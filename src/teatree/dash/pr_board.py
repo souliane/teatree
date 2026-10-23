@@ -18,7 +18,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.pr_inventory import PrInventoryEntry, read_inventory
+from teatree.core.pr_inventory import PrInventoryEntry, elapsed_label, merged_entries, parse_time, read_inventory
 from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS
 from teatree.dash.selectors import _last_failure_by_ticket
 from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons
@@ -27,8 +27,6 @@ _GROUPS = ("Needs you", "Waiting on colleagues", "Factory working", "Ready to me
 _ACTIVE_PR_STATES = (PullRequest.State.OPEN, PullRequest.State.REVIEW_REQUESTED, PullRequest.State.APPROVED)
 _ACTIVE_TASK_STATES = (Task.Status.PENDING, Task.Status.CLAIMED)
 _STALE_INVENTORY_AFTER = timedelta(minutes=30)
-_MINUTES_PER_HOUR = 60
-_HOURS_PER_DAY = 24
 
 
 class CachedPr(TypedDict, total=False):
@@ -95,52 +93,27 @@ def _web_link(value: str) -> str:
         return value if parsed.scheme in {"http", "https"} and parsed.hostname else ""
 
 
-def _when(value: str | datetime | None) -> datetime | None:
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else None
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else None
+@dataclass(frozen=True, slots=True)
+class PrObservation:
+    entries: dict[str, PrInventoryEntry]
+    overlays: set[str]
+    verified_urls: set[str]
+    warning: str
 
 
-def _elapsed(value: str | datetime | None, now: datetime) -> str:
-    at = _when(value)
-    if at is None:
-        return "unknown"
-    minutes = max(0, int((now - at).total_seconds() // 60))
-    if minutes < 1:
-        return "< 1 min"
-    if minutes < _MINUTES_PER_HOUR:
-        return f"{minutes} min"
-    hours = minutes // _MINUTES_PER_HOUR
-    if hours < _HOURS_PER_DAY:
-        return f"{hours} h"
-    return f"{hours // _HOURS_PER_DAY} d"
-
-
-def _inventory(now: datetime) -> tuple[dict[str, PrInventoryEntry], set[str], str]:
+def _inventory(now: datetime) -> PrObservation:
     try:
         snapshots = read_inventory()
     except (OSError, ValueError) as exc:
-        return {}, set(), f"PR inventory unavailable: {exc}"
+        return PrObservation({}, set(), set(), f"PR inventory unavailable: {exc}")
     if not snapshots:
-        return {}, set(), "PR inventory unavailable; showing recorded pull requests."
-    entries: dict[str, PrInventoryEntry] = {}
-    overlays: set[str] = set()
-    stale: list[str] = []
-    for snapshot in sorted(snapshots, key=lambda item: (not item.overlay.startswith("own:"), item.observed_at)):
-        if not snapshot.overlay.startswith("own:"):
-            overlays.add(snapshot.overlay)
-        if now - snapshot.observed_at > _STALE_INVENTORY_AFTER:
-            stale.append(snapshot.overlay)
-        for entry in snapshot.entries:
-            entries[entry.url] = entry
-    warning = f"PR inventory is stale for {', '.join(sorted(stale))}." if stale else ""
-    return entries, overlays, warning
+        return PrObservation({}, set(), set(), "PR inventory unavailable; showing recorded pull requests.")
+    overlays = {snapshot.overlay for snapshot in snapshots if not snapshot.overlay.startswith("own:")}
+    stale = [snapshot for snapshot in snapshots if now - snapshot.observed_at > _STALE_INVENTORY_AFTER]
+    stale_urls = {entry.url for snapshot in stale for entry in snapshot.entries}
+    entries = merged_entries(snapshots)
+    warning = f"PR inventory is stale for {', '.join(sorted(item.overlay for item in stale))}." if stale else ""
+    return PrObservation(entries, overlays, entries.keys() - stale_urls, warning)
 
 
 def _cached_prs(tickets: list[Ticket]) -> tuple[dict[str, Ticket], dict[str, CachedPr]]:
@@ -215,6 +188,7 @@ class PrActionFacts:
     approvals_met: bool | None
     approvals: str
     threads: str
+    verified: bool
 
 
 @dataclass(slots=True)
@@ -222,6 +196,7 @@ class PrBoardSources:
     now: datetime
     urls: set[str]
     observed: dict[str, PrInventoryEntry]
+    verified_urls: set[str]
     rows_by_url: dict[str, PullRequest]
     owners: dict[str, Ticket]
     cache: dict[str, CachedPr]
@@ -274,7 +249,11 @@ def _next_action(facts: PrActionFacts) -> tuple[str, str, str]:
     elif facts.review_requested or (facts.row is not None and facts.row.state == PullRequest.State.REVIEW_REQUESTED):
         outcome = ("Waiting on colleagues", "Reviewer", "Review requested")
     elif facts.approvals_met is True and facts.ci.lower() in {"green", "success"}:
-        outcome = ("Ready to merge or merging", "Factory", "Merge through the ticket keystone")
+        outcome = (
+            ("Ready to merge or merging", "Factory", "Merge through the ticket keystone")
+            if facts.verified
+            else ("Blocked", "Factory", "Forge facts not verified by a recent tick; waiting for the next read")
+        )
     elif facts.entry is not None and facts.entry.next_task:
         group = "Factory working" if facts.ci.lower() in {"pending", "running"} else "Blocked"
         outcome = (group, "Factory", facts.entry.next_task)
@@ -335,13 +314,13 @@ def _review_posts(urls: set[str]) -> dict[str, ReviewRequestPost]:
 
 def _collect_sources() -> PrBoardSources:
     now = timezone.now()
-    observed, observed_overlays, warning = _inventory(now)
+    observation = _inventory(now)
     rows_by_url = {
         row.url: row for row in PullRequest.objects.filter(state__in=_ACTIVE_PR_STATES).select_related("ticket")
     }
-    urls = _visible_pr_urls(observed, observed_overlays, rows_by_url)
+    urls = _visible_pr_urls(observation.entries, observation.overlays, rows_by_url)
     owners, cache, by_issue_url, ticket_ids = _ticket_state(urls, rows_by_url)
-    if not observed_overlays:
+    if not observation.overlays:
         urls.update(
             url for url, raw in cache.items() if raw.get("state") in {"open", "opened", "review_requested", "approved"}
         )
@@ -351,7 +330,8 @@ def _collect_sources() -> PrBoardSources:
     return PrBoardSources(
         now,
         urls,
-        observed,
+        observation.entries,
+        observation.verified_urls,
         rows_by_url,
         owners,
         cache,
@@ -363,7 +343,7 @@ def _collect_sources() -> PrBoardSources:
         attempts,
         questions_by_url,
         questions_by_ticket,
-        warning,
+        observation.warning,
     )
 
 
@@ -418,7 +398,7 @@ def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
     threads = _thread_text(raw)
     if threads == "unknown" and entry is not None:
         threads = entry.threads
-    created = _when(entry.created_at if entry is not None else row.create_verified_at if row is not None else None)
+    created = parse_time(entry.created_at if entry is not None else row.create_verified_at if row is not None else None)
     updated = entry.updated_at if entry is not None else raw.get("updated_at")
     post = sources.review_posts.get(url)
     approvals = _approval_text(raw)
@@ -435,6 +415,7 @@ def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
         approvals_met=_approvals_met(raw),
         approvals=approvals,
         threads=threads,
+        verified=url in sources.verified_urls,
     )
     outcome = _next_action(facts)
     title, ref = _card_identity(entry, row, raw, ticket)
@@ -444,12 +425,12 @@ def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
         link_url=_web_link(url),
         title=title,
         ref=ref,
-        age=_elapsed(created, sources.now),
+        age=elapsed_label(created, sources.now),
         created_at=created,
         ci=ci,
         approvals=approvals,
         threads=threads,
-        last_activity=_elapsed(updated if isinstance(updated, (str, datetime)) else None, sources.now),
+        last_activity=elapsed_label(updated if isinstance(updated, (str, datetime)) else None, sources.now),
         next_actor=outcome[1],
         next_action=outcome[2],
         group=outcome[0],
@@ -465,13 +446,13 @@ def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
                 )
             )
         ),
-        review_age=_elapsed(post.created_at, sources.now) if post else "unknown",
+        review_age=elapsed_label(post.created_at, sources.now) if post else "unknown",
         review_reasks=post.nag_count if post else 0,
         review_due=_review_due(post, entry.repo if entry else row.repo if row else str(raw.get("repo", "")))
         if post
         else "unknown",
         work_agent=(facts.task.claimed_by or "queued") if facts.task else "",
-        work_since=_elapsed(facts.task.claimed_at or facts.task.created_at, sources.now) if facts.task else "",
+        work_since=elapsed_label(facts.task.claimed_at or facts.task.created_at, sources.now) if facts.task else "",
         last_result=_last_result(sources.attempts.get(facts.task.pk)) if facts.task else "",
         enqueue_buttons=board_enqueue_buttons(sources.queued.get(ticket.pk, {}), ticket=ticket) if ticket else (),
     )

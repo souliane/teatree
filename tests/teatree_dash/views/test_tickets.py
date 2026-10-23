@@ -324,7 +324,7 @@ class TaskEnqueuePostTestCase(TestCase):
 
 class TaskEnqueueButtonsRenderTestCase(TestCase):
     def setUp(self) -> None:
-        self.ticket = TicketFactory(state=State.WORK_STARTED)
+        self.ticket = TicketFactory(state=State.TESTED)
 
     def _drawer(self) -> str:
         return self.client.get(reverse("dash:ticket_drawer", args=[self.ticket.pk])).content.decode()

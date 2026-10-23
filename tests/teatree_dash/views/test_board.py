@@ -298,6 +298,8 @@ class CardEnqueueButtonsTestCase(TestCase):
         assert "Ship now" in body
 
     def test_the_button_does_not_also_open_the_drawer(self) -> None:
+        self.ticket.state = State.TESTED
+        self.ticket.save(update_fields=["state"])
         assert "event.stopPropagation()" in self._card()
 
     def test_a_queued_phase_renders_disabled_with_its_reason(self) -> None:

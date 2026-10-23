@@ -95,7 +95,8 @@ PAGE_QUERY_PINS: dict[str, int] = {
 # the two-population assertion below is what tells those apart.
 # code_direct's legality now reads the recorded plan decision: one more bounded EXISTS, O(1).
 # The PR chips read the voided-merge refs once per render: one more bounded read, O(1).
-TICKET_DRAWER_QUERIES = 14
+# The enqueue buttons' coding legality reads the plan decision again: one more bounded EXISTS, O(1).
+TICKET_DRAWER_QUERIES = 15
 TRANSCRIPT_QUERIES = 2
 
 
@@ -164,7 +165,7 @@ class DashboardPageQueryPlansTestCase(TestCase):
                 TicketTransition(ticket_id=ticket_id, from_state=State.PR_OPENED, to_state=State.MERGED)
                 for ticket_id in merged_ids
             )
-            for name in ("dash:board", "dash:cycle_time"):
+            for name in ("dash:board_lifecycle", "dash:cycle_time"):
                 with self.subTest(page=name, scale=scale):
                     cache.clear()
                     with self.assertNumQueries(PAGE_QUERY_PINS[name] + MERGE_READ_QUERIES):

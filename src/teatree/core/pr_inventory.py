@@ -1,15 +1,21 @@
 """Durable open-PR observations shared by the tick and dashboard."""
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from django.utils import timezone
 
+from teatree.core.models.pull_request import PullRequest
 from teatree.paths import data_dir_root
+
+_MINUTES_PER_HOUR = 60
+_HOURS_PER_DAY = 24
+_UNKNOWN_TIME = datetime.max.replace(tzinfo=UTC)
 
 
 class PrInventoryError(ValueError):
@@ -31,6 +37,15 @@ class PrInventoryEntry:
     threads: str
     draft: bool
     reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class OpenPrRow:
+    ref: str
+    url: str
+    age: str
+    next_task: str
+    started: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,3 +133,61 @@ def read_inventory(*, directory: Path | None = None) -> tuple[PrInventorySnapsho
     if not root.exists():
         return ()
     return tuple(sorted((_read_snapshot(path) for path in root.glob("*.json")), key=lambda row: row.overlay))
+
+
+def merged_entries(snapshots: Iterable[PrInventorySnapshot]) -> dict[str, PrInventoryEntry]:
+    ordered = sorted(snapshots, key=lambda item: (not item.overlay.startswith("own:"), item.observed_at))
+    return {entry.url: entry for snapshot in ordered for entry in snapshot.entries}
+
+
+def parse_time(value: str | datetime | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else None
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def elapsed_label(value: str | datetime | None, now: datetime) -> str:
+    at = parse_time(value)
+    if at is None:
+        return "unknown"
+    minutes = max(0, int((now - at).total_seconds() // 60))
+    if minutes < 1:
+        return "< 1 min"
+    if minutes < _MINUTES_PER_HOUR:
+        return f"{minutes} min"
+    hours = minutes // _MINUTES_PER_HOUR
+    if hours < _HOURS_PER_DAY:
+        return f"{hours} h"
+    return f"{hours // _HOURS_PER_DAY} d"
+
+
+def open_pr_rows(started_at: datetime, *, now: datetime | None = None) -> list[OpenPrRow]:
+    """Every open PR observed since *started_at*: PRs with lifecycle rows first, then oldest first."""
+    entries = merged_entries(snapshot for snapshot in read_inventory() if snapshot.observed_at >= started_at)
+    started = set(PullRequest.objects.filter(url__in=list(entries)).values_list("url", flat=True))
+    ordered = sorted(
+        entries.values(),
+        key=lambda entry: (
+            entry.url not in started,
+            parse_time(entry.created_at) or _UNKNOWN_TIME,
+            entry.repo,
+            entry.iid,
+        ),
+    )
+    moment = now or timezone.now()
+    return [
+        OpenPrRow(
+            ref=f"{entry.repo}!{entry.iid}",
+            url=entry.url,
+            age=elapsed_label(entry.created_at, moment),
+            next_task=entry.next_task,
+            started=entry.url in started,
+        )
+        for entry in ordered
+    ]

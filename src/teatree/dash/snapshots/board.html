@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TeaTree · Board</title>
+  <title>TeaTree · PR board</title>
   <link rel="icon" href="/static/dash/favicon.svg">
   <link rel="stylesheet" href="/static/dash/css/dash.css">
   <script>
@@ -66,148 +66,72 @@
   </header>
   <div id="terminal-result" class="terminal-result"></div>
   <main class="dash-main" id="dash-main">
-    <h1 class="dash-h1">Board</h1>
+    <h1 class="dash-h1">Open pull requests</h1>
 
+  <nav class="board-tabs" aria-label="Board views"><strong aria-current="page">Open PRs</strong><a href="/dash/board/lifecycle/">Lifecycle</a></nav>
   <section class="band">
     <h2>Factory speed</h2>
 
       <p>No merged pull requests to measure yet.</p>
 
   </section>
-  <form class="dash-filters" method="get" action="/dash/board/">
-    <input type="text" name="text" value="" placeholder="search #/description">
-    <input type="text" name="overlay" value="" placeholder="overlay">
-    <select name="role">
-      <option value="">any role</option>
-      <option value="author" >author</option>
-      <option value="reviewer" >reviewer</option>
-    </select>
-    <select name="kind">
-      <option value="">any kind</option>
-      <option value="feature" >feature</option>
-      <option value="fix" >fix</option>
-    </select>
-    <label><input type="checkbox" name="ignored" value="1" > ignored</label>
-    <button class="dash-btn primary" type="submit">Filter</button>
-    <span class="result-count">0 shown</span>
-  </form>
-
-  <div id="board"
-    hx-get="/dash/board/columns/?text=&overlay=&role=&kind="
+  <div id="pr-board"
+    hx-get="/dash/board/prs/"
     hx-trigger="every 4s"
     hx-sync="this:drop"
     hx-swap="morph:innerHTML">
-    <div class="fsm-rail" role="presentation">
+    <p class="band" role="status">PR inventory unavailable; showing recorded pull requests.</p>
+<p class="result-count">0 open pull requests</p>
+<div class="kanban-groups pr-groups">
 
-    <span class="fsm-node" data-group="backlog"><span class="fsm-dot"></span>Backlog</span>
-    <span class="fsm-link" data-group="backlog"></span>
-
-    <span class="fsm-node" data-group="building"><span class="fsm-dot"></span>Building</span>
-    <span class="fsm-link" data-group="building"></span>
-
-    <span class="fsm-node" data-group="reviewing"><span class="fsm-dot"></span>Reviewing</span>
-    <span class="fsm-link" data-group="reviewing"></span>
-
-    <span class="fsm-node" data-group="landed"><span class="fsm-dot"></span>Landed</span>
-
-
-
-</div>
-<div class="kanban-groups">
-
-    <section class="kanban-group" data-group="backlog">
-      <h2>Backlog</h2>
+    <section class="kanban-group" data-pr-group="Needs you">
+      <h2>Needs you <span class="count">0</span></h2>
       <div class="kanban-columns">
-
-          <div class="kanban-column" data-state="not_started">
-            <h3 title="Admitted to the board. Nothing claimed it yet."><span>Not started</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
-          <div class="kanban-column" data-state="scoped">
-            <h3 title="Scope agreed — what is in and out is settled."><span>Scoped</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
+        <div class="kanban-column">
+          <p class="column-empty">—</p>
+        </div>
       </div>
     </section>
 
-    <section class="kanban-group" data-group="building">
-      <h2>Building</h2>
+    <section class="kanban-group" data-pr-group="Waiting on colleagues">
+      <h2>Waiting on colleagues <span class="count">0</span></h2>
       <div class="kanban-columns">
-
-          <div class="kanban-column" data-state="work_started">
-            <h3 title="Someone picked it up and a worktree exists. Comes BEFORE the plan: the plan is recorded from the work, not ahead of it."><span>Work started</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
-          <div class="kanban-column" data-state="plan_recorded">
-            <h3 title="A PlanArtifact is recorded. The plan() transition refuses without one."><span>Plan recorded</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
-          <div class="kanban-column" data-state="coded">
-            <h3 title="The change is written and committed on its branch."><span>Coded</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
-          <div class="kanban-column" data-state="tested">
-            <h3 title="Its tests pass — the broader CI/QA run, not just the author&#x27;s own."><span>Tested</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
+        <div class="kanban-column">
+          <p class="column-empty">—</p>
+        </div>
       </div>
     </section>
 
-    <section class="kanban-group" data-group="reviewing">
-      <h2>Reviewing</h2>
+    <section class="kanban-group" data-pr-group="Factory working">
+      <h2>Factory working <span class="count">0</span></h2>
       <div class="kanban-columns">
-
-          <div class="kanban-column" data-state="self_reviewed">
-            <h3 title="The AUTHOR&#x27;s own pre-ship review is done. This is not peer review; that is &#x27;In peer review&#x27;, after shipping."><span>Self-reviewed</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
-          <div class="kanban-column" data-state="pr_opened">
-            <h3 title="A pull/merge request exists on the target branch."><span>PR opened</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
-          <div class="kanban-column" data-state="review_requested">
-            <h3 title="Review was REQUESTED from someone else and is outstanding."><span>In peer review</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
+        <div class="kanban-column">
+          <p class="column-empty">—</p>
+        </div>
       </div>
     </section>
 
-    <section class="kanban-group" data-group="landed">
-      <h2>Landed</h2>
+    <section class="kanban-group" data-pr-group="Ready to merge or merging">
+      <h2>Ready to merge or merging <span class="count">0</span></h2>
       <div class="kanban-columns">
-
-          <div class="kanban-column" data-state="merged">
-            <h3 title="The PR is merged into its target branch."><span>Merged</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
-          <div class="kanban-column" data-state="retro_recorded">
-            <h3 title="A retro extracted the lessons and turned them into enforcement."><span>Retro recorded</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
-          <div class="kanban-column" data-state="delivered">
-            <h3 title="Done and confirmed on the surface that matters."><span>Delivered</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
+        <div class="kanban-column">
+          <p class="column-empty">—</p>
+        </div>
       </div>
     </section>
 
+    <section class="kanban-group" data-pr-group="Blocked">
+      <h2>Blocked <span class="count">0</span></h2>
+      <div class="kanban-columns">
+        <div class="kanban-column">
+          <p class="column-empty">—</p>
+        </div>
+      </div>
+    </section>
 
 </div>
 
   </div>
-
   <aside id="drawer" aria-label="Ticket detail"></aside>
 
   </main>
@@ -257,6 +181,7 @@
       if (drawer) { renderDrawerDiagram(drawer); }
     });
   </script>
+
 
   <script>
     // A morph writes the DOM value PROPERTY, bypassing the dirty-value flag, so a

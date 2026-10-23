@@ -39,9 +39,14 @@ class EnqueueButtonsTestCase(TestCase):
         assert enqueue_buttons(self.ticket) == ()
 
     def test_the_label_reads_as_a_now_verb(self) -> None:
-        labels = {button.phase: button.label for button in enqueue_buttons(self.ticket)}
-        assert labels["reviewing"] == "Review now"
-        assert labels["shipping"] == "Ship now"
+        for state, phase, label in (
+            (Ticket.State.TESTED, "reviewing", "Review now"),
+            (Ticket.State.SELF_REVIEWED, "shipping", "Ship now"),
+        ):
+            with self.subTest(phase=phase):
+                self.ticket.state = state
+                labels = {button.phase: button.label for button in enqueue_buttons(self.ticket)}
+                assert labels[phase] == label
 
     def test_not_started_offers_only_the_fsm_scoping_phase(self) -> None:
         buttons = {button.phase: button for button in enqueue_buttons(self.ticket)}

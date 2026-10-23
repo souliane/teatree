@@ -58,7 +58,7 @@ class PrBoardTestCase(TestCase):
         assert _group(board, "Factory working") == [f"{active.repo}!{active.iid}"]
         assert _group(board, "Waiting on colleagues") == [f"{waiting.repo}!{waiting.iid}"]
 
-    def test_approved_green_pr_is_ready_to_merge_with_cached_facts(self) -> None:
+    def _approved_green_pr(self) -> PullRequest:
         ticket = TicketFactory()
         pr = PullRequestFactory(ticket=ticket, state=PullRequest.State.APPROVED)
         ticket.extra = {
@@ -72,14 +72,56 @@ class PrBoardTestCase(TestCase):
             }
         }
         ticket.save(update_fields=["extra"])
+        return PullRequest.objects.get(pk=pr.pk)
 
-        board = build_pr_board()
-        card = next(card for group in board.groups for card in group.cards)
+    def _observed(self, pr: PullRequest, *, age: timedelta) -> tuple[PrInventorySnapshot, ...]:
+        entry = PrInventoryEntry(
+            url=pr.url,
+            repo=pr.repo,
+            iid=pr.iid,
+            title="Ready PR",
+            created_at="2026-10-01T10:00:00Z",
+            updated_at="2026-10-02T10:00:00Z",
+            next_task="Review or merge PR",
+            decision="my_pr.open",
+            ci="success",
+            approvals="unknown",
+            threads="unknown",
+            draft=False,
+        )
+        return (PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now() - age, entries=(entry,)),)
+
+    def test_approved_green_pr_observed_by_the_last_tick_is_ready_to_merge(self) -> None:
+        pr = self._approved_green_pr()
+
+        with patch("teatree.dash.pr_board.read_inventory", return_value=self._observed(pr, age=timedelta(minutes=2))):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
+
         assert card.group == "Ready to merge or merging"
         assert card.ci == "success"
         assert card.approvals == "2/2"
         assert card.threads == "0 unresolved"
         assert card.title == "Ready PR"
+
+    def test_approved_green_pr_with_a_stale_observation_is_blocked_not_ready(self) -> None:
+        pr = self._approved_green_pr()
+
+        with patch("teatree.dash.pr_board.read_inventory", return_value=self._observed(pr, age=timedelta(hours=2))):
+            board = build_pr_board()
+        card = next(card for group in board.groups for card in group.cards)
+
+        assert card.group == "Blocked"
+        assert card.next_actor == "Factory"
+        assert "not verified" in card.next_action
+        assert "stale" in board.inventory_warning
+
+    def test_approved_green_pr_without_any_tick_observation_is_blocked_not_ready(self) -> None:
+        self._approved_green_pr()
+
+        card = next(card for group in build_pr_board().groups for card in group.cards)
+
+        assert card.group == "Blocked"
+        assert "not verified" in card.next_action
 
     def test_failed_task_is_blocked_and_unknown_facts_are_explicit(self) -> None:
         ticket = TicketFactory()

@@ -31,6 +31,7 @@ its own dedicated ``LoopLease``.
 import datetime as dt
 import os
 import uuid
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Annotated, Any, cast
@@ -43,6 +44,7 @@ from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.machine_output import emit
 from teatree.core.models import LoopLease
+from teatree.core.pr_inventory import OpenPrRow, open_pr_rows
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line_reader
 from teatree.loops.preset_status import overridden_loop_names, preset_line_handles
@@ -127,7 +129,17 @@ class _ScopedJobsBuilder:
         return list(outcome.jobs)
 
 
-def _report_to_dict(report: "TickReport", *, blocked_reason: str = "") -> ReportDict:
+def _open_pr_rows(report: "TickReport") -> list[OpenPrRow]:
+    try:
+        return open_pr_rows(report.started_at)
+    except (OSError, ValueError) as exc:
+        report.errors["open_prs"] = f"open-PR inventory unreadable: {exc}"
+        return []
+
+
+def _report_to_dict(
+    report: "TickReport", *, blocked_reason: str = "", open_prs: Sequence[OpenPrRow] = ()
+) -> ReportDict:
     """The structured tick report, carrying any loop-table refusal as a real skip.
 
     A loop the loop-table declined to dispatch is ``skipped`` — NOT a zero-signal
@@ -142,6 +154,7 @@ def _report_to_dict(report: "TickReport", *, blocked_reason: str = "") -> Report
         "actions": [asdict(action) for action in report.actions],
         "skipped": bool(blocked_reason),
         "skipped_reason": blocked_reason,
+        "open_prs": [asdict(row) for row in open_prs],
     }
 
 
@@ -162,6 +175,7 @@ def _skipped_report_dict(started_at: dt.datetime, reason: str) -> ReportDict:
         "actions": [],
         "skipped": True,
         "skipped_reason": reason,
+        "open_prs": [],
     }
 
 
@@ -251,13 +265,15 @@ class Command(TyperCommand):
             if blocked_reason
             else f"ran   loop {loop!r} — {report.signal_count} signal(s), {report.action_count} action(s)"
         )
+        open_prs = [] if blocked_reason else _open_pr_rows(report)
         warnings = [f"WARN  {name}: {message}" for name, message in report.errors.items()]
+        listing = [f"OPEN  {row.ref}  {row.age}  {row.next_task}" for row in open_prs]
         emit(
-            _report_to_dict(report, blocked_reason=blocked_reason),
+            _report_to_dict(report, blocked_reason=blocked_reason, open_prs=open_prs),
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human="\n".join([verdict, *warnings]),
+            human="\n".join([verdict, *warnings, *listing]),
         )
 
     def _run_followup_dry_run(self, *, overlay: str, json_output: bool) -> None:
