@@ -38,20 +38,16 @@ from teatree.core.review.live_head import live_head_at
 # first, then grade every quality dimension.
 _VERIFICATION_BRIEF_LINES: tuple[str, ...] = (
     "",
-    "VERIFICATION RIGOR (do NOT rubber-stamp):",
-    "1. Read the PROOF first — reproduce the change's claimed outcome (a PoC read / a test run)",
-    "   before accepting it; a summary is not evidence, and a finding you cannot reproduce is not a finding.",
-    "2. Grade against the six quality dimensions and record a per-dimension verdict:",
-    "   correctness | robustness (failure modes) | maintainability | coherence | reliability | proactivity.",
+    "VERIFICATION RIGOR:",
+    "1. Reproduce the claimed outcome from proof; summaries and unverified findings are not evidence.",
+    "2. Grade correctness, robustness, maintainability, coherence, reliability, and proactivity separately.",
 )
 
 #: Appended when the dispatch named the identity: what the agent must do with it, and the one
 #: spelling the orchestrator will still refuse rather than replace.
 _ASSIGNED_IDENTITY_LINES: tuple[str, ...] = (
-    "`reviewer_identity` is ASSIGNED above — return it verbatim. You do not choose it: the",
-    "orchestrator records the verdict under it, so an omitted or respelt value is replaced by it",
-    "rather than refused. An identity naming a maker/coding/loop role is the one exception — that",
-    "is you declaring yourself the author, and it still records nothing.",
+    "Return the ASSIGNED `reviewer_identity` verbatim; omission or respelling is replaced.",
+    "A maker/coding/loop identity is refused and records nothing.",
 )
 
 
@@ -69,15 +65,17 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
     """
     return (
         "",
-        "RECORD YOUR VERDICT BY RETURNING IT (do NOT try `t3 <overlay> review record` — maker≠checker",
-        "requires a different actor to write the row): add a `review_verdict` object to your final JSON",
-        "result. The orchestrator records the ReviewVerdict server-side and releases the review lock:",
+        "RECORD YOUR VERDICT BY RETURNING IT in final JSON; maker≠checker forbids `t3 <overlay> review record`.",
+        "The orchestrator records it and releases the review lock:",
         '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
         f'                     "reviewer_identity": "{identity or REVIEWER_IDENTITY_INSTRUCTION}",',
         '                     "gh_verify_result": "green"|"pending"|"failed",',
         '                     "blast_class": "substrate"|"logic"|"docs",',
-        '  "findings": [{"severity":"...", "kind": "blocking"|"nit", "summary":"...", "file":"...", "line":0}]}',
-        "A vacuous test is BLOCKING; NIT-only: merge_safe + follow-up. Read skills/review/references/nit-lane.md.",
+        '                     "findings": [{"severity": "...", "kind": "blocking"|"nit",',
+        '                                   "summary": "...", "file": "...", "line": 0}]}',
+        "BLOCKING: wrong behaviour, false claim, untested shipped behaviour, vacuous test, redundant",
+        "test, duplicate definition, or red check. NIT: wording, naming, style, or placement.",
+        "Only BLOCKING findings may hold a review; NITs need a merge_safe verdict and follow-up.",
         ENVELOPE_FINDINGS_RULE,
         "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
         (
@@ -97,20 +95,14 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
         "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
         "dispatched one, so a verdict that names no head records nothing at all.",
-        "A blocking finding (blocker/major/high/critical) citing a file OUTSIDE the PR's changed-file set is",
-        "REFUSED and records nothing: a branch-only probe reports what main did to that file since the branch",
+        "A blocking finding (blocker/major/high/critical) outside PR-changed files is REFUSED and records nothing.",
+        "Branch-only probes may blame main; recheck on the MERGE RESULT.",
         *(
-            (
-                "was cut, not what this PR did. This venue cannot build the MERGE RESULT;",
-                "return `hold` and state the unverified concern rather than claiming a retake.",
-            )
+            ("This venue cannot build it; return `hold` with the unverified concern.",)
             if read_only_venue
             else (
-                (
-                    "was cut, not what this PR did. Re-measure it on the MERGE RESULT — "
-                    "`t3 review merge-tree` extracts one"
-                ),
-                'to a plain directory (never a git worktree) — then add "merge_result_retake": true if it survives.',
+                "Use `t3 review merge-tree` (plain directory, never a git worktree),",
+                'then add "merge_result_retake": true only if it survives.',
             )
         ),
         *(
@@ -128,14 +120,13 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             if read_only_venue
             else ()
         ),
-        "A result without `review_verdict` FAILS the phase.",
+        "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
         *(_ASSIGNED_IDENTITY_LINES if identity else ()),
         "",
         "GRADE THE TICKET'S RUBRIC IN THE SAME ENVELOPE — you are its independent verifier (grader != maker):",
         '  "rubric_grades": [{"ordinal": 0, "status": "pass"|"fail", "rationale": "<what proves it>"}, ...]',
-        "Grade EVERY criterion the TICKET RUBRIC block below lists; a verdict leaving one ungraded records nothing.",
-        "A PASS cites the test that proves it; a FAIL needs none, is a finding, and no bypass overrides it.",
-        "do NOT run `t3 <overlay> ticket rubric-grade`: it writes outside the transaction recording your verdict.",
+        "Grade EVERY criterion or the verdict records nothing. A PASS cites a test; a FAIL needs none,",
+        "is a finding, and no bypass overrides it. do NOT run `t3 <overlay> ticket rubric-grade` separately.",
     )
 
 
@@ -393,9 +384,9 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
             '"proven_tests":["<test ID observed RED before the fix>"],"no_new_tests":false}'
         ),
         (
-            "`proven_tests`: test IDs seen RED before the fix. Set `no_new_tests`: true "
-            "with an empty list only if no regression test was added; other keys are dropped. "
-            "Shippable maker `merge_safe` requires this; a `hold` owes none."
+            "`proven_tests`: IDs seen RED before the fix. Use `no_new_tests`: true and [] only if no"
+            " regression test was added; other keys are dropped. Shippable maker `merge_safe` requires this;"
+            " a `hold` owes none."
         ),
         ("For multi-repo tickets, review the combined diff and list all repos in `integration_review.repos`."),
         *(() if read_only_venue else ("2. Run /t3:next to wrap up.",)),
