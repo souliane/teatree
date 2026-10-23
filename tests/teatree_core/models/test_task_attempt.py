@@ -7,7 +7,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.models.task_attempt import RESUME_HEADROOM_TOKENS
+from teatree.core.models.task_attempt import RESUME_CONTEXT_CAP_TOKENS, RESUME_HEADROOM_TOKENS
 
 
 class TestTaskAttemptEffectiveTokens(TestCase):
@@ -175,8 +175,16 @@ class TestResumeHeadroom:
     def test_room_left_can_continue(self) -> None:
         assert not self._attempt(200_000 - RESUME_HEADROOM_TOKENS, 200_000).cannot_continue_its_conversation()
 
-    @pytest.mark.parametrize(("context", "window"), [(None, 200_000), (313_014, None), (None, None)])
-    def test_an_unmeasured_size_or_window_is_never_judged_oversized(
-        self, context: int | None, window: int | None
-    ) -> None:
-        assert not self._attempt(context, window).cannot_continue_its_conversation()
+    @pytest.mark.parametrize("window", [1_000_000, None])
+    def test_a_conversation_over_the_absolute_cap_cannot_continue_whatever_its_window(self, window: int | None) -> None:
+        assert self._attempt(RESUME_CONTEXT_CAP_TOKENS + 1, window).cannot_continue_its_conversation()
+
+    def test_a_conversation_at_the_cap_on_a_large_window_can_continue(self) -> None:
+        assert not self._attempt(RESUME_CONTEXT_CAP_TOKENS, 1_000_000).cannot_continue_its_conversation()
+
+    @pytest.mark.parametrize("window", [200_000, 1_000_000, None])
+    def test_an_unmeasured_context_is_never_judged_oversized(self, window: int | None) -> None:
+        assert not self._attempt(None, window).cannot_continue_its_conversation()
+
+    def test_a_measured_context_under_the_cap_with_no_window_can_continue(self) -> None:
+        assert not self._attempt(RESUME_CONTEXT_CAP_TOKENS, None).cannot_continue_its_conversation()

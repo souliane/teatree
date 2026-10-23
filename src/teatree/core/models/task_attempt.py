@@ -510,9 +510,14 @@ class TaskAttempt(models.Model):
         """Whether resuming this attempt's conversation hits a wall a fresh one avoids (#4874)."""
         if self.model_fell_back:
             return True
-        if self.context_tokens is None or self.context_window_tokens is None:
+        if self.context_tokens is None:
             return False
-        return self.context_tokens + RESUME_HEADROOM_TOKENS > self.context_window_tokens
+        if self.context_tokens > RESUME_CONTEXT_CAP_TOKENS:
+            return True
+        return (
+            self.context_window_tokens is not None
+            and self.context_tokens + RESUME_HEADROOM_TOKENS > self.context_window_tokens
+        )
 
     def _stamp_repair_loop_fields(self) -> None:
         """Stamp the iteration counter + error fingerprint on insert (#2009).

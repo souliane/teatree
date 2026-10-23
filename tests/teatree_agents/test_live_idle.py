@@ -16,6 +16,7 @@ from teatree.agents.harness import HarnessSession, PydanticAiHarnessSession
 from teatree.agents.live_control import ControlOutcome, FollowUpSession, LiveSessionController, LiveTask, RejectCode
 from teatree.agents.live_idle import IdleWindowBudget, can_idle, hold_idle_window
 from teatree.agents.runner_stream import StreamCapture
+from teatree.core.models.task_attempt import RESUME_CONTEXT_CAP_TOKENS
 from tests.teatree_agents._sdk_fake import assistant_text, result_message
 
 
@@ -315,3 +316,68 @@ def test_a_streaming_follow_up_is_busy_and_cannot_reuse_the_first_result() -> No
     assert state == "busy"
     assert previous_result is None
     assert failure == "follow-up turn ended without a result"
+
+
+class _TurnSession(_CapableSession):
+    def __init__(self, capture: StreamCapture, *, context_after_turn: int | None = None) -> None:
+        self.capture = capture
+        self.context_after_turn = context_after_turn
+        self.prompts: list[str] = []
+
+    async def follow_up(self, prompt: str) -> None:
+        self.prompts.append(prompt)
+
+    async def receive_response(self) -> AsyncIterator[object]:
+        if self.context_after_turn is not None:
+            self.capture.context_tokens = self.context_after_turn
+        yield assistant_text("next turn")
+        yield result_message(result="next turn")
+
+
+def _follow_up_after_first_result(
+    context_tokens: int, *, context_after_turn: int | None = None, follow_ups: int = 1
+) -> tuple[list[RejectCode | ControlOutcome], int]:
+    async def run() -> tuple[list[RejectCode | ControlOutcome], int]:
+        capture = StreamCapture()
+        capture.observe(result_message(result="first"))
+        capture.context_tokens = context_tokens
+        session = _TurnSession(capture, context_after_turn=context_after_turn)
+        live = _controller(capture)
+        live.bind(session)
+        held = asyncio.create_task(
+            hold_idle_window(
+                cast("HarnessSession", session), capture, live, capture.outcome(), budget=IdleWindowBudget(1, None)
+            )
+        )
+        verdicts: list[RejectCode | ControlOutcome] = []
+        for index in range(follow_ups):
+            await asyncio.sleep(0.05)
+            receipt = await live.follow_up(f"turn {index}", command_id=f"c{index}", wait=1)
+            verdicts.append(receipt.code or receipt.outcome)
+        await held
+        return verdicts, len(session.prompts)
+
+    return asyncio.run(run())
+
+
+def test_a_conversation_over_the_resume_cap_opens_no_idle_window() -> None:
+    verdicts, prompts_sent = _follow_up_after_first_result(RESUME_CONTEXT_CAP_TOKENS + 1)
+
+    assert verdicts == [RejectCode.SESSION_CLOSED]
+    assert prompts_sent == 0
+
+
+def test_a_conversation_exactly_at_the_resume_cap_still_opens_the_window() -> None:
+    verdicts, prompts_sent = _follow_up_after_first_result(RESUME_CONTEXT_CAP_TOKENS)
+
+    assert verdicts == [ControlOutcome.ACCEPTED_NEW_TURN]
+    assert prompts_sent == 1
+
+
+def test_a_follow_up_turn_that_crosses_the_cap_finishes_and_the_next_window_is_refused() -> None:
+    verdicts, prompts_sent = _follow_up_after_first_result(
+        100_000, context_after_turn=RESUME_CONTEXT_CAP_TOKENS + 1, follow_ups=2
+    )
+
+    assert verdicts == [ControlOutcome.ACCEPTED_NEW_TURN, RejectCode.SESSION_CLOSED]
+    assert prompts_sent == 1
