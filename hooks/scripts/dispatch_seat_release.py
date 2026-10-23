@@ -21,6 +21,8 @@ Cold-import safe: stdlib only at module top — never Django / ``teatree.core``.
 
 import sys
 
+from hooks.scripts.gate_result import warn_gate_skipped
+
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("dispatch_seat_release", sys.modules[__name__])
@@ -45,9 +47,11 @@ def handle_subagent_stop_release(data: dict) -> None:
         from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 — deferred: cold-hook
 
         if not bootstrap_teatree_django():
+            warn_gate_skipped("dispatch seat release", "the hook interpreter cannot read the ORM control DB")
             return
         from teatree.core.dispatch_admission import release_interactive_dispatch  # noqa: PLC0415 — deferred: post-setup
 
         release_interactive_dispatch(session_id=session_id, agent_id=agent_id)
-    except Exception:  # noqa: BLE001 — crash-proof hook: a release bug must never break SubagentStop
+    except Exception as exc:  # noqa: BLE001 — crash-proof hook: a release bug must never break SubagentStop
+        warn_gate_skipped("dispatch seat release", f"the ORM release failed ({type(exc).__name__}: {exc})")
         return

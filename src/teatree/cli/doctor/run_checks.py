@@ -35,6 +35,7 @@ from teatree.cli.doctor.checks_cold_hooks import (
     _check_autoload_engages_platform_skill,
     _check_cold_hook_settings_readable,
     _check_config_override_tier_healthy,
+    _check_hook_orm_reachable,
 )
 from teatree.cli.doctor.checks_config_drift import _check_config_rows_shadowing_shipped_defaults
 from teatree.cli.doctor.checks_container_env import check_deployed_gnupg_home
@@ -564,10 +565,13 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # ensure_django() above: it compares the hook's answer against the Django-side one.
     # #3873 rides alongside: a runtime ConfigSetting read fault resolves every gate to a
     # shipped default and says so only in a worker log. The resolver records it beside the
-    # control DB; this is the surface that makes an operator see it. The tuple calls BOTH
+    # control DB; this is the surface that makes an operator see it. The tuple calls all three
     # before ``all`` short-circuits, so an unreadable-store FAIL never masks a degraded-tier
-    # FAIL — they are different faults with different remedies.
-    ok = all((_check_cold_hook_settings_readable(), _check_config_override_tier_healthy())) and ok
+    # or ORM-reachability FAIL — these are different faults with different remedies.
+    ok = (
+        all((_check_cold_hook_settings_readable(), _check_config_override_tier_healthy(), _check_hook_orm_reachable()))
+        and ok
+    )
     # The same shape one layer up: the settings READ fine and say the deployment knows neither
     # who may review its merges nor whose credential opens its MRs. Both are invisible until a
     # merge is refused or an MR's author is read by hand, so this one hard-FAILs.

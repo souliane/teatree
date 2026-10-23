@@ -19,7 +19,7 @@ behind phantom seats; erring short reopens the burst this bounds.
 import datetime as dt
 from typing import ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 #: How long a seat survives with no release. Covers a sub-agent's ordinary life, so the
@@ -49,12 +49,13 @@ class InteractiveDispatchManager(models.Manager["InteractiveDispatch"]):
         *other_agents* is the rest of the box's live population — the durable ``Task``
         claims — which the rank cannot see because those rows are not seats.
         """
-        seat = self._open_seat(session_id)
-        ahead = self.live_seats().filter(pk__lt=seat.pk).count()
-        if other_agents + ahead >= ceiling:
-            seat.delete()
-            return False
-        return True
+        with transaction.atomic(using=self.db):
+            seat = self._open_seat(session_id)
+            ahead = self.live_seats().filter(pk__lt=seat.pk).count()
+            if other_agents + ahead >= ceiling:
+                seat.delete()
+                return False
+            return True
 
     def record_seat(self, *, session_id: str) -> "InteractiveDispatch":
         """Take a seat with no ceiling to clear — the ceiling-EXEMPT arm's stamp.
@@ -77,15 +78,16 @@ class InteractiveDispatchManager(models.Manager["InteractiveDispatch"]):
         kill-switch) hands back someone else's, which UNDER-counts — the fail-open
         direction this module takes everywhere.
         """
-        if not agent_id or self.filter(agent_id=agent_id).exists():
-            return False
-        seat = self.live_seats().filter(session_id=session_id).order_by("admitted_at", "pk").first()
-        if seat is None:
-            return False
-        seat.agent_id = agent_id
-        seat.released_at = timezone.now()
-        seat.save(update_fields=["agent_id", "released_at"])
-        return True
+        with transaction.atomic(using=self.db):
+            if not agent_id or self.filter(agent_id=agent_id).exists():
+                return False
+            seat = self.live_seats().filter(session_id=session_id).order_by("admitted_at", "pk").first()
+            if seat is None:
+                return False
+            seat.agent_id = agent_id
+            seat.released_at = timezone.now()
+            seat.save(update_fields=["agent_id", "released_at"])
+            return True
 
     def _open_seat(self, session_id: str) -> "InteractiveDispatch":
         """Write one seat, dropping whatever the window has already expired."""

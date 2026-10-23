@@ -205,3 +205,14 @@ class TestReopenedIssueRule(TestCase):
             report = reconcile_board()
 
         assert (report.applied, report.probes) == ((), 0)
+
+    def test_stale_revival_counter_cannot_bypass_live_cap(self) -> None:
+        ticket = self._delivered()
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"reopen_revivals": issue_reopen.MAX_REOPEN_REVIVALS})
+
+        result = issue_reopen._revive_reopened(ticket, dry_run=False)
+
+        ticket.refresh_from_db()
+        assert result is None
+        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.extra["reopen_revivals"] == issue_reopen.MAX_REOPEN_REVIVALS

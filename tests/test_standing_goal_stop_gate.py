@@ -136,10 +136,15 @@ class TestCrashProof(_GateTest):
         # ``_run`` lazily does ``from hooks.scripts.django_bootstrap import
         # bootstrap_teatree_django`` (the canonical package module) — patch it there.
         StandingGoal.objects.set_goal("evals-green", "false")
-        with patch.object(sys.modules["hooks.scripts.django_bootstrap"], "bootstrap_teatree_django", lambda: False):
+        stderr = StringIO()
+        with (
+            patch.object(sys.modules["hooks.scripts.django_bootstrap"], "bootstrap_teatree_django", lambda: False),
+            patch("sys.stderr", stderr),
+        ):
             result, decision = self._run()
         assert result is None
         assert decision == {}
+        assert "SKIPPED" in stderr.getvalue()
 
 
 class TestDefensiveHelpers(_GateTest):

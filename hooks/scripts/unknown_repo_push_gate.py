@@ -106,7 +106,7 @@ def _classify_push_for_cwd(cwd: Path) -> str:
     unvalidated push and a scoped-and-cleared one are the same silence otherwise.
     """
     if not bootstrap_teatree_django():
-        warn_gate_skipped("unknown-repo push SCOPE", "the hook interpreter cannot import Django")
+        warn_gate_skipped("unknown-repo push SCOPE", "the hook interpreter cannot verify ORM access")
         return "allow"
     try:
         from teatree.core.gates.owned_repo_guard import classify_active_push  # noqa: PLC0415 — cold-hook import

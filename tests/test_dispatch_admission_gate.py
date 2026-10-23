@@ -149,6 +149,7 @@ class TestDeniedReasonSeam:
         assert _REAL_DENIED_REASON(apply_ceiling=True) is None
 
     def test_it_forwards_the_ceiling_flag_to_core(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(bootstrap, "bootstrap_teatree_django", lambda: True)
         seen: list[bool] = []
         monkeypatch.setattr(
             core,
@@ -184,3 +185,14 @@ class TestColdImport:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "['Agent', 'Task']"
+
+
+def test_orm_probe_error_is_an_audible_skip(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gate, "_denied_reason", _exploding_probe)
+
+    assert gate.handle_dispatch_admission(_agent_dispatch()) is False
+    err = capsys.readouterr().err
+    assert "SKIPPED" in err
+    assert "RuntimeError" in err

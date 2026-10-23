@@ -36,15 +36,13 @@ Cold-import safe: the module top imports only stdlib plus the already-extracted
 
 import sys
 
-from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent
+from hooks.scripts.gate_result import warn_gate_skipped
+from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS, call_is_from_subagent
 
 # Alias the bare and ``hooks.scripts.`` identities so the handlers the router
 # re-exports and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("dispatch_admission_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.dispatch_admission_gate", sys.modules[__name__])
-
-#: The two harness tool names that spawn a sub-agent.
-DISPATCH_TOOLS = frozenset({"Agent", "Task"})
 
 
 def _block_message(reason: str) -> str:
@@ -68,6 +66,7 @@ def _denied_reason(*, apply_ceiling: bool, session_id: str = "") -> str | None:
     from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 — deferred: cold-hook import
 
     if not bootstrap_teatree_django():
+        warn_gate_skipped("dispatch admission", "the hook interpreter cannot read the ORM control DB")
         return None
     from teatree.core.dispatch_admission import dispatch_admission_denied_reason  # noqa: PLC0415 — deferred: post-setup
 
@@ -94,7 +93,8 @@ def handle_dispatch_admission(data: dict) -> bool:
         if data.get("tool_name") not in DISPATCH_TOOLS:
             return False
         reason = _denied_reason(apply_ceiling=not call_is_from_subagent(data), session_id=_session_of(data))
-    except Exception:  # noqa: BLE001 — crash-proof hook: a gate bug must never wedge the dispatch
+    except Exception as exc:  # noqa: BLE001 — crash-proof hook: a gate bug must never wedge the dispatch
+        warn_gate_skipped("dispatch admission", f"the ORM probe failed ({type(exc).__name__}: {exc})")
         return False
     if reason is None:
         return False

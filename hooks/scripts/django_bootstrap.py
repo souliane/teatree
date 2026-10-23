@@ -1,41 +1,21 @@
-"""Shared leaf: bootstrap Django once per hook subprocess.
-
-The hook subprocess never calls ``django.setup()`` on its own, yet several
-gate handlers resolve overlays / models through the app registry. This
-self-contained utility (src-path insert + ``django.setup()`` + bool return)
-has ZERO dependency on ``hook_router``, so both ``hook_router`` and the sibling
-gate modules import it directly without a cycle.
-
-A FAILED bootstrap is audible. ``run-hook.sh`` deliberately falls back to a
-version-floor-only interpreter with no Django and prints nothing, so without a
-line here every ORM-backed gate degrades to a silent allow that an operator
-reading the session cannot tell from a clean pass. The line is emitted once per
-process (the gates call this repeatedly) and names the missing capability, not
-the gate — each degraded gate says SKIPPED itself, through
-``gate_result.warn_gate_skipped``.
-"""
+"""Bootstrap Django and verify that this hook interpreter can read the ORM database."""
 
 import os
 import sys
 from pathlib import Path
 
-#: Whether this process already named the missing capability. The bootstrap is
-#: called by every ORM-backed gate in the chain; one line is the signal, ten is
-#: noise the operator learns to skip past.
 _MISSING_CAPABILITY_WARNED = False
 
 
 def _django_setup() -> None:
-    """Import Django and initialise the app registry against teatree's settings."""
-    import django  # noqa: PLC0415 — deferred: Django import at call time
+    import django  # noqa: PLC0415 — deferred cold-hook import
 
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
     django.setup()
 
 
 def _warn_missing_capability(exc: BaseException) -> None:
-    """Name the missing capability on stderr, once per process."""
-    global _MISSING_CAPABILITY_WARNED  # noqa: PLW0603 — process-scoped dedup for a stderr line
+    global _MISSING_CAPABILITY_WARNED  # noqa: PLW0603 — process-scoped stderr dedup
     if _MISSING_CAPABILITY_WARNED:
         return
     _MISSING_CAPABILITY_WARNED = True
@@ -47,20 +27,61 @@ def _warn_missing_capability(exc: BaseException) -> None:
     )
 
 
-def bootstrap_teatree_django() -> bool:
-    """Import teatree and run ``django.setup()`` once per hook process.
+def _warn_orm_unavailable(status: str, db_path: str, exc: BaseException) -> None:
+    global _MISSING_CAPABILITY_WARNED  # noqa: PLW0603 — process-scoped stderr dedup
+    if _MISSING_CAPABILITY_WARNED:
+        return
+    _MISSING_CAPABILITY_WARNED = True
+    from teatree.hooks.orm_health import hook_venue  # noqa: PLC0415 — deferred cold-hook import
 
-    Returns ``True`` when the bootstrap succeeded (the away-mode handler
-    can record a ``DeferredQuestion`` row) and ``False`` when ``teatree``
-    is unavailable — the handler then fails open (never intercepts) and the
-    missing capability is named on stderr (:func:`_warn_missing_capability`).
-    """
+    sys.stderr.write(
+        f"NOTE: hook ORM {status} under {sys.executable} ({hook_venue()}); control DB {db_path}: "
+        f"{type(exc).__name__}: {exc}. ORM-backed gates are SKIPPED, not passed.\n"
+    )
+
+
+def _probe_orm() -> tuple[str, str, BaseException | None]:
+    from django.db import OperationalError, connections  # noqa: PLC0415 — deferred post-setup import
+
+    from teatree.core.models import StandingGoal  # noqa: PLC0415 — deferred post-setup import
+
+    db_path = str(connections["default"].settings_dict["NAME"])
+    if db_path != ":memory:" and not db_path.startswith("file:") and not Path(db_path).is_file():
+        return "unreachable", db_path, FileNotFoundError(db_path)
+    try:
+        StandingGoal.objects.exists()
+    except OperationalError as exc:
+        status = "unreachable" if "unable to open database file" in str(exc).lower() else "error"
+        return status, db_path, exc
+    except Exception as exc:  # noqa: BLE001 — an ORM probe failure is not a successful bootstrap
+        return "error", db_path, exc
+    return "ok", db_path, None
+
+
+def bootstrap_teatree_django() -> bool:
     src_dir = Path(__file__).resolve().parents[2] / "src"
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
     try:
         _django_setup()
-    except Exception as exc:  # noqa: BLE001 — crash-proof hook: any failure degrades, never breaks the tool call
+    except Exception as exc:  # noqa: BLE001 — cold hooks must allow unbootstrappable calls with a warning
         _warn_missing_capability(exc)
+        try:
+            from teatree.hooks.orm_health import record_orm_health  # noqa: PLC0415 — deferred cold-hook import
+
+            record_orm_health("error", "unresolved", f"{type(exc).__name__}: {exc}")
+        except Exception as marker_exc:  # noqa: BLE001 — the hook still must allow the call
+            sys.stderr.write(f"NOTE: hook ORM health marker could not be recorded ({marker_exc}).\n")
+        return False
+    try:
+        status, db_path, cause = _probe_orm()
+    except Exception as exc:  # noqa: BLE001 — a failed ORM probe must not become a measured allow
+        status, db_path, cause = "error", "unresolved", exc
+    if os.environ.get("DJANGO_SETTINGS_MODULE") == "teatree.settings":
+        from teatree.hooks.orm_health import record_orm_health  # noqa: PLC0415 — deferred cold-hook import
+
+        record_orm_health(status, db_path, "" if cause is None else f"{type(cause).__name__}: {cause}")
+    if cause is not None:
+        _warn_orm_unavailable(status, db_path, cause)
         return False
     return True

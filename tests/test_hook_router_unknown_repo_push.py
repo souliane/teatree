@@ -181,7 +181,9 @@ class TestDegradedPathIsAudible:
 
         assert router.handle_block_unknown_repo_push(_push_event("git push origin HEAD", repo)) is False
 
-        assert "SKIPPED is not PASSED" in capsys.readouterr().err
+        stderr = capsys.readouterr().err
+        assert "SKIPPED is not PASSED" in stderr
+        assert "cannot verify ORM access" in stderr
 
     def test_broken_resolver_says_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

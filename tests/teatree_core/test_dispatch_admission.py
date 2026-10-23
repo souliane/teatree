@@ -96,11 +96,12 @@ class TestDispatchAdmissionDeniedReason(TestCase):
         with _signals():
             assert dispatch_admission_denied_reason() is None
 
-    def test_a_signal_read_failure_admits_fail_open(self) -> None:
+    def test_a_signal_read_failure_reaches_the_hook_adapter(self) -> None:
         with (
             patch.object(gate_mod, "read_quota_signal", side_effect=RuntimeError("probe down")),
+            pytest.raises(RuntimeError, match="probe down"),
         ):
-            assert dispatch_admission_denied_reason() is None
+            dispatch_admission_denied_reason()
 
     def test_live_agent_count_at_ceiling_denies(self) -> None:
         with _signals(), patch.object(gate_mod, "_claimed_agent_count", return_value=999):
@@ -180,12 +181,13 @@ class TestTheCeilingSeesItsOwnAdmissions(TestCase):
         assert reason is not None
         assert "at/over governor ceiling" in reason
 
-    def test_a_seat_write_failure_admits_fail_open(self) -> None:
+    def test_a_seat_write_failure_reaches_the_hook_adapter(self) -> None:
         with (
             _signals(),
             patch.object(InteractiveDispatch.objects, "claim_seat", side_effect=RuntimeError("db gone")),
+            pytest.raises(RuntimeError, match="db gone"),
         ):
-            assert dispatch_admission_denied_reason(session_id="s-4129") is None
+            dispatch_admission_denied_reason(session_id="s-4129")
 
     def test_an_agent_with_no_task_row_still_binds_the_ceiling(self) -> None:
         # The population #4107 governs — a harness Agent/Task sub-agent — holds no Task
