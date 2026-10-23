@@ -135,12 +135,22 @@ def test_no_planted_command_runs_through_a_control_plane_spawn(planted: Checkout
     assert planted.fired == []
 
 
-def test_an_explicit_caller_hooks_path_still_wins_over_the_pin(planted: Checkout) -> None:
+def test_an_explicit_caller_hooks_path_cannot_override_the_pin(planted: Checkout) -> None:
     argv = ["git", "-C", str(planted.repo), "-c", f"core.hooksPath={planted.hooks_dir}", "checkout", "-q", "-b", "side"]
 
     run_checked(argv)
 
-    assert "post-checkout" in planted.fired
+    assert planted.fired == []
+
+
+def test_an_explicit_caller_fsmonitor_cannot_override_the_pin(planted: Checkout, tmp_path: Path) -> None:
+    fsmonitor = tmp_path / "caller-fsmonitor"
+    recording_script(fsmonitor, planted.marker, "caller-fsmonitor")
+    argv = ["git", "-C", str(planted.repo), "-c", f"core.fsmonitor={fsmonitor}", "status", "--porcelain"]
+
+    run_checked(argv)
+
+    assert planted.fired == []
 
 
 class TestHooksTheGateLayerDependsOn:
@@ -165,27 +175,29 @@ class TestHooksTheGateLayerDependsOn:
         with pytest.raises(CommandFailedError):
             run_checked(hooked.argv("push", "origin", "main"), env=git_identity_env())
 
-    def test_a_planted_hooks_path_cannot_replace_the_pre_push_gate(self, hooked: Checkout, tmp_path: Path) -> None:
+    def test_a_local_hooks_path_refuses_the_pre_push_gate(self, hooked: Checkout, tmp_path: Path) -> None:
         planted_hooks = tmp_path / "planted-hooks"
         recording_script(planted_hooks / "pre-push", hooked.marker, "planted")
         recording_script(hooked.hooks_dir / "pre-push", hooked.marker, "default")
         run_git(hooked.repo, "config", "core.hooksPath", str(planted_hooks))
 
-        run_checked(hooked.argv("push", "origin", "main"), env=git_identity_env())
+        with pytest.raises(CommandFailedError, match=r"untrusted local core\.hooksPath"):
+            run_checked(hooked.argv("push", "origin", "main"), env=git_identity_env())
 
-        assert hooked.fired == ["default"]
+        assert hooked.fired == []
 
-    def test_a_planted_hooks_path_cannot_replace_the_pre_commit_gate(self, hooked: Checkout, tmp_path: Path) -> None:
+    def test_a_local_hooks_path_refuses_the_pre_commit_gate(self, hooked: Checkout, tmp_path: Path) -> None:
         planted_hooks = tmp_path / "planted-hooks"
         recording_script(planted_hooks / "pre-commit", hooked.marker, "planted")
         recording_script(hooked.hooks_dir / "pre-commit", hooked.marker, "default")
         run_git(hooked.repo, "config", "core.hooksPath", str(planted_hooks))
 
-        run_checked(hooked.argv("commit", "-q", "--allow-empty", "-m", "x"), env=git_identity_env())
+        with pytest.raises(CommandFailedError, match=r"untrusted local core\.hooksPath"):
+            run_checked(hooked.argv("commit", "-q", "--allow-empty", "-m", "x"), env=git_identity_env())
 
-        assert hooked.fired == ["default"]
+        assert hooked.fired == []
 
-    def test_a_linked_worktree_push_uses_the_common_default_hooks(self, hooked: Checkout, tmp_path: Path) -> None:
+    def test_a_linked_worktree_refuses_the_shared_local_hooks_override(self, hooked: Checkout, tmp_path: Path) -> None:
         linked = tmp_path / "linked"
         run_git(hooked.repo, "worktree", "add", "-q", str(linked), "-b", "side")
         planted_hooks = tmp_path / "planted-hooks"
@@ -193,9 +205,40 @@ class TestHooksTheGateLayerDependsOn:
         recording_script(hooked.hooks_dir / "pre-push", hooked.marker, "default")
         run_git(hooked.repo, "config", "core.hooksPath", str(planted_hooks))
 
-        run_bounded_group(["git", "-C", str(linked), "push", "origin", "side"], env=git_identity_env(), timeout=10)
+        with pytest.raises(CommandFailedError, match=r"untrusted local core\.hooksPath"):
+            run_bounded_group(["git", "-C", str(linked), "push", "origin", "side"], env=git_identity_env(), timeout=10)
 
-        assert hooked.fired == ["default"]
+        assert hooked.fired == []
+
+    @pytest.mark.parametrize("verb", ["commit", "push"])
+    def test_a_global_hooks_path_keeps_its_refusing_hook(self, hooked: Checkout, tmp_path: Path, verb: str) -> None:
+        custom_hooks = tmp_path / "operator-hooks"
+        marker = tmp_path / "operator-hook-fired"
+        hook_name = "pre-commit" if verb == "commit" else "pre-push"
+        executable(custom_hooks / hook_name, f"touch '{marker}'\nexit 1")
+        global_config = tmp_path / "global.gitconfig"
+        run_git(hooked.repo, "config", "--file", str(global_config), "core.hooksPath", str(custom_hooks))
+        env = {**git_identity_env(), "GIT_CONFIG_GLOBAL": str(global_config)}
+        args = ("commit", "-q", "--allow-empty", "-m", "x") if verb == "commit" else ("push", "origin", "main")
+
+        with pytest.raises(CommandFailedError):
+            run_checked(hooked.argv(*args), env=env)
+
+        assert marker.exists()
+
+    @pytest.mark.parametrize("verb", ["commit", "push"])
+    def test_command_line_hooks_path_cannot_replace_gate(self, hooked: Checkout, tmp_path: Path, verb: str) -> None:
+        custom_hooks = tmp_path / "planted-hooks"
+        marker = tmp_path / "planted-hook-fired"
+        hook_name = "pre-commit" if verb == "commit" else "pre-push"
+        executable(custom_hooks / hook_name, f"touch '{marker}'\nexit 0")
+        args = ("commit", "-q", "--allow-empty", "-m", "x") if verb == "commit" else ("push", "origin", "main")
+        argv = ["git", "-C", str(hooked.repo), "-c", f"core.hooksPath={custom_hooks}", *args]
+
+        with pytest.raises(CommandFailedError, match=r"core\.hooksPath"):
+            run_checked(argv, env=git_identity_env())
+
+        assert not marker.exists()
 
     def test_a_merge_still_runs_the_commit_msg_hook(self, hooked: Checkout) -> None:
         run_git(hooked.repo, "checkout", "-q", "-b", "side")
@@ -276,3 +319,12 @@ def test_a_lenient_streamed_push_from_a_non_repo_returns_a_failed_code(
 
     assert returncode != 0
     assert capsys.readouterr().err
+
+
+@pytest.mark.parametrize("runner", ["run_checked", "run_allowed_to_fail", "git_run.run_with_status"])
+def test_success_returns_the_callers_git_argv(planted: Checkout, runner: str) -> None:
+    argv = planted.argv("status", "--porcelain")
+    result = ENTRY_POINTS[runner](argv)
+
+    assert isinstance(result, CompletedProcess)
+    assert result.args == argv

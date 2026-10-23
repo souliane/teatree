@@ -18,20 +18,22 @@ _HOOKS_OFF = ("-c", "core.hooksPath=/dev/null")
 class GitPins:
     @classmethod
     def argv(cls, cmd: Sequence[str], *, hooks_path: str | None = None) -> list[str]:
-        """Pin Git config; hook-bearing verbs require their trusted default hooks path."""
+        """Pin Git config; hook-bearing verbs require a preflighted hooks path."""
         if not cmd or Path(cmd[0]).name != "git":
             return list(cmd)
         verb = cls._verb(cmd)
         if verb in _GATE_VERBS:
             if hooks_path is None:
-                msg = "hook-bearing git commands need the checkout's default hooks path"
+                msg = "hook-bearing git commands need a preflighted hooks path"
                 raise ValueError(msg)
             pins = (*_FSMONITOR_OFF, "-c", f"core.hooksPath={hooks_path}")
         elif verb in _READER_VERBS:
             pins = _FSMONITOR_OFF
         else:
             pins = (*_FSMONITOR_OFF, *_HOOKS_OFF)
-        return [cmd[0], *pins, *cmd[1:]]
+        verb_index = cls._verb_index(cmd)
+        insert_at = verb_index if verb_index is not None else len(cmd)
+        return [*cmd[:insert_at], *pins, *cmd[insert_at:]]
 
     @classmethod
     def needs_hooks(cls, cmd: Sequence[str]) -> bool:
@@ -51,6 +53,21 @@ class GitPins:
             "rev-parse",
             "--path-format=absolute",
             "--git-common-dir",
+        ]
+
+    @classmethod
+    def hooks_path_probe(cls, cmd: Sequence[str]) -> list[str]:
+        verb_index = cls._verb_index(cmd)
+        if verb_index is None:
+            msg = "git command has no verb"
+            raise ValueError(msg)
+        return [
+            *cmd[:verb_index],
+            *_FSMONITOR_OFF,
+            "config",
+            "--show-scope",
+            "--get",
+            "core.hooksPath",
         ]
 
     @staticmethod

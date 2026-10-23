@@ -118,6 +118,42 @@ def _last_lines(text: str, *, n: int) -> str:
     return "\n".join(lines[-n:])
 
 
+def _git_probe_timeout(cmd: Sequence[str], timeout: float | None, started: float) -> float:
+    if timeout is None:
+        return 5.0
+    remaining = timeout - (time.monotonic() - started)
+    if remaining <= 0:
+        raise TimeoutExpired(cmd, timeout)
+    return min(remaining, 5.0)
+
+
+def _trusted_hooks_path(
+    cmd: Sequence[str], common_dir: str, *, env: dict[str, str] | None, cwd: str | Path | None, timeout: float
+) -> str:
+    probe = subprocess.run(
+        GitPins.hooks_path_probe(cmd),
+        env=env,
+        cwd=str(cwd) if cwd is not None else None,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if probe.returncode not in {0, 1}:
+        raise CommandFailedError(cmd, probe.returncode, probe.stdout, probe.stderr)
+    default = str(Path(common_dir) / "hooks")
+    if probe.returncode == 1:
+        return default
+    scope, separator, configured = probe.stdout.rstrip("\n").partition("\t")
+    if not separator or not configured or "\n" in configured:
+        raise CommandFailedError(cmd, 1, probe.stdout, "invalid core.hooksPath probe result")
+    if scope in {"system", "global"}:
+        return configured
+    if Path(configured).is_absolute() and Path(configured).resolve() == Path(default).resolve():
+        return default
+    raise CommandFailedError(cmd, 1, "", f"untrusted {scope} core.hooksPath on control-plane git write")
+
+
 def _pinned_git_argv(
     cmd: Sequence[str],
     *,
@@ -134,18 +170,25 @@ def _pinned_git_argv(
         cwd=str(cwd) if cwd is not None else None,
         capture_output=True,
         text=True,
-        timeout=min(timeout, 5.0) if timeout is not None else 5.0,
+        timeout=_git_probe_timeout(cmd, timeout, started),
         check=False,
     )
     common_dir = probe.stdout.strip()
     if probe.returncode != 0 or not common_dir or "\n" in common_dir or not Path(common_dir).is_absolute():
         raise CommandFailedError(cmd, probe.returncode or 1, probe.stdout, probe.stderr)
+    hooks_path = _trusted_hooks_path(
+        cmd,
+        common_dir,
+        env=env,
+        cwd=cwd,
+        timeout=_git_probe_timeout(cmd, timeout, started),
+    )
     remaining = None
     if timeout is not None:
         remaining = timeout - (time.monotonic() - started)
         if remaining <= 0:
             raise TimeoutExpired(cmd, timeout)
-    return GitPins.argv(cmd, hooks_path=str(Path(common_dir) / "hooks")), remaining
+    return GitPins.argv(cmd, hooks_path=hooks_path), remaining
 
 
 def run_checked(
@@ -174,7 +217,7 @@ def run_checked(
     )
     if result.returncode != 0:
         raise CommandFailedError(cmd, result.returncode, result.stdout, result.stderr)
-    return result
+    return CompletedProcess(list(cmd), result.returncode, result.stdout, result.stderr)
 
 
 def _kill_process_group(process: "Popen[str]") -> None:
@@ -283,7 +326,7 @@ def run_allowed_to_fail(  # noqa: PLR0913 — each keyword-only param is one doc
     )
     if expected_codes is not None and result.returncode not in expected_codes:
         raise CommandFailedError(cmd, result.returncode, result.stdout, result.stderr)
-    return result
+    return CompletedProcess(list(cmd), result.returncode, result.stdout, result.stderr)
 
 
 def run_streamed(

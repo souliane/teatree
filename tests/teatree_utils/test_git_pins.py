@@ -11,13 +11,13 @@ HOOKS_OFF = ["-c", "core.hooksPath=/dev/null"]
     [
         (
             ["git", "-C", "r", "-c", "a=b", "status"],
-            ["git", *FSMONITOR_OFF, *HOOKS_OFF, "-C", "r", "-c", "a=b", "status"],
+            ["git", "-C", "r", "-c", "a=b", *FSMONITOR_OFF, *HOOKS_OFF, "status"],
         ),
         (
             ["git", "--no-optional-locks", "-C", "r", "fetch"],
-            ["git", *FSMONITOR_OFF, *HOOKS_OFF, "--no-optional-locks", "-C", "r", "fetch"],
+            ["git", "--no-optional-locks", "-C", "r", *FSMONITOR_OFF, *HOOKS_OFF, "fetch"],
         ),
-        (["git", "-C", "commit", "status"], ["git", *FSMONITOR_OFF, *HOOKS_OFF, "-C", "commit", "status"]),
+        (["git", "-C", "commit", "status"], ["git", "-C", "commit", *FSMONITOR_OFF, *HOOKS_OFF, "status"]),
         (["/usr/bin/git", "status"], ["/usr/bin/git", *FSMONITOR_OFF, *HOOKS_OFF, "status"]),
         (["git"], ["git", *FSMONITOR_OFF, *HOOKS_OFF]),
     ],
@@ -28,24 +28,44 @@ def test_pins_both_settings_on_a_verb_that_fires_no_gate_hook(cmd: list[str], ex
 
 
 @pytest.mark.parametrize(
-    "cmd",
+    ("cmd", "expected"),
     [
-        ["git", "-C", "r", "commit", "-m", "x"],
-        ["git", "--git-dir=x", "merge", "--ff-only", "origin/main"],
-        ["git", "--git-dir", "x", "pull", "--ff-only"],
-        ["git", "-C", "r", "push", "origin", "main"],
+        (
+            ["git", "-C", "r", "commit", "-m", "x"],
+            ["git", "-C", "r", *FSMONITOR_OFF, "-c", "core.hooksPath=/trusted/hooks", "commit", "-m", "x"],
+        ),
+        (
+            ["git", "--git-dir=x", "merge", "--ff-only", "origin/main"],
+            [
+                "git",
+                "--git-dir=x",
+                *FSMONITOR_OFF,
+                "-c",
+                "core.hooksPath=/trusted/hooks",
+                "merge",
+                "--ff-only",
+                "origin/main",
+            ],
+        ),
+        (
+            ["git", "--git-dir", "x", "pull", "--ff-only"],
+            ["git", "--git-dir", "x", *FSMONITOR_OFF, "-c", "core.hooksPath=/trusted/hooks", "pull", "--ff-only"],
+        ),
+        (
+            ["git", "-C", "r", "push", "origin", "main"],
+            ["git", "-C", "r", *FSMONITOR_OFF, "-c", "core.hooksPath=/trusted/hooks", "push", "origin", "main"],
+        ),
     ],
     ids=["commit", "merge", "pull", "push"],
 )
-def test_keeps_the_hooks_of_a_verb_that_fires_an_installed_gate_hook(cmd: list[str]) -> None:
+def test_keeps_the_hooks_of_a_verb_that_fires_an_installed_gate_hook(cmd: list[str], expected: list[str]) -> None:
     pinned = GitPins.argv(cmd, hooks_path="/trusted/hooks")
 
-    assert pinned[:5] == ["git", *FSMONITOR_OFF, "-c", "core.hooksPath=/trusted/hooks"]
-    assert pinned[5:] == cmd[1:]
+    assert pinned == expected
 
 
-def test_hook_bearing_verb_refuses_an_unknown_default_hooks_path() -> None:
-    with pytest.raises(ValueError, match="default hooks path"):
+def test_hook_bearing_verb_refuses_an_unknown_hooks_path() -> None:
+    with pytest.raises(ValueError, match="preflighted hooks path"):
         GitPins.argv(["git", "push", "origin", "main"])
 
 
@@ -72,15 +92,21 @@ def test_common_dir_probe_requires_a_verb() -> None:
 
 
 @pytest.mark.parametrize(
-    "cmd",
+    ("cmd", "expected"),
     [
-        ["git", "-C", "r", "config", "--get", "core.hooksPath"],
-        ["git", "-C", "r", "rev-parse", "--git-path", "hooks"],
+        (
+            ["git", "-C", "r", "config", "--get", "core.hooksPath"],
+            ["git", "-C", "r", *FSMONITOR_OFF, "config", "--get", "core.hooksPath"],
+        ),
+        (
+            ["git", "-C", "r", "rev-parse", "--git-path", "hooks"],
+            ["git", "-C", "r", *FSMONITOR_OFF, "rev-parse", "--git-path", "hooks"],
+        ),
     ],
     ids=["config", "rev-parse"],
 )
-def test_keeps_hooks_path_visible_to_the_verbs_that_read_it(cmd: list[str]) -> None:
-    assert GitPins.argv(cmd) == ["git", *FSMONITOR_OFF, *cmd[1:]]
+def test_keeps_hooks_path_visible_to_the_verbs_that_read_it(cmd: list[str], expected: list[str]) -> None:
+    assert GitPins.argv(cmd) == expected
 
 
 @pytest.mark.parametrize(
