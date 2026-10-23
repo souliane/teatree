@@ -278,17 +278,7 @@ class CiAccountSwitcher:
                 message = f"token at {account!r} contains a newline — the CI pool was left untouched"
                 raise CiAccountSwitchError(message)
             tokens.append(token)
-        body = "\n".join(tokens)
-        code, out = self._gh(
-            ["secret", "set", CI_OAUTH_POOL_SECRET, "--repo", self._repo, "--body-file", "-"],
-            stdin_text=body,
-        )
-        if code != 0:
-            detail = redact_secrets(out.strip())
-            for token in tokens:
-                detail = detail.replace(token, "[REDACTED]")
-            message = f"`gh secret set {CI_OAUTH_POOL_SECRET}` failed on {self._repo} (exit {code}): {detail[:500]}"
-            raise CiAccountSwitchError(message)
+        self._put_secret(CI_OAUTH_POOL_SECRET, tokens)
         code, out = self._gh(
             ["variable", "set", CI_OAUTH_POOL_VARIABLE, "--repo", self._repo, "--body", json.dumps(accounts)]
         )
@@ -350,14 +340,20 @@ class CiAccountSwitcher:
         if not token:
             empty = f"no token stored at {account!r} — the CI secret was left untouched"
             raise CiAccountSwitchError(empty)
-        code, out = self._gh(
-            ["secret", "set", CI_OAUTH_SECRET, "--repo", self._repo, "--body-file", "-"], stdin_text=token
-        )
+        self._put_secret(CI_OAUTH_SECRET, [token])
+
+    def _put_secret(self, name: str, tokens: Sequence[str]) -> None:
+        """Set secret *name* to *tokens*, one per line, the value on stdin only — gh has no body-file flag."""
+        code, out = self._gh(["secret", "set", name, "--repo", self._repo], stdin_text="\n".join(tokens))
         if code != 0:
             # Keep the actionable gh stderr, but never echo the value supplied on stdin.
             # The shared sanitizer additionally strips NAME=value/header/query secrets.
-            detail = redact_secrets(out.replace(token, "[REDACTED]").strip())[:500]
-            failed = f"`gh secret set {CI_OAUTH_SECRET}` failed on {self._repo} (exit {code}): {detail}"
+            detail = out
+            for token in tokens:
+                detail = detail.replace(token, "[REDACTED]")
+            failed = (
+                f"`gh secret set {name}` failed on {self._repo} (exit {code}): {redact_secrets(detail.strip())[:500]}"
+            )
             raise CiAccountSwitchError(failed)
 
     def _record_account(self, account: str) -> None:

@@ -10,6 +10,11 @@ load-bearing invariant — that a token value never reaches any captured output.
 
 import datetime as dt
 import json
+import os
+import shutil
+import subprocess
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from django.test import TestCase
@@ -22,6 +27,7 @@ from teatree.ci_oauth_switch import (
     WEIGHT_7D,
     CiAccountSwitcher,
     CiAccountSwitchError,
+    GhClient,
     NoEligibleAccountError,
     select_account,
 )
@@ -74,8 +80,15 @@ def _live_rows() -> list[TokenAccountRow]:
     ]
 
 
+SECRET_SET_FLAGS = frozenset({"--repo", "-R"})
+
+
 class FakeGh:
-    """A recording ``gh`` stand-in: canned variable value, captured argv + stdin."""
+    """A recording ``gh`` stand-in: canned variable value, captured argv + stdin.
+
+    ``secret set`` is strict like the real client: any flag outside :data:`SECRET_SET_FLAGS`
+    exits 1 with ``unknown flag``, so the value can only ride on stdin.
+    """
 
     def __init__(
         self, *, active: str = "", pool_accounts: str | None = None, fail_on: str = "", fail_output: str = "boom"
@@ -90,6 +103,10 @@ class FakeGh:
     def __call__(self, args: list[str], *, stdin_text: str | None = None) -> tuple[int, str]:
         self.calls.append(list(args))
         self.stdin.append(stdin_text)
+        if args[:2] == ["secret", "set"]:
+            unknown = [part for part in args[3:] if part.startswith("-") and part not in SECRET_SET_FLAGS]
+            if unknown:
+                return 1, f"unknown flag: {unknown[0]}"
         if self.fail_on and self.fail_on in args:
             return 1, self.fail_output
         if args[0] == "api":
@@ -107,7 +124,7 @@ class FakeGh:
         return any(call[:2] == ["variable", "set"] for call in self.calls)
 
 
-def _switcher(gh: FakeGh) -> CiAccountSwitcher:
+def _switcher(gh: GhClient) -> CiAccountSwitcher:
     return CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _account: SECRET_TOKEN)
 
 
@@ -178,6 +195,61 @@ class TestPoolReconciliation:
             switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
         assert "permission denied" in str(caught.value)
         assert SECRET_TOKEN not in str(caught.value)
+
+
+def _switch_secret(gh: GhClient) -> None:
+    _switcher(gh).switch(_live_rows(), run_start=RUN_START, allowlist=(SOULIANE,))
+
+
+def _reconcile_pool_secret(gh: GhClient) -> None:
+    _switcher(gh).reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
+
+
+SECRET_WRITES: list[tuple[str, Callable[[GhClient], None]]] = [
+    (CI_OAUTH_SECRET, _switch_secret),
+    (CI_OAUTH_POOL_SECRET, _reconcile_pool_secret),
+]
+
+
+class TestSecretSetArgv:
+    @pytest.mark.parametrize(("secret", "write"), SECRET_WRITES)
+    def test_the_value_rides_on_stdin_with_no_body_flag(self, secret: str, write: Callable[[GhClient], None]) -> None:
+        gh = FakeGh(active=SPENT_ACCOUNT)
+
+        write(gh)
+
+        index = next(i for i, call in enumerate(gh.calls) if call[:2] == ["secret", "set"])
+        assert gh.calls[index] == ["secret", "set", secret, "--repo", "souliane/teatree"]
+        assert gh.stdin[index] == SECRET_TOKEN
+
+    @pytest.mark.parametrize(("secret", "write"), SECRET_WRITES)
+    def test_the_installed_gh_accepts_the_argv(
+        self, secret: str, write: Callable[[GhClient], None], tmp_path: Path
+    ) -> None:
+        gh_path = shutil.which("gh") or pytest.skip("gh is not installed")
+        recorded: list[list[str]] = []
+
+        def record(args: list[str], *, stdin_text: str | None = None) -> tuple[int, str]:
+            recorded.append(args)
+            return 0, ""
+
+        write(record)
+        argv = next(args for args in recorded if args[:2] == ["secret", "set"])
+        assert argv[2] == secret
+        dead_host_env = {
+            **os.environ,
+            "GH_HOST": "127.0.0.1:1",
+            "GH_TOKEN": "unused",
+            "GH_ENTERPRISE_TOKEN": "unused",
+            "GH_CONFIG_DIR": str(tmp_path),
+        }
+
+        result = subprocess.run(
+            [gh_path, *argv], input="unused", text=True, capture_output=True, env=dead_host_env, timeout=30, check=False
+        )
+
+        assert "unknown" not in result.stderr
+        assert "public key" in result.stderr
 
 
 class TestSelectionRule(TestCase):
