@@ -20,6 +20,7 @@ import httpx
 
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
+from teatree.core.backend_protocols import IssueResolutionSpec
 from teatree.types import RawAPIDict
 
 #: ``/<group>/.../<repo>/-/issues/<iid>`` or the newer ``-/work_items/<iid>`` —
@@ -35,6 +36,22 @@ class NewIssue:
     title: str
     body: str
     labels: list[str] = field(default_factory=list)
+    merge_request_to_resolve_discussions_of: int | None = None
+    discussion_to_resolve: str = ""
+
+
+def create_issue_resolving_threads(
+    client: GitLabAPI, project: ProjectInfo | None, spec: IssueResolutionSpec
+) -> RawAPIDict:
+    native = NewIssue(
+        repo=spec.repo,
+        title=spec.title,
+        body=spec.body,
+        labels=list(spec.labels),
+        merge_request_to_resolve_discussions_of=spec.merge_request_iid,
+        discussion_to_resolve=spec.thread_id,
+    )
+    return create_issue(client, project, native)
 
 
 def create_issue(client: GitLabAPI, project: ProjectInfo | None, issue: NewIssue) -> RawAPIDict:
@@ -48,6 +65,10 @@ def create_issue(client: GitLabAPI, project: ProjectInfo | None, issue: NewIssue
     payload: RawAPIDict = {"title": issue.title, "description": issue.body}
     if issue.labels:
         payload["labels"] = ",".join(issue.labels)
+    if issue.merge_request_to_resolve_discussions_of is not None:
+        payload["merge_request_to_resolve_discussions_of"] = issue.merge_request_to_resolve_discussions_of
+    if issue.discussion_to_resolve:
+        payload["discussion_to_resolve"] = issue.discussion_to_resolve
     return client.post_json(f"projects/{project.project_id}/issues", payload) or {}
 
 
@@ -151,3 +172,11 @@ def update_issue(client: GitLabAPI, issue_url: str, *, body: str) -> RawAPIDict:
         return ref
     project, iid = ref
     return client.put_json(f"projects/{project.project_id}/issues/{iid}", {"description": body}) or {}
+
+
+def add_issue_labels(client: GitLabAPI, issue_url: str, *, labels: tuple[str, ...]) -> RawAPIDict:
+    ref = _resolve_issue_ref(client, issue_url)
+    if isinstance(ref, dict):
+        return ref
+    project, iid = ref
+    return client.put_json(f"projects/{project.project_id}/issues/{iid}", {"add_labels": ",".join(labels)}) or {}

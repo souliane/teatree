@@ -36,6 +36,7 @@ graph TD
     teatree.update_check --> teatree.paths
     teatree.update_check --> teatree.utils
     teatree.utils --> teatree.paths
+    teatree.utils --> teatree.sqlite_integrity
     teatree.utils.disk_consumers --> teatree.core
     teatree.utils.disk_consumers --> teatree.config
     teatree.self_update --> teatree.utils
@@ -489,6 +490,9 @@ graph TD
     teatree.visual_qa --> teatree.browser
     teatree.visual_qa --> teatree.core
     teatree.visual_qa --> teatree.utils
+    teatree.visual_qa --> teatree.visual_qa_server
+    teatree.visual_qa_server --> teatree.types
+    teatree.visual_qa_server --> teatree.utils
     teatree.on_behalf_gate --> teatree.config
     teatree.messaging --> teatree.core
     teatree.messaging --> teatree.core.modelkit
@@ -508,6 +512,7 @@ graph TD
     teatree.dream_constants
     teatree.mount_identity
     teatree.sqlite_snapshot
+    teatree.sqlite_integrity
     teatree.request_cache
     teatree.forge_credentials
     teatree.types

@@ -101,7 +101,7 @@ _HARNESS_WRAPPER_MARKERS = ("<command-name>", "<skill-format>", "Base directory 
 
 def _gate_enabled() -> bool:
     """Whether the gate is enabled (default True; `t3 <overlay> gate visible-plan disable`)."""
-    return teatree_bool_setting("visible_plan_gate_enabled", default=True)
+    return teatree_bool_setting("visible_plan_gate_enabled")
 
 
 def _owner_turn(transcript_path: str) -> tuple[str, str]:

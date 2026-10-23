@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
+from teatree.agents.model_tiering import DEFAULT_TIER, tier_models
 from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS, is_known_cli_stub
 from teatree.eval.git_fixture import KNOWN_FIXTURES
 from teatree.eval.matcher_vacuity import is_positive_anchor
@@ -42,7 +42,7 @@ from teatree.eval.models import (
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
 # Scenarios reference models by ABSTRACT TIER, not a concrete id. ``model`` is the
 # escape-hatch concrete-id pin and defaults to unset (``""``); a tier/phase
-# scenario resolves through teatree.agents.model_tiering.TIER_MODELS at run time.
+# scenario resolves through teatree.agents.model_tiering.tier_models() at run time.
 DEFAULT_MODEL = ""
 # DEFAULT_MAX_TURNS is the single canonical default, reused from
 # teatree.eval.models (the data-layer owner of EvalSpec.max_turns's default).
@@ -50,7 +50,7 @@ DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
 # The judge rides the conservative mid tier, DERIVED from the tier catalog so a
 # generation bump carries it — a pinned id would leave the judge a generation
 # behind the runs it grades.
-DEFAULT_JUDGE_MODEL = TIER_MODELS[DEFAULT_TIER]
+DEFAULT_JUDGE_MODEL = tier_models()[DEFAULT_TIER]
 
 # Compiled FROM the single-source-of-truth operator set (teatree.eval.models) so the
 # loader, the grader, and the dream synthesizer prompt cannot drift apart on which
@@ -206,14 +206,14 @@ def _parse_fixture(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
 def _parse_tier(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
     """Parse an optional ``tier`` (``frontier`` / ``balanced`` / ``cheap``), or ``""``.
 
-    Validated against :data:`teatree.agents.model_tiering.TIER_MODELS` so a typo'd
+    Validated against :data:`teatree.agents.model_tiering.tier_models()` so a typo'd
     tier fails loud at load time, never silently resolves to the default tier.
     """
     raw = entry.get("tier")
     if raw is None:
         return ""
-    if not isinstance(raw, str) or raw not in TIER_MODELS:
-        permitted = ", ".join(sorted(TIER_MODELS))
+    if not isinstance(raw, str) or raw not in tier_models():
+        permitted = ", ".join(sorted(tier_models()))
         raise EvalSpecError(path, None, f"spec {spec_name!r}: `tier` must be one of {permitted}, got {raw!r}")
     return raw
 
@@ -221,7 +221,7 @@ def _parse_tier(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
 def _parse_phase(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
     """Parse an optional ``phase`` (a teatree FSM phase name), or ``""``.
 
-    A phase resolves to its tier via ``DEFAULT_PHASE_MODELS`` at run time; an
+    A phase resolves to its tier via ``phase_models()`` at run time; an
     unmapped phase legitimately falls back to the default tier, so any non-empty
     string is accepted (only an empty/blank value is rejected).
     """

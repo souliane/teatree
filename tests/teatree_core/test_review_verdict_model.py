@@ -38,12 +38,18 @@ class TestRecordContract(TestCase):
             reviewed_sha=_SHA,
             verdict="merge_safe",
             reviewer_identity="cold-reviewer",
-            findings=[Finding(severity="nit", summary="rename x", file="a.py", line=12)],
+            findings=[Finding(severity="minor", kind="nit", summary="rename x", file="a.py", line=12)],
         )
         assert verdict.is_merge_safe()
         assert verdict.reviewed_sha == _SHA
         only = verdict.structured_findings[0]
-        assert (only.severity, only.summary, only.location()) == ("nit", "rename x", "a.py:12")
+        assert (only.severity, only.summary, only.location()) == ("minor", "rename x", "a.py:12")
+        assert only.kind == "nit"
+
+    def test_an_explicit_blocking_kind_survives_the_finding_round_trip(self) -> None:
+        finding = Finding(severity="minor", summary="false statement", kind="blocking")
+
+        assert Finding.from_dict(finding.as_dict()).kind == "blocking"
 
     def test_records_a_hold_verdict_on_failed_checks(self) -> None:
         verdict = ReviewVerdict.record(

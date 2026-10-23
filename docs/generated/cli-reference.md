@@ -2697,7 +2697,7 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     three tier models        │
 │                                                     (frontier, balanced,     │
 │                                                     cheap — resolved through │
-│                                                     the single TIER_MODELS   │
+│                                                     the single tier_models() │
 │                                                     constant) and render a   │
 │                                                     comparison matrix + a    │
 │                                                     self-contained HTML      │
@@ -3492,6 +3492,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      whose leader is gone.                                   │
 │ ratchet-prune        Report the reference ratchets' drift; with --write,     │
 │                      delete the stale pins.                                  │
+│ review-evidence                                                              │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -4094,6 +4095,19 @@ Usage: t3 tool ratchet-prune [OPTIONS]
 │ --write          Delete the stale pins (the only auto-repairable direction). │
 │ --json           Emit machine-readable JSON.                                 │
 │ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool review-evidence`
+
+```
+Usage: t3 tool review-evidence [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --expect-sha        TEXT  Full committed head SHA to measure. [required]  │
+│    --base              TEXT  Target branch ref for the changed set.          │
+│                              [default: origin/main]                          │
+│    --help                    Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7472,16 +7486,9 @@ Usage: t3 settings [OPTIONS] COMMAND [ARGS]...
 Usage: t3 settings compare [OPTIONS]
 
  What differs between this box and its peers, and whether it can be read as
- drift.
-
- Exits non-zero only when there was nothing to compare — fewer than two
- instances answered. A
- comparison that RAN is a success whatever it found, "not comparable" included:
- that verdict is
- a true reading of boxes running different code, not a failure of this command.
-
- The table is laid out in the terminal's own width, so ``COLUMNS`` sets it for
- a redirected run.
+ drift. Exits non-zero only when fewer than two instances answered. A completed
+ comparison succeeds even when instances are not comparable. COLUMNS sets table
+ width for a redirected run.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --snapshot        TEXT   A saved snapshot JSON file to compare against,      │
@@ -7494,6 +7501,12 @@ Usage: t3 settings compare [OPTIONS]
 │                          registry entry. A forward under load answers late,  │
 │                          and a wait too short reports a live box as one that │
 │                          did not answer.                                     │
+│ --family          TEXT   Show one setting or seed family.                    │
+│ --group           TEXT   Match a setting group by name.                      │
+│ --text            TEXT   Search row names and descriptions.                  │
+│ --scope           TEXT   Global, all, or one overlay scope.                  │
+│                          [default: global]                                   │
+│ --all-rows               Include matching identical rows.                    │
 │ --full                   Do not truncate a value, and print each row's       │
 │                          import reason.                                      │
 │ --json                   Emit the whole view as JSON, nothing summarised     │
@@ -7546,8 +7559,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
-│ live            Sessions running now on this host's workers: inspect them    │
-│                 passively, steer them actively.                              │
+│ live            Sessions on this host's workers: inspect passively, steer or │
+│                 follow up actively.                                          │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
@@ -11746,18 +11759,20 @@ Usage: t3 teatree standup stale [OPTIONS]
 ```
 Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
 
- Sessions running now on this host's workers: inspect them passively, steer
- them actively.
+ Sessions on this host's workers: inspect passively, steer or follow up
+ actively.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list     List every live session on this host's workers (passive).           │
-│ inspect  Show one live session's state, tool and progress without contacting │
-│          the agent.                                                          │
-│ steer    Send input into a running agent's current turn and print its        │
-│          receipt (active).                                                   │
+│ list       List every live session on this host's workers (passive).         │
+│ inspect    Show one live session's state, tool and progress without          │
+│            contacting the agent.                                             │
+│ steer      Send input into a running agent's current turn and print its      │
+│            receipt (active).                                                 │
+│ follow-up  Start one new turn in an idle agent session and print its receipt │
+│            (active).                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11814,6 +11829,30 @@ Usage: t3 teatree live steer [OPTIONS] TASK
 │                            defaults to the attempt `live list` shows.        │
 │ --generation        TEXT   Refuse unless the worker runs this generation;    │
 │                            defaults to the located session's.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live follow-up`
+
+```
+Usage: t3 teatree live follow-up [OPTIONS] TASK
+
+ Start one new turn in a still-open idle session and print its receipt
+ (active).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --text              TEXT   The input for one new turn in an idle session (at │
+│                            most 16 KiB).                                     │
+│ --command-id        TEXT   Idempotency key; the same text returns the first  │
+│                            receipt.                                          │
+│ --wait              FLOAT  Seconds to wait for the new turn to start (at     │
+│                            most 900).                                        │
+│                            [default: 60.0]                                   │
+│ --json                     Emit JSON on stdout instead of the human view.    │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -14091,9 +14130,9 @@ Usage: t3 teatree config_setting get [OPTIONS] KEY
 
  Print the resolved value for *key* and name its source (DB vs env/default).
 
- When a ``ConfigSetting`` row exists in the requested scope it is reported as
- the ``db`` source; otherwise the value falls through to the code layer: a
- cold-hook gate key (``COLD_HOOK_SETTINGS``) reports its in-code
+ The shared resolver reads overlay aliases and global fallback rows.
+ A selected DB row reports ``db``. Without one, a cold-hook gate key
+ (``COLD_HOOK_SETTINGS``) reports its in-code
  ``ColdHookSetting`` default, every other key its ``UserSettings``
  env/default value. ``--overlay <name>`` reads that overlay's scope. Refuses
  an unknown key — a typo is loud, not a silent answer for a non-setting — but

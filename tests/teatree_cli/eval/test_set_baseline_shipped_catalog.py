@@ -7,23 +7,23 @@ from unittest.mock import patch
 import yaml
 from typer.testing import CliRunner
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.cli import app
 from teatree.eval.models import EvalSpec
 
 
 def test_shipped_sonnet_pass_is_labeled_balanced(tmp_path: Path) -> None:
-    assert TIER_MODELS["cheap"] == TIER_MODELS["balanced"]
+    assert tier_models()["cheap"] == tier_models()["balanced"]
     matrix = tmp_path / "matrix.json"
     matrix.write_text(
         json.dumps(
             {
-                "models": [TIER_MODELS["cheap"]],
+                "models": [tier_models()["cheap"]],
                 "scenarios": [
                     {
                         "name": "alpha",
                         "results": {
-                            TIER_MODELS["cheap"]: {
+                            tier_models()["cheap"]: {
                                 "passed": True,
                                 "skipped": False,
                                 "errored": False,

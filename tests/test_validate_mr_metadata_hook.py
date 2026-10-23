@@ -380,7 +380,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
     def test_default_allowance_covers_the_measured_validator_cost(self):
         # ~13s cold, 25-50s under load on the reference box — the default must
         # clear the loaded range with headroom, or it rots into a false deny again.
-        assert gate_result._HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS >= 60
+        assert COLD_HOOK_SETTINGS[_ALLOWANCE_KEY].default >= 60
 
     def test_configured_allowance_is_passed_to_the_subprocess(self, monkeypatch):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
@@ -435,11 +435,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
         assert gate_result.validator_timeout_seconds() == 77
 
     def test_allowance_is_a_registered_cold_hook_budget(self):
-        # The no-silent-drop registry: an unregistered cold budget is dropped by
-        # the TOML->DB import and silently reverts to its in-code default.
-        setting = COLD_HOOK_SETTINGS[_ALLOWANCE_KEY]
-        assert setting.default == gate_result._HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS
-        assert setting.scope == ""
+        assert COLD_HOOK_SETTINGS[_ALLOWANCE_KEY].scope == ""
 
 
 class TestFileBasedDescriptionIsRead:

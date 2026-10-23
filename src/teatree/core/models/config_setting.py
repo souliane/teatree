@@ -193,6 +193,17 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         row = self.filter(scope=scope, key=key).first()
         return row.value if row is not None else None
 
+    def get_effective_with_scope(self, key: str, scope: str = GLOBAL_SCOPE) -> tuple[ConfigValue | None, str]:
+        """Read one key, folding equivalent overlay names before global fallback."""
+        if scope:
+            from teatree.config.override_reader import fold_overlay_rows  # noqa: PLC0415 — avoid a model import cycle
+
+            scoped = {row.scope: {key: row.value} for row in self.filter(key=key).exclude(scope=GLOBAL_SCOPE)}
+            folded = fold_overlay_rows(scoped, scope)
+            if key in folded.rows:
+                return self.get_effective(key, scope=folded.scopes[key]), folded.scopes[key]
+        return self.get_effective(key), GLOBAL_SCOPE
+
     def reject_inconsistent_cross_key(self, key: str, value: ConfigValue, scope: str) -> None:
         """Raise :class:`ValidationError` when this write would land an inconsistent coupled pair (#3688).
 

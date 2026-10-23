@@ -1424,16 +1424,16 @@ Fields:
 - `agent_path` — path to a `SKILL.md` (relative to the teatree repo root).
 - `prompt` — full prompt text passed as the user message.
 - `tier` — abstract model tier (`frontier` / `balanced` / `cheap`), resolved to a
-  concrete model id through the single `teatree.agents.model_tiering.TIER_MODELS`
-  constant. Optional; wins over `phase`, loses to an explicit `model`.
+  concrete model id through the single `teatree.agents.model_tiering.tier_models()`
+  map. Optional; wins over `phase`, loses to an explicit `model`.
 - `phase` — a teatree FSM phase name (`planning` / `coding` / `reviewing` / …),
-  resolved to its tier via `DEFAULT_PHASE_MODELS` (an unmapped phase falls back to
+  resolved to its tier via `phase_models()` (an unmapped phase falls back to
   the default tier) then to a model. Optional; loses to `model` and `tier`.
 - `model` — a concrete model-id ESCAPE HATCH (`model@effort` allowed). Optional —
   default unset; when unset the model resolves from `tier` / `phase` / the default
   tier (`balanced`). **Resolution precedence: `model` > `tier` > `phase` >
   default tier.** No concrete model id is ever baked into a scenario by default —
-  adopt a new model by editing `TIER_MODELS` (or `[agent.tier_models]`), with no
+  adopt a new model by editing the `agent_tier_models` default (or `[agent.tier_models]`), with no
   scenario edit.
 - `max_turns` — turn budget for the CLI (default `30`, the generous
   `DEFAULT_MAX_TURNS`; env `T3_EVAL_MAX_TURNS`).
@@ -1674,7 +1674,7 @@ silent mass-conversion shows up as a diff.
 ### The shipped catalog never opts into the `frontier` tier
 
 `phase:`/`tier:` are resolved abstractly (see "Fields" above), and
-`DEFAULT_PHASE_MODELS` maps several phases (`planning` / `coding` / `reviewing`
+`phase_models()` maps several phases (`planning` / `coding` / `reviewing`
 / `debugging` / `retrospecting`) to the `frontier` tier — Opus. The metered CI
 lane's single shared credential (subscription OAuth by default) is right-sized
 for a `balanced`-tier (Sonnet) run, not for a suite that silently mixes in
@@ -1690,7 +1690,7 @@ precedence, so the shipped catalog can never reach `frontier` by any path.
 catalog-wide: it resolves every shipped scenario through
 `resolve_eval_model` and fails if any lands on the `frontier` tier's model id.
 `scripts/eval/corpus_gen/model.py::infer_tier_or_phase` enforces the same rule
-for the generated scenarios (reading `DEFAULT_PHASE_MODELS` rather than
+for the generated scenarios (reading `phase_models()` rather than
 duplicating its frontier set, so a future frontier phase is caught
 automatically). A scenario that genuinely needs to exercise `frontier`-tier
 behavior (a benchmark cell, a deliberate model-regression check) still reaches
@@ -1702,7 +1702,7 @@ rule is about the catalog's OWN default resolution path, not about removing
 
 Mechanically, a scenario CAN pin `tier: frontier` (or a concrete `model:` id)
 in its `evals/scenarios/*.yaml` spec — both are loader-validated against
-`TIER_MODELS` and honored by the normal eval lanes the same as any other tier.
+`tier_models()` and honored by the normal eval lanes the same as any other tier.
 But doing so on a scenario shipped under `evals/scenarios/` also trips the
 catalog-wide guard above: `tests/eval_replay/test_catalog_never_resolves_frontier.py`
 fails on ANY shipped scenario that resolves to the frontier model, by any path.

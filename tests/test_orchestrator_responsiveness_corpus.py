@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """Golden corpus for orchestrator responsiveness — symmetric never-lockout guard.
 
 The orchestrator (MAIN agent) stays responsive only if it (a) never ties its
@@ -38,6 +39,7 @@ from hooks.scripts.hook_router import (
     handle_orchestrator_turn_budget_nudge,
     handle_reset_turn_tool_budget,
 )
+from teatree.config.resolution import effective_default
 
 
 def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
@@ -419,7 +421,8 @@ class TestTheRouterWritesOneModelVisibleObject:
 
     @staticmethod
     def _over_budget_call(command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> str:
-        budget = router._DEFAULT_ORCHESTRATOR_TURN_BUDGET
+        budget = effective_default("orchestrator_turn_budget")
+        assert isinstance(budget, int)
         (router.STATE_DIR / f"s-corpus.{router._TURN_TOOL_COUNT_SUFFIX}").write_text(str(budget - 1), encoding="utf-8")
         payload = {**_main_tool("Bash", command=command), "hook_event_name": "PreToolUse"}
         monkeypatch.setattr("sys.argv", ["hook_router.py", "--event", "PreToolUse"])

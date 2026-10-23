@@ -10,22 +10,22 @@ unexplained key to both surfaces.
 from django.test import SimpleTestCase
 
 from teatree.config.schema import TeatreeSettingsSchema
-from teatree.config.setting_help import SETTING_HELP, setting_help
+from teatree.config.setting_help import all_setting_help, setting_help
 
 _MAX_REPORTED = 8
 
 
 class TestHelpCoversTheSchema(SimpleTestCase):
     def test_every_schema_key_has_help_text(self) -> None:
-        missing = sorted(set(TeatreeSettingsSchema.model_fields) - set(SETTING_HELP))
+        missing = sorted(set(TeatreeSettingsSchema.model_fields) - set(all_setting_help()))
         assert not missing, f"{len(missing)} setting(s) carry no help text: {missing[:_MAX_REPORTED]}"
 
     def test_the_table_names_no_key_the_schema_does_not_declare(self) -> None:
-        stale = sorted(set(SETTING_HELP) - set(TeatreeSettingsSchema.model_fields))
+        stale = sorted(set(all_setting_help()) - set(TeatreeSettingsSchema.model_fields))
         assert not stale, f"{len(stale)} help entr(ies) name no schema key: {stale[:_MAX_REPORTED]}"
 
     def test_no_entry_is_blank(self) -> None:
-        blank = sorted(key for key, text in SETTING_HELP.items() if not text.strip())
+        blank = sorted(key for key, text in all_setting_help().items() if not text.strip())
         assert not blank, f"blank help text: {blank[:_MAX_REPORTED]}"
 
 
@@ -33,23 +33,23 @@ class TestHelpIsShapedForBothSurfaces(SimpleTestCase):
     def test_no_entry_carries_the_toml_key_value_separator(self) -> None:
         # The shipped-file conformance suite reads keys out of the rendered TOML by splitting
         # on " =", so a help comment carrying one would be counted as a settings line.
-        offenders = sorted(key for key, text in SETTING_HELP.items() if " =" in text)
+        offenders = sorted(key for key, text in all_setting_help().items() if " =" in text)
         assert not offenders, f"help text carries the TOML separator: {offenders[:_MAX_REPORTED]}"
 
     def test_no_entry_spans_more_than_one_line(self) -> None:
         # A TOML comment is one line; a second line would render outside the comment.
-        offenders = sorted(key for key, text in SETTING_HELP.items() if "\n" in text)
+        offenders = sorted(key for key, text in all_setting_help().items() if "\n" in text)
         assert not offenders, f"help text spans several lines: {offenders[:_MAX_REPORTED]}"
 
 
 class TestLookup(SimpleTestCase):
     def test_e2e_repos_describes_playwright_specs_not_gate_scope(self) -> None:
-        help_text = SETTING_HELP["e2e_repos"]
+        help_text = all_setting_help()["e2e_repos"]
         assert "Playwright" in help_text
         assert "gate" not in help_text.lower()
 
     def test_a_known_key_resolves_its_sentence(self) -> None:
-        assert setting_help("merge_wip") == SETTING_HELP["merge_wip"]
+        assert setting_help("merge_wip") == all_setting_help()["merge_wip"]
 
     def test_an_unknown_key_resolves_to_empty_rather_than_raising(self) -> None:
         assert setting_help("no-such-setting") == ""

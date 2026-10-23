@@ -117,7 +117,7 @@ class OpenAICompatibleLaneConfig:
         ``None`` means the credential resolves from ``OPENAI_COMPATIBLE_API_KEY``
         alone (or fails loud naming the setting).
     *   ``model`` — the ``openai_compatible_model`` id an unpinned teatree-native
-        dispatch normalises UP to; ``None`` keeps the ``PYDANTIC_AI_TIER_MODELS``
+        dispatch normalises UP to; ``None`` keeps the ``pydantic_ai_tier_models()``
         default for the dispatch's abstract tier.
     *   ``extra_headers`` — the ``openai_compatible_extra_headers`` map every request carries
         beside ``x-lane``; :data:`SESSION_PLACEHOLDER` in a value becomes the run's session id. A header off

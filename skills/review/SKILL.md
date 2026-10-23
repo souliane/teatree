@@ -510,3 +510,7 @@ Use this **only** when there is genuinely nothing to post or approve. If you hav
 |---------|-------------|
 | `t3 ci quality-check` | Quality analysis for self-review |
 | `t3 <overlay> run tests` | Verification after review changes |
+
+### NIT lane (own PR)
+
+On the owner's own PR, this overrides Step -1 and step 4 for NITs only: BLOCKING findings are fixed directly and not posted; NIT-only findings are posted inline and tracked in one follow-up issue. See [the NIT lane](references/nit-lane.md).

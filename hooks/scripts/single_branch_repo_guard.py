@@ -52,7 +52,7 @@ def _gate_enabled() -> bool:
     """Whether the single-branch gate is enabled (default True); ``false`` is the kill-switch."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("single_branch_repo_gate_enabled", default=True)
+    return _teatree_bool_setting("single_branch_repo_gate_enabled")
 
 
 def _declared_entries() -> list[str]:

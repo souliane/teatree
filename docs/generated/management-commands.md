@@ -225,13 +225,14 @@ Group root — forces sub-commands to be addressed by name.
 
 ## `live`
 
-Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.
+Live sessions: list and inspect are passive; steer and follow-up are active.
 
 | Subcommand | Description |
 | --- | --- |
 | `inspect` | Show one live session's state, tool and progress without contacting the agent |
 | `steer` | Send input into a running agent's current turn and print its receipt (active) |
 | `list` | List every live session on this host's workers (passive) |
+| `follow-up` | Start one new turn in a still-open idle session and print its receipt (active) |
 
 ## `loop_directive_set`
 
@@ -550,7 +551,7 @@ Session-lifecycle operations.
 
 ## `settings_compare`
 
-Render the same settings comparison as the dashboard, including peers and saved snapshots.
+What differs between this box and its peers, and whether it can be read as drift. Exits non-zero only when fewer than two instances answered. A completed comparison succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run.
 
 ## `shipped_seed`
 
@@ -631,6 +632,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `sweep-finish` | Close a sweep run, persisting its changed-ticket count — zero included |
 | `sweep-trend` | Report the changed-ticket count series, the zero streak, and any unfinished runs |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
+| `critic-record` | Record a merge critic envelope for the ticket's dispatched head |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
 | `return-gaps` | Return guarded legacy gap members to the dream umbrella |
 | `fold-check` | Prove a host body still carries the folded member's substance (#4344) |

@@ -22,8 +22,7 @@ overlay-scope rows and stale/retired keys are reported, never emitted.
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
-
-import tomlkit
+from importlib import import_module
 
 from teatree.config.feature_flags import FEATURE_FLAGS
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
@@ -35,7 +34,7 @@ from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 # A stored config value — the JSON/TOML shapes a ConfigSetting row round-trips. The table
 # arm is a ``Mapping`` because nothing here mutates one, and an invariant ``dict`` would
 # refuse the narrower tables the structured settings (``speak`` / ``mr_reminder``) store.
-type SettingValue = bool | int | float | str | list[object] | Mapping[str, object]
+type SettingValue = bool | int | float | str | list[object] | dict[str, object]
 
 #: Owner-workflow + engagement keys kept at the current shipped value even when the live
 #: box overrides them (O2). The first row is the owner-named workflow set; the second is
@@ -350,6 +349,7 @@ def render_toml(emitted: Mapping[str, SettingValue], *, base_text: str = "") -> 
     sub-tables, and reads back flat through
     :func:`~teatree.config.cold_defaults.flatten_settings_table`.
     """
+    tomlkit = import_module("tomlkit")
     document = tomlkit.parse(base_text) if base_text else tomlkit.document()
     document["teatree"] = grouped_settings_table(emitted)
     return tomlkit.dumps(document) if base_text else _HEADER + "\n" + tomlkit.dumps(document)

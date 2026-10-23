@@ -69,7 +69,7 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
     def test_a_drifted_row_is_named_with_both_values(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_label", "t3-batch")
         with patch(
-            "teatree.cli.doctor.checks_config_drift.shipped_defaults_table",
+            "teatree.cli.doctor.checks_config_drift.declared_defaults",
             return_value={"issue_implementer_label": "t3-auto"},
         ):
             out = _run()
@@ -82,20 +82,20 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         # finding here must never turn a green doctor run red.
         ConfigSetting.objects.set_value("issue_implementer_label", "t3-batch")
         with patch(
-            "teatree.cli.doctor.checks_config_drift.shipped_defaults_table",
+            "teatree.cli.doctor.checks_config_drift.declared_defaults",
             return_value={"issue_implementer_label": "t3-auto"},
         ):
             assert _check_config_rows_shadowing_shipped_defaults() is None
 
     def test_an_undrifted_store_says_nothing(self) -> None:
-        with patch("teatree.cli.doctor.checks_config_drift.shipped_defaults_table", return_value={}):
+        with patch("teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={}):
             assert _run() == ""
 
     def test_a_crashing_read_degrades_to_a_warn_line(self) -> None:
         # Every sibling advisory is crash-proof: a doctor run must complete even when one
         # probe's read blows up, or one broken check hides every other finding.
         with patch(
-            "teatree.cli.doctor.checks_config_drift.shipped_defaults_table",
+            "teatree.cli.doctor.checks_config_drift.declared_defaults",
             side_effect=RuntimeError("db down"),
         ):
             out = _run()
@@ -106,7 +106,7 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         # other — but neither the stored nor the shipped value may reach the output.
         ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["leaked-term"], "prose_collider": []})
         with patch(
-            "teatree.cli.doctor.checks_config_drift.shipped_defaults_table",
+            "teatree.cli.doctor.checks_config_drift.declared_defaults",
             return_value={"banned_term_registry": {"leak": ["shipped-term"], "prose_collider": []}},
         ):
             out = _run()

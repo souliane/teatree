@@ -4,7 +4,8 @@ from subprocess import TimeoutExpired
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
-from teatree.contrib.t3_teatree.overlay import TeatreeRuntime
+from teatree.contrib.t3_teatree.overlay import TeatreeReview, TeatreeRuntime
+from teatree.visual_qa import MAX_PAGES
 
 
 def test_empty_project_venv_is_rebuilt_before_tests(tmp_path):
@@ -14,6 +15,38 @@ def test_empty_project_venv_is_rebuilt_before_tests(tmp_path):
     steps = TeatreeRuntime().pre_run_steps(worktree, "tests")
 
     assert [step.name for step in steps] == ["sync-dependencies"]
+
+
+def test_visual_qa_syncs_frozen_before_start_even_with_a_ready_venv(tmp_path):
+    worktree = SimpleNamespace(worktree_path=str(tmp_path), repo_path=str(tmp_path))
+    runtime = TeatreeRuntime()
+
+    with patch.dict(TeatreeRuntime.pre_run_steps.__globals__, {"_python_env_ready": lambda _repo: True}):
+        steps = runtime.pre_run_steps(worktree, "visual_qa")
+
+    assert [step.name for step in steps] == ["sync-dependencies"]
+    run_checked = Mock()
+    with patch.dict(steps[0].callable.__globals__, {"run_checked": run_checked}):
+        steps[0].callable()
+    run_checked.assert_called_once_with(["uv", "sync", "--frozen"], cwd=tmp_path)
+    command = runtime.visual_qa_server(worktree)
+    assert command.args == ["uv", "--directory", str(tmp_path), "run", "--no-sync", "python", "e2e/dash/serve.py"]
+    assert command.cwd == tmp_path
+    assert command.env == {"DJANGO_SETTINGS_MODULE": "e2e.dash.settings"}
+
+
+def test_teatree_visual_qa_targets_dashboard_and_admin_pages() -> None:
+    targets = TeatreeReview().visual_qa_targets(["src/teatree/dash/templates/dash/sessions.html"])
+
+    assert len(targets) == MAX_PAGES
+    assert "/dash/board/" in targets
+    assert "/admin/" in targets
+    assert "/admin/login/" in targets
+    assert "/" not in targets
+
+
+def test_teatree_visual_qa_targets_nothing_for_a_change_outside_the_dashboard() -> None:
+    assert TeatreeReview().visual_qa_targets(["README.md"]) == []
 
 
 def test_incompatible_project_python_is_rebuilt_before_tests(tmp_path):

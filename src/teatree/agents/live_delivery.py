@@ -11,6 +11,16 @@ from teatree.agents.live_control import MAX_INPUT_BYTES, ControlOutcome, RejectC
 MAX_WAIT_SECONDS = 20
 MAX_KEY_BYTES = 128
 MAX_SENT_KEYS = 1_000
+MAILBOX_SOCKET_ENV = "T3_AGENT_MAILBOX_SOCKET"
+MAILBOX_AUTH_ENV = "T3_AGENT_MAILBOX_TOKEN"
+
+
+def _redacted_token_repr(_value: str) -> str:
+    return "'<redacted>'"
+
+
+MailboxToken = type("MailboxToken", (str,), {"__slots__": (), "__repr__": _redacted_token_repr})
+
 
 type MailboxRequest = Mapping[str, object]
 
@@ -36,10 +46,10 @@ class InboxPage(TypedDict):
 class MailboxIdentity:
     socket_path: Path
     address: str
-    token: str
+    token: str = field(repr=False)
 
     def mcp_env(self) -> dict[str, str]:
-        return {"T3_AGENT_MAILBOX_SOCKET": str(self.socket_path), "T3_AGENT_MAILBOX_TOKEN": self.token}
+        return {MAILBOX_SOCKET_ENV: str(self.socket_path), MAILBOX_AUTH_ENV: MailboxToken(self.token)}
 
 
 def send_fields(request: MailboxRequest) -> tuple[str, str, str, float]:

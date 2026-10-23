@@ -5,10 +5,10 @@ reads, and a corrupt SQLite b-tree reads fine on almost every table while writes
 AUTOINCREMENT table die with a raw ``DatabaseError`` — so a read-only doctor reports
 green on a database the factory can no longer record work in. That is the exact shape of
 the corruption this install already took: reads served 111 of 112 tables and nothing
-surfaced it until a random write threw. A database failing ``PRAGMA quick_check`` is not
-degraded, it is unusable for writes, so this is a HARD FAIL, not an advisory WARN. It is
-cheap: ``quick_check`` skips ``integrity_check``'s full index cross-reference, so it is
-O(pages) rather than O(index entries) and returns well under a second here.
+surfaced it until a random write threw. A database failing ``PRAGMA quick_check`` cannot
+be trusted for writes, so this is a HARD FAIL, not an advisory WARN. ``quick_check``
+skips ``integrity_check``'s full index cross-reference, so it is O(pages) rather than
+O(index entries).
 
 The ISOLATION and WRITER probes are the cause side, and they assert facts that are true
 NOW: the database is in its named volume where no host process can name it, and no
@@ -32,7 +32,7 @@ from pathlib import Path
 import typer
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
-from django.db import DatabaseError, connections
+from django.db import connections
 
 from teatree.config.cold_db import projection_dir_for
 from teatree.config.host_projection import ProjectionPublisher, ProjectionReader
@@ -44,9 +44,7 @@ from teatree.db.write_domain import (
     read_write_holders_across,
 )
 from teatree.paths import DATA_DIR, TRUE_CANONICAL_DB, find_control_db_artifacts
-
-# quick_check returns exactly this single row when the database is sound.
-_SQLITE_OK = "ok"
+from teatree.sqlite_integrity import quick_check_problems
 
 # quick_check reports one row per problem and a wide corruption can produce thousands.
 # The operator needs the shape of the failure, not a wall of page numbers.
@@ -78,13 +76,7 @@ def _quick_check() -> list[str]:
     A database too damaged to answer the PRAGMA raises instead of returning rows, and that
     IS the finding — so the error is reported, never propagated.
     """
-    try:
-        with connections["default"].cursor() as cursor:
-            cursor.execute("PRAGMA quick_check")
-            rows = [str(row[0]) for row in cursor.fetchall()]
-    except DatabaseError as corrupt:
-        return [str(corrupt)]
-    return [] if rows == [_SQLITE_OK] else rows
+    return quick_check_problems(connections["default"])
 
 
 def _check_db_integrity() -> bool:

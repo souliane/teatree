@@ -73,6 +73,26 @@ class TestVoidRequest(TestCase):
         assert "this pull request" in row.question
         assert "private" not in row.question
 
+    def test_cut_title_uses_the_safe_full_title_on_the_void_card(self) -> None:
+        self.ticket.short_description = "The recorded merge should be corrected..."
+        self.ticket.extra = {"issue_title": "The recorded merge should be corrected for the affected issue"}
+        self.ticket.save(update_fields=["short_description", "extra"])
+
+        with stub_forge():
+            row = self._ask()
+
+        assert "corrected for the affected issue" in row.question
+
+    def test_unsafe_full_title_retries_the_short_title_on_the_void_card(self) -> None:
+        self.ticket.short_description = "The recorded merge should be corrected..."
+        self.ticket.extra = {"issue_title": "The recorded merge should be corrected unsafe_dash_live"}
+        self.ticket.save(update_fields=["short_description", "extra"])
+
+        with stub_forge():
+            row = self._ask()
+
+        assert "The recorded merge should be corrected..." in row.question
+
     def test_the_forge_is_read_outside_the_write_lock(self) -> None:
         depths: list[int] = []
 

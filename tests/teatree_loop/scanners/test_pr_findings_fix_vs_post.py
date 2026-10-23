@@ -22,13 +22,20 @@ case is a first-class test rather than an edge note.
 """
 
 import pytest
+from django.test import TestCase
 
+from teatree.core.models import CriticVerdict, PullRequest, Ticket
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.review_verdict import HeadVerdictState
 from teatree.loop.dispatch_tables import AGENT_BY_KIND, DUAL_DISPATCH, STATUSLINE_ZONE_BY_KIND
 from teatree.loop.persistence import _FIX_REASON_BY_KIND
 from teatree.loop.scanners.my_prs import MyPrsScanner
-from teatree.loop.scanners.pr_findings import FindingDisposition, disposition_for_author, unaddressed_review_findings
+from teatree.loop.scanners.pr_findings import (
+    FindingDisposition,
+    RecordedCriticFindingReader,
+    disposition_for_author,
+    unaddressed_review_findings,
+)
 from tests.teatree_loop.test_scanners import FakeCodeHost
 
 # Neutral stand-ins on purpose: the rule is driven by the CONFIGURED identity set,
@@ -128,6 +135,22 @@ class TestAGreenHeadStillOwesItsFindings:
         assert unaddressed_review_findings(verdict_state=None, notes_count=1)
         assert not unaddressed_review_findings(verdict_state=HeadVerdictState.NO_MERGE_SAFE, notes_count=0)
 
+    def test_failed_merge_critic_routes_own_green_pr_to_fix_lane(self) -> None:
+        class _CleanReview:
+            def state_for(self, *, url: str, head_sha: str) -> HeadVerdictState:
+                return HeadVerdictState.MERGE_SAFE
+
+        class _FailedCritic:
+            def unmet_for(self, *, url: str, head_sha: str) -> bool:
+                return True
+
+        host = FakeCodeHost(user=OWNER, my_prs=[_mr(author=BOT, notes=0)])
+        signal = MyPrsScanner(
+            host=host, identities=IDENTITIES, verdict_reader=_CleanReview(), critic_reader=_FailedCritic()
+        ).scan()[0]
+        assert signal.kind == FIX_KIND
+        assert signal.payload["fix_kind"] == RedMrFixAttempt.Kind.REVIEW_FINDINGS
+
 
 class TestTheRoutingTableCarriesTheSameRule:
     """The kind the scanner picked must actually reach (or not reach) an agent."""
@@ -160,3 +183,25 @@ class TestTheFixDispatchGetsItsOwnLedgerSlotAndRemedy:
         assert "IMPLEMENT" in remedy
         assert "push" in remedy
         assert "another comment" in remedy
+
+
+class TestRecordedCriticFindingReader(TestCase):
+    def test_uses_the_exact_pr_head(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.DELIVERED)
+        url = "https://github.com/o/r/pull/9"
+        PullRequest.objects.record_opened(ticket=ticket, url=url)
+        CriticVerdict.record_from_envelope(
+            ticket=ticket,
+            transition="merge",
+            head_sha="a" * 40,
+            envelope={
+                "grader_identity": "critic-agent-7",
+                "items": [
+                    {"slug": "test_value", "status": "fail", "citation": "tests/x.py:3"},
+                    {"slug": "cleanliness", "status": "pass", "citation": "src/x.py:4"},
+                ],
+            },
+        )
+        reader = RecordedCriticFindingReader()
+        assert reader.unmet_for(url=url, head_sha="a" * 40)
+        assert not reader.unmet_for(url=url, head_sha="b" * 40)

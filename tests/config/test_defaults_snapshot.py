@@ -10,7 +10,7 @@ workflow-engagement keys are declined whatever the live box says.
 import tomllib
 from typing import Any
 
-from teatree.config.cold_defaults import flatten_settings_table
+from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.defaults_snapshot import (
     _HEADER,
     WORKFLOW_ENGAGEMENT_KEYS,
@@ -25,7 +25,7 @@ from teatree.config.defaults_snapshot import (
 )
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.schema import _DEFAULTS_TOML, Category, setting_meta
+from teatree.config.schema import Category, setting_meta
 from teatree.config.setting_groups import grouped_key_order
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.mcp.write_tools import refuse_reason
@@ -33,7 +33,7 @@ from teatree.mcp.write_tools import refuse_reason
 
 def _shipped() -> dict[str, Any]:
     """The committed ``[teatree]`` table in the FLAT namespace the planner works in."""
-    return flatten_settings_table(tomllib.loads(_DEFAULTS_TOML.read_text())["teatree"])
+    return flatten_settings_table(tomllib.loads(DEFAULTS_TOML.read_text())["teatree"])
 
 
 def _emitted(text: str) -> dict[str, Any]:
@@ -50,7 +50,7 @@ def _plan(live_global: dict[str, Any], *, shipped=None, banned_scan=_never_banne
     return plan_snapshot(
         shipped=ShippedFile(
             table=table,
-            text=_DEFAULTS_TOML.read_text(encoding="utf-8") if base is None else base,
+            text=DEFAULTS_TOML.read_text(encoding="utf-8") if base is None else base,
             _code_defaults=_shipped(),
         ),
         live_global=live_global,
@@ -230,13 +230,13 @@ class TestSerialisedShape:
     def test_a_snapshot_with_no_live_rows_reproduces_the_committed_file_byte_for_byte(self) -> None:
         # The committed file is a fixed point of the renderer, so a proposal's diff shows
         # only real value changes — never a re-serialisation churn the owner must read past.
-        assert _plan({}).toml == _DEFAULTS_TOML.read_text(encoding="utf-8")
+        assert _plan({}).toml == DEFAULTS_TOML.read_text(encoding="utf-8")
 
     def test_the_committed_file_opens_with_the_renderers_header(self) -> None:
         # A snapshot over the existing file preserves the file's OWN header, so `_HEADER`
         # is only reached when the file is absent — and would silently rot. Pinning the two
         # in lockstep keeps a from-scratch write documenting the same tables.
-        assert _DEFAULTS_TOML.read_text(encoding="utf-8").startswith(_HEADER)
+        assert DEFAULTS_TOML.read_text(encoding="utf-8").startswith(_HEADER)
 
     def test_the_header_says_the_settings_table_is_generated(self) -> None:
         # The snapshot writes `[teatree]`, and a reader who takes the written file as

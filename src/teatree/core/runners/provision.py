@@ -518,7 +518,7 @@ class WorktreeProvisioner(RunnerBase):
         declared single-branch or the branch IS the pinned one — the overwhelming
         majority of provisions, which pay one config read.
         """
-        if not cold_reader.bool_setting(GATE_KEY, default=True):
+        if not cold_reader.bool_setting(GATE_KEY):
             return ""
         settings = get_effective_settings(self.ticket.overlay or None)
         pinned = resolve_pinned_branch(repo_name, list(settings.single_branch_repos))

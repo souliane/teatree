@@ -10,6 +10,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents.live_control import LiveTask
 from teatree.agents.live_delivery import MailboxIdentity
 from teatree.agents.live_mailbox import LiveMailboxBroker, PushOnlyTask, shared_broker
+from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ def bound_task_mailbox(
     broker: LiveMailboxBroker | None = None,
 ) -> Generator[MailboxIdentity | None]:
     original = options.mcp_servers
+    original_env = options.env
     servers = original if isinstance(original, dict) else {}
     teatree = servers.get("teatree")
     teatree_stdio = (
@@ -42,7 +44,7 @@ def bound_task_mailbox(
             "dict[str, McpServerConfig]",
             {**servers, "teatree": {**teatree_stdio, "env": child_env}},
         )
-    if teatree_stdio is None and task.harness != "codex_app_server":
+    if teatree_stdio is None and task.harness not in {"codex_app_server", "pydantic_ai"}:
         try:
             yield None
         finally:
@@ -57,7 +59,8 @@ def bound_task_mailbox(
                 room=str(task.ticket),
                 harness=task.harness,
                 label=label,
-                task=task if teatree_stdio is not None else PushOnlyTask(task),
+                task=task if teatree_stdio is not None or task.harness == "pydantic_ai" else PushOnlyTask(task),
+                can_receive=task.harness != "pydantic_ai" or bool(task.phase and tools_for_phase(task.phase)),
             )
         except Exception:
             logger.warning("live mailbox unavailable for %s; dispatching without one", label, exc_info=True)
@@ -66,8 +69,11 @@ def bound_task_mailbox(
                 "dict[str, McpServerConfig]",
                 {**servers, "teatree": {**teatree_stdio, "env": {**child_env, **identity.mcp_env()}}},
             )
+        elif identity is not None and task.harness == "pydantic_ai":
+            options.env = {**(original_env or {}), **identity.mcp_env()}
         yield identity
     finally:
         options.mcp_servers = original
+        options.env = original_env
         if identity is not None and active is not None:
             active.unregister(identity.address)

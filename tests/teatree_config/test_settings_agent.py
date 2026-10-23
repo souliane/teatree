@@ -1,0 +1,9 @@
+"""Agent declaration group remains a flat dataclass base."""
+
+from teatree.config.settings_agent import _ModeHarnessSettings
+
+
+def test_agent_group_defaults() -> None:
+    settings = _ModeHarnessSettings()
+    assert settings.agent_harness == "claude_sdk"
+    assert settings.agent_max_turns == 250

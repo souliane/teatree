@@ -23,6 +23,7 @@ from teatree.agents.harness_registry import (
     NoAvailableHarnessError,
     UnknownHarnessError,
 )
+from teatree.agents.live_control import DEFAULT_IDLE_WINDOW_SECONDS
 from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
@@ -523,5 +524,6 @@ async def _drive_with_heartbeat(
             sample_usage=_sample_usage_closing_connection,
             renew_lease=_renew_lease_closing_connection,
             drain_reason=drain_reason_closing_connection,
+            idle_window_seconds=DEFAULT_IDLE_WINDOW_SECONDS,
         ),
     )

@@ -269,7 +269,11 @@ class TestPrCreateSyncShip(TestCase):
         "Cannot ship from state" gate failure); GREEN once the skip path
         reconciles.
         """
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
+        ticket = Ticket.objects.create(
+            overlay="test",
+            state=Ticket.State.WORK_STARTED,
+            extra={"visual_qa": {"report_markdown": "## Visual QA\n\n:x: stale failure"}},
+        )
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -292,6 +296,7 @@ class TestPrCreateSyncShip(TestCase):
         assert result["ok"] is True
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEW_REQUESTED
+        assert "visual_qa" not in ticket.extra
 
     def test_skip_validation_still_enforces_mr_format_check(self) -> None:
         """Skip the heavy gates, still enforce the MR format check.

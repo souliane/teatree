@@ -33,3 +33,15 @@ def test_drift_is_reported_and_left_in_place(planted: Path) -> None:
 def test_write_puts_the_declared_value_back(planted: Path) -> None:
     assert gen.main(["--write"]) == 0
     assert planted.read_text(encoding="utf-8") == DEFAULTS_TOML.read_text(encoding="utf-8")
+
+
+def test_statusline_default_drift_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = gen.STATUSLINE_SH.read_text(encoding="utf-8")
+    drifted = original.replace("_AUTOLOAD_DEFAULT=off", "_AUTOLOAD_DEFAULT=on", 1)
+    assert drifted != original
+    target = tmp_path / "statusline.sh"
+    target.write_text(drifted, encoding="utf-8")
+    monkeypatch.setattr(gen, "STATUSLINE_SH", target)
+
+    assert gen.main([]) == 1
+    assert target.read_text(encoding="utf-8") == drifted

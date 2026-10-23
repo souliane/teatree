@@ -2,27 +2,65 @@
 
 import shutil
 from pathlib import Path
-from typing import IO, Annotated, cast
+from typing import IO, Annotated, cast, override
 
 import typer
 
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.settings.settings_compare import build_compare_view
+from teatree.core.settings.settings_compare import CompareFilters, build_compare_view
 from teatree.core.settings.settings_compare_terminal import KIND_SLUGS, compare_payload, render_compare
 from teatree.core.settings.settings_files import load_snapshots
 
 
 class Command(MachineOutputCommand):
-    help = "Render the same settings comparison as the dashboard, including peers and saved snapshots."
+    help = (
+        "What differs between this box and its peers, and whether it can be read as drift. "
+        "Exits non-zero only when fewer than two instances answered. A completed comparison "
+        "succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run."
+    )
 
+    @override
     def handle(
         self,
-        snapshots: Annotated[list[str] | None, typer.Option("--snapshot")] = None,
-        kinds: Annotated[list[str] | None, typer.Option("--kind")] = None,
-        timeout: Annotated[float | None, typer.Option("--timeout")] = None,
+        snapshots: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--snapshot",
+                help=(
+                    "A saved snapshot JSON file to compare against, repeatable. A record reaches what a tunnel "
+                    "cannot: a box whose forward is down, a box that is gone, and this box as it stood earlier."
+                ),
+            ),
+        ] = None,
+        kinds: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--kind",
+                help="Show only these difference kinds, repeatable: values, override, code. Default shows all three.",
+            ),
+        ] = None,
+        timeout: Annotated[
+            float | None,
+            typer.Option(
+                "--timeout",
+                help=(
+                    "Seconds to wait for each peer, overriding its registry entry. A forward under load "
+                    "answers late, and a wait too short reports a live box as one that did not answer."
+                ),
+            ),
+        ] = None,
         *,
-        full: Annotated[bool, typer.Option("--full")] = False,
-        json_output: Annotated[bool, typer.Option("--json")] = False,
+        family: Annotated[str, typer.Option("--family", help="Show one setting or seed family.")] = "",
+        group: Annotated[str, typer.Option("--group", help="Match a setting group by name.")] = "",
+        text: Annotated[str, typer.Option("--text", help="Search row names and descriptions.")] = "",
+        scope: Annotated[str, typer.Option("--scope", help="Global, all, or one overlay scope.")] = "global",
+        all_rows: Annotated[bool, typer.Option("--all-rows", help="Include matching identical rows.")] = False,
+        full: Annotated[
+            bool, typer.Option("--full", help="Do not truncate a value, and print each row's import reason.")
+        ] = False,
+        json_output: Annotated[
+            bool, typer.Option("--json", help="Emit the whole view as JSON, nothing summarised away.")
+        ] = False,
     ) -> None:
         selected = []
         for slug in kinds or []:
@@ -39,7 +77,8 @@ class Command(MachineOutputCommand):
                 self.stderr.write(f"{path}: {exc.strerror or exc}")
                 raise SystemExit(2) from None
         loaded = load_snapshots(documents)
-        view = build_compare_view(loaded.snapshots, timeout=timeout, kinds=selected)
+        filters = CompareFilters(scope=scope, family=family, group=group, text=text, differs_only=not all_rows)
+        view = build_compare_view(loaded.snapshots, timeout=timeout, kinds=selected, filters=filters)
         human = render_compare(
             view,
             width=shutil.get_terminal_size(fallback=(100, 24)).columns,

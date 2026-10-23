@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 import teatree.utils.singleton as singleton_mod
@@ -90,6 +91,43 @@ class ServiceLauncherTests(TestCase):
         with patch.object(singleton_mod, "DATA_DIR", Path(self._tmp.name)), singleton(held._lock_name()):
             result = ServiceLauncher(self.worktree, "backend", overlay=self.overlay).run()
         assert result.ok
+
+
+class _FailingSyncRuntime(OverlayRuntime):
+    def __init__(self, ran: list[str]) -> None:
+        self._ran = ran
+
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        def sync() -> None:
+            self._ran.append("sync")
+            message = "sync broke"
+            raise RuntimeError(message)
+
+        return [
+            ProvisionStep(name="sync", callable=sync),
+            ProvisionStep(name="seed", callable=lambda: self._ran.append("seed")),
+        ]
+
+
+class StrictPrepareTests(TestCase):
+    def setUp(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2")
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="b")
+        self.ran: list[str] = []
+        overlay = CommandOverlay()
+        overlay.runtime = _FailingSyncRuntime(self.ran)
+        self.launcher = ServiceLauncher(worktree, "visual_qa", overlay=overlay)
+
+    def test_strict_prepare_raises_and_stops_at_the_failed_required_step(self) -> None:
+        with pytest.raises(RuntimeError, match="sync"):
+            self.launcher.prepare(strict=True)
+
+        assert self.ran == ["sync"]
+
+    def test_default_prepare_runs_past_a_failed_step_without_raising(self) -> None:
+        self.launcher.prepare()
+
+        assert self.ran == ["sync", "seed"]
 
 
 class _RealisticStackOverlayRuntime(OverlayRuntime):

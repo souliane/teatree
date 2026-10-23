@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.core.cost import (
     DEFAULT_MONTHLY_CREDIT_USD,
     ET_MODEL_MULTIPLIER,
@@ -66,8 +66,8 @@ class TestTierResolution:
         assert tier_of_model("claude-haiku-4-5") == "haiku"
 
     def test_balanced_tier_model_maps_to_sonnet_price(self) -> None:
-        assert tier_of_model(TIER_MODELS["balanced"]) == "sonnet"
-        assert price_for_model(TIER_MODELS["balanced"]) == ModelPrice(input_per_mtok=2.0, output_per_mtok=10.0)
+        assert tier_of_model(tier_models()["balanced"]) == "sonnet"
+        assert price_for_model(tier_models()["balanced"]) == ModelPrice(input_per_mtok=2.0, output_per_mtok=10.0)
 
     def test_older_sonnet_id_keeps_historical_estimate(self) -> None:
         usage = AttemptUsage("claude-sonnet-4-6", None, 1_000_000, 1_000_000, 0, 0)

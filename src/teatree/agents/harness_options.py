@@ -16,9 +16,14 @@ vendor type never leaks past the boundary into provider-agnostic code. The facto
 its provider-agnostic dispatch against this type, not against ``ClaudeAgentOptions``.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from claude_agent_sdk import ClaudeAgentOptions
+
+from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV
+from teatree.agents.live_mailbox_client import MailboxClient
+from teatree.core.mcp_registration import TEATREE_MCP_SERVER_NAME
 
 
 def extract_system_prompt(options: ClaudeAgentOptions) -> str:
@@ -62,12 +67,16 @@ class HarnessOptions:
     system_prompt: str = ""
     cwd: str | None = None
     add_dirs: tuple[str, ...] = ()
-    env: dict[str, str] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict, repr=False)
     max_turns: int = 0
+    mailbox: MailboxClient | None = None
 
     @classmethod
     def from_sdk_options(cls, options: ClaudeAgentOptions) -> "HarnessOptions":
         """Adapt the vendor ``ClaudeAgentOptions`` into the neutral options at the ``open`` boundary."""
+        servers = options.mcp_servers if isinstance(options.mcp_servers, dict) else {}
+        teatree = servers.get(TEATREE_MCP_SERVER_NAME)
+        identity = teatree.get("env") if isinstance(teatree, dict) else None
         return cls(
             model=options.model,
             effort=options.effort,
@@ -76,8 +85,13 @@ class HarnessOptions:
             # plain path string (a Path is more vendor/OS-coupled than its string form).
             cwd=str(options.cwd) if options.cwd else None,
             add_dirs=tuple(str(directory) for directory in options.add_dirs),
-            env=dict(options.env or {}),
+            env={
+                key: value
+                for key, value in (options.env or {}).items()
+                if key not in {MAILBOX_SOCKET_ENV, MAILBOX_AUTH_ENV}
+            },
             # ``ClaudeAgentOptions.max_turns`` is ``int | None``; coerce SDK-``None`` (and 0) to
             # 0 so only a genuinely positive cap wins over the lane's ``request_limit``.
             max_turns=options.max_turns or 0,
+            mailbox=MailboxClient.from_env(identity if isinstance(identity, Mapping) else options.env or {}),
         )

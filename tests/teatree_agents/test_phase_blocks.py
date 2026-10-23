@@ -91,6 +91,12 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
     def test_the_reviewing_brief_keeps_the_findings_rule(self) -> None:
         assert ENVELOPE_FINDINGS_RULE in phase_specific_lines(_task("reviewing"), [])
 
+    def test_the_reviewing_brief_names_the_blocking_standard_and_kind(self) -> None:
+        brief = self._reviewing_brief()
+        assert '"kind": "blocking"|"nit"' in brief
+        assert "vacuous test" in brief
+        assert "NIT" in brief
+
     def test_a_non_reviewing_brief_does_not_carry_it(self) -> None:
         assert "rubric_grades" not in "\n".join(phase_specific_lines(_task("coding"), []))
 
@@ -358,6 +364,13 @@ class TestEnvelopeVerdictPhasesIsExactlyWhatTheBriefTeaches(TestCase):
     #: The directive ``_REVIEW_VERDICT_RETURN_LINES`` opens with — present iff the brief
     #: asks for the envelope the orchestrator must record server-side.
     _RETURN_DIRECTIVE = "RECORD YOUR VERDICT BY RETURNING IT"
+
+    def test_reviewer_brief_keeps_full_dispatched_head_refusal(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
+        assert "Any other head is REFUSED and records nothing" in brief
+        assert "one or return needs_user_input" in brief
+        assert "OMITTING `reviewed_sha` is REFUSED too" in brief
+        assert "dispatched one, so a verdict that names no head records nothing at all" in brief
 
     def _phases_briefed_for_the_envelope(self) -> set[str]:
         return {

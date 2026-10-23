@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import typer
 
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.declared_defaults import declared_defaults
 from teatree.core.config_display import masked_display
 
 
@@ -97,7 +97,7 @@ def _check_config_rows_shadowing_shipped_defaults() -> None:
     finding.
     """
     try:
-        drifted = drifted_settings(stored=_stored_rows(), shipped=shipped_defaults_table())
+        drifted = drifted_settings(stored=_stored_rows(), shipped=declared_defaults())
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Config-drift check crashed: {exc.__class__.__name__}: {exc}")
         return

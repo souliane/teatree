@@ -50,15 +50,6 @@ overlay phase candidate list alike.
 
 ## Runtime lifecycle and concurrency
 
-### Live steering
-
-A running Codex turn accepts operator input or a peer message through the App Server's
-`turn/steer` with its open `expectedTurnId`. TeaTree reports `accepted_current_turn`
-only when the answer names that turn. A timeout, lost answer or turn-end race is
-`unknown_delivery` and is never replayed; an idle or ended turn rejects the input.
-In the worker's Codex sandbox, MCP is unavailable, so the task is a push-only
-mailbox recipient with no inbox copy.
-
 The harness ignores an ambient `CODEX_HOME`. It uses the stable private directory
 named by `T3_CODEX_HOME`, or Teatree's data directory under `codex-home` by
 default. The child receives a minimal allowlisted process environment and its
@@ -103,6 +94,15 @@ lease: keep this authenticated runner at one replica, or acquire a Kubernetes
 Lease/shared lock before enabling concurrent Codex runs against the same pass
 entry. A hard kill cannot run graceful persistence; the next worker hydrates the
 last verified cache from pass.
+
+### Live steering
+
+A running Codex turn accepts operator input or a peer message through the App Server's
+`turn/steer` with its open `expectedTurnId`. TeaTree reports `accepted_current_turn`
+only when the answer names that turn. A timeout, lost answer or turn-end race is
+`unknown_delivery` and is never replayed; an idle or ended turn rejects the input.
+In the worker's Codex sandbox, MCP is unavailable, so the task is a push-only
+mailbox recipient with no inbox copy.
 
 ## Forge credential parity
 
@@ -274,6 +274,13 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
 Codex cannot enforce Claude's shell-tool deny list. The worker accepts that mismatch only for a live-attested
 executor turn; the executor's mounts and missing forge credentials remain the enforced write boundary.
 
+The worker reads a pull request ticket through the PR body and conversation APIs, and reads an issue ticket
+through the issue APIs. Manual planning enqueue records a missing landscape survey with the ticket's overlay
+credential before minting the task; an unreadable configured forge refuses the enqueue. Required skill bodies
+stay inline across the system context and task message: whole skill blocks move to the task message when the
+system context would exceed 96 KiB. The worker keeps the review diff, comments and other facts under their
+separate caps.
+
 - **Image and mounts.** Its `ro-executor` stage starts from the pinned Ubuntu base with git, python3, tini,
   node and the pinned Codex package, and no `t3`, `gh`, `docker` or `pass`. Compose mounts only the deploy
   checkout's `.git` (path identity, where the worktrees' gitdirs point), never the directory that holds
@@ -298,8 +305,8 @@ executor turn; the executor's mounts and missing forge credentials remain the en
   source that embeds the marker is no key. The run is refused, named and with nothing started, on a mount that
   accepts a write or is not declared, a declared mount that is missing or that the write probe or the
   secret scan skipped, any readable secret file, running as root or as the owner of a mounted tree, a
-  checkout whose git files (`HEAD`, `index`, `config`, `commondir`, `packed-refs`, `refs/`, `objects/`)
-  it cannot read, a tmpfs whose control write fails, capabilities or a missing `no_new_privs`, any
+  checkout whose Git metadata it cannot read, a tmpfs whose control write fails, capabilities or a missing
+  `no_new_privs`, any
   environment key outside the allowlist in the probe's own environment or in `/proc/1/environ`, `t3`,
   `gh`, `docker` or `pass` on `PATH`, an inspect mount whose source differs from the worker's mount at the
   same place (for `.git`, the worker's checkout source plus `/.git`), a writable root, privilege, added
@@ -309,11 +316,10 @@ executor turn; the executor's mounts and missing forge credentials remain the en
   environment flag can skip it. The walk covers every entry under the mounts (about 2.6 million on a box
   with many worktrees: measured 6.6 s with a warm page cache and 54 s cold), so the worker gives each
   docker call 180 s.
-- **Git permissions.** The executor reads git data as `nobody`, so a clone whose git files were written
-  owner-only (under umask 077: `packed-refs` 0600, packs 0400) refuses the run and names the first such
-  file. Making them readable is an owner decision about the box: `chmod -R a+rX <clone>/.git` for the
-  deploy checkout and each clone in the clone volume, and `git config core.sharedRepository 0644` there so
-  new files stay readable.
+- **Git permissions.** Before each attestation, the writable worker makes Git metadata under the
+  executor's matched checkout mounts readable by `nobody`, including files recreated by maintenance.
+  The read-only probe reports every remaining unreadable file and directory, including missing directory
+  read or traverse bits, in one refusal with a repair command. It never follows metadata symlinks.
 - **Attestation.** Only an `ExecutorAttestation`, which only a passing probe can construct, turns a
   write-barring phase into the unsandboxed translation. The worker's own session and shared server refuse
   attested options before anything starts, and an executor server refuses another container's.

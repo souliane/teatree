@@ -25,22 +25,24 @@ import dataclasses
 from collections.abc import Mapping
 
 from teatree.config.cold_defaults import DEFAULTS_TOML
+from teatree.config.declaration import stored_form
 from teatree.config.defaults_snapshot import SettingValue, default_category_keys, render_toml
 from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS
-from teatree.config.setting_layers import stored_form
 from teatree.config.settings import UserSettings
 
 
 def _renderable(value: object) -> SettingValue:
     """*value* in the form the file stores it, refusing a shape the file has never carried.
 
-    The conversion is :func:`~teatree.config.setting_layers.stored_form`, shared with the
+    The conversion is :func:`~teatree.config.declaration.stored_form`, shared with the
     resolver's default authority so the rendered file and the resolved value cannot
     disagree. What this adds is the REFUSAL: a field typed as something new (a ``Path``, a
     new dataclass) fails loudly rather than rendering as its ``repr``.
     """
     stored = stored_form(value)
-    if isinstance(stored, bool | int | float | str | list | Mapping):
+    if isinstance(stored, Mapping):
+        return dict(stored)
+    if isinstance(stored, bool | int | float | str | list):
         return stored
     msg = f"no stored form for a {type(value).__name__} default — teach stored_form how the file carries it"
     raise TypeError(msg)
