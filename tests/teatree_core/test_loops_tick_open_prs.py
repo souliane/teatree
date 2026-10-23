@@ -132,9 +132,22 @@ class TestTickReportsOpenPrs(django.test.TestCase):
         assert output.count("souliane/teatree!9") == 1
 
     def test_a_tick_that_observed_nothing_lists_no_stale_snapshot_from_an_earlier_tick(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
         with _tick([]) as statusline:
             write_inventory("teatree", [_entry(4, age=timedelta(days=1), next_task="Fix failing CI")])
-            out = io.StringIO()
-            call_command("loops_tick", loop=_LOOP, statusline_file=statusline, stdout=out, stderr=io.StringIO())
+            call_command("loops_tick", loop=_LOOP, statusline_file=statusline, stdout=out, stderr=err)
 
-        assert "souliane/teatree!4" not in out.getvalue()
+        report = out.getvalue() + err.getvalue()
+        assert "ran   loop" in report, report
+        assert "souliane/teatree!4" not in report, report
+
+    def test_an_unreadable_inventory_is_named_in_the_report_not_read_as_no_open_prs(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with _tick([]) as statusline:
+            write_inventory("teatree", [_entry(5, age=timedelta(days=1), next_task="Fix failing CI")])
+            next(Path(os.environ["T3_DATA_DIR"]).glob("pr-inventory/*.json")).write_text("bad JSON", encoding="utf-8")
+            call_command("loops_tick", loop=_LOOP, statusline_file=statusline, stdout=out, stderr=err)
+
+        report = out.getvalue() + err.getvalue()
+        assert "ran   loop" in report, report
+        assert "WARN  open_prs: open-PR inventory unreadable" in report, report
