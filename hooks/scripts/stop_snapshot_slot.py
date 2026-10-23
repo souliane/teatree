@@ -30,7 +30,7 @@ import sys
 import time
 from pathlib import Path
 
-from hooks.scripts.git_pin_args import GIT_PINS
+from hooks.scripts.git_pin_args import GIT_PINS, git_executable
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
@@ -100,7 +100,7 @@ def git_state_for_repo(repo_path: Path) -> dict[str, str] | None:
     def _git(*args: str) -> str:
         try:
             return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-                ["git", *GIT_PINS, "-C", str(repo_path), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation with a fixed argv
+                [git_executable(), *GIT_PINS, "-C", str(repo_path), "--no-optional-locks", *args],
                 text=True,
                 timeout=3,
                 stderr=subprocess.DEVNULL,

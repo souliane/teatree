@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from hooks.scripts.git_pin_args import GIT_PINS
+from hooks.scripts.git_pin_args import GIT_PINS, git_executable
 from hooks.scripts.stop_snapshot_slot import read_open_prs
 from hooks.scripts.stranded_work_report import checkout_root, clear, found_at, found_line, leave, peek
 from hooks.scripts.t3_invocation import run_t3, t3_argv
@@ -102,7 +102,7 @@ def _git(repo: Path, *args: str, absent_is_empty: bool = False) -> str:
     """
     try:
         return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            ["git", *GIT_PINS, "-C", str(repo), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation
+            [git_executable(), *GIT_PINS, "-C", str(repo), "--no-optional-locks", *args],
             text=True,
             timeout=PROBE_TIMEOUT_SECONDS,
             stderr=subprocess.DEVNULL,

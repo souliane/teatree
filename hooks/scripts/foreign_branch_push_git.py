@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Final
 
 from hooks.scripts.credential_redaction import clip, redact_credentials
-from hooks.scripts.git_pin_args import GIT_PINS
+from hooks.scripts.git_pin_args import GIT_PINS, git_executable
 from hooks.scripts.hook_budget import NO_TIME_LEFT, remaining_timeout_s
 from hooks.scripts.managed_repo import teatree_src_on_path
 
@@ -86,7 +86,7 @@ def git_probe(work_dir: str, *args: str, timeout: float = _GIT_TIMEOUT_S, neutra
     try:
         proc = subprocess.run(  # noqa: S603 -- trusted internal subprocess; fixed argv, no shell.
             # Use the same Git from PATH as the push this gate judges.
-            ["git", *GIT_PINS, "-C", work_dir or ".", "--no-optional-locks", *args],  # noqa: S607 -- see above.
+            [git_executable(), *GIT_PINS, "-C", work_dir or ".", "--no-optional-locks", *args],
             capture_output=True,
             text=True,
             timeout=affordable,
