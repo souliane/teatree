@@ -7,7 +7,7 @@ from django.test import TestCase
 from teatree.agents.live_client import LiveOfflineError
 from teatree.core.models import DmContext, PendingChatInjection, SessionCommand, Task, ThreadBinding
 from teatree.core.models.thread_binding import slack_command_id
-from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource, read_inbound
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work
 from tests.teatree_loop.slack_answer.test_cycle import _BOT_UID, _USER_UID, RecordingBackend, _resolver
@@ -125,6 +125,24 @@ class TestBoundTicketThread(TestCase):
         assert "busy" in backend.replies[0][2]
         row.refresh_from_db()
         assert row.answer_kind == PendingChatInjection.AnswerKind.SESSION
+
+    def test_fallback_reader_inspects_progress_question(self) -> None:
+        task = self._bound_task()
+        row = self._message("How is it going?")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [{"task": task.pk, "ticket": task.ticket_id, "state": "busy", "steerable": True}]
+        client.inspect.return_value = {"task": task.pk, "state": "busy", "tool_calls": 3}
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(
+                messaging_resolver=_resolver(backend), reader=lambda text: read_inbound(text, one_shot=lambda *_: None)
+            )
+
+        assert report.inspected == 1
+        client.steer.assert_not_called()
+        assert "busy" in backend.replies[0][2]
 
     def test_idle_session_takes_followup_without_creating_task(self) -> None:
         task = self._bound_task()
