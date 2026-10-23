@@ -167,6 +167,11 @@ class TestMainAgentHeavyBashBlocked:
             "cargo test",
             "make all",
             "sleep 600",
+            "echo `pytest`",
+            'echo "$(date; pytest)"',
+            'echo "`date; pytest`"',
+            "bash -c 'pytest'",
+            "bash -c 'date; pytest'",
             "find . -name '*.py' -exec grep -l TODO {} ;",
             "ls -laR /Users/dev/workspace",
         ],
@@ -210,7 +215,12 @@ class TestFileWritingHeredocs:
             "cat > run.sh && bash <<EOF\nuv run pytest\nEOF",
             "cat > run.sh <<EOF\n$(uv run pytest)\nEOF",
             "cat > run.sh <<EOF\n`uv run pytest`\nEOF",
+            "cat > run.sh <<EOF\nit's `uv run pytest`\nEOF",
             "tee >(bash) <<EOF\nuv run pytest\nEOF",
+            "cat > run.sh <<<EOF\nuv run pytest\nEOF",
+            "python3 - <<'OUTER'\ncat > run.sh <<'INNER'\nuv run pytest\nINNER\nOUTER",
+            "tee run.sh <<EOF | bash\nuv run pytest\nEOF",
+            "tee run.sh <<EOF >(bash)\nuv run pytest\nEOF",
         ],
     )
     def test_executable_or_unclosed_heredoc_still_denies(self, command: str) -> None:
@@ -225,6 +235,10 @@ class TestHeavyWordIsNotACommand:
             "cat tox.ini",
             "git commit -m 'make the gate narrower'",
             "sed -n '1,3p' webpack.config.js",
+            "gh pr comment --body 'CI runs `pytest` on shard 3'",
+            "ps -eo pid,etime,stat,cmd | rg 'test-affected|pytest|uv run' | head -20",
+            'echo "CI runs | pytest on shard 3"',
+            "echo \\`pytest\\`",
         ],
     )
     def test_identifier_or_argument_passes(self, command: str) -> None:

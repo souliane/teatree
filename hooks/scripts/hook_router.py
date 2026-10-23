@@ -122,11 +122,13 @@ from hooks.scripts.mr_cli_fields import extract_api_mr_fields, extract_cli_mr_fi
 from hooks.scripts.mr_validator import handle_validate_mr_metadata
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
 from hooks.scripts.orchestration_boundary_signals import COMMAND_HEAD as _COMMAND_HEAD
-from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
+from hooks.scripts.orchestration_boundary_signals import (
+    command_matches_non_pytest_heavy as _command_matches_non_pytest_heavy,
+)
+from hooks.scripts.orchestration_boundary_signals import heavy_command_text as _heavy_command_text
 from hooks.scripts.orchestration_boundary_signals import pytest_command_is_targeted as _pytest_command_is_targeted
-from hooks.scripts.orchestration_boundary_signals import without_file_heredoc_bodies as _without_file_heredoc_bodies
 from hooks.scripts.orchestrator_delegation_gate import handle_block_undelegated_investigation
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from hooks.scripts.out_of_band_merge_guard import handle_block_out_of_band_merge
@@ -1740,19 +1742,6 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     )
 
 
-def _command_matches_non_pytest_heavy(command: str) -> bool:
-    """True when ``command`` matches a heavy pattern OTHER than the ``pytest`` verb.
-
-    The targeted-pytest exemption (#1825) must only relax a command whose
-    sole heavy match is a targeted ``pytest`` — a ``pytest -k foo && npm
-    install`` still denies on the ``npm install`` arm. Stripping the
-    pytest verb tokens to bare placeholders before re-matching leaves any
-    other heavy arm intact.
-    """
-    stripped = _PYTEST_VERB_FINDER.sub(" __pytest__ ", command)
-    return bool(_ORCHESTRATOR_HEAVY_BASH_RE.search(stripped))
-
-
 def _heavy_command_is_help_only(command: str) -> bool:
     """True when EVERY heavy denylist match in ``command`` is a --help/--version query.
 
@@ -1792,10 +1781,12 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     command = tool_input.get("command")
     if not isinstance(command, str):
         return False
-    scanned = _without_file_heredoc_bodies(command)
+    scanned = _heavy_command_text(command)
     if not _ORCHESTRATOR_HEAVY_BASH_RE.search(scanned) or _heavy_command_is_help_only(scanned):
         return False
-    if _pytest_command_is_targeted(scanned) and not _command_matches_non_pytest_heavy(scanned):
+    if _pytest_command_is_targeted(scanned) and not _command_matches_non_pytest_heavy(
+        scanned, _ORCHESTRATOR_HEAVY_BASH_RE
+    ):
         return False
     return _fail_open_or_deny(
         data,

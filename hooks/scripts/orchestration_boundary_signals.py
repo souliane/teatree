@@ -58,7 +58,7 @@ def call_is_from_subagent(data: dict) -> bool:
 # matches); the trailing ``(?![\w-])`` keeps the match pinned to ``pytest`` so
 # wrapper prefixes never widen to other tools (``uvx ruff`` stays unmatched).
 COMMAND_HEAD = (
-    r"(?:^|[;&|\n(){}`])\s*(?:\w+=\S+\s+)*"
+    r"(?:^|[;&|\n(){}])\s*(?:\w+=\S+\s+)*"
     r"(?:(?:(?:command|exec|time|nice|sudo|nohup)(?:\s+-\S+)*"
     r"|env(?:\s+(?:-\S+|\w+=\S+))*)\s+)*"
 )
@@ -68,8 +68,42 @@ PYTEST_VERB_RE = COMMAND_HEAD + (
 )
 PYTEST_VERB_FINDER = re.compile(PYTEST_VERB_RE)
 
+
+_QUOTED_SHELL_TEXT_RE = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+
+
+def _executable_backticks(text: str) -> str:
+    result: list[str] = []
+    escaped = False
+    for char in text:
+        result.append("\n" if char == "`" and not escaped else char)
+        escaped = char == "\\" and not escaped
+    return "".join(result)
+
+
+def _quoted_shell_text(match: re.Match[str]) -> str:
+    text = match.group()
+    if re.search(r"(?:^|[;&|\n])\s*(?:bash|sh)\s+-c\s*$", match.string[: match.start()]):
+        return "\n" + _executable_backticks(text[1:-1]) + "\n"
+    if text.startswith("'") or ("$(" not in text and "`" not in text):
+        return re.sub(r"[;&|\n(){}]", " ", text)
+    return _executable_backticks(text)
+
+
+def command_with_executable_separators(command: str) -> str:
+    if not any(quote in command for quote in ("'", '"', "`")):
+        return command
+    result: list[str] = []
+    last = 0
+    for match in _QUOTED_SHELL_TEXT_RE.finditer(command):
+        result.extend((_executable_backticks(command[last : match.start()]), _quoted_shell_text(match)))
+        last = match.end()
+    result.append(_executable_backticks(command[last:]))
+    return "".join(result)
+
+
 _PYTEST_TARGETED_RE = re.compile(r"(?:^|\s)(?:-k|--deselect)(?:[=\s]|$)|::|(?:^|\s)\S*\.py(?:::|\s|$)")
-_HEREDOC_OPEN_RE = re.compile(r"<<(-?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+_HEREDOC_OPEN_RE = re.compile(r"(?<!<)<<(-?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
 _FILE_WRITER_RE = re.compile(r"(?:^|[;&|])\s*(cat|tee)\b([^\n]*)")
 _FILE_REDIRECT_RE = re.compile(r"(?<!<)>{1,2}\s*(?![(&])\S+")
 
@@ -89,7 +123,13 @@ def pytest_command_is_targeted(command: str) -> bool:
     return True
 
 
-def without_file_heredoc_bodies(command: str) -> str:
+def command_matches_non_pytest_heavy(command: str, heavy_pattern: re.Pattern[str]) -> bool:
+    return bool(heavy_pattern.search(PYTEST_VERB_FINDER.sub(" __pytest__ ", command)))
+
+
+def heavy_command_text(command: str) -> str:
+    if "<<" not in command:
+        return command_with_executable_separators(command)
     lines = command.splitlines(keepends=True)
     result: list[str] = []
     index = 0
@@ -98,20 +138,6 @@ def without_file_heredoc_bodies(command: str) -> str:
         result.append(line)
         opener = _HEREDOC_OPEN_RE.search(line)
         if opener is None:
-            index += 1
-            continue
-        segment_start = max(line.rfind(separator, 0, opener.start()) for separator in ";&|(){}`") + 1
-        writer = _FILE_WRITER_RE.match(line[segment_start:])
-        if writer is None:
-            index += 1
-            continue
-        verb, args = writer.groups()
-        file_bound = (
-            bool(_FILE_REDIRECT_RE.search(args))
-            if verb == "cat"
-            else bool(re.search(r"(?:^|\s)(?:-a\s+)?[^\s<|;&-][^\s<|;&]*", args))
-        )
-        if not file_bound or "|" in line[opener.end() :] or re.search(r"[<>]\(", args):
             index += 1
             continue
         delimiter = opener.group(3)
@@ -124,11 +150,27 @@ def without_file_heredoc_bodies(command: str) -> str:
                 break
             end += 1
         if end == len(lines):
-            index += 1
-            continue
-        if not opener.group(2) and any("$(" in body or "`" in body for body in lines[index + 1 : end]):
-            index += 1
-            continue
-        result.append(lines[end])
+            result.extend(body.replace("`", "\n").replace("'", " ").replace('"', " ") for body in lines[index + 1 :])
+            break
+        segment_start = max(line.rfind(separator, 0, opener.start()) for separator in ";&|(){}`") + 1
+        writer = _FILE_WRITER_RE.match(line[segment_start:])
+        file_bound = False
+        process_substitution = False
+        if writer is not None:
+            verb, args = writer.groups()
+            file_bound = (
+                bool(_FILE_REDIRECT_RE.search(args))
+                if verb == "cat"
+                else bool(re.search(r"(?:^|\s)(?:-a\s+)?[^\s<|;&-][^\s<|;&]*", args))
+            )
+            process_substitution = bool(re.search(r"[<>]\(", args))
+        executable_body = not opener.group(2) and any("$(" in body or "`" in body for body in lines[index + 1 : end])
+        if not file_bound or "|" in line[opener.end() :] or process_substitution or executable_body:
+            result.extend(
+                body.replace("`", "\n").replace("'", " ").replace('"', " ") for body in lines[index + 1 : end]
+            )
+            result.append(lines[end])
+        else:
+            result.append(lines[end])
         index = end + 1
-    return "".join(result)
+    return command_with_executable_separators("".join(result))
