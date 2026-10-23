@@ -32,6 +32,10 @@ from tests._planted_git_config import PlantedConfig, executable, plant_exec_conf
 class Checkout(PlantedConfig):
     repo: Path
 
+    @property
+    def reference_marker(self) -> Path:
+        return self.repo.parent / "fetch-reference-transaction"
+
     def argv(self, *verb: str) -> list[str]:
         return ["git", "-C", str(self.repo), *verb]
 
@@ -45,8 +49,21 @@ def planted(tmp_path: Path) -> Checkout:
     run_git(repo, "add", "tracked.txt")
     run_git(repo, "commit", "-q", "-m", "base")
     run_git(repo, "push", "-q", "origin", "main")
+    upstream = tmp_path / "upstream"
+    run_git(tmp_path, "clone", "-q", str(origin), str(upstream))
+    (upstream / "tracked.txt").write_text("upstream\n", encoding="utf-8")
+    run_git(upstream, "add", "tracked.txt")
+    run_git(upstream, "commit", "-q", "-m", "upstream")
+    run_git(upstream, "push", "-q", "origin", "main")
+    assert run_git(origin, "rev-parse", "main") != run_git(repo, "rev-parse", "HEAD")
+    assert run_git(repo, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main", check=False) != run_git(
+        origin, "rev-parse", "main"
+    )
     (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
     config = plant_exec_config(repo, tmp_path)
+    recording_script(
+        config.hooks_dir / "reference-transaction", tmp_path / "fetch-reference-transaction", "fetched-ref"
+    )
     return Checkout(repo=repo, marker=config.marker, hooks_dir=config.hooks_dir)
 
 
@@ -109,6 +126,11 @@ def test_a_bare_git_honours_the_planted_config(planted: Checkout, verb: str) -> 
     run_git(planted.repo, *VERBS[verb](planted.repo))
 
     assert planted.fired
+    if verb == "fetch":
+        assert "fetched-ref" in planted.reference_marker.read_text(encoding="utf-8").splitlines()
+        assert run_git(planted.repo, "rev-parse", "origin/main") == run_git(
+            planted.repo.parent / "origin", "rev-parse", "main"
+        )
 
 
 @pytest.mark.parametrize("entry_point", ENTRY_POINTS)
@@ -132,7 +154,11 @@ def test_no_planted_command_runs_through_a_control_plane_spawn(planted: Checkout
         assert (planted.repo.parent / "wt" / ".git").is_file()
     elif verb == "fetch":
         assert "main" in (planted.repo / ".git" / "FETCH_HEAD").read_text(encoding="utf-8")
+        assert run_git(planted.repo, "rev-parse", "origin/main") == run_git(
+            planted.repo.parent / "origin", "rev-parse", "main"
+        )
     assert planted.fired == []
+    assert not planted.reference_marker.exists()
 
 
 def test_an_explicit_caller_hooks_path_cannot_override_the_pin(planted: Checkout) -> None:
