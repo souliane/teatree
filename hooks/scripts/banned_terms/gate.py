@@ -61,7 +61,7 @@ def _banned_terms_gate_enabled() -> bool:
     would be a privacy regression, not a rescue (hooks/CLAUDE.md). See
     :func:`_teatree_bool_setting` for the shared semantics.
     """
-    return _teatree_bool_setting("banned_terms_gate_enabled", default=True)
+    return _teatree_bool_setting("banned_terms_gate_enabled")
 
 
 def handle_banned_terms_pretool(data: dict) -> bool:

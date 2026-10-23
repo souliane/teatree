@@ -9,33 +9,32 @@ import itertools
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 import yaml
 from typer.testing import CliRunner
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.cli import app
-from teatree.cli.eval import set_baseline
+from teatree.config.registries import COLD_SETTINGS
 from teatree.eval.models import EvalSpec
 
 _HAIKU = "claude-haiku-4-5"
-_SONNET = TIER_MODELS["balanced"]
-_OPUS = TIER_MODELS["frontier"]
+_SONNET = tier_models()["balanced"]
+_OPUS = tier_models()["frontier"]
 
 
 @pytest.fixture(autouse=True)
 def _three_distinct_tier_models() -> Iterator[None]:
-    with (
-        patch.dict(TIER_MODELS, {"cheap": _HAIKU}),
-        patch.dict(set_baseline._TIER_BY_MODEL, {_HAIKU: "cheap", _SONNET: "balanced"}),
-    ):
+    defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+    with patch.dict(defaults, {"cheap": _HAIKU}):
         yield
 
 
 #: The frontier model of a matrix produced before the opus-5 bump — a column no
-#: current tier maps back to. Held as a literal (not a former TIER_MODELS read)
+#: current tier maps back to. Held as a literal (not a former tier_models() read)
 #: because the point is a value the shipped catalog no longer contains.
 _STALE_OPUS = "claude-opus-4-8"
 
@@ -251,7 +250,7 @@ class TestHeaderAndUnknownColumn:
 
 
 class TestStaleModelColumn:
-    """A matrix produced BEFORE a tier bump names a model no longer in ``TIER_MODELS``.
+    """A matrix produced BEFORE a tier bump names a model no longer in ``tier_models()``.
 
     Such a column carries no evidence about any CURRENT tier model, so its cells
     are dropped and the derivation proceeds on the columns that are still valid.

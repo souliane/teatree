@@ -29,10 +29,8 @@ Deliberately pydantic-free — it composes the same cold-safe registries
 
 import dataclasses
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from importlib import import_module
 from typing import TYPE_CHECKING, cast
-
-import tomlkit
-from tomlkit import items as tomlkit_items
 
 from teatree.config.registries import (
     COLD_HOOK_SETTINGS,
@@ -47,6 +45,7 @@ from teatree.config.settings import UserSettings
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
+    from tomlkit import items as tomlkit_items
 
 #: The bucket a key no declaration owns lands in — rendered last, under a visible banner.
 UNGROUPED_PATH: tuple[str, ...] = ("Ungrouped",)
@@ -225,8 +224,9 @@ def group_outline[RowT](rows: Sequence[RowT], key_of: Callable[[RowT], str]) -> 
         )
 
 
-def nested_value_table[ValueT](value: Mapping[str, ValueT]) -> tomlkit_items.Table:
+def nested_value_table[ValueT](value: Mapping[str, ValueT]) -> "tomlkit_items.Table":
     """A ``dict``-valued setting rendered as its own TOML table, recursively, key-sorted."""
+    tomlkit = import_module("tomlkit")
     table = tomlkit.table()
     for key in sorted(value):
         inner = value[key]
@@ -255,7 +255,7 @@ def setting_comment(key: str) -> str:
     return " — ".join(part for part in (setting_annotation(key), setting_help(key)) if part)
 
 
-def _commented(key: str, value: object) -> tomlkit_items.Item:
+def _commented(key: str, value: object) -> "tomlkit_items.Item":
     """*value* as a TOML item carrying *key*'s type, choices and help as a TRAILING comment.
 
     Trailing rather than a line above: a standalone ``#`` line inside ``[teatree]`` is what
@@ -264,17 +264,20 @@ def _commented(key: str, value: object) -> tomlkit_items.Item:
     reads as the annotation it is, and every parser of the block — including the one that
     splits ``key = value`` out of the file — sees the same key it always did.
     """
+    tomlkit = import_module("tomlkit")
+    tomlkit_items = import_module("tomlkit.items")
     item: tomlkit_items.Item = value if isinstance(value, tomlkit_items.Item) else tomlkit.item(value)
     comment = setting_comment(key)
     return item.comment(comment) if comment else item
 
 
-def _group_subtable[ValueT](node: SettingGroupNode[str], rows: Mapping[str, ValueT]) -> tomlkit_items.Table:
+def _group_subtable[ValueT](node: SettingGroupNode[str], rows: Mapping[str, ValueT]) -> "tomlkit_items.Table":
     """One group level as a TOML table — its own keys, then its subsections.
 
     A level that holds only subsections is a super-table, so it prints no header of its
     own and its children read as one dotted path rather than a bare empty section.
     """
+    tomlkit = import_module("tomlkit")
     table = tomlkit.table(is_super_table=not node.rows)
     for key in node.rows:
         table[key] = _commented(key, rows[key])
@@ -283,7 +286,7 @@ def _group_subtable[ValueT](node: SettingGroupNode[str], rows: Mapping[str, Valu
     return table
 
 
-def grouped_settings_table[ValueT](rows: Mapping[str, ValueT]) -> tomlkit_items.Table:
+def grouped_settings_table[ValueT](rows: Mapping[str, ValueT]) -> "tomlkit_items.Table":
     """A settings table whose keys read as the group tree's real NESTED sub-tables.
 
     The nesting is a FILE shape only: the flat key namespace stays the persisted contract
@@ -301,6 +304,7 @@ def grouped_settings_table[ValueT](rows: Mapping[str, ValueT]) -> tomlkit_items.
     groups. Ordering is the tree's, then key-sorted within a leaf: a function of the
     CONTENT and the declarations, never of insertion order.
     """
+    tomlkit = import_module("tomlkit")
     scalars = {key: value for key, value in rows.items() if not isinstance(value, Mapping)}
     table = tomlkit.table()
     for node in group_tree(sorted(scalars), key_of=lambda key: key):

@@ -32,7 +32,7 @@ def _gate_enabled() -> bool:
     protective default; ``t3 <overlay> gate verbatim-paste disable`` is the
     never-lockout kill-switch.
     """
-    return _teatree_bool_setting("verbatim_paste_gate_enabled", default=True)
+    return _teatree_bool_setting("verbatim_paste_gate_enabled")
 
 
 def handle_block_verbatim_operator_paste(data: dict) -> bool:

@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
-    from teatree.core.settings.settings_compare import CompareRow
+    from teatree.core.settings.settings_compare_rows import CompareRow
 
 #: The registry category whose values never leave the box, redacted or not.
 WITHHELD_CATEGORY: Final = "secret"

@@ -24,6 +24,7 @@ from teatree.config import get_effective_settings
 from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.enums import Mode
 from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage
+from teatree.config.resolution import get_effective_setting
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.config.setting_groups import UNGROUPED_PATH
 from teatree.config.setting_taxonomy import taxonomy
@@ -483,6 +484,27 @@ class TestConfigSettingOverlayScope(TestCase):
         assert "db" in rendered
         assert "ov" in rendered
 
+    def test_get_resolves_an_alias_row_and_names_its_decider(self) -> None:
+        ConfigSetting.objects.set_value(
+            "issue_implementer_max_concurrent", 7, scope="teatree", authorized_by="operator"
+        )
+        out = StringIO()
+
+        call_command("config_setting", "get", "issue_implementer_max_concurrent", "--overlay", "t3-teatree", stdout=out)
+
+        assert "issue_implementer_max_concurrent = 7" in out.getvalue()
+        assert "[source: db, overlay 'teatree']" in out.getvalue()
+        assert "[decided by operator]" in out.getvalue()
+
+    def test_get_resolves_global_row_for_an_overlay(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 7)
+        out = StringIO()
+
+        call_command("config_setting", "get", "issue_implementer_max_concurrent", "--overlay", "t3-teatree", stdout=out)
+
+        assert "issue_implementer_max_concurrent = 7" in out.getvalue()
+        assert "[source: db, global]" in out.getvalue()
+
     def test_list_names_each_rows_scope(self) -> None:
         call_command("config_setting", "set", "admit_colleague_prs_to_board", "true")
         call_command("config_setting", "set", "issue_implementer_label", '"ready"', "--overlay", "ov")
@@ -764,6 +786,20 @@ class TestGetNamesWhoDecided(TestCase):
     def test_a_value_that_is_not_stored_names_nobody(self) -> None:
         # A code default was decided by the release, not by a person on this box.
         assert "decided by" not in self._get("merge_wip")
+
+    def test_an_invalid_other_row_does_not_break_single_key_diagnostics(self) -> None:
+        ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
+        ConfigSetting.objects.set_value("agent_max_turns", 7)
+        assert "agent_max_turns = 7" in self._get("agent_max_turns")
+
+    def test_an_invalid_other_row_does_not_break_an_unset_key_diagnostic(self) -> None:
+        ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
+        assert "agent_max_turns = " in self._get("agent_max_turns")
+
+    def test_single_key_fallback_keeps_the_autonomy_dependent_mode(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "babysit")
+        ConfigSetting.objects.set_value("mode", "interactive")
+        assert get_effective_setting("mode") is Mode.INTERACTIVE
 
 
 class TestConfigSettingSeed(TestCase):

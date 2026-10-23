@@ -16,7 +16,7 @@ _MAY_CHECKOUT = re.compile(r"worktree|(?<![\w.-])(?:sh|bash|zsh|eval)(?![\w-])")
 
 
 def _gate_enabled() -> bool:
-    return teatree_bool_setting("worktree_containment_gate_enabled", default=True)
+    return teatree_bool_setting("worktree_containment_gate_enabled")
 
 
 def _may_checkout(command: str) -> bool:

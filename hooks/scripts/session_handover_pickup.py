@@ -187,7 +187,7 @@ def claim_session_handover_from_file(claims: StartClaims) -> tuple[str, str]:
         # the parser to the default bootstrap path.
         from teatree.config import _parse_handover_mirror_path, cold_reader  # noqa: PLC0415, PLC2701 — cold-hook import
 
-        path = _parse_handover_mirror_path(cold_reader.str_setting("handover_mirror_path", default=""))
+        path = _parse_handover_mirror_path(cold_reader.str_setting("handover_mirror_path"))
         text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
         if not text:
             return "", ""

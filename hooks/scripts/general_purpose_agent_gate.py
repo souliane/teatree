@@ -109,7 +109,7 @@ def _gate_enabled() -> bool:
     """Whether the gate is enabled (default True), fail-open on a broken config."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("general_purpose_agent_gate_enabled", default=True)
+    return _teatree_bool_setting("general_purpose_agent_gate_enabled")
 
 
 def _blank_dispatch_fields(data: dict) -> list[str]:

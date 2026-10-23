@@ -20,6 +20,9 @@ are inheritance bases rather than composed attributes.
 from dataclasses import dataclass
 from typing import ClassVar
 
+from teatree.config.declaration import Category, SettingSpec, setting
+from teatree.config.setting_parsers import _parse_strict_bool, _parse_strict_float, _parse_strict_int, _parse_strict_str
+
 
 @dataclass
 class _ArchReviewLoopSettings:
@@ -30,8 +33,15 @@ class _ArchReviewLoopSettings:
     # #1136 / #1152 CORE always-on (not per-overlay opt-in): the cadence applies
     # uniformly to every overlay's worktrees because it is a teatree-platform behaviour.
     # The skill it dispatches is a review-gate setting and stays declared there.
-    architectural_review_cadence_hours: int = 168
-    architectural_review_after_merge_count: int = 25
+    architectural_review_cadence_hours: int = setting(
+        168, spec=SettingSpec(help="hours between architectural review runs", parse=_parse_strict_int)
+    )
+    architectural_review_after_merge_count: int = setting(
+        25,
+        spec=SettingSpec(
+            help="merges that must land before another architectural review is due", parse=_parse_strict_int
+        ),
+    )
 
 
 @dataclass
@@ -42,7 +52,10 @@ class _BacklogSweepLoopSettings:
 
     # #2419 Default ON: an unattended wrong close destroys tracker signal, so the skill
     # records each fold proposal with its citation and retires a row only on approval.
-    ask_before_backlog_sweep_closes: bool = True
+    ask_before_backlog_sweep_closes: bool = setting(
+        default=True,
+        spec=SettingSpec(help="ask the operator before a backlog sweep closes an issue", parse=_parse_strict_bool),
+    )
 
 
 @dataclass
@@ -54,10 +67,18 @@ class _DirectiveLoopSettings:
     # #3649 — bounds only the INERT pre-admission arc (interpret → clarify → ratify-ask →
     # admit), which writes nothing and terminates at the human ratify gate, so a backlog
     # reaches the owner in a bounded number of ticks. Execution stays one per tick.
-    directive_intake_per_tick: int = 25
+    directive_intake_per_tick: int = setting(
+        25,
+        spec=SettingSpec(help="how many owner directives the directive loop intakes per tick", parse=_parse_strict_int),
+    )
     # North-star PR-7 — how long after a ratified activation the five evidence classes are
     # judged.
-    directive_verify_days: int = 7
+    directive_verify_days: int = setting(
+        7,
+        spec=SettingSpec(
+            help="days a ratified directive is watched before it is considered settled", parse=_parse_strict_int
+        ),
+    )
 
 
 @dataclass
@@ -68,7 +89,9 @@ class _DogfoodLoopSettings:
 
     # Which overlay anchor the placeholder task is created against — empty falls back to
     # the active overlay resolved via ``discover_active_overlay``.
-    dogfood_smoke_overlay: str = ""
+    dogfood_smoke_overlay: str = setting(
+        "", spec=SettingSpec(help="overlay the dogfood smoke run exercises", parse=_parse_strict_str)
+    )
 
 
 @dataclass
@@ -87,7 +110,10 @@ class _DreamLoopSettings:
     # pass budget bounds their metered work.
 
     # A pass batches its memory promotions into ONE ticket, so this ships ON.
-    dream_memory_promote: bool = True
+    dream_memory_promote: bool = setting(
+        default=True,
+        spec=SettingSpec(help="let the dream pass promote a core-gap memory to a fix", parse=_parse_strict_bool),
+    )
 
 
 @dataclass
@@ -96,8 +122,17 @@ class _FollowupLoopSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "followup")
 
-    review_nag_max_interval_days: int = 30
-    review_nag_reask_mention: str = ""
+    review_nag_max_interval_days: int = setting(
+        30, spec=SettingSpec(help="ceiling on the review nag's widening re-ask interval", parse=_parse_strict_int)
+    )
+    review_nag_reask_mention: str = setting(
+        "",
+        spec=SettingSpec(
+            help=("user group id or handle, or user handle, used when no engaged reviewer maps to Slack"),
+            parse=_parse_strict_str,
+            category=Category.PERSONAL,
+        ),
+    )
 
 
 @dataclass
@@ -110,11 +145,15 @@ class _HousekeepingLoopSettings:
     # ``origin/<default>`` once the cadence has elapsed. Hourly keeps the orchestrator
     # current without spamming the upstream remote on every tick.
     # ``auto_update_require_green_main`` fails closed on non-green default-branch CI.
-    auto_update_require_green_main: bool = True
+    auto_update_require_green_main: bool = setting(
+        default=True, spec=SettingSpec(help="only self-update onto a main whose CI is green", parse=_parse_strict_bool)
+    )
     # The same fast-forward over each WORK repo's main clone under ``$T3_WORKSPACE_DIR``,
     # so a clone never drifts behind after a merge and poisons a ``git show`` / ``grep``
     # investigation. Hourly keeps the clones current without spamming each remote.
-    pull_main_clone_cadence_hours: int = 1
+    pull_main_clone_cadence_hours: int = setting(
+        1, spec=SettingSpec(help="hours between pulls of each main clone", parse=_parse_strict_int)
+    )
 
 
 @dataclass
@@ -124,7 +163,14 @@ class _InboxLoopSettings:
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "inbox")
 
     # The relay's pull subscription as ``projects/<project>/subscriptions/<name>``; empty is OFF (no job built).
-    gitlab_events_subscription: str = ""
+    gitlab_events_subscription: str = setting(
+        "",
+        spec=SettingSpec(
+            help=("Pub/Sub subscription the inbox loop pulls GitLab webhook events from; empty is off"),
+            parse=_parse_strict_str,
+            box_global=True,
+        ),
+    )
 
 
 @dataclass
@@ -136,7 +182,13 @@ class _IssueImplementerLoopSettings:
     # Below the scan phase's 60s pool deadline on purpose: past that one the thread is
     # abandoned rather than stopped, so it keeps mutating rows after the tick ended and
     # records no resume point for the next pass (#4466).
-    issue_intake_pass_budget_seconds: float = 45.0
+    issue_intake_pass_budget_seconds: float = setting(
+        45.0,
+        spec=SettingSpec(
+            help="seconds the intake scanner walks candidates before recording a resume point",
+            parse=_parse_strict_float,
+        ),
+    )
 
 
 @dataclass
@@ -145,11 +197,16 @@ class _NewsLoopSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "news")
 
-    scanning_news_cadence_hours: int = 24
+    scanning_news_cadence_hours: int = setting(
+        24, spec=SettingSpec(help="hours between news scans", parse=_parse_strict_int, box_global=True)
+    )
     # #1391 Default ON: the skill records a ``PendingArticleSuggestion`` per candidate and
     # files an issue only on approval, because backlog pollution from unconfirmed
     # auto-filing is the failure mode this gate forecloses.
-    ask_before_creating_news_tickets: bool = True
+    ask_before_creating_news_tickets: bool = setting(
+        default=True,
+        spec=SettingSpec(help="ask the operator before the news scanner files a ticket", parse=_parse_strict_bool),
+    )
 
     # T4-PR-3 — the measurement horizon after an experiment merges, the experiments
     # admitted per rolling 7-day window, and the convergence brake: after this many
@@ -164,14 +221,28 @@ class _ResourcePressureLoopSettings:
 
     # Measures ABSOLUTE reclaimable bytes (``vm_stat`` pages) — never
     # percent-of-nominal, which macOS "99 % RAM used" misleads about.
-    ram_warn_avail_gb: float = 3.0
-    ram_crit_avail_gb: float = 1.5
+    ram_warn_avail_gb: float = setting(
+        3.0, spec=SettingSpec(help="available RAM below this many GB warns", parse=_parse_strict_float)
+    )
+    ram_crit_avail_gb: float = setting(
+        1.5, spec=SettingSpec(help="available RAM below this many GB is critical", parse=_parse_strict_float)
+    )
     # Measured cost of one agent in full verification over the idle baseline. The number
     # that varies by box, hence a setting: it is what one admitted ticket is sized at.
-    intake_ram_per_agent_gb: float = 6.2
+    intake_ram_per_agent_gb: float = setting(
+        6.2,
+        spec=SettingSpec(
+            help="RAM one admitted ticket is sized at when deriving intake concurrency", parse=_parse_strict_float
+        ),
+    )
     # Headroom held back rather than admitted against, so a burst is absorbed instead of
     # becoming an OOM — and so tightening lowers the limit BEFORE the memory ceiling.
-    intake_ram_reserve_gb: float = 4.0
+    intake_ram_reserve_gb: float = setting(
+        4.0,
+        spec=SettingSpec(
+            help="RAM held back from intake sizing so a burst is absorbed instead of OOMing", parse=_parse_strict_float
+        ),
+    )
 
 
 @dataclass
@@ -185,7 +256,10 @@ class _ReviewLoopSettings:
     # only when set, so false stops colleague PRs reaching the board while self-review
     # still runs. The author distinction lives HERE, upstream — the review execution is
     # blind to author.
-    admit_colleague_prs_to_board: bool = True
+    admit_colleague_prs_to_board: bool = setting(
+        default=True,
+        spec=SettingSpec(help="put pull requests opened by colleagues onto the review board", parse=_parse_strict_bool),
+    )
 
 
 @dataclass
@@ -195,7 +269,9 @@ class _SnapshotWarmerLoopSettings:
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "snapshot_warmer")
 
     # Refreshed out-of-band so a ticket-critical-path provision never has to.
-    snapshot_warmer_max_age_days: int = 1
+    snapshot_warmer_max_age_days: int = setting(
+        1, spec=SettingSpec(help="days a warmed snapshot stays usable", parse=_parse_strict_int, box_global=True)
+    )
 
 
 @dataclass
@@ -209,7 +285,9 @@ class _TicketsLoopSettings:
     # a stale read.
     # The per-task window a swept task is skipped within, and the idempotency window for
     # the atomic ``last_sweep_check_ts`` stamp.
-    task_sweep_recheck_interval_hours: int = 1
+    task_sweep_recheck_interval_hours: int = setting(
+        1, spec=SettingSpec(help="hours between rechecks of a swept task", parse=_parse_strict_int)
+    )
 
 
 #: Every per-loop base, in the order its group renders under ``Loops``.

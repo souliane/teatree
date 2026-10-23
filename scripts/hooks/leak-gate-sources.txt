@@ -6,6 +6,7 @@ src/teatree/config/agent_enums.py
 src/teatree/config/agent_spawn.py
 src/teatree/config/cold_db.py
 src/teatree/config/cold_reader.py
+src/teatree/config/declaration.py
 src/teatree/config/discovery.py
 src/teatree/config/e2e_repo.py
 src/teatree/config/enums.py
@@ -27,8 +28,10 @@ src/teatree/config/setting_layers.py
 src/teatree/config/setting_parsers.py
 src/teatree/config/setting_registries.py
 src/teatree/config/settings.py
+src/teatree/config/settings_agent.py
 src/teatree/config/settings_loop_flags.py
 src/teatree/config/settings_loop_owned.py
+src/teatree/config/settings_provisioning.py
 src/teatree/config/speak.py
 src/teatree/config/trusted_authors.py
 src/teatree/config/value_coercion.py

@@ -6,11 +6,21 @@ bases — see that module's docstring for why the groups are inheritance bases
 rather than composed attributes.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from teatree.config.setting_parsers import _default_handover_mirror_path
+from teatree.config.declaration import Category, SettingSpec, setting
+from teatree.config.setting_parsers import (
+    _default_handover_mirror_path,
+    _parse_handover_mirror_path,
+    _parse_overridable_positive_int,
+    _parse_str_list,
+    _parse_strict_bool,
+    _parse_strict_float,
+    _parse_strict_int,
+    _parse_strict_str,
+)
 
 
 @dataclass
@@ -24,7 +34,9 @@ class _LoopFlagAndCredentialSettings:
     # UNTRUSTED author's issue reaches the factory; a trusted author needs no label
     # at all. Empty resolves to the shipped ``t3-auto`` convention
     # (``factory_admission.DEFAULT_ADMIT_LABEL``).
-    issue_implementer_label: str = ""
+    issue_implementer_label: str = setting(
+        "", spec=SettingSpec(help="label an issue must carry for the implementer to claim it", parse=_parse_strict_str)
+    )
     # #3235 The allowlist of OTHER humans whose issues the factory may act on (a
     # colleague, an operator account) — one of the three UNION sources of the
     # trusted-author set, alongside the owner's own ``user_identity_aliases`` and
@@ -38,21 +50,39 @@ class _LoopFlagAndCredentialSettings:
     # unconfigured deployment can never auto-implement a stranger's issue. It
     # governs INTAKE only; merge authority is untouched (a substrate PR still
     # needs a recorded human approver).
-    trusted_issue_authors: list[str] = field(default_factory=list)
+    trusted_issue_authors: list[str] = setting(
+        default_factory=list,
+        spec=SettingSpec(help="issue authors whose issues may be claimed without extra triage", parse=_parse_str_list),
+    )
     # The FALLBACK in-flight ceiling when the resource loop has no adaptive
     # opinion (no reading yet, or stale) — see #3992's
     # resolve_intake_concurrency, which otherwise derives the live limit from
     # observed headroom and may exceed this number.
-    issue_implementer_max_concurrent: int = 3
+    issue_implementer_max_concurrent: int = setting(
+        3,
+        spec=SettingSpec(
+            help="fallback in-flight ceiling when the resource loop has no adaptive reading", parse=_parse_strict_int
+        ),
+    )
     # Marker labels for an UMBRELLA/epic parent intake never claims (#4105) — data, not a
     # constant, because which marker a deployment uses is its own policy. Emptying it
     # turns the LABEL half off; the structural half still declines an unlabelled epic.
-    umbrella_issue_labels: list[str] = field(default_factory=lambda: ["epic", "umbrella", "tracking"])
+    umbrella_issue_labels: list[str] = setting(
+        default_factory=lambda: ["epic", "umbrella", "tracking"],
+        spec=SettingSpec(
+            help="labels marking an issue as an umbrella/epic parent intake never claims", parse=_parse_str_list
+        ),
+    )
     # T4-PR-2 — the human-approved recipe sha (``config/factory_recipe.recipe_sha``).
     # A scored read stamps ``recipe_approved`` by comparing the committed recipe's sha
     # to this; unset (the default) means no recipe is approved, so every payload is
     # ``recipe_approved=false`` until a human runs ``t3 <overlay> recipe approve``.
-    approved_recipe_sha: str = ""
+    approved_recipe_sha: str = setting(
+        "",
+        spec=SettingSpec(
+            help="commit of the provisioning recipe the operator reviewed and approved", parse=_parse_strict_str
+        ),
+    )
     # PR-13 boost pool-refill target: how many live loop workers ``boost`` wip
     # keeps in flight. ``0`` (default) means UNSET — ``boost`` keeps today's
     # summed per-overlay ``max_concurrent_auto_starts`` target. A positive ``N``
@@ -60,20 +90,37 @@ class _LoopFlagAndCredentialSettings:
     # PR-01 resource ceiling (``provision_max_concurrency`` / nCPU). DB-home,
     # per-overlay overridable, ``T3_BOOST_CONCURRENCY`` env wins; set via
     # ``t3 <overlay> wip boost N``.
-    boost_concurrency: int = 0
+    boost_concurrency: int = setting(
+        0, spec=SettingSpec(help="extra concurrent units allowed while the box is in boost", parse=_parse_strict_int)
+    )
     # Directive #2 — the periodic DB-backup scanner's config surface.
     # ``db_backup_retention_days`` is how long a backup artifact is kept before the pass
     # prunes it. A non-positive retention FAILS SAFE to the default at read time (see the
     # registry parsers) so the "keep at least a week of backups" bound cannot be mistyped
     # away to 0 (which would prune every backup immediately). The cadence is the Loop
     # row's ``daily_at`` anchor, not a second setting. DB-home, per-overlay overridable.
-    db_backup_retention_days: int = 7
+    db_backup_retention_days: int = setting(
+        7,
+        spec=SettingSpec(
+            help="days a database backup is kept before it is pruned", parse=_parse_overridable_positive_int(7)
+        ),
+    )
     # Human-readable mirror of the latest session hand-off. The
     # ``SessionHandover`` DB row is the source of truth; this file mirrors
     # the payload for human-readability and for bootstrapping a brand-new
     # session. Default ``${XDG_STATE_HOME:-~/.local/state}/teatree/handover/
     # latest.md``; override via ``[teatree] handover_mirror_path``.
-    handover_mirror_path: Path = field(default_factory=_default_handover_mirror_path)
+    handover_mirror_path: Path = setting(
+        default_factory=_default_handover_mirror_path,
+        spec=SettingSpec(
+            help="path a hand-off document is mirrored to, beside the durable record",
+            parse=_parse_handover_mirror_path,
+            category=Category.PERSONAL,
+            stored=str,
+            storage_default="",
+            storage_parse=_parse_strict_str,
+        ),
+    )
     # Env kill-switch ``T3_ISSUE_IMPLEMENTER_ENABLED`` (operational fast-
     # disable) wins over both the per-overlay override and the global
     # setting; resolution is env → per-overlay ``[overlays.<name>]`` →
@@ -83,15 +130,23 @@ class _LoopFlagAndCredentialSettings:
     # starts on that day. ``0`` (default) means the refresh day is unknown, so
     # the cycle is the calendar month. ``sdk_monthly_credit_usd`` is the credit
     # the cycle-to-date spend is shown against ($200 = Max 20x).
-    billing_cycle_anchor_day: int = 0
-    sdk_monthly_credit_usd: float = 200.0
+    billing_cycle_anchor_day: int = setting(
+        0, spec=SettingSpec(help="day of the month the subscription's usage window resets", parse=_parse_strict_int)
+    )
+    sdk_monthly_credit_usd: float = setting(
+        200.0,
+        spec=SettingSpec(help="monthly SDK credit the cost tracker measures spend against", parse=_parse_strict_float),
+    )
     # #2697 — formerly env-only bypass readers, now DB-home (#1775): each resolves
     # from the ``ConfigSetting`` store + its ``T3_*`` env layer where one is
     # registered in ``ENV_SETTING_OVERRIDES``, never from a bespoke
     # ``os.environ.get`` read. Set via ``t3 <overlay> config_setting set <key>``.
     # Pass ``--plugin-dir`` to the launched Claude Code agent so retro may edit
     # core plugin files (formerly ``T3_CONTRIBUTE``). ``T3_CONTRIBUTE`` env wins.
-    contribute_plugin_dir: bool = False
+    contribute_plugin_dir: bool = setting(
+        default=False,
+        spec=SettingSpec(help="directory holding the plugin a contribute run writes to", parse=_parse_strict_bool),
+    )
     # Per-account ``pass`` routing for the two Anthropic credentials
     # (``teatree.llm.credentials``): an ORDERED LIST of ``pass`` entries the routing
     # selector (``teatree.credential_config.PassPathSelector``) fans out over per
@@ -106,7 +161,24 @@ class _LoopFlagAndCredentialSettings:
     # per-overlay routing works, and ``get_effective_settings()`` reports ``[]`` when
     # unset. Set via ``t3 <overlay> config_setting set
     # anthropic_oauth_pass_paths '["anthropic/<account>/oauth-token"]'``.
-    anthropic_oauth_pass_paths: list[str] = field(default_factory=list)
-    anthropic_api_key_pass_paths: list[str] = field(default_factory=list)
+    anthropic_oauth_pass_paths: list[str] = setting(
+        default_factory=list,
+        spec=SettingSpec(
+            help="password-store paths the Anthropic OAuth credential is read from",
+            parse=_parse_str_list,
+            category=Category.SECRET,
+        ),
+    )
+    anthropic_api_key_pass_paths: list[str] = setting(
+        default_factory=list,
+        spec=SettingSpec(
+            help="password-store paths the Anthropic API key is read from",
+            parse=_parse_str_list,
+            category=Category.SECRET,
+        ),
+    )
 
-    eval_ci_account_allowlist: list[str] = field(default_factory=list)
+    eval_ci_account_allowlist: list[str] = setting(
+        default_factory=list,
+        spec=SettingSpec(help="password-store OAuth accounts allowed in the CI eval pool", parse=_parse_str_list),
+    )

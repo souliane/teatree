@@ -19,8 +19,7 @@ from typing import Any
 import tomlkit
 from tomlkit import items as tomlkit_items
 
-from teatree.config.cold_defaults import flatten_settings_table
-from teatree.config.schema import _DEFAULTS_TOML
+from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.setting_groups import grouped_key_order, grouped_settings_table, setting_group_path
 
 _MAX_REPORTED = 5
@@ -28,7 +27,7 @@ _SUBTABLE_KEYS = ("mr_reminder", "speak")
 
 
 def _file_text() -> str:
-    return _DEFAULTS_TOML.read_text(encoding="utf-8")
+    return DEFAULTS_TOML.read_text(encoding="utf-8")
 
 
 def _teatree_block() -> str:

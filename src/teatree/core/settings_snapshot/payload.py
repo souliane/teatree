@@ -41,9 +41,13 @@ from teatree.config import (
     is_feature_flag,
     provenance,
 )
+from teatree.config.override_reader import column_spelling, fold_overlay_rows
+from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.config.schema import setting_meta
+from teatree.config.secret_settings import is_pass_key_setting
 from teatree.config.seed_defaults import SEED_ROW_FIELDS, SEED_TABLES, SHIPPED_ONLY_FIELDS, shipped_seed_table
 from teatree.config.setting_groups import UNGROUPED_PATH, group_outline
+from teatree.config.settings import OverlayEntry
 from teatree.config.stored_row_health import stored_row_kind
 from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.config_interchange.secret_guard import (
@@ -62,7 +66,7 @@ from teatree.hooks.term_match import line_matches
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_FORMAT: Final = "teatree-settings-snapshot"
-FORMAT_VERSION: Final = 1
+FORMAT_VERSION: Final = 2
 
 #: What ``instance.label`` reads when the configured label carries a banned term.
 WITHHELD_LABEL: Final = "<withheld: banned-term>"
@@ -78,13 +82,13 @@ _redaction_key: Final = itemgetter("scope", "key", "path")
 
 
 def build_snapshot(label: str, note: str = "") -> dict[str, Any]:
-    """The whole snapshot for this box, format v1 — a required source raises :class:`SnapshotError`."""
+    """The whole snapshot for this box, format v2 — a required source raises :class:`SnapshotError`."""
     terms = _required_scan_terms()
     warn = Warnings()
     controls = {key: SettingControl(key) for key in sorted(ALL_KNOWN_CONFIG_SETTINGS)}
     shapes: dict[str, Shape] = {key: (one.annotation_text, one.raw_choices) for key, one in controls.items()}
     instance = _instance(WITHHELD_LABEL if line_matches(label, terms) else label, note, warn)
-    registry, values, notices = _registry_and_values(controls, instance["overlay"], terms, warn)
+    registry, values, notices = _registry_and_values(controls, instance, terms, warn)
     return {
         "format": SNAPSHOT_FORMAT,
         "format_version": FORMAT_VERSION,
@@ -127,12 +131,18 @@ def _required_scan_terms() -> tuple[str, ...]:
 
 
 def _registry_and_values(
-    controls: Mapping[str, SettingControl], overlay: str, terms: tuple[str, ...], warn: Warnings
+    controls: Mapping[str, SettingControl], instance: Mapping[str, Any], terms: tuple[str, ...], warn: Warnings
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, str]]]]:
     keys = list(controls)
+    overlay = str(instance["overlay"])
     defaults = _default_values(keys, terms, warn)
-    settings_registry = _settings_registry(controls, defaults, warn)
     stored, redacted, omitted = _stored_block(terms, warn)
+    registered = {str(row["name"]) for row in instance["overlays_installed"]}
+    if overlay:
+        registered.add(overlay)
+    stored = _fold_stored_settings(stored, registered)
+    settings_registry = _settings_registry(controls, defaults, warn)
+    _add_credential_rows(settings_registry, stored)
     _mark_redacted_unsyncable(settings_registry, redacted)
     seed_registry, seed_values, seed_shipped = _seed_block(terms, warn)
     # Every scope a row could be planned against: the global one, the active overlay, and any
@@ -164,6 +174,7 @@ def _settings_registry(
         reason = secrets.get(key, "")
         entries[key] = {
             "kind": control.kind,
+            "family": setting_family(key),
             "annotation": control.annotation_text,
             "choices": [serialise(choice) for choice in control.raw_choices] or None,
             "default": defaults.get(key),
@@ -178,6 +189,49 @@ def _settings_registry(
             "sync_note": _secret_note(reason),
         }
     return entries
+
+
+def setting_family(key: str) -> str:
+    if key in REGISTRY_SETTINGS:
+        return "registry"
+    if key in COLD_HOOK_SETTINGS:
+        return "hook-gate"
+    if key in COLD_SETTINGS:
+        return "table" if isinstance(COLD_SETTINGS[key].default, dict) else "cold"
+    return "setting"
+
+
+def _add_credential_rows(registry: dict[str, dict[str, Any]], stored: Mapping[str, Mapping[str, Any]]) -> None:
+    keys = {key for rows in stored.values() for key in rows if is_pass_key_setting(key)}
+    for key in sorted(keys - registry.keys()):
+        registry[key] = {
+            "kind": "str",
+            "family": "credential",
+            "annotation": "credential coordinate",
+            "choices": None,
+            "default": None,
+            "category": "secret",
+            "registry": "credential",
+            "help": "password-store coordinate for a credential",
+            "group": "Credentials",
+            "home": "db",
+            "safety_posture": False,
+            "feature_flag": False,
+            "syncable": False,
+            "sync_note": _secret_note("credential-coordinate"),
+        }
+
+
+def _fold_stored_settings(stored: Mapping[str, Mapping[str, Any]], registered: set[str]) -> dict[str, dict[str, Any]]:
+    result = {"": dict(stored[""])} if "" in stored else {}
+    spellings: dict[str, set[str]] = {}
+    for scope in stored:
+        if scope:
+            spellings.setdefault(OverlayEntry.canonical_overlay_name(scope), set()).add(scope)
+    for group in spellings.values():
+        chosen = column_spelling(group, registered)
+        result[chosen] = fold_overlay_rows(stored, chosen).rows
+    return result
 
 
 def _secret_note(reason: str) -> str:
@@ -451,4 +505,5 @@ __all__ = [
     "WITHHELD_LABEL",
     "SnapshotError",
     "build_snapshot",
+    "setting_family",
 ]

@@ -54,7 +54,7 @@ from teatree.agents.harness import (
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessSpec, InvalidHarnessProviderError, register_harness
-from teatree.agents.model_tiering import TIER_MODELS, UnconfiguredOpenAICompatibleModelError
+from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError, tier_models
 from teatree.agents.pydantic_ai_config import (
     LANE_EVAL,
     LANE_FACTORY,
@@ -1137,7 +1137,7 @@ class TestPydanticAiSkillFloorSelection(TestCase):
             skills=["floor-skill"],
             overrides=SpawnOverrides(spawn_selection=dispatch.spawn_selection),
         )
-        assert options.model == TIER_MODELS["balanced"]
+        assert options.model == tier_models()["balanced"]
         assert isinstance(dispatch.harness, PydanticAiHarness)
         model = dispatch.harness._resolve_model(HarnessOptions.from_sdk_options(options), SessionRun.start())
         assert model.model_name == "vendor/balanced"
@@ -1293,19 +1293,19 @@ class TestPydanticAiMaxTokens(TestCase):
         chosen against the frontier model's 128K would therefore 400 every ``cheap``-tier
         dispatch (Haiku 4.5 caps at 64K) while looking correct on ``frontier``.
         """
-        from teatree.agents.model_tiering import TIER_MODELS  # noqa: PLC0415 — test-local
+        from teatree.agents.model_tiering import tier_models  # noqa: PLC0415 — test-local
         from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT  # noqa: PLC0415 — test-local
 
-        # Published per-model output ceilings for the ids TIER_MODELS resolves to.
+        # Published per-model output ceilings for the ids tier_models() resolves to.
         max_output_tokens = {
             "claude-opus-5-5": 128_000,
             "claude-sonnet-5-5": 128_000,
         }
-        assert set(TIER_MODELS.values()) <= max_output_tokens.keys(), (
-            "TIER_MODELS gained a model with no known output limit — confirm its ceiling before "
+        assert set(tier_models().values()) <= max_output_tokens.keys(), (
+            "tier_models() gained a model with no known output limit — confirm its ceiling before "
             "trusting PYDANTIC_AI_MAX_TOKENS_DEFAULT against it"
         )
-        smallest = min(max_output_tokens[model] for model in TIER_MODELS.values())
+        smallest = min(max_output_tokens[model] for model in tier_models().values())
         assert smallest >= PYDANTIC_AI_MAX_TOKENS_DEFAULT
 
     def test_resolve_harness_reads_the_configured_max_tokens_synchronously(self) -> None:
@@ -1357,7 +1357,7 @@ class TestVerifierPinnedToClaude(TestCase):
 class TestResolveDispatchProvider(TestCase):
     """The Layer-2 provider follows the SAME phase pin Layer 1 does.
 
-    ``resolve_harness`` validates the CONFIGURED pair and then lets ``PHASE_HARNESS`` flip
+    ``resolve_harness`` validates the CONFIGURED pair and then lets ``agent_phase_harness`` flip
     Layer 1 for a verification phase. The credential must follow that flip, or a valid
     ``pydantic_ai`` deployment hands the claude_sdk child-env resolver a provider invalid
     under the harness it is actually running and every verification dispatch is refused.
