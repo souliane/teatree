@@ -1,6 +1,7 @@
 """Cold hook defaults come from declarations, including when the store is empty."""
 
 import ast
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -8,7 +9,15 @@ import pytest
 
 from hooks.scripts import teatree_settings
 from teatree.config import cold_reader
-from teatree.config.registries import COLD_HOOK_SETTINGS, tier_models
+from teatree.config.registries import (
+    COLD_HOOK_SETTINGS,
+    COLD_SETTINGS,
+    phase_harness_defaults,
+    phase_models,
+    pydantic_ai_tier_models,
+    tier_effort,
+    tier_models,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 TYPED_READERS = {
@@ -79,11 +88,39 @@ def test_cold_reader_does_not_expose_mutable_registry_defaults(tmp_path: Path) -
     assert cold_reader.list_setting("private_repos", db_path=missing) == []
 
 
-def test_registry_model_maps_are_independent_copies() -> None:
-    models = tier_models()
-    models["frontier"] = "changed"
+@pytest.mark.parametrize(
+    "accessor",
+    [tier_models, pydantic_ai_tier_models, tier_effort, phase_models, phase_harness_defaults],
+)
+def test_registry_model_maps_are_independent_copies(accessor: Callable[[], dict[str, str]]) -> None:
+    original = dict(accessor())
+    first = accessor()
+    first["__test_mutation__"] = "changed"
+    assert accessor() == original
 
-    assert tier_models()["frontier"] != "changed"
+
+def test_emergency_int_defaults_match_declarations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "orchestrator_turn_budget",
+        "orchestrator_turn_wall_clock_seconds",
+        "hook_validator_timeout_seconds",
+    ):
+        assert teatree_settings._EMERGENCY_INT_BUDGETS[key] == COLD_HOOK_SETTINGS[key].default
+
+    monkeypatch.setattr(cold_reader, "_declared_default", lambda _name: None)
+    assert (
+        cold_reader.int_setting("agent_shell_max_output_bytes", db_path=tmp_path / "missing")
+        == COLD_SETTINGS["agent_shell_max_output_bytes"].default
+    )
+
+
+def test_undeclared_hook_int_uses_bounded_emergency_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(teatree_settings, "_cold_db_int", lambda _name: None)
+    assert teatree_settings.teatree_int_setting("undeclared_int_setting") == 1
+
+
+def test_undeclared_cold_int_uses_bounded_emergency_default(tmp_path: Path) -> None:
+    assert cold_reader.int_setting("undeclared_int_setting", db_path=tmp_path / "missing") == 1
 
 
 def test_autoload_follows_a_changed_declaration_when_the_store_has_no_row(monkeypatch: pytest.MonkeyPatch) -> None:

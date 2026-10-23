@@ -797,8 +797,9 @@ class TestGetNamesWhoDecided(TestCase):
         assert "agent_max_turns = " in self._get("agent_max_turns")
 
     def test_single_key_fallback_keeps_the_autonomy_dependent_mode(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "full")
-        assert get_effective_setting("mode") is Mode.AUTO
+        ConfigSetting.objects.set_value("autonomy", "babysit")
+        ConfigSetting.objects.set_value("mode", "interactive")
+        assert get_effective_setting("mode") is Mode.INTERACTIVE
 
 
 class TestConfigSettingSeed(TestCase):

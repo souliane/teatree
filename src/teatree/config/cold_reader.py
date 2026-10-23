@@ -47,6 +47,10 @@ __all__ = [
 ]
 
 _GLOBAL_SCOPE = ""
+# Pinned to the declaration by test_emergency_int_defaults_match_declarations.
+_EMERGENCY_SHELL_OUTPUT_BYTES = 16384
+# Pinned by test_undeclared_cold_int_uses_bounded_emergency_default.
+_UNDECLARED_INT_DEFAULT = 1
 
 
 @dataclass(frozen=True)
@@ -222,7 +226,7 @@ def int_setting(
     fallback = (
         declared
         if isinstance(declared, int) and not isinstance(declared, bool)
-        else (16384 if name == "agent_shell_max_output_bytes" else 1)
+        else (_EMERGENCY_SHELL_OUTPUT_BYTES if name == "agent_shell_max_output_bytes" else _UNDECLARED_INT_DEFAULT)
     )
     try:
         coerced = value_coercion.strict_int(value, accept_numeric_str=False)

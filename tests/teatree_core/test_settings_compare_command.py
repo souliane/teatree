@@ -19,6 +19,135 @@ from teatree.core.settings_snapshot import SNAPSHOT_FORMAT
 
 
 class TestSettingsCompareManagementCommand(TestCase):
+    def _assert_single_terminal_filter_matches_page(
+        self,
+        *,
+        filter_spec: tuple[str, str],
+        settings: dict[str, dict[str, str]],
+        local_values: dict[str, dict[str, object]],
+        peer_values: dict[str, dict[str, object]],
+        expected: list[tuple[str, str]],
+    ) -> None:
+        flag, value = filter_spec
+
+        def box(label: str, values: dict[str, dict[str, object]]) -> PeerSnapshot:
+            return PeerSnapshot(
+                label=label,
+                url="" if label == "this instance" else "http://127.0.0.1/peer",
+                note="",
+                payload={
+                    "format": SNAPSHOT_FORMAT,
+                    "format_version": 2,
+                    "fingerprint": {},
+                    "registry": {"settings": settings},
+                    "values": {
+                        "settings": values,
+                        "defaults": {},
+                        "provenance": {},
+                        "seed": {},
+                        "seed_shipped": {},
+                    },
+                },
+            )
+
+        with (
+            patch.object(settings_compare_module, "local_snapshot", return_value=box("this instance", local_values)),
+            patch.object(settings_compare_module, "peer_snapshots", return_value=(box("peer", peer_values),)),
+        ):
+            page = Client().get(
+                reverse("dash:settings_compare"),
+                {flag: value, "differs_only": "off"},
+                REMOTE_ADDR="127.0.0.1",
+            )
+            terminal = CliRunner().invoke(app, ["settings", "compare", f"--{flag}", value, "--all-rows", "--json"])
+
+        assert page.status_code == 200
+        assert terminal.exit_code == 0, terminal.output
+        page_keys = [(row.scope, row.title) for row in page.context["comparison"].rows]
+        terminal_keys = [(row["scope"], row["key"]) for row in json.loads(terminal.stdout)["rows"]]
+        assert page_keys == terminal_keys == expected
+
+    def test_family_alone_selects_the_same_rows_as_the_page(self) -> None:
+        self._assert_single_terminal_filter_matches_page(
+            filter_spec=("family", "registry"),
+            settings={
+                "merge_wip": {"family": "setting", "group": "Agents"},
+                "overlays": {"family": "registry", "group": "Registries"},
+            },
+            local_values={"": {"merge_wip": 2, "overlays": {"left": 1}}},
+            peer_values={"": {"merge_wip": 3, "overlays": {"right": 1}}},
+            expected=[("", "overlays")],
+        )
+
+    def test_group_alone_selects_the_same_rows_as_the_page(self) -> None:
+        self._assert_single_terminal_filter_matches_page(
+            filter_spec=("group", "Agents"),
+            settings={
+                "merge_wip": {"family": "setting", "group": "Agents"},
+                "agent_max_turns": {"family": "setting", "group": "Limits"},
+            },
+            local_values={"": {"merge_wip": 2, "agent_max_turns": 5}},
+            peer_values={"": {"merge_wip": 3, "agent_max_turns": 6}},
+            expected=[("", "merge_wip")],
+        )
+
+    def test_text_alone_selects_the_same_rows_as_the_page(self) -> None:
+        self._assert_single_terminal_filter_matches_page(
+            filter_spec=("text", "merge"),
+            settings={
+                "merge_wip": {"family": "setting", "group": "Agents"},
+                "autoload": {"family": "setting", "group": "Agents"},
+            },
+            local_values={"": {"merge_wip": 2, "autoload": False}},
+            peer_values={"": {"merge_wip": 3, "autoload": True}},
+            expected=[("", "merge_wip")],
+        )
+
+    def test_scope_alone_selects_the_same_rows_as_the_page(self) -> None:
+        self._assert_single_terminal_filter_matches_page(
+            filter_spec=("scope", "alpha"),
+            settings={"merge_wip": {"family": "setting", "group": "Agents"}},
+            local_values={"": {"merge_wip": 2}, "alpha": {"merge_wip": 4}},
+            peer_values={"": {"merge_wip": 3}, "alpha": {"merge_wip": 5}},
+            expected=[("alpha", "merge_wip")],
+        )
+
+    def test_all_rows_heading_counts_differences_only(self) -> None:
+        def box(label: str, merge_wip: int) -> PeerSnapshot:
+            return PeerSnapshot(
+                label=label,
+                url="" if label == "this instance" else "http://127.0.0.1/peer",
+                note="",
+                payload={
+                    "format": SNAPSHOT_FORMAT,
+                    "format_version": 2,
+                    "fingerprint": {},
+                    "registry": {
+                        "settings": {
+                            "merge_wip": {"family": "setting", "group": "Agents"},
+                            "autoload": {"family": "setting", "group": "Agents"},
+                        }
+                    },
+                    "values": {
+                        "settings": {"": {"merge_wip": merge_wip, "autoload": False}},
+                        "defaults": {},
+                        "provenance": {},
+                        "seed": {},
+                        "seed_shipped": {},
+                    },
+                },
+            )
+
+        with (
+            patch.object(settings_compare_module, "local_snapshot", return_value=box("this instance", 2)),
+            patch.object(settings_compare_module, "peer_snapshots", return_value=(box("peer", 3),)),
+        ):
+            stderr = StringIO()
+            call_command("settings_compare", all_rows=True, stderr=stderr)
+
+        assert "Differences (1)" in stderr.getvalue()
+        assert "1 no difference" in stderr.getvalue()
+
     def test_terminal_filters_select_the_same_rows_as_the_page(self) -> None:
         def box(label: str, value: int) -> PeerSnapshot:
             return PeerSnapshot(

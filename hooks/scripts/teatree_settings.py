@@ -35,11 +35,14 @@ _GLOBAL_SCOPE = ""
 
 # A missing declaration is a broken cold import, so these preserve each budget's unit;
 # the hook's 30-second process ceiling is unrelated to turn counts or validator timeouts.
+# Pinned to declarations by test_emergency_int_defaults_match_declarations.
 _EMERGENCY_INT_BUDGETS = {
     "orchestrator_turn_budget": 25,
     "orchestrator_turn_wall_clock_seconds": 180,
     "hook_validator_timeout_seconds": 60,
 }
+# Pinned by test_undeclared_hook_int_uses_bounded_emergency_default.
+_UNDECLARED_INT_DEFAULT = 1
 # ``read_cold_setting_status`` second-element vocabulary.
 COLD_READ_OK = "ok"
 COLD_READ_UNREADABLE = "unreadable"
@@ -193,7 +196,7 @@ def section_int_setting(section: str, name: str, *, minimum: int | None = None) 
     """
     declared = _declared_default(name)
     if not isinstance(declared, int) or isinstance(declared, bool):
-        declared = _EMERGENCY_INT_BUDGETS.get(name, 1)
+        declared = _EMERGENCY_INT_BUDGETS.get(name, _UNDECLARED_INT_DEFAULT)
     if section == "teatree":
         db_value = _cold_db_int(name)
         if db_value is not None and (minimum is None or db_value >= minimum):
