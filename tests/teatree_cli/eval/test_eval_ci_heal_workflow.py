@@ -1,28 +1,34 @@
-"""Static contract checks for the ``eval-ci-heal`` workflow.
+# test-path: cross-cutting — runs the eval-ci-heal.yml leg bodies then merges via teatree.eval.summary_json_merge.
+"""Contract checks for the dispatched heal workflow and its shipped shell bodies."""
 
-`eval-ci-heal.yml` is the workflow_dispatch-only workflow the CI-eval heal loop
-dispatches. These pin its contract without running it: the trigger + inputs, both
-credential secrets wired (the knob is a pure config flip), the no-silent-green
-enforcement, that it reuses the exact in-Docker `t3 eval run --backend api
---docker --require-executed` invocation and emits the publish-safe `--summary-json`
-artifact + the private transcript, and the injection-safe env-var pattern (no
-caller input inlined into a run line).
-
-The full suite (~231 scenarios) is FANNED OUT across a parallel matrix of shards
-(souliane/teatree#3202): a `prepare` job computes the `{shard}` matrix, the `eval`
-job runs one `--shard <index>/<total>` leg per matrix entry, and a `combine` job
-merges every shard's per-scenario JSON into ONE `eval-heal-<sha>.json`. The eval
-runs single-trial with `--escalate-on-fail` (the adaptive default) — the retired
-blanket `--trials 2` pass@2 must be gone. These assertions FAIL if the sharding,
-the combine job, or the adaptive single-trial invocation is missing.
-"""
-
+import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import yaml
 
+from teatree.eval.summary_json_merge import merge_summary_json
+
 _WORKFLOW = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "eval-ci-heal.yml"
+_BASH = shutil.which("bash") or "/bin/bash"
+_SHA = "0123456789abcdef0123456789abcdef01234567"
+_STUB_UV = """#!/bin/bash
+shift
+if [ "$1" = t3 ]; then
+    if [ "$2 $3 $4" = "eval owed record" ]; then exit 0; fi
+    calls=0
+    [ -f "$T3_CALLS" ] && calls=$(wc -l < "$T3_CALLS")
+    echo "$*" >> "$T3_CALLS"
+    read -ra rcs <<< "$T3_RCS"
+    exit "${rcs[$calls]:-${rcs[-1]}}"
+fi
+shift
+exec "$REAL_PYTHON" "$@"
+"""
 
 
 def _load() -> dict[str, Any]:
@@ -59,103 +65,250 @@ class TestTrigger:
         assert 6 <= int(inputs["shards"]["default"]) <= 8
 
 
-class TestCredentialWiring:
-    def test_both_secrets_and_the_selector_are_wired(self) -> None:
-        text = _text()
-        assert "secrets.CLAUDE_CODE_OAUTH_TOKEN" in text
-        assert "secrets.ANTHROPIC_API_KEY" in text
-        assert "T3_AGENT_HARNESS_PROVIDER" in text
+def _eval_steps() -> list[dict[str, Any]]:
+    return cast("list[dict[str, Any]]", _jobs()["eval"]["steps"])
 
 
-class TestNoSilentGreen:
-    def test_asserts_claude_cli_and_require_executed(self) -> None:
-        text = _text()
-        assert "claude --version" in text
-        assert "--require-executed" in text
-
-    def test_full_suite_uses_configured_semantic_judges(self) -> None:
-        assert _text().count("--escalate-on-fail --judge") == 2
+def _step_index(predicate: str) -> int:
+    for index, step in enumerate(_eval_steps()):
+        if predicate in json.dumps(step):
+            return index
+    msg = f"no eval-job step carries {predicate!r}"
+    raise AssertionError(msg)
 
 
-class TestReusesTheDockerEvalInvocation:
-    def test_runs_backend_api_in_docker(self) -> None:
-        text = _text()
-        assert "--backend api" in text
-        assert "--docker" in text
-
-    def test_emits_the_summary_json_artifact(self) -> None:
-        assert "--summary-json" in _text()
+def _selector() -> dict[str, Any]:
+    return _eval_steps()[_step_index('"id": "select"')]
 
 
-class TestAdaptiveSingleTrial:
-    def test_uses_escalate_on_fail_not_blanket_pass_at_2(self) -> None:
-        text = _text()
-        # The adaptive single-trial default: a passing scenario runs once, a real
-        # failure escalates. The retired blanket pass@2 must be gone.
-        assert "--escalate-on-fail" in text
-        assert "--trials 2" not in text
-        assert "--require any" not in text
-        assert "EVAL_TRIALS" not in text
+def _eval_step() -> dict[str, Any]:
+    return _eval_steps()[_step_index("uv run t3 eval run")]
 
 
-class TestSharding:
-    def test_prepare_job_computes_the_shard_matrix(self) -> None:
+def _recorder() -> dict[str, Any]:
+    return _eval_steps()[_step_index("eval-heal-parked-")]
+
+
+def _named_step(job: str, name: str) -> dict[str, Any]:
+    return next(step for step in _jobs()[job]["steps"] if step.get("name") == name)
+
+
+class TestHealWorkflowContract:
+    def test_no_silent_green(self) -> None:
+        assert "claude --version" in _named_step("eval", "Install and assert the Claude CLI")["run"]
+        command = _eval_step()["with"]["command"]
+        assert command.count("--require-executed") == 2
+        assert command.count("--escalate-on-fail --judge") == 2
+
+    def test_both_eval_branches_use_the_docker_api_and_emit_summaries(self) -> None:
+        command = _eval_step()["with"]["command"]
+        for argument in ("--backend api", "--docker", "--summary-json"):
+            assert command.count(argument) == 2
+
+    def test_adaptive_single_trial_does_not_reintroduce_blanket_pass_at_two(self) -> None:
+        command = _eval_step()["with"]["command"]
+        assert command.count("--escalate-on-fail") == 2
+        for retired in ("--trials 2", "--require any", "EVAL_TRIALS"):
+            assert retired not in command
+
+    def test_prepare_computes_the_matrix_and_checked_out_sha(self) -> None:
         prepare = _jobs()["prepare"]
-        assert "scripts/eval/shard_matrix.py" in _text()
-        assert "matrix" in prepare["outputs"]
-        assert "sha" in prepare["outputs"]
+        assert "scripts/eval/shard_matrix.py" in _named_step("prepare", "Compute the shard matrix")["run"]
+        assert {"matrix", "sha"} <= set(prepare["outputs"])
 
-    def test_eval_job_fans_out_over_the_matrix(self) -> None:
+    def test_eval_fans_out_without_cancelling_red_siblings(self) -> None:
         eval_job = _jobs()["eval"]
         assert eval_job["needs"] == "prepare"
-        strategy = eval_job["strategy"]
-        # A red shard must not cancel its siblings — each leg's verdict is independent.
-        assert strategy["fail-fast"] is False
-        assert "fromJSON(needs.prepare.outputs.matrix)" in str(strategy["matrix"]["include"])
+        assert eval_job["strategy"]["fail-fast"] is False
+        assert "fromJSON(needs.prepare.outputs.matrix)" in str(eval_job["strategy"]["matrix"]["include"])
+        assert '--shard "$EVAL_SHARD"' in _eval_step()["with"]["command"]
+        assert _eval_step()["env"]["EVAL_SHARD"] == "${{ matrix.shard }}"
 
-    def test_eval_leg_runs_one_shard_of_the_catalog(self) -> None:
-        assert "--shard" in _text()
-        # The full-suite leg passes the matrix shard token through to the CLI.
-        assert "matrix.shard" in _text()
+    @pytest.mark.parametrize("job", ["eval", "combine"])
+    def test_downstream_jobs_checkout_the_prepared_commit(self, job: str) -> None:
+        assert _jobs()[job]["steps"][0]["with"]["ref"] == "${{ needs.prepare.outputs.sha }}"
 
-    def test_eval_and_combine_checkout_the_prepared_commit(self) -> None:
-        jobs = _jobs()
-        for name in ("eval", "combine"):
-            checkout = jobs[name]["steps"][0]
-            assert checkout["with"]["ref"] == "${{ needs.prepare.outputs.sha }}"
-
-
-class TestCombineJob:
-    def test_combine_needs_prepare_and_eval(self) -> None:
+    def test_combine_runs_after_a_red_shard(self) -> None:
         combine = _jobs()["combine"]
         assert set(combine["needs"]) == {"prepare", "eval"}
-        # `always()` so a red shard still merges — a red run is when reds are triaged.
         assert "always()" in combine["if"]
 
-    def test_combine_downloads_shard_jsons_and_merges_them(self) -> None:
-        text = _text()
-        assert "eval-heal-shard-${{ needs.prepare.outputs.sha }}-*" in text
-        assert "merge-summary-json" in text
+    def test_combine_downloads_and_merges_only_shard_json(self) -> None:
+        download = _named_step("combine", "Download every shard's publish-safe JSON")
+        assert download["with"]["pattern"] == "eval-heal-shard-${{ needs.prepare.outputs.sha }}-*"
+        assert download["with"]["merge-multiple"] is True
+        merge = _named_step("combine", "Merge the shard JSONs into one eval-heal-<sha>.json")
+        assert "merge-summary-json" in merge["run"]
 
-    def test_combine_uploads_the_one_eval_heal_sha_artifact(self) -> None:
-        # The download path (`t3 eval ci-status`) resolves the artifact by the
-        # `eval-heal-<sha>` name — the combine job is what produces it now.
-        assert "eval-heal-${{ needs.prepare.outputs.sha }}" in _text()
+    @pytest.mark.parametrize(
+        ("job", "name", "artifact"),
+        [
+            (
+                "eval",
+                "Upload this shard's publish-safe per-scenario JSON",
+                "eval-heal-shard-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}",
+            ),
+            (
+                "eval",
+                "Upload this shard's private per-trial transcript",
+                "eval-heal-transcript-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}",
+            ),
+            ("combine", "Upload the merged publish-safe eval-heal JSON", "eval-heal-${{ needs.prepare.outputs.sha }}"),
+        ],
+    )
+    def test_artifact_names(self, job: str, name: str, artifact: str) -> None:
+        assert _named_step(job, name)["with"]["name"] == artifact
+
+    def test_inputs_reach_shell_bodies_only_through_env(self) -> None:
+        for job in _jobs().values():
+            for step in job.get("steps", []):
+                body = step.get("run") or step.get("with", {}).get("command", "")
+                assert "${{ inputs." not in body, step.get("name")
 
 
-class TestArtifacts:
-    def test_uploads_the_per_shard_json_and_transcript(self) -> None:
-        text = _text()
-        assert "eval-heal-shard-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}" in text
-        assert "eval-heal-transcript-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}" in text
+class TestCredentialWiring:
+    def test_the_selector_holds_the_account_pool_and_the_base_token(self) -> None:
+        env = _selector()["env"]
+        assert env["EVAL_OAUTH_TOKENS"] == "${{ secrets.EVAL_OAUTH_TOKENS }}"
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
+        assert _eval_step()["env"]["ANTHROPIC_API_KEY"] == "${{ secrets.ANTHROPIC_API_KEY }}"
+        assert env["EVAL_SHARD"] == "${{ matrix.shard }}"
+        assert "subscription_oauth" in env["EVAL_CREDENTIAL"]
+
+    def test_the_selector_precedes_the_eval_and_tolerates_only_a_park(self) -> None:
+        assert _step_index('"id": "select"') < _step_index("uv run t3 eval run")
+        assert _selector()["run"] == 'uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]'
+
+    def test_the_heal_lane_never_falls_back_to_the_metered_key(self) -> None:
+        assert "EVAL_API_KEY_FALLBACK" not in _text()
+
+    def test_the_eval_step_pins_no_credential_over_the_selection(self) -> None:
+        env = _eval_step()["env"]
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+        assert "T3_AGENT_HARNESS_PROVIDER" not in env
+
+    def test_a_parked_selection_skips_the_eval(self) -> None:
+        assert _eval_step()["if"] == "steps.select.outputs.parked != 'true'"
+
+    def test_the_legs_run_two_at_a_time(self) -> None:
+        assert _jobs()["eval"]["strategy"]["max-parallel"] == 2
 
 
-class TestInjectionSafety:
-    def test_caller_inputs_are_routed_through_env_not_inlined_into_run(self) -> None:
-        # A caller-supplied input (scenarios / shards / credential / pr_ref) is bound
-        # to an env var and referenced as $VAR in the shell — never interpolated as
-        # ${{ inputs.* }} directly inside a `run:` / retry `command:` body.
-        for line in _text().splitlines():
-            stripped = line.strip()
-            if stripped.startswith(("uv run", "echo ", "for ", "if ", "npm ", "claude ", "python ")):
-                assert "${{ inputs." not in stripped, f"inlined input in a run line — {stripped!r}"
+@pytest.fixture
+def leg(tmp_path: Path) -> dict[str, str]:
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    uv = stub_bin / "uv"
+    uv.write_text(_STUB_UV, encoding="utf-8")
+    uv.chmod(0o755)
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    return {
+        "PATH": f"{stub_bin}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "REAL_PYTHON": sys.executable,
+        "RUNNER_TEMP": str(runner_temp),
+        "HEAL_DIR": str(runner_temp / "heal"),
+        "GITHUB_SHA": _SHA,
+        "GITHUB_RUN_ID": "7",
+        "HEAD_SHA": _SHA,
+        "EVAL_SCENARIOS": "",
+        "EVAL_SHARD": "1/8",
+        "SUFFIX": "1-8",
+        "SELECT_PARKED": "false",
+        "T3_CALLS": str(tmp_path / "t3-calls"),
+        "T3_RCS": "0",
+    }
+
+
+def _run(body: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [_BASH, "-eo", "pipefail", "-c", body], env=env, capture_output=True, text=True, check=False, timeout=120
+    )
+
+
+def _attempt(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return _run(cast("str", _eval_step()["with"]["command"]), env)
+
+
+def _record(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return _run(cast("str", _recorder()["run"]), env)
+
+
+def _t3_calls(env: dict[str, str]) -> list[str]:
+    calls = Path(env["T3_CALLS"])
+    return calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+
+
+def _limit_marker(env: dict[str, str]) -> Path:
+    return Path(env["RUNNER_TEMP"]) / "eval-limit-hit"
+
+
+def _merged(env: dict[str, str]) -> dict[str, Any]:
+    return cast("dict[str, Any]", json.loads(merge_summary_json([env["HEAL_DIR"]], head_sha=_SHA, generated_at="t")))
+
+
+class TestALegParksOnTheUsageLimit:
+    def test_a_limit_exit_parks_the_leg_green_and_marks_it(self, leg: dict[str, str]) -> None:
+        leg["T3_RCS"] = "75"
+
+        attempt = _attempt(leg)
+        recorded = _record(leg)
+
+        assert attempt.returncode == 0, attempt.stderr
+        assert _limit_marker(leg).exists()
+        assert recorded.returncode == 0, recorded.stderr
+        assert _merged(leg)["parked"] is True
+
+    def test_a_red_eval_fails_the_leg_and_parks_nothing(self, leg: dict[str, str]) -> None:
+        leg["T3_RCS"] = "1"
+
+        attempt = _attempt(leg)
+        _record(leg)
+
+        assert attempt.returncode == 1
+        assert not _limit_marker(leg).exists()
+        assert not list(Path(leg["HEAL_DIR"]).glob("eval-heal-parked-*.json"))
+
+    def test_a_red_measured_before_the_limit_stays_red_on_every_attempt(self, leg: dict[str, str]) -> None:
+        leg |= {"EVAL_SCENARIOS": "alpha,beta,gamma", "SUFFIX": "subset", "T3_RCS": "1 75"}
+
+        first = _attempt(leg)
+        retried = _attempt(leg)
+
+        assert (first.returncode, retried.returncode) == (1, 1)
+        assert len(_t3_calls(leg)) == 2
+        assert _limit_marker(leg).exists()
+
+    @pytest.mark.parametrize("scenarios", ["", "alpha,beta"], ids=["full-suite", "subset"])
+    def test_a_retry_never_turns_a_measured_red_green(self, leg: dict[str, str], scenarios: str) -> None:
+        leg |= {"EVAL_SCENARIOS": scenarios, "T3_RCS": "1 0"}
+        first = _attempt(leg)
+        calls = len(_t3_calls(leg))
+        retried = _attempt(leg)
+        assert (first.returncode, retried.returncode) == (1, 1)
+        assert len(_t3_calls(leg)) == calls
+
+    def test_a_selector_park_records_the_leg_as_parked(self, leg: dict[str, str]) -> None:
+        leg["SELECT_PARKED"] = "true"
+
+        recorded = _record(leg)
+
+        assert recorded.returncode == 0, recorded.stderr
+        assert _merged(leg) | {"generated_at": "t"} == {
+            "generated_at": "t",
+            "model": "unknown",
+            "head_sha": _SHA,
+            "totals": {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "incomplete": 0},
+            "outcome_counts": {"PASS": 0, "FLAKY": 0, "BEHAVIOR_FAIL": 0, "INFRA_BLOCKED": 0, "UNVERIFIED": 0},
+            "scenarios": [],
+            "parked": True,
+        }
+
+
+class TestTheGreenProofStep:
+    @pytest.mark.parametrize(("proof_rc", "step_rc"), [(0, 0), (75, 0), (1, 1)])
+    def test_only_a_park_is_tolerated(self, leg: dict[str, str], proof_rc: int, step_rc: int) -> None:
+        step = next(step for step in _jobs()["combine"]["steps"] if "t3 eval green-proof" in str(step.get("run", "")))
+        leg |= {"T3_RCS": str(proof_rc), "OUT_DIR": leg["RUNNER_TEMP"], "SHA": _SHA}
+        assert _run(step["run"], leg).returncode == step_rc

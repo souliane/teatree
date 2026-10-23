@@ -71,6 +71,8 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 
 `t3 tool verify-gates` validates whatever worktree you run it in, against ITSELF — it prints the checkout, SHA and branch it measured, so quote that SHA with the exit code and bind the run with `--expect-sha <head>` when a specific head is the target. It says nothing about whether the branch still merges into its target, so a ticket can pass every local gate and still be unmergeable. A coding phase that finished cleanly proves none of it: one commit, a clean `git status`, and a `git log origin/main..HEAD` showing only the ticket's own commit are all consistent with a branch that is dozens of commits behind, because the local `origin/main` ref is only as fresh as the last fetch.
 
+Commit a resolved merge before running `t3 tool verify-gates --expect-sha <head>` so the SHA-bound check measures the committed gate code.
+
 So the testing phase's FIRST action is the currency read, before any gate or test run:
 
 ```bash
@@ -136,7 +138,7 @@ A regression test is only evidence once it has been SEEN to fail on the pre-fix 
 worktree — both halves need git, because the ancestry proof is what makes the pair mean
 "this test failed BEFORE the fix and passes after":
 
-For FIX tickets, record RED before editing; the coding completion check requires it, and the testing phase reruns that command and records GREEN before it can complete.
+For FIX tickets, record RED before editing unless the owner turned `forced_repro_gate_enabled` off for the overlay; when on, the coding completion check requires RED and the testing phase reruns that command and records GREEN before it can complete.
 
 ```bash
 t3 <overlay> repro record-red <ticket-id> ...      # observed failing on the pre-fix tree
@@ -178,7 +180,7 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 - `t3 ci fetch-failed-tests` — extract failed test node IDs from CI.
 - `t3 ci fetch-errors` — extract error logs from CI.
 - Run failed tests locally to reproduce before fixing.
-- `t3 eval ci-heal open` — open an observe-only healing session against a red PR branch.
+- `t3 eval ci-heal open` — open a healing session against a red PR branch; the loop parks below reserve, then runs a bounded fix for measured reds.
 
 ### CI Pipeline Monitoring
 

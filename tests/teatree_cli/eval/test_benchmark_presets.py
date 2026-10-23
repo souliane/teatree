@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from teatree.agents.model_tiering import resolve_tier
 from teatree.cli import app
+from teatree.eval.api_errors import UsageLimitReachedError
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.llm.credentials import AnthropicSubscriptionCredential
 
@@ -74,6 +75,11 @@ class _StubRunner:
         return _run(spec)
 
 
+class _UsageLimitRunner(_StubRunner):
+    def run(self, spec: EvalSpec) -> EvalRun:
+        raise UsageLimitReachedError
+
+
 @pytest.fixture(autouse=True)
 def _reset_seen() -> None:
     _StubRunner.seen = []
@@ -86,6 +92,17 @@ def _invoke(args: list[str], specs: list[EvalSpec]) -> object:
         patch("teatree.eval.persistence.current_git_sha", return_value=""),
     ):
         return CliRunner().invoke(app, ["eval", "benchmark", *args], env={"T3_EVAL_IN_CONTAINER": "1"})
+
+
+def test_benchmark_usage_limit_parks_without_a_traceback() -> None:
+    with (
+        patch("teatree.cli.eval.benchmark.discover_specs", return_value=[_spec("alpha")]),
+        patch("teatree.eval.backends.ApiInProcessRunner", _UsageLimitRunner),
+    ):
+        out = CliRunner().invoke(app, ["eval", "benchmark", "--models", "opus", "--no-persist"])
+    assert out.exit_code == 75
+    assert "PARKED" in out.output
+    assert "Traceback" not in out.output
 
 
 class TestPresetColumns:

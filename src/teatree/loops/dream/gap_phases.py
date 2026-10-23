@@ -7,7 +7,7 @@ never aborts the pass. Composed onto the command through ``backlog_host_resolver
 keeping the command a wiring layer.
 
 Compliance and automatable asks run on every pass. Memory promotion keeps its
-``memory_promote`` toggle, gated with the ``not force_all_phases and not <toggle>()``
+``dream_memory_promote`` toggle, gated with the ``not force_all_phases and not <toggle>()``
 OR-idiom: ``force_all_phases`` is the ``--full`` alias for one manual pass, which the
 nightly ``tick`` cannot set, so no gate ANDs on it (#4176).
 
@@ -94,7 +94,7 @@ class GapPromotionPhases:
     def run_memory_promotion(self, *, dry_run: bool, force_all_phases: bool, batch: "PromotionBatch") -> str:
         """Pass 2 — collect each core gap into this pass's promotion batch (#2663, #4776).
 
-        Runs only when the default-ON ``memory_promote`` toggle admits it (#4685, #4776).
+        Runs only when the default-ON ``dream_memory_promote`` toggle admits it (#4685, #4776).
         Resolves the teatree backlog code host, triages
         every untriaged ``ConsolidatedMemory`` row, and COLLECTS each core-generic gap
         into *batch* (queued once, after every promoting phase has run — see

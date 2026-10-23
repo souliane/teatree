@@ -11,13 +11,12 @@ from hooks.scripts.teatree_settings import teatree_bool_setting
 if TYPE_CHECKING:
     from teatree.config.checkout_roots import CheckoutRoots
 
-_WAIVER = re.compile(r"\[worktree-containment-ok:\s*(\S[^\]]*?)\s*\]")
 # A superset of what the scanner reports, so a miss can skip the scan without hiding a checkout.
 _MAY_CHECKOUT = re.compile(r"worktree|(?<![\w.-])(?:sh|bash|zsh|eval)(?![\w-])")
 
 
 def _gate_enabled() -> bool:
-    return teatree_bool_setting("worktree_containment_gate_enabled", default=True)
+    return teatree_bool_setting("worktree_containment_gate_enabled")
 
 
 def _may_checkout(command: str) -> bool:
@@ -34,7 +33,7 @@ def _deny_reason(raw_target: str, target: Path | None, policy: "CheckoutRoots") 
         f"BLOCKED: git worktree target {location} "
         "Use `t3 <overlay> workspace ticket <issue>` or choose an allowed temp root for disposable work. "
         "One-call waiver: "
-        "`[worktree-containment-ok: <reason>]` in the Bash command."
+        "`[gate-escape:worktree_containment: <reason>]` in the Bash command."
     )
 
 
@@ -42,7 +41,7 @@ def handle_block_worktree_checkout(data: dict) -> bool:
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
-    if not isinstance(command, str) or not _may_checkout(command) or _WAIVER.search(command) or not _gate_enabled():
+    if not isinstance(command, str) or not _may_checkout(command) or not _gate_enabled():
         return False
     raw_cwd = data.get("cwd")
     cwd = Path(raw_cwd) if isinstance(raw_cwd, str) and raw_cwd else None

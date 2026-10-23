@@ -6,6 +6,7 @@ src/teatree/config/agent_enums.py
 src/teatree/config/agent_spawn.py
 src/teatree/config/cold_db.py
 src/teatree/config/cold_reader.py
+src/teatree/config/declaration.py
 src/teatree/config/discovery.py
 src/teatree/config/e2e_repo.py
 src/teatree/config/enums.py
@@ -27,13 +28,16 @@ src/teatree/config/setting_layers.py
 src/teatree/config/setting_parsers.py
 src/teatree/config/setting_registries.py
 src/teatree/config/settings.py
+src/teatree/config/settings_agent.py
 src/teatree/config/settings_loop_flags.py
 src/teatree/config/settings_loop_owned.py
+src/teatree/config/settings_provisioning.py
 src/teatree/config/speak.py
 src/teatree/config/trusted_authors.py
 src/teatree/config/value_coercion.py
 src/teatree/forge_credentials.py
 src/teatree/generation.py
+src/teatree/git_sha.py
 src/teatree/harness_skills.py
 src/teatree/hooks/__init__.py
 src/teatree/hooks/_diff_lines.py
@@ -51,6 +55,7 @@ src/teatree/hooks/leak_policy.py
 src/teatree/hooks/opaque_id.py
 src/teatree/hooks/own_repo_url_carve_out.py
 src/teatree/hooks/privacy_diff_comments.py
+src/teatree/hooks/privacy_generic_detectors.py
 src/teatree/hooks/remote_holds.py
 src/teatree/hooks/repo_visibility_cli.py
 src/teatree/hooks/term_fingerprint.py

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalSpec
 from teatree.eval.presets import (
@@ -68,10 +68,10 @@ class TestResolvePresetModel:
 
     def test_uniform_preset_forces_every_scenario_to_its_tier(self) -> None:
         for spec in (_spec(tier="frontier"), _spec(phase="planning"), _spec()):
-            assert resolve_preset_model(spec, CHEAP_PRESET) == TIER_MODELS["cheap"]
+            assert resolve_preset_model(spec, CHEAP_PRESET) == tier_models()["cheap"]
 
     def test_frontier_preset_forces_the_frontier_tier(self) -> None:
-        assert resolve_preset_model(_spec(), FRONTIER_PRESET) == TIER_MODELS["frontier"]
+        assert resolve_preset_model(_spec(), FRONTIER_PRESET) == tier_models()["frontier"]
 
     def test_per_scenario_entry_below_the_declared_tier_is_floored_up(self) -> None:
         # A scenario declaring `tier: balanced` but pinned `cheap` in baseline.yaml
@@ -79,14 +79,14 @@ class TestResolvePresetModel:
         # floor a stale/wrong cheap pin can never drop below.
         spec = _spec(name="alpha", tier="balanced")
         preset = Preset(name="p", scenario_tiers={"alpha": "cheap"})
-        assert resolve_preset_model(spec, preset) == TIER_MODELS["balanced"]
+        assert resolve_preset_model(spec, preset) == tier_models()["balanced"]
 
     def test_per_scenario_entry_at_or_above_the_declared_tier_is_used_as_pinned(self) -> None:
         spec = _spec(name="alpha", tier="balanced")
         below_none = Preset(name="p", scenario_tiers={"alpha": "balanced"})
         above = Preset(name="p", scenario_tiers={"alpha": "frontier"})
-        assert resolve_preset_model(spec, below_none) == TIER_MODELS["balanced"]
-        assert resolve_preset_model(spec, above) == TIER_MODELS["frontier"]
+        assert resolve_preset_model(spec, below_none) == tier_models()["balanced"]
+        assert resolve_preset_model(spec, above) == tier_models()["frontier"]
 
     def test_a_scenario_with_no_declared_tier_asserts_no_floor(self) -> None:
         # No explicit `tier:` is no assertion — the baseline pin cheapens freely,
@@ -94,13 +94,13 @@ class TestResolvePresetModel:
         # scenarios that never declared a minimum.
         spec = _spec(name="alpha")
         preset = Preset(name="p", scenario_tiers={"alpha": "cheap"})
-        assert resolve_preset_model(spec, preset) == TIER_MODELS["cheap"]
+        assert resolve_preset_model(spec, preset) == tier_models()["cheap"]
 
     def test_absent_from_the_map_falls_through_to_the_scenarios_own_tier(self) -> None:
         # The scenario is never silently cheapened when it isn't in the map.
         spec = _spec(name="not_in_map", tier="frontier")
         preset = Preset(name="p", scenario_tiers={"other": "cheap"})
-        assert resolve_preset_model(spec, preset) == resolve_eval_model(spec) == TIER_MODELS["frontier"]
+        assert resolve_preset_model(spec, preset) == resolve_eval_model(spec) == tier_models()["frontier"]
 
     def test_absent_from_the_map_falls_through_to_the_default_tier(self) -> None:
         spec = _spec(name="not_in_map")

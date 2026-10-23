@@ -433,6 +433,7 @@ class SharedCodexSession(CodexAppServerSession):
     async def close(self) -> None:
         if self._closed:
             return
+        self._turn_closed(session=True)
         if self.thread_id:
             await self.manager.close_session(self.options, self.thread_id)
         self._closed = True

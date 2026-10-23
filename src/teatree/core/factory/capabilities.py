@@ -128,6 +128,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json emits the steer receipt; active: 0 accepted_current_turn, 3 rejected, 4 unknown_delivery, "
         "5 offline",
     ),
+    Capability(
+        "teatree live follow-up",
+        json_output=True,
+        exit_codes=("0", "2", "3", "4", "5"),
+        note="--json emits the follow-up receipt; active: 0 accepted_new_turn, 3 rejected, "
+        "4 unknown_delivery, 5 offline",
+    ),
     Capability("teatree signals", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree settings_compare",
@@ -237,6 +244,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         json_output=True,
         exit_codes=("0", "1"),
         note="--json emits the repo-scoped stacked-delivery target override; 1 when ticket, repo, or branch is invalid",
+    ),
+    Capability(
+        "teatree ticket critic-record",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits whether the supplied merge critic envelope was recorded for the dispatched head",
     ),
     Capability(
         "teatree ticket rework-hold",

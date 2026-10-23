@@ -575,4 +575,4 @@ def resolve_worktree(path: str = "", ticket_hint: Ticket | None = None) -> Workt
     if wt is not None:
         return wt
 
-    raise WorktreeNotFoundError(unresolvable_worktree_message(cwd))
+    raise WorktreeNotFoundError(unresolvable_worktree_message(cwd, explicit_path=bool(path)))

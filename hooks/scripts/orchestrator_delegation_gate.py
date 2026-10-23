@@ -135,14 +135,6 @@ _STEMLESS_GLOB_RE = re.compile(r"^[*?]+(?:\.[\w{},*]+)?$")
 #: them. Only the PIPE says "an output existed that was too big to read".
 _PARSE_RE = re.compile(r"(?<!\|)\|(?!\|)\s*(?:(?:command|exec)\s+)*(?:python3?|node|ruby|perl)\s+-")
 
-#: Per-call escape, mirroring the sibling ``[…-ok: <reason>]`` tokens. The leading
-#: ``\S`` is what rejects an empty reason.
-_DELEGATE_OK_RE = re.compile(r"\[delegate-ok:\s*(\S[^\]]*?)\s*\]")
-
-#: Scanned prefix of the command. Bounded rather than unlimited (the hook has a
-#: 30s ceiling), but wide enough for a trailing ``# [delegate-ok: …]`` comment.
-_TOKEN_SCAN_CHARS = 16 * 1024
-
 _AGENTS = (
     "Explore (read-only fan-out search — the right one for a code sweep), "
     "t3:debugger (diagnose a failure), t3:bughunter (reproduce a defect), "
@@ -180,8 +172,8 @@ def refusal(shape: str, tool_name: str = "Bash") -> str:
         "used as a downstream filter.\n"
         "Note `run_in_background: true` is NOT an escape here: this gate guards context, not "
         "responsiveness, and a backgrounded sweep still lands in your context when you collect it.\n"
-        "Per-call escape: put `[delegate-ok: <reason>]` in the command (a trailing "
-        "`# [delegate-ok: <reason>]` comment works). An empty reason does not unblock.\n"
+        "Per-call escape: put `[gate-escape:orchestrator_delegation_gate: <reason>]` in the command (a trailing "
+        "`# [gate-escape:orchestrator_delegation_gate: <reason>]` comment works). An empty reason does not unblock.\n"
         "Turn the gate off: `t3 <overlay> gate delegation disable`."
     )
 
@@ -231,18 +223,13 @@ def _gate_enabled() -> bool:
     """Whether the gate is on (default True); an explicit ``false`` is the kill-switch."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("orchestrator_delegation_gate_enabled", default=True)
+    return _teatree_bool_setting("orchestrator_delegation_gate_enabled")
 
 
 def _engaged(session_id: str) -> bool:
     from hooks.scripts.hook_router import _teatree_engaged  # noqa: PLC0415 deferred back-import
 
     return bool(session_id) and _teatree_engaged(session_id)
-
-
-def _scannable(tool_input: dict) -> str:
-    """The tool call's own text, wherever a per-call token could ride in it."""
-    return " ".join(value for value in tool_input.values() if isinstance(value, str))[:_TOKEN_SCAN_CHARS]
 
 
 def _unattended() -> bool:
@@ -269,9 +256,6 @@ def _refusal_shape(data: dict) -> str | None:
     if shape is None or call_is_from_subagent(data) or session_lane() != LANE_INTERACTIVE_CLI or _unattended():
         return None
     if not _gate_enabled() or not _engaged(str(data.get("session_id", ""))):
-        return None
-    if match := _DELEGATE_OK_RE.search(_scannable(tool_input)):
-        sys.stderr.write(f"NOTE: orchestrator delegation gate skipped via [delegate-ok: {match.group(1).strip()}].\n")
         return None
     return shape
 

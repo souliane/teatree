@@ -32,20 +32,14 @@ TS = "1779180558.938799"
 
 
 @dataclass
-class FakeMessaging:
-    """In-memory MessagingBackend for scanner tests."""
+class ReactionsOnlyMessaging:
+    """In-memory backend without a mentions API."""
 
     user_id: str = USER
     reactions: list[RawAPIDict] = field(default_factory=list)
-    mentions: list[RawAPIDict] = field(default_factory=list)
     messages_by_ts: dict[tuple[str, str], RawAPIDict] = field(default_factory=dict)
     existing_reactions: dict[tuple[str, str], list[str]] = field(default_factory=dict)
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
-
-    def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        events, self.mentions = self.mentions, []
-        return events
 
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -78,6 +72,18 @@ class FakeMessaging:
     def resolve_user_id(self, handle: str) -> str:
         _ = handle
         return ""
+
+
+@dataclass
+class FakeMessaging(ReactionsOnlyMessaging):
+    """In-memory MessagingBackend for scanner tests."""
+
+    mentions: list[RawAPIDict] = field(default_factory=list)
+
+    def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
+        _ = since
+        events, self.mentions = self.mentions, []
+        return events
 
 
 def _reaction_event(*, user: str = USER, name: str = "thumbsup", channel: str = CHANNEL, ts: str = TS) -> RawAPIDict:
@@ -394,11 +400,8 @@ class TestBackendWithoutMentionsApi:
     """
 
     def test_scanner_skips_mention_drain_when_backend_lacks_fetch_mentions(self) -> None:
-        @dataclass
-        class ReactionsOnlyBackend(FakeMessaging):
-            fetch_mentions: None = None  # shadow the inherited callable with a non-callable
-
-        backend = ReactionsOnlyBackend(reactions=[_reaction_event()], messages_by_ts={(CHANNEL, TS): _message()})
+        backend = ReactionsOnlyMessaging(reactions=[_reaction_event()], messages_by_ts={(CHANNEL, TS): _message()})
+        assert not hasattr(backend, "fetch_mentions")
         signals = SlackReviewIntentScanner(backend=backend, overlay="teatree").scan()
 
         # Reaction path still works; mention path silently no-ops.

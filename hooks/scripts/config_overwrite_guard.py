@@ -17,7 +17,7 @@ escape, the kill-switch, and routes the deny through the router's shared
 ``_fail_open_or_deny`` chain (self-rescue allowlist + master fail-open +
 circuit breaker all apply).
 
-NEVER-LOCKOUT: a per-call ``[config-overwrite-ok: <reason>]`` token (in the
+NEVER-LOCKOUT: a per-call ``[gate-escape:config_overwrite: <reason>]`` token (in the
 Write content / Edit new_string / file_path, or the Bash command), the
 ``[teatree] config_overwrite_gate_enabled = false`` kill-switch
 (``t3 <overlay> gate config-overwrite disable``), and the unconditional
@@ -25,7 +25,6 @@ fail-open chain all keep this gate from wedging a session.
 """
 
 import contextlib
-import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -40,8 +39,6 @@ if TYPE_CHECKING:
 sys.modules.setdefault("config_overwrite_guard", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.config_overwrite_guard", sys.modules[__name__])
 
-_CONFIG_OVERWRITE_OK_RE = re.compile(r"\[config-overwrite-ok:\s*(\S[^\]]*?)\s*\]")
-
 
 def _config_overwrite_gate_enabled() -> bool:
     """Whether the read-before-overwrite gate is enabled (default True).
@@ -52,31 +49,7 @@ def _config_overwrite_gate_enabled() -> bool:
     """
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("config_overwrite_gate_enabled", default=True)
-
-
-def _overwrite_ok_token(data: dict) -> str | None:
-    """Return the reason from a ``[config-overwrite-ok: <reason>]`` token, else None.
-
-    Scans the current tool call's text fields (Write ``content`` / Edit
-    ``new_string`` / either ``file_path``, and a Bash ``command``) within the
-    first 512 chars of each — mirroring the other per-call escapes. An empty
-    reason returns None.
-    """
-    tool_input = data.get("tool_input", {})
-    if not isinstance(tool_input, dict):
-        return None
-    for field in ("content", "new_string", "file_path", "command"):
-        value = tool_input.get(field, "")
-        if not isinstance(value, str) or not value:
-            continue
-        match = _CONFIG_OVERWRITE_OK_RE.search(value[:512])
-        if not match:
-            continue
-        reason = match.group(1).strip()
-        if reason:
-            return reason
-    return None
+    return _teatree_bool_setting("config_overwrite_gate_enabled")
 
 
 _READS_LINE_PARTS = 2
@@ -188,18 +161,13 @@ def _find_finding(
 
 
 def _gate_should_skip(data: dict) -> bool:
-    """True iff a pre-check says this call is out of scope or escaped.
+    """True iff a pre-check says this call is out of scope.
 
-    Collapses the early-exit guards (wrong tool, kill-switch off, per-call
-    token, malformed input) into ONE predicate so the handler stays under the
-    return-count bar. Emits the token NOTE as a side effect.
+    Collapses the early-exit guards into one predicate to keep the handler small.
     """
     if data.get("tool_name", "") not in {"Write", "Edit", "Bash"}:
         return True
     if not _config_overwrite_gate_enabled():
-        return True
-    if reason := _overwrite_ok_token(data):
-        sys.stderr.write(f"NOTE: config-overwrite gate skipped via [config-overwrite-ok: {reason}].\n")
         return True
     return not isinstance(data.get("tool_input", {}), dict)
 

@@ -12,30 +12,45 @@ that while costing a model call.
 """
 
 import asyncio
+import shutil
 import tempfile
 import threading
+import time
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
 import pytest
-from django.test import TestCase
+from claude_agent_sdk import ClaudeAgentOptions
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from teatree.agents import runner
-from teatree.agents.live_control import LiveTask
+from teatree.agents.live_control import ControlOutcome, LiveFence, LiveTask, RejectCode
 from teatree.agents.live_registry import shared_registry
+from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat
 from teatree.agents.runner_stream import StreamCapture
+from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import LeaseLostError, Task, TaskAttempt, Worktree
 from teatree.core.worktree.checkout_fence import CheckoutFenceError
+from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import (
     OccupancyHolder,
     WorktreeOccupiedError,
     acquire,
     occupancy_holder,
+    release,
     task_holder_id,
 )
+from teatree.utils.thread_db import close_thread_db_connections
+from tests._file_backed_db import file_backed_default_database
 from tests.factories import SessionFactory, TicketFactory, WorktreeFactory
+from tests.teatree_agents._sdk_fake import OneSessionHarness
+from tests.teatree_agents.test_live_control_integration import _in_background
+from tests.teatree_agents.test_runner_heartbeat import _TwoTurnSession
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
 class _DispatchCase(TestCase):
@@ -86,6 +101,18 @@ class OccupiedCheckoutTests(_DispatchCase):
         assert "operator-lane" in str(attempt.result.get("summary", ""))
         assert str(self.checkout) in str(attempt.result.get("summary", ""))
 
+    def test_the_holders_release_makes_the_parked_dispatch_due_at_once(self) -> None:
+        held = acquire(self.worktree, holder="task:999", holder_session="operator-lane")
+
+        self.dispatch()
+
+        self.task.refresh_from_db()
+        assert self.task.not_before is not None
+        assert self.task.not_before > timezone.now()
+        assert release(self.worktree, holder=held.holder, holder_session=held.holder_session)
+        self.task.refresh_from_db()
+        assert self.task.not_before <= timezone.now()
+
     def test_the_incumbent_keeps_the_checkout_after_the_refusal(self) -> None:
         acquire(self.worktree, holder="task:999", holder_session="operator-lane")
 
@@ -97,6 +124,17 @@ class OccupiedCheckoutTests(_DispatchCase):
 
 
 class CheckoutFenceDispatchTests(_DispatchCase):
+    def test_a_real_foreign_edit_asks_the_owner_to_attest(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+        self.addCleanup(shutil.rmtree, self.checkout)
+        self.worktree.merge_extra(set_keys={"attested_state": checkout_state(self.checkout).digest})
+        clear = ProcessTable(frozenset(), "/proc")
+        with mock.patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
+            (self.checkout / "foreign.txt").write_text("foreign edit")
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
+
+        assert self.task.deferred_questions.filter(answered_at__isnull=True, dismissed_at__isnull=True).count() == 1
+
     def test_a_refused_checkout_never_opens_the_harness(self) -> None:
         driver = mock.Mock()
         with (
@@ -113,6 +151,29 @@ class CheckoutFenceDispatchTests(_DispatchCase):
 
 
 class HeldForTheRunTests(_DispatchCase):
+    def test_a_crashed_run_releases_and_attests_its_own_checkout_edit(self) -> None:
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+        self.addCleanup(shutil.rmtree, self.checkout)
+        self.worktree.merge_extra(set_keys={"attested_state": checkout_state(self.checkout).digest})
+        clear = ProcessTable(frozenset(), "/proc")
+        failure = RuntimeError("harness crashed")
+
+        def crash(*_: object, **__: object) -> TaskAttempt:
+            (self.checkout / "own.txt").write_text("agent edit")
+            raise failure
+
+        with (
+            mock.patch.object(runner, "_run_agent", side_effect=crash),
+            mock.patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear),
+            mock.patch("teatree.core.worktree.occupancy.read_process_table", return_value=clear),
+            pytest.raises(RuntimeError, match="harness crashed"),
+        ):
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
+
+        settled = self.fresh()
+        assert occupancy_holder(settled) is None
+        assert settled.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+
     def test_process_settlement_runs_before_checkout_release(self) -> None:
         seen: list[bool] = []
 
@@ -318,3 +379,122 @@ class LiveSessionKeepsOneWriterTests(_DispatchCase):
         summary = TaskAttempt.objects.filter(task=rival).latest("pk").result.get("summary", "")
         assert task_holder_id(self.task) in str(summary)
         assert [(row["task"], row["steerable"]) for row in seen[0]] == [(self.task.pk, True)]
+
+
+class IdleWindowHoldsTheClaimTests(TransactionTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(file_backed_default_database())
+        self.ticket = TicketFactory()
+        self.checkout = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.checkout, ignore_errors=True)
+        self.worktree = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
+        self.task = Task.objects.create(
+            ticket=self.ticket,
+            session=SessionFactory(ticket=self.ticket),
+            phase="coding",
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-A",
+            claimed_by_session="session-A",
+            claimed_at=timezone.now(),
+            claimed_generation="worker-A",
+            lease_expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+    def holder(self) -> OccupancyHolder | None:
+        return occupancy_holder(Worktree.objects.get(pk=self.worktree.pk))
+
+    def test_the_task_lease_and_checkout_are_renewed_through_the_idle_window_and_released_after(self) -> None:
+        minted = LiveFence.mint()
+
+        def observe() -> tuple[str, datetime, datetime, datetime, datetime]:
+            deadline = time.monotonic() + 10
+            while not any(row["state"] == "idle" for row in shared_registry().sessions()):
+                assert time.monotonic() < deadline, "no idle window opened"
+                time.sleep(0.005)
+            facts = shared_registry().facts(self.task.pk)
+            assert facts is not None
+            assert (facts["attempt"], facts["generation"]) == (minted.attempt, "worker-A")
+            while Task.objects.get(pk=self.task.pk).lease_expires_at is None:
+                assert time.monotonic() < deadline, "no lease renewal reached the task"
+                time.sleep(0.005)
+            held = self.holder()
+            lease = Task.objects.get(pk=self.task.pk).lease_expires_at
+            time.sleep(0.2)
+            renewed = self.holder()
+            renewed_lease = Task.objects.get(pk=self.task.pk).lease_expires_at
+            close_thread_db_connections()
+            assert held is not None
+            assert renewed is not None
+            assert lease is not None
+            assert renewed_lease is not None
+            return held.holder, held.expires_at, renewed.expires_at, lease, renewed_lease
+
+        def driver(task: Task, **_: object) -> TaskAttempt:
+            runtime = HeartbeatRuntime(
+                watchdog=LoopWatchdog(max_runtime_seconds=30, max_turns=0, max_cost_usd=0.0),
+                heartbeat_interval=0.02,
+                sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+                renew_lease=runner._renew_lease_closing_connection,
+                drain_reason=lambda: "",
+                idle_window_seconds=1.0,
+            )
+            asyncio.run(
+                drive_with_heartbeat(
+                    task, "p", ClaudeAgentOptions(), OneSessionHarness(_TwoTurnSession()), runtime=runtime
+                )
+            )
+            return mock.Mock(spec=TaskAttempt)
+
+        observed = _in_background(observe)
+        with (
+            mock.patch.object(runner, "_run_agent", driver),
+            mock.patch.object(runner, "verify_task_checkout"),
+            mock.patch.object(LiveFence, "mint", return_value=minted),
+        ):
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
+        holder, held_until, renewed_until, lease, renewed_lease = observed.result(timeout=30)
+
+        assert holder == task_holder_id(self.task)
+        assert renewed_until > held_until
+        assert renewed_lease > lease
+        assert self.holder() is None
+
+    def test_a_new_worker_generation_refuses_an_idle_follow_up_before_a_second_turn(self) -> None:
+        session = _TwoTurnSession()
+
+        def observe() -> tuple[ControlOutcome, RejectCode | None]:
+            deadline = time.monotonic() + 10
+            while not any(row["state"] == "idle" for row in shared_registry().sessions()):
+                assert time.monotonic() < deadline, "no idle window opened"
+                time.sleep(0.005)
+            Task.objects.filter(pk=self.task.pk).update(claimed_generation="worker-B")
+            facts = shared_registry().facts(self.task.pk)
+            assert facts is not None
+            fence = LiveFence(facts["attempt"], facts["generation"])
+            receipt = asyncio.run(
+                shared_registry().follow_up(self.task.pk, "stale", command_id="old", wait=1, fence=fence)
+            )
+            close_thread_db_connections()
+            return receipt.outcome, receipt.code
+
+        def driver(task: Task, **_: object) -> TaskAttempt:
+            runtime = HeartbeatRuntime(
+                watchdog=LoopWatchdog(max_runtime_seconds=30, max_turns=0, max_cost_usd=0.0),
+                heartbeat_interval=0.5,
+                sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+                renew_lease=runner._renew_lease_closing_connection,
+                drain_reason=lambda: "",
+                idle_window_seconds=1.0,
+            )
+            asyncio.run(
+                drive_with_heartbeat(task, "p", ClaudeAgentOptions(), OneSessionHarness(session), runtime=runtime)
+            )
+            return mock.Mock(spec=TaskAttempt)
+
+        observed = _in_background(observe)
+        with mock.patch.object(runner, "_run_agent", driver), mock.patch.object(runner, "verify_task_checkout"):
+            runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
+
+        assert observed.result(timeout=30) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+        assert session.prompts == []

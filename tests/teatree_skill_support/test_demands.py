@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from teatree.config.cold_defaults import flatten_settings_table, shipped_defaults_table
+from teatree.config.cold_defaults import flatten_settings_table
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.settings import UserSettings
 from teatree.core.overlay import OverlayConfig
 from teatree.loop.scanners.eval_local import EvalLocalScanner
@@ -70,7 +71,7 @@ def test_every_loop_skill_default_names_a_shipped_skill(field: str) -> None:
     defaults = {
         "UserSettings": getattr(UserSettings(), field),
         "OverlayConfig": OverlayConfig.model_fields[field].default,
-        "defaults.toml": flatten_settings_table(shipped_defaults_table())[field],
+        "defaults.toml": flatten_settings_table(declared_defaults())[field],
     }
 
     missing = {source: name for source, name in defaults.items() if not (SHIPPED_SKILLS / name / "SKILL.md").is_file()}

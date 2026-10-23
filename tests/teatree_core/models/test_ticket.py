@@ -174,9 +174,9 @@ class TestMergeExtraSkipsTheNoOpWrite(TestCase):
         assert ticket.extra == {"reviewed_sha": "def"}
 
     def test_an_unchanged_extra_with_a_changed_sibling_field_still_writes(self) -> None:
-        ticket = Ticket.objects.create(extra={"a": 1}, variant="x")
+        ticket = Ticket.objects.create(extra={"reviewed_sha": "abc"}, variant="x")
 
-        updates = self._updates(lambda: ticket.merge_extra(set_keys={"a": 1}, also_set={"variant": "y"}))
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"reviewed_sha": "abc"}, also_set={"variant": "y"}))
 
         assert len(updates) == 1
         ticket.refresh_from_db()
@@ -661,7 +661,7 @@ class TestTicketArtifacts(TestCase):
         artifacts = ticket.artifacts()
 
         with pytest.raises(AttributeError):
-            artifacts.ticket_id = 99  # frozen dataclass rejects mutation
+            artifacts.ticket_id = 99  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 class TestHasCompletedPhase(TestCase):

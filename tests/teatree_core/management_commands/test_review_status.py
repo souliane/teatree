@@ -136,6 +136,16 @@ def _status_over_live_checks(*, head: str, rollup_rc: int, rollup_body: str) -> 
 
 
 class TestRecordCommand(TestCase):
+    def test_pass_beside_standing_hold_emits_hold_reaction(self) -> None:
+        _record(verdict="hold", reviewer_identity="cold-reviewer-a")
+        with (
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=object()),
+            patch("teatree.loop.review_claim.emit_review_done_reactions", return_value=["eyes", "question"]) as emit,
+        ):
+            _record(reviewer_identity="cold-reviewer-b")
+
+        assert emit.call_args.kwargs["emojis"] == ("eyes", "question")
+
     def test_record_persists_a_verdict_with_findings(self) -> None:
         findings = '[{"severity": "nit", "summary": "rename x", "file": "a.py", "line": 9}]'
         result = _record(findings_json=findings)

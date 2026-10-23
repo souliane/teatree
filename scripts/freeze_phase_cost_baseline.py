@@ -32,7 +32,7 @@ from teatree.core.cost_baseline.aggregate import AttemptRecord, UsageStats, aggr
 from teatree.core.cost_baseline.frozen import FROZEN_BASELINE_PATH
 
 #: The cutover this baseline is frozen against — the change that repointed
-#: ``TIER_MODELS["frontier"]``, recorded as provenance in the artifact.
+#: ``tier_models()["frontier"]``, recorded as provenance in the artifact.
 CUTOVER_MODEL = "claude-opus-5"
 CUTOVER_PULL_REQUEST = 3731
 CUTOVER_MERGED_AT = "2026-07-25T08:59:42Z"

@@ -16,6 +16,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from hooks.scripts.teatree_settings import teatree_bool_setting
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.teatree_gate import (
     COMPLETION_CLAIM_GATE_KEY,
@@ -90,10 +91,40 @@ class TestGateStatus:
 
 
 class TestGateDisableEnable:
-    def test_disable_fails_loudly_when_the_canonical_db_is_missing(self, app: typer.Typer) -> None:
+    def test_disable_fails_loudly_when_the_canonical_db_is_missing(
+        self, app: typer.Typer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = tmp_path / "absent.sqlite3"
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         result = CliRunner().invoke(app, ["gate", "disable"])
         assert result.exit_code == 1
         assert "did NOT take" in result.output
+        assert str(db) in result.output
+        assert "no file at this path" in result.output
+        assert "locked" not in result.output
+
+    def test_disable_names_missing_table(
+        self, app: typer.Typer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = tmp_path / "unmigrated.sqlite3"
+        sqlite3.connect(db).close()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        result = CliRunner().invoke(app, ["gate", "disable"])
+        assert result.exit_code == 1
+        assert str(db) in result.output
+        assert "no teatree_config_setting table" in result.output
+
+    def test_disable_names_the_locked_database(
+        self, app: typer.Typer, canonical_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cold_writer, "_BUSY_TIMEOUT_MS", 100)
+        with closing(sqlite3.connect(canonical_db)) as blocker:
+            blocker.execute("PRAGMA journal_mode=WAL")
+            blocker.execute("BEGIN IMMEDIATE")
+            result = CliRunner().invoke(app, ["gate", "disable"])
+        assert result.exit_code == 1
+        assert str(canonical_db) in result.output
+        assert "database is locked" in result.output
 
     def test_disable_fails_loudly_when_a_seeded_row_stays_enabled(
         self, app: typer.Typer, canonical_db: Path, monkeypatch: pytest.MonkeyPatch
@@ -104,10 +135,16 @@ class TestGateDisableEnable:
                 "VALUES ('', ?, 'true', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0')",
                 (GATE_KEY,),
             )
-        monkeypatch.setattr(cold_writer, "write_setting", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            cold_writer,
+            "write_setting",
+            lambda *_args, **_kwargs: cold_writer.WriteOutcome(cold_writer.WriteResult.WROTE, canonical_db),
+        )
         result = CliRunner().invoke(app, ["gate", "disable"])
         assert result.exit_code == 1
         assert "did NOT take" in result.output
+        assert f"write landed at {canonical_db}" in result.output
+        assert "read-back says the gate is still ENABLED" in result.output
         assert _gate_value(canonical_db, GATE_KEY) is True
 
     def test_disable_writes_false(self, app: typer.Typer, canonical_db: Path) -> None:
@@ -128,6 +165,16 @@ class TestGateDisableEnable:
         assert gate_is_enabled() is False
         assert runner.invoke(app, ["gate", "enable"]).exit_code == 0
         assert gate_is_enabled() is True
+
+    def test_foreign_push_toggle_reaches_hook_reader(self, app: typer.Typer, canonical_db: Path) -> None:
+        runner = CliRunner()
+        disabled = runner.invoke(app, ["gate", "foreign-push", "disable"])
+        assert disabled.exit_code == 0, disabled.output
+        assert str(canonical_db) in disabled.output
+        assert teatree_bool_setting("foreign_branch_push_gate_enabled") is False
+        enabled = runner.invoke(app, ["gate", "foreign-push", "enable"])
+        assert enabled.exit_code == 0, enabled.output
+        assert teatree_bool_setting("foreign_branch_push_gate_enabled") is True
 
 
 class TestGateIsEnabledFailsOpen:

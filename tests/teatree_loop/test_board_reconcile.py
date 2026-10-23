@@ -12,7 +12,7 @@ its idempotence, its fail-closed probe, and its per-run work bound.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -36,7 +36,7 @@ def _merged_query(sha: str = _FORTY_HEX) -> SimpleNamespace:
 
 
 @contextlib.contextmanager
-def _forge(states: dict[str, PrOpenState]) -> Iterator[None]:
+def _forge(states: dict[str, PrOpenState]) -> Generator[None]:
     """Stand in for the live forge: URL → open state, UNKNOWN for anything unlisted."""
 
     def _probe(pr_url: str) -> PrOpenState:

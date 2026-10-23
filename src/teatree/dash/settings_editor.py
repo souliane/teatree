@@ -5,7 +5,7 @@ and editable with NO hand-kept list — a newly-added setting appears here for f
 edit path writes through ``ConfigSetting.set_value`` (the same seam ``config_setting set``
 uses), so the #258 strict coercion and the #3688 cross-key checks fire identically.
 
-**One row per setting, every scope on it.** A row carries one :class:`ScopeCell` per scope —
+**One row per setting, every scope on it.** A row carries one :class:`SettingCell` per scope —
 global first, then each overlay — so "what is this set to everywhere" is one line rather
 than a per-scope hunt. Each cell says whether it still equals the shipped default; a cell
 that does not is the drift the page exists to make visible. A setting drifts at most ONCE
@@ -39,7 +39,8 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.declared_defaults import declared_defaults
+from teatree.config.override_reader import column_spelling
 from teatree.config.provenance import ResolvedSetting, resolve_settings
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import SettingGroupNode, group_leaves, group_slug, group_tree
@@ -193,7 +194,7 @@ def _build_grid(keys: Sequence[str], columns: Sequence[str] | None = None) -> _G
     return _Grid(
         scopes=scopes,
         resolved={scope: resolve_settings(keys, scope=scope) for scope in scopes},
-        shipped=shipped_defaults_table(),
+        shipped=declared_defaults(),
     )
 
 
@@ -285,18 +286,6 @@ def _registered_overlays() -> set[str]:
         return set()
 
 
-def _column_spelling(spellings: set[str], registered: set[str]) -> str:
-    """Which of one overlay's spellings names its column — the REGISTERED one wherever there is one.
-
-    Not cosmetic. A column resolves its tiers with its own name as the exact-match spelling
-    (:func:`~teatree.config.override_reader.load_overlay_rows` applies the alias group first
-    and the exact name last), and the process reads its rows under the name the overlay is
-    registered as — so the registered spelling is the column whose reading is the one actually
-    in force. Naming the column after the alias would show a value the box does not use.
-    """
-    return next(iter(sorted(spellings & registered)), min(spellings))
-
-
 def scopes_of_column(scope: str) -> tuple[str, ...]:
     """Every stored scope the *scope* column speaks for — itself, then its other spellings.
 
@@ -329,7 +318,7 @@ def available_scopes() -> tuple[str, ...]:
     spellings: dict[str, set[str]] = {}
     for scope in _stored_scopes() | registered:
         spellings.setdefault(OverlayEntry.canonical_overlay_name(scope), set()).add(scope)
-    return (GLOBAL_SCOPE, *sorted(_column_spelling(group, registered) for group in spellings.values()))
+    return (GLOBAL_SCOPE, *sorted(column_spelling(group, registered) for group in spellings.values()))
 
 
 def build_setting_row(key: str) -> EditableSetting:

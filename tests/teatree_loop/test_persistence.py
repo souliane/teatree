@@ -320,6 +320,14 @@ class TestPersistOrchestrator(TestCase):
         assert ticket.issue_url == "https://example.com/owner/repo/issues/99"
         assert ticket.state == Ticket.State.WORK_STARTED
 
+    def test_a_nit_issue_stamps_its_ticket_for_review_and_admission(self) -> None:
+        action = self._action()
+        action.payload["raw"] = {"labels": [{"name": "nit"}, {"name": "t3-auto"}]}
+
+        created = persist_agent_actions([action])
+
+        assert created[0].ticket.extra["nit_follow_up"] is True
+
     def test_the_scheduled_task_is_not_refused_by_the_plan_gate(self) -> None:
         """The acceptance criterion, stated as the gate itself rather than as the phase name."""
         task = persist_agent_actions([self._action()])[0]

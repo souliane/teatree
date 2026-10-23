@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0013_resume_refused"),
+        ("core", "0018_forge_ingest_identity"),
     ]
 
     operations = [

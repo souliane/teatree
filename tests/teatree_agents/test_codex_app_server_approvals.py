@@ -2,15 +2,16 @@
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +28,7 @@ from teatree.agents.codex_shared_app_server import SharedCodexAppServer, SharedC
 from teatree.agents.harness import AgentHarness
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessSpec, register_harness, select_harness
 from teatree.core.models import Session, Task
+from teatree.forge_credentials import FORGE_TOKEN_ENV_KEYS, ROUTED_GH_KEY_ENV
 from tests.factories import planned_ticket
 from tests.teatree_agents._codex_command_shape import codex_wrapped
 from tests.teatree_agents._codex_plugin import CODEX_PLUGIN_ID
@@ -243,6 +245,68 @@ def test_only_a_file_change_that_ran_reaches_post_tool_use(
     assert sent == reported
 
 
+def test_post_tool_router_forwards_task_token_without_debug_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    worker_options: CodexAppServerOptions,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    sentinel = "sentinel-task-token"
+    for key in FORGE_TOKEN_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    observed = tmp_path / "post-env"
+    script = tmp_path / "post-router.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$GH_TOKEN" = "{sentinel}" ] && '
+        "[ \"$T3_ROUTED_GH_TOKEN_KEY\" = 'github/example/pat' ]; then echo yes > "
+        f"'{observed}'; else echo no > '{observed}'; fi\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr("teatree.agents.codex_router._RUN_HOOK", script)
+    options = replace(
+        worker_options,
+        core=replace(worker_options.core, env={"GH_TOKEN": sentinel, ROUTED_GH_KEY_ENV: "github/example/pat"}),
+    )
+
+    asyncio.run(
+        report_completed_item(
+            {"type": "commandExecution", "status": "completed", "command": "pwd", "exitCode": 0},
+            "thread-1",
+            options,
+        )
+    )
+
+    assert observed.read_text().strip() == "yes"
+    assert all(sentinel not in record.getMessage() for record in caplog.records)
+
+
+def test_file_change_approval_forwards_the_task_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, worker_options: CodexAppServerOptions
+) -> None:
+    observed = tmp_path / "file-change-env"
+    script = tmp_path / "file-change-router.sh"
+    script.write_text(
+        f'#!/bin/sh\n[ "$GH_TOKEN" = "sentinel-task-token" ] && echo yes > "{observed}" || echo no > "{observed}"\n'
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr("teatree.agents.codex_router._RUN_HOOK", script)
+    options = replace(worker_options, core=replace(worker_options.core, env={"GH_TOKEN": "sentinel-task-token"}))
+
+    decision, reason = asyncio.run(
+        approval_decision(
+            "item/fileChange/requestApproval",
+            {"cwd": str(tmp_path), "threadId": "thread-1"},
+            options,
+            [{"path": "example.txt", "kind": {"type": "add"}}],
+        )
+    )
+
+    assert (decision, reason) == ("accept", None)
+    assert observed.read_text().strip() == "yes"
+
+
 def test_failed_post_tool_report_warns_and_turn_completes(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -296,7 +360,7 @@ def test_child_and_unknown_approvals_preserve_other_shared_session(
 
 class _FakeCache:
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[Path]:
+    async def session(self) -> AsyncGenerator[Path]:
         yield Path("/unused/auth.json")
 
     def persist(self) -> None:

@@ -18,7 +18,8 @@ from collections.abc import Sequence
 from typing import cast
 from urllib.parse import urlparse
 
-from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _gh_api_get, _run_gh
+from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _run_gh
+from teatree.backends.github.api import gh_api_get as _gh_api_get
 from teatree.backends.github.payloads import _GitHubPullRequestSummary, pr_open_state_from_payload
 from teatree.backends.types import dig
 from teatree.core.backend_protocols import ApprovalState, PrOpenState
@@ -43,7 +44,7 @@ query {{
         pullRequest(number: {number}) {{
             reviewThreads(first: 100{after}) {{
                 pageInfo {{ hasNextPage endCursor }}
-                nodes {{ isResolved }}
+                nodes {{ id isResolved comments(first: 1) {{ nodes {{ body url path line }} }} }}
             }}
         }}
     }}
@@ -53,6 +54,32 @@ query {{
 # walk returns None so `approval_state` fails closed exactly as it does for an
 # unreadable page.
 _REVIEW_THREADS_MAX_PAGES = 20
+
+_ENGAGED_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"})
+
+
+class ReviewerReads:
+    @staticmethod
+    def requested(pr: object, *, repo: str, pr_iid: int) -> list[str]:
+        reviewers = pr.get("requested_reviewers") if isinstance(pr, dict) else None
+        if not isinstance(reviewers, list):
+            msg = f"Could not read requested reviewers for {repo}#{pr_iid}"
+            raise TypeError(msg)
+        return [login for item in reviewers if isinstance(item, dict) if isinstance(login := item.get("login"), str)]
+
+    @staticmethod
+    def engaged(requested: list[str], reviews: list[RawAPIDict]) -> list[str]:
+        names = list(dict.fromkeys(requested))
+        seen = set(names)
+        for review in reviews:
+            if not isinstance(review, dict) or str(review.get("state") or "").upper() not in _ENGAGED_REVIEW_STATES:
+                continue
+            user = review.get("user")
+            login = user.get("login") if isinstance(user, dict) else None
+            if isinstance(login, str) and login and login not in seen:
+                names.append(login)
+                seen.add(login)
+        return names
 
 
 # CheckRun conclusions / StatusContext states that count as a hard failure — the
@@ -91,18 +118,6 @@ def rollup_state(rollup: object) -> str:
         if state in _ROLLUP_PENDING_STATES or (status and status != "COMPLETED"):
             any_pending = True
     return "pending" if any_pending else "success"
-
-
-def is_not_found(exc: CommandFailedError) -> bool:
-    """Whether a failed ``gh api`` call was a genuine HTTP 404.
-
-    ``gh api`` exits non-zero for EVERY HTTP error (404, 401, 403, 5xx alike)
-    with returncode 1, so the only reliable signal for a permanent "no such
-    resource" is the literal ``HTTP 404`` string in stderr — the same probe
-    :meth:`GitHubCodeHost.get_issue` uses. Everything else is an indeterminate
-    failure the caller must NOT swallow as an empty result.
-    """
-    return "HTTP 404" in exc.stderr
 
 
 def issue_repo_short(url: str) -> str:
@@ -205,6 +220,35 @@ def count_unresolved_review_threads(*, repo: str, pr_iid: int, token: str) -> in
             return unresolved
         after = f', after: "{end_cursor}"'
     return None
+
+
+def list_review_threads(*, repo: str, pr_iid: int, token: str) -> list[RawAPIDict]:
+    owner, _, name = repo.partition("/")
+    if not owner or not name:
+        message = "Cannot read review threads for invalid repo"
+        raise RuntimeError(message)
+    threads: list[RawAPIDict] = []
+    after = ""
+    for _ in range(_REVIEW_THREADS_MAX_PAGES):
+        page = _review_threads_page(owner=owner, name=name, pr_iid=pr_iid, after=after, token=token)
+        if page is None:
+            message = "Cannot read review threads"
+            raise RuntimeError(message)
+        nodes, end_cursor = page
+        for node in nodes:
+            if not isinstance(node, dict):
+                message = "Malformed review threads"
+                raise TypeError(message)
+            comments = dig(node, "comments", "nodes")
+            if not isinstance(comments, list):
+                message = "Malformed review threads"
+                raise TypeError(message)
+            threads.append({"id": node.get("id"), "isResolved": node.get("isResolved"), "notes": comments})
+        if end_cursor is None:
+            return threads
+        after = f', after: "{end_cursor}"'
+    message = "Review threads exceed page budget"
+    raise RuntimeError(message)
 
 
 def _review_threads_page(

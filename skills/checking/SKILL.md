@@ -34,7 +34,7 @@ After the report, if there are pending deferred questions, walk the user through
 
 1. List them: prefer the `mcp__teatree__question_list` MCP tool — it returns the pending backlog as structured JSON; fall back to `t3 teatree questions list` when the MCP server isn't connected.
 2. If the list is empty, say so in one line (`No pending questions.`) and stop — do not invent a walk-through.
-3. For each pending question, in order, raise it with the `AskUserQuestion` tool (one question per call), using the stored question text and option labels. **Do NOT batch** — one decision per call, wait for the answer, then move to the next.
+3. For each pending question, in order, raise it with the `AskUserQuestion` tool (one question per call), rephrasing the stored question text and option labels in plain words: no ticket or pull request numbers, hashes, flag or setting names, and within the card length limits. In the client, file names and paths made of plain words (for example README.md) are allowed; a name or path containing an underscore-joined word is refused as internal shorthand. A row captured from a loop turn often carries shorthand the gate refuses. **Do NOT batch** — one decision per call, wait for the answer, then move to the next.
 4. Record each answer immediately: prefer the `mcp__teatree__question_answer` MCP tool — one call per question; fall back to `t3 teatree questions answer <id> "<the user's answer text>"` when the MCP server isn't connected. A directive ratification (`Ratify directive #N …`, or its re-ask) is always recorded with that CLI command: an MCP answer is recorded as agent-given, and an agent-given answer never ratifies. If the user wants to skip one, `t3 teatree questions dismiss <id> --reason "<why>"`.
 5. After the last one, confirm in one line how many were answered/dismissed.
 
@@ -60,7 +60,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 - **All-overlays (default):** Header `Since <local HH:MM> · all overlays`. Overlay-scoped items carry an `[overlay]` tag in their detail so the reader sees provenance.
 - **Single-overlay (`--this-overlay`):** Header `Since <local HH:MM> · <overlay>`.
-- Groups in fixed order — `Merged`, `In-flight`, `Needs you`. Group header is the bare word; items are `-` indented, one idea per line.
+- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Metered`. Group header is the bare word; items are `-` indented, one idea per line.
 - Every PR / issue / ticket reference is a markdown link `[label](url)` — never a bare numeric id.
 - Each group caps at 5 items; beyond that, append `…and X more`.
 - Empty groups are omitted. If everything is empty, say so in one line: `Nothing since <local time>.`
@@ -71,6 +71,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 - **Merged** — `MergeAudit` joined to `MergeClear`, merged inside the window, overlay-scoped. URL prefers the exact stored `pr_urls`, else a host-aware builder.
 - **In-flight** — latest `TicketTransition` per ticket in the window, plus completed background `TaskAttempt` runs.
 - **Needs you** — pending `DeferredQuestion` rows (not window-bounded — an old pending question still needs you) plus failed `TaskAttempt` runs (the durable "blocked" proxy). `DeferredQuestion` is queried ONCE for the whole report (not once per overlay) so a pending question never appears more than once. An overlay opts into richer signals via `OverlayBase.get_checking_sources`.
+- **Metered** — one row per ticket with metered attempts inside the window, overlay-scoped, with attempt count and total cost labelled as an estimate (`estimated $N.NN`, or `estimated cost unavailable`).
 
 Resist adding a dashboard. The terse text IS the surface.
 

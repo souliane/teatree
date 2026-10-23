@@ -312,10 +312,11 @@ Agent(
 
 `pr create` also runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff actually touches and reports silent-render regressions (page crashes, console errors, raw `app.*` translation keys, blocking asset 404s). Target URLs come from the overlay's `review.visual_qa_targets(changed_files)` — overlays opt in by mapping diff paths to URLs.
 
-- Runs automatically before PR creation; the report is recorded on `Ticket.extra['visual_qa']`.
+- Runs automatically before PR creation; the report is recorded on `Ticket.extra['visual_qa']` and included in the PR body.
+- If `runtime.visual_qa_server(worktree)` supplies a command, the gate syncs its prerequisites and serves the checkout beside its browser in an isolated scratch environment. Otherwise it discovers the stack's live port from the browser venue.
 - Blocks PR creation when findings exist; the error payload includes `report_markdown` for a `## Visual QA` section.
-- Bypass: `t3 <overlay> pr create <ticket> --skip-visual-qa "<reason>"` or `T3_VISUAL_QA=disabled` in the environment.
-- Refuses as `[gate:visual_qa] DID NOT RUN` when the check cannot run: the diff is unreadable, the browser cannot start, or the page budget runs out. Run `playwright install chromium` and retry, or bypass on purpose with `--skip-visual-qa '<reason>'`.
+- Bypass: `t3 <overlay> pr create <ticket> --skip-visual-qa "<reason>"` still runs the check and records its evidence plus the reason, head SHA, and timestamp.
+- Refuses as `[gate:visual_qa] DID NOT RUN` when the diff is unreadable, the server or browser cannot start, a page is unreachable, or the page budget runs out. Repair the named cause and retry, or bypass on purpose with `--skip-visual-qa '<reason>'`.
 
 ### 5. Create MR/PR
 
@@ -353,7 +354,7 @@ Some namespaces drive their issue lifecycle through a separate workflow and forb
 t3 <overlay> config_setting set ban_close_trailers_on_namespaces '["my-group/*"]'
 ```
 
-When the target PR/MR repo matches one of these fnmatch patterns and the body still carries a `Closes|Fixes|Resolves` trailer (the `part of` and full-URL variants too), `ShipExecutor._build_pr_spec` silently strips those lines before opening the PR — the publish proceeds, the issue does not auto-close on merge. Default empty list keeps legacy behaviour. This is the user-scoped sibling of the overlay-scoped `forbid_close_keywords` gate (#1012) which refuses the publish entirely.
+When the target PR/MR repo matches one of these fnmatch patterns and the body still carries a `Closes|Fixes|Resolves` trailer (the `part of` and full-URL variants too), `ShipExecutor.build_pr_spec` silently strips those lines before opening the PR — the publish proceeds, the issue does not auto-close on merge. Default empty list keeps legacy behaviour. This is the user-scoped sibling of the overlay-scoped `forbid_close_keywords` gate (#1012) which refuses the publish entirely.
 
 **STOP — resolve the ticket URL before creating the MR.**
 
@@ -401,7 +402,7 @@ Open questions & assumptions:
 
 When there is genuinely nothing to surface, the section carries a single `- none` bullet — the section is never silently omitted, so a reviewer can tell "nothing to flag" apart from "the author forgot".
 
-`t3 <overlay> pr create` WARNS (exit 0, never blocks) when the PR body has no `Open questions` heading, with a hint to add the section. The warn is the prompt, not a gate — a reliable bad/legit separation is impossible (the section can be worded many ways), so it warns per the "gate without a reliable heuristic warns" rule. The detector + warn live in `teatree.core.gates.open_questions_gate` and fire from both PR-creation chokepoints (`ShipExecutor._build_pr_spec` and the orphan-branch `create_or_defer_pr`).
+`t3 <overlay> pr create` WARNS (exit 0, never blocks) when the PR body has no `Open questions` heading, with a hint to add the section. The warn is the prompt, not a gate — a reliable bad/legit separation is impossible (the section can be worded many ways), so it warns per the "gate without a reliable heuristic warns" rule. The detector + warn live in `teatree.core.gates.open_questions_gate` and fire from both PR-creation chokepoints (`ShipExecutor.build_pr_spec` and the orphan-branch `create_or_defer_pr`).
 
 A second warn from the same module covers the `decided-by-user` STATUS: an entry citing a `PlanArtifact` recorded by the maker/loop side (the shared `is_non_reviewer_role` predicate), or citing a pk no row carries, is reported as an attribution the cited record does not back. Only the citation is checked, so an entry that cites nothing is silent — the warn tells you the receipt is wrong, never that you needed one.
 

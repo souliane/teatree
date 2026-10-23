@@ -10,7 +10,7 @@ tokens; the direct-API transport itself is proved by building the real
 
 import asyncio
 import dataclasses
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -115,7 +115,7 @@ class _RecordingAnthropicModel(AnthropicModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
         run_context: RunContext[None] | None = None,
-    ) -> AsyncIterator[StreamedResponse]:
+    ) -> AsyncGenerator[StreamedResponse]:
         self.recorded.append(model_settings)
         async with self._offline.request_stream(
             messages, model_settings, model_request_parameters, run_context

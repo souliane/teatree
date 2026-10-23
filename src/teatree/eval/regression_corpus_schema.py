@@ -15,7 +15,7 @@ the module-health LOC cap.
 """
 
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -37,7 +37,7 @@ SCHEMA_PREFLIGHT = RegressionCheck(
 
 
 @contextmanager
-def fresh_corpus_db() -> Iterator[None]:
+def fresh_corpus_db() -> Generator[None]:
     """Point every file-backed DB alias at one fresh temp file the pre-flight migrates, then restore.
 
     An in-memory DB is already private to this process, so it is left alone.

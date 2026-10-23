@@ -18,7 +18,7 @@ restore failure never masks the merge result or a merge exception.
 """
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 from teatree.utils.run import run_allowed_to_fail
@@ -69,7 +69,7 @@ def _restore_head(repo: str, branch: str, detached_sha: str) -> None:
 
 
 @contextmanager
-def restore_caller_branch(repo: str | None) -> Iterator[None]:
+def restore_caller_branch(repo: str | None) -> Generator[None]:
     """Restore *repo*'s checked-out ref after the keystone merge (#2383).
 
     A no-op when *repo* is ``None`` (no project root resolved) or git cannot

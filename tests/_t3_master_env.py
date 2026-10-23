@@ -7,14 +7,14 @@ worker's own claim/release seams so the tests exercise the real lease semantics
 (runner principal, pid anchor, ``loop_runner`` driver), not a stub of them.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 from teatree.loops.worker import _claim_t3_master, _release_t3_master
 
 
 @contextmanager
-def worker_owns_t3_master() -> Iterator[None]:
+def worker_owns_t3_master() -> Generator[None]:
     """Claim ``t3-master`` as the loop runner for the duration, then hand it back."""
     _claim_t3_master()
     try:

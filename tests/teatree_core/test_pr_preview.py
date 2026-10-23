@@ -191,7 +191,7 @@ class TestShipPreviewUsesOverlayGeneratedTitle(TestCase):
 class TestShipPreviewHonorsTitleOverride(TestCase):
     """``ship_preview`` must use the pinned title, not the regenerated subject.
 
-    Parity with ``ShipExecutor._build_pr_spec`` (``runners/ship.py``): a title
+    Parity with ``ShipExecutor.build_pr_spec`` (``runners/ship.py``): a title
     pinned via ``ticket.extra['pr_title_override']`` (or an explicit ``--title``)
     is the title that will actually ship, so the preview — and therefore the
     preflight validation built on it — must reflect it. Regenerating the title
@@ -397,10 +397,33 @@ class TestShipPreviewEmitsRequiredSections(TestCase):
         assert "## Configuration" not in description
 
 
+class TestVisualQAInPrBody(TestCase):
+    def test_preview_contains_recorded_bypass_and_head(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            state=Ticket.State.SELF_REVIEWED,
+            extra={
+                "visual_qa": {
+                    "repo_path": "/tmp/backend",
+                    "head_sha": "a" * 40,
+                    "report_markdown": "## Visual QA\n\nBypass: docs only; head: abc123",
+                }
+            },
+        )
+        worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/backend", branch="feat")
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(_pr_preview.git, "last_commit_message", return_value=("feat: example", "## What\nChange.")),
+            patch("teatree.core.review.mr_metadata.git.head_sha", return_value="a" * 40),
+        ):
+            _, _, description = ship_preview(ticket, worktree)
+        assert "## Visual QA\n\nBypass: docs only; head: abc123" in description
+
+
 class TestPreviewAndShipReadTheSameCommit(TestCase):
     """#4103: the preflight must validate the title the ship will actually use.
 
-    ``ShipExecutor._build_pr_spec`` skips merge commits when deriving the subject;
+    ``ShipExecutor.build_pr_spec`` skips merge commits when deriving the subject;
     a preview that still read the raw ``HEAD`` would validate a merge subject the
     ship never ships — the two drifting again, which is what
     ``resolve_pr_title`` exists to prevent.

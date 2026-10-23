@@ -359,15 +359,20 @@ class PipelineRead:
         return not self.unreadable_reason
 
 
+@dataclass(frozen=True, slots=True)
+class IssueResolutionSpec:
+    repo: str
+    title: str
+    body: str
+    labels: tuple[str, ...]
+    merge_request_iid: int | None
+    thread_id: str = ""
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 @runtime_checkable  # noqa: PLR0904 — method count IS the code-host capability surface, mirrored by the concrete backends.
 class CodeHostBackend(Protocol):
-    """Pull/merge requests + issue fetch — the canonical code-host concern.
-
-    PR is the canonical term in core; GitLab implementations translate
-    MR ↔ PR at the API edge. ``repo`` + ``pr_iid`` is the natural unit on
-    both APIs (GitLab ``merge_requests/<iid>``, GitHub ``pulls/<number>``).
-    """
+    """Canonical code-host interface for pull requests and issues."""
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict: ...  # pragma: no branch
 
@@ -438,6 +443,8 @@ class CodeHostBackend(Protocol):
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]: ...  # pragma: no branch
+
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:  # pragma: no branch
         """Whether a submitted review (or its summary note) on the PR already carries *marker*."""
         ...
@@ -449,6 +456,10 @@ class CodeHostBackend(Protocol):
         :class:`PartialReviewPublishError`.
         """
         ...
+
+    def list_review_threads(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def resolve_review_thread(self, *, repo: str, pr_iid: int, thread_id: str) -> RawAPIDict: ...  # pragma: no branch
 
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # pragma: no branch
         """Thread-structured, author-carrying discussion read (#3340).
@@ -518,6 +529,8 @@ class CodeHostBackend(Protocol):
         labels: list[str] | None = None,
     ) -> RawAPIDict: ...  # pragma: no branch
 
+    def create_issue_resolving_threads(self, spec: "IssueResolutionSpec") -> RawAPIDict: ...  # pragma: no branch
+
     def create_sub_issue(
         self,
         *,
@@ -535,6 +548,8 @@ class CodeHostBackend(Protocol):
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict: ...  # pragma: no branch
 
     def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def add_issue_labels(self, *, issue_url: str, labels: tuple[str, ...]) -> RawAPIDict: ...  # pragma: no branch
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
 
@@ -665,6 +680,8 @@ class MessagingBackend(Protocol):
     def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 
     def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch
+
+    def resolve_unique_active_user_id(self, handle: str) -> str: ...  # pragma: no branch
 
     def resolve_usergroup_id(self, handle: str) -> str: ...  # pragma: no branch
 

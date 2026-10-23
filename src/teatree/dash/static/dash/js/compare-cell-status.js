@@ -31,8 +31,15 @@
       return;
     }
     if (event.detail.successful) {
+      var apply = control.closest(".compare-apply");
+      var revert = apply && apply.querySelector(".compare-revert");
+      if (revert && control.classList.contains("compare-use-here")) {
+        revert.hidden = false;
+      } else if (revert && control.classList.contains("compare-revert")) {
+        revert.hidden = true;
+      }
       slot.dataset.state = "saved";
-      slot.textContent = "✓ saved";
+      slot.textContent = control.classList.contains("compare-revert") ? "✓ reverted" : "✓ saved";
       return;
     }
     slot.dataset.state = "refused";

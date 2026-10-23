@@ -17,6 +17,7 @@ from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.session import Session
+from teatree.core.models.task_claim import atomic_after_checkout_exit
 from teatree.core.models.task_claim import claim as _claim_task
 from teatree.core.models.task_claim import complete_claimed as _complete_claimed_task
 from teatree.core.models.task_claim import fail as _fail_task
@@ -46,6 +47,16 @@ SERVER_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 class Task(models.Model):
     attempts: "models.Manager[TaskAttempt]"
+
+    if TYPE_CHECKING:
+        # Django synthesises these at class-prep time, so a static checker cannot see them.
+        id: int
+        ticket_id: int
+        session_id: int
+        parent_task_id: int | None
+        child_tasks: "models.Manager[Task]"
+
+        def get_status_display(self) -> str: ...
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
@@ -220,8 +231,21 @@ class Task(models.Model):
             role_phase |= Q(ticket__role=role, phase__in=phase_spellings(phase))
         return role_phase & not_under_external_delivery_q()
 
-    def claim(self, *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
-        _claim_task(self, claimed_by=claimed_by, claimed_by_session=claimed_by_session, lease_seconds=lease_seconds)
+    def claim(
+        self,
+        *,
+        claimed_by: str,
+        claimed_by_session: str = "",
+        lease_seconds: int = 300,
+        cleanup_unknown_overlay: bool = False,
+    ) -> None:
+        _claim_task(
+            self,
+            claimed_by=claimed_by,
+            claimed_by_session=claimed_by_session,
+            lease_seconds=lease_seconds,
+            cleanup_unknown_overlay=cleanup_unknown_overlay,
+        )
         self.observe_transition("task.claimed")
 
     def observe_transition(self, kind: str, cause: str = "none") -> None:
@@ -260,7 +284,7 @@ class Task(models.Model):
         ``complete_claimed`` refuses the write when a rival reclaimed the
         row under this worker, raising ``LeaseLostError``.
         """
-        with transaction.atomic():
+        with atomic_after_checkout_exit(self):
             _complete_claimed_task(self, result_artifact_path=result_artifact_path)
             self._advance_ticket()
             self.observe_transition("task.completed")
@@ -286,7 +310,7 @@ class Task(models.Model):
         """
         from teatree.core.models.errors import QualityGateError  # noqa: PLC0415 — deferred: ORM/app-registry
 
-        with transaction.atomic():
+        with atomic_after_checkout_exit(self):
             _complete_claimed_task(self, result_artifact_path=result_artifact_path)
             self.observe_transition("task.completed")
         try:
@@ -421,7 +445,7 @@ class Task(models.Model):
         # Sessions). Reading the state OUTSIDE the atomic (the previous shape)
         # let both completions read the same stale state and both fire.
         with transaction.atomic():
-            ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)  # ty: ignore[unresolved-attribute]
+            ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)
             if (
                 phase == "reviewing"
                 and ticket.role == Ticket.Role.REVIEWER

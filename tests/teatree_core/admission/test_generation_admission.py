@@ -1,6 +1,6 @@
 """``teatree.core.admission.generation_admission`` — the claim verdict and the stranded-drain heal."""
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import timedelta
 from functools import partial
@@ -17,7 +17,7 @@ _N1 = "b" * 40
 
 
 @contextmanager
-def _running_as(sha: str) -> Iterator[None]:
+def _running_as(sha: str) -> Generator[None]:
     with patch.dict("os.environ", {"TEATREE_GENERATION": sha}):
         yield
 

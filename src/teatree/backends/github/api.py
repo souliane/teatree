@@ -1,19 +1,21 @@
 """GitHub ``gh`` CLI request helpers — the low-level transport concern.
 
 Free functions wrapping ``gh`` / ``gh api`` (GET / paginated GET / search /
-POST / PATCH) plus the issue-URL parse, so :class:`teatree.backends.github.GitHubCodeHost`
-stays focused on the cross-host Protocol surface and under the module-health cap —
-the same split shape as :mod:`teatree.backends.gitlab.api`.
+POST / PATCH) plus the issue-URL parse and the HTTP 404 predicate, so
+:class:`teatree.backends.github.GitHubCodeHost` stays focused on the cross-host
+Protocol surface and under the module-health cap — the same split shape as
+:mod:`teatree.backends.gitlab.api`.
 """
 
 import json
 import os
 import re
+import shutil
 from typing import cast
 from urllib.parse import urlparse
 
 from teatree.types import RawAPIDict
-from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
+from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
@@ -39,13 +41,39 @@ def _run_gh(*args: str, token: str = "", timeout: float | None = None) -> Comple
             "",
             "github_token_pass_key resolved no token; refusing ambient gh authentication",
         )
+    return run_checked(list(args), env=_gh_env(token), timeout=timeout)
+
+
+def is_not_found(exc: CommandFailedError) -> bool:
+    """Whether a failed ``gh api`` call was a genuine HTTP 404.
+
+    ``gh api`` exits non-zero for EVERY HTTP error (404, 401, 403, 5xx alike)
+    with returncode 1, so the only reliable signal for a permanent "no such
+    resource" is the literal ``HTTP 404`` string in stderr. Everything else is
+    an indeterminate failure the caller must NOT swallow as an empty result.
+    """
+    return "HTTP 404" in exc.stderr
+
+
+def _gh_env(token: str) -> dict[str, str]:
     env = dict(os.environ)
     env.pop("GITHUB_TOKEN", None)
+    env.pop("GITLAB_TOKEN", None)
     env["GH_TOKEN"] = token
-    return run_checked(list(args), env=env, timeout=timeout)
+    return env
 
 
-def _gh_api_get(endpoint: str, *, token: str = "") -> object:
+def run_gh_unchecked(args: list[str], *, token: str) -> CompletedProcess[str]:
+    argv = [shutil.which("gh") or "gh", *args]
+    if not token:
+        return CompletedProcess(args=argv, returncode=4, stdout="", stderr="github token unavailable")
+    try:
+        return run_allowed_to_fail(argv, expected_codes=None, env=_gh_env(token))
+    except FileNotFoundError:
+        return CompletedProcess(args=argv, returncode=127, stdout="", stderr="gh not installed")
+
+
+def gh_api_get(endpoint: str, *, token: str = "") -> object:
     """Call ``gh api`` (GET) and return parsed JSON."""
     result = _run_gh(
         "gh",
@@ -59,7 +87,7 @@ def _gh_api_get(endpoint: str, *, token: str = "") -> object:
     return json.loads(result.stdout)
 
 
-def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
+def gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
     """Fetch EVERY page of a list endpoint and return one flat list.
 
     A plain ``gh api`` GET returns only the first page — GitHub's default
@@ -94,11 +122,11 @@ def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]
     return flattened
 
 
-def _gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
+def gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
     """Fetch every page of a GitHub search endpoint and return a flat item list.
 
     Search responses wrap results in ``{"items": [...], "total_count": N}``
-    rather than a bare JSON array, so ``_gh_api_get_paginated`` (which expects
+    rather than a bare JSON array, so ``gh_api_get_paginated`` (which expects
     bare arrays per page via ``--slurp``) cannot be used here.
     ``--paginate`` + ``--slurp`` emits each page as a search-object element;
     this pulls the ``items`` list from each page and flattens them.
@@ -144,9 +172,6 @@ def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str
             "",
             "github_token_pass_key resolved no token; refusing ambient gh authentication",
         )
-    env = dict(os.environ)
-    env.pop("GITHUB_TOKEN", None)
-    env["GH_TOKEN"] = token
     result = run_checked(
         [
             "gh",
@@ -160,7 +185,7 @@ def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str
             "-",
         ],
         stdin_text=json.dumps(payload),
-        env=env,
+        env=_gh_env(token),
         timeout=_FORGE_READ_TIMEOUT_SECONDS,
     )
     return json.loads(result.stdout)
@@ -176,7 +201,7 @@ def _gh_api_patch(endpoint: str, payload: RawAPIDict, *, token: str = "") -> obj
     return _gh_api_write(endpoint, payload, method="PATCH", token=token)
 
 
-def _parse_issue_ref(issue_url: str) -> tuple[str, int] | None:
+def parse_issue_ref(issue_url: str) -> tuple[str, int] | None:
     """The ``(owner/repo, number)`` of a GitHub issue URL, or ``None`` when unparsable.
 
     The single source of truth for the ``urlparse`` + ``_ISSUE_URL_RE`` preamble the

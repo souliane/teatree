@@ -1,5 +1,5 @@
-# teatree headless deployment image — one image, five roles (init/worker/admin/
-# slack-listener/watchdog) selected by $TEATREE_ROLE. Extends the
+# teatree headless deployment image — one image, six roles (init/worker/admin/
+# webhook-listener/slack-listener/watchdog) selected by $TEATREE_ROLE. Extends the
 # dev/Dockerfile.test toolchain and adds gh. The image is SELF-CONTAINED (#3451):
 # it BAKES a pinned source@ref + the managed Python interpreter + the locked
 # editable install (see the bake stage near the end), so a fresh box with only
@@ -112,7 +112,7 @@ RUN apt-get update -qq && \
         echo "deploy image: FATAL - npm is absent after installing nodejs ($(node --version 2>/dev/null || echo 'node missing')). The NodeSource repo did not take effect, so this is Ubuntu's nodejs, which packages npm separately." >&2; \
         exit 1; \
     fi && \
-    npm install -g @anthropic-ai/claude-code@2.1.286 pyright@1.1.411 @openai/codex@0.155.1 skills@1.7.0 && \
+    npm install -g @anthropic-ai/claude-code@2.1.294 pyright@1.1.411 @openai/codex@0.155.1 skills@1.7.0 && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*
 

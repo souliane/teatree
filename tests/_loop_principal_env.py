@@ -20,7 +20,7 @@ pins the identity while replacing no module attribute — no door to leave open,
 and the integration-shaped choice ``tests/CLAUDE.md`` asks for.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 from teatree.core.session_identity import RUNNER_PID_ENV, RUNNER_SESSION_ENV, SESSION_ID_ENV_VARS
@@ -38,7 +38,7 @@ _PINNED_VARS = (*SESSION_ID_ENV_VARS, RUNNER_SESSION_ENV, RUNNER_PID_ENV, SESSIO
 
 
 @contextmanager
-def pinned_loop_principal(session_id: str = "", *, pid: int | None = None) -> Iterator[None]:
+def pinned_loop_principal(session_id: str = "", *, pid: int | None = None) -> Generator[None]:
     """Resolve the loop principal to (*session_id*, *pid*) for the duration.
 
     Every source the resolvers consult is neutralised first, so the pin holds

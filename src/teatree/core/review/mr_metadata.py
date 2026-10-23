@@ -25,13 +25,17 @@ the declaring overlay's own skill (core stays overlay-agnostic). The generator
 """
 
 import re
+from pathlib import Path
 
 from teatree.types import DEFAULT_MR_TITLE_REGEX
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 __all__ = [
     "AUTO_CREATED_MARKER",
     "DEFAULT_MR_TITLE_REGEX",
     "STANDARD_SECTIONS",
+    "append_recorded_visual_qa",
     "auto_created_description",
     "ensure_standard_body",
     "expected_first_line_format",
@@ -40,6 +44,24 @@ __all__ = [
     "missing_required_sections",
     "validate_mr_metadata",
 ]
+
+
+def append_recorded_visual_qa(description: str, evidence: object, *, repo_path: str) -> str:
+    if not isinstance(evidence, dict) or "## Visual QA" in description:
+        return description
+    if evidence.get("repo_path") != str(Path(repo_path).resolve()) or not evidence.get("head_sha"):
+        return description
+    try:
+        head_sha = git.head_sha(repo=repo_path)
+    except (CommandFailedError, OSError):
+        return description
+    if evidence["head_sha"] != head_sha:
+        return description
+    markdown = evidence.get("report_markdown")
+    if not isinstance(markdown, str) or not markdown.strip():
+        return description
+    return f"{description.rstrip()}\n\n{markdown.rstrip()}"
+
 
 _WHAT_WHY_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(what|why)\b\s*:?", re.IGNORECASE | re.MULTILINE)
 

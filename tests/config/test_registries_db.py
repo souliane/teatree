@@ -17,7 +17,7 @@ leak into discovery). ``_isolate_env`` (conftest) clears ``T3_CONFIG_DB`` /
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -32,7 +32,7 @@ _LOCK_HELD_SECONDS = 0.4
 
 
 @contextmanager
-def _a_writer_holding_the_store_locked(db: Path) -> Iterator[None]:
+def _a_writer_holding_the_store_locked(db: Path) -> Generator[None]:
     """Hold EXCLUSIVE on *db* for `_LOCK_HELD_SECONDS`, the way a committing writer does.
 
     Entered only once the lock is actually held, so the read inside the block cannot pass by
@@ -141,7 +141,7 @@ class TestAnUnreadableStoreIsNotAnEmptyRegistry:
 class TestAMomentarilyLockedStoreIsNotAnUnreadableOne:
     """Contention is transient by construction, so giving up on it reports a fault that is not one.
 
-    The control DB runs `journal_mode=TRUNCATE`, so a reader genuinely waits on a committing
+    A host-reachable copy runs `journal_mode=TRUNCATE`, so a reader waits on a committing
     writer; a cold read that gave up after 100ms recorded every such commit as a degraded config
     tier, and the safety clamp then resolved every autonomy/approval gate to its most restrictive
     value against a store that was perfectly readable a moment later.

@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.conf import settings
+from xdist.workermanage import parse_tx_spec_config
 
 from hooks.scripts import hook_budget
 from teatree.agents import live_mailbox
@@ -35,10 +37,19 @@ from teatree.core.worktree.branch_classification import reset_forge_probe_cache,
 from teatree.eval.artifact_redaction import CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV
 from teatree.eval.cost_observation import suite_budget_from_env
 from teatree.llm.credentials import Credential
+from teatree.loop.overlay_followup_jobs import reset_inflight_hooks
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
 from teatree.loops.slack_inbound import reset_dm_recorders
-from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
+from teatree.quality.pytest_resource_contract import (
+    TOTAL_TEST_WORKERS_PER_CORE,
+    PoolUnavailableError,
+    SlotLease,
+    WorkerSlotPool,
+    bounded_auto_workers,
+    whole_tree_refusal,
+    worker_pool_root,
+)
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
@@ -67,6 +78,13 @@ os.environ["T3_OVERLAY_NAME"] = "t3-teatree"
 os.environ["T3_BANNED_TERMS_SCAN_TIMEOUT_S"] = "45"
 # Synthetic /host-proc tables model a Linux host; the refusal tests unset or change it themselves.
 os.environ["TEATREE_HOST_OS"] = "Linux"
+
+
+@pytest.fixture(autouse=True)
+def _no_idle_window_in_existing_tests() -> Iterator[None]:
+    with patch("teatree.agents.runner.DEFAULT_IDLE_WINDOW_SECONDS", 0.0):
+        yield
+
 
 # Guard against import-time side effects in script modules that call _init.init()
 # at module import. Route HOME/T3_WORKSPACE_DIR to a disposable temp sandbox.
@@ -127,6 +145,15 @@ def configured_banned_term_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
 
 
+_WORKER_SLOT_LEASE = pytest.StashKey[SlotLease]()
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--teatree-selected-full", action="store_true", help="Run the affected-test selector's full verdict"
+    )
+
+
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     """Bound a bare ``-n auto`` by this process's CPU and usable RAM."""
     return bounded_auto_workers(
@@ -136,8 +163,9 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     )
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Refuse a non-sharded whole-tree local run before test collection starts."""
+    """Refuse a non-sharded whole-tree local run, then lease its xdist workers from the host-wide pool."""
     config = session.config
     if hasattr(config, "workerinput"):
         return
@@ -145,9 +173,37 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
     )
     tach_active = bool(getattr(config.option, "tach", False))
-    refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded, tach_active=tach_active)
+    refusal = whole_tree_refusal(
+        config.args,
+        root=config.rootpath,
+        sharded=sharded,
+        tach_active=tach_active,
+        full_selected=bool(config.getoption("teatree_selected_full")),
+    )
     if refusal:
         raise pytest.UsageError(refusal)
+    distributed = config.getoption("dist", "no") != "no" and not config.option.collectonly
+    if not distributed:
+        return
+    tx = parse_tx_spec_config(config)
+    pool = WorkerSlotPool(worker_pool_root(), capacity=available_cpu_count() * TOTAL_TEST_WORKERS_PER_CORE)
+    try:
+        lease = pool.session_lease(len(tx))
+    except PoolUnavailableError as exc:
+        msg = f"{exc}; set TEATREE_PYTEST_WORKER_POOL_ROOT to a directory every pytest on this host shares"
+        raise pytest.UsageError(msg) from exc
+    config.stash[_WORKER_SLOT_LEASE] = lease
+    config.option.tx = tx[: lease.workers]
+    if isinstance(config.option.numprocesses, int) and config.option.numprocesses > 0:
+        config.option.numprocesses = lease.workers
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    if hasattr(config, "workerinput"):
+        return
+    lease = config.stash.get(_WORKER_SLOT_LEASE, None)
+    if lease is not None:
+        lease.release()
 
 
 def load_script(name: str) -> types.ModuleType:
@@ -418,6 +474,13 @@ def _restore_django_settings_module() -> Iterator[None]:
         os.environ.pop("DJANGO_SETTINGS_MODULE", None)
     else:
         os.environ["DJANGO_SETTINGS_MODULE"] = before
+
+
+@pytest.fixture(autouse=True)
+def _reset_overlay_followup_hook_cache() -> Iterator[None]:
+    reset_inflight_hooks()
+    yield
+    reset_inflight_hooks()
 
 
 @pytest.fixture(autouse=True)
@@ -795,6 +858,13 @@ def pytest_configure(config: pytest.Config) -> None:
     (a worker thread that STRANDS a DB handle) and ``tests/_speak_thread_sentinel.py``
     (a test that LEAKS a local-playback thread into the next test, #4277).
     """
+    if settings.SETTINGS_MODULE != "tests.django_settings":
+        message = (
+            f"the suite runs only under tests.django_settings, not {settings.SETTINGS_MODULE}: "
+            "an ambient DJANGO_SETTINGS_MODULE won because addopts (and its --ds) were dropped; "
+            "pass --ds=tests.django_settings"
+        )
+        raise pytest.UsageError(message)
     config.pluginmanager.register(ThreadDbHandleSentinel(), "thread-db-handle-sentinel")
     config.pluginmanager.register(SpeakThreadSentinel(), "speak-thread-sentinel")
     config.pluginmanager.register(_session_resource_guard, "session-resource-guard")
@@ -824,7 +894,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         )
 
 
-@pytest.fixture(autouse=True)
+# Class-local _isolate_env fixtures must not shadow the process sandbox.
+@pytest.fixture(autouse=True, name="isolated_test_process_env")
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Isolate process env so tests cannot touch host workspace/config.
 
@@ -854,6 +925,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # never reads a host DB.
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    # Resolve test registry paths under the isolated HOME.
+    monkeypatch.delenv("T3_LOOP_REGISTRY_DIR", raising=False)
     # Redirect the update-check cache at a hermetic per-test dir holding a fresh
     # "up to date" verdict (empty message) so ``run_update_check`` short-circuits on the
     # cache before its network/subprocess ``gh`` call. Update checks always run here
@@ -868,8 +941,6 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         json.dumps({"ts": time.time(), "message": ""}), encoding="utf-8"
     )
     monkeypatch.setattr("teatree.update_check.DATA_DIR", update_cache_dir)
-    # Default to per-worktree postgres for test isolation (override in specific tests)
-    monkeypatch.setenv("T3_SHARE_DB_SERVER", "false")
     monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
     monkeypatch.delenv("T3_BRANCH_PREFIX", raising=False)
     monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)

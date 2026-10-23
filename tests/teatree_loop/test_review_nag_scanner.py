@@ -1,10 +1,4 @@
-"""Tests for the ReviewNagScanner — the 2-day re-ask (#1084 follow-up).
-
-The scanner walks ``ReviewRequestPost`` rows and, when an MR has had no thread
-activity (reply or reaction) for 2 days and is still live-open, non-draft, and
-unapproved, posts exactly ONE thread reply: the configured re-ask mention + `` :pray:``.
-``last_nag_at`` enforces no double-ping within the 2-day window.
-"""
+"""Tests for the ReviewNagScanner — the widening review re-ask."""
 
 import datetime as dt
 from collections.abc import Iterator
@@ -13,9 +7,11 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from django.core.cache import cache as django_cache
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.backends.slack.web_reads import resolve_unique_active_user_id
 from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
 from teatree.backends.slack.web_reads import resolve_usergroup_id as resolve_slack_usergroup_id
 from teatree.config import TeaTreeConfig, UserSettings, cold_reader
@@ -28,9 +24,11 @@ from teatree.core.review import mr_state_question
 from teatree.core.review.mr_state_question import mr_state_marker
 from teatree.core.review.mr_triage import RepoOwner
 from teatree.loop.domain_jobs import _followup_jobs_for_overlay
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_resume import ReviewRequestResumeScanner
 from teatree.types import RawAPIDict
+from tests._review_nag_members import active_member
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
@@ -40,6 +38,7 @@ _REVIEWERS_GROUP: RawAPIDict = {"id": "S0REVIEWERS", "handle": "reviewers-team",
 
 @pytest.fixture(autouse=True)
 def _guard_confirms_absence() -> Iterator[None]:
+    django_cache.clear()
     target = GuardTarget(channel_id=_CHANNEL, channel_name="review", token="xoxb-test")
     with (
         patch("teatree.core.gates.review_request_guard.resolve_guard_target", return_value=target),
@@ -66,6 +65,7 @@ class _PermittingPostureMixin:
         patcher.start()
         self.addCleanup(patcher.stop)
         seed_permitting_posture()
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
         identity_patcher = patch.object(
             cold_reader,
             "mapping_setting",
@@ -156,6 +156,9 @@ class FakeSlack:
     def resolve_user_id(self, handle: str) -> str:
         return resolve_slack_user_id(get=self._slack_api, handle=handle)
 
+    def resolve_unique_active_user_id(self, handle: str) -> str:
+        return resolve_unique_active_user_id(get=self._slack_api, handle=handle)
+
 
 @dataclass
 class FakeHost:
@@ -171,6 +174,9 @@ class FakeHost:
     author: str = "owner"
     raise_on_current_user: Exception | None = None
     raise_on_author: Exception | None = None
+    comments: list[RawAPIDict] = field(default_factory=list)
+    comments_by_iid: dict[int, list[RawAPIDict]] = field(default_factory=dict)
+    requested_reviewers: list[RawAPIDict] = field(default_factory=list)
 
     def get_pr_open_state(self, *, pr_url: str) -> Any:
         _ = pr_url
@@ -204,6 +210,15 @@ class FakeHost:
             raise self.raise_on_author
         return self.author
 
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        _ = repo
+        return self.comments_by_iid.get(pr_iid, self.comments)
+
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+        _ = (repo, pr_iid)
+        requested = [str(pr["username"]) for pr in self.requested_reviewers if isinstance(pr.get("username"), str)]
+        return sorted(set(requested + self.approved_by))
+
 
 def _seed(
     *,
@@ -231,6 +246,66 @@ def _attribute(post: ReviewRequestPost, overlay: str | None) -> ReviewRequestPos
 
 
 class TestActivityGate(_PermittingPostureMixin, TestCase):
+    def test_requester_only_reaction_does_not_suppress_the_ping(self) -> None:
+        _seed(days_old=5.0)
+        slack = FakeSlack(
+            thread_replies=[
+                {"ts": "ts.1", "reactions": [{"name": "white_check_mark", "users": ["UOWNER"], "count": 1}]},
+            ],
+        )
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.ping"]
+        assert [post["thread_ts"] for post in slack.posts] == ["ts.1"]
+
+    def test_colleague_reaction_still_suppresses_the_ping(self) -> None:
+        _seed(days_old=5.0)
+        slack = FakeSlack(
+            thread_replies=[
+                {
+                    "ts": "ts.1",
+                    "reactions": [{"name": "eyes", "users": ["UOWNER", "UPEER"], "count": 2}],
+                },
+            ],
+        )
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert slack.posts == []
+        assert signals == []
+
+    def test_the_nag_builder_resolves_the_requester_at_its_overlay(self) -> None:
+        backend = OverlayBackends(name="t3-test", hosts=(FakeHost(),), messaging=FakeSlack())
+        with (
+            patch("teatree.loop.domain_jobs.egress_forbidden", return_value=False),
+            patch("teatree.loop.domain_jobs._user_slack_id_for_overlay", return_value="UOWNER") as resolve,
+        ):
+            jobs = _followup_jobs_for_overlay(backend)
+
+        nags = [job.scanner for job in jobs if isinstance(job.scanner, ReviewNagScanner)]
+        resumes = [job.scanner for job in jobs if isinstance(job.scanner, ReviewRequestResumeScanner)]
+        assert len(nags) == 1
+        assert nags[0].requester_slack_id == "UOWNER"
+        assert len(resumes) == 1
+        assert resumes[0].requester_slack_id == "UOWNER"
+        resolve.assert_called_once_with("t3-test")
+
+    def test_unreadable_requester_id_builds_a_safe_nag(self) -> None:
+        backend = OverlayBackends(name="t3-test", hosts=(FakeHost(),), messaging=FakeSlack())
+        with (
+            patch("teatree.loop.domain_jobs.egress_forbidden", return_value=False),
+            patch("teatree.loop.domain_jobs._user_slack_id_for_overlay", side_effect=RuntimeError("unreadable")),
+        ):
+            jobs = _followup_jobs_for_overlay(backend)
+
+        nags = [job.scanner for job in jobs if isinstance(job.scanner, ReviewNagScanner)]
+        resumes = [job.scanner for job in jobs if isinstance(job.scanner, ReviewRequestResumeScanner)]
+        assert len(nags) == 1
+        assert nags[0].requester_slack_id == ""
+        assert len(resumes) == 1
+        assert resumes[0].requester_slack_id == ""
+
     def test_idle_over_two_days_re_asks_on_thread(self) -> None:
         post = _seed(days_old=3.0)
         slack = FakeSlack()
@@ -240,7 +315,7 @@ class TestActivityGate(_PermittingPostureMixin, TestCase):
         sent = slack.posts[0]
         assert sent["channel"] == _CHANNEL
         assert sent["thread_ts"] == "ts.1"
-        assert sent["text"] == ":pray:"
+        assert sent["text"] == "<!subteam^S0REVIEWERS> could you please have another look?"
         post.refresh_from_db()
         assert post.last_nag_at is not None
         assert [s.kind for s in signals] == ["review_nag.ping"]
@@ -256,7 +331,7 @@ class TestOwnerAuthorshipGuard(_PermittingPostureMixin, TestCase):
         post = _seed(days_old=30.0, last_nag_at=prior, nag_count=2)
         slack = FakeSlack()
 
-        with patch("teatree.loop.scanners.review_nag._NagClaim.take") as take:
+        with patch("teatree.loop.scanners.review_nag.ReviewNagClaim.take") as take:
             signals = ReviewNagScanner(
                 messaging=slack,
                 host=FakeHost(author="colleague"),
@@ -280,7 +355,7 @@ class TestOwnerAuthorshipGuard(_PermittingPostureMixin, TestCase):
         for index, (host, identities) in enumerate(cases, start=1):
             _seed(url=f"https://gitlab.example/x/-/merge_requests/{100 + index}", days_old=30.0)
             slack = FakeSlack()
-            with self.subTest(index=index), patch("teatree.loop.scanners.review_nag._NagClaim.take") as take:
+            with self.subTest(index=index), patch("teatree.loop.scanners.review_nag.ReviewNagClaim.take") as take:
                 signals = ReviewNagScanner(messaging=slack, host=host, identities=identities).scan()
                 take.assert_not_called()
                 assert slack.posts == []
@@ -292,7 +367,11 @@ class TestOwnerAuthorshipGuard(_PermittingPostureMixin, TestCase):
             FakeHost(raise_on_current_user=RuntimeError("down"), author="owner"),
         )
         for index, host in enumerate(hosts, start=1):
-            _seed(url=f"https://gitlab.example/x/-/merge_requests/{300 + index}", days_old=30.0)
+            _seed(
+                url=f"https://gitlab.example/x/-/merge_requests/{300 + index}",
+                thread_ts=f"ts.{index}",
+                days_old=30.0,
+            )
             slack = FakeSlack()
 
             with self.subTest(index=index):
@@ -384,6 +463,108 @@ class TestOwnerAuthorshipGuard(_PermittingPostureMixin, TestCase):
 
 
 class TestNoDoublePing(_PermittingPostureMixin, TestCase):
+    def test_ping_signal_marks_a_batch_attempted_for_this_scan(self) -> None:
+        _seed(days_old=5.0)
+        _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=5.0)
+        scanner = ReviewNagScanner(messaging=FakeSlack(), host=FakeHost())
+        ping = ScanSignal(kind="review_nag.ping", summary="sent", payload={})
+
+        with patch.object(ReviewNagScanner, "_process_one", return_value=ping) as process:
+            assert scanner.scan() == [ping]
+
+        process.assert_called_once()
+
+    def test_misaligned_siblings_wait_for_the_slowest_backoff_then_share_the_step(self) -> None:
+        first = _seed(days_old=30.0, last_nag_at=timezone.now() - dt.timedelta(days=10), nag_count=2)
+        second = _seed(
+            url="https://gitlab.example/x/-/merge_requests/2",
+            days_old=30.0,
+            last_nag_at=timezone.now() - dt.timedelta(days=3),
+            nag_count=1,
+        )
+        slack = FakeSlack()
+        now = timezone.now()
+
+        assert ReviewNagScanner(messaging=slack, host=FakeHost(), now=now).scan() == []
+        assert slack.posts == []
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), now=now + dt.timedelta(days=2)).scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.ping"]
+        assert len(slack.posts) == 1
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert first.nag_count == second.nag_count == 3
+        assert first.last_nag_at == second.last_nag_at
+
+    def test_batch_mention_includes_reviewer_of_a_sibling_request(self) -> None:
+        first = _seed(days_old=5.0)
+        second = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=5.0)
+        slack = FakeSlack(members=[active_member("UPEERA0", "peer-a"), active_member("UPEERB0", "peer-b")])
+        host = FakeHost(
+            comments_by_iid={
+                1: [{"author": {"username": "peer-a"}}],
+                2: [{"author": {"username": "peer-b"}}],
+            }
+        )
+
+        signals = ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.ping"]
+        assert slack.posts[0]["text"] == "<@UPEERA0> <@UPEERB0> could you please have another look?"
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert first.last_nag_at == second.last_nag_at
+
+    def test_batch_thread_gets_one_ping_and_one_shared_backoff(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
+        first = _seed(days_old=5.0)
+        second = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=5.0)
+        other = _seed(url="https://gitlab.example/x/-/merge_requests/3", thread_ts="ts.other", days_old=1.0)
+        closed = _seed(url="https://gitlab.example/x/-/merge_requests/4", days_old=5.0)
+        closed.done_at = timezone.now()
+        closed.save(update_fields=["done_at"])
+        slack = FakeSlack(
+            usergroups=[_REVIEWERS_GROUP],
+            thread_replies=[{"ts": "ts.1", "reactions": [{"name": "eyes", "users": ["UOWNER"], "count": 1}]}],
+        )
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.ping"]
+        assert slack.posts == [
+            {
+                "channel": _CHANNEL,
+                "text": "<!subteam^S0REVIEWERS> could you please have another look?",
+                "thread_ts": "ts.1",
+            }
+        ]
+        first.refresh_from_db()
+        second.refresh_from_db()
+        other.refresh_from_db()
+        closed.refresh_from_db()
+        assert first.last_nag_at == second.last_nag_at
+        assert first.last_nag_at is not None
+        assert first.nag_count == second.nag_count == 1
+        assert first.last_nag_reply_ts == second.last_nag_reply_ts == "reply.1"
+        assert other.last_nag_at is None
+        assert closed.last_nag_at is None
+
+    def test_closed_siblings_recent_nag_cannot_hold_open_thread(self) -> None:
+        open_post = _seed(days_old=5.0)
+        closed = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=5.0)
+        closed.done_at = timezone.now()
+        closed.last_nag_at = timezone.now()
+        closed.save(update_fields=["done_at", "last_nag_at"])
+        slack = FakeSlack()
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.ping"]
+        assert len(slack.posts) == 1
+        open_post.refresh_from_db()
+        assert open_post.nag_count == 1
+
     def test_recent_last_nag_at_blocks_re_ping(self) -> None:
         _seed(days_old=10.0, last_nag_at=timezone.now() - dt.timedelta(hours=6))
         slack = FakeSlack()
@@ -411,8 +592,9 @@ class TestReaskMention(_PermittingPostureMixin, TestCase):
     def _re_ask(self, slack: FakeSlack, *, overlay: str = "") -> str:
         url = f"https://gitlab.example/x/-/merge_requests/{ReviewRequestPost.objects.count() + 1}"
         _attribute(_seed(url=url, days_old=3.0), overlay)
+        before = len(slack.posts)
         ReviewNagScanner(messaging=slack, host=FakeHost(), overlay_name=overlay).scan()
-        return slack.posts[-1]["text"]
+        return slack.posts[-1]["text"] if len(slack.posts) > before else ""
 
     def test_a_handle_the_usergroups_list_knows_renders_a_group_mention(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
@@ -420,20 +602,119 @@ class TestReaskMention(_PermittingPostureMixin, TestCase):
         text = self._re_ask(FakeSlack(usergroups=[_REVIEWERS_GROUP]))
 
         assert text.startswith("<!subteam^")
-        assert text == "<!subteam^S0REVIEWERS> :pray:"
+        assert text == "<!subteam^S0REVIEWERS> could you please have another look?"
 
     def test_an_empty_setting_posts_no_mention_and_looks_nothing_up(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
         slack = FakeSlack(usergroups=[_REVIEWERS_GROUP])
 
-        assert self._re_ask(slack) == ":pray:"
+        assert self._re_ask(slack) == ""
         assert slack.lookups == []
 
     def test_the_mention_is_read_at_the_scanners_overlay(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
         ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team", scope="t3-acme")
         slack = FakeSlack(usergroups=[_REVIEWERS_GROUP])
 
-        assert self._re_ask(slack, overlay="t3-acme") == "<!subteam^S0REVIEWERS> :pray:"
-        assert self._re_ask(slack, overlay="t3-other") == ":pray:"
+        assert self._re_ask(slack, overlay="t3-acme") == "<!subteam^S0REVIEWERS> could you please have another look?"
+        assert self._re_ask(slack, overlay="t3-other") == ""
+
+    def test_unresolved_requester_id_uses_group_even_with_engagement(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
+        _seed(days_old=5.0)
+        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP], members=[active_member("UPEER00", "peer")])
+        host = FakeHost(comments=[{"author": {"username": "peer"}}])
+
+        ReviewNagScanner(messaging=slack, host=host, requester_slack_id="").scan()
+
+        assert slack.posts[0]["text"] == "<!subteam^S0REVIEWERS> could you please have another look?"
+
+    def test_unresolved_requester_id_refuses_a_user_fallback(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "owner")
+        _seed(days_old=5.0)
+        slack = FakeSlack(members=[{"id": "UOWNER", "name": "owner"}])
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="").scan()
+
+        assert slack.posts == []
+        assert [signal.kind for signal in signals] == ["review_nag.mention_held"]
+
+    def test_requester_is_not_mentioned_as_the_engaged_reviewer(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
+        _seed(days_old=5.0)
+        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP], members=[active_member("UOWNER", "owner")])
+        host = FakeHost(comments=[{"author": {"username": "owner"}}])
+
+        ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
+
+        assert slack.posts[0]["text"] == "<!subteam^S0REVIEWERS> could you please have another look?"
+
+    def test_requested_reviewer_gets_a_direct_reask(self) -> None:
+        _seed(days_old=5.0)
+        slack = FakeSlack(members=[active_member("UPEER00", "peer")])
+        host = FakeHost(requested_reviewers=[{"username": "peer"}])
+
+        ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
+
+        assert slack.posts[0]["text"] == "<@UPEER00> could you please have another look?"
+
+    def test_old_thread_reply_author_gets_a_direct_reask(self) -> None:
+        _seed(days_old=5.0)
+        slack = FakeSlack(
+            thread_replies=[{"ts": _recent_ts(72), "user": "UPEER00"}], members=[active_member("UPEER00", "peer")]
+        )
+
+        ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert slack.posts[0]["text"] == "<@UPEER00> could you please have another look?"
+
+    def test_no_safe_mention_refuses_the_post_and_releases_the_claim(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
+        post = _seed(days_old=5.0)
+        slack = FakeSlack()
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert slack.posts == []
+        assert [signal.kind for signal in signals] == ["review_nag.mention_held"]
+        post.refresh_from_db()
+        assert post.last_nag_at is None
+        assert post.nag_count == 0
+
+    def test_held_reask_does_not_walk_the_directory_on_every_tick(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
+        _seed(days_old=5.0)
+        slack = FakeSlack()
+        host = FakeHost(comments=[{"author": {"username": "absent_lookup_peer"}}])
+        scanner = ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER")
+
+        assert [signal.kind for signal in scanner.scan()] == ["review_nag.mention_held"]
+        assert [signal.kind for signal in scanner.scan()] == ["review_nag.mention_held"]
+        assert slack.lookups.count("users.list") == 1
+
+    def test_held_reask_repeated_case_starts_with_empty_cache(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
+        _seed(days_old=5.0)
+        slack = FakeSlack()
+        host = FakeHost(comments=[{"author": {"username": "absent_lookup_peer"}}])
+
+        signals = ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.mention_held"]
+        assert slack.lookups.count("users.list") == 1
+
+    def test_batch_thread_holds_once_with_one_directory_lookup(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "")
+        _seed(days_old=5.0)
+        _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=5.0)
+        slack = FakeSlack()
+        host = FakeHost(comments=[{"author": {"username": "single_lookup_peer"}}])
+
+        signals = ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.mention_held"]
+        assert slack.lookups.count("users.list") == 1
+        assert slack.posts == []
 
 
 class TestMrStateGate(_PermittingPostureMixin, TestCase):
@@ -605,6 +886,58 @@ class TestUnreadableMrStateFailsClosed(_PermittingPostureMixin, TestCase):
 class TestPausedRequestIsNeverPinged(_PermittingPostureMixin, TestCase):
     """A request the owner reacted "hold" on is theirs to release, not ours to escalate."""
 
+    def test_the_requesters_own_pause_reaction_still_holds_the_nag(self) -> None:
+        _seed(days_old=10.0)
+        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
+        slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}], root_reactions=[pause])
+        host = FakeHost()
+
+        with (
+            patch.object(host, "get_pr_open_state", wraps=host.get_pr_open_state) as open_read,
+            patch.object(slack, "fetch_message", wraps=slack.fetch_message) as root_read,
+        ):
+            signals = ReviewNagScanner(messaging=slack, host=host, requester_slack_id="UOWNER").scan()
+
+        assert slack.posts == []
+        assert [signal.kind for signal in signals] == ["review_nag.mr_paused"]
+        open_read.assert_called_once()
+        root_read.assert_not_called()
+
+    def test_closed_paused_request_is_marked_done(self) -> None:
+        post = _seed(days_old=10.0)
+        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
+        slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}])
+
+        signals = ReviewNagScanner(
+            messaging=slack, host=FakeHost(open_state=PrOpenState.CLOSED), requester_slack_id="UOWNER"
+        ).scan()
+
+        post.refresh_from_db()
+        assert post.done_at is not None
+        assert slack.posts == []
+        assert [signal.kind for signal in signals] == ["review_nag.mr_closed"]
+
+    def test_not_yet_due_paused_request_emits_no_signal(self) -> None:
+        _seed(days_old=1.0)
+        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
+        slack = FakeSlack(thread_replies=[{"ts": "ts.1", "reactions": [pause]}])
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert signals == []
+        assert slack.posts == []
+
+    def test_pause_on_a_reply_still_checks_the_root(self) -> None:
+        _seed(days_old=10.0)
+        pause = {"name": "double_vertical_bar", "users": ["UOWNER"], "count": 1}
+        slack = FakeSlack(thread_replies=[{"ts": "ts.2", "reactions": [pause]}])
+
+        with patch.object(slack, "fetch_message", wraps=slack.fetch_message) as root_read:
+            signals = ReviewNagScanner(messaging=slack, host=FakeHost(), requester_slack_id="UOWNER").scan()
+
+        assert [signal.kind for signal in signals] == ["review_nag.ping"]
+        root_read.assert_called_once()
+
     def test_a_paused_request_is_not_nagged(self) -> None:
         post = _seed(days_old=10.0)
         slack = FakeSlack(root_reactions=[{"name": "double_vertical_bar", "count": 1}])
@@ -689,8 +1022,8 @@ class TestConcurrentTickPingsOnce(_PermittingPostureMixin, TestCase):
         slack = FakeSlack()
         right_now = timezone.now()
         with patch("teatree.loop.scanners.review_nag._consult_guard_before_nag", return_value=None):
-            sig_a = scanner._post_reask(snap_a, slack, right_now)
-            sig_b = scanner._post_reask(snap_b, slack, right_now)
+            sig_a = scanner._post_reask(snap_a, slack, FakeHost(), right_now, dt.timedelta(days=2))
+            sig_b = scanner._post_reask(snap_b, slack, FakeHost(), right_now, dt.timedelta(days=2))
         assert len(slack.posts) == 1
         assert [s.kind for s in (sig_a, sig_b) if s is not None] == ["review_nag.ping"]
 
@@ -719,7 +1052,7 @@ class TestReconcileBeforeNag(_PermittingPostureMixin, TestCase):
         slack = FakeSlack()
         with (
             patch("teatree.core.gates.review_request_guard.resolve_guard_target", return_value=None),
-            patch("teatree.loop.scanners.review_nag._NagClaim.take") as take,
+            patch("teatree.loop.scanners.review_nag.ReviewNagClaim.take") as take,
         ):
             signals = ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
         take.assert_not_called()
@@ -821,7 +1154,7 @@ class TestNagPatienceFollowsTheRepoOwner(_PermittingPostureMixin, TestCase):
 
         ReviewNagScanner(messaging=slack, host=FakeHost(), repo_owner=self._devops_everywhere).scan()
 
-        assert slack.posts[0]["text"] == ":pray:"
+        assert slack.posts[0]["text"] == "<!subteam^S0REVIEWERS> could you please have another look?"
 
     def test_the_resolver_is_asked_about_the_repo_slug_not_the_url(self) -> None:
         seen: list[str] = []
@@ -906,6 +1239,7 @@ class TestNagCountRollsBackWithTheClaim(_PermittingPostureMixin, TestCase):
 
     def test_a_blocked_post_restores_both_the_stamp_and_the_count(self) -> None:
         post = _seed(days_old=30.0, nag_count=2)
+        sibling = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=30.0, nag_count=2)
         slack = FakeSlack()
         gated = TeaTreeConfig(user=UserSettings())
         seed_forbidding_posture()
@@ -917,10 +1251,13 @@ class TestNagCountRollsBackWithTheClaim(_PermittingPostureMixin, TestCase):
         post.refresh_from_db()
         assert post.last_nag_at is None
         assert post.nag_count == 2
+        sibling.refresh_from_db()
+        assert sibling.nag_count == 2
         assert [s.kind for s in signals] == ["review_nag.gated"]
 
     def test_a_failed_post_restores_both_the_stamp_and_the_count(self) -> None:
         post = _seed(days_old=30.0, nag_count=2)
+        sibling = _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=30.0, nag_count=2)
         slack = FakeSlack(raise_on_post=RuntimeError("not_in_channel"))
 
         signals = ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
@@ -928,6 +1265,8 @@ class TestNagCountRollsBackWithTheClaim(_PermittingPostureMixin, TestCase):
         post.refresh_from_db()
         assert post.last_nag_at is None
         assert post.nag_count == 2
+        sibling.refresh_from_db()
+        assert sibling.nag_count == 2
         assert [s.kind for s in signals] == ["review_nag.post_failed"]
 
     def test_a_delivered_re_ask_advances_the_count(self) -> None:
@@ -957,6 +1296,18 @@ class TestBackoffCapAsksTheOwnerInsteadOfNaggingForever(_PermittingPostureMixin,
         question = DeferredQuestion.objects.get(dedupe_marker=mr_state_marker(post.mr_url))
         assert post.mr_url in question.question
         assert [s.kind for s in signals] == ["review_nag.backoff_exhausted"]
+
+    def test_sibling_at_cap_holds_the_batch(self) -> None:
+        primary = _seed(days_old=200.0)
+        _seed(url="https://gitlab.example/x/-/merge_requests/2", days_old=200.0, nag_count=7)
+        slack = FakeSlack()
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
+
+        assert slack.posts == []
+        assert signals
+        assert all(signal.kind == "review_nag.backoff_exhausted" for signal in signals)
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(primary.mr_url)).exists()
 
     def test_one_step_below_the_cap_still_re_asks_the_group(self) -> None:
         """The control: the cap, not the fixture's age or count, is what stops the nag."""
@@ -1008,7 +1359,7 @@ class TestBackoffCapAsksTheOwnerInsteadOfNaggingForever(_PermittingPostureMixin,
 class TestReviewExemptRepoIsNeverPinged(_PermittingPostureMixin, TestCase):
     """A review-exempt repo's row never reaches a colleague's thread.
 
-    The re-ping @-mentions a whole group, so the exemption the post command
+    The re-ping @-mentions colleagues, so the exemption the post command
     refuses on has to hold here too: an exempt repo's row enters the ledger by
     other doors — the manual-broadcast seeder — and nothing stood between that
     row and the group.
@@ -1094,6 +1445,7 @@ class TestTheNagReadsSettingsAtTheScannersOwnOverlay(TestCase):
         identity_patcher.start()
         self.addCleanup(identity_patcher.stop)
         ConfigSetting.objects.set_value("review_nag_max_interval_days", 3, scope="t3-acme")
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
 
     def test_the_guard_reads_the_scanners_overlay_and_the_posts_own_channel(self) -> None:
         post = _attribute(_seed(days_old=3.0), "t3-acme")

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 RESUME_HEADROOM_TOKENS = 80_000
 
 #: The columns an attempt's billed spend lives in — the cost ledger no park bookkeeping may fold or prune away.
-_BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
+BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
 
 #: Kinds where a route candidate ran and did not deliver. Outage and provisioning failures are deliberately
 #: absent (no other candidate fixes them), as are the evidence and recording kinds, which earn their one
@@ -30,31 +30,43 @@ _BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_
 CANDIDATE_FAULT_KINDS = frozenset(
     {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
 )
+READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
 
 
-_PARK_ERROR = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
+PARK_ERROR_Q = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
 
 
 class TaskAttemptQuerySet(models.QuerySet):
     def parks(self) -> "TaskAttemptQuerySet":
-        return self.filter(_PARK_ERROR)
+        return self.filter(PARK_ERROR_Q)
 
     def excluding_parks(self) -> "TaskAttemptQuerySet":
-        return self.exclude(_PARK_ERROR)
+        return self.exclude(PARK_ERROR_Q)
 
-    def failed_route_candidates(self, source_skill: str) -> dict[int, int]:
-        """Route candidate index -> its latest failed attempt's id, since the task's last usage-window park."""
+    def _since_last_park(self) -> "TaskAttemptQuerySet":
         last_park = (
             self.filter(error__startswith=LIMIT_PARKED_PREFIX).order_by("-pk").values_list("pk", flat=True).first()
         )
-        failed = self.filter(
+        return self.filter(pk__gt=last_park or 0)
+
+    def failed_route_candidates(self, source_skill: str) -> dict[int, int]:
+        """Route candidate index -> its latest failed attempt's id, since the task's last usage-window park."""
+        failed = self._since_last_park().filter(
             route_source_skill=source_skill,
             route_candidate_index__isnull=False,
             outcome__in=TaskAttempt.FAILED_OUTCOMES,
             failure_kind__in=CANDIDATE_FAULT_KINDS,
-            pk__gt=last_park or 0,
         )
         return dict(failed.order_by("pk").values_list("route_candidate_index", "pk"))
+
+    def refused_brief_candidates(self, source_skill: str) -> dict[int, str]:
+        """Route candidate index -> the reason its read-only brief was last refused, since the task's last park."""
+        refused = self._since_last_park().filter(
+            route_source_skill=source_skill,
+            route_candidate_index__isnull=False,
+            error__startswith=READ_ONLY_BRIEF_REFUSED_PREFIX,
+        )
+        return dict(refused.order_by("pk").values_list("route_candidate_index", "error"))
 
     def create(self, **kwargs: object) -> "TaskAttempt":
         """Record an attempt — folding a REPEATED, unchanged usage-window park into one row.
@@ -69,10 +81,10 @@ class TaskAttemptQuerySet(models.QuerySet):
 
         A changed reason, an intervening real attempt, and any non-park attempt all insert
         normally, so the audit trail still shows every genuine transition. So does a park that
-        BILLED spend: it is a run that ended in a park (a deploy checkpoint, a reactive limit),
+        BILLED spend: it is a run that ended in a park (a checkpoint, a reactive limit),
         and folding it would drop its tokens and its session id from the ledger.
         """
-        if any(kwargs.get(column) is not None for column in _BILLED_COLUMNS):
+        if any(kwargs.get(column) is not None for column in BILLED_COLUMNS):
             return super().create(**kwargs)
         coalesced = self._coalesce_repeated_park(
             task=kwargs.get("task"),
@@ -126,7 +138,7 @@ class TaskAttemptQuerySet(models.QuerySet):
         return (
             self.parks()
             .filter(
-                **{f"{column}__isnull": True for column in _BILLED_COLUMNS},
+                **{f"{column}__isnull": True for column in BILLED_COLUMNS},
             )
             .filter(
                 models.Q(ended_at__lt=cutoff) | models.Q(ended_at__isnull=True, started_at__lt=cutoff),
@@ -251,6 +263,10 @@ class TaskAttempt(models.Model):
     FAILED_OUTCOMES: ClassVar[tuple[str, ...]] = (Outcome.REFUSAL, Outcome.CRASH)
 
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attempts")
+    if TYPE_CHECKING:
+        # Django synthesises this at class-prep time, so a static checker cannot see it.
+        task_id: int
+
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     error = models.TextField(blank=True)
@@ -494,5 +510,5 @@ class TaskAttempt(models.Model):
         # stamping one here disagrees with that query and leaves the park row carrying a
         # bogus work-iteration number that corrupts the "attempt N/max" display and the
         # S5 signal. Leave it at the 0 sentinel so the stamp and the budget query agree.
-        if not self.iteration and self.task_id and not self.error.startswith(PARK_ERROR_PREFIXES):  # ty: ignore[unresolved-attribute]
+        if not self.iteration and self.task_id and not self.error.startswith(PARK_ERROR_PREFIXES):
             self.iteration = self.task.phase_iteration_count() + 1

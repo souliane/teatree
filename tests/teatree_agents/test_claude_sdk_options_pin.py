@@ -35,7 +35,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -67,8 +67,8 @@ from tests._git_repo import make_git_repo, run_git
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
 # Every headless spawn loads only the injected teatree MCP server (strict_mcp_config).
-_OPTIONS_SHA256 = "61194b7eea24c9a9a35d985cefb60bb4119b80e29742edd02136da509381e65f"
-_SYSTEM_CONTEXT_SHA256 = "eb41b61bee76f2f1905057e85f8f50c74b0256292b6993172114125824cf1baa"
+_OPTIONS_SHA256 = "42c8cf5a49f4f809e574e50e7cb54b67140b89c52d4e0e44b0a7a40a33aa1435"
+_SYSTEM_CONTEXT_SHA256 = "bb04cf62ed0861ea3764880bf25fad8536034fe486e7dc5965f580d2592b41e5"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]
 
@@ -373,7 +373,7 @@ class TestInteractiveSessionsArePinned(TestCase):
         return value
 
     @contextlib.contextmanager
-    def _world(self, extra_env: Mapping[str, str] | None = None) -> Iterator[None]:
+    def _world(self, extra_env: Mapping[str, str] | None = None) -> Generator[None]:
         installed = [OverlayEntry(name=_PIN_OVERLAY, overlay_class=f"{__name__}:_PinOverlay")]
         with (
             patch.dict(os.environ, {**self._env, **(extra_env or {})}, clear=True),

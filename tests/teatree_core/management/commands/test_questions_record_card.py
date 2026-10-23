@@ -165,3 +165,12 @@ class TestAnInvalidOptionsListIsRefused(TestCase):
         assert code == 2
         assert "--options must be a JSON list" in err
         assert not DeferredQuestion.objects.exists()
+
+
+class TestAnActionMarkerIsReserved(TestCase):
+    def test_a_reserved_owner_action_marker_is_refused(self) -> None:
+        code, _out, err = _record("May I act?", "--dedupe-marker", "owner-action:attest:fake", *_complete())
+
+        assert code == 2
+        assert "reserved" in err
+        assert not DeferredQuestion.objects.exists()

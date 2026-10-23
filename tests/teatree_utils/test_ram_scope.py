@@ -10,7 +10,7 @@ The cgroup fake is keyed on FILENAME rather than on call order, so a test states
 container it is standing in and changes nothing else.
 """
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -88,7 +88,7 @@ def _in_cgroup(
     inactive_file: int = 0,
     slab_reclaimable: int = 0,
     host_available_mib: int = _HOST_AVAILABLE_MIB,
-) -> Iterator[None]:
+) -> Generator[None]:
     """Stand the probe inside one specific cgroup, with the host reading held fixed.
 
     ``limit_bytes=None`` is the uncapped host (no ``memory.max``/``memory.current`` at all).

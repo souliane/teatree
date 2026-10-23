@@ -49,7 +49,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from teatree.account_headroom import WEIGHT_5H, WEIGHT_7D, AccountHeadroom, headroom_at, sort_key
+from teatree.account_headroom import WEIGHT_5H, WEIGHT_7D, AccountHeadroom, WindowReserve, headroom_at, sort_key
 from teatree.llm.rate_limits import (
     RateLimitProbeError,
     RateLimitReader,
@@ -71,6 +71,8 @@ class TokenProbeStatus(StrEnum):
 
     HEALTHY = "healthy"
     EXHAUSTED = "exhausted"
+    BELOW_RESERVE = "below_reserve"
+    UNKNOWN = "unknown"
     UNREACHABLE = "unreachable"
 
 
@@ -156,8 +158,16 @@ def _is_exhausted(snapshot: RateLimitSnapshot) -> bool:
 
 
 def _health_from_snapshot(
-    index: int, label: str, snapshot: RateLimitSnapshot, run_start: dt.datetime
+    index: int,
+    label: str,
+    snapshot: RateLimitSnapshot,
+    run_start: dt.datetime,
+    reserve: WindowReserve,
 ) -> CandidateHealth:
+    if snapshot.unified_5h_utilization is None or snapshot.unified_7d_utilization is None:
+        return CandidateHealth(
+            index=index, label=label, status=TokenProbeStatus.UNKNOWN, reason="usage window unreadable"
+        )
     if _is_exhausted(snapshot):
         reason = (
             f"exhausted — 5h {used_fraction(snapshot.unified_5h_utilization) * 100:.0f}% used, "
@@ -169,6 +179,16 @@ def _health_from_snapshot(
             status=TokenProbeStatus.EXHAUSTED,
             organization_id=snapshot.organization_id,
             reason=reason,
+        )
+    if not reserve.allows(
+        snapshot.unified_5h_utilization,
+        snapshot.unified_5h_reset,
+        snapshot.unified_7d_utilization,
+        snapshot.unified_7d_reset,
+        run_start,
+    ):
+        return CandidateHealth(
+            index=index, label=label, status=TokenProbeStatus.BELOW_RESERVE, reason="below eval reserve"
         )
     return CandidateHealth(
         index=index,
@@ -185,17 +205,22 @@ def select_freshest(
     *,
     reader: RateLimitReader | None = None,
     now: dt.datetime | None = None,
+    reserve: WindowReserve | None = None,
+    sweep_within_hours: float | None = None,
 ) -> OAuthSelection:
     """Probe every token in *tokens* and rank the eligible accounts by headroom.
 
     Each token is probed once through *reader* (default the real
-    :func:`~teatree.llm.rate_limits.read_rate_limits`). A probe error marks the candidate
-    :attr:`TokenProbeStatus.UNREACHABLE`; an exhausted snapshot marks it
-    :attr:`TokenProbeStatus.EXHAUSTED`; both are ineligible. Eligible candidates rank
-    lexicographically on binding then weighted headroom, deterministic first on a tie.
+    :func:`~teatree.llm.rate_limits.read_rate_limits`). Probe errors are UNREACHABLE;
+    missing window readings are UNKNOWN; exhausted snapshots are EXHAUSTED.
+    An account below either reserve, or whose weekly reset is outside the optional
+    sweep window, is BELOW_RESERVE; its reason distinguishes the sweep case.
+    Only eligible candidates rank by binding then weighted headroom, with input
+    order breaking a tie.
     """
     probe = reader or read_rate_limits
     run_start = now or dt.datetime.now(tz=dt.UTC)
+    active_reserve = reserve or WindowReserve()
     candidates: list[CandidateHealth] = []
     for index, token in enumerate(tokens):
         label = f"token[{index + 1}]"
@@ -211,7 +236,18 @@ def select_freshest(
                 )
             )
             continue
-        candidates.append(_health_from_snapshot(index, label, snapshot, run_start))
+        if sweep_within_hours is not None:
+            until_reset = (
+                (snapshot.unified_7d_reset - run_start).total_seconds() / 3600 if snapshot.unified_7d_reset else None
+            )
+            if until_reset is None or not 0 <= until_reset <= sweep_within_hours:
+                candidates.append(
+                    CandidateHealth(
+                        index=index, label=label, status=TokenProbeStatus.BELOW_RESERVE, reason="outside sweep window"
+                    )
+                )
+                continue
+        candidates.append(_health_from_snapshot(index, label, snapshot, run_start, active_reserve))
     eligible = [candidate for candidate in candidates if candidate.is_eligible]
     ranked = sorted(eligible, key=lambda candidate: sort_key(candidate.headroom))
     return OAuthSelection(candidates=tuple(candidates), ranked=tuple(ranked))

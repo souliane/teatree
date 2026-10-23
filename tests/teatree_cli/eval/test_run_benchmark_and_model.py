@@ -1,26 +1,27 @@
 """``t3 eval run`` --benchmark / --model / default lane, end-to-end through typer.
 
 ``--benchmark`` runs every scenario against ALL three tier models (resolved
-through the single TIER_MODELS constant) and renders the matrix + an HTML
+through the single tier_models() constant) and renders the matrix + an HTML
 dashboard. ``--model`` forces the whole suite onto one model. The DEFAULT run is
 per-scenario tier/phase, single-trial, with NO pass@k and NO escalation. The
 ``--only`` flag is gone; positional + ``--lane`` are the surviving filters.
 
 These exercise the real CLI with a stubbed api runner — no live model call. No
 concrete model-id string literal: the benchmark column models are asserted via
-TIER_MODELS / resolve_tier.
+tier_models() / resolve_tier.
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
-from teatree.agents.model_tiering import TIER_MODELS, resolve_tier
+from teatree.agents.model_tiering import resolve_tier, tier_models
 from teatree.cli import app
 from teatree.cli.eval.app_helpers import BENCHMARK_TIERS
+from teatree.config.registries import COLD_SETTINGS
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.llm.credentials import AnthropicSubscriptionCredential
 
@@ -104,16 +105,17 @@ class TestBenchmark:
         # The benchmark expands to the concrete model behind each of the 3 tiers.
         expected = {resolve_tier(t) for t in BENCHMARK_TIERS}
         assert set(_StubRunner.seen_models) == expected
-        # Sanity: exactly the three TIER_MODELS values, no concrete literal here.
-        assert expected == set(TIER_MODELS.values())
+        # Sanity: exactly the three tier_models() values, no concrete literal here.
+        assert expected == set(tier_models().values())
 
     def test_a_model_shared_by_two_tiers_runs_once_per_scenario(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
-        with patch.dict(TIER_MODELS, {"cheap": TIER_MODELS["balanced"]}):
+        defaults = cast("dict[str, str]", COLD_SETTINGS["agent_tier_models"].default)
+        with patch.dict(defaults, {"cheap": tier_models()["balanced"]}):
             out = _invoke(["--benchmark", "--no-persist"], specs)
         assert out.exit_code == 0, out.output
         assert sorted(_StubRunner.seen_models) == sorted(
-            [TIER_MODELS["balanced"], TIER_MODELS["frontier"]] * len(specs)
+            [tier_models()["balanced"], tier_models()["frontier"]] * len(specs)
         )
 
     def test_writes_html_dashboard(self, tmp_path: Path) -> None:

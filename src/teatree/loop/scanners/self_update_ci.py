@@ -17,26 +17,30 @@ so a required check landing past page 1 reads as absent), and the same
 returns a four-way verdict instead of a bool so the scanner can distinguish red
 from pending from "cannot tell".
 
-:class:`GlabMainCiStatus` is the GitLab twin, keyed on the SHA the pull would land
+:class:`GitLabMainCiStatus` is the GitLab twin, keyed on the SHA the pull would land
 on because GitLab has no per-commit check-run rollup. :class:`ForgeMainCiStatus` is
 what the scanner is given: it picks the arm each clone's own ``origin`` speaks, so a
 fork on one forge beside a core clone on the other both get a real verdict.
 
-An unresolvable slug, a non-zero ``gh``/``glab`` exit, an offline machine, a
+An unresolvable slug, a non-zero GitHub CLI exit, an HTTP error, an offline machine, a
 truncated check-runs page, or a commit no gating pipeline ran on all classify as
 ``unknown`` — and ``unknown`` is a skip, never a proceed. It is also a REFUSAL the
 operator must see rather than wait out: unlike red or pending it does not clear on
 its own, which is why the scanner notifies on it.
 """
 
-import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, TypedDict, cast, runtime_checkable
+from urllib.parse import quote
 
-from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
+import httpx
+
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState, resolve_repo_token
 from teatree.loop.main_check_runs import CheckRun, check_runs_argv, parse_check_run_pages
+from teatree.loop.scanners.base import run_gh
+from teatree.loop.scanners.gitlab_http import gitlab_api_for
 from teatree.loop.scanners.pr_sweep import GREEN_TERMINAL_CONCLUSIONS, REQUIRED_CHECK_NAME
 from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
@@ -72,22 +76,14 @@ class GhMainCiStatus:
         resolution = resolve_repo_token(str(repo), credential="github_token")
         if resolution.state is not ForgeTokenState.TOKEN:
             return CiVerdict.UNKNOWN
-        runs = self._check_runs(slug=slug, branch=_default_branch(repo), token=resolution.token)
+        runs = self._check_runs(slug=slug, branch=_default_branch(repo), resolution=resolution)
         if runs is None:
             return CiVerdict.UNKNOWN
         return _classify_check_runs(runs)
 
     @staticmethod
-    def _check_runs(*, slug: str, branch: str, token: str) -> list[CheckRun] | None:
-        import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
-
-        gh = shutil.which("gh") or "gh"
-        argv = [gh, *check_runs_argv(slug=slug, ref=branch)]
-        env = {"GH_TOKEN": token}
-        try:
-            result = run_allowed_to_fail(argv, expected_codes=None, env=_merged_env(env))
-        except FileNotFoundError:
-            return None
+    def _check_runs(*, slug: str, branch: str, resolution: ForgeTokenResolution) -> list[CheckRun] | None:
+        result = run_gh(check_runs_argv(slug=slug, ref=branch), resolution=resolution)
         if result.returncode != 0:
             return None
         return parse_check_run_pages(result.stdout)
@@ -106,19 +102,6 @@ def _default_branch(repo: Path) -> str:
         return git.default_branch(repo=str(repo))
     except RuntimeError:
         return "main"
-
-
-def _merged_env(extra: dict[str, str] | None) -> dict[str, str] | None:
-    if extra is None:
-        return None
-    import os  # noqa: PLC0415 — deferred: loaded only on this code path
-
-    env = dict(os.environ)
-    env.pop("GH_TOKEN", None)
-    env.pop("GITHUB_TOKEN", None)
-    env.pop("GITLAB_TOKEN", None)
-    env.update(extra)
-    return env
 
 
 def _classify_check_runs(runs: list[CheckRun]) -> CiVerdict:
@@ -157,8 +140,6 @@ def _run_verdict(run: CheckRun) -> CiVerdict:
 
 
 class _GitlabPipeline(TypedDict, total=False):
-    """One entry of ``glab api projects/<path>/pipelines``."""
-
     id: object
     source: object
     status: object
@@ -173,16 +154,15 @@ _GATING_PIPELINE_SOURCES = frozenset({"push", "merge_request_event"})
 _PIPELINE_PAGE_SIZE = 20
 
 
-class GlabMainCiStatus:
-    """``glab``-backed :class:`MainCiStatus` for the commit a pull would land on.
+class GitLabMainCiStatus:
+    """HTTP-backed :class:`MainCiStatus` for the commit a pull would land on.
 
     GitLab has no per-commit check-run rollup, so the unit is the pipeline. The query is
     keyed on ``origin/<default>``'s SHA rather than on the branch name: that SHA is
     exactly what ``pull --ff-only`` is about to make live, and a branch-keyed read would
     answer for whatever landed since.
 
-    ``:fullpath`` is resolved by ``glab`` from *repo*, which is why every call carries
-    ``cwd`` — it also spares us URL-encoding a nested group path.
+    The project path comes from the clone's origin remote and is encoded in full.
     """
 
     @staticmethod
@@ -190,7 +170,7 @@ class GlabMainCiStatus:
         sha = _upstream_sha(repo)
         if not sha:
             return CiVerdict.UNKNOWN
-        pipelines = _glab_pipelines(repo=repo, sha=sha)
+        pipelines = _gitlab_pipelines(repo=repo, sha=sha)
         if pipelines is None:
             return CiVerdict.UNKNOWN
         return _classify_pipelines(pipelines)
@@ -207,7 +187,7 @@ class ForgeMainCiStatus:
     """
 
     github: MainCiStatus = field(default_factory=GhMainCiStatus)
-    gitlab: MainCiStatus = field(default_factory=GlabMainCiStatus)
+    gitlab: MainCiStatus = field(default_factory=GitLabMainCiStatus)
 
     def verdict(self, *, repo: Path) -> CiVerdict:
         forge = forge_from_remote(git.remote_url(repo=str(repo)))
@@ -228,29 +208,17 @@ def _upstream_sha(repo: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _glab_pipelines(*, repo: Path, sha: str) -> list[_GitlabPipeline] | None:
-    """Every pipeline GitLab records for *sha*, or ``None`` when the read gave no evidence."""
-    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
-
+def _gitlab_pipelines(*, repo: Path, sha: str) -> list[_GitlabPipeline] | None:
     resolution = resolve_repo_token(str(repo), credential="gitlab_token")
     if resolution.state is not ForgeTokenState.TOKEN:
         return None
-    glab = shutil.which("glab") or "glab"
-    endpoint = f"projects/:fullpath/pipelines?sha={sha}&per_page={_PIPELINE_PAGE_SIZE}"
-    try:
-        result = run_allowed_to_fail(
-            [glab, "api", endpoint],
-            cwd=repo,
-            expected_codes=None,
-            env=_merged_env({"GITLAB_TOKEN": resolution.token}),
-        )
-    except FileNotFoundError:
+    project = git.remote_slug(repo=str(repo))
+    if not project:
         return None
-    if result.returncode != 0:
-        return None
+    endpoint = f"projects/{quote(project, safe='')}/pipelines?sha={sha}&per_page={_PIPELINE_PAGE_SIZE}"
     try:
-        payload = json.loads(result.stdout or "[]")
-    except json.JSONDecodeError:
+        payload = gitlab_api_for(resolution).get_json(endpoint)
+    except (httpx.HTTPError, ValueError):
         return None
     if not isinstance(payload, list):
         return None
@@ -282,4 +250,4 @@ _PIPELINE_VERDICT: dict[str, CiVerdict] = {
 }
 
 
-__all__ = ["CiVerdict", "ForgeMainCiStatus", "GhMainCiStatus", "GlabMainCiStatus", "MainCiStatus"]
+__all__ = ["CiVerdict", "ForgeMainCiStatus", "GhMainCiStatus", "GitLabMainCiStatus", "MainCiStatus"]

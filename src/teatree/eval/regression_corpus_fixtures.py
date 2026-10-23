@@ -9,7 +9,7 @@ the invariants it pins.
 """
 
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -18,7 +18,7 @@ from teatree.utils.run import run_checked
 
 
 @contextmanager
-def without_git_overrides() -> Iterator[None]:
+def without_git_overrides() -> Generator[None]:
     """Run the block with every ambient ``GIT_*`` override stripped.
 
     Mirrors :func:`teatree.utils.git.git_env_without_overrides` for an in-process

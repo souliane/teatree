@@ -26,6 +26,8 @@ with no backstop behind it, so it BLOCKS.
 **Class routing is derived here, not duplicated.**
 :data:`banned_term_registry.GATE_CLASSES` is built from :func:`classes_for_surface`
 so the "which classes does this gate scan" question also has exactly one answer.
+The generic email, home-path, private-IP, API-key and internal-hostname detectors
+all use ``LEAK``; an exact registry allow entry is their only term exemption.
 """
 
 from enum import Enum

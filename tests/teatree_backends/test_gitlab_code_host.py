@@ -2,6 +2,8 @@ import logging
 from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab import subissues as _subissues
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
@@ -13,6 +15,7 @@ from teatree.backends.gitlab.discussions import (
 from teatree.core.backend_protocols import (
     BackendResolutionError,
     DraftState,
+    IssueResolutionSpec,
     PartialReviewPublishError,
     PrReview,
     PrReviewComment,
@@ -140,6 +143,35 @@ def test_create_issue_posts_to_project_with_labels() -> None:
     )
 
 
+def test_create_nit_issue_asks_gitlab_to_resolve_discussions() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.post_json.return_value = {"iid": 3, "web_url": "https://gitlab.com/org/repo/-/issues/3"}
+    host = GitLabCodeHost(client=client)
+
+    host.create_issue_resolving_threads(
+        IssueResolutionSpec(
+            repo="org/repo",
+            title="NIT follow-up",
+            body="Review the inline points.",
+            labels=("nit", "t3-auto"),
+            merge_request_iid=42,
+            thread_id="discussion-7",
+        )
+    )
+
+    client.post_json.assert_called_once_with(
+        "projects/42/issues",
+        {
+            "title": "NIT follow-up",
+            "description": "Review the inline points.",
+            "labels": "nit,t3-auto",
+            "merge_request_to_resolve_discussions_of": 42,
+            "discussion_to_resolve": "discussion-7",
+        },
+    )
+
+
 def test_create_issue_returns_error_when_project_not_resolved() -> None:
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = None
@@ -193,6 +225,18 @@ def test_update_issue_puts_the_description() -> None:
 
     assert result == {"iid": 3}
     client.put_json.assert_called_once_with("projects/42/issues/3", {"description": "new umbrella body"})
+
+
+def test_add_issue_labels_uses_additive_issue_field() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.put_json.return_value = {"iid": 3, "labels": ["nit", "t3-auto"]}
+    host = GitLabCodeHost(client=client)
+
+    result = host.add_issue_labels(issue_url="https://gitlab.com/org/repo/-/issues/3", labels=("nit", "t3-auto"))
+
+    assert result["labels"] == ["nit", "t3-auto"]
+    client.put_json.assert_called_once_with("projects/42/issues/3", {"add_labels": "nit,t3-auto"})
 
 
 def test_a_work_item_url_is_read_and_written_as_the_same_issue() -> None:
@@ -481,6 +525,60 @@ def test_list_pr_discussions_delegates_to_client() -> None:
 
     assert result == [{"id": "a", "notes": []}]
     client.get_mr_discussions.assert_called_once_with(42, 10)
+
+
+def test_list_review_threads_exposes_inline_notes() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_mr_discussions.return_value = [
+        {
+            "id": "discussion-7",
+            "resolved": False,
+            "notes": [{"id": 7, "body": "Nit: rename", "position": {"new_path": "x.py", "new_line": 2}}],
+        }
+    ]
+    host = GitLabCodeHost(client=client)
+
+    threads = host.list_review_threads(repo="org/repo", pr_iid=10)
+
+    assert threads[0]["id"] == "discussion-7"
+    notes = threads[0]["notes"]
+    assert isinstance(notes, list)
+    assert isinstance(notes[0], dict)
+    assert notes[0]["body"] == "Nit: rename"
+
+
+def test_resolve_review_thread_uses_gitlab_discussion_api() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.put_json.return_value = {"id": "discussion-7", "resolved": True}
+    host = GitLabCodeHost(client=client)
+
+    resolved = host.resolve_review_thread(repo="org/repo", pr_iid=10, thread_id="discussion-7")
+
+    assert resolved["resolved"] is True
+    client.put_json.assert_called_once_with(
+        "projects/42/merge_requests/10/discussions/discussion-7", {"resolved": True}
+    )
+
+
+def test_review_thread_read_refuses_unresolved_project() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    with pytest.raises(RuntimeError, match="Cannot read review threads"):
+        host.list_review_threads(repo="org/unknown", pr_iid=10)
+
+
+def test_review_thread_resolution_requires_confirmation() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.put_json.return_value = {"id": "discussion-7", "resolved": False}
+    host = GitLabCodeHost(client=client)
+
+    with pytest.raises(RuntimeError, match="not confirmed"):
+        host.resolve_review_thread(repo="org/repo", pr_iid=10, thread_id="discussion-7")
 
 
 def test_list_pr_discussions_returns_empty_when_project_unresolved() -> None:
@@ -1526,7 +1624,6 @@ def test_get_repo_unresolvable_project_returns_structured_error() -> None:
 # --- F8.2 resolve_project error semantics ------------------------------------
 
 import httpx  # noqa: E402
-import pytest  # noqa: E402
 
 from teatree.core.backend_protocols import ApprovalState  # noqa: E402
 from teatree.utils.throttled_log import reset_throttle  # noqa: E402

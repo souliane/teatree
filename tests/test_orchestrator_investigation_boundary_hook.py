@@ -19,7 +19,7 @@ import ast
 import contextlib
 import io
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
@@ -41,7 +41,7 @@ _OWNER = "sess-owner"
 
 
 @contextlib.contextmanager
-def _capture_stderr() -> Iterator[io.StringIO]:
+def _capture_stderr() -> Generator[io.StringIO]:
     """Capture ``sys.stderr`` writes inside a Django ``TestCase`` (no ``capsys``)."""
     buffer = io.StringIO()
     original = sys.stderr
@@ -180,7 +180,7 @@ class TestNudgeIsWarnOnlyNeverDenies:
         err = capsys.readouterr().err
         assert "[orchestration-boundary]" in err
         assert "sub-agent" in err
-        assert "[orchestration-ok:" in err
+        assert "[orchestration-ok:" not in err
 
     def test_orientation_call_emits_no_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert handle_enforce_orchestrator_investigation_boundary(_owner_bash("git status")) is False
@@ -268,25 +268,15 @@ class TestSubagentNeverNudged:
         assert capsys.readouterr().err.strip() == ""
 
 
-class TestOrchestrationOkEscapeHatch:
-    """``[orchestration-ok: <reason>]`` suppresses the nudge for a genuine read."""
+class TestRetiredOrchestrationMarker:
+    """The retired marker cannot suppress an advisory."""
 
     @pytest.fixture(autouse=True)
     def _is_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gate, "_session_is_loop_owner", lambda _sid: True)
 
-    def test_token_in_bash_suppresses_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_the_retired_marker_does_not_suppress_the_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = _owner_bash("git show HEAD [orchestration-ok: routing the next dispatch]")
-        assert handle_enforce_orchestrator_investigation_boundary(data) is False
-        assert capsys.readouterr().err.strip() == ""
-
-    def test_token_in_edit_content_suppresses_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
-        data = _owner_call("Edit", file_path="src/x.py", new_string="x  [orchestration-ok: sanctioned memory write]")
-        assert handle_enforce_orchestrator_investigation_boundary(data) is False
-        assert capsys.readouterr().err.strip() == ""
-
-    def test_empty_reason_does_not_suppress(self, capsys: pytest.CaptureFixture[str]) -> None:
-        data = _owner_bash("git show HEAD [orchestration-ok: ]")
         assert handle_enforce_orchestrator_investigation_boundary(data) is False
         assert "[orchestration-boundary]" in capsys.readouterr().err
 

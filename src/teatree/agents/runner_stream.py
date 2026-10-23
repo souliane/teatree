@@ -5,6 +5,7 @@ the ``asyncio.wait_for`` that enforces the runtime ceiling, so a run cut off at 
 hands over every text block it had already written.
 """
 
+import re
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 
 #: The tail of a cut-short run's text its failure keeps; a child task's prompt reads the same budget.
 KEPT_TEXT_CHARS = 2000
+_NUMBERED_READ_GUTTER = re.compile(r"^ *\d+\t", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -197,6 +199,10 @@ async def _collect(session: HarnessSession, prompt: str, capture: StreamCapture 
     """Send *prompt* and collect the agent's text + terminal ``ResultMessage`` + rejected window."""
     capture = capture if capture is not None else StreamCapture()
     await session.query(prompt)
+    return await drain_turn(session, capture)
+
+
+async def drain_turn(session: HarnessSession, capture: StreamCapture) -> HarnessOutcome:
     interrupted = False
     async for message in session.receive_response():
         capture.observe(message)
@@ -215,7 +221,9 @@ def _complete_skill_read(skill: str, read_path: Path, content: object) -> bool:
         body = expected.read_text(encoding="utf-8")
     except (OSError, RuntimeError, UnicodeError):
         return False
-    return bool(body) and body in content
+    return bool(body) and (
+        body in content or ("\n" + body.removesuffix("\n")) in ("\n" + _NUMBERED_READ_GUTTER.sub("", content))
+    )
 
 
 def _direct_skill_cat_path(command: object) -> str | None:

@@ -34,6 +34,30 @@ from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.scanners.base import ScanSignal
 
 
+def test_held_review_reask_is_visible_as_action_needed() -> None:
+    signal = ScanSignal(
+        kind="review_nag.mention_held",
+        summary="Review re-ask held: no safe reviewer mention",
+        payload={"mr_url": "https://gitlab.example/x/-/merge_requests/1"},
+    )
+
+    actions = dispatch([signal])
+
+    assert [(action.kind, action.zone) for action in actions] == [("statusline", "action_needed")]
+
+
+def test_held_resume_mention_is_visible_as_action_needed() -> None:
+    signal = ScanSignal(
+        kind="review_request.resume_mention_held",
+        summary="Resume held: no safe reviewer mention",
+        payload={"mr_url": "https://gitlab.example/x/-/merge_requests/1"},
+    )
+
+    actions = dispatch([signal])
+
+    assert [(action.kind, action.zone) for action in actions] == [("statusline", "action_needed")]
+
+
 @pytest.fixture(autouse=True)
 def _pin_review_intent_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the two ambient review-request gates so routing tests are deterministic.
@@ -388,7 +412,7 @@ class PrSweepFlagStatuslineTests(TestCase):
 
     def test_held_flag_surfaces_in_action_needed(self) -> None:
         # #4380: a contested head — a HOLD standing at the live head that a later
-        # merge_safe superseded under newest-wins — is refused by the autonomous
+        # merge_safe coexists with a standing HOLD — is refused by the autonomous
         # merge and needs a human to reconcile. Without the PR_SWEEP_FLAG_KINDS
         # entry the "pr_sweep." drop prefix swallows it and the refusal is silent.
         action = self._action("pr_sweep.flag_held", "contested_hold_at_head")

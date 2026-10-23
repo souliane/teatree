@@ -25,14 +25,13 @@ environmental facts (which repo the command targets) and the deny emission. The
 router helpers are imported lazily because ``hook_router`` imports this module at
 top level, so a top-level back-import would cycle.
 
-NEVER-LOCKOUT: a per-call ``[single-branch-ok: <reason>]`` token, the
+NEVER-LOCKOUT: a per-call ``[gate-escape:single_branch_repo: <reason>]`` token, the
 ``[teatree] single_branch_repo_gate_enabled = false`` kill-switch, and the shared
 ``_fail_open_or_deny`` chain all keep this gate from wedging a session. Every
 resolution failure fails OPEN — a gate that blocks what it cannot read teaches its
 operator to disable it.
 """
 
-import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -48,22 +47,12 @@ if TYPE_CHECKING:
 sys.modules.setdefault("single_branch_repo_guard", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.single_branch_repo_guard", sys.modules[__name__])
 
-_SINGLE_BRANCH_OK_RE = re.compile(r"\[single-branch-ok:\s*(\S[^\]]*?)\s*\]")
-
 
 def _gate_enabled() -> bool:
     """Whether the single-branch gate is enabled (default True); ``false`` is the kill-switch."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("single_branch_repo_gate_enabled", default=True)
-
-
-def _ok_token(command: str) -> str | None:
-    """The reason from a ``[single-branch-ok: <reason>]`` token in *command*, else None."""
-    match = _SINGLE_BRANCH_OK_RE.search(command[:512])
-    if not match:
-        return None
-    return match.group(1).strip() or None
+    return _teatree_bool_setting("single_branch_repo_gate_enabled")
 
 
 def _declared_entries() -> list[str]:
@@ -205,12 +194,7 @@ def _gate_should_skip(data: dict) -> bool:
     if not isinstance(tool_input, dict):
         return True
     command = tool_input.get("command", "")
-    if not isinstance(command, str) or not command:
-        return True
-    if reason := _ok_token(command):
-        sys.stderr.write(f"NOTE: single-branch gate skipped via [single-branch-ok: {reason}].\n")
-        return True
-    return False
+    return bool(not isinstance(command, str) or not command)
 
 
 def handle_block_second_branch(data: dict) -> bool:

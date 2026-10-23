@@ -9,7 +9,7 @@ idempotent and dry-run-safe, and that one failed move never aborts the rest.
 
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -21,6 +21,7 @@ from django.test import TestCase
 
 from teatree.core.management.commands._workspace.relocate import RelocateIO, run_relocate
 from teatree.core.models import ConfigSetting, Session, Ticket, Worktree
+from teatree.core.models.types import WorktreeExtra, WorktreeSiblingFields
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -217,7 +218,7 @@ class TestMountBoundaryRefusal(_RelocateCase):
     """
 
     @contextmanager
-    def _pinned_table(self, *mount_points: Path) -> Iterator[None]:
+    def _pinned_table(self, *mount_points: Path) -> Generator[None]:
         rows = [f"36 28 252:0 / {point} rw,relatime - ext4 /dev/mapper/vg-root rw" for point in mount_points]
         mountinfo = self._tmp() / "mountinfo"
         mountinfo.write_text("\n".join(rows) + "\n", encoding="utf-8")
@@ -344,17 +345,19 @@ class TestHalfMoveReconcile(_RelocateCase):
         wt = self._make_row()
         target = self.new_ws / self.branch / "myrepo"
 
-        # Make the post-move ``save(update_fields=["extra"])`` throw, leaving git +
+        # Make the post-move ``worktree_path`` write throw, leaving git +
         # disk at ``target`` while the row still records the OLD (now-gone) path.
-        real_save = Worktree.save
+        real_merge_extra = Worktree.merge_extra
 
-        def fail_extra_save(self_wt: Worktree, *args: object, **kwargs: object) -> None:
-            if kwargs.get("update_fields") == ["extra"]:
+        def fail_path_write(
+            self_wt: Worktree, *, set_keys: WorktreeExtra | None = None, also_set: WorktreeSiblingFields | None = None
+        ) -> None:
+            if set_keys and "worktree_path" in set_keys:
                 msg = "simulated DB failure mid-relocate"
                 raise OperationalError(msg)
-            real_save(self_wt, *args, **kwargs)
+            real_merge_extra(self_wt, set_keys=set_keys, also_set=also_set)
 
-        with patch.object(Worktree, "save", fail_extra_save):
+        with patch.object(Worktree, "merge_extra", fail_path_write):
             first = run_relocate("test", self.new_ws, _io(), dry_run=False)
 
         assert target.is_dir()  # the git move happened

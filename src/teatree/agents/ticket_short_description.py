@@ -110,7 +110,7 @@ def describe_ticket_short_description(ticket_id: int) -> str:
 
 def run_short_describe(task: "Task") -> str:
     """The ``short_describe`` deterministic-phase runner: describe the task's ticket."""
-    ticket_id = task.ticket_id  # ty: ignore[unresolved-attribute]
+    ticket_id = task.ticket_id
     summary = describe_ticket_short_description(int(ticket_id))
     if not summary:
         return f"NOOP  ticket {ticket_id} has no extra['issue_title'] — skipped"

@@ -29,18 +29,22 @@ from pathlib import Path
 import pytest
 from django.db import OperationalError, connections, transaction
 
-from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests.db_alias import wal_control_db
+
+pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
+
 
 _M_ROWS = 5
 _K_CLAIMERS = 8  # more claimers than rows: the surplus must claim nothing
 
 
-def _make_alias(tmp_path: Path, options: dict[str, object]) -> str:
+def _make_alias(tmp_path: Path, options: dict[str, object], *, engine: str = "django.db.backends.sqlite3") -> str:
     """Register a Django connection against a fresh file-backed SQLite DB with M pending rows."""
     alias = f"claimkm_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
     connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
+        "ENGINE": engine,
         "NAME": str(db_file),
         "OPTIONS": dict(options),
         "ATOMIC_REQUESTS": False,
@@ -141,7 +145,7 @@ class TestClaimNextPendingKClaimersMRows:
 
     def test_k_claimers_over_m_rows_claim_exactly_m_with_no_double_claims(self, tmp_path: Path) -> None:
         """Production OPTIONS: exactly M distinct rows claimed, surplus claimers get None."""
-        alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS)
+        alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS, engine=SQLITE_BOUNDARY_ENGINE)
         try:
             outcomes = _run_k_claimers(alias)
             claimed = [r for r in outcomes if r is not None]
@@ -171,7 +175,7 @@ class TestClaimNextPendingKClaimersMRows:
         bleed). The K - M surplus claimers get nothing.
         """
         sessions = {f"tick-{i}": f"sess-{i}" for i in range(_K_CLAIMERS)}
-        alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS)
+        alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS, engine=SQLITE_BOUNDARY_ENGINE)
         try:
             outcomes = _run_k_claimers(alias, sessions=sessions)
             claimed = [r for r in outcomes if r is not None]

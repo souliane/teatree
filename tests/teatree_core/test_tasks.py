@@ -3,8 +3,9 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator
 from contextlib import ExitStack, contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Self
 from unittest.mock import MagicMock, Mock, patch
@@ -25,13 +26,16 @@ from teatree.core.models import (
     ConfigSetting,
     Mode,
     ModeOverride,
+    PullRequest,
     Session,
     Task,
     TaskAttempt,
     Ticket,
     Worktree,
 )
+from teatree.core.models.checkout_exit import attest_checkout_on_park
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
@@ -49,11 +53,13 @@ from teatree.core.tasks import (
     refresh_followup_snapshot,
     sync_followup,
 )
+from teatree.core.worktree.checkout_fence import verify_task_checkout
 from teatree.core.worktree.checkout_state import checkout_state
 from teatree.core.worktree.occupancy import occupancy_holder
 from teatree.loop.drain import DrainReport, set_worker_quiescing
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
+from teatree.utils.git import run_strict
 from teatree.utils.thread_db import close_thread_db_connections
 from tests._file_backed_db import file_backed_default_database
 from tests.factories import MergeAuditFactory, planned_ticket, waive_rubric
@@ -213,6 +219,106 @@ class TestDrainHeadlessQueue(TestCase):
         assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
         poison.refresh_from_db()
         assert poison.status == Task.Status.FAILED
+
+    def test_cap_held_unknown_overlay_fails_and_drain_still_admits(self) -> None:
+        for index in range(3):
+            ticket = Ticket.objects.create(overlay="test")
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 200}"
+            )
+
+        poison_ticket = Ticket.objects.create(overlay="ghost-overlay")
+        poison = Task.objects.create(
+            ticket=poison_ticket,
+            session=Session.objects.create(ticket=poison_ticket, overlay="ghost-overlay"),
+            phase="shipping",
+        )
+        live_ticket = Ticket.objects.create(overlay="test")
+        live = Task.objects.create(
+            ticket=live_ticket,
+            session=Session.objects.create(ticket=live_ticket, overlay="test"),
+            phase="reviewing",
+        )
+
+        claim_snapshot: list[tuple[str, object, object]] = []
+        original_complete = Task.complete_with_attempt
+
+        def record_claim(task: Task, *, exit_code: int, error: str, result: dict[str, str]) -> TaskAttempt:
+            claim_snapshot.append((task.claimed_by, task.claimed_at, task.lease_expires_at))
+            return original_complete(task, exit_code=exit_code, error=error, result=result)
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.models.task.record_lifecycle_transition") as record,
+            patch.object(Task, "complete_with_attempt", new=record_claim),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            result = drain_queue_body()
+
+        assert result["failed_unknown_overlay"] == [poison.pk]
+        assert live.pk in result["enqueued"]
+        poison.refresh_from_db()
+        assert poison.status == Task.Status.FAILED
+        assert len(claim_snapshot) == 1
+        assert claim_snapshot[0][0] == "drain-poison"
+        assert claim_snapshot[0][1] is not None
+        assert claim_snapshot[0][2] is not None
+        assert any(call.kwargs.get("kind") == "task.claimed" for call in record.call_args_list)
+        assert TaskAttempt.objects.filter(task=poison, exit_code=1).exists()
+
+    def test_poison_cleanup_leaves_a_rival_claim_and_still_admits(self) -> None:
+        poison_ticket = Ticket.objects.create(overlay="ghost-overlay")
+        poison = Task.objects.create(
+            ticket=poison_ticket,
+            session=Session.objects.create(ticket=poison_ticket, overlay="ghost-overlay"),
+            phase="coding",
+        )
+        live_ticket = Ticket.objects.create(overlay="test")
+        live = Task.objects.create(
+            ticket=live_ticket,
+            session=Session.objects.create(ticket=live_ticket, overlay="test"),
+            phase="reviewing",
+        )
+        original = Ticket.has_dispatchable_overlay
+
+        def rival_claims_first(ticket: Ticket) -> bool:
+            if ticket.pk == poison_ticket.pk:
+                Task.objects.filter(pk=poison.pk).update(
+                    status=Task.Status.CLAIMED,
+                    claimed_by="rival",
+                    lease_expires_at=timezone.now() + timedelta(hours=1),
+                )
+                return False
+            return original(ticket)
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(Ticket, "has_dispatchable_overlay", new=rival_claims_first),
+        ):
+            result = drain_queue_body()
+
+        assert result["failed_unknown_overlay"] == []
+        assert live.pk in result["enqueued"]
+        poison.refresh_from_db()
+        assert poison.status == Task.Status.CLAIMED
+        assert not TaskAttempt.objects.filter(task=poison).exists()
+
+    def test_cleanup_claim_refuses_a_dispatchable_overlay(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket, overlay="test"),
+            phase="shipping",
+        )
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            pytest.raises(InvalidTransitionError, match="unknown overlay"),
+        ):
+            task.claim(claimed_by="drain-poison", cleanup_unknown_overlay=True)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_quiescing_withholds_every_live_row_but_still_fails_poison_rows(self) -> None:
@@ -427,7 +533,7 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
             result = execute_task.func(task.pk, task.phase)
 
         runner.assert_not_called()
-        assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
+        assert result == {"skipped": "not claimable: Task already finished"}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_task_claimed_by_live_rival_does_not_re_execute(self) -> None:
@@ -444,9 +550,24 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
             result = execute_task.func(task.pk, task.phase)
 
         runner.assert_not_called()
-        assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
+        assert result == {"skipped": "not claimable: Task already claimed"}
         task.refresh_from_db()
         assert task.claimed_by == "rival-worker"
+
+    def test_cap_held_worker_refusal_names_the_cap(self) -> None:
+        for index in range(3):
+            ticket = Ticket.objects.create()
+            PullRequest.objects.record_opened(
+                ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 900}"
+            )
+        ticket = Ticket.objects.create()
+        held = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="shipping")
+
+        with self.assertLogs("teatree.core.tasks", level="INFO") as logs:
+            result = execute_task.func(held.pk, held.phase)
+
+        assert "pull requests are open" in result["skipped"]
+        assert any("pull requests are open" in message for message in logs.output)
 
     def _run_frozen(self) -> tuple[Task, object, MagicMock]:
         task = self._make_task(status=Task.Status.PENDING)
@@ -700,7 +821,7 @@ class TestExecuteTeardownTerminalPurge(TestCase):
         return ticket
 
     @contextmanager
-    def _patched_clone_root(self) -> Iterator[None]:
+    def _patched_clone_root(self) -> Generator[None]:
         with ExitStack() as stack:
             stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
             for target in (
@@ -1222,6 +1343,24 @@ class TestExecuteShip(TestCase):
             "detail": "https://example.com/mr/1",
         }
 
+    def test_open_pr_advances_despite_dirty_worktree_without_requeue(self) -> None:
+        ticket = self._ticket_in_shipped()
+        ticket.merge_extra(append_to_lists={"pr_urls": ["https://example.com/mr/1"]})
+
+        with (
+            patch("teatree.core.tasks.ShipExecutor") as ship_exec,
+            patch("teatree.core.models.ticket_scheduling.collect_dirty_worktree_paths", return_value=["/tmp/repo"]),
+            patch("teatree.core.tasks.execute_ship") as requeue,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            ship_exec.return_value.run.return_value = RunnerResult(ok=True, detail="https://example.com/mr/1")
+            result = execute_ship.call(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert result == {"ticket_id": ticket.pk, "ok": True, "detail": "https://example.com/mr/1"}
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
+        requeue.enqueue.assert_not_called()
+
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_does_not_match(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.MERGED)
@@ -1279,7 +1418,7 @@ class TestExecuteShipOrphanPrWindow(TestCase):
         return ticket
 
     @contextmanager
-    def _ship_collaborators(self, host: object) -> Iterator[None]:
+    def _ship_collaborators(self, host: object) -> Generator[None]:
         with ExitStack() as stack:
             stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
             stack.enter_context(patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host))
@@ -1814,3 +1953,71 @@ class ExecuteTaskMidRunCheckoutTests(TransactionTestCase):
         drive.assert_called_once()
         assert Task.objects.get(pk=testing.pk).status == Task.Status.CLAIMED
         assert not TaskAttempt.objects.filter(task=testing, error__startswith="checkout_parked:").exists()
+
+
+class ExecuteTaskInterruptedCheckoutTests(TransactionTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.checkout = Path(temporary.name) / "checkout"
+        self.enterContext(file_backed_default_database())
+        seed_default_loops_and_prompts()
+        seed_default_presets_and_schedules()
+        self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED, overlay="t3-teatree")
+        self.session = Session.objects.create(ticket=self.ticket, overlay="t3-teatree")
+        _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
+        self.worktree = Worktree.objects.create(
+            ticket=self.ticket, branch="feature", extra={"worktree_path": str(self.checkout)}
+        )
+        self.clear = ProcessTable(frozenset(), "/proc")
+        self.coding = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear):
+            verify_task_checkout(self.coding, str(self.checkout))
+
+    def interrupt_run(self) -> None:
+        class ContainerRecreated(BaseException):
+            pass
+
+        def change_and_park(task: Task, **_kwargs: object) -> TaskAttempt:
+            (self.checkout / "interrupted.txt").write_text("committed before restart")
+            run_strict(repo=str(self.checkout), args=["config", "user.email", "test@example.com"])
+            run_strict(repo=str(self.checkout), args=["config", "user.name", "Test"])
+            run_strict(repo=str(self.checkout), args=["add", "interrupted.txt"])
+            run_strict(repo=str(self.checkout), args=["commit", "-m", "interrupted work"])
+            attest_checkout_on_park()
+            task.park(not_before=timezone.now())
+            return Mock(spec=TaskAttempt)
+
+        with (
+            patch.object(runner_mod, "_run_agent", side_effect=change_and_park),
+            patch("teatree.core.worktree.occupancy.finish_owned_checkout_processes", side_effect=ContainerRecreated),
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=self.clear),
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear),
+            pytest.raises(ContainerRecreated),
+        ):
+            execute_task.func(self.coding.pk, "coding")
+
+    def dispatch_and_assert_recovered(self, task: Task) -> None:
+        with (
+            patch.object(runner_mod, "_run_agent", return_value=Mock(spec=TaskAttempt)) as drive,
+            patch("teatree.core.worktree.occupancy.read_process_table", return_value=self.clear),
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=self.clear),
+        ):
+            execute_task.func(task.pk, task.phase)
+        drive.assert_called_once()
+        assert not TaskAttempt.objects.filter(task=task, error__startswith="checkout_parked:").exists()
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+        interrupted = self.worktree.get_extra()["auto_attestation"]["tenures"][0]
+        assert (interrupted["holder"], interrupted["ended"]) == (f"task:{self.coding.pk}", "abandoned")
+
+    def test_same_task_retry_after_worker_restart(self) -> None:
+        self.interrupt_run()
+        self.dispatch_and_assert_recovered(self.coding)
+
+    def test_next_writing_phase_after_lease_lapses(self) -> None:
+        self.interrupt_run()
+        Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        testing = Task.objects.create(ticket=self.ticket, session=self.session, phase="testing")
+        self.dispatch_and_assert_recovered(testing)

@@ -611,7 +611,12 @@ class TestSlugForCwdSshAliasNormalization:
         (home / ".ssh" / "config").write_text("Host gh-acct\n  HostName github.com\n")
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         repo = _repo_with_remote(tmp_path / "r", "git@gh-acct:owner-org/private-product.git")
-        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        bin_dir = tmp_path / "bin"
+        isolated_path = _git_only_bin(bin_dir)
+        real_ssh = shutil.which("ssh")
+        assert real_ssh is not None
+        (bin_dir / "ssh").symlink_to(real_ssh)
+        monkeypatch.setenv("PATH", isolated_path)
         assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is True
 
 

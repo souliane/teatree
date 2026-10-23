@@ -21,8 +21,9 @@ tools carry ``read_only_hint``; the write tools name their gated seam in
 phase without the ``mcp_write`` capability launches) registers only the tools
 annotated ``read_only_hint`` — every core, service, mailbox and overlay tool passes
 the one registration choke point, and a tool with no annotation counts as a write.
-*allowed_writes* (``--allow-write``) names the write tools such a server still
-registers: the one a phase's own deliverable goes through.
+*allowed_writes* (``--allow-write``) names non-read-only tools such a server still
+registers: a phase's deliverable tool or, for planning, reviewing and critic_reviewing,
+the three peer-mailbox tools. Other read-only phases retain only mailbox self and peers.
 
 The live agent mailbox is a separate, addressed communication surface, present
 only when the runner binds this MCP child to a running TeaTree task.
@@ -370,8 +371,8 @@ async def _loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
 async def _factory_signals(*, overlay: str | None = None, window_days: int = 28) -> FactorySignalsReportDict:
     """Derived-on-read factory quality/velocity signals over the trailing window.
 
-    Returns the five signals (first-try-green, defect-escape, review-catch,
-    merge-latency, repair-burn) with fail-loud statuses (``ok`` /
+    Returns the signals (first-try-green, defect-escape, review-catch,
+    merge-latency, PR start-to-merged, repair-burn) with fail-loud statuses (``ok`` /
     ``insufficient_data`` / ``instrumentation_gap``), each signal's red-floor
     trip, and the top-level verdict (``ok`` / ``regressing`` / ``red``). Scope to
     an overlay with ``overlay``; widen the window with ``window_days``.
@@ -543,7 +544,7 @@ _READ_TOOLS: tuple[_ReadTool, ...] = (
     _ReadTool(
         "factory_signals",
         _factory_signals,
-        "- factory_signals(overlay, window_days): the five factory quality/velocity "
+        "- factory_signals(overlay, window_days): the factory quality/velocity "
         "signals with fail-loud statuses and the verdict.",
     ),
 )
@@ -584,7 +585,7 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
         + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
         + write_tools.INSTRUCTIONS
         + (
-            "\n\nLive agent mailbox (busy peers can receive now; idle peers read inbox/wait):\n"
+            "\n\nLive agent mailbox (busy peers receive now; idle Claude peers can wake within their window):\n"
             + agent_mailbox.INSTRUCTIONS
             if agent_mailbox.MailboxClient.from_env() is not None
             else ""

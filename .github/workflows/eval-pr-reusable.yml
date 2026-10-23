@@ -40,9 +40,9 @@
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
 #   asserted before the eval, so a missing binary / all-skipped run fails RED.
+#   A validated cached pass counts as coverage without a fresh execution.
 #   ZERO-IS-RED closes the last vacuous gap: when `detect` promised scenarios
-#   (`run=true`) the eval job asserts it executed >=1 — a run that was SUPPOSED
-#   to execute scenarios but executed ZERO fails, never passes green.
+#   (`run=true`) the eval job asserts it invoked >=1 scenario — an empty selection fails.
 #
 # SCENARIO-REACHABILITY (advisory, F12 / #3566)
 #   The `detect` job runs `t3 eval reachability` on every PR: it walks every
@@ -105,6 +105,7 @@ jobs:
     outputs:
       names: ${{ steps.select.outputs.names }}
       run: ${{ steps.select.outputs.run }}
+      deferred: ${{ steps.select.outputs.deferred }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -127,7 +128,7 @@ jobs:
       - name: Symlink the teatree host where uv.sources resolves it
         if: inputs.teatree-repo != ''
         run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -158,7 +159,7 @@ jobs:
           git diff --name-only "origin/$BASE_REF...HEAD" > changed-files.txt
           git diff --unified=0 "origin/$BASE_REF...HEAD" > changed.diff
           rc=0
-          uv run t3 eval changed-scenarios --skip-code 3 --diff-file changed.diff \
+          uv run t3 eval changed-scenarios --skip-code 3 --diff-file changed.diff --deferred-out deferred.txt \
             < changed-files.txt > names.txt || rc=$?
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
             echo "t3 eval changed-scenarios failed (exit $rc) — failing the check rather than silently skipping the eval." >&2
@@ -166,6 +167,7 @@ jobs:
           fi
           NAMES="$(paste -sd, names.txt)"
           echo "names=$NAMES" >> "$GITHUB_OUTPUT"
+          echo "deferred=$(paste -sd, deferred.txt)" >> "$GITHUB_OUTPUT"
           if [ -n "$NAMES" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "Changed scenarios → running: $NAMES"
@@ -187,6 +189,12 @@ jobs:
     needs: detect
     if: needs.detect.outputs.run == 'true'
     runs-on: ubuntu-latest
+    # The agent under test runs here: never inherit the caller's wider grant.
+    permissions:
+      contents: read
+    outputs:
+      parked: ${{ steps.owed.outputs.parked }}
+      owed: ${{ steps.owed.outputs.owed }}
     # A single-trial bounded subset finishes well inside this cap; the cap exists
     # so a hang (a wedged scenario, a stuck docker daemon) fails loud as a red,
     # diagnosable run instead of stalling to the 6h default.
@@ -208,7 +216,7 @@ jobs:
       - name: Symlink the teatree host where uv.sources resolves it
         if: inputs.teatree-repo != ''
         run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -230,7 +238,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.286
+          npm install -g @anthropic-ai/claude-code@2.1.294
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -262,6 +270,55 @@ jobs:
             fi
           done
           echo "All asserted scenarios are discovered."
+      - name: Check verdict cache availability
+        id: verdict-cache-availability
+        run: |
+          if uv run t3 eval verdict-cache --help >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check owed ledger availability
+        id: owed-availability
+        run: |
+          if uv run t3 eval owed --help >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install the teatree cache action for overlay callers
+        if: inputs.teatree-repo != '' && steps.verdict-cache-availability.outputs.enabled == 'true'
+        run: |
+          mkdir -p .github/actions/eval-verdict-cache
+          cp teatree-upstream/.github/actions/eval-verdict-cache/action.yml .github/actions/eval-verdict-cache/action.yml
+      - name: Restore latest main eval verdicts
+        continue-on-error: true
+        if: steps.verdict-cache-availability.outputs.enabled == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/eval-verdicts.json
+          key: eval-verdicts-main-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: eval-verdicts-main-
+      - name: Keep main verdicts for merge
+        continue-on-error: true
+        if: steps.verdict-cache-availability.outputs.enabled == 'true'
+        run: |
+          if [ -f "$RUNNER_TEMP/eval-verdicts.json" ]; then
+            cp "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
+            rm "$RUNNER_TEMP/eval-verdicts.json"
+          fi
+      - name: Restore PR eval verdicts
+        continue-on-error: true
+        if: steps.verdict-cache-availability.outputs.enabled == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/eval-verdicts.json
+          key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: eval-verdicts-pr-${{ github.event.pull_request.number }}-
+      - name: Combine PR and main verdicts
+        continue-on-error: true
+        if: steps.verdict-cache-availability.outputs.enabled == 'true'
+        run: uv run t3 eval verdict-cache merge "$RUNNER_TEMP/eval-verdicts.json" "$RUNNER_TEMP/eval-verdicts-main.json"
       # Run the changed scenarios at the DEFAULT per-tier lane. `--only` is gone;
       # the positional NAME filter runs one scenario, so the comma-joined detect
       # list is looped one scenario per `t3 eval run <name>` — each at its OWN
@@ -308,24 +365,53 @@ jobs:
             SUMMARY="$RUNNER_TEMP/eval-summary.md"
             echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) =====" \
               | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
+            LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit"
+            RED_MARKER="$RUNNER_TEMP/eval-confirmed-red"
+            if [ -f "$RED_MARKER" ]; then
+              read -r rc < "$RED_MARKER"
+              echo "An earlier attempt measured a red — invoking no scenario."
+              exit "$rc"
+            fi
+            if [ -f "$LIMIT_MARKER" ]; then
+              read -r rc < "$LIMIT_MARKER"
+              echo "The usage limit was hit on an earlier attempt — invoking no scenario."
+              exit "$rc"
+            fi
             : > "$SUMMARY"
             rc=0
             ran=0
+            CACHE_ARGS=()
+            if [ "${{ steps.verdict-cache-availability.outputs.enabled }}" = "true" ]; then
+              CACHE_ARGS=(--verdict-cache "$RUNNER_TEMP/eval-verdicts.json")
+            fi
             IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
-            for name in "${NAMES[@]}"; do
-              name="$(echo "$name" | xargs)"
+            for index in "${!NAMES[@]}"; do
+              name="$(echo "${NAMES[$index]}" | xargs)"
               if [ -z "$name" ]; then
                 continue
               fi
               ran=$((ran + 1))
+              scenario_rc=0
               uv run t3 eval run "$name" --backend api \
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 \
-                | uv run python -m teatree.eval.artifact_redaction tee "$LOG" || rc=$?
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" \
+                --summary-json "$RUNNER_TEMP/eval-verdict-rows-$name.json" \
+                "${CACHE_ARGS[@]}" 2>&1 \
+                | uv run python -m teatree.eval.artifact_redaction tee "$LOG" || scenario_rc=$?
               if [ -f "$RUNNER_TEMP/eval-summary-$name.md" ]; then
                 cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$SUMMARY"
+              fi
+              if [ "$scenario_rc" -eq 75 ]; then
+                printf '%s\n' "${NAMES[@]:index}" | xargs -n1 > "$RUNNER_TEMP/eval-owed-limit.txt"
+                echo "$rc" > "$LIMIT_MARKER"
+                echo "::warning title=eval PARKED::usage limit reached at $name"
+                break
+              fi
+              if [ "$scenario_rc" -ne 0 ]; then
+                rc="$scenario_rc"
+                echo "$scenario_rc" > "$RED_MARKER"
               fi
             done
             # ZERO-IS-RED: detect reached this job only with run=true (>=1 changed
@@ -346,6 +432,42 @@ jobs:
               echo "No summary at $SUMMARY: the run died before rendering one, so the tail above is the whole diagnosis."
             fi
             exit "$rc"
+      # A usage limit parks the remaining scenarios instead of reddening the PR; the
+      # gate below reports them as owed.
+      - name: Report the owed scenarios
+        id: owed
+        if: always()
+        env:
+          DEFERRED: ${{ needs.detect.outputs.deferred }}
+        run: |
+          LIMIT_NAMES="$RUNNER_TEMP/eval-owed-limit.txt"
+          if [ -s "$LIMIT_NAMES" ]; then
+            echo "parked=true" >> "$GITHUB_OUTPUT"
+            LIMIT_OWED="$(paste -sd, "$LIMIT_NAMES")"
+            echo "owed=${LIMIT_OWED}${DEFERRED:+,$DEFERRED}" >> "$GITHUB_OUTPUT"
+          else
+            echo "parked=false" >> "$GITHUB_OUTPUT"
+            echo "owed=$DEFERRED" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record owed scenarios
+        if: always() && steps.owed-availability.outputs.enabled == 'true'
+        env:
+          DEFERRED: ${{ needs.detect.outputs.deferred }}
+        run: |
+          touch "$RUNNER_TEMP/eval-owed-limit.txt"
+          printf '%s' "$DEFERRED" | tr ',' '\n' > "$RUNNER_TEMP/eval-owed-deferred.txt"
+          for reason in limit deferred; do
+            uv run t3 eval owed record --out "$RUNNER_TEMP/eval-owed.json" --reason "$reason" \
+              --source "pr#${{ github.event.pull_request.number }}@${{ github.event.pull_request.head.sha }}" \
+              --names-file "$RUNNER_TEMP/eval-owed-$reason.txt"
+          done
+      - name: Record and save eval verdicts
+        continue-on-error: true
+        if: success() && steps.verdict-cache-availability.outputs.enabled == 'true'
+        uses: ./.github/actions/eval-verdict-cache
+        with:
+          cache-key: eval-verdicts-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly). The summary is the
       # publish-safe dashboard; the transcript stays private. It runs before the
@@ -374,6 +496,15 @@ jobs:
           uv run python -m teatree.eval.artifact_redaction in-place
           "$RUNNER_TEMP/eval-transcripts-*.html"
           "$RUNNER_TEMP/eval-run-pr.log"
+          "$RUNNER_TEMP/eval-owed.json"
+      - name: Upload the owed scenarios
+        if: always() && steps.owed-availability.outputs.enabled == 'true' && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-owed
+          path: ${{ runner.temp }}/eval-owed.json
+          if-no-files-found: error
+          retention-days: 90
       # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
       # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
       # red run still publishes it. The path is a GLOB: the loop renders ONE report
@@ -411,7 +542,8 @@ jobs:
   # passed or was legitimately skipped (no scenario changed); it FAILs when
   # detection failed, when the eval failed (a real regression OR the vacuous
   # zero-executed case that `exit 1`s inside the eval job), or when either job was
-  # cancelled.
+  # cancelled. A usage limit that cut the eval short with nothing failed is PARKED:
+  # green, with the owed scenarios named; a confirmed red still fails.
   eval-gate:
     needs: [detect, eval]
     if: always()
@@ -422,6 +554,8 @@ jobs:
           DETECT_RESULT: ${{ needs.detect.result }}
           EVAL_RESULT: ${{ needs.eval.result }}
           CHANGED: ${{ needs.detect.outputs.run }}
+          PARKED: ${{ needs.eval.outputs.parked }}
+          OWED: ${{ needs.eval.outputs.owed }}
         run: |
           echo "detect=$DETECT_RESULT eval=$EVAL_RESULT changed_scenarios=$CHANGED"
           if [ "$DETECT_RESULT" != "success" ]; then
@@ -430,7 +564,19 @@ jobs:
           fi
           case "$EVAL_RESULT" in
             success)
-              echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+              if [ "$PARKED" = "true" ]; then
+                echo "eval-gate PARKED — owed: $OWED"
+                echo "::warning title=eval-gate PARKED::Owed scenarios: $OWED"
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "eval-gate PARKED — owed: $OWED" >> "$GITHUB_STEP_SUMMARY"
+                fi
+              else
+                if [ -n "$OWED" ]; then
+                  echo "eval-gate PASS — bounded scenarios passed; deferred to the owed ledger: $OWED"
+                else
+                  echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+                fi
+              fi
               ;;
             skipped)
               echo "eval-gate PASS — no scenario changed; nothing to eval."

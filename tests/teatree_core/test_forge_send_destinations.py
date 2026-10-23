@@ -16,6 +16,7 @@ _EXPECTED_WRITERS = {
     "core/issue_hygiene.py",
     "core/management/commands/_test_plan/mr_post.py",
     "core/management/commands/ticket.py",
+    "core/review/nit_lane.py",
     "core/review/verdict_findings_publish.py",
     "loops/dream/umbrella_ledger.py",
 }

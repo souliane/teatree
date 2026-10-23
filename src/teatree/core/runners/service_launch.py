@@ -56,11 +56,13 @@ class ServiceLauncher(RunnerBase):
         overlay = overlay or get_overlay_for_worktree(worktree)
         run_provision_steps(cls._collect_steps(overlay, worktree, services), stop_on_required_failure=False)
 
-    def prepare(self) -> None:
-        run_provision_steps(
+    def prepare(self, *, strict: bool = False) -> None:
+        report = run_provision_steps(
             self._collect_steps(self.overlay, self.worktree, [self.service]),
-            stop_on_required_failure=False,
+            stop_on_required_failure=strict,
         )
+        if strict and not report.success:
+            raise RuntimeError(report.summary())
 
     def _lock_name(self) -> str:
         """Per-(worktree, service) singleton key; sanitised for a filename."""

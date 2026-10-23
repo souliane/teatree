@@ -14,10 +14,12 @@ from teatree.backends.gitlab import uploads as _uploads
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.discussions import _count_unresolved_resolvable_threads, _read_int
 from teatree.backends.gitlab.pr_notes import GitLabMrNotes
+from teatree.backends.gitlab.reads import list_pr_commits as _list_pr_commits
 from teatree.core.backend_protocols import (
     ApprovalState,
     DraftState,
     ForgeMergeResult,
+    IssueResolutionSpec,
     PrMergeState,
     PrMessage,
     PrOpenState,
@@ -207,7 +209,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _pr_reads.project_pr_file_diffs(self._client, project, pr_iid=pr_iid)
 
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        return _pr_reads.list_project_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+        return _list_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
 
     def get_repo(self, *, repo: str) -> RawAPIDict:
         return _pr_reads.repo_metadata(self._resolve_project(repo), repo=repo)
@@ -223,6 +225,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """Open a GitLab issue on *repo* and return the created payload."""
         spec = _issue_ops.NewIssue(repo=repo, title=title, body=body, labels=labels or [])
         return _issue_ops.create_issue(self._client, self._resolve_project(repo), spec)
+
+    def create_issue_resolving_threads(self, spec: "IssueResolutionSpec") -> RawAPIDict:
+        return _issue_ops.create_issue_resolving_threads(self._client, self._resolve_project(spec.repo), spec)
 
     def create_sub_issue(
         self,
@@ -265,26 +270,23 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return self._notes.list_comments(repo=repo, pr_iid=pr_iid)
 
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]:
+        return _pr_reads.project_engaged_reviewers(self._client, self._resolve_project(repo), repo=repo, pr_iid=pr_iid)
+
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
         return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)
 
     def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:
         return self._notes.submit_review(repo=repo, pr_iid=pr_iid, review=review)
 
-    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        """Return thread-structured, author-carrying discussion threads for an MR (#3340).
+    def list_review_threads(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return self._notes.list_review_threads(repo=repo, pr_iid=pr_iid)
 
-        Unlike :meth:`list_pr_comments` (a flat note list), this preserves the
-        thread grouping AND each note's authorship — what
-        :func:`thread_opened_solely_by` needs to tell a stale bot thread apart
-        from one a human replied to. Keyed like its neighbours (``repo`` +
-        ``pr_iid``) so a caller selects threads through the backend without
-        dropping to the forge-specific ``project_id``-keyed API client.
-        """
-        project = self._resolve_project(repo)
-        if project is None:
-            return []
-        return self._client.get_mr_discussions(project.project_id, pr_iid)
+    def resolve_review_thread(self, *, repo: str, pr_iid: int, thread_id: str) -> RawAPIDict:
+        return self._notes.resolve_review_thread(repo=repo, pr_iid=pr_iid, thread_id=thread_id)
+
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return self._notes.list_discussions(repo=repo, pr_iid=pr_iid)
 
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         return _uploads.upload_file(self._client, project=self._resolve_project(repo), repo=repo, filepath=filepath)
@@ -435,6 +437,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict:
         """Replace a GitLab issue's description in place."""
         return _issue_ops.update_issue(self._client, issue_url, body=body)
+
+    def add_issue_labels(self, *, issue_url: str, labels: tuple[str, ...]) -> RawAPIDict:
+        return _issue_ops.add_issue_labels(self._client, issue_url, labels=labels)
 
     def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
         """Return the project slug that OWNS *issue_url* (the note's own project).

@@ -62,6 +62,7 @@ from teatree.backends.slack.voice_classifier import SlackVoiceMismatchError, Voi
 from teatree.backends.slack.web_ops import join_conversation as join_slack_conversation
 from teatree.backends.slack.web_ops import open_im_channel, read_ext_shared, read_permalink, run_auth_test
 from teatree.backends.slack.web_reads import read_channel_history, read_channel_history_or_refuse, read_reactions
+from teatree.backends.slack.web_reads import resolve_unique_active_user_id as resolve_slack_unique_active_user_id
 from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
 from teatree.backends.slack.web_reads import resolve_usergroup_id as resolve_slack_usergroup_id
 from teatree.slack_mrkdwn import wrap_slack_message
@@ -363,16 +364,16 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]:
         """Like :meth:`fetch_channel_history` but raises :class:`ChannelReadRefusedError`.
 
-        The MCP ``slack_channel_history`` seam — a GENUINE viewing read, not a
-        read-as-post — so it routes under :attr:`SlackOp.READ` through the user
-        ``xoxp`` token: the agent sees the same channels and history the user sees,
-        not the bot's view of only the channels it was invited to. A channel neither
-        can read still refuses loudly, never a misleading ``[]``.
+        A viewing read under :attr:`SlackOp.READ`: with both tokens, non-DMs use
+        the user; DMs start with the bot and may retry as the user.
+        A refused read stays loud.
         """
         if not channel:
             raise ChannelReadRefusedError(channel, "empty_channel_argument")
         token = self._channel_token(channel, op=SlackOp.READ)
-        messages = read_channel_history_or_refuse(get=self.get, channel=channel, token=token, limit=limit)
+        messages = read_channel_history_or_refuse(
+            get=self.get, channel=channel, token=token, user_token=self._user_token, limit=limit
+        )
         return self._strip_own_tts_audio(messages)
 
     def _own_identity(self) -> OwnSlackIdentity | None:
@@ -553,6 +554,9 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def resolve_user_id(self, handle: str) -> str:
         """Look up a Slack user id from a handle (``@alice`` or ``alice``)."""
         return resolve_slack_user_id(get=self.get, handle=handle)
+
+    def resolve_unique_active_user_id(self, handle: str) -> str:
+        return resolve_slack_unique_active_user_id(get=self.get, handle=handle)
 
     def resolve_usergroup_id(self, handle: str) -> str:
         return resolve_slack_usergroup_id(get=self.get, handle=handle)

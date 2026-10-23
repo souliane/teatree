@@ -8,8 +8,9 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError, is_usage_limit_skip_reason
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
-from teatree.eval.parallel import DEFAULT_PARALLEL, ConcurrencyGovernor, run_specs
+from teatree.eval.parallel import DEFAULT_PARALLEL, ConcurrencyGovernor, is_usage_limit_skip, run_specs
 from teatree.llm.anthropic_limits import CreditExhaustedError
 
 
@@ -58,6 +59,14 @@ class _RecordingRunner:
 
 
 class TestRunSpecs:
+    def test_only_a_usage_limit_skip_is_classified_as_capacity_park(self) -> None:
+        limited = EvalRun.skipped("limited", f"{USAGE_LIMIT_REACHED_REASON}: subscription window reached")
+        other = EvalRun.skipped("other", "ordinary skip")
+        assert is_usage_limit_skip(limited)
+        assert is_usage_limit_skip_reason(limited.terminal_reason)
+        assert not is_usage_limit_skip(other)
+        assert not is_usage_limit_skip_reason(other.terminal_reason)
+
     def test_default_is_serial(self) -> None:
         assert DEFAULT_PARALLEL == 1
 
@@ -86,6 +95,31 @@ class TestRunSpecs:
         runs = run_specs(runner, specs, parallel=1)
         assert runner.peak_in_flight == 1
         assert [r.spec_name for r in runs] == [s.name for s in specs]
+
+    @pytest.mark.parametrize("parallel", [1, 2])
+    def test_subscription_limit_parks_remaining_serial_scenarios(self, tmp_path: Path, parallel: int) -> None:
+        names = ("first", "limited", "remaining") if parallel == 1 else ("limited", "inflight", "remaining")
+        specs = [_spec(tmp_path, name=name) for name in names]
+        called: list[str] = []
+        sibling_started = threading.Event()
+
+        class _LimitRunner:
+            def run(self, spec: EvalSpec) -> EvalRun:
+                called.append(spec.name)
+                if spec.name == "limited":
+                    if parallel == 2:
+                        assert sibling_started.wait(5)
+                    msg = "weekly limit reached"
+                    raise UsageLimitReachedError(msg)
+                if spec.name == "inflight":
+                    sibling_started.set()
+                    time.sleep(0.05)
+                return EvalRun.skipped(spec.name, "other")
+
+        runs = run_specs(_LimitRunner(), specs, parallel=parallel)
+        assert set(called) == (set(names[:2]) if parallel == 2 else {"first", "limited"})
+        assert [run.spec_name for run in runs] == [spec.name for spec in specs]
+        assert all(is_usage_limit_skip(run) for run in runs[(1 if parallel == 1 else 2) :])
 
     def test_empty_specs_yields_empty(self) -> None:
         assert run_specs(_RecordingRunner(), [], parallel=4) == []

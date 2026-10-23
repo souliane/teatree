@@ -1,5 +1,7 @@
 # TeaTree — Agent Instructions
 
+Read [`skills/rules/RULES.md`](skills/rules/RULES.md) first: the six always-on rules every agent follows, ranked by importance.
+
 This is the teatree repo — both the Python package (`src/teatree/`) and the workflow skills (`skills/*/`). You are developing teatree itself, not using it on a downstream project.
 
 ## First Principles (Non-Negotiable — outrank BLUEPRINT.md and every section below)
@@ -154,7 +156,7 @@ records.
 ### Task — Agent work unit (FSM, FK → Ticket, Session)
 
 - **Fields:** ticket (FK), session (FK), parent_task (self FK), phase, execution_reason, failure_reason + failure_kind, status (FSMField: pending/claimed/completed/failed)
-- `execution_reason` is why the task was SCHEDULED; `failure_reason` is why it FAILED, named by `core/task_failure_taxonomy.py`. `Task.fail()` requires a reason, so no failure path can land a task in FAILED with no cause attached.
+- `execution_reason` is why the task was SCHEDULED; `failure_reason` is why it FAILED, named by `core/modelkit/task_failure_taxonomy.py`. `Task.fail()` requires a reason, so no failure path can land a task in FAILED with no cause attached.
 - **Claim/lease:** claimed_at, claimed_by, lease_expires_at, heartbeat_at, result_artifact_path
 - **Key methods:** claim(), complete(), fail(), reopen(), park()
 
@@ -439,7 +441,7 @@ teatree resolves ALL required state from its own stores; an assistant's memory i
 ## Things That Catch People
 
 - The package is `teatree` (double-e) but the repo/CLI is `teatree`/`t3`.
-- `DJANGO_SETTINGS_MODULE` is stripped from env when running `_managepy()` so the overlay's own settings win.
+- `DJANGO_SETTINGS_MODULE` is stripped from env when running `managepy()` so the overlay's own settings win.
 - **Running unit tests from another repo's working directory** (e.g., an overlay project) may fail with "No module named" errors because `DJANGO_SETTINGS_MODULE` from the outer shell leaks in before conftest can strip it. Fix: pass `--ds=tests.django_settings` to pytest, or `unset DJANGO_SETTINGS_MODULE` before invoking.
 - Port allocation uses file-level locking (`teatree.utils.ports`) — never hardcode ports.
 - The `t3 agent` command builds a system prompt from overlay detection + skill resolution, then `os.execvp`s into `claude`.

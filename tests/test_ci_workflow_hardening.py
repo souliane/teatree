@@ -90,7 +90,7 @@ _MINIMUM_GRANTS: dict[JobKey, dict[str, str]] = {
     ("dependabot-sbom-sync.yml", "dependabot-sbom-sync"): {"contents": "read", "actions": "read"},
     ("docs.yml", "deploy"): {"contents": "read", "pages": "write", "id-token": "write"},
     ("eval.yml", "prepare"): {"contents": "read", "pull-requests": "read"},
-    ("eval-nightly.yml", "prepare"): {"contents": "read", "pull-requests": "read"},
+    ("eval-nightly.yml", "prepare"): {"contents": "read", "pull-requests": "read", "actions": "read"},
     ("force-push-alert.yml", "alert"): {"contents": "read"},
     ("lock-refresh-scope.yml", "scope"): {"contents": "write", "pull-requests": "write"},
     ("needs-triage.yml", "label"): {"issues": "write"},
@@ -113,6 +113,28 @@ def test_a_token_using_job_holds_at_least_its_scopes(name: str, key: str) -> Non
 def test_every_job_that_hands_the_workflow_token_to_a_step_is_accounted_for() -> None:
     holders = {(name, key) for name, key, job in _all_jobs() if _TOKEN_USE.search(_text(job))}
     assert holders <= set(_MINIMUM_GRANTS) | _CALLER_BOUNDED
+
+
+_AGENT_RUN = re.compile(r"\bt3 eval run\b")
+
+
+def _runs_the_agent_under_test(job: Mapping[str, Any]) -> bool:
+    scripts = (script for step in _steps(job) for script in (step.get("run"), step.get("with", {}).get("command")))
+    return any(_AGENT_RUN.search(script) for script in scripts if script)
+
+
+_AGENT_JOBS = [(name, key) for name, key, job in _all_jobs() if _runs_the_agent_under_test(job)]
+
+
+def test_the_agent_job_scan_sees_both_reusable_lanes() -> None:
+    assert {("eval-pr-reusable.yml", "eval"), ("eval-weekly-reusable.yml", "eval")} <= set(_AGENT_JOBS)
+
+
+@pytest.mark.parametrize(("name", "key"), _AGENT_JOBS, ids=str)
+def test_a_job_that_runs_the_agent_under_test_holds_only_contents_read(name: str, key: str) -> None:
+    # A reusable job with no block inherits whatever its caller granted, so it must declare its own.
+    workflow = _workflow(name)
+    assert workflow["jobs"][key].get("permissions", workflow.get("permissions")) == {"contents": "read"}
 
 
 _USES = re.compile(r"^[ \t-]*uses:\s*(?P<action>[^\s@]+)@(?P<ref>\S+?)(?:\s+#\s*(?P<label>\S+))?\s*$", re.MULTILINE)
@@ -286,7 +308,10 @@ def test_credential_jobs_bind_the_production_environment(name: str, key: str) ->
 
 def test_the_dashboard_publish_job_runs_on_main_only() -> None:
     condition = " ".join(str(_workflow("eval.yml")["jobs"]["publish"]["if"]).split())
-    assert condition == "always() && needs.prepare.outputs.run_eval == 'true' && github.ref == 'refs/heads/main'"
+    assert condition == (
+        "always() && needs.prepare.outputs.run_eval == 'true' && needs.prepare.outputs.parked != 'true' "
+        "&& github.ref == 'refs/heads/main'"
+    )
 
 
 _PR_WRITE = re.compile(r"\bgh pr (?:create|review)\b|pulls\.(?:create|createReview)\b")

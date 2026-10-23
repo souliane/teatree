@@ -80,7 +80,7 @@ Action-needed lines are bright red, in-flight bright cyan. If a
 `STATUSLINE_ZONE_BY_KIND` in `src/teatree/loop/dispatch_tables.py`.
 
 Multi-overlay ticks prefix lines with `[<overlay>]`. A signal with
-`payload.overlay = "teatree"` and no `[teatree]` prefix is a `_zones_for` bug.
+`payload.overlay = "teatree"` and no `[teatree]` prefix is a `zones_for` bug (`src/teatree/loop/rendering.py`).
 
 ### OSC 8 hyperlinks
 
@@ -119,15 +119,8 @@ doesn't change) but isn't. Symptom: edits look gone, or tests run against an
 in-memory version while disk has older content. Fix: always use separate
 worktrees, never `git stash`.
 
-**`discover_active_overlay()` returns the wrong name in worktrees.** The
-function walks cwd looking for `manage.py` and returns the directory name.
-In worktrees, this gives names like `ac-teatree-541-follow-up-...` instead
-of `teatree`. The `_resolve_overlay_for_server()` function in `cli/__init__.py`
-works around this by preferring entry-point overlays. Always test from a
-worktree path so this code path actually runs.
-
 **Single-overlay tick caches.** `code_host_from_overlay()` and
-`messaging_from_overlay()` are `lru_cache`d for the whole process. After
+`messaging_from_overlay()` are cached for the whole process. After
 swapping overlay credentials in tests or local config, call
 `reset_backend_caches()` (or restart the process) — otherwise the next tick
 reuses the stale client and you'll think your edit didn't take.
@@ -281,7 +274,7 @@ Verify against the source before quoting in a bug report — these can drift.
 - **`overlay_resolution_failed` at a `*_env_unset` step** — this class. Those steps run the workspace verbs with `T3_OVERLAY_NAME` removed from the child env; a bare `get_overlay()` raises `Multiple overlays found` on a multi-overlay install. Its `*_env_set` twin pins the var, so the two together tell you which resolution route regressed.
 - **`; uncovered: dslr-alias-variant (...)` on a PASS** — the run could not exercise the variant→tenant alias path, because the overlay declares no variant whose canonical tenant differs from its own name. Not a failure; a named coverage gap. Fix it by listing the alias variant (the LEFT side of the overlay's alias map) in the overlay's `known_variants`, or pass `--variant <alias>` explicitly.
 - An identity-mapped variant is the trap this guards: the smoke passes green while a non-identity alias bug ships.
-- **`provision_failed at env_show: worktree path unresolved: ...`** — every step after `workspace_ticket` targets the new worktree by `--path`, resolved from the `Ticket` row that step created. This verdict means the row carries no materialised checkout, so the smoke stopped rather than shelling the step out pathless and blaming your CWD.
+- **`provision_failed at env_show: worktree path unresolved: ...`** — every step after `workspace_ticket` targets the fixture's checkout by `--path`. Give each overlay its own `OverlayConfig.dogfood_smoke_fixture_url` when no checkout belongs to it. A `fixture checkout pre-existed` refusal protects an existing checkout: inspect its ticket and branch, then use `worktree teardown --path` only for a verified smoke-owned leftover, or choose a fresh fixture URL. Failed runs attempt to remove checkouts they created; a cleanup failure appears in stderr and the failure DM.
 
 ## Rules
 

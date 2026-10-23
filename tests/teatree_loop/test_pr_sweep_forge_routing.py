@@ -13,7 +13,7 @@ Only the unstoppable externals are stubbed — the forge transport and the overl
 registry that declares which host owns a namespace.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
@@ -58,7 +58,7 @@ def _declaring_both_forges() -> dict[str, SimpleNamespace]:
 
 
 @contextmanager
-def _declared_scopes(owned: dict[str, list[str]] | None = None) -> Iterator[None]:
+def _declared_scopes(owned: dict[str, list[str]] | None = None) -> Generator[None]:
     """Stub the two host-bearing sources ``forge_for_repo_slug`` reads."""
     overlays = (
         _declaring_both_forges()

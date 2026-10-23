@@ -1,6 +1,6 @@
 """Bounded transient-throttle retry envelope for the metered in-process eval runner.
 
-The driver rides out a TRANSIENT/SUSTAINED throttle (and the empty-trajectory
+The driver rides out a transient throttle (and the empty-trajectory
 watchdog timeout) with bounded backoff, while a genuine cap, credit exhaustion, or
 mislabeled success is graded by the caller's handlers — never retried, the
 anti-cheat boundary that keeps a real behavioral fail from becoming a passing retry.
@@ -15,7 +15,6 @@ from teatree.eval.ephemeral_checkout import EphemeralCheckoutError
 from teatree.eval.models import EvalRun
 from teatree.eval.throttle_retry import (
     THROTTLE_RETRY_MAX_ATTEMPTS,
-    THROTTLE_WINDOW_WAIT_MAX_SECONDS,
     ThrottleRetryDriver,
     ThrottleRetryHandlers,
     resolve_throttle_retries,
@@ -165,14 +164,6 @@ class TestThrottleRetryDriver:
         run = _driver(sleeps).run(drive, _handlers())
         assert calls["n"] == 2
         assert run.throttle_retries == 1
-
-    def test_session_window_wait_is_bounded_by_the_cap(self) -> None:
-        drive, calls = _scripted_drive([RuntimeError("session limit reached"), []])
-        sleeps: list[float] = []
-        run = _driver(sleeps).run(drive, _handlers())
-        assert calls["n"] == 2
-        assert run.is_error is False
-        assert sleeps == [pytest.approx(THROTTLE_WINDOW_WAIT_MAX_SECONDS)]
 
     def test_exhausted_throttle_surfaces_loud(self) -> None:
         drive, calls = _scripted_drive([RuntimeError("Overloaded")])

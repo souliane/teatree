@@ -10,7 +10,7 @@ chokepoint, so it inherits the self-rescue allowlist and the master
 ``danger_gate_fail_open`` switch like every other over-deny gate.
 
 NEVER-LOCKOUT: the ``brief_anchor_gate_enabled`` kill-switch (``t3 <overlay> gate brief-anchor
-disable``) turns it off entirely; a per-call ``[brief-anchor-ok: <reason>]`` token
+disable``) turns it off entirely; a per-call ``[gate-escape:brief_anchor: <reason>]`` token
 in the first 512 chars of the brief clears one dispatch (an empty reason does not);
 and any internal error, an unimportable ``teatree`` and an unreadable settings store
 all fail OPEN.
@@ -20,7 +20,6 @@ through a deferred import after the ``sys.path`` bootstrap.
 """
 
 import contextlib
-import re
 import sys
 from pathlib import Path
 
@@ -32,18 +31,11 @@ sys.modules.setdefault("hooks.scripts.brief_anchor_gate", sys.modules[__name__])
 #: The two harness tool names that spawn a sub-agent.
 DISPATCH_TOOLS = frozenset({"Agent", "Task"})
 
-# Per-call opt-out, mirroring ``[admission-ok: <reason>]``. An empty reason does not clear.
-_BRIEF_ANCHOR_OK_RE = re.compile(r"\[brief-anchor-ok:\s*\S[^\]]*?\s*\]")
-
-#: Scanned prefix for the opt-out token — a token buried deep in a long brief must
-#: not silently authorise the whole prompt (the ``[quote-ok:]`` precedent).
-_TOKEN_SCAN_CHARS = 512
-
 
 def _gate_enabled() -> bool:
     from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 — deferred: cold-hook import
 
-    return teatree_bool_setting("brief_anchor_gate_enabled", default=True)
+    return teatree_bool_setting("brief_anchor_gate_enabled")
 
 
 def _prompt_of(data: dict) -> str:
@@ -78,7 +70,7 @@ def handle_brief_anchor_lint(data: dict) -> bool:
         if data.get("tool_name") not in DISPATCH_TOOLS or not _gate_enabled():
             return False
         prompt = _prompt_of(data)
-        if not prompt or _BRIEF_ANCHOR_OK_RE.search(prompt[:_TOKEN_SCAN_CHARS]):
+        if not prompt:
             return False
         message = _warning_for(prompt)
         if message is None:

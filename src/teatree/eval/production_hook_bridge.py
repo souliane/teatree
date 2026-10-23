@@ -42,7 +42,7 @@ from teatree.llm.credentials import AnthropicApiKeyCredential
 from teatree.utils.run import SUBPROCESS_UNREACHABLE, redact_secrets, run_allowed_to_fail
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator, Iterator
 
     from teatree.agents.pydantic_ai_turn import SessionRun
     from teatree.eval.models import EvalSpec
@@ -108,7 +108,7 @@ class ProductionHookBridge:
         run: "SessionRun",
         cwd: Path | None = None,
         state_root: Path | None = None,
-    ) -> "Iterator[ProductionHookBridge]":
+    ) -> "Generator[ProductionHookBridge]":
         """Provision isolated hook state for *spec* and remove it after the run."""
         plugin_root = preflighted_plugin_root()
         if state_root is not None:

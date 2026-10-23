@@ -89,6 +89,11 @@ class LimitCause(Enum):
     PROVIDER_ACCESS_DENIED = "provider_access_denied"
 
 
+SUBSCRIPTION_LIMIT_CAUSES: frozenset[LimitCause] = frozenset(
+    {LimitCause.SUBSCRIPTION_SESSION, LimitCause.SUBSCRIPTION_WEEKLY}
+)
+
+
 EGRESS_BLOCKED_MARKER = "egress_blocked"
 
 
@@ -216,10 +221,8 @@ def window_horizon(cause: LimitCause) -> timedelta | None:
 #: The exhaustion causes whose window RESETS on a timer — the ones an idle auto-requeue
 #: (#3407) may reopen once the horizon elapses. :data:`LimitCause.API_CREDIT` is excluded:
 #: a $0 balance has no timed reset, so a credit-killed task is never auto-requeued.
-RECOVERABLE_EXHAUSTION_CAUSES: frozenset[LimitCause] = frozenset(
+RECOVERABLE_EXHAUSTION_CAUSES: frozenset[LimitCause] = SUBSCRIPTION_LIMIT_CAUSES | frozenset(
     {
-        LimitCause.SUBSCRIPTION_SESSION,
-        LimitCause.SUBSCRIPTION_WEEKLY,
         LimitCause.RATE_LIMIT,
         LimitCause.PROVIDER_ACCESS_DENIED,
     },

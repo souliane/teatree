@@ -209,7 +209,7 @@ class TestTransientRequeue(TestCase):
             "result_error: context_exhausted — subtype=success — the resumed conversation ended without taking a turn"
         )
         _add_failed_attempt(task, error=reason)
-        _add_failed_attempt(task, error="limit_parked: deploy checkpoint")
+        _add_failed_attempt(task, error="limit_parked: checkpoint: worker exiting")
         _add_failed_attempt(task, error=reason)
 
         assert requeue_transient_failed() == 1

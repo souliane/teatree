@@ -22,7 +22,7 @@ import teatree.core.worktree.checkout_fence as checkout_fence_mod
 from teatree.agents._runner_env import system_child_env
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
-from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
+from teatree.agents.model_tiering import tier_effort, tier_models
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.agents.runner import (
     LoopWatchdog,
@@ -1175,7 +1175,7 @@ class TestDriveWithHeartbeat(TestCase):
         self.task = Task.objects.create(ticket=self.ticket, session=self.session)
         # Threaded ORM access under TestCase's wrapping transaction is a
         # harness artifact, not production behaviour — stub the lease renewal.
-        self.task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(self.task, "renew_lease", new=lambda **_kw: None))
 
     def _options(self) -> Any:
         return runner_mod._build_options(self.task, "ctx", phase="coding", skills=[])
@@ -1200,7 +1200,7 @@ class TestDriveWithHeartbeat(TestCase):
             nonlocal renew_count
             renew_count += 1
 
-        self.task.renew_lease = counting_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=counting_renew))
         messages = [_assistant_text("hello"), _result_message()]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with _fake_sdk(messages, delay=0.05), patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02):
@@ -1222,7 +1222,7 @@ class TestDriveWithHeartbeat(TestCase):
         def capturing_renew(*, lease_seconds: int = 300, **_kwargs: object) -> None:
             seen_lease.append(lease_seconds)
 
-        self.task.renew_lease = capturing_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=capturing_renew))
         messages = [_assistant_text("hello"), _result_message()]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with _fake_sdk(messages, delay=0.05), patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02):
@@ -1257,7 +1257,7 @@ class TestDriveWithHeartbeat(TestCase):
             msg = "DB connection lost"
             raise RuntimeError(msg)
 
-        self.task.renew_lease = failing_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=failing_renew))
         messages = [_assistant_text("ok"), _result_message()]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with (
@@ -1282,7 +1282,7 @@ class TestDriveWithHeartbeat(TestCase):
             msg = f"lease lost for task {self.task.pk}"
             raise LeaseLostError(msg)
 
-        self.task.renew_lease = lease_lost_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=lease_lost_renew))
         messages = [_assistant_text("step") for _ in range(1000)]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         start = time.monotonic()
@@ -1305,7 +1305,7 @@ class TestDriveWithHeartbeat(TestCase):
             msg = f"lease lost for task {self.task.pk}"
             raise LeaseLostError(msg)
 
-        self.task.renew_lease = lease_lost_renew
+        self.enterContext(patch.object(self.task, "renew_lease", new=lease_lost_renew))
         messages = [_assistant_text("step") for _ in range(1000)]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         start = time.monotonic()
@@ -1332,7 +1332,7 @@ class TestWatchdogResamplesUsageMidRun(TestCase):
         self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.task = Task.objects.create(ticket=self.ticket, session=self.session)
-        self.task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(self.task, "renew_lease", new=lambda **_kw: None))
 
     def _options(self) -> Any:
         return runner_mod._build_options(self.task, "ctx", phase="coding", skills=[])
@@ -1424,7 +1424,7 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session)
         TaskAttempt.objects.create(task=task, num_turns=500)
-        task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(task, "renew_lease", new=lambda **_kw: None))
 
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=200, max_cost_usd=0.0)
         # A long never-terminating stream: the watchdog must interrupt it on the
@@ -1548,24 +1548,24 @@ class TestBuildOptions(TestCase):
 
     def test_retrospecting_runs_on_frontier(self) -> None:
         options = self._options_for_phase("retrospecting")
-        assert options.model == TIER_MODELS["frontier"]
+        assert options.model == tier_models()["frontier"]
 
     def test_reviewing_runs_on_frontier(self) -> None:
         options = self._options_for_phase("reviewing")
-        assert options.model == TIER_MODELS["frontier"]
+        assert options.model == tier_models()["frontier"]
 
     def test_coding_runs_on_frontier(self) -> None:
         # The redesign maps coding to the frontier tier (was inherit/None before).
         options = self._options_for_phase("coding")
-        assert options.model == TIER_MODELS["frontier"]
+        assert options.model == tier_models()["frontier"]
 
     def test_requesting_review_runs_on_cheap(self) -> None:
         options = self._options_for_phase("requesting_review")
-        assert options.model == TIER_MODELS["cheap"]
+        assert options.model == tier_models()["cheap"]
 
     def test_testing_runs_on_balanced(self) -> None:
         options = self._options_for_phase("testing")
-        assert options.model == TIER_MODELS["balanced"]
+        assert options.model == tier_models()["balanced"]
 
     def test_permission_mode_bypasses_prompts(self) -> None:
         options = self._options_for_phase("coding")
@@ -1594,17 +1594,17 @@ class TestBuildOptions(TestCase):
         # adaptive thinking explicitly AND the frontier-tier effort (xhigh).
         options = self._options_for_phase("coding")
         assert options.thinking == {"type": "adaptive"}
-        assert options.effort == TIER_EFFORT["frontier"]
+        assert options.effort == tier_effort()["frontier"]
 
     def test_balanced_phase_pins_adaptive_thinking_and_xhigh_effort(self) -> None:
         # A balanced (Sonnet) phase supports thinking and carries the balanced-tier
         # effort (xhigh).
         options = self._options_for_phase("testing")
         assert options.thinking == {"type": "adaptive"}
-        assert options.effort == TIER_EFFORT["balanced"]
+        assert options.effort == tier_effort()["balanced"]
 
     def test_cheap_phase_pins_no_effort(self) -> None:
-        # The cheap tier has no TIER_EFFORT entry, so the SDK default effort applies.
+        # The cheap tier has no tier_effort() entry, so the SDK default effort applies.
         options = self._options_for_phase("requesting_review")
         assert options.thinking == {"type": "adaptive"}
         assert options.effort is None
@@ -1679,7 +1679,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
             config={"agent_skill_models": {"code-review": []}},
         )
         # requesting_review's cheap phase default stands; the inherit floor is a no-op.
-        assert options.model == TIER_MODELS["cheap"]
+        assert options.model == tier_models()["cheap"]
 
     def test_session_effort_does_not_leak_into_headless(self) -> None:
         # A headless SDK run's effort comes from the per-TIER map, never from the
@@ -1810,7 +1810,7 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
     ``agent_harness=pydantic_ai`` + ``agent_harness_provider=anthropic_api`` — a pair
     :meth:`~teatree.config.AgentHarnessProvider.valid_for` accepts, the ``ConfigSetting``
     cross-key write gate admits, and ``resolve_harness`` deliberately passes.
-    ``PHASE_HARNESS`` then pins the verification phases (``reviewing`` /
+    ``agent_phase_harness`` then pins the verification phases (``reviewing`` /
     ``requesting_review`` / ``testing``) to ``claude_sdk``, flipping Layer 1 without
     flipping Layer 2 — so the claude_sdk-scoped child-env resolver saw a provider that
     is invalid under the harness it was NOW running and refused every verification

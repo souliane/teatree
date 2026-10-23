@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import StrEnum
@@ -17,7 +17,7 @@ _EGRESS_SUPPRESSOR: ContextVar[EgressSuppressor | None] = ContextVar("egress_sup
 
 
 @contextmanager
-def suppress_on_behalf_egress(suppressor: EgressSuppressor) -> Iterator[None]:
+def suppress_on_behalf_egress(suppressor: EgressSuppressor) -> Generator[None]:
     token = _EGRESS_SUPPRESSOR.set(suppressor)
     try:
         yield

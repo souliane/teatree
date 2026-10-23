@@ -17,6 +17,7 @@ declare it, and its bytes are the render (``tests/teatree_config/test_declared_d
 """
 
 import dataclasses
+import tomllib
 from pathlib import Path
 from unittest import mock
 
@@ -32,7 +33,7 @@ from teatree.config import (
     effective_default,
     get_effective_settings,
 )
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.overlay_code_defaults import PROMOTED_OVERLAY_CODE_DEFAULT_KEYS
 from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS
 from teatree.config.resolution import _BESPOKE_STRUCTURED_FIELDS as _STRUCTURED_KEYS
@@ -65,11 +66,18 @@ class TestTheShippedFileIsNotATier(TestCase):
 
     def test_a_diverging_scalar_leaves_the_declared_default_in_force(self) -> None:
         assert ConfigSetting.objects.count() == 0
-        assert shipped_defaults_table()["provision_ram_ceiling_percent"] == 42
+        assert (
+            tomllib.loads(cold_defaults.DEFAULTS_TOML.read_text(encoding="utf-8"))["teatree"][
+                "provision_ram_ceiling_percent"
+            ]
+            == 42
+        )
         assert get_effective_settings().provision_ram_ceiling_percent == UserSettings().provision_ram_ceiling_percent
 
     def test_a_diverging_sub_table_leaves_the_declared_default_in_force(self) -> None:
-        assert shipped_defaults_table()["speak"]["local"] == "all"
+        assert (
+            tomllib.loads(cold_defaults.DEFAULTS_TOML.read_text(encoding="utf-8"))["teatree"]["speak"]["local"] == "all"
+        )
         assert get_effective_settings().speak.local == UserSettings().speak.local
 
     def test_a_db_row_still_wins_over_the_declared_default(self) -> None:
@@ -81,7 +89,7 @@ class TestTheShippedFileIsNotATier(TestCase):
     def test_effective_default_reads_the_declaration_not_the_file(self) -> None:
         # The seed-skip / import-skip authority agrees with the resolver, so a row equal
         # to the shipped default stays provably redundant.
-        assert shipped_defaults_table()["merge_wip"] == 7
+        assert tomllib.loads(cold_defaults.DEFAULTS_TOML.read_text(encoding="utf-8"))["teatree"]["merge_wip"] == 7
         assert effective_default("merge_wip") == UserSettings().merge_wip
         assert effective_default("session_stale_after_hours") == UserSettings().session_stale_after_hours
 
@@ -105,7 +113,7 @@ class TestTheBaseTheResolverIsHandedSurvives(TestCase):
         # ``autonomy``, not ``mode``: ``mode`` is autonomy-collapsed, so ``_apply_autonomy``
         # pins it and the staged base could never be what survived.
         staged = TeaTreeConfig(user=UserSettings(autonomy=Autonomy.BABYSIT))
-        assert shipped_defaults_table()["autonomy"] == "full"
+        assert declared_defaults()["autonomy"] == "full"
         with mock.patch("teatree.config.load_config", return_value=staged):
             assert get_effective_settings().autonomy is Autonomy.BABYSIT
 
@@ -127,8 +135,8 @@ class TestEveryShippedKeyIsPinned:
     """
 
     def test_every_shipped_key_lands_in_exactly_one_pinned_bucket(self) -> None:
-        shipped = set(shipped_defaults_table())
-        resolver_reached = set(_coerce_setting_rows(shipped_defaults_table())) | _STRUCTURED_KEYS
+        shipped = set(declared_defaults())
+        resolver_reached = set(_coerce_setting_rows(declared_defaults())) | _STRUCTURED_KEYS
         buckets = (resolver_reached, set(COLD_HOOK_SETTINGS), set(COLD_SETTINGS))
         unpinned = shipped - set().union(*buckets)
         assert not unpinned, f"shipped keys pinned by nothing: {sorted(unpinned)}"
@@ -138,7 +146,7 @@ class TestEveryShippedKeyIsPinned:
     def test_cold_hook_keys_ship_their_registered_default(self) -> None:
         # Driven from the REGISTRY, not the table, so an absent key is drift too: a cold-hook
         # gate the file stops shipping would otherwise leave this guard silently vacuous.
-        table = shipped_defaults_table()
+        table = declared_defaults()
         missing = object()
         drift = {
             key: (table.get(key, missing), setting.default)
@@ -153,7 +161,7 @@ class TestEveryShippedKeyIsPinned:
         # returns DEFAULT_TOKEN_OUTAGE_PRESET for a blank value). So the shipped value is the
         # UNSET SENTINEL, never the fallback the reader materialises from it — writing the
         # fallback in would make the key read as explicitly set.
-        table = shipped_defaults_table()
+        table = declared_defaults()
         materialised = {key: table[key] for key in table if key in COLD_SETTINGS and table[key]}
         assert not materialised, (
             f"a cold key ships a materialised fallback instead of its unset sentinel: {materialised}"

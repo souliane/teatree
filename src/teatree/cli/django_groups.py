@@ -150,6 +150,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("ensure-pr", "Create a PR for an orphan branch (idempotent)."),
             ("discharge-pending", "Drop a deferred-PR obligation the drain can never discharge."),
             ("void-merge", "Void a merge whose content never reached the default branch (a human at a terminal)."),
+            ("request-void", "Ask the owner on Slack to correct a merge whose content is absent."),
             ("check-gates", "Check whether session gates allow a phase transition."),
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),
@@ -217,11 +218,12 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
     ),
     "live": DjangoGroup(
-        "Sessions running now on this host's workers: inspect them passively, steer them actively.",
+        "Sessions on this host's workers: inspect passively, steer or follow up actively.",
         [
             ("list", "List every live session on this host's workers (passive)."),
             ("inspect", "Show one live session's state, tool and progress without contacting the agent."),
             ("steer", "Send input into a running agent's current turn and print its receipt (active)."),
+            ("follow-up", "Start one new turn in an idle agent session and print its receipt (active)."),
         ],
         # The broker sockets are this host's runtime state, not an overlay's: core runtime only.
         core_dispatch=True,

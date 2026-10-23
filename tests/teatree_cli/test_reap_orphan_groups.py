@@ -17,7 +17,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -155,7 +155,7 @@ _BURN_SH = "i=0; while [ $i -lt 90000000 ]; do i=$((i+1)); done"
 
 
 @contextmanager
-def planted_leaderless_group(*, program: str = "sh", tail: str = "") -> Iterator[int]:
+def planted_leaderless_group(*, program: str = "sh", tail: str = "") -> Generator[int]:
     """A real group whose leader has exited and whose child is still burning CPU.
 
     Its zombie member is a direct child of a holder outside the group, so it remains

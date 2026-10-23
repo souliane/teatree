@@ -9,14 +9,12 @@ import secrets
 import threading
 import uuid
 from collections import deque
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, NoReturn, Self, cast
-
-from claude_agent_sdk import ClaudeAgentOptions
+from typing import NoReturn, Self
 
 from teatree.agents.live_control import ControlOutcome, LiveTask, PeerIdentity, RejectCode, frame_peer_message
 from teatree.agents.live_delivery import (
@@ -44,10 +42,6 @@ from teatree.agents.live_federation import (
 )
 from teatree.agents.live_ingress import IngressRefusedError, OperatorIngress
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
-from teatree.config import AgentHarness
-
-if TYPE_CHECKING:
-    from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -65,18 +59,24 @@ def _reject(message: str) -> NoReturn:
 @dataclass(slots=True)
 class _Participant:
     address: str
-    token: str
+    token: str = field(repr=False)
     room: str
     harness: str
     label: str
     phase: str = ""
     can_receive: bool = True
-    task: int | None = None
+    task: LiveTask | None = None
+    reads_inbox: bool = True
     inbox: deque[InboxMessage] = field(default_factory=lambda: deque(maxlen=_MAX_INBOX_MESSAGES))
     sent: dict[str, PeerDelivery] = field(default_factory=dict)
     remote_sent: RemoteReceipts = field(default_factory=RemoteReceipts)
     dropped_before: int = 0
     waiting: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PushOnlyTask:
+    task: LiveTask
 
 
 class LiveMailboxBroker:
@@ -152,21 +152,30 @@ class LiveMailboxBroker:
         self._stop = None
 
     def register(
-        self, *, room: str, harness: str, label: str, task: int | None = None, phase: str = ""
+        self,
+        *,
+        room: str,
+        harness: str,
+        label: str,
+        task: LiveTask | PushOnlyTask | None = None,
+        can_receive: bool = True,
     ) -> MailboxIdentity:
         if not room or not harness or not label:
             msg = "Mailbox room, harness, and label are required"
             raise ValueError(msg)
         self.start()
+        push_only = isinstance(task, PushOnlyTask)
+        bound_task = task.task if push_only else task
         participant = _Participant(
             address=str(uuid.uuid4()),
             token=secrets.token_urlsafe(32),
             room=room,
             harness=harness,
             label=label,
-            phase=phase,
-            can_receive=harness != AgentHarness.PYDANTIC_AI,
-            task=task,
+            phase=bound_task.phase if bound_task else "",
+            can_receive=can_receive,
+            task=bound_task,
+            reads_inbox=not push_only,
         )
         with self._lock:
             self._by_token[participant.token] = participant
@@ -313,7 +322,7 @@ class LiveMailboxBroker:
     async def accepted(self, delivery: PeerDelivery, wait: float) -> SendReceipt:
         with self._lock:
             recipient = self._by_address.get(delivery.to)
-        return await self._accepted(delivery, recipient.task if recipient else None, wait)
+        return await self._accepted(delivery, recipient, wait)
 
     def _require_active(self, participant: _Participant) -> None:
         if self._by_address.get(participant.address) is not participant:
@@ -357,7 +366,7 @@ class LiveMailboxBroker:
                 with self._lock:
                     participant.remote_sent.keep(key, to, body, receipt)
                 return receipt
-            return await self._accepted(delivery, recipient.task if recipient else None, timeout)
+            return await self._accepted(delivery, recipient, timeout)
         finally:
             participant.waiting -= 1
 
@@ -373,6 +382,9 @@ class LiveMailboxBroker:
         if not recipient.can_receive:
             delivery.queued_in_inbox = False
             delivery.settle(ControlOutcome.REJECTED, RejectCode.RECIPIENT_CANNOT_RECEIVE)
+            return delivery
+        if not recipient.reads_inbox:
+            delivery.queued_in_inbox = False
             return delivery
         if len(recipient.inbox) == recipient.inbox.maxlen:
             evicted = recipient.inbox[0]["id"]
@@ -391,29 +403,36 @@ class LiveMailboxBroker:
         )
         return delivery
 
-    async def _accepted(self, delivery: PeerDelivery, task: int | None, wait: float) -> SendReceipt:
+    async def _accepted(self, delivery: PeerDelivery, recipient: _Participant | None, wait: float) -> SendReceipt:
         """Push into the recipient's running turn while its inbox read can still accept first."""
         deadline = asyncio.get_running_loop().time() + wait
         if not delivery.settled.done():
-            if task is not None and delivery.push is None:
-                delivery.push = asyncio.create_task(self._push_into_turn(delivery, task, wait))
-            if delivery.push is not None and not delivery.unknown_reported:
-                await asyncio.wait({delivery.settled, delivery.push}, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
-                if delivery.push.done() and delivery.push_outcome is ControlOutcome.UNKNOWN_DELIVERY:
-                    delivery.unknown_reported = True
-                    return delivery.as_receipt(ControlOutcome.UNKNOWN_DELIVERY, None)
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(delivery.settled), max(0, deadline - asyncio.get_running_loop().time())
-                )
-            except TimeoutError:
-                if delivery.push is not None and not delivery.push.done():
-                    await asyncio.wait({delivery.push})
+            was_unknown = delivery.unknown_reported
+            if not was_unknown:
+                if recipient is not None and recipient.task is not None and delivery.push is None:
+                    delivery.push = asyncio.create_task(self._push_into_turn(delivery, recipient.task, wait))
+                if delivery.push is not None:
+                    await asyncio.wait(
+                        {delivery.settled, delivery.push}, timeout=wait, return_when=asyncio.FIRST_COMPLETED
+                    )
+            if delivery.push_outcome is not ControlOutcome.UNKNOWN_DELIVERY or (
+                was_unknown and delivery.queued_in_inbox
+            ):
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(delivery.settled), max(0, deadline - asyncio.get_running_loop().time())
+                    )
+                except TimeoutError:
+                    if delivery.push is not None and not delivery.push.done():
+                        await asyncio.wait({delivery.push})
+            delivery.unknown_reported = delivery.push_outcome is ControlOutcome.UNKNOWN_DELIVERY
         return delivery.receipt()
 
-    async def _push_into_turn(self, delivery: PeerDelivery, task: int, wait: float) -> None:
+    async def _push_into_turn(self, delivery: PeerDelivery, task: LiveTask, wait: float) -> None:
         command_id = f"peer-{delivery.message_id}"
-        receipt = await self._registry().push(task, delivery.framed, command_id=command_id, wait=wait)
+        receipt = await self._registry().push(
+            task.pk, delivery.framed, command_id=command_id, wait=wait, fence=task.fence
+        )
         delivery.push_outcome = receipt.outcome
         if receipt.outcome is not ControlOutcome.UNKNOWN_DELIVERY:
             delivery.settle(receipt.outcome, receipt.code)
@@ -487,46 +506,6 @@ def shared_broker() -> LiveMailboxBroker:
             broker.start()
             _shared_brokers[pid] = broker
         return _shared_brokers[pid]
-
-
-@contextmanager
-def bound_task_mailbox(
-    options: ClaudeAgentOptions,
-    task: LiveTask,
-    *,
-    broker: LiveMailboxBroker | None = None,
-) -> Iterator[MailboxIdentity | None]:
-    """Bind a running TeaTree task to its own stdio MCP child; revoke it on exit."""
-    original = options.mcp_servers
-    servers = original if isinstance(original, dict) else {}
-    teatree = servers.get("teatree")
-    if not isinstance(teatree, dict) or not isinstance(teatree.get("command"), str):
-        yield None
-        return
-    teatree_stdio = cast("McpStdioServerConfig", teatree)
-    label = f"{task.phase} task {task.pk}"
-    try:
-        active = broker or shared_broker()
-        identity = active.register(
-            room=str(task.ticket), harness=task.harness, label=label, task=task.pk, phase=task.phase
-        )
-    except Exception:
-        logger.warning("live mailbox unavailable for %s; dispatching without one", label, exc_info=True)
-        yield None
-        return
-    env = teatree_stdio.get("env")
-    options.mcp_servers = cast(
-        "dict[str, McpServerConfig]",
-        {
-            **servers,
-            "teatree": {**teatree_stdio, "env": {**(env if isinstance(env, dict) else {}), **identity.mcp_env()}},
-        },
-    )
-    try:
-        yield identity
-    finally:
-        options.mcp_servers = original
-        active.unregister(identity.address)
 
 
 def reset_shared_brokers() -> None:
