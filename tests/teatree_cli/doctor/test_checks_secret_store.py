@@ -3,12 +3,13 @@ import os
 import subprocess
 import sys
 import tempfile
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
 
+import teatree.cli.doctor.run_checks as doctor_runner
 from teatree.cli.doctor.checks_secret_store import check_secret_store
 from teatree.core.sealed.store import DbStore
 from teatree.utils.master_key import KeyFileSource
@@ -50,6 +51,29 @@ class TestSecretStoreDoctor(TestCase):
         report = self._doctor(healthy=False)
         assert report.startswith("FAIL")
         assert self.source.label in report
+
+    def test_removed_key_fails_the_doctor_aggregate(self) -> None:
+        DbStore(self.source).write("alpha/token", "canary")
+        self.source.path.unlink()
+
+        output = io.StringIO()
+        with ExitStack() as stack:
+            for name in doctor_runner.run_doctor_checks.__code__.co_names:
+                if name != "check_secret_store" and callable(getattr(doctor_runner, name, None)):
+                    stack.enter_context(patch.object(doctor_runner, name, return_value=True))
+            for target in (
+                "teatree.core.gates.schema_guard.doctor_check_self_db_migrations",
+                "teatree.core.gates.schema_guard.doctor_check_process_code_freshness",
+                "teatree.cli.doctor.self_heal.run_self_heal_checks",
+                "teatree.cli.update._collect_repos",
+                "teatree.core.gates.clone_guard.doctor_check_clone_currency",
+            ):
+                stack.enter_context(patch(target, return_value=True))
+            with redirect_stdout(output):
+                result = doctor_runner.run_doctor_checks()
+
+        assert result is False
+        assert f"FAIL  Sealed secret key {self.source.label}" in output.getvalue()
 
     def test_unloadable_key_without_rows_fails(self) -> None:
         self.source.path.write_text("not base64")

@@ -123,7 +123,7 @@ class SecretNotFoundError(RuntimeError):
 
 
 def _pass_show(key: str) -> str | None:
-    """The first line stored at *key*, or ``None`` when the store holds no such entry.
+    """The raw value stored at *key*, or ``None`` when the store holds no such entry.
 
     The one seam every read goes through, so the deadline and the
     absent-versus-unreadable verdict are decided in exactly one place. Raises
@@ -140,8 +140,7 @@ def _pass_show(key: str) -> str | None:
         if exc.returncode == PASS_ABSENT_RETURNCODE:
             return None
         raise SecretStoreError.unreadable(key, exc.returncode, exc.stderr) from exc
-    lines = result.stdout.strip().splitlines()
-    return lines[0] if lines else ""
+    return result.stdout
 
 
 #: The injected store-read seam: given a ``pass`` entry, return its secret (``""`` when
