@@ -10,7 +10,7 @@ from pydantic_ai.models.test import TestModel
 
 from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.harness import PydanticAiHarness, pydantic_ai_thread
-from teatree.agents.live_control import ControlOutcome, LiveTask, RejectCode, SteerRejectedError
+from teatree.agents.live_control import ControlOutcome, FollowUpSession, LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_registry import LiveSessionRegistry
 from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
 from teatree.agents.pydantic_ai_steering import SteerablePydanticAiSession
@@ -55,6 +55,41 @@ def test_a_running_pydantic_ai_session_admits_input_before_its_next_request() ->
 
 async def _collect(session: SteerablePydanticAiSession) -> list[object]:
     return [message async for message in session.receive_response()]
+
+
+def test_an_idle_pydantic_session_takes_a_follow_up_as_a_new_turn() -> None:
+    async def run() -> tuple[str, list[str]]:
+        requests: list[str] = []
+
+        async def model(messages: object, _info: AgentInfo) -> object:
+            requests.append(repr(messages))
+            await asyncio.sleep(0)
+            yield "done"
+
+        harness = PydanticAiHarness(model=FunctionModel(stream_function=model))
+        async with harness.open(ClaudeAgentOptions()) as session:
+            assert isinstance(session, SteerablePydanticAiSession)
+            assert isinstance(session, FollowUpSession)
+            with pytest.raises(SteerRejectedError) as early:
+                await session.follow_up("too early")
+            assert early.value.code == RejectCode.NOT_IDLE
+            await session.query("first turn")
+            await _collect(session)
+            await session.follow_up("second turn")
+            await _collect(session)
+            session_id = session.session_id
+        with pytest.raises(SteerRejectedError) as closed:
+            await session.follow_up("too late")
+        assert closed.value.code == RejectCode.SESSION_CLOSED
+        return session_id, requests
+
+    session_id, requests = asyncio.run(run())
+
+    assert session_id
+    assert len(requests) == 2
+    assert "first turn" in requests[0]
+    assert "first turn" in requests[1]
+    assert "second turn" in requests[1]
 
 
 def test_reopen_clears_only_a_finished_turn_and_preserves_first_end_reason() -> None:

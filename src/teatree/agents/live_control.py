@@ -33,6 +33,7 @@ class ControlOutcome(StrEnum):
     ACCEPTED_CURRENT_TURN = "accepted_current_turn"
     ACCEPTED_NEW_TURN = "accepted_new_turn"
     ACCEPTED_INBOX_READ = "accepted_inbox_read"
+    PAUSED = "paused"
     REJECTED = "rejected"
     UNKNOWN_DELIVERY = "unknown_delivery"
 
@@ -236,6 +237,7 @@ class LiveSessionController:
         self._starting: FollowUp | None = None
         self._follow_up_active = False
         self._turn_running = True
+        self._paused = False
         self._claim_live = claim_live
 
     def bind(self, session: InterruptibleSession) -> None:
@@ -255,6 +257,39 @@ class LiveSessionController:
         self.close()
         if self._session is not None and self._turn_running:
             await self._session.interrupt()
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    async def pause(self, text: str, *, command_id: str) -> ControlReceipt:
+        entry = self._receipts.get(command_id)
+        if entry is not None:
+            if entry[0] != _digest(text, "pause"):
+                return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.DUPLICATE_MISMATCH)
+            return await asyncio.shield(entry[1])
+        if self._closed or not self._turn_running:
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.TURN_ENDED)
+        settled: asyncio.Future[ControlReceipt] = asyncio.get_running_loop().create_future()
+        self._receipts[command_id] = (_digest(text, "pause"), settled)
+        self._paused = True
+        try:
+            await self.interrupt()
+            receipt = ControlReceipt(
+                command_id,
+                self.task.pk,
+                ControlOutcome.PAUSED,
+                accepted_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            )
+        except asyncio.CancelledError:
+            settled.set_result(ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY))
+            raise
+        except Exception:
+            self._paused = False
+            logger.warning("Task %s: pause failed", self.task.pk, exc_info=True)
+            receipt = ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
+        settled.set_result(receipt)
+        return receipt
 
     @property
     def idle(self) -> bool:

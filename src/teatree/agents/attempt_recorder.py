@@ -205,7 +205,7 @@ def record_result_envelope(
     usage = usage or AttemptUsage()
     result = normalize_envelope_aliases(result)
     operator_inputs = list(
-        SessionCommand.objects.filter(task=task, outcome__in=["accepted_current_turn", "accepted_new_turn"])
+        SessionCommand.objects.filter(task=task, outcome__in=["accepted_current_turn", "accepted_new_turn", "queued"])
         .order_by("pk")
         .values_list("text", flat=True)
     )
@@ -241,6 +241,7 @@ def record_result_envelope(
                 result=recorded_result,
                 **usage_fields(usage),
             )
+            SessionCommand.objects.filter(task=task, outcome="queued").update(outcome="accepted_new_turn")
             task.complete(result_artifact_path="")
     except NoCurrentPlanError as exc:
         task.refresh_from_db()

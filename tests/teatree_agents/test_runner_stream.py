@@ -46,6 +46,15 @@ class TestStreamCapture:
         assert result is not None
         assert result.session_id == "s1"
 
+    def test_the_init_session_id_survives_an_interruption_without_a_result(self) -> None:
+        capture = StreamCapture()
+        capture.observe(SystemMessage(subtype="init", data={"session_id": "0f1e2d3c-4b5a-4968-8776-655443322110"}))
+
+        outcome = capture.outcome(stuck_reason="operator pause")
+
+        assert outcome.result_message is None
+        assert outcome.session_id == "0f1e2d3c-4b5a-4968-8776-655443322110"
+
     def test_a_model_fallback_is_kept_and_other_system_events_are_not(self) -> None:
         fallback = {
             "subtype": "model_fallback",

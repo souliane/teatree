@@ -15,10 +15,13 @@ decision (``user_input_kind``) is an owner question (#5096).
 """
 
 import dataclasses
+from datetime import timedelta
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
+from teatree.agents.session_lineage import resume_session_id
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
@@ -27,11 +30,38 @@ from teatree.core.models.task_handoff import (
     RESUME_CONTINUATION_CLAUSE,
     dispatch_reason,
     record_deferred_question,
+    release_operator_pause,
     resume_on_answer,
     schedule_resume,
 )
 from tests._owner_channel import OWNER_CARD, owner_stop
 from tests.factories import planned_ticket
+
+
+class TestOperatorPause(TestCase):
+    def test_resume_releases_the_gate_and_the_task_continues_its_own_conversation(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.PENDING,
+            not_before=timezone.now() + timedelta(days=3650),
+            session_continuation=Task.SessionContinuation.SELF,
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            error="operator_paused: paused by the operator",
+            agent_session_id="0f1e2d3c-4b5a-4968-8776-655443322110",
+        )
+
+        assert release_operator_pause(task)
+        task.refresh_from_db()
+        assert task.not_before is None
+        assert task.status == Task.Status.PENDING
+        assert resume_session_id(task) == "0f1e2d3c-4b5a-4968-8776-655443322110"
+        assert not release_operator_pause(task)
+        assert Task.objects.count() == 1
 
 
 class TestRecordDeferredQuestionAudience(TestCase):

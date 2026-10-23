@@ -58,6 +58,14 @@ class SteerablePydanticAiSession(PydanticAiHarnessSession):
             if not accepted.done():
                 accepted.cancel()
 
+    async def follow_up(self, prompt: str) -> None:
+        if self._closed:
+            raise SteerRejectedError(RejectCode.SESSION_CLOSED)
+        if not self._turn_ended or self._active_run is not None:
+            raise SteerRejectedError(RejectCode.NOT_IDLE)
+        await self.query(prompt)
+        self._turn_ended = False
+
     def _observe_input(self, event: "AgentStreamEvent") -> None:
         if isinstance(event, EnqueuedMessagesEvent):
             accepted = self._waiters.get(event.enqueue_id)

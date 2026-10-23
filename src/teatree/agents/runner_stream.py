@@ -59,6 +59,8 @@ class HarnessOutcome:
     lease_lost: bool = False
     #: Whether ``stuck_reason`` is a deploy drain's checkpoint, so the run parks to resume rather than fails.
     checkpointed: bool = False
+    paused: bool = False
+    session_id: str = ""
     #: ``ToolUseBlock``s the run emitted. Both backends yield tool use in this same
     #: vocabulary, so the count is lane-agnostic evidence that the agent ACTED —
     #: what :mod:`teatree.agents.action_verification` gates an acting phase on. A
@@ -108,6 +110,7 @@ class StreamCapture:
     round_ceiling: RoundCeiling | None = None
     text_parts: list[str] = field(default_factory=list)
     result_message: ResultMessage | None = None
+    session_id: str = ""
     rate_limit_info: RateLimitInfo | None = None
     tool_calls: int = 0
     observed_skill_loads: list[str] = field(default_factory=list)
@@ -145,9 +148,18 @@ class StreamCapture:
                 self._observe_tool_block(block)
         if isinstance(message, ResultMessage):
             self.result_message = message
+            self.session_id = message.session_id or self.session_id
         elif isinstance(message, RateLimitEvent) and message.rate_limit_info.status == "rejected":
             self.rate_limit_info = message.rate_limit_info
-        elif isinstance(message, SystemMessage) and message.subtype == MODEL_FALLBACK_SUBTYPE:
+        elif isinstance(message, SystemMessage):
+            self._observe_system_message(message)
+
+    def _observe_system_message(self, message: SystemMessage) -> None:
+        if message.subtype == "init":
+            session_id = message.data.get("session_id")
+            if isinstance(session_id, str):
+                self.session_id = session_id
+        elif message.subtype == MODEL_FALLBACK_SUBTYPE:
             self.model_fallbacks.append(message.data)
 
     def _observe_tool_block(self, block: object) -> None:
@@ -181,6 +193,7 @@ class StreamCapture:
             agent_text="\n".join(self.text_parts),
             result_message=self.result_message,
             stuck_reason=stuck_reason,
+            session_id=self.session_id,
             rate_limit_info=self.rate_limit_info,
             thread=thread,
             tool_calls=self.tool_calls,

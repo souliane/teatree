@@ -11,6 +11,8 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 
 import logging
 
+from django.db import transaction
+
 from teatree.core.modelkit.owner_action import read_action
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -20,7 +22,7 @@ from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
-from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
+from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX, OPERATOR_PAUSED_PREFIX
 
 _DEFAULT_REASON = "Agent needs human input"
 
@@ -86,6 +88,25 @@ def release_checkout_park(task: Task) -> bool:
         not_before=None
     )
     return bool(updated)
+
+
+def release_operator_pause(task: Task) -> bool:
+    with transaction.atomic():
+        live = (
+            Task.objects.select_for_update()
+            .filter(pk=task.pk, status=Task.Status.PENDING, not_before__isnull=False)
+            .first()
+        )
+        if live is None:
+            return False
+        latest_error = live.attempts.order_by("-pk").values_list("error", flat=True).first()
+        if not latest_error or not latest_error.startswith(OPERATOR_PAUSED_PREFIX):
+            return False
+        return bool(
+            Task.objects.filter(pk=task.pk, status=Task.Status.PENDING, not_before=live.not_before).update(
+                not_before=None
+            )
+        )
 
 
 def record_deferred_question(task: Task) -> DeferredQuestion:

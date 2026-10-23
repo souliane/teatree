@@ -122,6 +122,8 @@ class _Heartbeat:
             await asyncio.to_thread(close_thread_db_connections)
 
     def folded(self, outcome: HarnessOutcome) -> HarnessOutcome:
+        if self.live.paused:
+            return replace(outcome, stuck_reason="operator pause", paused=True)
         if self.breach and outcome.stuck_reason is None:
             return replace(
                 outcome, stuck_reason=self.breach[0], lease_lost=self.lease_lost, checkpointed=self.checkpointed

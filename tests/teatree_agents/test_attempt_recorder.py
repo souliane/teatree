@@ -135,6 +135,26 @@ class TestRecordResultEnvelope(TestCase):
 
         assert attempt.result["operator_inputs"] == ["Keep the public API"]
 
+    def test_queued_operator_message_is_recorded_only_after_success(self) -> None:
+        task = self._claimed(phase="testing")
+        command = SessionCommand.objects.create(
+            command_id="queued-result", ticket=task.ticket, task=task, text="Preserve the endpoint", outcome="queued"
+        )
+
+        attempt = record_result_envelope(
+            task,
+            {
+                "summary": "Tested",
+                "tests_run": [{"name": "focused", "passed": True}],
+                "tests_passed": 1,
+                "tests_failed": 0,
+            },
+        )
+
+        command.refresh_from_db()
+        assert attempt.result["operator_inputs"] == ["Preserve the endpoint"]
+        assert command.outcome == "accepted_new_turn"
+
     def test_push_ownership_venue_fault_fails_without_an_owner_question(self) -> None:
         task = self._claimed(phase="debugging")
         attempt = record_result_envelope(

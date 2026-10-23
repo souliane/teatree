@@ -13,10 +13,13 @@ from teatree.agents.live_client import (
     LiveRefusedError,
     WorkerSessionFacts,
 )
-from teatree.core.models import PendingChatInjection, SessionCommand, ThreadBinding
+from teatree.core.models import PendingChatInjection, SessionCommand, Task, ThreadBinding
+from teatree.core.models.task_handoff import release_operator_pause
 from teatree.core.models.thread_binding import slack_command_id
+from teatree.core.models.usage_window_state import OPERATOR_PAUSED_PREFIX
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading
 from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply, configured_owner_id
+from teatree.loop.slack_answer.control_verbs import control_verb
 from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread
 
 if TYPE_CHECKING:
@@ -72,6 +75,35 @@ class _AmbiguousSessions:
     tasks: tuple[int, ...]
 
 
+def _selected_task_id(text: str) -> int | None:
+    selected = re.match(r"^#(\d+)(?:\s|$)", text)
+    return int(selected.group(1)) if selected is not None else None
+
+
+def _pending_task(binding: ThreadBinding, text: str, *, paused_only: bool = False) -> Task | _AmbiguousSessions | None:
+    tasks = list(
+        Task.objects.filter(ticket_id=binding.ticket_id, status=Task.Status.PENDING, not_before__isnull=False).order_by(
+            "pk"
+        )
+    )
+    if paused_only:
+        tasks = [
+            task
+            for task in tasks
+            if str(task.attempts.order_by("-pk").values_list("error", flat=True).first() or "").startswith(
+                OPERATOR_PAUSED_PREFIX
+            )
+        ]
+    selected = _selected_task_id(text)
+    if selected is not None:
+        tasks = [task for task in tasks if task.pk == selected]
+    if len(tasks) == 1:
+        return tasks[0]
+    if not tasks:
+        return None
+    return _AmbiguousSessions(tuple(task.pk for task in tasks))
+
+
 def _live_session(binding: ThreadBinding, text: str) -> _BoundLiveSession | _AmbiguousSessions | None:
     client = LiveClient()
     try:
@@ -82,9 +114,9 @@ def _live_session(binding: ThreadBinding, text: str) -> _BoundLiveSession | _Amb
         return None
     matching = [row for row in sessions if row["ticket"] == binding.ticket_id]
     if matching:
-        selected = re.match(r"^#(\d+)(?:\s|$)", text)
+        selected = _selected_task_id(text)
         if selected is not None:
-            matching = [row for row in matching if row["task"] == int(selected.group(1))]
+            matching = [row for row in matching if row["task"] == selected]
         if len(matching) == 1:
             return _BoundLiveSession(binding, client, matching[0])
         return _AmbiguousSessions(tuple(sorted(row["task"] for row in sessions if row["ticket"] == binding.ticket_id)))
@@ -107,7 +139,7 @@ def _direction_reply(client: LiveClient, unit: "_Unit", binding: ThreadBinding, 
         raise LiveOfflineError(msg)
     if created or not command.outcome:
         try:
-            send = client.follow_up if idle else client.steer
+            send = client.pause if control_verb(unit.text) == "pause" else client.follow_up if idle else client.steer
             receipt = send(task_pk, unit.text, command_id=command_id, wait=SLACK_STEER_WAIT_SECONDS)
         except LiveOfflineError:
             if created:
@@ -128,7 +160,11 @@ def _command_reply(command: SessionCommand) -> str:
     if not command.outcome:
         command.outcome = "unknown_delivery"
         command.save(update_fields=["outcome"])
-    outcome = "queued follow-up (answering task)" if command.outcome == "queued_followup" else command.outcome
+    outcome = {
+        "queued_followup": "queued follow-up (answering task)",
+        "queued_resume": "queued follow-up (same task)",
+        "queued": "queued for the same task's next run",
+    }.get(command.outcome, command.outcome)
     code = f" ({command.code})" if command.code else ""
     return f"Task {command.task_id}: {outcome}{code}."
 
@@ -153,6 +189,103 @@ def _post_live_reply(backend: "MessagingBackend", unit: "_Unit", reply: str) -> 
             expected_ts=ExpectedReply(posted_ts, reply),
         )
     )
+
+
+def _post_bound_reply(
+    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", reply: str, *, kind: str
+) -> bool:
+    if not _mark_unit_loop_replied(unit, kind):
+        return True
+    try:
+        if not _post_live_reply(backend, unit, reply):
+            _unmark_unit_loop_replied(unit)
+            return True
+    except Exception:
+        _unmark_unit_loop_replied(unit)
+        raise
+    _confirm_unit_loop_replied(unit)
+    report.acked += 1
+    return True
+
+
+def _choice_reply(
+    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", tasks: tuple[int, ...]
+) -> bool:
+    choices = " or ".join(f"#{task}" for task in tasks)
+    return _post_bound_reply(
+        backend,
+        unit,
+        report,
+        f"Several tasks are available for this ticket. Start your reply with {choices} to choose one.",
+        kind=PendingChatInjection.AnswerKind.ACK,
+    )
+
+
+def _queue_pending_input(
+    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding, task: Task
+) -> bool:
+    command, _created = SessionCommand.objects.get_or_create(
+        command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts),
+        defaults={"ticket_id": binding.ticket_id, "task_id": task.pk, "text": unit.text},
+    )
+    if command.task_id != task.pk or command.text != unit.text:
+        reply = f"Task {command.task_id}: rejected (duplicate_mismatch)."
+    else:
+        command.outcome = "queued"
+        command.save(update_fields=["outcome"])
+        reply = _command_reply(command)
+    return _post_bound_reply(backend, unit, report, reply, kind=PendingChatInjection.AnswerKind.SESSION)
+
+
+def _resume_pending_task(
+    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding
+) -> bool:
+    existing = SessionCommand.objects.filter(
+        command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts)
+    ).first()
+    if (
+        existing is not None
+        and not existing.outcome
+        and existing.ticket_id == binding.ticket_id
+        and existing.text == unit.text
+    ):
+        released_task = Task.objects.filter(
+            pk=existing.task_id, ticket_id=binding.ticket_id, status=Task.Status.PENDING, not_before__isnull=True
+        ).first()
+        if released_task is not None and str(
+            released_task.attempts.order_by("-pk").values_list("error", flat=True).first() or ""
+        ).startswith(OPERATOR_PAUSED_PREFIX):
+            existing.outcome = "queued_resume"
+            existing.save(update_fields=["outcome"])
+            return _post_bound_reply(
+                backend, unit, report, _command_reply(existing), kind=PendingChatInjection.AnswerKind.SESSION
+            )
+    selected = _pending_task(binding, unit.text, paused_only=True)
+    if isinstance(selected, _AmbiguousSessions):
+        return _choice_reply(backend, unit, report, selected.tasks)
+    if selected is None:
+        return _post_bound_reply(
+            backend,
+            unit,
+            report,
+            "Resume rejected (turn_ended): no operator-paused task is pending.",
+            kind=PendingChatInjection.AnswerKind.ACK,
+        )
+    command, _created = SessionCommand.objects.get_or_create(
+        command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts),
+        defaults={"ticket_id": binding.ticket_id, "task_id": selected.pk, "text": unit.text},
+    )
+    if command.task_id != selected.pk or command.text != unit.text:
+        reply = f"Task {command.task_id}: rejected (duplicate_mismatch)."
+    else:
+        if not command.outcome:
+            released = release_operator_pause(selected)
+            selected.refresh_from_db()
+            command.outcome = "queued_resume" if released or selected.not_before is None else "rejected"
+            command.code = "" if command.outcome == "queued_resume" else "turn_ended"
+            command.save(update_fields=["outcome", "code"])
+        reply = _command_reply(command)
+    return _post_bound_reply(backend, unit, report, reply, kind=PendingChatInjection.AnswerKind.SESSION)
 
 
 def _replay_bound_command(
@@ -196,6 +329,31 @@ def _replay_bound_command(
     return True
 
 
+def _no_live_session(
+    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding, verb: str | None
+) -> bool:
+    command_id = slack_command_id(unit.overlay, unit.channel, unit.slack_ts)
+    if SessionCommand.objects.filter(command_id=command_id).exists():
+        msg = "unsettled session command has no reachable owner"
+        raise LiveOfflineError(msg)
+    if unit.lead.answer_kind == PendingChatInjection.AnswerKind.SESSION:
+        _unmark_unit_loop_replied(unit)
+    if verb == "pause":
+        return _post_bound_reply(
+            backend,
+            unit,
+            report,
+            "Pause rejected (turn_ended): no live task is running.",
+            kind=PendingChatInjection.AnswerKind.ACK,
+        )
+    pending = _pending_task(binding, unit.text)
+    if isinstance(pending, _AmbiguousSessions):
+        return _choice_reply(backend, unit, report, pending.tasks)
+    if pending is not None:
+        return _queue_pending_input(backend, unit, report, binding, pending)
+    return False
+
+
 def _live_receipt(
     backend: "MessagingBackend",
     unit: "_Unit",
@@ -206,30 +364,14 @@ def _live_receipt(
     bound_answer = bind_reply(unit.lead, reader=reader, owner_user_id=configured_owner_id(backend), text=unit.text)
     if _replay_bound_command(backend, unit, report, binding, bound_answer):
         return True
+    verb = control_verb(unit.text)
+    if verb == "resume":
+        return _resume_pending_task(backend, unit, report, binding)
     session = _live_session(binding, unit.text)
     if isinstance(session, _AmbiguousSessions):
-        if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.ACK):
-            return True
-        choices = " or ".join(f"#{task}" for task in session.tasks)
-        reply = f"Several tasks are live for this ticket. Start your reply with {choices} to choose one."
-        try:
-            if not _post_live_reply(backend, unit, reply):
-                _unmark_unit_loop_replied(unit)
-                return True
-        except Exception:
-            _unmark_unit_loop_replied(unit)
-            raise
-        _confirm_unit_loop_replied(unit)
-        report.acked += 1
-        return True
+        return _choice_reply(backend, unit, report, session.tasks)
     if session is None:
-        command_id = slack_command_id(unit.overlay, unit.channel, unit.slack_ts)
-        if SessionCommand.objects.filter(command_id=command_id).exists():
-            msg = "unsettled session command has no reachable owner"
-            raise LiveOfflineError(msg)
-        if unit.lead.answer_kind == PendingChatInjection.AnswerKind.SESSION:
-            _unmark_unit_loop_replied(unit)
-        return False
+        return _no_live_session(backend, unit, report, binding, verb)
     return _apply_live_session(backend, unit, report, session, _LiveInput(reader(unit.text), bound_answer))
 
 
@@ -237,7 +379,7 @@ def _apply_live_answer(command: SessionCommand, bound_answer: BoundAnswer | None
     if (
         bound_answer is not None
         and bound_answer.question.parked_task_id == command.task_id
-        and command.outcome in {"accepted_current_turn", "accepted_new_turn"}
+        and command.outcome in {"accepted_current_turn", "accepted_new_turn", "queued"}
     ):
         apply_bound_answer(bound_answer, backend=backend, resume_task=False)
 
@@ -250,8 +392,14 @@ def _apply_live_session(
     route: _LiveInput,
 ) -> bool:
     task_pk = session.facts["task"]
-    inspect = route.bound_answer is None and route.reading.intent is InboundIntent.QUESTION and route.reading.answerable
-    if not inspect and not session.facts["steerable"] and session.facts["state"] != "idle":
+    pause = control_verb(unit.text) == "pause"
+    inspect = (
+        not pause
+        and route.bound_answer is None
+        and route.reading.intent is InboundIntent.QUESTION
+        and route.reading.answerable
+    )
+    if not inspect and not pause and not session.facts["steerable"] and session.facts["state"] != "idle":
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SESSION):
         return True

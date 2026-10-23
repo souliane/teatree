@@ -9,12 +9,20 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from teatree.agents.live_client import LiveClient
 from teatree.agents.live_control import MAX_STEER_WAIT_SECONDS, LiveFence, LiveTask
-from teatree.agents.live_ingress import OperatorIngress, PeerCredentials, PeerRole, classify_peer, peer_credentials
+from teatree.agents.live_ingress import (
+    IngressRefusedError,
+    OperatorIngress,
+    PeerCredentials,
+    PeerRole,
+    classify_peer,
+    peer_credentials,
+)
 from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.agents.live_registry import LiveSessionRegistry
 from tests.teatree_agents._live_owner import OwnerLoop
@@ -175,6 +183,20 @@ def test_a_valid_follow_up_reaches_the_registry() -> None:
         "mode": "active",
         "accepted_at": None,
     }
+
+
+def test_live_pause_reaches_the_registry_and_is_refused_to_an_agent_child() -> None:
+    receipt = _served_by_an_operator("live.pause", _STEER)
+    assert isinstance(receipt, dict)
+    assert receipt["code"] == "unknown_session"
+
+    ingress = OperatorIngress(LiveSessionRegistry, worker_pid=os.getpid())
+    with (
+        patch("teatree.agents.live_ingress.classify_peer", return_value=PeerRole.AGENT),
+        pytest.raises(IngressRefusedError) as refused,
+    ):
+        asyncio.run(ingress.serve("live.pause", {"method": "live.pause", **_STEER}, None))
+    assert refused.value.code.value == "permission_denied"
 
 
 def test_a_legacy_worker_generation_is_a_valid_fence_value() -> None:

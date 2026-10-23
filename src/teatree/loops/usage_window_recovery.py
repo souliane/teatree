@@ -25,7 +25,7 @@ import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
-from django.db.models import F
+from django.db.models import F, OuterRef, Q, Subquery
 from django.tasks import task
 from django.utils import timezone
 
@@ -103,13 +103,21 @@ def _release_parked_tasks(now: dt.datetime) -> int:
     release explicit and immediate (and gives the notify a meaningful count). A task still
     parked behind a not-yet-due window (``not_before`` in the future) is untouched.
     """
-    from teatree.core.models import Task  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+    from teatree.core.models import Task, TaskAttempt  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+    from teatree.core.models.usage_window_state import OPERATOR_PAUSED_PREFIX  # noqa: PLC0415 — deferred import
 
-    return Task.objects.filter(
-        status=Task.Status.PENDING,
-        not_before__isnull=False,
-        not_before__lte=now,
-    ).update(not_before=None)
+    latest_error = TaskAttempt.objects.filter(task_id=OuterRef("pk")).order_by("-pk").values("error")[:1]
+
+    return (
+        Task.objects.filter(
+            status=Task.Status.PENDING,
+            not_before__isnull=False,
+            not_before__lte=now,
+        )
+        .annotate(latest_error=Subquery(latest_error))
+        .filter(Q(latest_error__isnull=True) | ~Q(latest_error__startswith=OPERATOR_PAUSED_PREFIX))
+        .update(not_before=None)
+    )
 
 
 def _wake_loops(now: dt.datetime) -> None:

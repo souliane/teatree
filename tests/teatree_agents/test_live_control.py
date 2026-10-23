@@ -85,6 +85,33 @@ def test_the_input_reaches_the_agent_named_as_operator_input_that_keeps_its_enve
     assert "result envelope" in last
 
 
+def test_pause_interrupts_the_running_turn_and_settles_a_paused_receipt() -> None:
+    class InterruptCount(_AcceptingSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.interruptions = 0
+
+        async def interrupt(self) -> None:
+            self.interruptions += 1
+
+    session = InterruptCount()
+    controller = _controller(session)
+
+    async def run() -> tuple[ControlReceipt, ControlReceipt, ControlReceipt]:
+        first = await controller.pause("pause", command_id="pause-1")
+        duplicate = await controller.pause("pause", command_id="pause-1")
+        later = await controller.pause("pause", command_id="pause-2")
+        return first, duplicate, later
+
+    first, duplicate, later = asyncio.run(run())
+
+    assert first == duplicate
+    assert first.outcome is ControlOutcome.PAUSED
+    assert controller.paused
+    assert session.interruptions == 1
+    assert later.code is RejectCode.TURN_ENDED
+
+
 def test_an_idle_follow_up_claims_one_turn_and_a_duplicate_returns_its_receipt() -> None:
     session = _FollowUpSession()
     controller = _controller(session, _Capture(result_message=object()))

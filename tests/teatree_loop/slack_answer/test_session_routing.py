@@ -16,6 +16,7 @@ from teatree.core.models import (
     Session,
     SessionCommand,
     Task,
+    TaskAttempt,
     ThreadBinding,
     Ticket,
 )
@@ -258,6 +259,78 @@ class TestBoundTicketThread(TestCase):
             command_id=slack_command_id("", "C1", row.slack_ts),
             wait=10.0,
         )
+
+    def test_pause_calls_live_control_and_starts_no_task(self) -> None:
+        task = self._bound_task()
+        row = self._message("pause")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [{"task": task.pk, "ticket": task.ticket_id, "state": "busy", "steerable": True}]
+        client.pause.return_value = {"outcome": "paused", "code": None, "accepted_at": "now"}
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert report.dispatched == 0
+        assert Task.objects.count() == 1
+        client.pause.assert_called_once_with(
+            task.pk, "pause", command_id=slack_command_id("", "C1", row.slack_ts), wait=10.0
+        )
+        client.steer.assert_not_called()
+        assert "paused" in backend.replies[0][2]
+
+    def test_resume_releases_an_operator_pause_on_the_same_task(self) -> None:
+        task = self._bound_task()
+        task.not_before = timezone.now() + timedelta(days=3650)
+        task.save(update_fields=["not_before"])
+        TaskAttempt.objects.create(task=task, error="operator_paused: paused by the operator")
+        row = self._message("resume")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        task.refresh_from_db()
+        assert report.dispatched == 0
+        assert Task.objects.count() == 1
+        assert task.not_before is None
+        assert "same task" in backend.replies[0][2]
+
+    def test_resume_retry_records_receipt_after_pause_release(self) -> None:
+        task = self._bound_task()
+        TaskAttempt.objects.create(task=task, error="operator_paused: paused by the operator")
+        row = self._message("resume")
+        command = SessionCommand.objects.create(
+            command_id=slack_command_id("", "C1", row.slack_ts), ticket=task.ticket, task=task, text="resume"
+        )
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        command.refresh_from_db()
+        assert command.outcome == "queued_resume"
+        assert report.dispatched == 0
+        assert "same task" in backend.replies[0][2]
+
+    def test_message_to_a_paused_task_is_queued_into_its_resumed_run(self) -> None:
+        task = self._bound_task()
+        task.not_before = timezone.now() + timedelta(days=3650)
+        task.save(update_fields=["not_before"])
+        TaskAttempt.objects.create(task=task, error="operator_paused: paused by the operator")
+        row = self._message("Keep the old adapter too")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        command = SessionCommand.objects.get(command_id=slack_command_id("", "C1", row.slack_ts))
+        assert command.task_id == task.pk
+        assert command.outcome == "queued"
+        assert report.dispatched == 0
+        assert Task.objects.count() == 1
+        assert "queued" in backend.replies[0][2]
 
     def test_unreachable_worker_does_not_start_another_task(self) -> None:
         self._bound_task()
