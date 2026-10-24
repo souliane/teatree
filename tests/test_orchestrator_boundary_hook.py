@@ -248,6 +248,9 @@ class TestHeavyWordIsNotACommand:
             'echo "CI runs | pytest on shard 3"',
             "echo \\`pytest\\`",
             "command -v pytest",
+            "command -V pytest",
+            "command -v make",
+            "command -v tox",
         ],
     )
     def test_identifier_or_argument_passes(self, command: str) -> None:
@@ -275,6 +278,7 @@ class TestHeavyWordIsNotACommand:
             "xargs make",
             "bash -lc 'make all'",
             "if true; then make all; fi",
+            "command -p pytest",
         ],
     )
     def test_real_heavy_verb_still_denies(self, command: str) -> None:
