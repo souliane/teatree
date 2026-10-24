@@ -1,11 +1,23 @@
 """The interactive dispatch seat — the ledger the #4107 ceiling was missing (#4129)."""
 
+import contextlib
 import datetime as dt
+import uuid
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier, BrokenBarrierError
+from unittest.mock import patch
 
+import pytest
+from django.db import connections
+from django.db.models import QuerySet
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import SEAT_WINDOW, InteractiveDispatch, InteractiveDispatchManager
+from teatree.utils.thread_db import close_thread_db_connections
+from tests.db_alias import register_control_db_alias, teardown_sqlite_alias, wal_control_db
 
 SESSION = "sess-4129"
 OTHER_SESSION = "sess-other"
@@ -86,3 +98,77 @@ class InteractiveDispatchReleaseTests(TestCase):
         InteractiveDispatch.objects.record_seat(session_id=OTHER_SESSION)
         assert InteractiveDispatch.objects.release_seat(session_id=SESSION, agent_id="a-1") is False
         assert InteractiveDispatch.objects.live_seats().count() == 1
+
+
+class InteractiveDispatchAtomicityTests(TestCase):
+    def test_failed_claim_leaves_no_orphan_seat(self) -> None:
+        with (
+            patch.object(InteractiveDispatch.objects, "live_seats", side_effect=RuntimeError("count failed")),
+            pytest.raises(RuntimeError, match="count failed"),
+        ):
+            InteractiveDispatch.objects.claim_seat(session_id=SESSION, ceiling=1)
+
+        assert InteractiveDispatch.objects.count() == 0
+
+    def test_failed_release_does_not_persist_partial_release(self) -> None:
+        seat = InteractiveDispatch.objects.record_seat(session_id=SESSION)
+        original_save = InteractiveDispatch.save
+
+        def save_then_fail(instance: InteractiveDispatch, *args: object, **kwargs: object) -> None:
+            original_save(instance, *args, **kwargs)
+            error = RuntimeError("release failed")
+            raise error
+
+        with (
+            patch.object(InteractiveDispatch, "save", save_then_fail),
+            pytest.raises(RuntimeError, match="release failed"),
+        ):
+            InteractiveDispatch.objects.release_seat(session_id=SESSION, agent_id="failed-agent")
+
+        seat.refresh_from_db()
+        assert seat.agent_id == ""
+        assert seat.released_at is None
+
+
+@pytest.fixture
+def _private_sqlite_access(django_db_blocker: pytest.FixtureRequest) -> Iterator[None]:
+    with django_db_blocker.unblock():
+        yield
+
+
+@pytest.mark.usefixtures("_private_sqlite_access", wal_control_db.__name__)
+class TestInteractiveDispatchConcurrentRelease:
+    def test_two_releases_of_one_seat_succeed_exactly_once(self, tmp_path: Path) -> None:
+        alias = f"seat_{uuid.uuid4().hex}"
+        register_control_db_alias(alias, tmp_path / "seats.sqlite3")
+        try:
+            with connections[alias].schema_editor() as schema:
+                schema.create_model(InteractiveDispatch)
+            manager = InteractiveDispatch.objects.db_manager(alias)
+            manager.record_seat(session_id=SESSION)
+            barrier = Barrier(2)
+            original_first = QuerySet.first
+
+            def rendezvous_after_selection(queryset: QuerySet) -> InteractiveDispatch | None:
+                seat = original_first(queryset)
+                if queryset.model is InteractiveDispatch and seat is not None:
+                    with contextlib.suppress(BrokenBarrierError):
+                        barrier.wait(timeout=5)
+                return seat
+
+            def release(agent_id: str) -> bool:
+                try:
+                    return manager.release_seat(session_id=SESSION, agent_id=agent_id)
+                finally:
+                    close_thread_db_connections()
+
+            with (
+                patch.object(QuerySet, "first", rendezvous_after_selection),
+                ThreadPoolExecutor(max_workers=2) as workers,
+            ):
+                results = list(workers.map(release, ("agent-one", "agent-two")))
+
+            assert sorted(results) == [False, True]
+            assert manager.live_seats().count() == 0
+        finally:
+            teardown_sqlite_alias(alias)

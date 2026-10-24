@@ -12,7 +12,7 @@ from teatree.agents.runner_skill_staging import staged_skills_or_refusal
 from teatree.core.factory.factory_signal_queries import S5Evidence, compute_s5, current_window
 from teatree.core.factory.queue_stall import DEFAULT_STALL_MINUTES, read_queue_stall, stall_minutes
 from teatree.core.models import Session, Task, Ticket
-from teatree.core.models.task_repair import phase_attempts
+from teatree.core.models.task_repair_queries import phase_attempts
 from teatree.skill_support import index as skill_index
 from tests._unreadable_apm_manifest import unreadable_running_manifest
 
