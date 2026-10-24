@@ -4,6 +4,7 @@ import re
 import sys
 from functools import lru_cache
 
+from hooks.scripts.mr_cli_fields import strip_heredoc
 from teatree.hooks.shell_tokens import HeredocBody, TokenKind, raw_substitution_sees_live, tokenize
 
 # Alias both identities so a bare ``from orchestration_boundary_signals import
@@ -53,7 +54,10 @@ def _subcommand_text(raw: str, *, heredoc_body: bool = False) -> str:
     commands: list[str] = []
     for match in _SUBCOMMAND_RE.finditer(raw):
         opener = "$(" if match.group(1) is not None else "`"
-        if match.start() and raw[match.start() - 1] == "\\":
+        preceding = match.start() - 1
+        while preceding >= 0 and raw[preceding] == "\\":
+            preceding -= 1
+        if (match.start() - preceding - 1) % 2:
             continue
         if heredoc_body or raw_substitution_sees_live(raw, (opener,), report_from=match.start()):
             commands.append(heavy_command_text(match.group(1) or match.group(2) or ""))
@@ -112,6 +116,9 @@ def heavy_command_text(command: str) -> str:
     bodies: list[HeredocBody] = []
     tokens = tokenize(command, heredoc_bodies=bodies)
     result: list[str] = []
+    subcommands = _subcommand_text(strip_heredoc(" ".join(token.raw for token in tokens)))
+    if subcommands:
+        result.extend(("\n", subcommands, "\n"))
     words: list[str] = []
     for token in tokens:
         if token.kind is TokenKind.OP:
@@ -122,14 +129,10 @@ def heavy_command_text(command: str) -> str:
         shell_script_arg = len(words) > 1 and words[-2] in {"bash", "sh"} and bool(re.fullmatch(r"-[a-z]*c", words[-1]))
         if shell_script_arg:
             result.extend(("\n", heavy_command_text(token.value), "\n"))
+        elif "'" not in raw and '"' not in raw:
+            result.append(token.value)
         else:
-            subcommands = _subcommand_text(raw) if "$(" in raw or "`" in raw else ""
-            if subcommands:
-                result.extend(("\n", subcommands, "\n"))
-            elif "'" not in raw and '"' not in raw:
-                result.append(token.value)
-            else:
-                result.append(" ")
+            result.append(" ")
         result.append(" ")
         words.append(token.value)
     for body in bodies:

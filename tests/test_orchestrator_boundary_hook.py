@@ -168,6 +168,9 @@ class TestMainAgentHeavyBashBlocked:
             "make all",
             "sleep 600",
             "echo `pytest`",
+            "echo `make all`",
+            r"echo \\`pytest`",
+            r'echo "\\`pytest`"',
             'echo "$(date; pytest)"',
             'echo "`date; pytest`"',
             "bash -c 'pytest'",
@@ -205,6 +208,7 @@ class TestFileWritingHeredocs:
             "gh pr create --body \"$(cat <<'EOF'\n`uv run pytest`\nEOF\n)\"",
             "git commit -m \"$(cat <<'EOF'\n`uv run pytest`\nEOF\n)\"",
             "gh pr create --body \"$(cat <<'EOF'\n`make lint`\nEOF\n)\"",
+            "gh pr create --body \"$(cat <<'EOF'\n) `uv run pytest`\nEOF\n)\"",
         ],
     )
     def test_writing_a_file_does_not_execute_its_body(self, command: str) -> None:
