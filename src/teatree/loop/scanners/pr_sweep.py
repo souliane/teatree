@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.pull_request import PullRequest
-from teatree.core.pr_inventory import PrInventoryEntry
+from teatree.core.review.pr_inventory import PrInventoryEntry
 from teatree.loop.scanners import pr_sweep_branch_update as branch_update
 from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal

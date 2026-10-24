@@ -9,9 +9,9 @@ from typing import Protocol
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import RedMrFixAttempt
 from teatree.core.models.review_verdict import HeadVerdictState
-from teatree.core.pr_inventory import PrInventoryEntry
-from teatree.core.pr_next_action import UNKNOWN, approvals_label, my_pr_next_task, threads_label
 from teatree.core.review.mr_ci_state import GREEN_STATUSES, carries_pipeline_field, pipeline_status
+from teatree.core.review.pr_inventory import PrInventoryEntry
+from teatree.core.review.pr_next_action import UNKNOWN, approvals_label, my_pr_next_task, threads_label
 from teatree.core.review.review_candidate import author_username
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.pr_findings import (

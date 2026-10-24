@@ -18,9 +18,9 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.pr_inventory import PrInventoryEntry, elapsed_label, merged_entries, parse_time, read_inventory
-from teatree.core.pr_next_action import GROUPS, UNKNOWN, PrActionFacts, decide, threads_label
 from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS
+from teatree.core.review.pr_inventory import PrInventoryEntry, elapsed_label, merged_entries, parse_time, read_inventory
+from teatree.core.review.pr_next_action import GROUPS, UNKNOWN, PrActionFacts, decide, threads_label
 from teatree.dash.selectors import last_failure_by_ticket
 from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, oldest_pending_phase_tasks
 

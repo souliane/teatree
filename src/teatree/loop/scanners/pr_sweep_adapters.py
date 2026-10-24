@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree import forge_credentials
-from teatree.core.pr_next_action import APPROVED, AWAITING_APPROVAL, UNKNOWN
+from teatree.core.review.pr_next_action import APPROVED, AWAITING_APPROVAL, UNKNOWN
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr, run_gh
 from teatree.loop.scanners.pr_behind_base import (

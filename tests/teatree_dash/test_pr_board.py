@@ -9,8 +9,8 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.task import Task
-from teatree.core.pr_inventory import PrInventoryEntry, PrInventorySnapshot
 from teatree.core.review.mr_triage import RepoOwner
+from teatree.core.review.pr_inventory import PrInventoryEntry, PrInventorySnapshot
 from teatree.dash.pr_board import PrBoard, PrBoardCard, build_pr_board
 from tests.factories import PullRequestFactory, TaskAttemptFactory, TaskFactory, TicketFactory
 

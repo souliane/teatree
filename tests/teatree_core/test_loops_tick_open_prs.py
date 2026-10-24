@@ -17,7 +17,7 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, PlanArtifact, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.pr_inventory import PrInventoryEntry, write_inventory
+from teatree.core.review.pr_inventory import PrInventoryEntry, write_inventory
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loops.base import MiniLoop

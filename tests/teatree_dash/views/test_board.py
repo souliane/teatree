@@ -18,7 +18,7 @@ from django.utils import timezone
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
-from teatree.core.pr_inventory import PrInventoryEntry, write_inventory
+from teatree.core.review.pr_inventory import PrInventoryEntry, write_inventory
 from teatree.dash.selectors import BOARD_COLUMNS
 from tests.factories import PullRequestFactory, TaskAttemptFactory, TaskFactory, TicketFactory
 

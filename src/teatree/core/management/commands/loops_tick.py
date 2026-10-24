@@ -45,7 +45,7 @@ from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.machine_output import emit
 from teatree.core.models import LoopLease
-from teatree.core.pr_inventory import OpenPrRow, open_pr_rows
+from teatree.core.review.pr_inventory import OpenPrRow, open_pr_rows
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.pr_stall import StallRepair, repair_stalled_prs
 from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line_reader

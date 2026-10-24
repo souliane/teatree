@@ -7,7 +7,7 @@ from unittest import TestCase
 
 import pytest
 
-from teatree.core.pr_inventory import PrInventoryEntry, PrInventoryError, read_inventory, write_inventory
+from teatree.core.review.pr_inventory import PrInventoryEntry, PrInventoryError, read_inventory, write_inventory
 
 
 def _entry(number: int) -> PrInventoryEntry:

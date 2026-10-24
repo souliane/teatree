@@ -2,8 +2,8 @@
 
 from datetime import UTC, datetime
 
-from teatree.core.pr_inventory import PrInventoryEntry
-from teatree.core.pr_next_action import UNKNOWN, ci_label, sweep_next_task
+from teatree.core.review.pr_inventory import PrInventoryEntry
+from teatree.core.review.pr_next_action import UNKNOWN, ci_label, sweep_next_task
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 

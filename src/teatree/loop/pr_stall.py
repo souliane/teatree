@@ -11,7 +11,7 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.task_enqueue import TaskEnqueueError, phase_eligible
 from teatree.core.models.ticket import Ticket
-from teatree.core.pr_inventory import OpenPrRow
+from teatree.core.review.pr_inventory import OpenPrRow
 
 _REPAIR_PHASE = "coding"
 _IN_FLIGHT = (Task.Status.PENDING, Task.Status.CLAIMED)

@@ -10,7 +10,7 @@ unaffected.
 
 from dataclasses import dataclass, field
 
-from teatree.core.pr_next_action import UNKNOWN
+from teatree.core.review.pr_next_action import UNKNOWN
 from teatree.types import RawAPIDict
 
 GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})

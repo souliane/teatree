@@ -12,7 +12,7 @@ import logging
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.pr_inventory import write_inventory
+from teatree.core.review.pr_inventory import write_inventory
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanner_factory_config import stranger_pr_admission
 from teatree.loop.scanners import (

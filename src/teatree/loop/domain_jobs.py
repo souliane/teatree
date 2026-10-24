@@ -15,8 +15,8 @@ from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, resolve_user_id
 from teatree.core.overlay_metadata import OverlayMetadata
-from teatree.core.pr_inventory import write_inventory
 from teatree.core.review.mr_triage import RepoOwner
+from teatree.core.review.pr_inventory import write_inventory
 from teatree.loop.dispatch import agent_dispatching_kinds
 from teatree.loop.domain_optional_scanner_jobs import (
     _arch_review_jobs_for_overlay,

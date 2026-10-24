@@ -24,7 +24,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.pr_inventory import HOURS_PER_DAY, MINUTES_PER_HOUR
+from teatree.core.review.pr_inventory import HOURS_PER_DAY, MINUTES_PER_HOUR
 from teatree.dash.issue_link import issue_link
 from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, pending_phase_tasks_by_ticket
 from teatree.url_classify import pr_ref

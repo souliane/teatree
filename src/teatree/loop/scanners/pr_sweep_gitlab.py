@@ -29,7 +29,7 @@ import httpx
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.merge import MergePreconditionError, execute_bound_merge
 from teatree.core.merge.host_kind import forge_for_repo_slug
-from teatree.core.pr_next_action import APPROVED, AWAITING_APPROVAL, UNKNOWN
+from teatree.core.review.pr_next_action import APPROVED, AWAITING_APPROVAL, UNKNOWN
 from teatree.loop.scanners.base import classify_http_error
 from teatree.loop.scanners.pr_sweep_ports import PrApiClient
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult, PrSummary

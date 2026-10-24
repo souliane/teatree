@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from teatree.core.review.mr_ci_state import GREEN_STATUSES
 
 if TYPE_CHECKING:
-    from teatree.core.pr_inventory import PrInventoryEntry
+    from teatree.core.review.pr_inventory import PrInventoryEntry
 
 GROUPS = ("Needs you", "Waiting on colleagues", "Factory working", "Ready to merge or merging", "Blocked")
 UNKNOWN = "unknown"

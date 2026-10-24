@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from teatree.core.pr_inventory import write_inventory
+from teatree.core.review.pr_inventory import write_inventory
 from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 

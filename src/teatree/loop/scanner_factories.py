@@ -23,7 +23,7 @@ from teatree.core.intake.budget import read_intake_budget, release_deadlocked_ho
 from teatree.core.intake.concurrency import resolve_intake_concurrency
 from teatree.core.models import ImplementedIssueMarker
 from teatree.core.overlay_repos import owned_repo_slugs
-from teatree.core.pr_inventory import write_inventory
+from teatree.core.review.pr_inventory import write_inventory
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.loop.job_identity import _TUPLE_PAIR, CANONICAL_CORE_OVERLAY

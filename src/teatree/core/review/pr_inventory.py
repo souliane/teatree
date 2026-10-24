@@ -11,7 +11,7 @@ from tempfile import NamedTemporaryFile
 from django.utils import timezone
 
 from teatree.core.models.pull_request import PullRequest
-from teatree.core.pr_next_action import stall_cause
+from teatree.core.review.pr_next_action import stall_cause
 from teatree.paths import data_dir_root
 
 MINUTES_PER_HOUR = 60
