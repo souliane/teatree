@@ -37,7 +37,7 @@ def test_headless_rules_do_not_answer_owner_cards(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [ROOT / "skills"])
     rendered = skill_injection.read_only_venue_skill_contents(["rules"], {"rules"})
     assert "0. **Nothing may endanger security or leak:**" in rendered
-    assert "Rule -1" not in rendered
+    assert ("Rule " + "-1") not in rendered
 
 
 def test_runtime_phases_do_not_load_the_attended_skill(tmp_path: Path) -> None:
