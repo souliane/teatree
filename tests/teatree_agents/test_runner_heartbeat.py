@@ -19,7 +19,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ToolUseBlock
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, SystemMessage, ToolUseBlock
 from django.test import TestCase
 
 import teatree.agents.runner as runner_mod
@@ -635,6 +635,43 @@ def test_a_steer_taken_before_a_drain_checkpoint_stays_delivered_and_the_run_is_
     assert session.steered == ["before-drain"]
     assert session.interrupts == 1
     assert outcome.checkpointed is True
+
+
+class _CompactingSession(_OperatorSteerableSession):
+    """Takes operator input, then reports the CLI compacting; it ends only once the directions are restated."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.texts: list[str] = []
+        self._taken = asyncio.Event()
+        self._restated = asyncio.Event()
+
+    async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+        await super().steer(text, input_id=input_id, wait=wait)
+        self.texts.append(text)
+        (self._restated if input_id.startswith("compact:") else self._taken).set()
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        await self._taken.wait()
+        yield SystemMessage(subtype="compact_boundary", data={})
+        await asyncio.wait_for(self._restated.wait(), timeout=5)
+        yield result_message(session_id=_SESSION)
+
+
+def test_a_compaction_mid_run_restates_the_accepted_direction_into_the_same_turn() -> None:
+    session = _CompactingSession()
+
+    def steer_once(_task: Task) -> None:
+        if not session.steered:
+            session.operator_steer("c-1")
+
+    outcome = _drive(session, drain_reason=lambda: "", renew_lease=steer_once, task=Task(pk=_TASK_PK, phase="coding"))
+
+    [direction, restated] = session.steered
+    assert direction == "c-1"
+    assert restated.startswith("compact:")
+    assert "stop and report" in session.texts[1]
+    assert outcome.result_message is not None
 
 
 def test_the_runner_wires_the_gate_read_off_the_event_loop_into_every_run() -> None:

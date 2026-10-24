@@ -60,6 +60,9 @@ CONTEXT_EXHAUSTION_PHRASES = (
 #: The ``SystemMessage`` subtype the CLI streams when ``fallback_model`` took over a refused request.
 MODEL_FALLBACK_SUBTYPE = "model_fallback"
 
+#: The ``SystemMessage`` subtype the CLI streams after it compacted the conversation.
+COMPACT_BOUNDARY_SUBTYPE = "compact_boundary"
+
 #: The API's error code for a CLI build older than the requested model supports (#4874).
 CLI_TOO_OLD_ERROR_CODE = "claude_code_version_too_old"
 

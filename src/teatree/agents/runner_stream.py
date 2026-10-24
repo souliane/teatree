@@ -27,7 +27,12 @@ from claude_agent_sdk.types import RateLimitInfo
 from teatree.agents.harness import HarnessSession, pydantic_ai_thread
 from teatree.agents.result_schema import AgentResultBlob
 from teatree.agents.round_ceiling import RoundCeiling
-from teatree.agents.runner_failure_taxonomy import MODEL_FALLBACK_SUBTYPE, TURN_CEILING_SUBTYPE, is_context_exhaustion
+from teatree.agents.runner_failure_taxonomy import (
+    COMPACT_BOUNDARY_SUBTYPE,
+    MODEL_FALLBACK_SUBTYPE,
+    TURN_CEILING_SUBTYPE,
+    is_context_exhaustion,
+)
 from teatree.agents.runner_usage import context_size
 from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 
@@ -117,6 +122,7 @@ class StreamCapture:
     pending_skill_loads: dict[str, tuple[str, Path | None]] = field(default_factory=dict)
     model_fallbacks: list[Mapping[str, object]] = field(default_factory=list)
     context_tokens: int | None = None
+    compactions: int = 0
     open_tools: dict[str, tuple[str, float]] = field(default_factory=dict)
     last_event_at: float | None = None
 
@@ -161,6 +167,8 @@ class StreamCapture:
                 self.session_id = session_id
         elif message.subtype == MODEL_FALLBACK_SUBTYPE:
             self.model_fallbacks.append(message.data)
+        elif message.subtype == COMPACT_BOUNDARY_SUBTYPE:
+            self.compactions += 1
 
     def _observe_tool_block(self, block: object) -> None:
         if isinstance(block, ToolUseBlock):

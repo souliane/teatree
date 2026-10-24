@@ -70,6 +70,16 @@ class TestStreamCapture:
         assert capture.outcome().model_fell_back
         assert not StreamCapture().outcome().model_fell_back
 
+    def test_each_compact_boundary_frame_is_one_compaction(self) -> None:
+        capture = StreamCapture()
+        capture.observe(SystemMessage(subtype="init", data={"subtype": "init"}))
+        assert capture.compactions == 0
+
+        capture.observe(SystemMessage(subtype="compact_boundary", data={"compact_metadata": {"trigger": "auto"}}))
+        capture.observe(SystemMessage(subtype="compact_boundary", data={"compact_metadata": {"trigger": "auto"}}))
+
+        assert capture.compactions == 2
+
     def test_the_conversation_size_is_the_last_main_thread_request(self) -> None:
         capture = StreamCapture()
         for message in (

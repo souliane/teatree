@@ -8,7 +8,7 @@ import asyncio
 import hashlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -27,6 +27,7 @@ MAX_STEER_WAIT_SECONDS = 900.0
 DEFAULT_IDLE_WINDOW_SECONDS = 60.0
 MAX_FOLLOW_UP_TURNS = 4
 _DRAIN_SECONDS = 5.0
+_RESTATE_WAIT_SECONDS = 5.0
 
 
 class ControlOutcome(StrEnum):
@@ -85,6 +86,7 @@ class StreamFacts(Protocol):
 
     tool_calls: int
     context_tokens: int | None
+    compactions: int
     last_event_at: float | None
 
     @property
@@ -197,6 +199,22 @@ def frame_follow_up(text: str, command_id: str) -> str:
     )
 
 
+def frame_restated_directions(directions: Sequence[str]) -> str:
+    kept: list[str] = []
+    size = 0
+    for direction in reversed(directions):
+        size += len(direction.encode())
+        if size > MAX_INPUT_BYTES:
+            break
+        kept.append(direction)
+    listed = "\n".join(f"- {direction}" for direction in reversed(kept))
+    return (
+        "[TeaTree operator directions restated after context compaction] The operator's earlier directions to this "
+        f"task, still in force:\n{listed}\n"
+        "[end restated directions: continue your task; your final message must still carry your result envelope]"
+    )
+
+
 def frame_peer_message(text: str, *, message_id: int, sender: PeerIdentity) -> str:
     ticket = f"ticket {sender['ticket']}, " if sender.get("ticket") else ""
     return (
@@ -238,6 +256,8 @@ class LiveSessionController:
         self._follow_up_active = False
         self._turn_running = True
         self._paused = False
+        self._directions: list[str] = []
+        self._restated = 0
         self._claim_live = claim_live
 
     def bind(self, session: InterruptibleSession) -> None:
@@ -379,8 +399,27 @@ class LiveSessionController:
             receipt = unknown
         finally:
             self._in_flight.discard(settled)
+        self._remember(text, receipt)
         settled.set_result(receipt)
         return receipt
+
+    def _remember(self, text: str, receipt: ControlReceipt) -> None:
+        if receipt.outcome in {ControlOutcome.ACCEPTED_CURRENT_TURN, ControlOutcome.ACCEPTED_NEW_TURN}:
+            self._directions.append(text)
+
+    async def restate_after_compaction(self) -> None:
+        """Put the accepted directions back in front of the model once per compaction the CLI reports."""
+        compactions = self._capture.compactions
+        if self._closed or self.idle or compactions <= self._restated:
+            return
+        self._restated = compactions
+        if not self._directions:
+            return
+        command_id = f"compact:{self.task.fence.attempt}:{compactions}"
+        framed = frame_restated_directions(self._directions)
+        receipt = await self._deliver(framed, command_id, _RESTATE_WAIT_SECONDS)
+        if receipt.outcome is not ControlOutcome.ACCEPTED_CURRENT_TURN:
+            logger.warning("Task %s: directions not restated after compaction: %s", self.task.pk, receipt.code)
 
     def _start_turn(self, prompt: str, wait: float) -> FollowUp | None:
         window = self._idle
@@ -447,6 +486,7 @@ class LiveSessionController:
             receipt = ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
         finally:
             self._in_flight.discard(settled)
+        self._remember(text, receipt)
         settled.set_result(receipt)
         return receipt
 
