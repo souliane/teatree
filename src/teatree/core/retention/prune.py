@@ -7,8 +7,8 @@ reaches it while that task is active); the FAILED, then the COMPLETED ``Task`` r
 quiescent tickets (:mod:`teatree.core.retention.ticket_history`) with their attempts by
 CASCADE, so failed history goes before completed history; ``BotPing`` payloads, blanked
 rather than deleted because dedup reads the key and status; settled ``IncomingEvent``
-rows; ``TicketTransition`` rows that record no edge on a finished ticket; ``DBTaskResult``
-through ``django_tasks_db``'s own prune.
+rows; ``TicketTransition`` rows that record no edge on a finished ticket; private issue-judgment ``SendAudit``
+rows older than 30 days; ``DBTaskResult`` through ``django_tasks_db``'s own prune.
 
 Every lane deletes through the ORM, in short committed batches of pks re-filtered through
 its predicate, so a batch holds the write lock briefly and an interrupted pass only leaves
@@ -30,7 +30,15 @@ from django.utils import timezone
 from teatree.config import get_effective_settings
 from teatree.config.settings import UserSettings
 from teatree.core.factory.factory_signals import FACTORY_LOOKBACK_DAYS
-from teatree.core.models import BotPing, IncomingEvent, IntentClassification, ReplyDispatch, Task, TaskAttempt
+from teatree.core.models import (
+    BotPing,
+    IncomingEvent,
+    IntentClassification,
+    ReplyDispatch,
+    SendAudit,
+    Task,
+    TaskAttempt,
+)
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import PARK_ATTEMPT_RETENTION_DAYS
 from teatree.core.retention.slack_rows import (
@@ -47,6 +55,7 @@ from teatree.core.retention.task_results import (
     task_results_are_stored_in_the_db,
 )
 from teatree.core.retention.ticket_history import prunable_tasks
+from teatree.core.send_proxy import PRIVATE_JUDGMENT_DESTINATION_PREFIX
 
 #: Rows per committed batch: small enough that a competing writer waits well under SQLite's busy timeout.
 BATCH_SIZE = 200
@@ -68,6 +77,7 @@ TRANSITION_TABLE = "TicketTransition"
 TASK_RESULT_TABLE = "DBTaskResult"
 PENDING_DM_TABLE = "PendingChatInjection"
 SENT_TEXT_TABLE = "BotPing (sent text)"
+PRIVATE_JUDGMENT_TABLE = "SendAudit (private judgment)"
 
 _NO_RESULT_TABLE = "the default task backend does not store results in the DB"
 
@@ -148,6 +158,10 @@ def _closed_ticket_non_edges(_cutoff: dt.datetime) -> models.QuerySet:
     return TicketTransition.objects.prunable()
 
 
+def _private_judgments(cutoff: dt.datetime) -> models.QuerySet:
+    return SendAudit.objects.filter(destination__startswith=PRIVATE_JUDGMENT_DESTINATION_PREFIX, created_at__lt=cutoff)
+
+
 def _task_attempts(tasks: models.QuerySet, moment: dt.datetime) -> int:
     parks = TaskAttempt.objects.prunable_parks(moment - dt.timedelta(days=PARK_ATTEMPT_RETENTION_DAYS))
     return TaskAttempt.objects.filter(task__in=tasks).exclude(pk__in=parks).count()
@@ -188,6 +202,7 @@ def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:
         ),
         Lane(TRANSITION_TABLE, 0, _closed_ticket_non_edges, aged=False),
         *_slack_lanes(),
+        Lane(PRIVATE_JUDGMENT_TABLE, POST_MORTEM_RETENTION_DAYS, _private_judgments),
     )
 
 

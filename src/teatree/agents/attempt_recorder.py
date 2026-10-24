@@ -43,7 +43,7 @@ from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, PUSH_OWNERSHIP_VENUE_FAULT
-from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
+from teatree.core.models import NoCurrentPlanError, SessionCommand, Task, TaskAttempt
 from teatree.core.models.critic_dispatch import CriticDispatch as _CriticDispatch
 from teatree.core.models.critic_verdict import CRITIC_EVIDENCE_UNAVAILABLE_PREFIX as _CRITIC_EVIDENCE_UNAVAILABLE_PREFIX
 from teatree.core.models.task_claim import atomic_after_checkout_exit
@@ -105,7 +105,7 @@ class AttemptUsage:
     # The per-request usage records the run's transport measured (``teatree.llm.usage_tee``);
     # empty on a lane that measures none.
     usage_per_request: "list[RequestRecord]" = dataclasses.field(default_factory=list)
-    # The run's tool-call trajectory (``pydantic_ai_session._StreamedToolCapture``); empty when unmeasured.
+    # The run's tool-call trajectory (``pydantic_ai_turn.StreamedToolCapture``); empty when unmeasured.
     trajectory: "list[ToolCallEntry]" = dataclasses.field(default_factory=list)
 
 
@@ -204,6 +204,13 @@ def record_result_envelope(
     """
     usage = usage or AttemptUsage()
     result = normalize_envelope_aliases(result)
+    operator_inputs = list(
+        SessionCommand.objects.filter(task=task, outcome__in=["accepted_current_turn", "accepted_new_turn", "queued"])
+        .order_by("pk")
+        .values_list("text", flat=True)
+    )
+    if operator_inputs or "operator_inputs" in result:
+        result = {**result, "operator_inputs": operator_inputs}
     checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
     result = checked.result
     if checked.error:
@@ -234,6 +241,7 @@ def record_result_envelope(
                 result=recorded_result,
                 **usage_fields(usage),
             )
+            SessionCommand.objects.filter(task=task, outcome="queued").update(outcome="accepted_new_turn")
             task.complete(result_artifact_path="")
     except NoCurrentPlanError as exc:
         task.refresh_from_db()

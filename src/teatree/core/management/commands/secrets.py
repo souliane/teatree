@@ -25,6 +25,8 @@ class Command(TyperCommand):
         if health.row_count:
             for key_id, count in sorted(SealedSecret.objects.key_census().items()):
                 typer.echo(f"key_id {key_id}: {count} rows")
+        if not health.healthy:
+            raise SystemExit(1)
 
     @command()
     def ls(self, prefix: Annotated[str, typer.Argument(help="Only names starting with this prefix.")] = "") -> None:

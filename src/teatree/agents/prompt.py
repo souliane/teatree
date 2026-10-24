@@ -30,7 +30,7 @@ from teatree.agents.skill_injection import (
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import Task, Ticket
+from teatree.core.models import SessionCommand, Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.task_handoff import dispatch_reason
 
@@ -158,6 +158,11 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
     lines = _task_header_lines(task, extra)
     lines.extend(_format_pr_context(extra))
     lines.extend(_ticket_context_lines(ticket))
+    queued = list(
+        SessionCommand.objects.filter(task=task, outcome="queued").order_by("pk").values_list("text", flat=True)
+    )
+    if queued:
+        lines.extend(("", "Operator messages queued for this task's next run:", *queued))
 
     lines.extend(
         ("", "Instructions:", *_OWNER_STOP_LINES, *_VERIFY_GATES_LINES, final_output_reminder_line(task.phase))
