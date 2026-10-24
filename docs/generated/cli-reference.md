@@ -14545,8 +14545,6 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 │ reachability  Report which automated resolvers can decide each pending       │
 │               question.                                                      │
 │ answer        Resolve a pending question with a user answer.                 │
-│ delegate      Answer a bounded owner decision under Rule -1, audited and     │
-│               applied at once.                                               │
 │ dismiss       Dismiss a pending question without answering it.               │
 │ resurface     Re-post the pending backlog to the user's Slack DM             │
 │               (away→present drain).                                          │
@@ -14633,8 +14631,8 @@ Usage: t3 teatree questions reachability [OPTIONS]
 ```
 Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
 
- Resolve pending internal questions; use ``delegate`` for a bounded owner
- decision.
+ Resolve pending internal questions; an owner question is answered only in its
+ Slack thread.
 
  ``--also`` exists because one decision routinely settles several questions:
  a loop that cannot act on an ambiguous instruction files a clarifying question
@@ -14657,24 +14655,6 @@ Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
 │ --also            INTEGER  Another question this same answer resolves        │
 │                            (repeatable).                                     │
 │ --help                     Show this message and exit.                       │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree questions delegate`
-
-```
-Usage: t3 teatree questions delegate [OPTIONS] QUESTION_ID TEXT
-
- Answer a bounded owner decision under Rule -1, audited and applied at once.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    question_id      INTEGER  [required]                                    │
-│ *    text             TEXT     The bounded card option to apply. [required]  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --resolver        TEXT  The answering agent identity.                        │
-│ --evidence        TEXT  The decision evidence read by the agent.             │
-│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

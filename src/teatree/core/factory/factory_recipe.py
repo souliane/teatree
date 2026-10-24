@@ -82,10 +82,6 @@ def recipe_sha(path: Path | None = None) -> str:
     return hashlib.sha256(bounds_path.read_bytes()).hexdigest()
 
 
-def recipe_approval_key(sha: str) -> str:
-    return hashlib.sha256(f"recipe_approval:{sha}".encode()).hexdigest()
-
-
 def load_recipe(path: Path | None = None) -> Recipe:
     """Parse ``recipe.yaml`` into a typed :class:`Recipe`, failing loud on drift.
 

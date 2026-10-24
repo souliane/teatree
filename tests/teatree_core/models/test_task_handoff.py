@@ -287,8 +287,6 @@ class TestAnOwnerActionCardResumesNothing(TestCase):
                 assert answered is not None
 
                 assert (resume_on_answer(answered, task) is not None) == resumes
-                answered.refresh_from_db()
-                assert (answered.applied_at is not None) == resumes
 
 
 class TestAnOverCapParentResumesFresh(TestCase):

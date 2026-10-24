@@ -1,5 +1,6 @@
 """Recipe score and explicit snapshot recording with deduped approval questions."""
 
+import hashlib
 import os
 from typing import IO, Annotated, cast
 
@@ -7,7 +8,7 @@ import typer
 from django_typer.management import command
 
 from teatree.config import get_effective_settings
-from teatree.core.factory.factory_recipe import load_recipe, recipe_approval_key
+from teatree.core.factory.factory_recipe import load_recipe
 from teatree.core.factory.factory_score import FactoryScore, FactoryScoreDict, score
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.owner_decision import OwnerDecision
@@ -20,6 +21,11 @@ from teatree.utils.git_branch import head_sha
 
 def _overlay() -> str:
     return os.environ.get("T3_OVERLAY_NAME", "")
+
+
+def _recipe_approval_dedup_key(recipe_sha: str) -> str:
+    """A namespaced 64-char dedup key so exactly one approval question exists per sha."""
+    return hashlib.sha256(f"recipe_approval:{recipe_sha}".encode()).hexdigest()
 
 
 def _render(result: FactoryScore) -> str:
@@ -55,14 +61,11 @@ def _queue_recipe_approval(recipe_sha: str) -> bool:
     Deduped on the sha-derived ``options_hash`` so a re-scored read against the
     same unapproved recipe never queues a second question.
     """
-    dedup_key = recipe_approval_key(recipe_sha)
+    dedup_key = _recipe_approval_dedup_key(recipe_sha)
     if DeferredQuestion.objects.filter(options_hash=dedup_key).exists():
         return False
     DeferredQuestion.record(
-        "Can the factory use the new scoring recipe?",
-        options_hash=dedup_key,
-        dedupe_marker=dedup_key,
-        card=_RECIPE_APPROVAL_CARD,
+        "Can the factory use the new scoring recipe?", options_hash=dedup_key, card=_RECIPE_APPROVAL_CARD
     )
     return True
 

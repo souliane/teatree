@@ -557,7 +557,7 @@ class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):
         self.data_home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(patch.dict(os.environ, {"XDG_DATA_HOME": str(self.data_home)}))
 
-    def test_the_committed_answer_lands_in_the_sessions_mailbox_and_is_marked_delivered(self) -> None:
+    def test_the_committed_answer_lands_in_the_sessions_mailbox_and_is_marked_applied(self) -> None:
         question = _question("Which DB host?", slack_ts="100.0")
         _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
@@ -566,8 +566,7 @@ class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):
 
         assert answer_handback.collect("s") == [{"id": question.pk, "answer": "use postgres-1"}]
         question.refresh_from_db()
-        assert question.delivered_at is not None
-        assert question.applied_at is None
+        assert question.applied_at is not None
 
     def test_nothing_is_handed_back_until_the_answer_commits(self) -> None:
         question = _question("Which DB host?", slack_ts="100.0")

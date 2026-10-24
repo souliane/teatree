@@ -47,7 +47,6 @@ from django.utils import timezone
 
 from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.modelkit.owner_decision import HARD_LIMIT_DECISIONS, owner_decision
 from teatree.core.modelkit.reask_cadence import (
     REASK_KEY_PREFIX,
     RESURFACE_INTERVAL_HOURS,
@@ -160,10 +159,7 @@ def _question_pings_left(*, reserved: int) -> int:
 
 def _first_post_reserve() -> int:
     """Slots a nag leaves for never-posted questions — capped at one poster tick so a stuck poster cannot mute it."""
-    return min(
-        DeferredQuestion.unmirrored_pending().exclude(evidence__decision__in=HARD_LIMIT_DECISIONS).count(),
-        _MAX_MIRRORS_PER_TICK,
-    )
+    return min(DeferredQuestion.unmirrored_pending().count(), _MAX_MIRRORS_PER_TICK)
 
 
 def owner_quiet_now() -> bool:
@@ -274,7 +270,7 @@ def resurface_question_backlog(
     rows (an agent's own tool-lack self-report) are excluded, as in the two
     first-post drains.
     """
-    rows = _checked(live_owner_questions(), backend=backend, user_id=user_id)
+    rows = _checked(live_owner_questions(), backend=backend)
     if not rows:
         return False, 0
 
@@ -297,39 +293,15 @@ def resurface_question_backlog(
     return posted, len(rows)
 
 
-def _checked(
-    rows: Iterable[DeferredQuestion], *, backend: "MessagingBackend | None", user_id: str = ""
-) -> list[DeferredQuestion]:
+def _checked(rows: Iterable[DeferredQuestion], *, backend: "MessagingBackend | None") -> list[DeferredQuestion]:
     """The rows that pass the owner-message checks; the others are withheld, never posted, bumped or counted."""
     sendable: list[DeferredQuestion] = []
     for row in rows:
-        if skip_hard_limit_question(row, backend=backend, user_id=user_id):
-            continue
         if not (problems := shown_problems_for(row)):
             sendable.append(row)
         elif withhold(row, problems) and row.slack_ts:
             _replace_root(row, backend)
     return sendable
-
-
-def skip_hard_limit_question(
-    row: DeferredQuestion, *, backend: "MessagingBackend | None" = None, user_id: str = ""
-) -> bool:
-    evidence = row.evidence if isinstance(row.evidence, dict) else {}
-    decision = owner_decision(evidence.get("decision"))
-    if decision not in HARD_LIMIT_DECISIONS:
-        return False
-    reason = f"Rule -1 skipped owner-only {decision.value.replace('_', ' ')} action."
-    outcome = notify_user_outcome(
-        f"{reason} No change was made: {row.question.rstrip('?')}.",
-        kind=NotifyKind.INFO,
-        audience=NotifyAudience.OWNER_ESCALATION,
-        idempotency_key=f"rule1-hard-limit:{row.stable_notify_ref}",
-        options=NotifyOptions(backend=backend, user_id=user_id or None),
-    )
-    if outcome.sent or outcome.reason is NotifyReason.ROUTED_TO_PULL:
-        row.mark_stale(reason, resolver_id="agent:rule-1")
-    return True
 
 
 def _replace_root(row: DeferredQuestion, backend: "MessagingBackend | None") -> None:
@@ -419,7 +391,7 @@ def reask_escalated_questions(
     batch while their delivered pings answer ALREADY_SENT, and row six is never bumped
     at all (#4706).
     """
-    rows = [row for row in _checked(live_owner_questions(), backend=backend, user_id=user_id) if row.slack_ts]
+    rows = [row for row in _checked(live_owner_questions(), backend=backend) if row.slack_ts]
     if not rows:
         return 0, 0
 
@@ -507,7 +479,7 @@ def drain_deferred_questions(
     """
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
-    owner_rows = _checked(live_owner_questions(), backend=backend, user_id=user_id)
+    owner_rows = _checked(live_owner_questions(), backend=backend)
     # Skip what a fresh send would decline to re-deliver BEFORE applying the cap. The queue
     # is oldest-first, so capping it directly hands the same stood-down head back every
     # time: each call deduped to a no-op and every row behind it stayed unreachable, on a
@@ -574,9 +546,7 @@ def drain_unmirrored_deferred_questions(
     is re-read every tick, so the backlog drains steadily instead of at once,
     and a question that has waited hours can wait one more cadence.
     """
-    rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend, user_id=user_id)[
-        :_MAX_MIRRORS_PER_TICK
-    ]
+    rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend)[:_MAX_MIRRORS_PER_TICK]
     if not rows:
         return 0, 0
 

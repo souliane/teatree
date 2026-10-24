@@ -636,8 +636,8 @@ class Task(models.Model):
         return children
 
     def phase_iteration_count(self) -> int:
-        """How many attempts this ticket-phase has already recorded (#2009)."""
-        from teatree.core.models.task_repair import phase_attempts  # noqa: PLC0415 — deferred: import cycle
+        """How many executed work iterations this ticket-phase has recorded (#2009)."""
+        from teatree.core.models.task_repair_queries import phase_attempts  # noqa: PLC0415 — deferred: import cycle
 
         return len(phase_attempts(self))
 

@@ -21,11 +21,12 @@ from typing import TYPE_CHECKING, Self
 from teatree.core.cost import FAMILY_TO_TIER, UNATTRIBUTED_LANE, ModelPrice, UsageGroup, price_for_model, tier_of_model
 from teatree.core.cost_baseline.aggregate import AttemptRecord, UsageStats, percentile, usage_stats
 from teatree.core.models.task_attempt import RESUME_CONTEXT_CAP_TOKENS
+from teatree.hooks.cache_wait_detect import CACHE_WAIT_LIMIT_SECONDS
 
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
 
-LONG_TOOL_CALL_MS = 240_000
+LONG_TOOL_CALL_MS = CACHE_WAIT_LIMIT_SECONDS * 1000
 CONTEXT_THRESHOLD_TOKENS = (120_000, 200_000, 300_000)
 
 RESUME_CONTEXT_ITEM = "item2_resume_context"

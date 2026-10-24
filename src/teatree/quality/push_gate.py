@@ -25,7 +25,7 @@ from pathlib import Path
 
 from teatree.quality.brief_constraints import ConstraintViolation, check_constraints, extract_constraints
 from teatree.quality.changed_set import ChangedSet, ChangedSetError, changed_paths, classify
-from teatree.quality.regression_scan import AstGrepUnavailableError, scan_findings
+from teatree.quality.regression_scan import AstGrepUnavailableError, NoBlockingRulesError, scan_findings
 from teatree.utils import git
 from teatree.utils.django_db.runner import runner_prefix
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
@@ -94,6 +94,17 @@ class PushGateResult:
     astgrep_deferred: bool
     notes: tuple[str, ...]
     exit_code: int
+    astgrep_rules_present: bool = True
+
+    @property
+    def status(self) -> str:
+        if not self.astgrep_rules_present:
+            return "NO_RULES"
+        if not self.ok:
+            return "FAILED"
+        if self.astgrep_deferred:
+            return "DEFERRED"
+        return "CLEAN"
 
 
 def _full_plan(reason: str) -> PushGatePlan:
@@ -226,9 +237,13 @@ def run_push_gate(
 
     findings: list[dict] = []
     deferred = False
+    missing_rules = False
     blocking_dir = repo_root / ".ast-grep" / "blocking"
     try:
         findings = astgrep_scanner(blocking_dir, paths=plan.astgrep_scope)
+    except NoBlockingRulesError as exc:
+        missing_rules = True
+        notes.append(f"FAILED: no blocking rules declared ({exc}).")
     except AstGrepUnavailableError as exc:
         deferred = True
         notes.append(
@@ -236,7 +251,7 @@ def run_push_gate(
             "whole-tree backstop. The push is NOT blocked (CI is the guarantor); this is not a skip-as-pass."
         )
 
-    ok = sweep.ok and not findings
+    ok = sweep.ok and not findings and not missing_rules
     return PushGateResult(
         ok=ok,
         doctest_ok=sweep.ok,
@@ -244,6 +259,7 @@ def run_push_gate(
         astgrep_deferred=deferred,
         notes=tuple(notes),
         exit_code=0 if ok else _gate_exit_code(sweep),
+        astgrep_rules_present=not missing_rules,
     )
 
 

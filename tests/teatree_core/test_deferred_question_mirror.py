@@ -188,15 +188,4 @@ class TestRecordBackwardCompatible:
         assert row.mark_posted() is True
         assert row.mark_posted() is False
         row.refresh_from_db()
-        assert row.delivered_at is not None
-        assert row.applied_at is None
-
-    def test_mailbox_delivery_does_not_claim_the_answer_was_applied(self) -> None:
-        row = DeferredQuestion.record("q", session_id="s", run_id="r", generation=1)
-        row.apply_answer("Yes", resolved_via="slack")
-
-        assert row.mark_posted() is True
-
-        row.refresh_from_db()
-        assert row.delivered_at is not None
-        assert row.applied_at is None
+        assert row.applied_at is not None

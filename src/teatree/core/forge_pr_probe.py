@@ -249,36 +249,6 @@ def github_exact_branch_head(repo_dir: str | Path, slug: str, branch: str, host:
     return sha if isinstance(sha, str) and is_full_git_sha(sha) else None
 
 
-def github_ancestor_on_forge(repo_dir: str | Path, slug: str, ancestor: str, head: str, host: str) -> bool | None:
-    """Ask GitHub to compare exact commits when the newer commit is not available locally."""
-    if not is_full_git_sha(ancestor) or not is_full_git_sha(head):
-        return None
-    output = _github_cli_stdout(
-        ["gh", "api", "--hostname", host, f"repos/{slug}/compare/{ancestor}...{head}"], repo_dir
-    )
-    if output is None:
-        return None
-    try:
-        row = json.loads(output)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(row, dict):
-        return None
-    base = row.get("base_commit")
-    merge_base = row.get("merge_base_commit")
-    ahead_by = row.get("ahead_by")
-    status = row.get("status")
-    if (
-        not isinstance(base, dict)
-        or not isinstance(merge_base, dict)
-        or base.get("sha") != ancestor
-        or not isinstance(ahead_by, int)
-        or status not in {"ahead", "behind", "diverged", "identical"}
-    ):
-        return None
-    return status == "ahead" and ahead_by > 0 and merge_base.get("sha") == ancestor
-
-
 def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
     """The tri-state open-MR probe for a known-GitLab repo, over the HTTP API (#151).
 

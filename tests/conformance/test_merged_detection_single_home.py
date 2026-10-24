@@ -32,9 +32,6 @@ _ALLOWED: dict[str, str] = {
     "core/worktree/checkout_released.py": (
         "proves the released writer's recorded anchor precedes the current PR head — checkout custody, not landed-ness"
     ),
-    "core/worktree/checkout_auto.py": (
-        "proves a checkout is cleanly behind or contains the forge head — checkout custody, not landed-ness"
-    ),
     "utils/git_branch.py": "the thin `branch_merged` wrapper the canonical detector's layer (c) calls",
     "core/management/commands/repro.py": "proves a RED sha is an ancestor of a GREEN sha — provenance, not landed-ness",
     "agents/repro_phase_recorder.py": (
