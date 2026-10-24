@@ -47,7 +47,7 @@ class TestPrivateForgeAudit(TestCase):
         text = "candidate rejected: " + "x" * 240
         record_private_audit(
             forge="github",
-            repo="acme/unlisted",
+            repo=" acme/unlisted ",
             action="github_issue_create_judgment",
             target="https://github.com/acme/unlisted/issues/5",
             text=text,
@@ -58,6 +58,8 @@ class TestPrivateForgeAudit(TestCase):
         assert row.destination == "private-judgment:github:acme/unlisted"
         assert row.channel == SendChannel.OTHER.value
         assert row.allowlist_verdict == SendAudit.Verdict.WARNED
+        assert row.redaction_applied is False
+        assert row.redaction_matches == []
 
     def test_private_judgment_with_numeric_project_id_never_raises(self) -> None:
         record_private_audit(

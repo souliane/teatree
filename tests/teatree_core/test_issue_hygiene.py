@@ -618,6 +618,10 @@ class TestMarkerJudgedCreate(TestCase):
         assert outcome.kind == "extended_existing"
         assert outcome.issue_url == marked
         assert host.creates == []
+        assert (
+            f"{marked} fits: marker <!-- fp: abc --> found"
+            in SendAudit.objects.get(action="issue_create_judgment").payload_summary
+        )
 
     def test_an_unmarked_backlog_files_once_and_logs_every_rejection(self) -> None:
         other = "https://gitlab.com/acme/widgets/-/issues/9"
@@ -629,7 +633,10 @@ class TestMarkerJudgedCreate(TestCase):
         assert outcome.kind == "created_new"
         assert len(host.creates) == 1
         assert host.creates[0]["body"] == "b"
-        assert other in SendAudit.objects.get(action="issue_create_judgment").payload_summary
+        assert (
+            f"{other} rejected: marker <!-- fp: abc --> missing"
+            in SendAudit.objects.get(action="issue_create_judgment").payload_summary
+        )
 
     def test_an_empty_backlog_logs_the_check_without_publishing_it(self) -> None:
         host = _FakeHost()

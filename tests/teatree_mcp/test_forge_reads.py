@@ -4,7 +4,7 @@ Each new tool rides an existing :class:`~teatree.core.backend_protocols.CodeHost
 method (no protocol change), resolved through the same ``_forge_client`` seam the
 shipped forge reads use. A scripted fake backend keeps the tools hermetic — no
 ``gh`` / ``glab`` binary, no network — while proving each tool forwards the right
-arguments and returns the intended public payload.
+arguments and returns the backend payload unchanged.
 """
 
 from typing import Any
@@ -91,7 +91,7 @@ def _call(tool: str, args: dict[str, Any], fake: _FakeForge) -> Any:
 
 
 class TestForgeReadTools(TestCase):
-    def test_issue_search_returns_bounded_summaries_without_bodies(self) -> None:
+    def test_issue_search_preserves_complete_backend_payload(self) -> None:
         fake = _FakeForge()
         rows = [
             {
@@ -99,6 +99,8 @@ class TestForgeReadTools(TestCase):
                 "title": f"issue {index}",
                 "state": "open",
                 "updated_at": "2026-10-24",
+                "html_url": f"https://github.com/acme/widgets/issues/{index}",
+                "labels": [{"name": "bug"}],
                 "body": "x" * 20_000,
             }
             for index in range(12)
@@ -106,11 +108,15 @@ class TestForgeReadTools(TestCase):
         with patch.object(fake, "search_open_issues", return_value=rows) as search:
             result = _call("github_issue_search", {"repo": "acme/widgets", "query": "flaky"}, fake)
 
-        assert result == [
-            {"number": index, "title": f"issue {index}", "state": "open", "updated_at": "2026-10-24"}
-            for index in range(10)
-        ]
+        assert result == rows
         search.assert_called_once_with(repo="acme/widgets", query="flaky")
+
+    def test_gitlab_search_preserves_iid_and_web_url(self) -> None:
+        fake = _FakeForge()
+        row = {"iid": 8, "title": "fault", "state": "opened", "web_url": "https://gitlab.com/acme/widgets/-/issues/8"}
+        with patch.object(fake, "search_open_issues", return_value=[row]):
+            result = _call("github_issue_search", {"repo": "acme/widgets", "query": "fault"}, fake)
+        assert result == [row]
 
     def test_issue_list_assigned_forwards_assignee(self) -> None:
         fake = _FakeForge()

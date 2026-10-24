@@ -295,6 +295,7 @@ class TestIssueCreateDedupesFirst(TestCase):
         assert "Dedupe check" not in filed
         audit = SendAudit.objects.get(action="github_issue_create_judgment")
         assert audit.target == result["issue_url"]
+        assert audit.destination == "private-judgment:github:acme/widgets"
         assert "https://github.com/acme/widgets/issues/3" in audit.payload_summary
         assert long_reason in audit.payload_summary
 

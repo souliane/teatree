@@ -3,7 +3,7 @@
 from django.test import TestCase
 
 from teatree.core.issue_hygiene import CreateDecision, CreateOutcome, IssueDraft
-from teatree.core.issue_judgment_audit import record_issue_judgment
+from teatree.core.issue_writes.issue_judgment_audit import record_issue_judgment
 from teatree.core.models import SendAudit
 
 
@@ -15,13 +15,14 @@ class TestIssueJudgmentAudit(TestCase):
             draft=IssueDraft(repo="acme/widgets", title="t", body="b"),
             outcome=CreateOutcome(kind="extended_existing", issue_url=fitting),
             decisions=[
-                CreateDecision(candidate_url=fitting, fits=True),
-                CreateDecision(candidate_url=rejected, reason="different topic"),
+                CreateDecision(candidate_url=fitting, fits=True, reason="  "),
+                CreateDecision(candidate_url=rejected, reason="  different topic  "),
                 CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/3", reason="stale"),
             ],
             live_urls=(fitting, rejected),
         )
         row = SendAudit.objects.get(action="issue_create_judgment")
+        assert row.destination == "private-judgment:gitlab:acme/widgets"
         assert "2 candidates judged" in row.payload_summary
         assert f"{fitting} fits: caller marked as fitting" in row.payload_summary
         assert f"{rejected} rejected: different topic" in row.payload_summary
@@ -35,7 +36,7 @@ class TestIssueJudgmentAudit(TestCase):
             outcome=CreateOutcome(kind="extended_existing", issue_url=fitting),
             decisions=[
                 CreateDecision(candidate_url=fitting, fits=True),
-                CreateDecision(candidate_url=rejected),
+                CreateDecision(candidate_url=rejected, reason=" \n"),
             ],
             live_urls=(fitting, rejected),
         )

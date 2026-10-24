@@ -53,7 +53,7 @@ from enum import StrEnum
 from typing import Literal
 
 from teatree.core.backend_protocols import CodeHostBackend, IssueResolutionSpec
-from teatree.core.issue_judgment_audit import record_issue_judgment
+from teatree.core.issue_writes.issue_judgment_audit import record_issue_judgment
 from teatree.core.issue_writes.section_removal import DescriptionRemoval
 from teatree.core.issue_writes.section_removal import remove_description_section as _remove_description_section
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
