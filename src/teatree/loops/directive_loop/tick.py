@@ -76,8 +76,6 @@ _INTAKE_STATES = frozenset(
     }
 )
 
-#: Tick actions that report a wait on someone else rather than a step taken.
-
 #: How many ratify questions may sit UNANSWERED on the owner at once.
 #:
 #: ``directive_intake_per_tick`` bounds how fast the drain moves, not how much lands on

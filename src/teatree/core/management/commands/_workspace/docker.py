@@ -41,6 +41,7 @@ def render_reclaim_report(
     report: ReclaimReport, write_out: Callable[[str], object], write_err: Callable[[str], object]
 ) -> str:
     write_out(report.render())
+    # A venue that could not act reclaimed nothing and must not exit 0 (#4585).
     if report.failures or report.venue_blocked:
         write_err(report.failure_summary())
         raise SystemExit(1)

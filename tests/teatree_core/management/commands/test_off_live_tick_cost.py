@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.management.commands.dream import PassOutcome
 from teatree.core.models import Loop, LoopLease
@@ -25,6 +26,27 @@ class TestOffLiveTickCost(TestCase):
         with patch.dict(os.environ, {TICK_SUBPROCESS_ENV_MARKER: "1"}):
             for name, command in commands.items():
                 with self.subTest(loop=name):
+                    call_command(command, "tick", stdout=StringIO())
+                    loop = Loop.objects.get(name=name)
+                    assert loop.idle_cpu_seconds is not None
+                    assert loop.busy_cpu_seconds is None
+
+    def test_a_cadence_or_lease_skip_records_idle_cost(self) -> None:
+        seed_default_loops_and_prompts()
+        for name, command in (("outer_loop", "outer"), ("directive_loop", "directive")):
+            for cause, last_run_at, lease_free in (
+                ("cadence not elapsed", timezone.now(), True),
+                ("lease held", None, False),
+            ):
+                with (
+                    self.subTest(loop=name, cause=cause),
+                    patch.dict(os.environ, {TICK_SUBPROCESS_ENV_MARKER: "1"}),
+                    patch("teatree.loops.enable_verdict.loop_admits", return_value=True),
+                    patch.object(LoopLease.objects, "acquire", return_value=lease_free),
+                ):
+                    Loop.objects.filter(name=name).update(
+                        enabled=True, last_run_at=last_run_at, idle_cpu_seconds=None, busy_cpu_seconds=None
+                    )
                     call_command(command, "tick", stdout=StringIO())
                     loop = Loop.objects.get(name=name)
                     assert loop.idle_cpu_seconds is not None

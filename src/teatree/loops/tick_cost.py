@@ -10,6 +10,7 @@ from teatree.core.models import Loop
 from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
 
 logger = logging.getLogger(__name__)
+#: Tick actions that report a wait on someone else, a refusal or a park rather than a step taken.
 _NO_PROGRESS_ACTIONS = frozenset({"waiting", "pending", "refused", "idle", "parked"})
 
 

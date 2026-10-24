@@ -352,7 +352,7 @@ class Command(TyperCommand):
         branch: Annotated[str | None, typer.Option("--branch", help="Scan only this branch.")] = None,
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """List orphan branches across the workspace or only ``--branch``; ``[]`` if none."""
+        """List branch verdicts; orphans have unmerged work but no PR; ``[]`` means no branch."""
         _ol.run_orphan_listing(self.stdout, self.stderr, branch=branch, json_output=json_output)
 
     @command()

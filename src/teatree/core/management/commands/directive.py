@@ -23,9 +23,8 @@ from django_typer.management import TyperCommand, command
 from teatree.core.models import Directive, Loop, LoopLease
 from teatree.loops.tick_cost import action_found_work, record_tick_cost
 
-# The teatree.loops imports below are DEFERRED to the method body: a top-level
-# teatree.loops import from a teatree.core management command is a module-level import
-# cycle (loops depends on core). They resolve fine at call time.
+# `tick_cost` imports only core.models, so it loads at the top; the loop modules the commands
+# below reach are DEFERRED to the method body.
 
 
 class Command(TyperCommand):
@@ -99,39 +98,36 @@ class Command(TyperCommand):
         from teatree.loops.directive_loop.tick import run_tick  # noqa: PLC0415 — cross-layer import cycle
         from teatree.loops.enable_verdict import loop_admits  # noqa: PLC0415 — cross-layer import cycle
 
-        now = timezone.now()
-        row = Loop.objects.filter(name=MINI_LOOP.name).first()
-        if row is None or not loop_admits(MINI_LOOP.name):
-            self.stdout.write("SKIP  directive_loop disabled (no enabled Loop row / LoopState hold).")
-            record_tick_cost(MINI_LOOP.name, found_work=False)
-            return
-        if not row.is_due(now):
-            self.stdout.write("SKIP  directive_loop cadence not elapsed.")
-            record_tick_cost(MINI_LOOP.name, found_work=False)
-            return
-
-        owner = f"pid-{os.getpid()}"
-        if not LoopLease.objects.acquire(
-            DIRECTIVE_LOOP_LEASE_NAME, owner=owner, lease_seconds=DIRECTIVE_LOOP_LEASE_SECONDS
-        ):
-            self.stdout.write("SKIP  another directive_loop tick is already running — lease held.")
-            record_tick_cost(MINI_LOOP.name, found_work=False)
-            return
         found_work = False
         try:
-            result = run_tick(now=now)
-            found_work = action_found_work(result.action)
-        finally:
+            now = timezone.now()
+            row = Loop.objects.filter(name=MINI_LOOP.name).first()
+            if row is None or not loop_admits(MINI_LOOP.name):
+                self.stdout.write("SKIP  directive_loop disabled (no enabled Loop row / LoopState hold).")
+                return
+            if not row.is_due(now):
+                self.stdout.write("SKIP  directive_loop cadence not elapsed.")
+                return
+
+            owner = f"pid-{os.getpid()}"
+            if not LoopLease.objects.acquire(
+                DIRECTIVE_LOOP_LEASE_NAME, owner=owner, lease_seconds=DIRECTIVE_LOOP_LEASE_SECONDS
+            ):
+                self.stdout.write("SKIP  another directive_loop tick is already running — lease held.")
+                return
             try:
-                LoopLease.objects.release(DIRECTIVE_LOOP_LEASE_NAME, owner=owner)
+                result = run_tick(now=now)
+                found_work = action_found_work(result.action)
             finally:
-                record_tick_cost(MINI_LOOP.name, found_work=found_work)
-        Loop.objects.mark_run(MINI_LOOP.name, now)
-        detail = f" ({result.reason})" if result.reason else ""
-        directive = f" directive={result.directive_id}" if result.directive_id else ""
-        # A guard refusal is a distinct outcome from a healthy tick, never an "OK" (#3643).
-        prefix = "WARN " if result.action == "refused" else "OK   "
-        self.stdout.write(f"{prefix} directive_loop tick — {result.action}{detail}{directive}.")
+                LoopLease.objects.release(DIRECTIVE_LOOP_LEASE_NAME, owner=owner)
+            Loop.objects.mark_run(MINI_LOOP.name, now)
+            detail = f" ({result.reason})" if result.reason else ""
+            directive = f" directive={result.directive_id}" if result.directive_id else ""
+            # A guard refusal is a distinct outcome from a healthy tick, never an "OK" (#3643).
+            prefix = "WARN " if result.action == "refused" else "OK   "
+            self.stdout.write(f"{prefix} directive_loop tick — {result.action}{detail}{directive}.")
+        finally:
+            record_tick_cost(MINI_LOOP.name, found_work=found_work)
 
     @command(name="resolve-revert")
     def resolve_revert(

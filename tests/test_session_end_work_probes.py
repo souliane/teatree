@@ -122,13 +122,16 @@ class TestDirtyWorktreeStates:
 
     def test_main_and_detached_heads_probe_the_fleet(self, tmp_path: Path) -> None:
         repo = _repo_with_commit(tmp_path)
+        completed = subprocess.CompletedProcess(args=["t3"], returncode=0, stdout="[]", stderr="")
         for branch in ("main", "(detached)"):
             with (
                 patch.object(work_check, "current_branch", return_value=branch),
-                patch.object(work_check, "fetch_orphans", return_value=[]) as fetch,
+                patch.object(work_check, "fetch_orphans", _REAL_FETCH_ORPHANS),
+                patch.object(work_check, "t3_argv", side_effect=lambda *args: ["/usr/bin/t3", *args]) as route,
+                patch.object(work_check, "run_t3", return_value=completed),
             ):
                 work_check.scan_work(str(repo))
-            fetch.assert_called_once_with(None)
+            route.assert_called_once_with("teatree", "workspace", "list-orphans", "--json")
 
     def test_an_unreadable_branch_falls_back_to_the_fleet_probe(self, tmp_path: Path) -> None:
         repo = _repo_with_commit(tmp_path)
@@ -282,12 +285,13 @@ class TestFetchOrphans:
 
         route.assert_called_once_with("teatree", "workspace", "list-orphans", "--branch", "work-branch", "--json")
 
-    def test_a_detached_head_scans_the_fleet(self) -> None:
+    def test_a_branch_with_no_worktree_of_its_own_scans_the_fleet(self) -> None:
         completed = subprocess.CompletedProcess(args=["t3"], returncode=0, stdout="[]", stderr="")
-        with (
-            patch.object(work_check, "t3_argv", side_effect=lambda *args: ["/usr/bin/t3", *args]) as route,
-            patch.object(work_check, "run_t3", return_value=completed),
-        ):
-            assert _REAL_FETCH_ORPHANS("(detached)") == []
+        for branch in ("(detached)", "main", "master"):
+            with (
+                patch.object(work_check, "t3_argv", side_effect=lambda *args: ["/usr/bin/t3", *args]) as route,
+                patch.object(work_check, "run_t3", return_value=completed),
+            ):
+                assert _REAL_FETCH_ORPHANS(branch) == []
 
-        route.assert_called_once_with("teatree", "workspace", "list-orphans", "--json")
+            route.assert_called_once_with("teatree", "workspace", "list-orphans", "--json")

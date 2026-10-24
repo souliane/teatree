@@ -1485,7 +1485,7 @@
           "name": "stamp-identity"
         },
         {
-          "help": "List orphan branches across the workspace or only ``--branch``; ``[]`` if none",
+          "help": "List branch verdicts; orphans have unmerged work but no PR; ``[]`` means no branch",
           "name": "list-orphans"
         },
         {

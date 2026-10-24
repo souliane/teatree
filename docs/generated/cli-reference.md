@@ -9944,8 +9944,8 @@ Usage: t3 teatree workspace relocate [OPTIONS]
 ```
 Usage: t3 teatree workspace list-orphans [OPTIONS]
 
- List orphan branches across the workspace or only ``--branch``; ``[]`` if
- none.
+ List branch verdicts; orphans have unmerged work but no PR; ``[]`` means no
+ branch.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --branch        TEXT  Scan only this branch.                                 │
