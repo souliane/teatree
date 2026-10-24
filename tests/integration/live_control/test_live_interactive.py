@@ -54,7 +54,7 @@ class LiveInteractiveTests(TestCase):
                     )
 
                 agent_future = pool.submit(receive_and_reply)
-                agent_address = wait_for_peer(task.pk)
+                agent_address = wait_for_peer(task.pk, agent_future)
 
                 async def exchange() -> tuple[dict[str, Any], dict[str, Any]]:
                     sending = asyncio.create_task(
