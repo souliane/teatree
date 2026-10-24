@@ -1344,7 +1344,7 @@ class TestTheControlOnThisPageActuallyWrites(TestCase):
             scope=scope,
             title=self._KEY,
             subtitle="global scope",
-            cells=(_local(LOCAL_LABEL, "hostkey"), _held("peer", "mac")),
+            cells=(_local(LOCAL_LABEL, "hostkey"), _held("peer", "peerhost")),
             control=_control(self._KEY),
         )
 
