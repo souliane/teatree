@@ -103,8 +103,11 @@ def _release_parked_tasks(now: dt.datetime) -> int:
     release explicit and immediate (and gives the notify a meaningful count). A task still
     parked behind a not-yet-due window (``not_before`` in the future) is untouched.
     """
-    from teatree.core.models import Task, TaskAttempt  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
-    from teatree.core.models.usage_window_state import OPERATOR_PAUSED_PREFIX  # noqa: PLC0415 — deferred import
+    from teatree.core.models import (  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+        OPERATOR_PAUSED_PREFIX,
+        Task,
+        TaskAttempt,
+    )
 
     latest_error = TaskAttempt.objects.filter(task_id=OuterRef("pk")).order_by("-pk").values("error")[:1]
 

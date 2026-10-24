@@ -1257,7 +1257,7 @@ class TestPydanticAiCompaction(TestCase):
                 ]
             )
         harness = PydanticAiHarness(
-            model=TestModel(custom_output_text="done", profile={"context_window": 1_000}),
+            model=TestModel(custom_output_text="done", call_tools=[], profile={"context_window": 1_000}),
             history=history,
             phase="coding",
         )

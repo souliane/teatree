@@ -148,7 +148,12 @@ from teatree.core.models.unclaimed_intake_candidate import (
     WaitingCandidate,
 )
 from teatree.core.models.unshipped_work_record import UnshippedWorkRecord
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, UsageWindowState, UsageWindowStateQuerySet
+from teatree.core.models.usage_window_state import (
+    LIMIT_PARKED_PREFIX,
+    OPERATOR_PAUSED_PREFIX,
+    UsageWindowState,
+    UsageWindowStateQuerySet,
+)
 from teatree.core.models.waiting_item import WaitingItem, WaitingItemError, WaitingItemManager
 from teatree.core.models.worker_generation import WorkerGeneration
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
@@ -159,6 +164,7 @@ __all__ = [
     "LIMIT_PARKED_PREFIX",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
+    "OPERATOR_PAUSED_PREFIX",
     "SEAT_WINDOW",
     "SOURCE_INTERACTIVE",
     "SOURCE_LOOP",
