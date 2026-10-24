@@ -112,6 +112,7 @@ def _drive_push(
             "USERPROFILE": str(home),
             "PYTHONPATH": str(_REPO_ROOT),
             "T3_CONFIG_DB": str(home / "config.sqlite3"),
+            "XDG_DATA_HOME": str(home / "xdg"),
         },
     )
 

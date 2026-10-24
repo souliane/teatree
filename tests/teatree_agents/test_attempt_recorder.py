@@ -24,6 +24,7 @@ from teatree.core.models import (
     PendingTriageRecommendation,
     PlanArtifact,
     Session,
+    SessionCommand,
     Task,
     TaskAttempt,
     Ticket,
@@ -116,6 +117,43 @@ class TestRecordResultEnvelope(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         task.claim(claimed_by="loop-slot")
         return task
+
+    def test_accepted_operator_directions_are_carried_into_the_handoff_result(self) -> None:
+        task = self._claimed()
+        SessionCommand.objects.create(
+            command_id="accepted",
+            ticket=task.ticket,
+            task=task,
+            text="Keep the public API",
+            outcome="accepted_current_turn",
+        )
+        SessionCommand.objects.create(
+            command_id="rejected", ticket=task.ticket, task=task, text="Ignore tests", outcome="rejected"
+        )
+
+        attempt = record_result_envelope(task, {"summary": "Work continues", "operator_inputs": ["untrusted"]})
+
+        assert attempt.result["operator_inputs"] == ["Keep the public API"]
+
+    def test_queued_operator_message_is_recorded_only_after_success(self) -> None:
+        task = self._claimed(phase="testing")
+        command = SessionCommand.objects.create(
+            command_id="queued-result", ticket=task.ticket, task=task, text="Preserve the endpoint", outcome="queued"
+        )
+
+        attempt = record_result_envelope(
+            task,
+            {
+                "summary": "Tested",
+                "tests_run": [{"name": "focused", "passed": True}],
+                "tests_passed": 1,
+                "tests_failed": 0,
+            },
+        )
+
+        command.refresh_from_db()
+        assert attempt.result["operator_inputs"] == ["Preserve the endpoint"]
+        assert command.outcome == "accepted_new_turn"
 
     def test_push_ownership_venue_fault_fails_without_an_owner_question(self) -> None:
         task = self._claimed(phase="debugging")

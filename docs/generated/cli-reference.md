@@ -21,6 +21,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
 │                 credit.                                                      │
+│ cost-profile    Profile real dispatches: read share, resume-context cost and │
+│                 addressable upper bounds.                                    │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
 │ speak           Refuse to speak — local audio cannot reach the user.         │
@@ -212,6 +214,22 @@ Usage: t3 cost [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the structured report as JSON.                          │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 cost-profile`
+
+```
+Usage: t3 cost-profile [OPTIONS]
+
+ Profile real dispatches: read share, resume-context cost and addressable upper
+ bounds.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json               Emit the structured report as JSON.                     │
+│ --since        TEXT  ISO-8601 lower bound on attempt start (default: every   │
+│                      attempt).                                               │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7560,8 +7578,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
-│ live            Sessions on this host's workers: inspect passively, steer or │
-│                 follow up actively.                                          │
+│ live            Sessions on this host's workers: inspect passively; steer,   │
+│                 follow up or pause actively.                                 │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
@@ -11816,7 +11834,7 @@ Usage: t3 teatree standup stale [OPTIONS]
 ```
 Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
 
- Sessions on this host's workers: inspect passively, steer or follow up
+ Sessions on this host's workers: inspect passively; steer, follow up or pause
  actively.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
@@ -11829,6 +11847,8 @@ Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
 │ steer      Send input into a running agent's current turn and print its      │
 │            receipt (active).                                                 │
 │ follow-up  Start one new turn in an idle agent session and print its receipt │
+│            (active).                                                         │
+│ pause      Interrupt a running task and park it for an operator resume       │
 │            (active).                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11910,6 +11930,31 @@ Usage: t3 teatree live follow-up [OPTIONS] TASK
 │                            [default: 60.0]                                   │
 │ --json                     Emit JSON on stdout instead of the human view.    │
 │ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live pause`
+
+```
+Usage: t3 teatree live pause [OPTIONS] TASK
+
+ Interrupt a running task and park it for an operator resume.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --command-id        TEXT   Idempotency key; the same command returns the     │
+│                            first receipt.                                    │
+│ --wait              FLOAT  Seconds to wait for the pause receipt (at most    │
+│                            900).                                             │
+│                            [default: 60.0]                                   │
+│ --json                     Emit JSON on stdout instead of the human view.    │
+│ --help                     Show this message and exit.                       │
+│ --attempt           TEXT   Refuse unless the session is this attempt;        │
+│                            defaults to the attempt `live list` shows.        │
+│ --generation        TEXT   Refuse unless the worker runs this generation;    │
+│                            defaults to the located session's.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

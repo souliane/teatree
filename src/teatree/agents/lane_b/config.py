@@ -93,6 +93,7 @@ class LaneBToolConfig:
     shell_timeout_seconds: float = _DEFAULT_SHELL_TIMEOUT_SECONDS
     shell_env: dict[str, str] = field(default_factory=dict)
     shell_max_output_bytes: int = field(default_factory=_declared_output_cap)
+    cache_lifetime_seconds: float | None = None
     mailbox: MailboxClient | None = None
 
     @property

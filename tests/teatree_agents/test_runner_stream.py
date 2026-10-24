@@ -1,14 +1,69 @@
 """A run's stream capture, and which endings count as a run cut short."""
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, TextBlock, ToolResultBlock, ToolUseBlock
 
+from teatree.agents.claude_sdk_session import ClaudeSdkSession, LiveInputQueue
 from teatree.agents.codex_app_server_messages import tool_blocks
-from teatree.agents.runner_stream import HarnessOutcome, StreamCapture
-from tests.teatree_agents._sdk_fake import assistant_text, assistant_tool_use, rate_limit_event, result_message
+from teatree.agents.runner_outcomes import failure_reason
+from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, _collect
+from tests.teatree_agents._sdk_fake import (
+    ScriptedResponseClient,
+    assistant_text,
+    assistant_tool_use,
+    rate_limit_event,
+    result_message,
+)
+
+_COMPACT_BOUNDARY_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "claude_cli" / "2.1.300-compact-boundary.json"
+)
+
+
+def test_collect_ignores_an_early_ack_and_keeps_the_real_result() -> None:
+    client = ScriptedResponseClient(
+        [result_message(num_turns=0), assistant_text("real answer"), result_message(num_turns=2)]
+    )
+    session = ClaudeSdkSession(client, LiveInputQueue())
+
+    outcome = replace(asyncio.run(_collect(session, "continue")), resumed=True)
+
+    assert outcome.agent_text == "real answer"
+    assert outcome.result_message is not None
+    assert outcome.result_message.num_turns == 2
+    assert failure_reason(outcome) is None
+    assert client.prompts == ["continue"]
+
+
+def test_stalled_ack_is_cancelled_without_a_refused_resume_result() -> None:
+    ack = result_message(num_turns=0)
+
+    class StalledClient(ScriptedResponseClient):
+        async def receive_response(self) -> AsyncIterator[object]:
+            self.receive_calls += 1
+            yield ack
+            await asyncio.Event().wait()
+
+    client = StalledClient([])
+    inputs = LiveInputQueue()
+    capture = StreamCapture()
+    session = ClaudeSdkSession(client, inputs)
+
+    async def run() -> None:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(_collect(session, "continue", capture), timeout=0.1)
+
+    asyncio.run(run())
+    assert client.receive_calls == 1
+    assert capture.result_message is None
+    assert inputs._ended is None
 
 
 class TestStreamCapture:
@@ -46,6 +101,15 @@ class TestStreamCapture:
         assert result is not None
         assert result.session_id == "s1"
 
+    def test_the_init_session_id_survives_an_interruption_without_a_result(self) -> None:
+        capture = StreamCapture()
+        capture.observe(SystemMessage(subtype="init", data={"session_id": "0f1e2d3c-4b5a-4968-8776-655443322110"}))
+
+        outcome = capture.outcome(stuck_reason="operator pause")
+
+        assert outcome.result_message is None
+        assert outcome.session_id == "0f1e2d3c-4b5a-4968-8776-655443322110"
+
     def test_a_model_fallback_is_kept_and_other_system_events_are_not(self) -> None:
         fallback = {
             "subtype": "model_fallback",
@@ -60,6 +124,25 @@ class TestStreamCapture:
         assert capture.outcome().model_fallbacks == (fallback,)
         assert capture.outcome().model_fell_back
         assert not StreamCapture().outcome().model_fell_back
+
+    def test_each_compact_boundary_frame_is_one_compaction(self) -> None:
+        capture = StreamCapture()
+        capture.observe(SystemMessage(subtype="init", data={"subtype": "init"}))
+        assert capture.compactions == 0
+
+        capture.observe(SystemMessage(subtype="compact_boundary", data={"compact_metadata": {"trigger": "auto"}}))
+        capture.observe(SystemMessage(subtype="compact_boundary", data={"compact_metadata": {"trigger": "auto"}}))
+
+        assert capture.compactions == 2
+
+    def test_a_recorded_cli_compact_boundary_frame_is_one_compaction(self) -> None:
+        recorded = json.loads(_COMPACT_BOUNDARY_FIXTURE.read_text())["compact_boundary_frame"]
+        capture = StreamCapture()
+
+        capture.observe(SystemMessage(subtype=recorded["subtype"], data=recorded))
+
+        assert capture.compactions == 1
+        assert recorded["compact_metadata"]["trigger"] == "auto"
 
     def test_the_conversation_size_is_the_last_main_thread_request(self) -> None:
         capture = StreamCapture()

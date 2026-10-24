@@ -461,7 +461,7 @@ The babysit-tier draft flow — the pre-flight read of existing discussions, the
 - **Default stance toward a colleague's concern:** assume it is correct until you have exhaustively disproven it. Verify it deeply against ground truth before concluding it's a non-issue; a shallow check that confirms your first instinct is not a disproof. The cost of taking a wrong concern seriously is small; the cost of dismissing a right one is a missed bug and a colleague who stops raising them.
 - **Push back when:** suggestion breaks functionality (show evidence), violates YAGNI, is based on stale context, or conflicts with user's stated architecture.
 - **Anti-performative:** No "You're absolutely right!" — just state the fix or the technical disagreement.
-- **Technical rigor:** verify reviewer suggestions against the actual codebase before implementing.
+- **Technical rigor:** verify claims in code; for tool output, run the exact command in worker and admin containers and compare live results before accepting it.
 - **Review rounds:** fix the defect class; three per MR is the cap. Full text: `skills/review/references/review-rounds.md`.
 
 #### Replying to Review Discussions

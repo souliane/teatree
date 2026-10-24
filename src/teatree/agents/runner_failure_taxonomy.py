@@ -60,6 +60,9 @@ CONTEXT_EXHAUSTION_PHRASES = (
 #: The ``SystemMessage`` subtype the CLI streams when ``fallback_model`` took over a refused request.
 MODEL_FALLBACK_SUBTYPE = "model_fallback"
 
+#: The ``SystemMessage`` subtype the CLI streams after it compacted the conversation.
+COMPACT_BOUNDARY_SUBTYPE = "compact_boundary"
+
 #: The API's error code for a CLI build older than the requested model supports (#4874).
 CLI_TOO_OLD_ERROR_CODE = "claude_code_version_too_old"
 
@@ -113,12 +116,12 @@ def context_exhaustion_reason(message: ResultMessage | None) -> str:
 
 
 def is_refused_resume(message: ResultMessage | None) -> TypeGuard[ResultMessage]:
-    """Whether a run ended cleanly without taking a single turn — how the CLI declines a resume it cannot fit."""
+    """Whether a clean result reports no assistant turn."""
     return message is not None and not message.is_error and not message.num_turns
 
 
 def refused_resume_reason(message: ResultMessage) -> str:
-    """The recorded reason for a declined resume: an exhausted conversation, so the retry starts fresh."""
+    """The recorded reason for a resumed run whose terminal result reports no turn; retry fresh."""
     return f"{RESULT_ERROR_PREFIX}{CONTEXT_EXHAUSTED_MARKER} — subtype={message.subtype} — {RESUME_REFUSED_PHRASE}"
 
 

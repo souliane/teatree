@@ -38,18 +38,20 @@ from pydantic_ai import Agent
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, ReasoningEffort
+from pydantic_ai.usage import RunUsage
 
 from teatree.agents.claude_cli_spawn import assert_spawnable, prepared_spawn, spawn_error
 from teatree.agents.claude_sdk_session import ClaudeSdkSession, LiveInputQueue
 from teatree.agents.codex_app_server import codex_app_server_spec
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities, HarnessSpec, register_harness
-from teatree.agents.lane_b.compaction import CompactionPolicy, elide_stale_tool_results
+from teatree.agents.lane_b.compaction import CompactionPolicy, LateHistoryCompactor
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from teatree.agents.live_control import RejectCode
-from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_pydantic_ai_model
+from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_pydantic_ai_model, resolve_tier
 from teatree.agents.pydantic_ai_config import (
+    ANTHROPIC_CACHE_TTL_SECONDS,
     PYDANTIC_AI_NATIVE_CAPABILITIES,
     PYDANTIC_AI_ROUTER_CAPABILITIES,
     OpenAICompatibleLaneConfig,
@@ -61,10 +63,10 @@ from teatree.agents.pydantic_ai_config import (
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
-from teatree.agents.pydantic_ai_steering import PeerInputAdmission, SteerablePydanticAiSession
+from teatree.agents.pydantic_ai_steering import SteerablePydanticAiSession
 from teatree.agents.pydantic_ai_turn import SessionRun
 from teatree.agents.regulated_path import RegulatedPathPolicy
-from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
+from teatree.config import AgentHarness, AgentHarnessProvider, cold_reader, get_effective_settings
 from teatree.llm.credentials import Credential
 
 CLAUDE_SDK_CAPABILITIES = HarnessCapabilities(
@@ -266,6 +268,7 @@ class PydanticAiHarness:
         self._max_tokens = cfg.max_tokens
         self._regulated_path = cfg.regulated_path
         self._anthropic_credential = cfg.anthropic_credential
+        self._context_windows = cfg.context_windows
 
     @property
     def history(self) -> "list[ModelMessage] | None":
@@ -295,24 +298,29 @@ class PydanticAiHarness:
         if self.resume_source is not None and self._history:
             persist_parked_thread(self.resume_source, self._history)
 
-    def _resolve_model(self, options: HarnessOptions, run: SessionRun) -> Model:
+    def _resolve_model(self, options: HarnessOptions, run: SessionRun, *, tier: str | None = None) -> Model:
         if self._model is not None:
             return self._model
         if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
-            return resolve_native_anthropic_model(options, self._regulated_path, self._anthropic_credential)
+            source = replace(options, model=resolve_tier(tier)) if tier is not None else options
+            return resolve_native_anthropic_model(source, self._regulated_path, self._anthropic_credential)
         # Normalise the resolved id to what the configured endpoint actually serves:
         # ``options.model`` is a teatree-abstract-tier default in Claude DASH-form
         # (the :data:`tier_models()` form) an OpenAI-compatible provider does NOT carry, so it maps
         # to the configured ``openai_compatible_model``; an explicit provider-native pin
         # passes through.
-        model_name = resolve_pydantic_ai_model(options.model, configured_model=self._backend.model, tier=self._tier)
+        model_name = resolve_pydantic_ai_model(
+            options.model if tier is None else None, configured_model=self._backend.model, tier=tier or self._tier
+        )
         # Regulated-path allowlist gate on the ORIGINAL pin (before normalisation
         # laundered a bare ineligible id into the configured id) — a config-policy
         # refusal that must surface BEFORE the credential step, so it fires even when
         # the backend credential is absent. ``options.model`` catches both a bare
         # ineligible name and an explicit provider-prefixed pin (which passes through
         # normalisation unchanged); an absent pin falls back to the resolved id.
-        RegulatedPathPolicy.resolve(self._regulated_path).assert_allowed(options.model or model_name)
+        RegulatedPathPolicy.resolve(self._regulated_path).assert_allowed(
+            (options.model if tier is None else None) or model_name
+        )
         return OpenAIChatModel(model_name, provider=build_openai_compatible_provider(self._backend, run))
 
     @asynccontextmanager
@@ -344,15 +352,28 @@ class PydanticAiHarness:
         # keeps a bare text Agent (byte-identical to before the tool port). The
         # worktree jail root is ``options.cwd`` (the resolved task cwd).
         config = LaneBToolConfig.from_options(harness_options, phase=self._phase or "")
+        if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
+            config = replace(config, cache_lifetime_seconds=ANTHROPIC_CACHE_TTL_SECONDS)
         toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
         keep_tool_results = CompactionPolicy.for_phase(self._phase).keep_tool_results
-        inputs = LiveInputQueue()
-        capabilities = [ProcessHistory(PeerInputAdmission(inputs))]
+        capabilities = []
+        compactor = None
         if self._phase:
-            # A lambda keeps annotations from changing pydantic_ai's processor calling convention.
-            capabilities.insert(
-                0, ProcessHistory(lambda messages: elide_stale_tool_results(messages, keep_tool_results))
+
+            async def summarize(stale: str, usage: RunUsage) -> str:
+                cheap_model = self._resolve_model(harness_options, run, tier="cheap")
+                async with Agent(cheap_model, model_settings={"max_tokens": 2_048}) as summarizer:
+                    result = await summarizer.run(
+                        "Summarize the earlier conversation for a continuing coding agent. Preserve decisions, "
+                        "constraints, unresolved questions, and file paths. Do not invent facts.\n\n" + stale,
+                        usage=usage,
+                    )
+                    return result.output
+
+            compactor = LateHistoryCompactor(
+                summarize, keep_tool_results=keep_tool_results, context_windows=self._context_windows
             )
+            capabilities.append(ProcessHistory(compactor))
         # ``config.shell_tool_retries`` is None outside the shell-exploration phase
         # family — passing ``retries=None`` there is byte-identical to omitting it,
         # so only those phases' Agent gets a widened tool-retry budget.
@@ -370,18 +391,19 @@ class PydanticAiHarness:
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         async with agent:
+            session = SteerablePydanticAiSession(
+                agent,
+                model_name=model.model_name,
+                history=self._history,
+                phase=self._phase,
+                run=run,
+            )
+            if compactor is not None:
+                session.set_compactor(compactor)
             try:
-                yield SteerablePydanticAiSession(
-                    agent,
-                    inputs=inputs,
-                    model_name=model.model_name,
-                    history=self._history,
-                    phase=self._phase,
-                    run=run,
-                )
+                yield session
             finally:
-                inputs.reopen()
-                inputs.end(RejectCode.SESSION_CLOSED)
+                session.close()
 
 
 def _build_claude_sdk_harness(context: HarnessBuildContext) -> Harness:  # noqa: ARG001 — factory signature
@@ -432,6 +454,20 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
     :meth:`PydanticAiHarness.restore_unconsumed_resume_thread` (souliane/teatree#2916).
     """
     settings = context.settings if context.settings is not None else get_effective_settings()
+    window_read = cold_reader.read_setting_confirmed("agent_model_context_windows")
+    if not window_read.readable:
+        msg = "agent_model_context_windows could not be read"
+        raise RuntimeError(msg)
+    raw_windows = window_read.value
+    context_windows = (
+        {
+            str(name): value
+            for name, value in raw_windows.items()
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        }
+        if isinstance(raw_windows, dict)
+        else {}
+    )
     resumed = rehydrate_thread_for_resume(context.task) if context.task is not None else None
     binding = (
         PydanticAiBinding.NATIVE_ANTHROPIC
@@ -448,6 +484,7 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
             tier=context.tier,
             regulated_path=RegulatedPathPolicy.from_settings(settings),
             anthropic_credential=_routed_anthropic_credential(binding, context.task),
+            context_windows=context_windows,
             backend=OpenAICompatibleLaneConfig(
                 lane=settings.openai_compatible_lane,
                 request_limit=settings.pydantic_ai_request_limit,

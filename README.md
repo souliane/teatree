@@ -420,6 +420,7 @@ t3 teatree pr create            # create a pull request with metadata validation
 t3 teatree followup sync        # sync tickets and PRs from code host
 t3 goal set/list/clear          # register / list / clear a standing verified-green goal (a Stop-gate blocks a loop turn ending "as done" while the goal's check command is red)
 t3 cost                         # cycle-to-date SDK-equivalent spend + effective-token (ET) totals, split by subscription/metered lane
+t3 cost-profile [--since ISO-8601] [--json]  # profile real dispatches: cache read share, context size, and addressable spend bounds
 t3 capabilities --json          # machine-readable registry of which t3 commands emit JSON and their exit-code contract (a front-end drives teatree from this)
 t3 speak                        # read text aloud on local speakers per [teatree.speak] (no-op unless local = all)
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
@@ -451,6 +452,10 @@ t3 directive list|status <id>|history               # inspect the directive ledg
 t3 directive tick               # cadence-gated step the worker's off-live-tick driver chain fires (implement→configure→verify→keep-or-revert; ships triple-OFF)
 t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)
 ```
+
+### Slack ticket thread control
+
+An answering task started from Slack binds its thread root to the ticket. A direction from the configured operator reaches the ticket's live task, including as a new turn while its session is idle; a progress question inspects the session without changing its context. The thread gets a typed receipt. `pause` parks the running task with its conversation; messages sent while parked queue into its next prompt, and `resume` releases that same task. A leading `#task-id` selects among several tasks on the ticket. Once no task remains, an answering follow-up stays on the same ticket and the receipt names that path. Messages from other authors in a bound thread are not forwarded. An incomplete worker list leaves a message pending for retry.
 
 ### Live agent mailbox
 
@@ -493,6 +498,7 @@ cannot use these verbs.
 t3 teatree live list                          # every live session on this host's workers (passive)
 t3 teatree live inspect 1234                  # state, phase, open tool, progress; the agent is not contacted
 t3 teatree live steer 1234 --text "Use the spec in docs/x.md"   # enters the running turn (active)
+t3 teatree live pause 1234                    # interrupts and parks this task for resume
 t3 teatree live follow-up 1234 --text "Continue with the new findings"  # starts an idle Claude turn (active)
 t3 teatree live steer 1234 --text "Use the spec" --attempt <attempt> --generation <generation>
 ```

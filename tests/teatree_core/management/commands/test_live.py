@@ -289,6 +289,23 @@ def test_live_steer_reaches_a_codex_session_through_the_public_cli(control_dir: 
     assert json.loads(receipt.stdout)["outcome"] == "accepted_current_turn"
 
 
+def test_live_pause_command_returns_a_typed_receipt() -> None:
+    receipt = {
+        "command_id": "pause-123",
+        "task": 123,
+        "outcome": "paused",
+        "code": None,
+        "mode": "active",
+        "accepted_at": "now",
+    }
+    with patch.object(LiveClient, "pause", return_value=receipt) as pause:
+        output = StringIO()
+        call_command("live", "pause", "123", "--command-id", "pause-123", "--json", stdout=output)
+
+    pause.assert_called_once()
+    assert json.loads(output.getvalue()) == receipt
+
+
 @pytest.mark.parametrize(
     ("task", "extra", "exit_code", "expected"),
     [

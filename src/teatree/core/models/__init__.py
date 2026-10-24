@@ -128,6 +128,7 @@ from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, S
 from teatree.core.models.sweep_skip_streak import SkipObservation, SweepSkipStreak, SweepSkipStreakManager
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.thread_binding import SessionCommand, ThreadBinding
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_artifacts import (
     E2eRunRef,
@@ -147,7 +148,12 @@ from teatree.core.models.unclaimed_intake_candidate import (
     WaitingCandidate,
 )
 from teatree.core.models.unshipped_work_record import UnshippedWorkRecord
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, UsageWindowState, UsageWindowStateQuerySet
+from teatree.core.models.usage_window_state import (
+    LIMIT_PARKED_PREFIX,
+    OPERATOR_PAUSED_PREFIX,
+    UsageWindowState,
+    UsageWindowStateQuerySet,
+)
 from teatree.core.models.waiting_item import WaitingItem, WaitingItemError, WaitingItemManager
 from teatree.core.models.worker_generation import WorkerGeneration
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
@@ -158,6 +164,7 @@ __all__ = [
     "LIMIT_PARKED_PREFIX",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
+    "OPERATOR_PAUSED_PREFIX",
     "SEAT_WINDOW",
     "SOURCE_INTERACTIVE",
     "SOURCE_LOOP",
@@ -328,6 +335,7 @@ __all__ = [
     "SendAudit",
     "Session",
     "SessionAuditRecord",
+    "SessionCommand",
     "SessionHandover",
     "SessionTodo",
     "SessionTodoManager",
@@ -341,6 +349,7 @@ __all__ = [
     "SweepSkipStreakManager",
     "Task",
     "TaskAttempt",
+    "ThreadBinding",
     "Ticket",
     "TicketArtifacts",
     "TicketExtra",

@@ -11,6 +11,8 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 
 import logging
 
+from django.db import transaction
+
 from teatree.core.modelkit.owner_action import read_action
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -20,7 +22,7 @@ from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
-from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX
+from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX, OPERATOR_PAUSED_PREFIX
 
 _DEFAULT_REASON = "Agent needs human input"
 
@@ -71,7 +73,7 @@ def resume_on_answer(row: DeferredQuestion, task: Task | None) -> Task | None:
     ):
         return None
     try:
-        return schedule_resume(task, answer=row.answer_text)
+        return schedule_resume(task, answer=row.answer_text, question=row.question)
     except NoPlanArtifactError:
         logger.warning("Answer to question %s kept; task %s was not resumed", row.pk, task.pk)
         return None
@@ -86,6 +88,25 @@ def release_checkout_park(task: Task) -> bool:
         not_before=None
     )
     return bool(updated)
+
+
+def release_operator_pause(task: Task) -> bool:
+    with transaction.atomic():
+        live = (
+            Task.objects.select_for_update()
+            .filter(pk=task.pk, status=Task.Status.PENDING, not_before__isnull=False)
+            .first()
+        )
+        if live is None:
+            return False
+        latest_error = live.attempts.order_by("-pk").values_list("error", flat=True).first()
+        if not latest_error or not latest_error.startswith(OPERATOR_PAUSED_PREFIX):
+            return False
+        return bool(
+            Task.objects.filter(pk=task.pk, status=Task.Status.PENDING, not_before=live.not_before).update(
+                not_before=None
+            )
+        )
 
 
 def record_deferred_question(task: Task) -> DeferredQuestion:
@@ -112,7 +133,7 @@ def record_deferred_question(task: Task) -> DeferredQuestion:
     )
 
 
-def schedule_resume(task: Task, *, answer: str) -> Task:
+def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
     """Re-queue a HEADLESS followup that resumes *task* with *answer*.
 
     Closes the headless ask-loop: the agent emitted ``needs_user_input`` and
@@ -122,6 +143,8 @@ def schedule_resume(task: Task, *, answer: str) -> Task:
     decision point, it does not restart from scratch. The answer is prepended to
     the work prompt via ``execution_reason``; :func:`dispatch_reason` adds the
     continue-where-you-left-off instruction for as long as the retry really does.
+    A parent whose conversation cannot be continued (:meth:`TaskAttempt.cannot_continue_its_conversation`)
+    gets a FRESH child instead, whose reason also carries *question* so the new run knows what was answered.
     Idempotent: a resume already queued for this task is returned, never duplicated. An
     implementing phase on a ticket with no plan decision raises ``NoPlanArtifactError``.
     """
@@ -135,11 +158,16 @@ def schedule_resume(task: Task, *, answer: str) -> Task:
     agent_session_id = last.agent_session_id if last else ""
     session = Session.objects.create(ticket=task.ticket, agent_id=agent_session_id or "headless-resume")
     reason = f"{RESUME_ANSWER_PREFIX} {answer}."
+    continuation = Task.SessionContinuation.PARENT
+    if last is not None and last.cannot_continue_its_conversation():
+        task.ticket.pop_task_thread(int(task.pk))
+        continuation = Task.SessionContinuation.FRESH
+        reason = f"{reason} The question was: {question}" if question else reason
     return Task.objects.create(
         ticket=task.ticket,
         session=session,
         phase=task.phase,
         execution_reason=reason,
         parent_task=task,
-        session_continuation=Task.SessionContinuation.PARENT,
+        session_continuation=continuation,
     )

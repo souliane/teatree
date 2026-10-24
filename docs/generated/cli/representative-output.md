@@ -24,6 +24,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
 │                 credit.                                                      │
+│ cost-profile    Profile real dispatches: read share, resume-context cost and │
+│                 addressable upper bounds.                                    │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
 │ speak           Refuse to speak — local audio cannot reach the user.         │

@@ -76,6 +76,11 @@
       "subcommands": []
     },
     {
+      "help": "Profile real dispatches: read share, resume-context cost and addressable upper bounds.",
+      "name": "cost_profile",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "db",
       "subcommands": [
@@ -458,6 +463,10 @@
         {
           "help": "Send input into a running agent's current turn and print its receipt (active)",
           "name": "steer"
+        },
+        {
+          "help": "Interrupt a running task and park it for an operator resume",
+          "name": "pause"
         },
         {
           "help": "List every live session on this host's workers (passive)",

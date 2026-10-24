@@ -143,7 +143,7 @@ DB, with the installation master key in a mode-0600 file beside that database.
 `T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override;
 it is never a `ConfigSetting` row. `t3 <overlay> secrets status`, `ls` and
 `import-pass` provide read-only key-health diagnostics and a names-only import
-inventory. No production reader or writer reaches the sealed rows: `DbStore` is
+inventory; `secrets status` exits 1 on any key verdict other than OK. No production reader or writer reaches the sealed rows: `DbStore` is
 not installed, and `import-pass` copies nothing.
 
 ### 10.1.1 Per-Overlay Setting Overrides
@@ -539,7 +539,7 @@ the default (no flag).
 **`[agent.tier_effort]` (per-abstract-tier spawn effort).** The effort parallel
 of `[agent.tier_models]`: overrides the reasoning effort an abstract tier spawns
 with, merged OVER the shipped `registries.tier_effort()`
-(`{"frontier": "xhigh", "balanced": "xhigh"}`; `cheap`/Haiku is absent → no
+(`{"frontier": "xhigh", "balanced": "high"}`; `cheap`/Haiku is absent → no
 effort). `resolve_spawn_effort(phase)` resolves phase → tier → effort through the
 same `[agent.phase_models]` override mechanism as the model, so a phase
 downgraded to a cheaper tier drops model and effort together. Each value must be

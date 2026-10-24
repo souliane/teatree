@@ -1459,7 +1459,7 @@ class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
 
 
 def _make_unusable_bare_pythons(bin_dir: Path) -> None:
-    """Version-explicit interpreters absent, and a bare ``python3`` too old to import core (the Mac stub)."""
+    """Version-explicit interpreters absent, and a bare ``python3`` too old to import core (a stock Mac's stub)."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     for name in ("python3.13", "python3.14", "python3"):
         shim = bin_dir / name

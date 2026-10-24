@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL
-from teatree.core.models import NEEDS_TRIAGE_LABEL, Ticket
+from teatree.core.models import NEEDS_TRIAGE_LABEL, ThreadBinding, Ticket
 from teatree.core.models.types import SlackAnswerContext
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlay_repos import owned_repo_slugs
@@ -128,7 +128,7 @@ def file_work_item(
         return None
     recorded = _recorded_work_url(ticket)
     if recorded:
-        return FiledWorkItem(url=recorded)
+        return _attach(ticket, recorded)
     existing = str(envelope.get("existing_issue_url") or "").strip()
     if existing:
         return _attach(ticket, _validated_forge_url(existing))
@@ -191,7 +191,7 @@ def _attach(ticket: Ticket, url: str, *, title: str = "") -> FiledWorkItem:
     claimable the moment the owner is told about it — the promise and the admissibility
     that backs it land together.
     """
-    Ticket.objects.get_or_create(
+    work_ticket, _created = Ticket.objects.get_or_create(
         issue_url=url,
         defaults={
             "overlay": ticket.overlay,
@@ -200,6 +200,7 @@ def _attach(ticket: Ticket, url: str, *, title: str = "") -> FiledWorkItem:
         },
     )
     _record_work_url(ticket, url)
+    ThreadBinding.objects.filter(ticket=ticket).update(ticket=work_ticket)
     return FiledWorkItem(url=url)
 
 
