@@ -133,7 +133,7 @@ from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.review_target import review_target_for_task
-from teatree.core.models.task_repair import phase_attempts
+from teatree.core.models.task_repair_queries import adjacent_work_attempts, phase_attempts, ticket_phase_observations
 from teatree.core.repair_loop import (
     IterationStalled,
     MaxIterationsExceeded,
@@ -150,6 +150,7 @@ from teatree.loop.transient_requeue_disposal import (
     park_if_live_successor,
     park_moved_target,
     retire_if_dead_artifact,
+    stale_plan_halt_reason,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,7 +240,7 @@ def _answer_moved_target(task: Task, *, error: str) -> bool:
     A stale plan is owed a planning pass and an author ticket's own review of a PR that moved is
     owed a fresh review; no sweep arms either, least of all for a ticket with an open PR. A
     reviewer ticket's moved head is re-armed by the PR sweep, so it is only parked. The recovery
-    spends the failed phase's own budget, and a spent one halts internally instead.
+    uses the work budget or the stale-plan cycle bound; an exhausted one halts internally.
     """
     kind = classify_failure(error)
     if kind not in MOVED_TARGET_KINDS:
@@ -249,6 +250,8 @@ def _answer_moved_target(task: Task, *, error: str) -> bool:
         park_moved_target(task)
         return True
     halt = _budget_halt_reason(task)
+    if halt is None and kind == FailureKind.PLAN_STALE:
+        halt = stale_plan_halt_reason(task)
     if halt is None:
         try:
             recovery()
@@ -459,7 +462,8 @@ def _budget_halt_reason(task: Task) -> str | None:
     a doom signal there. Stall detection stays live either way.
     """
     attempts = phase_attempts(task)
-    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
+    adjacent = adjacent_work_attempts(attempts, ticket_phase_observations(task.ticket_id, task.phase))
+    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in adjacent)
     try:
         requeue_verdict(
             ticket_id=task.ticket.pk,

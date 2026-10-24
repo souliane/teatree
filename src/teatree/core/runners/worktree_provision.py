@@ -283,10 +283,7 @@ class WorktreeProvisionRunner(RunnerBase):
                 progress=ProgressAlert(repo=worktree.repo_path),
             )
         if imported:
-            extra = worktree.extra or {}
-            extra.pop("db_import_failures", None)
-            worktree.extra = extra
-            worktree.save(update_fields=["extra"])
+            worktree.merge_extra(pop_keys=["db_import_failures"])
             return True
         logger.error("DB import failed for %s — aborting provision", worktree.repo_path)
         return False

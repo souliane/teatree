@@ -43,6 +43,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final
 
 import pytest
@@ -835,6 +836,9 @@ def _dispatch_admission_allow(ctx: GateContext) -> dict:
         "read_machine_signal",
         lambda: MachineSignal(cores=8, load1=0.0, ram_available_gb=16.0),
     )
+    ctx.monkeypatch.setattr(dispatch_admission, "_claimed_agent_count", lambda: 0)
+    ctx.monkeypatch.setattr(dispatch_admission, "_session_has_unseated_claim", lambda _session_id: False)
+    ctx.monkeypatch.setattr(dispatch_admission, "_seats", lambda: SimpleNamespace(claim_seat=lambda **_kw: True))
     return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": "review"}}
 
 
@@ -1796,6 +1800,8 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict |
         # always returns ``False``); pinned structurally to have no deny path by
         # ``tests/test_merged_detection_probe_gate.py``.
         router.handle_warn_merged_detection_probe,
+        # Cache-wait advice emits context and always returns False; it never denies.
+        router.handle_warn_cache_wait,
     }
 )
 

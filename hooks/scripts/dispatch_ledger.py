@@ -2,7 +2,7 @@ r"""PostToolUse: persist the dispatch ledger of sub-agents to ``<session>.agents
 
 The agentId is the handle ``SendMessage`` needs to resume/steer/collect a running
 agent; it lives only in the conversation and is lost on auto-compaction, orphaning
-the agent. Mirroring the #970 ``TodoWrite`` capture, every ``Agent`` PostToolUse
+the agent. Mirroring the #970 ``TodoWrite`` capture, every ``Agent``/``Task`` PostToolUse
 appends the agentId + its role/description so the PreCompact snapshot can quote
 the ledger back. Each line is ``<agentId>\t<role>`` — append-only and deduped on
 agentId, so a multi-agent fan-out accumulates rather than clobbers.
@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from typing import TypedDict, cast
 
+from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS
+
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("dispatch_ledger", sys.modules[__name__])
@@ -31,7 +33,7 @@ sys.modules.setdefault("hooks.scripts.dispatch_ledger", sys.modules[__name__])
 
 
 class AgentDispatchResponse(TypedDict, total=False):
-    """The id-bearing keys of an ``Agent`` PostToolUse response.
+    """The id-bearing keys of an ``Agent``/``Task`` PostToolUse response.
 
     The harness response shape is not contractually fixed, so all three are
     optional and each is re-checked at runtime — this types the probe, it does
@@ -81,7 +83,7 @@ def _newest_task_agent_id() -> str:
 
 
 def handle_track_agents(data: dict) -> None:
-    """Append a dispatched ``Agent`` sub-agent's id + role to the ``<session>.agents`` ledger.
+    """Append a dispatched ``Agent``/``Task`` sub-agent's id + role to the ``<session>.agents`` ledger.
 
     No-op for any other tool name. Prefers the agentId carried on the PostToolUse
     ``tool_response`` (``tool_result`` as a secondary payload key); falls back to
@@ -89,7 +91,7 @@ def handle_track_agents(data: dict) -> None:
     Append-only and deduped on agentId so a parallel fan-out of sub-agents all
     survive compaction.
     """
-    if data.get("tool_name") != "Agent":
+    if data.get("tool_name") not in DISPATCH_TOOLS:
         return
     session_id = data.get("session_id", "")
     if not session_id:
@@ -101,6 +103,10 @@ def handle_track_agents(data: dict) -> None:
     if not agent_id:
         agent_id = _newest_task_agent_id()
     if not agent_id:
+        sys.stderr.write(
+            f"WARN: dispatch ledger DIVERGENCE for {session_id}: no agent ID was available; "
+            "the file ledger cannot count this dispatch although an ORM seat may exist.\n"
+        )
         return
 
     tool_input = data.get("tool_input", {})
