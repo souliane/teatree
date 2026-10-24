@@ -30,6 +30,20 @@ _THIRTY_TWO_KIB = 32 * 1024
 
 
 class TestShellTool:
+    def test_native_cache_expiry_note_follows_slow_command(self, tmp_path: Path) -> None:
+        cfg = LaneBToolConfig(fs_root=tmp_path, cache_lifetime_seconds=0.05)
+        with patch.object(shell_module, "monotonic", side_effect=[0.0, 0.1]):
+            out = _shell(cfg)("printf done")
+        assert out.startswith("exit=0\ndone")
+        assert "prompt cache" in out
+        assert "background" in out
+
+    def test_cache_expiry_note_is_absent_for_fast_or_unbound_commands(self, tmp_path: Path) -> None:
+        cfg = LaneBToolConfig(fs_root=tmp_path, cache_lifetime_seconds=0.05)
+        with patch.object(shell_module, "monotonic", side_effect=[0.0, 0.04]):
+            assert _shell(cfg)("printf done") == "exit=0\ndone"
+        assert _shell(LaneBToolConfig(fs_root=tmp_path))("printf done") == "exit=0\ndone"
+
     def test_runs_command_in_worktree_and_returns_output(self, tmp_path: Path) -> None:
         (tmp_path / "marker.txt").write_text("x")
         out = _shell(LaneBToolConfig(fs_root=tmp_path))("ls")

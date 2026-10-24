@@ -5,7 +5,7 @@ The in-progress record used to be stamped once at the start, so a legal drain lo
 than the readers' guessed budget aged it out while ``deploy.sh`` was still running: the
 watchdog paged it as an outage and the doctor cleared the quiescing gate mid-drain. The
 doctor's fallback, ``/host-proc``, is the Docker VM's table on a macOS host, where a
-``deploy.sh`` running on the Mac never appears.
+``deploy.sh`` running natively on that host never appears.
 """
 
 import os
