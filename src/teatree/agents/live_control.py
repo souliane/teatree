@@ -28,6 +28,8 @@ DEFAULT_IDLE_WINDOW_SECONDS = 60.0
 MAX_FOLLOW_UP_TURNS = 4
 _DRAIN_SECONDS = 5.0
 _RESTATE_WAIT_SECONDS = 5.0
+OPERATOR_INPUT_PREFIX = "[TeaTree operator input id="
+OPERATOR_FOLLOW_UP_PREFIX = "[TeaTree operator follow-up id="
 
 
 class ControlOutcome(StrEnum):
@@ -185,7 +187,7 @@ class FollowUp:
 
 def frame_operator_input(text: str, command_id: str) -> str:
     return (
-        f"[TeaTree operator input id={command_id}] From the operator supervising this task, delivered mid-run.\n"
+        f"{OPERATOR_INPUT_PREFIX}{command_id}] From the operator supervising this task, delivered mid-run.\n"
         f"{text}\n"
         "[end operator input: continue your task; your final message must still carry your result envelope]"
     )
@@ -193,7 +195,7 @@ def frame_operator_input(text: str, command_id: str) -> str:
 
 def frame_follow_up(text: str, command_id: str) -> str:
     return (
-        f"[TeaTree operator follow-up id={command_id}] From the operator supervising this task; start one new turn.\n"
+        f"{OPERATOR_FOLLOW_UP_PREFIX}{command_id}] From the operator supervising this task; start one new turn.\n"
         f"{text}\n"
         "[end operator follow-up: finish with your complete result envelope as the last plain JSON object]"
     )

@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 
 from teatree.agents.lane_b.tool_names import TOOL_GREP, TOOL_READ
+from teatree.agents.live_control import OPERATOR_FOLLOW_UP_PREFIX, OPERATOR_INPUT_PREFIX
 from teatree.config import cold_reader
 from teatree.core.autocompact_advisory import native_context_window
 
@@ -139,7 +140,7 @@ def _pinned_operator_messages(messages: "Sequence[ModelMessage]") -> "list[Model
         and any(
             isinstance(part, UserPromptPart)
             and isinstance(part.content, str)
-            and part.content.startswith(("[TeaTree operator input id=", "[TeaTree operator follow-up id="))
+            and part.content.startswith((OPERATOR_INPUT_PREFIX, OPERATOR_FOLLOW_UP_PREFIX))
             for part in message.parts
         )
     ]

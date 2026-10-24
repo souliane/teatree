@@ -1,6 +1,7 @@
 """A run's stream capture, and which endings count as a run cut short."""
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +20,10 @@ from tests.teatree_agents._sdk_fake import (
     assistant_tool_use,
     rate_limit_event,
     result_message,
+)
+
+_COMPACT_BOUNDARY_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "claude_cli" / "2.1.300-compact-boundary.json"
 )
 
 
@@ -129,6 +134,15 @@ class TestStreamCapture:
         capture.observe(SystemMessage(subtype="compact_boundary", data={"compact_metadata": {"trigger": "auto"}}))
 
         assert capture.compactions == 2
+
+    def test_a_recorded_cli_compact_boundary_frame_is_one_compaction(self) -> None:
+        recorded = json.loads(_COMPACT_BOUNDARY_FIXTURE.read_text())["compact_boundary_frame"]
+        capture = StreamCapture()
+
+        capture.observe(SystemMessage(subtype=recorded["subtype"], data=recorded))
+
+        assert capture.compactions == 1
+        assert recorded["compact_metadata"]["trigger"] == "auto"
 
     def test_the_conversation_size_is_the_last_main_thread_request(self) -> None:
         capture = StreamCapture()

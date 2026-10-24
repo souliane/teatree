@@ -1,5 +1,6 @@
 import asyncio
 import math
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,7 @@ from pydantic_ai.usage import RunUsage
 from teatree.agents.lane_b import compaction as compaction_mod
 from teatree.agents.lane_b.compaction import CompactionPolicy, elide_stale_tool_results
 from teatree.agents.lane_b.tool_names import TOOL_READ
+from teatree.agents.live_control import frame_follow_up, frame_operator_input
 
 
 def _msgs(n: int) -> list:
@@ -93,15 +95,16 @@ class TestLateCompaction:
         assert compaction_mod.context_window_for_model("anthropic/claude-opus-4-7", None) == 1_000_000
         assert compaction_mod.context_window_for_model("router/unknown[1m]", None) == 1_000_000
 
-    def test_operator_steer_in_stale_history_survives_verbatim(self) -> None:
+    @pytest.mark.parametrize("frame", [frame_operator_input, frame_follow_up])
+    def test_operator_message_in_stale_history_survives_verbatim(self, frame: Callable[[str, str], str]) -> None:
         async def summarize(_text: str, _usage: RunUsage) -> str:
             await asyncio.sleep(0)
             return "Previous work summarized"
 
-        steer = "[TeaTree operator input id=steer-1] Preserve the public API. [end operator input]"
+        direction = frame("Preserve the public API.", "op-1")
         history = [
             ModelRequest(parts=[UserPromptPart(content="task")]),
-            ModelRequest(parts=[UserPromptPart(content=steer)]),
+            ModelRequest(parts=[UserPromptPart(content=direction)]),
             ModelResponse(parts=[TextPart(content="old " * 1000)]),
             ModelRequest(parts=[UserPromptPart(content="continue")]),
         ]
@@ -109,25 +112,8 @@ class TestLateCompaction:
 
         result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
 
-        assert steer in repr(result)
-
-    def test_operator_followup_in_stale_history_survives_verbatim(self) -> None:
-        async def summarize(_text: str, _usage: RunUsage) -> str:
-            await asyncio.sleep(0)
-            return "Previous work summarized"
-
-        followup = "[TeaTree operator follow-up id=idle-1] Keep the API stable. [end operator follow-up]"
-        history = [
-            ModelRequest(parts=[UserPromptPart(content="task")]),
-            ModelRequest(parts=[UserPromptPart(content=followup)]),
-            ModelResponse(parts=[TextPart(content="old " * 1000)]),
-            ModelRequest(parts=[UserPromptPart(content="continue")]),
-        ]
-        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1000), usage=RunUsage())
-
-        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
-
-        assert followup in repr(result)
+        kept = [part.content for message in result for part in message.parts if isinstance(part, UserPromptPart)]
+        assert direction in kept
 
     def test_superseded_read_is_stubbed_before_summary(self) -> None:
         calls = [
