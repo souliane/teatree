@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from claude_agent_sdk import ClaudeAgentOptions
 
-from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_SOCKET_ENV
+from teatree.agents.live_delivery import MAILBOX_AUTH_ENV, MAILBOX_PHASE_ENV, MAILBOX_SOCKET_ENV
 from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.core.mcp_registration import TEATREE_MCP_SERVER_NAME
 
@@ -88,7 +88,7 @@ class HarnessOptions:
             env={
                 key: value
                 for key, value in (options.env or {}).items()
-                if key not in {MAILBOX_SOCKET_ENV, MAILBOX_AUTH_ENV}
+                if key not in {MAILBOX_SOCKET_ENV, MAILBOX_AUTH_ENV, MAILBOX_PHASE_ENV}
             },
             # ``ClaudeAgentOptions.max_turns`` is ``int | None``; coerce SDK-``None`` (and 0) to
             # 0 so only a genuinely positive cap wins over the lane's ``request_limit``.
