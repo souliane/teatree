@@ -281,3 +281,8 @@ class ParkDoesNotImplyWorkTestCase(TestCase):
         segment = self._only_attempt_segment(result={"cancel_source": "owner"})
         assert segment.work_measured
         assert segment.queue_seconds == 100 * MINUTE
+
+    def test_legacy_cancel_kind_also_keeps_queue_split_measured(self) -> None:
+        segment = self._only_attempt_segment(error="cancelled: operator")
+        assert segment.work_measured
+        assert segment.queue_seconds == 100 * MINUTE

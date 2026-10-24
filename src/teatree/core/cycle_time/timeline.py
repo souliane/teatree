@@ -23,6 +23,7 @@ from teatree.core.cost import AttemptUsage, CostBreakdown
 from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets
 from teatree.core.cycle_time.work_intervals import Engagement, merged_seconds
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import BILLED_COLUMNS, PARK_ERROR_Q, TaskAttempt
 from teatree.core.models.task_cancel_source import CANCEL_SOURCE_KEY
@@ -193,22 +194,37 @@ def engagements_for_tickets(ticket_ids: Sequence[int]) -> dict[tuple[int, str], 
 
 def ticket_attempts(ticket_ids: Sequence[int]) -> models.QuerySet[TaskAttempt]:
     """The tickets' attempts with ``billed``, ``cancelled`` and ``parked`` computed in SQL."""
-    return TaskAttempt.objects.filter(task__ticket_id__in=ticket_ids).annotate(
+    return _annotated_attempts(TaskAttempt.objects.filter(task__ticket_id__in=ticket_ids))
+
+
+def _annotated_attempts(attempts: models.QuerySet[TaskAttempt]) -> models.QuerySet[TaskAttempt]:
+    return attempts.annotate(
         billed=models.ExpressionWrapper(
             reduce(or_, (models.Q(**{f"{column}__isnull": False}) for column in BILLED_COLUMNS)),
             output_field=models.BooleanField(),
         ),
         cancelled=models.ExpressionWrapper(
-            models.Q(result__has_key=CANCEL_SOURCE_KEY), output_field=models.BooleanField()
+            models.Q(result__has_key=CANCEL_SOURCE_KEY) | models.Q(failure_kind=FailureKind.CANCELLED),
+            output_field=models.BooleanField(),
         ),
         parked=models.ExpressionWrapper(PARK_ERROR_Q, output_field=models.BooleanField()),
     )
 
 
+def last_real_attempt_ends(task_ids: Sequence[int]) -> dict[int, datetime]:
+    real_ends, _first_stops = _attempt_end_groups(_annotated_attempts(TaskAttempt.objects.filter(task_id__in=task_ids)))
+    return real_ends
+
+
 def _last_attempt_end(ticket_ids: Sequence[int]) -> dict[int, datetime]:
+    real_ends, first_stops = _attempt_end_groups(ticket_attempts(ticket_ids))
+    return {task_id: real_ends.get(task_id, stopped) for task_id, stopped in first_stops.items()} | real_ends
+
+
+def _attempt_end_groups(attempts: models.QuerySet[TaskAttempt]) -> tuple[dict[int, datetime], dict[int, datetime]]:
     real_ends: dict[int, datetime] = {}
     first_stops: dict[int, datetime] = {}
-    for task_id, started_at, ended_at, park, billed, cancelled in ticket_attempts(ticket_ids).values_list(
+    for task_id, started_at, ended_at, park, billed, cancelled in attempts.values_list(
         "task_id", "started_at", "ended_at", "parked", "billed", "cancelled"
     ):
         if ended_at is not None and not cancelled and (not park or billed):
@@ -218,7 +234,7 @@ def _last_attempt_end(ticket_ids: Sequence[int]) -> dict[int, datetime]:
             stopped = started_at if park else ended_at or started_at
             known = first_stops.get(task_id)
             first_stops[task_id] = stopped if known is None or stopped < known else known
-    return {task_id: real_ends.get(task_id, stopped) for task_id, stopped in first_stops.items()} | real_ends
+    return real_ends, first_stops
 
 
 def _phase_usages(ticket_ids: Sequence[int]) -> dict[tuple[int, str], list[tuple[datetime | None, AttemptUsage, bool]]]:

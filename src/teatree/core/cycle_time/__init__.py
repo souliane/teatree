@@ -20,6 +20,7 @@ from teatree.core.cycle_time.pull_request_flow import (
     open_pull_requests,
 )
 from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets, spans_since
+from teatree.core.cycle_time.step_history import StepEstimate, StepHistory
 from teatree.core.cycle_time.timeline import PhaseSegment, TicketTimeline, build_ticket_timeline, build_ticket_timelines
 from teatree.core.cycle_time.waits import (
     WAIT_CAUSES,
@@ -37,6 +38,8 @@ __all__ = [
     "OpenPullRequestAge",
     "PhaseSegment",
     "PhaseSpan",
+    "StepEstimate",
+    "StepHistory",
     "TicketTimeline",
     "TransitionStat",
     "TransitionTrend",

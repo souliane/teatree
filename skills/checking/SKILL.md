@@ -60,7 +60,7 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 - **All-overlays (default):** Header `Since <local HH:MM> · all overlays`. Overlay-scoped items carry an `[overlay]` tag in their detail so the reader sees provenance.
 - **Single-overlay (`--this-overlay`):** Header `Since <local HH:MM> · <overlay>`.
-- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Metered`. Group header is the bare word; items are `-` indented, one idea per line.
+- Groups in fixed order — `Merged`, `In-flight`, `Needs you`, `Metered`, `Remaining`. Group header is the bare word; items are `-` indented, one idea per line.
 - Every PR / issue / ticket reference is a markdown link `[label](url)` — never a bare numeric id.
 - Each group caps at 5 items; beyond that, append `…and X more`.
 - Empty groups are omitted. If everything is empty, say so in one line: `Nothing since <local time>.`
@@ -70,8 +70,9 @@ The default path aggregates **all configured overlays** into one report. Each ov
 
 - **Merged** — `MergeAudit` joined to `MergeClear`, merged inside the window, overlay-scoped. URL prefers the exact stored `pr_urls`, else a host-aware builder.
 - **In-flight** — latest `TicketTransition` per ticket in the window, plus completed background `TaskAttempt` runs.
-- **Needs you** — pending `DeferredQuestion` rows (not window-bounded — an old pending question still needs you) plus failed `TaskAttempt` runs (the durable "blocked" proxy). `DeferredQuestion` is queried ONCE for the whole report (not once per overlay) so a pending question never appears more than once. An overlay opts into richer signals via `OverlayBase.get_checking_sources`.
+- **Needs you** — pending `DeferredQuestion` rows (not window-bounded — an old pending question still needs you) plus failed `TaskAttempt` runs, excluding operator cancellations. `DeferredQuestion` is queried ONCE for the whole report (not once per overlay) so a pending question never appears more than once. An overlay opts into richer signals via `OverlayBase.get_checking_sources`.
 - **Metered** — one row per ticket with metered attempts inside the window, overlay-scoped, with attempt count and total cost labelled as an estimate (`estimated $N.NN`, or `estimated cost unavailable`).
+- **Remaining** — live PR and active pre-PR steps, a global queue by phase with oldest pending age and phase and admission seats, held tickets with reasons, and per-item and total ETA ranges. The range sums median and p80 of completed-task durations (`Task.admitted_at` to the last real `TaskAttempt.ended_at`), merge CLEAR-to-audit spans, and merge-to-delivered spans. Each duration names its source, sample count, and 24h or 7d window. Sparse steps use the slowest measured median and p80 sources as named defaults; fewer than five samples in every source yield `ETA unknown` with no numeric default. Running steps use only samples that outlast elapsed time. Remaining is a snapshot, independent of `--since` and checkpoints, and never enters the `--notify` recap hash or DM. `--json` carries the same item details and figures.
 
 Resist adding a dashboard. The terse text IS the surface.
 

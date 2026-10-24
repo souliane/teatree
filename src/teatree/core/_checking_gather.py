@@ -7,16 +7,16 @@ All functions here are implementation details — callers import from
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
 
+from django.db import models
+
+from teatree.core.checking_types import CheckItem
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-
-if TYPE_CHECKING:
-    from teatree.core.checking import CheckItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +136,6 @@ def merged_entries_from_qs(
     order the union before capping it — capping each overlay's slice first let one
     overlay's older merges displace another's newer ones.
     """
-    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
     from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
 
     qs = (
@@ -187,8 +186,6 @@ def motion_for_overlay(
     seen_failed: set[int],
 ) -> tuple[list, list]:
     """Query ticket transitions and failed attempts for one overlay."""
-    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
-
     since, now = window
     in_flight: list = []
     failed: list = []
@@ -217,13 +214,7 @@ def motion_for_overlay(
             )
         )
 
-    attempts = (
-        TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
-        .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
-        .filter(task__ticket__overlay=overlay_name)
-        .select_related("task__ticket")
-        .order_by("-ended_at")
-    )
+    attempts = failed_attempts(since=since, now=now, overlay_name=overlay_name)
     for attempt in attempts:
         tick = attempt.task.ticket
         if tick.pk in seen_failed:
@@ -241,10 +232,19 @@ def motion_for_overlay(
     return in_flight, failed
 
 
+def failed_attempts(*, since: datetime, now: datetime, overlay_name: str) -> models.QuerySet[TaskAttempt]:
+    attempts = (
+        TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
+        .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
+        .exclude(failure_kind=FailureKind.CANCELLED)
+        .select_related("task__ticket")
+        .order_by("-ended_at")
+    )
+    return attempts.filter(task__ticket__overlay=overlay_name) if overlay_name else attempts
+
+
 def deferred_questions(*, overlay_slug: str) -> list:
     """Pending owner questions as :class:`CheckItem` rows, plus one line counting the internal escalations."""
-    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
-
     items: list = []
     for question in DeferredQuestion.owner_pending():
         snippet = question.question.strip().replace("\n", " ")[:60]
