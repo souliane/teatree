@@ -374,6 +374,20 @@ def test_a_conversation_exactly_at_the_resume_cap_still_opens_the_window() -> No
     assert prompts_sent == 1
 
 
+@pytest.mark.parametrize(
+    ("context_tokens", "verdicts", "prompts_sent"),
+    [
+        (200_000, [ControlOutcome.ACCEPTED_NEW_TURN], 1),
+        (200_001, [RejectCode.SESSION_CLOSED], 0),
+    ],
+    ids=["two-hundred-thousand-opens-the-window", "one-over-two-hundred-thousand-opens-none"],
+)
+def test_the_idle_window_closes_above_two_hundred_thousand_tokens(
+    context_tokens: int, verdicts: list[RejectCode | ControlOutcome], prompts_sent: int
+) -> None:
+    assert _follow_up_after_first_result(context_tokens) == (verdicts, prompts_sent)
+
+
 def test_a_follow_up_turn_that_crosses_the_cap_finishes_and_the_next_window_is_refused() -> None:
     verdicts, prompts_sent = _follow_up_after_first_result(
         100_000, context_after_turn=RESUME_CONTEXT_CAP_TOKENS + 1, follow_ups=2

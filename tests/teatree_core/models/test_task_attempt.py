@@ -188,3 +188,11 @@ class TestResumeHeadroom:
 
     def test_a_measured_context_under_the_cap_with_no_window_can_continue(self) -> None:
         assert not self._attempt(RESUME_CONTEXT_CAP_TOKENS, None).cannot_continue_its_conversation()
+
+    @pytest.mark.parametrize("window", [1_000_000, None])
+    def test_exactly_two_hundred_thousand_tokens_can_continue(self, window: int | None) -> None:
+        assert not self._attempt(200_000, window).cannot_continue_its_conversation()
+
+    @pytest.mark.parametrize("window", [1_000_000, None])
+    def test_one_token_over_two_hundred_thousand_cannot_continue(self, window: int | None) -> None:
+        assert self._attempt(200_001, window).cannot_continue_its_conversation()
