@@ -91,6 +91,8 @@ _QUESTION_TEXT_REGEX = (
     r"|.*\?\s*$)"
 )
 
+_SESSION_CLAIM_RECOVERY_AFTER = dt.timedelta(minutes=2)
+
 
 @dataclass(frozen=True, slots=True)
 class DmContext:
@@ -194,6 +196,7 @@ class PendingChatInjection(models.Model):
         SIMPLE = "simple", "Simple"
         DELEGATED = "delegated", "Delegated"
         QUESTION_REPLY = "question_reply", "Question reply"
+        SESSION = "session", "Session"
 
     question_text_regex: ClassVar[str] = _QUESTION_TEXT_REGEX
 
@@ -310,11 +313,18 @@ class PendingChatInjection(models.Model):
         Gates on ``loop_replied_at`` (the loop's own column, #1075 / Option B),
         NOT ``answered_at``: the loop posting a reply stamps only
         ``loop_replied_at``, so it never claims the agent personally answered.
+        An unconfirmed session or question claim returns after two minutes so
+        a crashed sender can retry delivery.
 
         Pass ``overlay=""`` to scan every overlay's queue (the v1 single-
         overlay path uses ``overlay=""`` consistently).
         """
-        qs = cls.objects.filter(loop_replied_at__isnull=True)
+        stale_delivery = models.Q(
+            answer_kind__in={cls.AnswerKind.SESSION, cls.AnswerKind.QUESTION_REPLY},
+            loop_response_confirmed_at__isnull=True,
+            loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
+        )
+        qs = cls.objects.filter(models.Q(loop_replied_at__isnull=True) | stale_delivery)
         if overlay:
             qs = qs.filter(overlay=overlay)
         return qs.order_by("received_at")
@@ -338,6 +348,21 @@ class PendingChatInjection(models.Model):
             self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
         return bool(updated)
 
+    def claim_stale_loop_reply(self) -> bool:
+        updated = (
+            type(self)
+            .objects.filter(
+                pk=self.pk,
+                answer_kind__in={self.AnswerKind.SESSION, self.AnswerKind.QUESTION_REPLY},
+                loop_response_confirmed_at__isnull=True,
+                loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
+            )
+            .update(loop_replied_at=timezone.now())
+        )
+        if updated:
+            self.refresh_from_db(fields=["loop_replied_at"])
+        return bool(updated)
+
     def observe_confirmed_loop_reply(self) -> None:
         """Persist verified delivery/application, distinct from the pre-post claim."""
         confirmed = (
@@ -346,7 +371,12 @@ class PendingChatInjection(models.Model):
                 pk=self.pk,
                 loop_replied_at__isnull=False,
                 loop_response_confirmed_at__isnull=True,
-                answer_kind__in={self.AnswerKind.SIMPLE, self.AnswerKind.QUESTION_REPLY, self.AnswerKind.DELEGATED},
+                answer_kind__in={
+                    self.AnswerKind.SIMPLE,
+                    self.AnswerKind.QUESTION_REPLY,
+                    self.AnswerKind.DELEGATED,
+                    self.AnswerKind.SESSION,
+                },
             )
             .update(loop_response_confirmed_at=timezone.now())
         )

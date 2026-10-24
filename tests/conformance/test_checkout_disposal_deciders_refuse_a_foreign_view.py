@@ -92,7 +92,10 @@ class TestNoDeciderDisposesOfAForeignViewCheckout(TestCase):
         )
 
         assert probe.returncode != 0
-        assert "not a git repository" in probe.stderr.lower(), "fixture invalid — it must read as dead to git"
+        assert any(
+            phrase in probe.stderr.lower()
+            for phrase in ("not a git repository", "does not point to a valid repository")
+        ), "fixture invalid — it must read as dead to git"
 
     def test_no_decider_authorises_disposal(self) -> None:
         authorising = [name for name, decides in self._deciders().items() if decides()]

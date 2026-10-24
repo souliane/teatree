@@ -142,6 +142,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "5 offline",
     ),
     Capability(
+        "teatree live pause",
+        json_output=True,
+        exit_codes=("0", "2", "3", "4", "5"),
+        note="--json emits the pause receipt; active: 0 paused, 3 rejected, 4 unknown_delivery, 5 offline",
+    ),
+    Capability(
         "teatree live follow-up",
         json_output=True,
         exit_codes=("0", "2", "3", "4", "5"),

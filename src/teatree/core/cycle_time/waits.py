@@ -23,7 +23,11 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_cancel_source import CANCEL_SOURCE_KEY, count_recorded_cancels
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, PARK_ATTEMPT_RETENTION_DAYS
+from teatree.core.models.usage_window_state import (
+    LIMIT_PARKED_PREFIX,
+    OPERATOR_PAUSED_PREFIX,
+    PARK_ATTEMPT_RETENTION_DAYS,
+)
 from teatree.core.models.worktree_occupancy import task_holder_id
 
 
@@ -343,7 +347,12 @@ def _task_wait_tags(
         )
         if end <= park.started_at:
             continue
-        cause = WaitCause.QUOTA if park.error.startswith(LIMIT_PARKED_PREFIX) else WaitCause.CHECKOUT_FENCE
+        if park.error.startswith(OPERATOR_PAUSED_PREFIX):
+            cause = WaitCause.HUMAN
+        elif park.error.startswith(LIMIT_PARKED_PREFIX):
+            cause = WaitCause.QUOTA
+        else:
+            cause = WaitCause.CHECKOUT_FENCE
         if cause == WaitCause.CHECKOUT_FENCE and park.holder in sibling_holders:
             cause = WaitCause.SIBLING_TASK
         tags.append((park.started_at, end, cause))

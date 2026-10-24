@@ -128,6 +128,17 @@ class LiveClient:
     ) -> ReceiptPayload:
         return self._operator_command(_OperatorInput("live.follow_up", task, text, command_id, wait, fence))
 
+    def pause(
+        self,
+        task: int,
+        text: str,
+        *,
+        command_id: str,
+        wait: float = DEFAULT_STEER_WAIT_SECONDS,
+        fence: FenceOverride | None = None,
+    ) -> ReceiptPayload:
+        return self._operator_command(_OperatorInput("live.pause", task, text, command_id, wait, fence))
+
     def _operator_command(self, command: _OperatorInput) -> ReceiptPayload:
         row = self._owner_row(command.task)
         if not isinstance(row.get("attempt"), str) or not row["attempt"] or not isinstance(row.get("generation"), str):

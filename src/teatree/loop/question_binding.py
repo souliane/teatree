@@ -109,8 +109,9 @@ def apply_bound_answer(
     *,
     backend: "MessagingBackend | None" = None,
     on_answer: Callable[[DeferredQuestion], object] | None = None,
+    resume_task: bool = True,
 ) -> bool:
-    """Resolve the bound question, resume its parked task and close its posted card; ``True`` when applied.
+    """Resolve the bound question and close its posted card; optionally resume its parked task.
 
     ``False`` means a concurrent answer won the single-use CAS, which the caller
     treats as "this reply resolved nothing" and rolls its own claim back.
@@ -129,9 +130,10 @@ def apply_bound_answer(
             )
     if applied is None:
         return False
-    from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
+    if resume_task:
+        from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
 
-    resume_on_answer(applied, applied.parked_task)
+        resume_on_answer(applied, applied.parked_task)
     if on_answer is not None:
         on_answer(applied)
     if backend is not None and applied.audience == DeferredQuestion.Audience.OWNER_QUESTION:

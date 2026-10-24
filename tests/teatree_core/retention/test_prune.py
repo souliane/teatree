@@ -25,6 +25,7 @@ from teatree.core.models import (
     IntentClassification,
     ReplyDispatch,
     ScannedBroadcast,
+    SendAudit,
     Session,
     Task,
     TaskAttempt,
@@ -63,6 +64,7 @@ _LANE_ORDER = [
     "TicketTransition",
     "PendingChatInjection",
     "BotPing (sent text)",
+    "SendAudit (private judgment)",
     "DBTaskResult",
 ]
 
@@ -261,6 +263,42 @@ class IncomingEventPrunableGuardTestCase(TestCase):
     def test_never_prunes_processed_event_within_window(self) -> None:
         _event(idempotency_key="k-recent", received_at=_RECENT)
         assert IncomingEvent.objects.prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
+
+
+class PrivateJudgmentRetentionTestCase(TestCase):
+    def test_plan_and_apply_prune_only_expired_private_judgments(self) -> None:
+        old = SendAudit.objects.create(
+            channel=SendAudit.Channel.OTHER,
+            destination="private-judgment:gitlab:acme/widgets",
+            action="issue_create_judgment",
+            target="https://gitlab.com/acme/widgets/-/issues/1",
+            allowlist_verdict=SendAudit.Verdict.WARNED,
+            payload_summary="old judgment",
+            created_at=_PAST_POST_MORTEM,
+        )
+        recent = SendAudit.objects.create(
+            channel=SendAudit.Channel.OTHER,
+            destination="private-judgment:gitlab:acme/widgets",
+            action="issue_create_judgment",
+            target="https://gitlab.com/acme/widgets/-/issues/2",
+            allowlist_verdict=SendAudit.Verdict.WARNED,
+            payload_summary="recent judgment",
+            created_at=_RECENT,
+        )
+        outbound = SendAudit.objects.create(
+            channel=SendAudit.Channel.GITLAB,
+            destination="gitlab:acme/widgets",
+            action="issue_create",
+            target="https://gitlab.com/acme/widgets/-/issues/3",
+            allowlist_verdict=SendAudit.Verdict.ALLOWED,
+            created_at=_PAST_POST_MORTEM,
+        )
+        planned = _lane(plan_retention(), "SendAudit (private judgment)")
+        assert planned.retention_days == 30
+        assert planned.rows == 1
+        assert _lane(apply_retention(), "SendAudit (private judgment)").rows == 1
+        assert not SendAudit.objects.filter(pk=old.pk).exists()
+        assert SendAudit.objects.filter(pk__in=(recent.pk, outbound.pk)).count() == 2
 
 
 class PlanRetentionTestCase(TestCase):

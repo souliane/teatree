@@ -13,13 +13,11 @@ agent-answered independently with no race and no double reply.
 
 Per unit, oldest-first, bounded to :data:`_BATCH` per cycle. First a
 no-LLM :eyes: receipt reaction, exactly once (``mark_eyes_reacted`` CAS)
-even across cycle re-runs. Then, BEFORE any read, the unit is offered to
-:func:`~teatree.loop.question_binding.bind_reply`: a reply that answers a
-queued ``DeferredQuestion`` resolves it and stops there — an option pick with
-no model turn at all, free text on the single reading the routing would have
-cost anyway. That rung is the whole reason this cycle may drain the queue at
-all: it shares the reply scanner's binder instead of racing it. Otherwise the
-unit is READ (:func:`~teatree.loop.inbound_reading.read_inbound` — one cheap
+even across cycle re-runs. A bound thread reaches its ticket's live session
+first, including a reply to a queued ``DeferredQuestion``. When no live
+session accepts it, :func:`~teatree.loop.question_binding.bind_reply` can
+resolve the answer before ordinary routing, without a model turn. Otherwise
+the unit is READ (:func:`~teatree.loop.inbound_reading.read_inbound` — one cheap
 model turn, keyword fallback) and routed on what it means, not on which
 keywords it contains:
 
@@ -56,13 +54,23 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
+from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.worktree.survivor_notice import apply_stop_answer
-from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, read_inbound
+from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, memoized_reader, read_inbound
 from teatree.loop.question_binding import apply_bound_answer, bind_reply, configured_owner_id
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
+from teatree.loop.slack_answer.session_routing import (
+    _command_reply,
+    _live_receipt,
+    _mark_unit_loop_replied,
+    _post_live_reply,
+    _reject_foreign_bound_unit,
+    _uncertain_question_reply,
+    _unmark_unit_loop_replied,
+)
 from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
-from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread, resolve_thread_root
+from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread, resolve_thread_root
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 
 logger = logging.getLogger(__name__)
@@ -168,6 +176,8 @@ class SlackAnswerReport:
     dispatched: int = 0
     covered: int = 0
     answered_question: int = 0
+    steered: int = 0
+    inspected: int = 0
     errors: int = 0
     skipped_no_backend: int = 0
 
@@ -184,7 +194,7 @@ def verify_reply_visible(
     channel: str,
     thread_root: str,
     after_ts: str | None = None,
-    expected_ts: str | None = None,
+    expected_ts: str | ExpectedReply | None = None,
 ) -> bool:
     """Confirm the just-posted reply is visible under its thread ROOT (#2061).
 
@@ -197,30 +207,12 @@ def verify_reply_visible(
     — releases the provisional claim; no confirmed receipt is stamped.
     """
     return bot_reply_present_in_thread(
-        backend, channel=channel, thread_root=thread_root, after_ts=after_ts, expected_ts=expected_ts
+        backend,
+        channel=channel,
+        thread_root=thread_root,
+        after_ts=after_ts,
+        expected_ts=expected_ts,
     )
-
-
-def _mark_unit_loop_replied(unit: _Unit, kind: str) -> bool:
-    """CAS ``mark_loop_replied`` on the lead; stamp every coalesced row to match.
-
-    The lead's CAS is the single idempotency boundary (the row that wins
-    creates the side effect). The follow-up rows are stamped best-effort
-    so they drop out of ``loop_unreplied()`` together with the lead — one
-    logical turn, one loop reply, no orphaned follow-up re-processed alone.
-    Stamps only ``loop_replied_at`` (#1075); never ``answered_at``, the agent's own reply.
-    """
-    if not unit.lead.mark_loop_replied(kind):
-        return False
-    for follow in unit.rows[1:]:
-        follow.mark_loop_replied(kind)
-    return True
-
-
-def _unmark_unit_loop_replied(unit: _Unit) -> None:
-    """Release the whole unit's loop-reply claim — the rollback of :func:`_mark_unit_loop_replied`."""
-    for row in unit.rows:
-        row.unmark_loop_replied()
 
 
 def _react_eyes_once(backend: MessagingBackend, unit: _Unit) -> bool:
@@ -338,7 +330,13 @@ def _react_done(backend: MessagingBackend, unit: _Unit) -> None:
         logger.warning("Completion react failed for %s/%s: %s", unit.channel, unit.slack_ts, exc)
 
 
-def _orchestrate(backend: MessagingBackend, unit: _Unit, reading: InboundReading, report: SlackAnswerReport) -> None:
+def _orchestrate(
+    backend: MessagingBackend,
+    unit: _Unit,
+    reading: InboundReading,
+    report: SlackAnswerReport,
+    binding: ThreadBinding | None = None,
+) -> None:
     """Dedupe the request, then either dispatch ONE lane or report the covering one.
 
     The lead's CAS ``mark_loop_replied("delegated")`` is claimed FIRST and stays
@@ -356,22 +354,24 @@ def _orchestrate(backend: MessagingBackend, unit: _Unit, reading: InboundReading
     (:attr:`~teatree.loop.slack_answer.orchestration.CoverageKind.THIS_MESSAGE`),
     so it re-reacts instead of dispatching twice.
 
-    No prose is posted on a fresh dispatch (#1155): the user reads Slack DMs
-    only, every thread reply is a phone notification, and 🔧 already says a lane
-    exists. A COVERED request does post, because which lane has it is
-    information the reaction cannot carry and the owner would otherwise wait for.
+    An unbound fresh dispatch posts no prose (#1155); a bound thread gets a
+    receipt naming the queued follow-up. A COVERED request names its lane.
     """
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
         return
     try:
-        _dispatch_or_report(backend, unit, reading, report)
+        _dispatch_or_report(backend, unit, reading, report, binding)
     except Exception:
         _unmark_unit_loop_replied(unit)
         raise
 
 
 def _dispatch_or_report(
-    backend: MessagingBackend, unit: _Unit, reading: InboundReading, report: SlackAnswerReport
+    backend: MessagingBackend,
+    unit: _Unit,
+    reading: InboundReading,
+    report: SlackAnswerReport,
+    binding: ThreadBinding | None,
 ) -> None:
     """The claimed body of :func:`_orchestrate` — dispatch ONE lane, or name the covering one."""
     coalesced = tuple(row.slack_ts for row in unit.rows)
@@ -398,12 +398,18 @@ def _dispatch_or_report(
                 slack_ts=unit.slack_ts,
                 coalesced_ts=coalesced,
                 text=unit.text,
+                thread_root=unit.lead.thread_ts,
             ),
         )
     reaction = backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
     if reaction.get("ok") is not True and reaction.get("error") != "already_reacted":
         msg = "in-flight reaction was not confirmed by Slack"
         raise RuntimeError(msg)
+    if binding is not None and coverage is None:
+        command = SessionCommand.objects.get(command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts))
+        if not _post_live_reply(backend, unit, _command_reply(command)):
+            msg = "queued follow-up receipt was not confirmed by Slack"
+            raise RuntimeError(msg)
     for row in unit.rows:
         row.observe_confirmed_loop_reply()
     report.dispatched += 1
@@ -464,22 +470,35 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
     if not apply_bound_answer(bound, backend=backend, on_answer=apply_stop_answer):
         _unmark_unit_loop_replied(unit)
         return False
+    parked_task = bound.question.parked_task
+    if parked_task is not None and bound.question.audience == DeferredQuestion.Audience.OWNER_QUESTION:
+        command, _ = SessionCommand.objects.get_or_create(
+            command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts),
+            defaults={
+                "ticket_id": parked_task.ticket_id,
+                "task_id": parked_task.pk,
+                "text": unit.text,
+                "outcome": "answered_resume",
+            },
+        )
+        if not _post_live_reply(backend, unit, _command_reply(command)):
+            msg = "resume-path receipt was not confirmed by Slack"
+            raise RuntimeError(msg)
     for row in unit.rows:
         row.observe_confirmed_loop_reply()
     _react_done(backend, unit)
     return True
 
 
-def _memoized(reader: InboundReader) -> InboundReader:
-    """One reading per text — the binder's question-guard and the router share it."""
-    cache: dict[str, InboundReading] = {}
-
-    def read(text: str) -> InboundReading:
-        if text not in cache:
-            cache[text] = reader(text)
-        return cache[text]
-
-    return read
+def _answer_or_acknowledge_question(
+    backend: MessagingBackend, unit: _Unit, report: SlackAnswerReport, reader: InboundReader
+) -> bool:
+    if _answer_bound_question(backend, unit, reader):
+        report.answered_question += 1
+        return True
+    if unit.lead.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY:
+        return _uncertain_question_reply(backend, unit, report)
+    return False
 
 
 def _process_unit(
@@ -491,9 +510,18 @@ def _process_unit(
     if _react_eyes_once(backend, unit):
         report.eyes_reacted += 1
 
-    read = _memoized(reader)
-    if _answer_bound_question(backend, unit, read):
-        report.answered_question += 1
+    binding = (
+        ThreadBinding.objects.filter(overlay=unit.overlay, channel=unit.channel, thread_ts=unit.lead.thread_ts).first()
+        if unit.lead.thread_ts
+        else None
+    )
+    if _reject_foreign_bound_unit(backend, unit, report, binding):
+        return
+
+    read = memoized_reader(reader)
+    if binding is not None and _live_receipt(backend, unit, report, binding, read):
+        return
+    if _answer_or_acknowledge_question(backend, unit, report, read):
         return
 
     reading = read(unit.text)
@@ -509,7 +537,7 @@ def _process_unit(
         if outcome == "retry":
             return  # leave unanswered, retry next cycle
         # else: the cheap answer bailed → the question needs a lane after all
-    _orchestrate(backend, unit, reading, report)
+    _orchestrate(backend, unit, reading, report, binding)
 
 
 def run_slack_answer_cycle(
