@@ -515,6 +515,27 @@ class TestCheckingRemaining:
         item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
         assert item["steps"] == ["independent review", "merge", "deploy"]
 
+    def test_a_pass_at_the_newest_head_supersedes_a_hold_at_an_older_head(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        for verdict, sha, minutes_ago in (
+            (ReviewVerdict.Verdict.HOLD, _SHA, 2),
+            (ReviewVerdict.Verdict.MERGE_SAFE, "c" * 40, 1),
+        ):
+            ReviewVerdict.objects.create(
+                ticket=ticket,
+                pr_id=601,
+                slug="acme/widgets",
+                reviewed_sha=sha,
+                verdict=verdict,
+                reviewer_identity="reviewer",
+                blast_class=MergeClear.BlastClass.LOGIC,
+                gh_verify_result=MergeClear.VerifyResult.GREEN,
+                recorded_at=timezone.now() - timedelta(minutes=minutes_ago),
+            )
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert item["steps"] == ["merge", "deploy"]
+
     def test_running_step_uses_elapsed_survivors_and_overdue_is_unknown(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
         ended = timezone.now() - timedelta(minutes=1)
@@ -602,6 +623,34 @@ class TestCheckingRemaining:
         assert "halted" in details
         assert "parked until " in details
         assert "unclassified" in details
+
+    def test_older_halted_is_only_a_dormant_count(self, checkpoint_file: Path) -> None:
+        for number, ended_days_ago in ((1400, (9, 0)), (1401, (8,))):
+            ticket = Ticket.objects.create(
+                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{number}", state=Ticket.State.CODED
+            )
+            task = Task.objects.create(
+                ticket=ticket, session=Session.objects.create(ticket=ticket), phase="testing", status=Task.Status.FAILED
+            )
+            for days in ended_days_ago:
+                TaskAttempt.objects.create(
+                    task=task, ended_at=timezone.now() - timedelta(days=days), exit_code=1, error="agent crashed"
+                )
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        remaining = payload["remaining"]
+        assert [row["label"] for row in remaining["items"][2:]] == ["#1400"]
+        assert remaining["holds"] == {"halted": 1, "blocked": 0, "owner": 0, "dormant": 1}
+
+    def test_reviewer_only_work_fills_the_queue_but_lists_no_item(self, checkpoint_file: Path) -> None:
+        reviewer = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1500", role=Ticket.Role.REVIEWER
+        )
+        Task.objects.create(ticket=reviewer, session=Session.objects.create(ticket=reviewer), phase="reviewing")
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        remaining = payload["remaining"]
+        assert [row["label"] for row in remaining["items"]] == ["Total", "Queue"]
+        assert remaining["queue"]["pending"] == {"reviewing": 1}
+        assert remaining["eta"]["basis"] == "no current work in scope"
 
     def test_failed_latest_task_halts_an_open_pr(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()

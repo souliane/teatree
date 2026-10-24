@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import TypedDict
 
+from teatree.core.ref_render import render_ref
+
 #: Per-group item cap; beyond it the renderer appends "…and X more".
 DEFAULT_CAP = 5
 
@@ -41,8 +43,6 @@ class CheckItem:
         return CheckItemDict(label=self.label, url=self.url, detail=self.detail, title=self.title)
 
     def render(self) -> str:
-        from teatree.core.ref_render import render_ref  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
         ref = render_ref(self.label, title=self.title, url=self.url)
         return f"  - {ref} — {self.detail}" if self.detail else f"  - {ref}"
 

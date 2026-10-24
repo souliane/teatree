@@ -22,6 +22,16 @@ def test_pr_ladder_reopens_rework_and_respects_merge_safe() -> None:
     assert remaining_steps(Ticket.State.REVIEW_REQUESTED, "", has_pr=True, merge_safe=True) == ("merge", "deploy")
 
 
+def test_pr_with_a_testing_task_still_owes_factory_review() -> None:
+    assert remaining_steps(Ticket.State.PR_OPENED, "testing", has_pr=True, merge_safe=False) == (
+        "testing",
+        "factory review",
+        "independent review",
+        "merge",
+        "deploy",
+    )
+
+
 def test_review_variants_and_merged_work_keep_their_current_step() -> None:
     for phase in ("codex_reviewing", "codex_adversarial_reviewing", "e2e_reviewing", "critic_reviewing"):
         assert remaining_steps(Ticket.State.PR_OPENED, phase, has_pr=True, merge_safe=False)[:2] == (

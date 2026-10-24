@@ -28,6 +28,7 @@ STEP_PHASE = {
 POST_PR = ("independent review", "merge", "deploy")
 PHASE_LABEL = {"reviewing": "factory review", "coding": "coding"}
 HELD_BASES = frozenset({"halted", "blocked", "waiting on you"})
+NO_WORK_BASIS = "no current work in scope"
 
 
 class RemainingItemDict(CheckItemDict):
@@ -84,7 +85,7 @@ def empty_remaining() -> RemainingGroup:
             "p80_minutes": None,
             "known": 0,
             "unknown": 0,
-            "basis": "no current work in scope",
+            "basis": NO_WORK_BASIS,
         },
         queue={"claimed": {}, "pending": {}, "oldest_pending_minutes": None, "oldest_pending_phase": None, "seats": {}},
         holds={"halted": 0, "blocked": 0, "owner": 0, "dormant": 0},
@@ -425,14 +426,10 @@ def _summarize(snapshot: RemainingSnapshot, items: list[RemainingItem], dormant:
     }
     if known:
         basis = "maximum known item range; unknown and held items excluded"
-    elif len(unknown_bases) == 1:
-        basis = next(iter(unknown_bases))
     elif unknown_bases:
-        basis = "multiple unknown ETA reasons"
-    elif items:
-        basis = "all current work is held"
+        basis = "; ".join(sorted(unknown_bases))
     else:
-        basis = "no current work in scope"
+        basis = "all current work is held" if items else NO_WORK_BASIS
     median_total = max((float(row["median_minutes"]) for row in known), default=None)
     p80_total = max((float(row["p80_minutes"]) for row in known), default=None)
     eta_total = {

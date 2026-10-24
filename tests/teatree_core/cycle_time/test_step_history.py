@@ -69,6 +69,10 @@ class TestStepHistory(TestCase):
         assert "coding" in estimate.basis
         assert "reviewing" in estimate.basis
 
+    def test_readmission_after_the_last_run_is_not_a_duration(self) -> None:
+        _run(minutes=-5)
+        assert StepHistory.measure(timezone.now()).spans == {}
+
     def test_empty_history_has_no_default(self) -> None:
         assert StepHistory.measure(timezone.now()).estimate("coding") is None
 
