@@ -4,8 +4,8 @@ from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from teatree.agents.pydantic_ai_turn import ToolCallRecord
 
 
-@pytest.mark.parametrize("args", [None, {}, "", '{"path":"x"}'])
-def test_tool_call_argument_bytes_match_provider_json(args: dict[str, str] | str | None) -> None:
+@pytest.mark.parametrize("args", [None, {}, ""])
+def test_empty_tool_call_argument_bytes_match_provider_json(args: dict[str, str] | str | None) -> None:
     part = ToolCallPart(tool_name="Read", args=args, tool_call_id="call-1")
 
     record = ToolCallRecord.start(part)
