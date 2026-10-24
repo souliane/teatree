@@ -1706,7 +1706,7 @@ Docker Desktop settings matter:
   socket to be used"* so `/var/run/docker.sock` is present for the socket mount.
 - **File sharing:** the read-only checkout bind mount resolves to
   `$TEATREE_DEPLOY_CHECKOUT` — the checkout `deploy.sh` / `deploy/t3` was invoked
-  out of — so it follows the Mac checkout automatically and needs no edit. It
+  out of — so it follows the host checkout automatically and needs no edit. It
   must still be under a path Docker Desktop is allowed to share (*Settings →
   Resources → File sharing*); a path outside that set leaves the container
   `Created` with `mounts denied`.
