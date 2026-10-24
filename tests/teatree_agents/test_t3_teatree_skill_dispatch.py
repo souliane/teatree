@@ -99,7 +99,8 @@ class TestT3TeatreeSkillDispatch(TestCase):
             credential=DispatchCredential(env={"ANTHROPIC_API_KEY": "key-x"}),
         )
 
-        assert "DISABLE_COMPACT" not in prepared.options.env
+        assert prepared.options.env["DISABLE_COMPACT"] == "0"
+        assert prepared.options.env["DISABLE_AUTO_COMPACT"] == "0"
         assert "PreCompact" not in (prepared.options.hooks or {})
         assert prepared.options.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "1000000"
 
@@ -137,5 +138,25 @@ class TestT3TeatreeSkillDispatch(TestCase):
 
         assert prepared.options.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "200000"
         assert prepared.options.env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "92.0"
-        assert "DISABLE_COMPACT" not in prepared.options.env
-        assert "DISABLE_AUTO_COMPACT" not in prepared.options.env
+        assert prepared.options.env["DISABLE_COMPACT"] == "0"
+        assert prepared.options.env["DISABLE_AUTO_COMPACT"] == "0"
+
+    def test_claude_child_overrides_ambient_compaction_disable_switches(self) -> None:
+        dispatch = DispatchHarness(
+            harness=ClaudeSdkHarness(),
+            name="claude_sdk",
+            provider=None,
+            model="claude-opus-5-5",
+            route_candidate_index=None,
+        )
+        with patch.dict("os.environ", {"DISABLE_COMPACT": "1", "DISABLE_AUTO_COMPACT": "true"}):
+            prepared = prepare_run(
+                self._task("coding"),
+                Preflight(stage_skills=[], dispatch=dispatch, skills=[]),
+                phase="coding",
+                handoff=None,
+                credential=DispatchCredential(env={"ANTHROPIC_API_KEY": "key-x"}),
+            )
+
+        assert prepared.options.env["DISABLE_COMPACT"] == "0"
+        assert prepared.options.env["DISABLE_AUTO_COMPACT"] == "0"
