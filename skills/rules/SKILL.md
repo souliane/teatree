@@ -197,7 +197,7 @@ Ask through `AskUserQuestion`, one decision per call, then stop; never narrate o
 
 ## The User Asked a Question — Answer It (Non-Negotiable)
 
-When the user asks, lead with the answer — polarity, cause, or an honest "not known yet" — and never let a dispatch report stand in for it (`t3 <overlay> gate answer-first disable`). Full text: `skills/rules/references/asking-questions.md`.
+Lead with the answer — polarity, cause, an honest "not known yet", or on live factory Slack a relay receipt — never a dispatch report (`t3 <overlay> gate answer-first disable`). Full text: `skills/rules/references/asking-questions.md`.
 
 ## Never Introduce Tech Debt; Reduce It (Non-Negotiable)
 
