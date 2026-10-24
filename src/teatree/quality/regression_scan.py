@@ -33,6 +33,11 @@ class AstGrepUnavailableError(RuntimeError):
         super().__init__(f"ast-grep engine unavailable: {reason}")
 
 
+class NoBlockingRulesError(RuntimeError):
+    def __init__(self, config_dir: Path) -> None:
+        super().__init__(f"no ast-grep rules under {config_dir}")
+
+
 def _astgrep_argv() -> list[str]:
     for binary in ("ast-grep", "sg"):
         local = shutil.which(binary)
@@ -79,13 +84,12 @@ def scan_findings(config_dir: Path, root: Path | None = None, *, paths: Sequence
     WITHOUT invoking ast-grep — an empty positional list would make ast-grep scan
     the whole tree, the opposite of the intent, so it is short-circuited.
     """
-    if paths is not None and len(paths) == 0:
-        return []
     base = root or teatree_source_root()
     rule_ids = _declared_rule_ids(config_dir)
     if not rule_ids:
-        reason = f"no ast-grep rules under {config_dir}"
-        raise AstGrepUnavailableError(reason)
+        raise NoBlockingRulesError(config_dir)
+    if paths is not None and len(paths) == 0:
+        return []
     sgconfig = _sgconfig_for(config_dir)
     cmd = [
         *_astgrep_argv(),

@@ -105,6 +105,7 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # exercised in tests/teatree_cli/doctor/test_config_tier_health_check.py; pin it to
     # a pass here so this smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_config_override_tier_healthy", lambda: True)
+    monkeypatch.setattr(teatree_cli_doctor, "_check_hook_orm_reachable", lambda: True)
     # These checks read the live t3 installation, PATH, worker role and checkout
     # remotes. Their dedicated modules exercise those probes against staged state;
     # this command-aggregation smoke test must not inherit the deployed box's state.
@@ -228,6 +229,21 @@ class TestDoctorCheckCommand(TestCase):
 
         assert result.exit_code == 0
         assert "All checks passed" in result.output
+
+    def test_unreachable_hook_orm_fails_the_command(self) -> None:
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+            patch.object(teatree_cli_doctor, "_check_hook_orm_reachable", return_value=False),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 1
+        assert "All checks passed" not in result.output
 
     def test_aggregates_the_shard_durations_checks_against_the_staged_repo(self):
         """Both #4048 checks run end to end here, not stubbed (#4113 review).

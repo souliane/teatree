@@ -1836,10 +1836,13 @@ class TestWorktreeProvisionerCutsFromAFetchedBase(TestCase):
         ticket = self._ticket(["repo-a"], branch, recorded=checkout)
 
         result = self._provision(ticket)
+        git_error = run_git_captured(checkout, "rev-parse", "--git-dir")
 
         assert result.ok is False
         assert "git cannot read in this execution context" in result.detail
-        assert "not a git repository" in result.detail
+        assert git_error.returncode != 0
+        assert git_error.stderr.strip()
+        assert git_error.stderr.strip() in result.detail
 
     def test_an_unreadable_checkout_found_at_the_slot_is_not_adopted(self) -> None:
         clone = self._clone()

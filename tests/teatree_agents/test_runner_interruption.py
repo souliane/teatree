@@ -27,7 +27,7 @@ from teatree.agents.runner_usage import DispatchProvenance
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.models.task_repair import phase_attempts
+from teatree.core.models.task_repair_queries import phase_attempts
 from tests.teatree_agents._sdk_fake import result_message
 
 _REVIEWED_HEAD = "a1b2c3d4" * 5

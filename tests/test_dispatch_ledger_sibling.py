@@ -27,6 +27,8 @@ import pytest
 
 import hooks.scripts.dispatch_ledger as ledger
 import hooks.scripts.hook_router as router
+from hooks.scripts import brief_anchor_gate, dispatch_admission_gate, general_purpose_agent_gate
+from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS
 
 _SCRIPTS_DIR = Path(router.__file__).resolve().parent
 _HOOK_ROUTER = _SCRIPTS_DIR / "hook_router.py"
@@ -176,3 +178,49 @@ class TestColdImport:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "a-1"
+
+
+def test_task_dispatch_is_recorded_in_the_file_ledger(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+    event = {
+        "session_id": "task-session",
+        "tool_name": "Task",
+        "tool_input": {"description": "review"},
+        "tool_response": {"agentId": "task-agent"},
+    }
+
+    ledger.handle_track_agents(event)
+
+    assert "task-agent" in (tmp_path / "task-session.agents").read_text(encoding="utf-8")
+
+
+def test_dispatch_consumers_use_one_tool_set() -> None:
+    assert brief_anchor_gate.DISPATCH_TOOLS is DISPATCH_TOOLS
+    assert dispatch_admission_gate.DISPATCH_TOOLS is DISPATCH_TOOLS
+    assert general_purpose_agent_gate.DISPATCH_TOOLS is DISPATCH_TOOLS
+    assert ledger.DISPATCH_TOOLS is DISPATCH_TOOLS
+
+
+def test_task_with_no_agent_id_reports_unrecorded_dispatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(ledger, "_newest_task_agent_id", lambda: "")
+
+    ledger.handle_track_agents({"session_id": "task-session", "tool_name": "Task", "tool_input": {}})
+
+    assert not (tmp_path / "task-session.agents").exists()
+    assert "DIVERGENCE" in capsys.readouterr().err
+
+
+def test_recorded_task_dispatch_has_no_divergence_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+
+    ledger.handle_track_agents(
+        {"session_id": "task-session", "tool_name": "Task", "tool_input": {}, "tool_response": {"agentId": "a-task"}}
+    )
+
+    assert (tmp_path / "task-session.agents").exists()
+    assert "DIVERGENCE" not in capsys.readouterr().err
