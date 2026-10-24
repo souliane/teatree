@@ -114,7 +114,7 @@ class IssueIntakeGateTests(TestCase):
     def test_owned_repo_slugs_are_resolved_from_the_overlay(self) -> None:
         """The builder scopes intake to the overlay's own repos — the cross-repo firehose fix."""
         overlay = _overlay_with_repos(followup=["souliane/teatree"], merge_candidates=["souliane/teatree-e2e"])
-        with patch(_PATCH_TARGET, return_value=_enabled()):
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_intake_repos=[])):
             scanner = _issue_intake_scanner_for(_backend(overlay=overlay))
         assert isinstance(scanner, IssueIntakeScanner)
         assert set(scanner.repo_slugs) == {"souliane/teatree", "souliane/teatree-e2e"}
@@ -333,6 +333,37 @@ class IssueIntakeMiniLoopTests(TestCase):
     def test_no_backends_is_inert(self) -> None:
         with patch(_PATCH_TARGET, return_value=_enabled()):
             assert MINI_LOOP.build_jobs(backends=None) == []
+
+    def test_configured_repo_scope_only_claims_listed_repo(self) -> None:
+        included = "https://github.com/o/app/issues/10"
+        excluded = "https://github.com/o/app-e2e/issues/11"
+        overlay = _overlay_with_repos(followup=["o/app"], merge_candidates=["o/app-e2e"])
+        backend = _backend(overlay=overlay)
+        host = backend.host
+        host.current_user.return_value = "alice"
+        host.list_authored_issues.return_value = []
+        host.list_my_prs.return_value = []
+        host.list_my_merged_prs.return_value = []
+
+        def labeled_issues(*, label: str, repo_slugs: tuple[str, ...]) -> list[dict[str, object]]:
+            return [
+                {"web_url": url, "title": "do it", "labels": [label], "state": "open", "user": {"login": "stranger"}}
+                for slug, url in (("o/app", included), ("o/app-e2e", excluded))
+                if slug in repo_slugs
+            ]
+
+        host.list_labeled_issues.side_effect = labeled_issues
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_intake_repos=["o/app"])):
+            scanner = _issue_intake_scanner_for(backend)
+        assert isinstance(scanner, IssueIntakeScanner)
+        with patch.object(IssueIntakeScanner, "_governor_denied", return_value=False):
+            signals = scanner.scan()
+
+        assert [signal.payload["url"] for signal in signals] == [included]
+        assert not ImplementedIssueMarker.objects.filter(issue_url=excluded).exists()
+        assert scanner.repo_slugs == ("o/app",)
+        assert host.list_authored_issues.call_args.kwargs["repo_slugs"] == ("o/app",)
+        assert host.list_labeled_issues.call_args.kwargs["repo_slugs"] == ("o/app",)
 
     def test_enabled_loop_claims_unlabelled_trusted_issue_and_dispatches_to_orchestrator(self) -> None:
         url = "https://github.com/souliane/teatree/issues/100"

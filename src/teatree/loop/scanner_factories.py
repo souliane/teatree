@@ -387,7 +387,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
         identities=backend.identities,
         exclude_labels=backend.exclude_labels,
-        repo_slugs=owned_repo_slugs(backend.overlay),
+        repo_slugs=tuple(settings.issue_intake_repos) or owned_repo_slugs(backend.overlay),
         can_claim=can_claim,
         max_concurrent=limit,
         pass_budget_seconds=settings.issue_intake_pass_budget_seconds,
