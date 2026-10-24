@@ -45,6 +45,14 @@ class TestDiffPathsAreSubstrate:
     def test_governance_agents_md_is_substrate(self) -> None:
         assert diff_paths_are_substrate(["AGENTS.md"]) is True
 
+    @pytest.mark.parametrize("path", ["skills/rules/RULES.md", "vendor/teatree/skills/rules/RULES.md"])
+    def test_rules_file_is_substrate(self, path: str) -> None:
+        assert diff_paths_are_substrate([path]) is True
+
+    @pytest.mark.parametrize("path", ["skills/rules/RULES.md.bak", "skills/rules/references/asking-questions.md"])
+    def test_rules_lookalikes_are_not_substrate(self, path: str) -> None:
+        assert diff_paths_are_substrate([path]) is False
+
     def test_nested_governance_doc_is_substrate(self) -> None:
         assert diff_paths_are_substrate(["src/teatree/core/CLAUDE.md"]) is True
 
@@ -191,6 +199,11 @@ class TestIsSubstrateConsultsTouchedPaths(TestCase):
         clear.touched_paths = ("src/teatree/core/merge/authorization.py",)
         assert clear.is_substrate() is True
 
+    def test_logic_clear_with_rules_file_is_substrate(self) -> None:
+        clear = self._logic_clear()
+        clear.touched_paths = ("skills/rules/RULES.md",)
+        assert clear.is_substrate() is True
+
     def test_logic_clear_with_only_logic_paths_is_not_substrate(self) -> None:
         clear = self._logic_clear()
         clear.touched_paths = ("src/teatree/loop/scanners/pr_sweep.py",)
@@ -300,5 +313,15 @@ class TestVendoredCoreReachesBothMergeRoutes(TestCase):
         with patch(
             "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
             return_value=[f"{_VENDORED}src/teatree/core/models/merge_clear.py"],
+        ):
+            assert pr_diff_is_substrate(pr) is True
+
+    def test_solo_sweep_holds_rules_file(self) -> None:
+        pr = PrSummary(
+            slug="a-fork/vendors-teatree", number=4244, head_sha="b" * 40, is_draft=False, has_changes_requested=False
+        )
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
+            return_value=["skills/rules/RULES.md"],
         ):
             assert pr_diff_is_substrate(pr) is True
