@@ -37,6 +37,10 @@ Edit the source command, not this file.
 
 Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 
+## `cost_profile`
+
+Profile real dispatches: read share, resume-context cost and addressable upper bounds.
+
 ## `db`
 
 | Subcommand | Description |
