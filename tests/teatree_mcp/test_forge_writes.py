@@ -255,6 +255,24 @@ class TestIssueCreateDedupesFirst(TestCase):
         assert result["candidates"][0]["title"] == "the empty case crashes"
         assert _writes(fake) == []
 
+    def test_issue_create_preserves_the_full_backlog_when_search_is_bounded(self) -> None:
+        issues = [
+            {
+                **self._candidate(title=f"issue {number}"),
+                "html_url": f"https://github.com/acme/widgets/issues/{number}",
+            }
+            for number in range(1, 31)
+        ]
+        fake = _FakeForge(issues)
+        with _forge_env(fake):
+            result = _call("github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": "b"})
+
+        assert result["outcome"] == "judgment_required"
+        assert len(result["candidates"]) == 30
+        assert len(result["snapshot"]) == 30
+        assert "Judge EVERY candidate" in result["instructions"]
+        assert _writes(fake) == []
+
     def test_a_fitting_candidate_is_extended_instead_of_duplicated(self) -> None:
         fake = _FakeForge([self._candidate()])
         judged = {
