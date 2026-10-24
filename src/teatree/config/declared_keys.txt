@@ -2,12 +2,12 @@ active_loop_schedule
 admission_pressure_shed_at
 admission_write_concurrency_per_core
 admit_colleague_prs_to_board
-agent_compaction_keep_recent
 agent_compaction_keep_tool_results
 agent_harness
 agent_harness_provider
 agent_honesty_model
 agent_max_turns
+agent_model_context_windows
 agent_phase_harness
 agent_phase_models
 agent_pydantic_ai_tier_models
@@ -193,3 +193,4 @@ worker_quiescing
 workspace_dir
 worktree_containment_gate_enabled
 write_wip
+RETIRED agent_compaction_keep_recent

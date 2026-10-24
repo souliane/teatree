@@ -38,7 +38,8 @@ from teatree.agents.skill_assurance import (
 from teatree.agents.skill_injection import _read_only_skill_text
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
-from teatree.config import AgentHarnessProvider
+from teatree.config import AgentHarnessProvider, cold_reader
+from teatree.core.autocompact_advisory import native_context_window
 from teatree.core.models import Task, TaskAttempt
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
@@ -88,6 +89,29 @@ def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: P
         task, skills=skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills, handoff=handoff
     )
     return prompt, context, ""
+
+
+def _native_compaction_env(env: dict[str, str] | None, dispatch: DispatchHarness) -> dict[str, str] | None:
+    if dispatch.name != "claude_sdk":
+        return env
+    window_read = cold_reader.read_setting_confirmed("agent_model_context_windows")
+    if not window_read.readable:
+        msg = "agent_model_context_windows could not be read"
+        raise RuntimeError(msg)
+    configured = window_read.value.get(dispatch.model) if isinstance(window_read.value, dict) else None
+    window = (
+        configured
+        if isinstance(configured, int) and not isinstance(configured, bool) and configured > 0
+        else native_context_window(dispatch.model)
+    )
+    if window is None:
+        return env
+    child_env = dict(env or {})
+    child_env["DISABLE_COMPACT"] = "0"
+    child_env["DISABLE_AUTO_COMPACT"] = "0"
+    child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(window)
+    child_env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(100 * (window - 16_000) / window)
+    return child_env
 
 
 def prepare_run(
@@ -143,10 +167,10 @@ def prepare_run(
         phase=phase,
         skills=skills,
         overrides=SpawnOverrides(
-            env=credential.env,
+            env=_native_compaction_env(credential.env, dispatch),
             turn_ceiling=_turn_ceiling(dispatch.harness),
             handoff=handoff,
-            compaction_guard=guard if dispatch.harness.capabilities.spawns_cli_child else None,
+            compaction_guard=None,
             model=dispatch.model,
             spawn_selection=dispatch.spawn_selection,
             model_is_resolved=(dispatch.route_candidate_index is not None or dispatch.name == "codex_app_server"),

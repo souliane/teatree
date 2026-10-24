@@ -1,4 +1,7 @@
+import asyncio
 import math
+from collections.abc import Callable
+from types import SimpleNamespace
 
 import pytest
 from pydantic_ai.messages import (
@@ -12,14 +15,12 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.usage import RunUsage
 
 from teatree.agents.lane_b import compaction as compaction_mod
-from teatree.agents.lane_b.compaction import (
-    DEFAULT_KEEP_RECENT,
-    CompactionPolicy,
-    compact_history,
-    elide_stale_tool_results,
-)
+from teatree.agents.lane_b.compaction import CompactionPolicy, elide_stale_tool_results
+from teatree.agents.lane_b.tool_names import TOOL_READ
+from teatree.agents.live_control import frame_follow_up, frame_operator_input
 
 
 def _msgs(n: int) -> list:
@@ -59,121 +60,239 @@ def _orphaned_return_ids(msgs: list[ModelMessage]) -> list[str]:
     return orphans
 
 
-class TestCompactHistory:
-    def test_short_history_is_returned_unchanged(self) -> None:
-        history = _msgs(5)
-        assert compact_history(history, keep_recent=40) == history
+class TestLateCompaction:
+    def test_large_final_message_stays_whole_after_older_history_is_summarized(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "older work"
 
-    def test_long_history_keeps_first_plus_recent(self) -> None:
-        history = _msgs(100)
-        compacted = compact_history(history, keep_recent=10)
-        assert len(compacted) == 11
-        assert compacted[0] is history[0]
-        assert compacted[1:] == history[-10:]
+        final = ModelRequest(parts=[UserPromptPart(content="x" * 100_000)])
+        history = [ModelRequest(parts=[UserPromptPart(content="task")]), *_msgs(4), final]
+        ctx = SimpleNamespace(context_window_used=0.95, model=SimpleNamespace(context_window=200_000), usage=RunUsage())
 
-    def test_boundary_is_not_trimmed(self) -> None:
-        history = _msgs(11)
-        assert compact_history(history, keep_recent=10) == history
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize)(ctx, history))
 
-    def test_over_boundary_is_trimmed(self) -> None:
-        history = _msgs(12)
-        assert len(compact_history(history, keep_recent=10)) == 11
+        assert result[-1] is final
+        assert "Earlier conversation summary:" in repr(result[1])
 
-    def test_keep_recent_zero_is_a_noop(self) -> None:
-        history = _msgs(50)
-        assert compact_history(history, keep_recent=0) == history
+    def test_target_reduction_keeps_every_tool_return_with_its_call(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "older work"
 
+        history = [ModelRequest(parts=[UserPromptPart(content="task" * 10_000)])]
+        for index in range(10):
+            history.extend((_tool_call(f"c{index}"), _big_return(f"c{index}", 8_000)))
+        ctx = SimpleNamespace(context_window_used=0.95, model=SimpleNamespace(context_window=32_000), usage=RunUsage())
 
-class TestToolPairingPreserved:
-    def test_naive_boundary_straddling_a_call_return_pair_drops_the_orphan(self) -> None:
-        # Cut lands so the first kept message is the tool RETURN while its CALL
-        # (one message earlier) falls in the dropped middle — a naive
-        # ``[first, *last-N]`` keeps an orphaned return.
-        history: list[ModelMessage] = [
-            ModelRequest(parts=[UserPromptPart(content="task")]),  # 0: framing (kept)
-            *_msgs(3),  # 1..3: stale middle (dropped)
-            _tool_call("c1"),  # 4: CALL — the last dropped message
-            _tool_return("c1"),  # 5: RETURN — the first message of the kept window
-            *_msgs(4),  # 6..9: fresh tail
-        ]
-        # keep_recent = len - 5 puts the cut exactly on the tool RETURN (index 5).
-        compacted = compact_history(history, keep_recent=len(history) - 5)
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, keep_tool_results=0)(ctx, history))
 
-        assert _orphaned_return_ids([history[0], *history[5:]]) == ["c1"], "the naive cut must orphan c1"
-        assert _orphaned_return_ids(compacted) == [], "the fix must drop the orphaned leading return"
-        # The framing head is kept; the orphaned return is gone.
-        assert compacted[0] is history[0]
-        assert history[5] not in compacted
+        assert _orphaned_return_ids(result) == []
+        assert "Earlier conversation summary:" in repr(result[1])
+        assert compaction_mod._estimated_tokens(result) < 14_000
 
-    def test_a_call_return_pair_fully_inside_the_window_is_preserved(self) -> None:
-        history: list[ModelMessage] = [
-            ModelRequest(parts=[UserPromptPart(content="task")]),  # 0: framing
-            *_msgs(4),  # 1..4: stale middle
-            _tool_call("c9"),  # 5: CALL (kept — inside the window)
-            _tool_return("c9"),  # 6: RETURN (kept)
-            *_msgs(2),  # 7..8: fresh tail
-        ]
-        compacted = compact_history(history, keep_recent=4)  # window = last 4: indices 5..8
+    def test_initial_rewind_keeps_large_tool_call_with_small_return(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "older work"
 
-        assert _orphaned_return_ids(compacted) == []
-        assert history[5] in compacted  # the paired call survives intact
-        assert history[6] in compacted
-
-    def test_a_tool_linked_retry_return_is_also_snapped(self) -> None:
-        # A gate-refusal RetryPromptPart (tool_name set) serializes as a tool
-        # message too, so an orphaned leading retry must be dropped like a return.
+        call = ModelResponse(parts=[ToolCallPart(tool_name="shell", args={"command": "x" * 4_000}, tool_call_id="c1")])
+        returned = _tool_return("c1")
         history: list[ModelMessage] = [
             ModelRequest(parts=[UserPromptPart(content="task")]),
-            *_msgs(3),
-            _tool_call("c2"),  # CALL dropped with the middle
-            _tool_retry("c2"),  # orphaned leading tool-retry
-            *_msgs(4),
+            ModelResponse(parts=[TextPart(content="old " * 1_000)]),
+            call,
+            returned,
         ]
-        compacted = compact_history(history, keep_recent=len(history) - 5)
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1_000), usage=RunUsage())
 
-        assert _orphaned_return_ids(compacted) == []
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
 
+        assert "Earlier conversation summary:" in repr(result[1])
+        assert result[-1] is returned
+        assert _orphaned_return_ids(result) == []
 
-class TestCompactionPolicy:
-    """The context-compaction policy object replacing the hardcoded trim (#3157 E2c)."""
+    def test_rewound_tool_pair_summarizes_every_skipped_recent_message(self) -> None:
+        summaries: list[str] = []
 
-    def test_default_policy_is_byte_identical_to_the_bare_keep_recent(self) -> None:
-        history = _msgs(DEFAULT_KEEP_RECENT + 10)
-        via_policy = compact_history(history, policy=CompactionPolicy())
-        via_default = compact_history(history)
-        assert via_policy == via_default
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "earlier work"
 
-    def test_policy_keep_recent_supersedes_the_bare_argument(self) -> None:
-        history = _msgs(20)
-        compacted = compact_history(history, keep_recent=15, policy=CompactionPolicy(keep_recent=4))
-        # keep_recent=4 wins → head + last 4 = 5 messages (no orphan trims here).
-        assert len(compacted) == 5
+        recent = "recent direction: preserve the API"
+        history: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="task" * 360)]),
+            ModelResponse(parts=[TextPart(content="old " * 1000)]),
+            ModelRequest(parts=[UserPromptPart(content=recent)]),
+            _tool_call("last"),
+            _big_return("last", 400),
+        ]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1000), usage=RunUsage())
 
-    def test_pin_head_false_drops_the_first_message(self) -> None:
-        history = _msgs(20)
-        compacted = compact_history(history, policy=CompactionPolicy(keep_recent=4, pin_head=False))
-        assert history[0] not in compacted
-        assert len(compacted) == 4
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
 
-    def test_for_phase_reads_the_db_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            compaction_mod.cold_reader,
-            "read_setting",
-            lambda key: {"coding": 12} if key == "agent_compaction_keep_recent" else None,
+        assert recent in summaries[-1]
+        assert _orphaned_return_ids(result) == []
+        assert result[-1] == history[-1]
+
+    def test_native_and_one_million_suffix_window_fallbacks(self) -> None:
+        assert compaction_mod.context_window_for_model("anthropic/claude-opus-4-7", None) == 1_000_000
+        assert compaction_mod.context_window_for_model("router/unknown[1m]", None) == 1_000_000
+
+    @pytest.mark.parametrize("frame", [frame_operator_input, frame_follow_up])
+    def test_operator_message_in_stale_history_survives_verbatim(self, frame: Callable[[str, str], str]) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "Previous work summarized"
+
+        direction = frame("Preserve the public API.", "op-1")
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelRequest(parts=[UserPromptPart(content=direction)]),
+            ModelResponse(parts=[TextPart(content="old " * 1000)]),
+            ModelRequest(parts=[UserPromptPart(content="continue")]),
+        ]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
+
+        kept = [part.content for message in result for part in message.parts if isinstance(part, UserPromptPart)]
+        assert direction in kept
+
+    def test_superseded_read_is_stubbed_before_summary(self) -> None:
+        calls = [
+            ModelResponse(parts=[ToolCallPart(tool_name=TOOL_READ, args={"file_path": "/a.py"}, tool_call_id=key)])
+            for key in ("old", "new")
+        ]
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            calls[0],
+            ModelRequest(parts=[ToolReturnPart(tool_name=TOOL_READ, content="old" * 6000, tool_call_id="old")]),
+            calls[1],
+            ModelRequest(parts=[ToolReturnPart(tool_name=TOOL_READ, content="latest", tool_call_id="new")]),
+        ]
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "summary"
+
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=2000), usage=RunUsage())
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
+
+        assert "old" * 100 not in repr(result)
+        assert "latest" in repr(result)
+        assert summaries == []
+
+    def test_forced_compaction_with_unknown_window_still_summarizes(self) -> None:
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "Older work"
+
+        history = [ModelRequest(parts=[UserPromptPart(content="task")]), *_msgs(30)]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=None), usage=RunUsage())
+        compactor = compaction_mod.LateHistoryCompactor(summarize)
+        compactor.force_next()
+
+        result = asyncio.run(compactor(ctx, history))
+
+        assert len(summaries) == 1
+        assert len(result) < len(history)
+
+    def test_compaction_lands_below_half_the_trigger(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "Earlier work " * 90
+
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelResponse(parts=[TextPart(content="old " * 1000)]),
+            ModelResponse(parts=[TextPart(content="recent " * 70)]),
+            ModelRequest(parts=[UserPromptPart(content="continue")]),
+        ]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
+
+        assert compaction_mod._estimated_tokens(result) <= 420
+        assert "continue" in repr(result)
+
+    def test_explicit_model_window_overrides_a_wrong_registry_window(self) -> None:
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "older work"
+
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelResponse(parts=[TextPart(content="old " * 700)]),
+            ModelRequest(parts=[UserPromptPart(content="recent direction")]),
+        ]
+        ctx = SimpleNamespace(
+            context_window_used=0.09,
+            model=SimpleNamespace(model_name="router/x", context_window=10_000),
+            usage=RunUsage(),
         )
-        assert CompactionPolicy.for_phase("coding").keep_recent == 12
-        # A phase with no override, and an absent phase, both fall back to the default.
-        assert CompactionPolicy.for_phase("reviewing").keep_recent == DEFAULT_KEEP_RECENT
-        assert CompactionPolicy.for_phase(None).keep_recent == DEFAULT_KEEP_RECENT
-
-    def test_for_phase_ignores_a_non_integer_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            compaction_mod.cold_reader,
-            "read_setting",
-            lambda key: {"coding": "lots", "testing": 0, "shipping": True},
+        compactor = compaction_mod.LateHistoryCompactor(
+            summarize, reserve_tokens=160, keep_recent_tokens=200, context_windows={"router/x": 1_000}
         )
-        for phase in ("coding", "testing", "shipping"):
-            assert CompactionPolicy.for_phase(phase).keep_recent == DEFAULT_KEEP_RECENT
+
+        result = asyncio.run(compactor(ctx, history))
+
+        assert summaries
+        assert "recent direction" in repr(result)
+
+    def test_history_stays_intact_below_the_token_reserve_threshold(self) -> None:
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "earlier decisions"
+
+        history = [ModelRequest(parts=[UserPromptPart(content="task")]), *_msgs(80)]
+        ctx = SimpleNamespace(context_window_used=0.83, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+        compactor = compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160, keep_recent_tokens=200)
+
+        result = asyncio.run(compactor(ctx, history))
+
+        assert result == history
+        assert summaries == []
+
+    def test_near_window_summary_preserves_recent_inputs_and_tool_pairs(self) -> None:
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "Earlier decision: keep the API"
+
+        history: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelResponse(parts=[TextPart(content="old decision " * 100)]),
+            ModelRequest(parts=[UserPromptPart(content="old correction")]),
+            ModelResponse(parts=[TextPart(content="old answer " * 100)]),
+            ModelRequest(parts=[UserPromptPart(content="recent operator steer")]),
+            _tool_call("c1"),
+            _tool_return("c1"),
+        ]
+        ctx = SimpleNamespace(context_window_used=0.9, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+        compactor = compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160, keep_recent_tokens=200)
+
+        result = asyncio.run(compactor(ctx, history))
+
+        assert len(summaries) == 1
+        assert "old correction" in summaries[0]
+        assert "Earlier decision: keep the API" in repr(result)
+        assert "recent operator steer" in repr(result)
+        assert _orphaned_return_ids(result) == []
 
 
 def _big_return(call_id: str, size: int = 50_000) -> ModelRequest:
@@ -201,7 +320,6 @@ class TestStaleToolResultsAreElided:
 
     def test_a_short_trajectory_the_trim_never_touches_is_still_shrunk(self) -> None:
         history = _tool_trajectory(20)
-        assert len(history) <= DEFAULT_KEEP_RECENT + 1
         assert _chars(elide_stale_tool_results(history)) <= _chars(history) * 0.3
 
     def test_the_most_recent_results_stay_verbatim(self) -> None:
@@ -256,10 +374,6 @@ class TestStaleToolResultsAreElided:
         before = _chars(history)
         elide_stale_tool_results(history)
         assert _chars(history) == before
-
-    def test_compact_history_no_longer_stubs(self) -> None:
-        history = _tool_trajectory(20)
-        assert compact_history(history, policy=CompactionPolicy()) == history
 
     def test_the_per_phase_override_is_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(

@@ -1,0 +1,45 @@
+{
+  "claude_cli_version": "2.1.300",
+  "claude_agent_sdk_version": "0.2.167",
+  "source": "stream-json recorded from the bundled Claude Code 2.1.300 in the worker container, 2026-10-24, under CLAUDE_CODE_AUTO_COMPACT_WINDOW=60000 with DISABLE_COMPACT=0 and DISABLE_AUTO_COMPACT=0, against a local stand-in model endpoint",
+  "observed": {
+    "compact_boundary": "a system frame emitted once per compaction, trigger auto; three frames in the recorded run",
+    "disabled_by": "DISABLE_COMPACT=1 or DISABLE_AUTO_COMPACT=true in the child environment: zero frames and no compaction request under the same load"
+  },
+  "compact_boundary_frame": {
+    "type": "system",
+    "subtype": "compact_boundary",
+    "uuid": "1bfb0ab8-5f45-47cb-a505-e46669bf308b",
+    "compact_metadata": {
+      "trigger": "auto",
+      "pre_tokens": 63560,
+      "post_tokens": 7886,
+      "cumulative_dropped_tokens": 55674,
+      "duration_ms": 25,
+      "preserved_segment": {
+        "head_uuid": "b7c42708-cab2-4949-a5f3-65503aa4b1b3",
+        "anchor_uuid": "aeda9197-67b1-446b-b389-175e46429f53",
+        "tail_uuid": "fe29f8fc-c346-451c-bced-52e8c666403e"
+      },
+      "preserved_messages": {
+        "anchor_uuid": "aeda9197-67b1-446b-b389-175e46429f53",
+        "uuids": [
+          "b7c42708-cab2-4949-a5f3-65503aa4b1b3",
+          "d1d833e4-9137-45f7-9555-494d97835212",
+          "56ce85b9-2f14-4c50-a143-31ac51aae341",
+          "5f29ae8c-1d79-4590-8f55-97ce86df32bc",
+          "fe29f8fc-c346-451c-bced-52e8c666403e"
+        ],
+        "all_uuids": [
+          "b7c42708-cab2-4949-a5f3-65503aa4b1b3",
+          "d1d833e4-9137-45f7-9555-494d97835212",
+          "56ce85b9-2f14-4c50-a143-31ac51aae341",
+          "5f29ae8c-1d79-4590-8f55-97ce86df32bc",
+          "fe29f8fc-c346-451c-bced-52e8c666403e"
+        ]
+      }
+    },
+    "logical_parent_uuid": "fe29f8fc-c346-451c-bced-52e8c666403e",
+    "session_id": "1e8d8031-9b10-4d1e-8aae-63de2ba3fae6"
+  }
+}
