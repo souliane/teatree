@@ -15,7 +15,7 @@ import pytest
 from django.conf import settings
 from xdist.workermanage import parse_tx_spec_config
 
-from hooks.scripts import hook_budget
+from hooks.scripts import django_bootstrap, hook_budget
 from teatree.agents import live_mailbox
 from teatree.agents.codex_app_server_options import container_is_the_sandbox
 from teatree.agents.codex_read_only_server import reset_executor_app_servers
@@ -468,6 +468,15 @@ def _restore_django_settings_module() -> Iterator[None]:
         os.environ.pop("DJANGO_SETTINGS_MODULE", None)
     else:
         os.environ["DJANGO_SETTINGS_MODULE"] = before
+
+
+@pytest.fixture(autouse=True)
+def _hook_orm_probe_reads_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report a readable control DB: the probe's real query would hit pytest-django's DB blocker.
+
+    A test of the probe itself overrides this fixture by name.
+    """
+    monkeypatch.setattr(django_bootstrap, "_probe_orm", lambda: ("ok", ":memory:", None))
 
 
 @pytest.fixture(autouse=True)

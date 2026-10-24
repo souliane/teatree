@@ -34,11 +34,6 @@ def _stop(**extra: object) -> dict:
     return {"session_id": "sess-4129", "agent_id": "a-1", **extra}
 
 
-@pytest.fixture(autouse=True)
-def _readable_orm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bootstrap, "bootstrap_teatree_django", lambda: True)
-
-
 class TestSeatRelease:
     def test_it_releases_the_terminating_agents_seat(self, monkeypatch: pytest.MonkeyPatch) -> None:
         released: list[tuple[str, str]] = []

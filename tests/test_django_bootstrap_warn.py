@@ -31,6 +31,11 @@ _RECORD_ORM_HEALTH = orm_health.record_orm_health
 
 
 @pytest.fixture(autouse=True)
+def _hook_orm_probe_reads_ok() -> None:
+    """Overrides the conftest default: this module exercises the real probe."""
+
+
+@pytest.fixture(autouse=True)
 def _reset_warn_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(django_bootstrap, "_EMITTED_NOTES", set())
     monkeypatch.setattr(orm_health, "record_orm_health", lambda *_args: True)
