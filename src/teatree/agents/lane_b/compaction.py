@@ -89,8 +89,7 @@ class LateHistoryCompactor:
         recent_tokens = min(self.keep_recent_tokens, max(1, current // 4) if unknown_window else window // 5)
         while start > 1 and _estimated_tokens(elided[start - 1 :]) < recent_tokens:
             start -= 1
-        while start > 1 and _tool_result_ids(elided[start]) - _tool_call_ids(elided[start:]):
-            start -= 1
+        start = _rewind_to_complete_pair(elided, min(start, len(elided) - 1))
         if start <= 1:
             return elided
         target = max(1, (window - self.reserve_tokens) // 2)
@@ -105,9 +104,31 @@ class LateHistoryCompactor:
             result = [elided[0], summarized, *pinned, *elided[start:]]
             if _estimated_tokens(result) <= target or start >= len(elided) - 1:
                 return result
-            while start < len(elided) - 1 and _estimated_tokens(result) > target:
-                start += 1
-                result = [elided[0], summarized, *_pinned_operator_messages(elided[1:start]), *elided[start:]]
+            start, result, pair_boundary = _reduce_recent_history(elided, start, summarized, target)
+            if pair_boundary:
+                return result
+
+
+def _rewind_to_complete_pair(messages: "Sequence[ModelMessage]", start: int) -> int:
+    while start > 1 and _tool_result_ids(messages[start]) - _tool_call_ids(messages[start:]):
+        start -= 1
+    return start
+
+
+def _reduce_recent_history(
+    messages: "Sequence[ModelMessage]", start: int, summary: ModelRequest, target: int
+) -> "tuple[int, list[ModelMessage], bool]":
+    result = [messages[0], summary, *_pinned_operator_messages(messages[1:start]), *messages[start:]]
+    while start < len(messages) - 1 and _estimated_tokens(result) > target:
+        start += 1
+        while start < len(messages) - 1 and _tool_result_ids(messages[start]) - _tool_call_ids(messages[start:]):
+            start += 1
+        if _tool_result_ids(messages[start]) - _tool_call_ids(messages[start:]):
+            start = _rewind_to_complete_pair(messages, start)
+            result = [messages[0], summary, *_pinned_operator_messages(messages[1:start]), *messages[start:]]
+            return start, result, True
+        result = [messages[0], summary, *_pinned_operator_messages(messages[1:start]), *messages[start:]]
+    return start, result, False
 
 
 def _pinned_operator_messages(messages: "Sequence[ModelMessage]") -> "list[ModelRequest]":
@@ -267,7 +288,7 @@ def _stubbed_part(part: ToolReturnPart) -> ToolReturnPart:
     return part if len(stub) >= len(rendered) else replace(part, content=stub)
 
 
-def _tool_call_ids(window: "list[ModelMessage]") -> set[str]:
+def _tool_call_ids(window: "Sequence[ModelMessage]") -> set[str]:
     """Every ``ToolCallPart.tool_call_id`` emitted by a ``ModelResponse`` in *window*."""
     return {
         part.tool_call_id

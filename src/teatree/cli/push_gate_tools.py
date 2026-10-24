@@ -28,7 +28,11 @@ def _brief_for_worktree(repo_root: Path) -> str:
         return ""
     ticket = worktree.ticket
     plan = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
-    task = Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging")).order_by("-created_at", "-pk").first()
+    task = (
+        Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging"), status=Task.Status.CLAIMED)
+        .order_by("-created_at", "-pk")
+        .first()
+    )
     return "\n".join(
         part
         for part in (

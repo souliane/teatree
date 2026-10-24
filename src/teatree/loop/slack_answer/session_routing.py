@@ -17,6 +17,7 @@ from teatree.core.models import PendingChatInjection, SessionCommand, Task, Thre
 from teatree.core.models.task_handoff import release_operator_pause
 from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.models.usage_window_state import OPERATOR_PAUSED_PREFIX
+from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading
 from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply, configured_owner_id
 from teatree.loop.slack_answer.control_verbs import control_verb
@@ -341,9 +342,17 @@ def _no_live_session(
     backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding, verb: str | None
 ) -> bool:
     command_id = slack_command_id(unit.overlay, unit.channel, unit.slack_ts)
-    if SessionCommand.objects.filter(command_id=command_id).exists():
-        msg = "unsettled session command has no reachable owner"
-        raise LiveOfflineError(msg)
+    unsettled = SessionCommand.objects.filter(command_id=command_id, outcome="").first()
+    if unsettled is not None:
+        if unsettled.ticket_id != binding.ticket_id or unsettled.text != unit.text:
+            return _post_bound_reply(
+                backend,
+                unit,
+                report,
+                f"Task {unsettled.task_id}: rejected (duplicate_mismatch).",
+                kind=PendingChatInjection.AnswerKind.ACK,
+            )
+        unsettled.delete()
     if unit.lead.answer_kind == PendingChatInjection.AnswerKind.SESSION:
         _unmark_unit_loop_replied(unit)
     if verb == "pause":
@@ -376,6 +385,10 @@ def _live_receipt(
     if verb == "resume":
         return _resume_pending_task(backend, unit, report, binding)
     session = _live_session(binding, unit.text)
+    if bound_answer is not None and (
+        not isinstance(session, _BoundLiveSession) or session.facts["task"] != bound_answer.question.parked_task_id
+    ):
+        return False
     if isinstance(session, _AmbiguousSessions):
         return _choice_reply(backend, unit, report, session.tasks)
     if session is None:
@@ -389,7 +402,7 @@ def _apply_live_answer(command: SessionCommand, bound_answer: BoundAnswer | None
         and bound_answer.question.parked_task_id == command.task_id
         and command.outcome in {"accepted_current_turn", "accepted_new_turn", "queued"}
     ):
-        apply_bound_answer(bound_answer, backend=backend, resume_task=False)
+        apply_bound_answer(bound_answer, backend=backend, on_answer=apply_stop_answer, resume_task=False)
 
 
 def _apply_live_session(

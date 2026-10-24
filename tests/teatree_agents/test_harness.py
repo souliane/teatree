@@ -54,6 +54,7 @@ from teatree.agents.harness import (
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessSpec, InvalidHarnessProviderError, register_harness
+from teatree.agents.lane_b.compaction import LateHistoryCompactor
 from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError, tier_models
 from teatree.agents.pydantic_ai_config import (
     LANE_EVAL,
@@ -1275,6 +1276,50 @@ class TestPydanticAiCompaction(TestCase):
         assert "Earlier conversation summary:" in repr(compacted[1])
         assert "old instruction 0" not in repr(compacted)
         assert "new work" in repr(compacted)
+
+    def test_harness_built_session_compacts_and_retries_after_provider_overflow(self) -> None:
+        calls = 0
+        summaries: list[str] = []
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            nonlocal calls
+            await asyncio.sleep(0)
+            calls += 1
+            if calls == 1:
+                raise ModelHTTPError(status_code=400, model_name="test", body="context window exceeded")
+            yield "continued"
+
+        async def summarize(stale: str, _usage: object) -> str:
+            await asyncio.sleep(0)
+            summaries.append(stale)
+            return "earlier work"
+
+        original_compactor = LateHistoryCompactor
+        harness = PydanticAiHarness(
+            model=FunctionModel(stream_function=stream_fn, profile={"context_window": 200_000}),
+            history=[
+                ModelRequest(parts=[UserPromptPart(content="task")]),
+                ModelResponse(parts=[TextPart(content="old work " * 10_000)]),
+                ModelRequest(parts=[UserPromptPart(content="recent direction")]),
+            ],
+            phase="coding",
+        )
+
+        async def drive() -> None:
+            async with harness.open(ClaudeAgentOptions()) as session:
+                await session.query("new work")
+                messages = [message async for message in session.receive_response()]
+                assert any(isinstance(message, ResultMessage) and not message.is_error for message in messages)
+
+        with patch.object(
+            harness_mod,
+            "LateHistoryCompactor",
+            side_effect=lambda _summarize, **kwargs: original_compactor(summarize, **kwargs),
+        ):
+            asyncio.run(drive())
+
+        assert calls == 2
+        assert summaries
 
 
 class TestPydanticAiStepCap(TestCase):

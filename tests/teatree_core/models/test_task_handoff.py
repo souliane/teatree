@@ -40,6 +40,21 @@ from tests.factories import planned_ticket
 
 
 class TestOperatorPause(TestCase):
+    def test_a_newer_non_pause_attempt_keeps_the_gate_closed(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            status=Task.Status.PENDING,
+            not_before=timezone.now() + timedelta(days=1),
+        )
+        TaskAttempt.objects.create(task=task, error="operator_paused: paused by the operator")
+        TaskAttempt.objects.create(task=task, error="worker restarted")
+
+        assert not release_operator_pause(task)
+        task.refresh_from_db()
+        assert task.not_before is not None
+
     def test_resume_releases_the_gate_and_the_task_continues_its_own_conversation(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)

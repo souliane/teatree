@@ -59,6 +59,39 @@ def _orphaned_return_ids(msgs: list[ModelMessage]) -> list[str]:
 
 
 class TestLateCompaction:
+    def test_large_final_message_stays_whole_after_older_history_is_summarized(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "older work"
+
+        final = ModelRequest(parts=[UserPromptPart(content="x" * 100_000)])
+        history = [ModelRequest(parts=[UserPromptPart(content="task")]), *_msgs(4), final]
+        ctx = SimpleNamespace(context_window_used=0.95, model=SimpleNamespace(context_window=200_000), usage=RunUsage())
+
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize)(ctx, history))
+
+        assert result[-1] is final
+        assert "Earlier conversation summary:" in repr(result[1])
+
+    def test_target_reduction_keeps_every_tool_return_with_its_call(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "older work"
+
+        history = [ModelRequest(parts=[UserPromptPart(content="task" * 10_000)])]
+        for index in range(10):
+            history.extend((_tool_call(f"c{index}"), _big_return(f"c{index}", 8_000)))
+        ctx = SimpleNamespace(context_window_used=0.95, model=SimpleNamespace(context_window=32_000), usage=RunUsage())
+
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, keep_tool_results=0)(ctx, history))
+
+        assert _orphaned_return_ids(result) == []
+        assert "Earlier conversation summary:" in repr(result[1])
+
+    def test_native_and_one_million_suffix_window_fallbacks(self) -> None:
+        assert compaction_mod.context_window_for_model("anthropic/claude-opus-4-7", None) == 1_000_000
+        assert compaction_mod.context_window_for_model("router/unknown[1m]", None) == 1_000_000
+
     def test_operator_steer_in_stale_history_survives_verbatim(self) -> None:
         async def summarize(_text: str, _usage: RunUsage) -> str:
             await asyncio.sleep(0)
