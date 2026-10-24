@@ -37,7 +37,7 @@ import sys
 from django.tasks import task
 from django.utils import timezone
 
-from teatree.loops.deadlined_tick import run_deadlined_argv
+from teatree.loops.deadlined_tick import run_deadlined_argv, tick_subprocess_env
 from teatree.loops.enable_verdict import fleet_admits_work
 from teatree.loops.timer_chains import DAILY_TICK_DEADLINE_SECONDS, LOOPS_QUEUE
 
@@ -118,6 +118,7 @@ def drive_off_live_tick_loops() -> dict[str, int]:
                 [sys.executable, "-m", "teatree", *argv_tail],
                 label=f"off-live-tick loop {name!r}",
                 deadline=deadline,
+                env=tick_subprocess_env(),
             )
         except Exception:
             logger.exception("off-live-tick driver: %r failed to run; the chain and the other loops survive", name)

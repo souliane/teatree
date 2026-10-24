@@ -37,19 +37,23 @@ class Command(TyperCommand):
             OUTER_LOOP_LEASE_SECONDS,
         )
         from teatree.loops.outer_loop.tick import REFUSED_ACTION, run_tick  # noqa: PLC0415 — cross-layer import cycle
+        from teatree.loops.tick_cost import record_tick_cost  # noqa: PLC0415 — deferred: command import cycle
 
         now = timezone.now()
         row = Loop.objects.filter(name=MINI_LOOP.name).first()
         if row is None or not loop_admits(MINI_LOOP.name):
             self.stdout.write("SKIP  outer_loop disabled (no enabled Loop row / LoopState hold).")
+            record_tick_cost(MINI_LOOP.name, found_work=False)
             return
         if not row.is_due(now):
             self.stdout.write("SKIP  outer_loop cadence not elapsed.")
+            record_tick_cost(MINI_LOOP.name, found_work=False)
             return
 
         owner = f"pid-{os.getpid()}"
         if not LoopLease.objects.acquire(OUTER_LOOP_LEASE_NAME, owner=owner, lease_seconds=OUTER_LOOP_LEASE_SECONDS):
             self.stdout.write("SKIP  another outer_loop tick is already running — lease held.")
+            record_tick_cost(MINI_LOOP.name, found_work=False)
             return
         try:
             result = run_tick(now=now)
@@ -61,6 +65,7 @@ class Command(TyperCommand):
         # A guard-chain refusal mutates nothing; labelling it OK read as an advanced tick.
         label = "REFUSE" if result.action == REFUSED_ACTION else "OK    "
         self.stdout.write(f"{label} outer_loop tick — {result.action}{detail}{experiment}.")
+        record_tick_cost(MINI_LOOP.name, found_work=result.action not in {"idle", "waiting", REFUSED_ACTION})
 
     @command(name="status")
     def status(self) -> None:

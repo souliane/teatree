@@ -97,14 +97,17 @@ class Command(TyperCommand):
         )
         from teatree.loops.directive_loop.tick import run_tick  # noqa: PLC0415 — cross-layer import cycle
         from teatree.loops.enable_verdict import loop_admits  # noqa: PLC0415 — cross-layer import cycle
+        from teatree.loops.tick_cost import record_tick_cost  # noqa: PLC0415 — deferred: command import cycle
 
         now = timezone.now()
         row = Loop.objects.filter(name=MINI_LOOP.name).first()
         if row is None or not loop_admits(MINI_LOOP.name):
             self.stdout.write("SKIP  directive_loop disabled (no enabled Loop row / LoopState hold).")
+            record_tick_cost(MINI_LOOP.name, found_work=False)
             return
         if not row.is_due(now):
             self.stdout.write("SKIP  directive_loop cadence not elapsed.")
+            record_tick_cost(MINI_LOOP.name, found_work=False)
             return
 
         owner = f"pid-{os.getpid()}"
@@ -112,6 +115,7 @@ class Command(TyperCommand):
             DIRECTIVE_LOOP_LEASE_NAME, owner=owner, lease_seconds=DIRECTIVE_LOOP_LEASE_SECONDS
         ):
             self.stdout.write("SKIP  another directive_loop tick is already running — lease held.")
+            record_tick_cost(MINI_LOOP.name, found_work=False)
             return
         try:
             result = run_tick(now=now)
@@ -123,6 +127,7 @@ class Command(TyperCommand):
         # A guard refusal is a distinct outcome from a healthy tick, never an "OK" (#3643).
         prefix = "WARN " if result.action == "refused" else "OK   "
         self.stdout.write(f"{prefix} directive_loop tick — {result.action}{detail}{directive}.")
+        record_tick_cost(MINI_LOOP.name, found_work=result.action not in {"idle", "waiting", "refused"})
 
     @command(name="resolve-revert")
     def resolve_revert(

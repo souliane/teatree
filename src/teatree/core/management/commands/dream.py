@@ -126,14 +126,16 @@ class Command(DreamGapCommands, TyperCommand):
 
         ``force_all_phases`` stays False — ``--full`` is the manual pass's alias.
         """
-        _surface_exit_code(
-            self._run_pass(
-                since=None,
-                dry_run=False,
-                enforce_cadence=True,
-                mode=PipelineMode(),
-            )
+        from teatree.loops.tick_cost import record_tick_cost  # noqa: PLC0415 — deferred: command import cycle
+
+        outcome = self._run_pass(
+            since=None,
+            dry_run=False,
+            enforce_cadence=True,
+            mode=PipelineMode(),
         )
+        record_tick_cost("dream", found_work=outcome is not PassOutcome.SKIPPED)
+        _surface_exit_code(outcome)
 
     @command(name="compliance")
     def compliance(self) -> None:
