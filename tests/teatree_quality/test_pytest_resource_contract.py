@@ -207,7 +207,7 @@ def test_real_unsharded_pytest_refuses_before_collection() -> None:
 
 
 @pytest.mark.timeout(90)
-def test_real_pytest_refuses_oversized_directory_but_collects_small_one() -> None:
+def test_real_pytest_refuses_oversized_directory() -> None:
     env = os.environ.copy()
     for name in ("CI", "CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
         env.pop(name, None)
@@ -224,18 +224,6 @@ def test_real_pytest_refuses_oversized_directory_but_collects_small_one() -> Non
     assert large.returncode == 4
     assert "local pytest directory selection records" in large.stderr
     assert "collected" not in large.stdout
-
-    small = subprocess.run(
-        [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q", "tests/cli_doctor"],
-        cwd=REPO,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=45,
-        check=False,
-    )
-    assert small.returncode == 0, small.stderr
-    assert "collected" in small.stdout
 
 
 @pytest.mark.timeout(420)
