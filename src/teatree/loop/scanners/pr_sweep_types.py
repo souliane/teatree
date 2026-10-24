@@ -10,6 +10,7 @@ unaffected.
 
 from dataclasses import dataclass, field
 
+from teatree.core.pr_next_action import UNKNOWN
 from teatree.types import RawAPIDict
 
 GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
@@ -90,6 +91,7 @@ class PrSummary:
     title: str = ""
     created_at: str = ""
     updated_at: str = ""
+    approvals: str = UNKNOWN
     is_conflicted: bool = False
     behind_main: bool = False
     # The two refs the behind-base compare needs (#4526). ``compare_head_ref`` is
@@ -198,3 +200,7 @@ def blocked_merge_attempt(
     else:
         reason = reason_prefix if default_reason is None else default_reason
     return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="blocked", reason=reason)
+
+
+def skip_attempt(pr: PrSummary, *, reason: str) -> MergeAttempt:
+    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason, url=pr.url)

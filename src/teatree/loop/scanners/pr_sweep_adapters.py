@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree import forge_credentials
+from teatree.core.pr_next_action import APPROVED, AWAITING_APPROVAL, UNKNOWN
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr, run_gh
 from teatree.loop.scanners.pr_behind_base import (
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _GH_NOT_INSTALLED_RC = 127
+_GH_APPROVALS = {"APPROVED": APPROVED, "REVIEW_REQUIRED": AWAITING_APPROVAL, "CHANGES_REQUESTED": AWAITING_APPROVAL}
 #: More open PRs than this is refused, never read as a partial listing.
 OPEN_PR_CEILING = 500
 
@@ -52,6 +54,7 @@ class GhPrJson(TypedDict, total=False):
     title: str
     createdAt: str
     updatedAt: str
+    reviewDecision: str
     reviews: list[object]
     statusCheckRollup: list[object]
     mergeable: str
@@ -110,6 +113,7 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         title=title,
         created_at=_as_str(raw.get("createdAt")),
         updated_at=_as_str(raw.get("updatedAt")),
+        approvals=_GH_APPROVALS.get(_as_str(raw.get("reviewDecision")).upper(), UNKNOWN),
         is_conflicted=_gh_is_conflicted(raw),
         behind_main=_gh_reports_behind(raw),
         base_ref=_as_str(raw.get("baseRefName")),
@@ -198,8 +202,8 @@ class GhPrApiClient:
             str(OPEN_PR_CEILING + 1),
             "--json",
             (
-                "number,headRefOid,isDraft,url,title,createdAt,updatedAt,reviews,statusCheckRollup,mergeable,mergeStateStatus,"
-                "baseRefName,headRefName,headRepositoryOwner,author,isCrossRepository"
+                "number,headRefOid,isDraft,url,title,createdAt,updatedAt,reviewDecision,reviews,statusCheckRollup,"
+                "mergeable,mergeStateStatus,baseRefName,headRefName,headRepositoryOwner,author,isCrossRepository"
             ),
         ]
         rc, out, err = self._run_gh(argv, slug=slug)

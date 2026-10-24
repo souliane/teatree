@@ -62,8 +62,6 @@ from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSign
 from teatree.loop.scanners.pr_sweep_ci_classify import ci_gate_verdict
 from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from teatree.loop.scanners.pr_sweep_decision import (
-    _precondition_skip_reason,
-    _skip_attempt,
     head_review_state,
     own_or_same_repo,
     record_mergeable_notified,
@@ -73,7 +71,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_reporting import inventory_entry, pr_created_at, signal_from_attempt
 from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
-from teatree.loop.scanners.pr_sweep_ticket_gate import unowned_pr_refusal
+from teatree.loop.scanners.pr_sweep_ticket_gate import precondition_skip_reason, unowned_pr_refusal
 from teatree.loop.scanners.pr_sweep_types import (
     CLEAR_PRESENT_UNUSABLE_REASON,
     CONTESTED_HOLD_REASON,
@@ -87,6 +85,7 @@ from teatree.loop.scanners.pr_sweep_types import (
     MergeAttempt,
     PrSummary,
     blocked_merge_attempt,
+    skip_attempt,
 )
 
 __all__ = [
@@ -211,13 +210,15 @@ class PrSweepScanner:
             if isinstance(attempt, ScannerError):
                 errors.append(attempt)
                 continue
-            self._log_attempt(attempt)
-            signals.append(signal_from_attempt(attempt, overlay=self.overlay))
-            if not attempt.merged:
+            if attempt is not None:
+                self._log_attempt(attempt)
+                signals.append(signal_from_attempt(attempt, overlay=self.overlay))
+            if attempt is None or not attempt.merged:
                 inventory.append(inventory_entry(pr, attempt))
         if not errors:
             self._write_inventory_for_scan(inventory, errors)
         if errors and not signals:
+            # #1287: nothing produced this pass, so surface the first error and let the dispatcher record it.
             raise errors[0]
         if errors:
             logger.warning(
@@ -235,21 +236,18 @@ class PrSweepScanner:
             try:
                 listed.extend(self._list_open_prs(slug))
             except ScannerError as exc:
+                # F5.8: record and continue, so a later repo's failure never discards earlier merge signals.
                 errors.append(exc)
         return listed, errors
 
-    def _evaluate_for_scan(self, pr: PrSummary) -> MergeAttempt | ScannerError:
+    def _evaluate_for_scan(self, pr: PrSummary) -> MergeAttempt | ScannerError | None:
         try:
             return self._evaluate(pr)
         except ScannerError as exc:
             return exc
-        except Exception as exc:
+        except Exception:
             logger.exception("pr_sweep failed to evaluate %s#%s", pr.slug, pr.number)
-            return ScannerError(
-                scanner="pr_sweep",
-                error_class=ScannerErrorClass.UNKNOWN,
-                detail=f"evaluation failed for {pr.slug}#{pr.number}: {type(exc).__name__}",
-            )
+            return None
 
     def _write_inventory_for_scan(self, inventory: list[PrInventoryEntry], errors: list[ScannerError]) -> None:
         if self.inventory_writer is None:
@@ -312,9 +310,9 @@ class PrSweepScanner:
     def _evaluate(self, pr: PrSummary) -> MergeAttempt:
         if pr.is_conflicted:
             return self._flag_conflict(pr)
-        skip_reason = _precondition_skip_reason(pr)
+        skip_reason = precondition_skip_reason(pr)
         if skip_reason is not None:
-            return _skip_attempt(pr, reason=skip_reason)
+            return skip_attempt(pr, reason=skip_reason)
         lookup = look_up_clear_for_head(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
         if lookup.clear is None:
             unusable = lookup.unusable is not None
@@ -349,7 +347,7 @@ class PrSweepScanner:
         if reason not in self._STALE_BASE_BLOCK_REASONS or not red_required_at_stale_base(
             failing, behind_main=pr.behind_main, conflicted=pr.is_conflicted
         ):
-            return with_ci_context(_skip_attempt(pr, reason=reason), pr=pr, failing=failing)
+            return with_ci_context(skip_attempt(pr, reason=reason), pr=pr, failing=failing)
         remedy = branch_update.remedy_stale_base(pr, ctx=self._remedy_ctx(), budget=self.branch_update_budget)
         return with_ci_context(remedy, pr=pr, failing=failing)
 
@@ -450,9 +448,9 @@ class PrSweepScanner:
         if ci_skip is not None:
             return self._ci_block(pr, reason=ci_skip, failing=failing)
         if not own_or_same_repo(pr, self_identities=self.self_identities) or pr.behind_main:
-            return _skip_attempt(pr, reason="no_clear_for_head")
+            return skip_attempt(pr, reason="no_clear_for_head")
         if not record_mergeable_notified(pr=pr, overlay=self.overlay):
-            return _skip_attempt(pr, reason="no_clear_for_head")
+            return skip_attempt(pr, reason="no_clear_for_head")
         self._flag(slug=pr.slug, pr_id=pr.number, reason=MERGEABLE_AWAITING_REVIEW_REASON, url=pr.url)
         return MergeAttempt(
             slug=pr.slug,

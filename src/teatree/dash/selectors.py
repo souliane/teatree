@@ -24,6 +24,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.pr_inventory import HOURS_PER_DAY, MINUTES_PER_HOUR
 from teatree.dash.issue_link import issue_link
 from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, pending_phase_tasks_by_ticket
 from teatree.url_classify import pr_ref
@@ -51,8 +52,6 @@ HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_DELIVERED)
 STALE_ERROR_AFTER = timedelta(days=2)
 BOARD_PAGE_SIZE = 50
 _SECONDS_PER_MINUTE = 60
-_MINUTES_PER_HOUR = 60
-_HOURS_PER_DAY = 24
 
 # Every column the board renders, in lifecycle order (excludes HIDDEN_STATES).
 BOARD_COLUMNS: tuple[str, ...] = tuple(state for _group, states in COLUMN_GROUPS for state in states)
@@ -295,7 +294,7 @@ def _card_context(ticket_ids: list[int]) -> _CardContext:
         return _CardContext()
     # One fetch feeds both maps so the chip's TEXT and its NAMED KIND can never
     # disagree about which attempt they describe.
-    failures = _last_failure_by_ticket(ticket_ids)
+    failures = last_failure_by_ticket(ticket_ids)
     return _CardContext(
         active_ticket_ids=_active_ticket_ids(ticket_ids),
         active_phase=_active_phase(ticket_ids),
@@ -349,7 +348,7 @@ def _claimed_by(ticket_ids: list[int]) -> dict[int, str]:
     return claimed
 
 
-def _last_failure_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[str, str]]:
+def last_failure_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[str, str]]:
     """Per ticket, the latest attempt's ``(error, failure_kind)`` — empty when it did not fail.
 
     The NAMED kind travels with the error text (#3957) so the card can say what KIND of
@@ -445,12 +444,12 @@ def _dwell(latest_transition_at: datetime | None) -> str:
     minutes = max(0, int((timezone.now() - latest_transition_at).total_seconds() // _SECONDS_PER_MINUTE))
     if minutes == 0:
         return "< 1 min"
-    if minutes < _MINUTES_PER_HOUR:
+    if minutes < MINUTES_PER_HOUR:
         return f"{minutes} min"
-    hours, remaining_minutes = divmod(minutes, _MINUTES_PER_HOUR)
-    if hours < _HOURS_PER_DAY:
+    hours, remaining_minutes = divmod(minutes, MINUTES_PER_HOUR)
+    if hours < HOURS_PER_DAY:
         return f"{hours} h {remaining_minutes:02d} min"
-    days, remaining_hours = divmod(hours, _HOURS_PER_DAY)
+    days, remaining_hours = divmod(hours, HOURS_PER_DAY)
     return f"{days} d {remaining_hours} h"
 
 

@@ -20,7 +20,7 @@ from teatree.core.models.task_phase_disposition import transition_source_states
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
 #: The phases a dashboard button may enqueue, in drawer order. A strict subset of
 #: ``CANONICAL_PHASES``: the CLI accepts a free-form phase, the button surface does not.
@@ -64,6 +64,19 @@ def board_enqueue_buttons(queued: "Mapping[str, int]", *, ticket: Ticket) -> tup
     return _buttons(queued, BOARD_PHASES, ticket=ticket)
 
 
+def oldest_pending_phase_tasks(tasks: "Iterable[Task]") -> dict[int, dict[str, int]]:
+    """Ticket pk -> offered phase -> oldest unstarted task pk, from *tasks* newest first.
+
+    Descending pk so the later, lower pk overwrites: the oldest wins, the row
+    :func:`teatree.core.models.task_enqueue.enqueue_phase_task_once` refuses against.
+    """
+    queued: dict[int, dict[str, int]] = {}
+    for task in tasks:
+        if task.status == Task.Status.PENDING and task.phase in BOARD_PHASES:
+            queued.setdefault(task.ticket_id, {})[task.phase] = task.pk
+    return queued
+
+
 def pending_phase_tasks_by_ticket(ticket_ids: "list[int]") -> dict[int, dict[str, int]]:
     """Ticket pk -> its offered phases' oldest unstarted task pks, for the whole board.
 
@@ -73,15 +86,11 @@ def pending_phase_tasks_by_ticket(ticket_ids: "list[int]") -> dict[int, dict[str
     """
     if not ticket_ids:
         return {}
-    rows = (
-        Task.objects.filter(ticket_id__in=ticket_ids, phase__in=BOARD_PHASES, status=Task.Status.PENDING)
-        .order_by("-pk")
-        .values_list("ticket_id", "phase", "pk")
+    return oldest_pending_phase_tasks(
+        Task.objects.filter(ticket_id__in=ticket_ids, phase__in=BOARD_PHASES, status=Task.Status.PENDING).order_by(
+            "-pk"
+        )
     )
-    queued: dict[int, dict[str, int]] = {}
-    for ticket_id, phase, task_pk in rows:
-        queued.setdefault(ticket_id, {})[phase] = task_pk
-    return queued
 
 
 def phase_eligible(ticket: Ticket, phase: str) -> bool:

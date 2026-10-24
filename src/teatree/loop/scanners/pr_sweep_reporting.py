@@ -3,13 +3,9 @@
 from datetime import UTC, datetime
 
 from teatree.core.pr_inventory import PrInventoryEntry
+from teatree.core.pr_next_action import UNKNOWN, ci_label, sweep_next_task
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.pr_sweep_types import (
-    CLEAR_PRESENT_UNUSABLE_REASON,
-    MERGEABLE_AWAITING_REVIEW_REASON,
-    MergeAttempt,
-    PrSummary,
-)
+from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 
 
 def pr_created_at(pr: PrSummary) -> datetime:
@@ -20,26 +16,9 @@ def pr_created_at(pr: PrSummary) -> datetime:
     return created.astimezone(UTC) if created.tzinfo is not None else datetime.max.replace(tzinfo=UTC)
 
 
-def next_task_for_attempt(pr: PrSummary, attempt: MergeAttempt) -> str:
-    if attempt.reason == "no_clear_for_head":
-        return (
-            "Update PR branch against main" if pr.behind_main else "Obtain independent review and merge authorization"
-        )
-    actions = {
-        "draft": "Finish draft and request review",
-        "changes_requested": "Address requested changes",
-        "ci_red": "Fix failing CI",
-        "ci_pending": "Wait for CI to finish",
-        "required_checks_indeterminate": "Inspect required checks",
-        "conflict": "Resolve merge conflict",
-        "solo_overlay_no_review": "Run independent review",
-        CLEAR_PRESENT_UNUSABLE_REASON: "Refresh merge authorization for current head",
-        MERGEABLE_AWAITING_REVIEW_REASON: "Request independent review",
-    }
-    return actions.get(attempt.reason, f"Inspect PR blocker: {(attempt.reason or attempt.decision).replace('_', ' ')}")
-
-
-def inventory_entry(pr: PrSummary, attempt: MergeAttempt) -> PrInventoryEntry:
+def inventory_entry(pr: PrSummary, attempt: MergeAttempt | None) -> PrInventoryEntry:
+    """The PR's inventory row; *attempt* is ``None`` when the sweep could not evaluate it."""
+    reason = attempt.reason if attempt else "evaluation_failed"
     return PrInventoryEntry(
         url=pr.url,
         repo=pr.slug,
@@ -47,13 +26,17 @@ def inventory_entry(pr: PrSummary, attempt: MergeAttempt) -> PrInventoryEntry:
         title=pr.title,
         created_at=pr.created_at,
         updated_at=pr.updated_at,
-        next_task=next_task_for_attempt(pr, attempt),
-        decision=attempt.decision,
-        ci="red" if attempt.failing_required else "unknown",
-        approvals="unknown",
-        threads="unknown",
+        next_task=(
+            sweep_next_task(reason, attempt.decision, behind_main=pr.behind_main)
+            if attempt
+            else "Inspect why the PR sweep could not evaluate this PR"
+        ),
+        decision=attempt.decision if attempt else "evaluation_failed",
+        ci=ci_label(reason, failing_required=bool(attempt and attempt.failing_required)),
+        approvals=pr.approvals,
+        threads=UNKNOWN,
         draft=pr.is_draft,
-        reason=attempt.reason,
+        reason=reason,
     )
 
 

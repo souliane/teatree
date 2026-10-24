@@ -19,11 +19,11 @@ from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.pr_inventory import PrInventoryEntry, elapsed_label, merged_entries, parse_time, read_inventory
+from teatree.core.pr_next_action import GROUPS, UNKNOWN, PrActionFacts, decide, threads_label
 from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS
-from teatree.dash.selectors import _last_failure_by_ticket
-from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons
+from teatree.dash.selectors import last_failure_by_ticket
+from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, oldest_pending_phase_tasks
 
-_GROUPS = ("Needs you", "Waiting on colleagues", "Factory working", "Ready to merge or merging", "Blocked")
 _ACTIVE_PR_STATES = (PullRequest.State.OPEN, PullRequest.State.REVIEW_REQUESTED, PullRequest.State.APPROVED)
 _ACTIVE_TASK_STATES = (Task.Status.PENDING, Task.Status.CLAIMED)
 _STALE_INVENTORY_AFTER = timedelta(minutes=30)
@@ -96,7 +96,7 @@ def _web_link(value: str) -> str:
 @dataclass(frozen=True, slots=True)
 class PrObservation:
     entries: dict[str, PrInventoryEntry]
-    overlays: set[str]
+    observed_at: dict[str, datetime]
     verified_urls: set[str]
     warning: str
 
@@ -105,15 +105,17 @@ def _inventory(now: datetime) -> PrObservation:
     try:
         snapshots = read_inventory()
     except (OSError, ValueError) as exc:
-        return PrObservation({}, set(), set(), f"PR inventory unavailable: {exc}")
+        return PrObservation({}, {}, set(), f"PR inventory unavailable: {exc}")
     if not snapshots:
-        return PrObservation({}, set(), set(), "PR inventory unavailable; showing recorded pull requests.")
-    overlays = {snapshot.overlay for snapshot in snapshots if not snapshot.overlay.startswith("own:")}
-    stale = [snapshot for snapshot in snapshots if now - snapshot.observed_at > _STALE_INVENTORY_AFTER]
-    stale_urls = {entry.url for snapshot in stale for entry in snapshot.entries}
-    entries = merged_entries(snapshots)
+        return PrObservation({}, {}, set(), "PR inventory unavailable; showing recorded pull requests.")
+    fresh = [snapshot for snapshot in snapshots if now - snapshot.observed_at <= _STALE_INVENTORY_AFTER]
+    stale = [snapshot for snapshot in snapshots if snapshot not in fresh]
+    verified = merged_entries(fresh)
+    observed_at = {
+        snapshot.overlay: snapshot.observed_at for snapshot in fresh if not snapshot.overlay.startswith("own:")
+    }
     warning = f"PR inventory is stale for {', '.join(sorted(item.overlay for item in stale))}." if stale else ""
-    return PrObservation(entries, overlays, entries.keys() - stale_urls, warning)
+    return PrObservation({**merged_entries(stale), **verified}, observed_at, set(verified), warning)
 
 
 def _cached_prs(tickets: list[Ticket]) -> tuple[dict[str, Ticket], dict[str, CachedPr]]:
@@ -134,20 +136,19 @@ def _cached_prs(tickets: list[Ticket]) -> tuple[dict[str, Ticket], dict[str, Cac
 def _approval_text(raw: CachedPr) -> str:
     approvals = raw.get("approvals")
     if not isinstance(approvals, dict):
-        return "unknown"
+        return UNKNOWN
     count = approvals.get("count")
     required = approvals.get("required")
-    return f"{count}/{required}" if isinstance(count, int) and isinstance(required, int) else "unknown"
+    return f"{count}/{required}" if isinstance(count, int) and isinstance(required, int) else UNKNOWN
 
 
-def _thread_text(raw: CachedPr) -> str:
+def _thread_text(raw: CachedPr) -> tuple[str, bool]:
     discussions = raw.get("discussions")
     if not isinstance(discussions, list):
-        return "unknown"
-    unresolved = sum(
-        item.get("status") in {"waiting_reviewer", "needs_reply"} for item in discussions if isinstance(item, dict)
-    )
-    return f"{unresolved} unresolved"
+        return UNKNOWN, False
+    statuses = [item.get("status") for item in discussions if isinstance(item, dict)]
+    unresolved = sum(status in {"waiting_reviewer", "needs_reply"} for status in statuses)
+    return threads_label(unresolved), "needs_reply" in statuses
 
 
 def _owner_questions(urls: set[str], ticket_ids: set[int]) -> tuple[dict[str, str], dict[int, str]]:
@@ -176,21 +177,6 @@ def _owner_questions(urls: set[str], ticket_ids: set[int]) -> tuple[dict[str, st
     return by_url, by_ticket
 
 
-@dataclass(frozen=True, slots=True)
-class PrActionFacts:
-    entry: PrInventoryEntry | None
-    row: PullRequest | None
-    task: Task | None
-    failure: str
-    review_requested: bool
-    question: str
-    ci: str
-    approvals_met: bool | None
-    approvals: str
-    threads: str
-    verified: bool
-
-
 @dataclass(slots=True)
 class PrBoardSources:
     now: datetime
@@ -211,65 +197,12 @@ class PrBoardSources:
     warning: str
 
 
-def _blocked_reason(facts: PrActionFacts) -> str:
-    if facts.failure:
-        return f"Fix failed task: {facts.failure[:160]}"
-    if facts.ci.lower() in {"red", "failed", "failure", "error", "canceled", "cancelled"}:
-        return "Fix red CI"
-    if facts.threads not in {"unknown", "0 unresolved"}:
-        return f"Resolve {facts.threads} thread(s)"
-    if facts.entry is not None and facts.entry.decision in {
-        "flag_conflict",
-        "needs_branch_update",
-        "required_checks_indeterminate",
-    }:
-        return facts.entry.next_task
-    return ""
-
-
-def _authorization_action(entry: PrInventoryEntry) -> tuple[str, str, str]:
-    if entry.reason == "mergeable_awaiting_review":
-        return "Needs you", "You", entry.next_task
-    if entry.next_task == "Update PR branch against main":
-        return "Blocked", "Factory", entry.next_task
-    return "Waiting on colleagues", "Reviewer", entry.next_task
-
-
-def _next_action(facts: PrActionFacts) -> tuple[str, str, str]:
-    if facts.question:
-        outcome = ("Needs you", "You", facts.question)
-    elif facts.task is not None:
-        outcome = ("Factory working", "Factory", f"{facts.task.phase} ({facts.task.status})")
-    elif blocked := _blocked_reason(facts):
-        outcome = ("Blocked", "Factory", blocked)
-    elif facts.entry is not None and facts.entry.reason in {"no_clear_for_head", "mergeable_awaiting_review"}:
-        outcome = _authorization_action(facts.entry)
-    elif facts.approvals_met is False:
-        outcome = ("Waiting on colleagues", "Reviewer", f"Await approvals ({facts.approvals})")
-    elif facts.review_requested or (facts.row is not None and facts.row.state == PullRequest.State.REVIEW_REQUESTED):
-        outcome = ("Waiting on colleagues", "Reviewer", "Review requested")
-    elif facts.approvals_met is True and facts.ci.lower() in {"green", "success"}:
-        outcome = (
-            ("Ready to merge or merging", "Factory", "Merge through the ticket keystone")
-            if facts.verified
-            else ("Blocked", "Factory", "Forge facts not verified by a recent tick; waiting for the next read")
-        )
-    elif facts.entry is not None and facts.entry.next_task:
-        group = "Factory working" if facts.ci.lower() in {"pending", "running"} else "Blocked"
-        outcome = (group, "Factory", facts.entry.next_task)
-    elif facts.ci == "unknown":
-        outcome = ("Blocked", "Factory", "PR state unreadable; inspect live checks and approvals")
-    else:
-        outcome = ("Factory working", "Factory", "Inspect pull request")
-    return outcome
-
-
 def _ticket_state(
     urls: set[str], rows_by_url: dict[str, PullRequest]
 ) -> tuple[dict[str, Ticket], dict[str, CachedPr], dict[str, Ticket], set[int]]:
     tickets = list(
-        Ticket.objects.filter(Q(issue_url__in=urls) | ~Q(extra={})).only(
-            "id", "issue_url", "short_description", "extra"
+        Ticket.objects.filter(Q(issue_url__in=urls) | Q(extra__has_key="prs")).only(
+            "id", "issue_url", "short_description", "extra", "state", "role"
         )
     )
     owners, cache = _cached_prs(tickets)
@@ -283,27 +216,30 @@ def _ticket_state(
 
 
 def _active_tasks(ticket_ids: set[int]) -> tuple[dict[int, Task], dict[int, dict[str, int]], dict[int, TaskAttempt]]:
+    active = list(
+        Task.objects.filter(ticket_id__in=ticket_ids, status__in=_ACTIVE_TASK_STATES).order_by("ticket_id", "-pk")
+    )
     tasks: dict[int, Task] = {}
-    queued: dict[int, dict[str, int]] = {}
-    for task in Task.objects.filter(ticket_id__in=ticket_ids, status__in=_ACTIVE_TASK_STATES).order_by(
-        "ticket_id", "-pk"
-    ):
+    for task in active:
         tasks.setdefault(task.ticket_id, task)
-        if task.status == Task.Status.PENDING:
-            queued.setdefault(task.ticket_id, {})[task.phase] = task.pk
     attempts: dict[int, TaskAttempt] = {}
     recent = TaskAttempt.objects.filter(task_id__in=[task.pk for task in tasks.values()]).order_by("task_id", "-pk")
     for attempt in recent:
         attempts.setdefault(attempt.task_id, attempt)
-    return tasks, queued, attempts
+    return tasks, oldest_pending_phase_tasks(active), attempts
 
 
 def _visible_pr_urls(
-    observed: dict[str, PrInventoryEntry], observed_overlays: set[str], rows_by_url: dict[str, PullRequest]
+    observed: dict[str, PrInventoryEntry], observed_at: dict[str, datetime], rows_by_url: dict[str, PullRequest]
 ) -> set[str]:
+    """Observed PRs, plus every recorded row a fresh complete snapshot of its overlay cannot contradict."""
     urls = set(observed)
     for row in rows_by_url.values():
-        if row.overlay not in observed_overlays or row.url in observed:
+        seen_at = observed_at.get(row.overlay)
+        newer_than_snapshot = (
+            seen_at is not None and row.create_verified_at is not None and row.create_verified_at > seen_at
+        )
+        if seen_at is None or newer_than_snapshot or row.url in observed:
             urls.add(row.url)
     return urls
 
@@ -318,9 +254,9 @@ def _collect_sources() -> PrBoardSources:
     rows_by_url = {
         row.url: row for row in PullRequest.objects.filter(state__in=_ACTIVE_PR_STATES).select_related("ticket")
     }
-    urls = _visible_pr_urls(observation.entries, observation.overlays, rows_by_url)
+    urls = _visible_pr_urls(observation.entries, observation.observed_at, rows_by_url)
     owners, cache, by_issue_url, ticket_ids = _ticket_state(urls, rows_by_url)
-    if not observation.overlays:
+    if not observation.observed_at:
         urls.update(
             url for url, raw in cache.items() if raw.get("state") in {"open", "opened", "review_requested", "approved"}
         )
@@ -338,7 +274,7 @@ def _collect_sources() -> PrBoardSources:
         by_issue_url,
         tasks,
         queued,
-        _last_failure_by_ticket(list(ticket_ids)) if ticket_ids else {},
+        last_failure_by_ticket(list(ticket_ids)) if ticket_ids else {},
         _review_posts(urls),
         attempts,
         questions_by_url,
@@ -355,16 +291,6 @@ def _card_identity(
     ref = f"{repo}!{iid}"
     title = entry.title if entry is not None else str(raw.get("title") or (ticket.short_description if ticket else ""))
     return title or ref, ref
-
-
-def _approvals_met(raw: CachedPr) -> bool | None:
-    approvals = raw.get("approvals")
-    if not isinstance(approvals, dict):
-        return None
-    count, required = approvals.get("count"), approvals.get("required")
-    if not isinstance(count, int) or not isinstance(required, int):
-        return None
-    return count >= required
 
 
 def _review_due(post: ReviewRequestPost, repo: str) -> str:
@@ -389,36 +315,81 @@ def _last_result(attempt: TaskAttempt | None) -> str:
     return str(attempt.outcome or "in progress")
 
 
-def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
+@dataclass(frozen=True, slots=True)
+class _Subject:
+    url: str
+    entry: PrInventoryEntry | None
+    row: PullRequest | None
+    ticket: Ticket | None
+    raw: CachedPr
+    post: ReviewRequestPost | None
+    task: Task | None
+
+    @property
+    def repo(self) -> str:
+        return self.entry.repo if self.entry else self.row.repo if self.row else str(self.raw.get("repo", ""))
+
+
+def _subject(url: str, sources: PrBoardSources) -> _Subject:
     entry = sources.observed.get(url)
     row = sources.rows_by_url.get(url)
     ticket = row.ticket if row is not None else sources.owners.get(url) or sources.tickets_by_issue_url.get(url)
-    raw = sources.cache.get(url, {})
-    ci = entry.ci if entry is not None and entry.ci != "unknown" else str(raw.get("pipeline_status") or "unknown")
-    threads = _thread_text(raw)
-    if threads == "unknown" and entry is not None:
-        threads = entry.threads
-    created = parse_time(entry.created_at if entry is not None else row.create_verified_at if row is not None else None)
-    updated = entry.updated_at if entry is not None else raw.get("updated_at")
-    post = sources.review_posts.get(url)
-    approvals = _approval_text(raw)
-    facts = PrActionFacts(
+    return _Subject(
+        url=url,
         entry=entry,
         row=row,
+        ticket=ticket,
+        raw=sources.cache.get(url, {}),
+        post=sources.review_posts.get(url),
         task=sources.tasks.get(ticket.pk) if ticket is not None else None,
+    )
+
+
+def _facts(subject: _Subject, sources: PrBoardSources) -> PrActionFacts:
+    entry, raw, ticket, task = subject.entry, subject.raw, subject.ticket, subject.task
+    if entry is not None:
+        ci, approvals, threads, threads_blocking = entry.ci, entry.approvals, entry.threads, True
+    else:
+        threads, threads_blocking = _thread_text(raw)
+        ci, approvals = str(raw.get("pipeline_status") or UNKNOWN), _approval_text(raw)
+    return PrActionFacts(
+        entry=entry,
+        working=f"{task.phase} ({task.status})" if task is not None else "",
         failure=sources.failures.get(ticket.pk, ("", ""))[0] if ticket is not None else "",
-        review_requested=post is not None or raw.get("review_requested") is True,
+        review_requested=subject.post is not None
+        or raw.get("review_requested") is True
+        or (subject.row is not None and subject.row.state == PullRequest.State.REVIEW_REQUESTED),
         question=(
-            sources.questions_by_url.get(url, "") or sources.questions_by_ticket.get(ticket.pk if ticket else -1, "")
+            sources.questions_by_url.get(subject.url, "")
+            or sources.questions_by_ticket.get(ticket.pk if ticket else -1, "")
         ),
         ci=ci,
-        approvals_met=_approvals_met(raw),
         approvals=approvals,
         threads=threads,
-        verified=url in sources.verified_urls,
+        threads_blocking=threads_blocking,
+        draft=entry.draft if entry is not None else bool(raw.get("draft")),
+        verified=subject.url in sources.verified_urls,
     )
-    outcome = _next_action(facts)
-    title, ref = _card_identity(entry, row, raw, ticket)
+
+
+def _review_link(subject: _Subject) -> str:
+    post = subject.post
+    slack = (
+        f"https://app.slack.com/archives/{post.slack_channel_id}/p{post.slack_thread_ts.replace('.', '')}"
+        if post and post.slack_channel_id and post.slack_thread_ts
+        else ""
+    )
+    return _web_link(str(subject.raw.get("review_permalink") or slack))
+
+
+def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
+    subject = _subject(url, sources)
+    entry, row, ticket, post, task = subject.entry, subject.row, subject.ticket, subject.post, subject.task
+    facts = _facts(subject, sources)
+    outcome = decide(facts)
+    created = parse_time(entry.created_at if entry is not None else row.create_verified_at if row is not None else None)
+    updated = entry.updated_at if entry is not None else subject.raw.get("updated_at")
+    title, ref = _card_identity(entry, row, subject.raw, ticket)
     return PrBoardCard(
         dom_id=sha256(url.encode()).hexdigest()[:16],
         url=url,
@@ -427,40 +398,29 @@ def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
         ref=ref,
         age=elapsed_label(created, sources.now),
         created_at=created,
-        ci=ci,
-        approvals=approvals,
-        threads=threads,
+        ci=facts.ci,
+        approvals=facts.approvals,
+        threads=facts.threads,
         last_activity=elapsed_label(updated if isinstance(updated, (str, datetime)) else None, sources.now),
-        next_actor=outcome[1],
-        next_action=outcome[2],
-        group=outcome[0],
+        next_actor=outcome.actor,
+        next_action=outcome.text,
+        group=outcome.group,
         ticket_id=ticket.pk if ticket is not None else None,
-        draft=entry.draft if entry is not None else bool(raw.get("draft")),
-        review_link=_web_link(
-            str(
-                raw.get("review_permalink")
-                or (
-                    f"https://app.slack.com/archives/{post.slack_channel_id}/p{post.slack_thread_ts.replace('.', '')}"
-                    if post and post.slack_channel_id and post.slack_thread_ts
-                    else ""
-                )
-            )
-        ),
-        review_age=elapsed_label(post.created_at, sources.now) if post else "unknown",
+        draft=facts.draft,
+        review_link=_review_link(subject),
+        review_age=elapsed_label(post.created_at, sources.now) if post else UNKNOWN,
         review_reasks=post.nag_count if post else 0,
-        review_due=_review_due(post, entry.repo if entry else row.repo if row else str(raw.get("repo", "")))
-        if post
-        else "unknown",
-        work_agent=(facts.task.claimed_by or "queued") if facts.task else "",
-        work_since=elapsed_label(facts.task.claimed_at or facts.task.created_at, sources.now) if facts.task else "",
-        last_result=_last_result(sources.attempts.get(facts.task.pk)) if facts.task else "",
+        review_due=_review_due(post, subject.repo) if post else UNKNOWN,
+        work_agent=(task.claimed_by or "queued") if task else "",
+        work_since=elapsed_label(task.claimed_at or task.created_at, sources.now) if task else "",
+        last_result=_last_result(sources.attempts.get(task.pk)) if task else "",
         enqueue_buttons=board_enqueue_buttons(sources.queued.get(ticket.pk, {}), ticket=ticket) if ticket else (),
     )
 
 
 def build_pr_board() -> PrBoard:
     sources = _collect_sources()
-    grouped: dict[str, list[PrBoardCard]] = {name: [] for name in _GROUPS}
+    grouped: dict[str, list[PrBoardCard]] = {name: [] for name in GROUPS}
     for url in sources.urls:
         card = _card(url, sources)
         grouped[card.group].append(card)
@@ -471,6 +431,6 @@ def build_pr_board() -> PrBoard:
                 sorted(grouped[name], key=lambda card: (card.created_at or datetime.max.replace(tzinfo=UTC), card.ref))
             ),
         )
-        for name in _GROUPS
+        for name in GROUPS
     )
     return PrBoard(groups=groups, total=len(sources.urls), inventory_warning=sources.warning)

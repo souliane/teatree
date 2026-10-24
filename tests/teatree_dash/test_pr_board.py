@@ -11,7 +11,7 @@ from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.task import Task
 from teatree.core.pr_inventory import PrInventoryEntry, PrInventorySnapshot
 from teatree.core.review.mr_triage import RepoOwner
-from teatree.dash.pr_board import PrBoard, build_pr_board
+from teatree.dash.pr_board import PrBoard, PrBoardCard, build_pr_board
 from tests.factories import PullRequestFactory, TaskAttemptFactory, TaskFactory, TicketFactory
 
 
@@ -85,8 +85,8 @@ class PrBoardTestCase(TestCase):
             next_task="Review or merge PR",
             decision="my_pr.open",
             ci="success",
-            approvals="unknown",
-            threads="unknown",
+            approvals="approved",
+            threads="0 unresolved",
             draft=False,
         )
         return (PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now() - age, entries=(entry,)),)
@@ -98,9 +98,7 @@ class PrBoardTestCase(TestCase):
             card = next(card for group in build_pr_board().groups for card in group.cards)
 
         assert card.group == "Ready to merge or merging"
-        assert card.ci == "success"
-        assert card.approvals == "2/2"
-        assert card.threads == "0 unresolved"
+        assert (card.ci, card.approvals, card.threads) == ("success", "approved", "0 unresolved")
         assert card.title == "Ready PR"
 
     def test_approved_green_pr_with_a_stale_observation_is_blocked_not_ready(self) -> None:
@@ -286,6 +284,92 @@ class PrBoardTestCase(TestCase):
         assert board.total == 1
         assert _group(board, "Blocked") == [f"{pr.repo}!{pr.iid}"]
         assert "unreadable" in board.groups[-1].cards[0].next_action
+
+
+def _observed_entry(pr: PullRequest, **overrides: object) -> PrInventoryEntry:
+    fields: dict[str, object] = {
+        "url": pr.url,
+        "repo": pr.repo,
+        "iid": int(pr.iid),
+        "title": "Observed PR",
+        "created_at": "2026-10-01T10:00:00Z",
+        "updated_at": "2026-10-02T10:00:00Z",
+        "next_task": "Review or merge PR",
+        "decision": "my_pr.open",
+        "ci": "green",
+        "approvals": "approved",
+        "threads": "unknown",
+        "draft": False,
+    }
+    return PrInventoryEntry(**{**fields, **overrides})
+
+
+class PrBoardFreshObservationTestCase(TestCase):
+    def setUp(self) -> None:
+        inventory = patch("teatree.dash.pr_board.read_inventory", return_value=())
+        inventory.start()
+        self.addCleanup(inventory.stop)
+
+    def _stale_ready_cache(self) -> PullRequest:
+        ticket = TicketFactory()
+        pr = PullRequestFactory(ticket=ticket, state=PullRequest.State.APPROVED)
+        ticket.extra = {
+            "prs": {pr.url: {"pipeline_status": "success", "approvals": {"count": 2, "required": 2}, "discussions": []}}
+        }
+        ticket.save(update_fields=["extra"])
+        return PullRequest.objects.get(pk=pr.pk)
+
+    def _card(self, pr: PullRequest, entry: PrInventoryEntry) -> PrBoardCard:
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            return next(card for group in build_pr_board().groups for card in group.cards)
+
+    def test_fresh_observation_blocks_a_ready_claim_the_stale_cache_would_make(self) -> None:
+        cases = {
+            "draft": ("Blocked", {"reason": "draft", "ci": "unknown", "draft": True}),
+            "changes requested": ("Blocked", {"reason": "changes_requested", "ci": "unknown"}),
+            "CI pending": ("Factory working", {"reason": "ci_pending", "ci": "pending", "approvals": "unknown"}),
+        }
+        for name, (group, overrides) in cases.items():
+            with self.subTest(name):
+                pr = self._stale_ready_cache()
+                card = self._card(pr, _observed_entry(pr, next_task=name, **overrides))
+                assert card.group == group
+                assert card.approvals != "2/2"
+
+    def test_fresh_approved_green_observation_is_ready(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        card = self._card(
+            pr,
+            _observed_entry(
+                pr, reason="no_clear_for_head", next_task="Obtain independent review and merge authorization"
+            ),
+        )
+        assert card.group == "Ready to merge or merging"
+        assert (card.ci, card.approvals) == ("green", "approved")
+
+    def test_approved_green_draft_is_not_ready(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        card = self._card(
+            pr, _observed_entry(pr, draft=True, reason="draft", next_task="Finish draft and request review")
+        )
+        assert card.group == "Blocked"
+
+    def test_green_pr_awaiting_approval_waits_on_the_reviewer(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        card = self._card(pr, _observed_entry(pr, approvals="awaiting approval"))
+        assert (card.group, card.next_actor) == ("Waiting on colleagues", "Reviewer")
+
+    def test_waiting_reviewer_thread_does_not_block_the_factory(self) -> None:
+        ticket = TicketFactory()
+        pr = PullRequestFactory(ticket=ticket)
+        ticket.extra = {
+            "prs": {pr.url: {"pipeline_status": "success", "discussions": [{"status": "waiting_reviewer"}]}}
+        }
+        ticket.save(update_fields=["extra"])
+        card = next(card for group in build_pr_board().groups for card in group.cards)
+        assert card.group != "Blocked"
+        assert card.threads == "1 unresolved"
 
 
 class PrBoardActionDetailsTestCase(TestCase):

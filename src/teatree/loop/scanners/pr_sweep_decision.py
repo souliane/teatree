@@ -253,22 +253,3 @@ def record_mergeable_notified(*, pr: PrSummary, overlay: str) -> bool:
         logger.exception("pr_sweep failed to record mergeable-notified ledger for %s#%d", pr.slug, pr.number)
         return False
     return row is not None
-
-
-def _skip_attempt(pr: PrSummary, *, reason: str) -> MergeAttempt:
-    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason, url=pr.url)
-
-
-def _precondition_skip_reason(pr: PrSummary) -> str | None:
-    if pr.is_draft:
-        return "draft"
-    if pr.has_changes_requested:
-        return "changes_requested"
-    # #3244: a FORK / cross-repo PR always holds for a human, even from a trusted
-    # author; unreported provenance fails closed to the identity+visibility author
-    # check. This rung fires AHEAD of the CLEAR lookup and the solo-overlay
-    # ``merge_pr_bound`` fallback (which would otherwise auto-merge OUTSIDE
-    # the keystone provenance gate). The keystone refuses this same merge too.
-    if untrusted_merge_provenance(pr):
-        return "fork_requires_human_approval" if pr.same_repo is False else "untrusted_author_public_repo"
-    return None

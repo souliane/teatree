@@ -10,6 +10,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import RedMrFixAttempt
 from teatree.core.models.review_verdict import HeadVerdictState
 from teatree.core.pr_inventory import PrInventoryEntry
+from teatree.core.pr_next_action import UNKNOWN, approvals_label, my_pr_next_task, threads_label
 from teatree.core.review.mr_ci_state import GREEN_STATUSES, carries_pipeline_field, pipeline_status
 from teatree.core.review.review_candidate import author_username
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
@@ -66,6 +67,7 @@ _SETTLED_STATUSES = GREEN_STATUSES | {"skipped"}
 _MANUAL_ACTION_STATUSES = frozenset({"manual"})
 
 MANUAL_ACTION_KIND = "my_pr.manual_action"
+FAILED_KIND = "my_pr.failed"
 
 
 def _needs_attention(status: str) -> bool:
@@ -75,6 +77,16 @@ def _needs_attention(status: str) -> bool:
     action-needed rather than passing silently as a benign open PR.
     """
     return status not in _SETTLED_STATUSES | _MANUAL_ACTION_STATUSES | _IN_PROGRESS_STATUSES
+
+
+def _ci_label(kind: str, status: str) -> str:
+    if status in GREEN_STATUSES:
+        return "green"
+    if kind == FAILED_KIND:
+        return "red"
+    if status in _IN_PROGRESS_STATUSES and status:
+        return "pending"
+    return status or UNKNOWN
 
 
 class CiEnricher(Protocol):
@@ -196,7 +208,7 @@ class MyPrsScanner:
             if _needs_attention(status):
                 signals.append(
                     ScanSignal(
-                        kind="my_pr.failed",
+                        kind=FAILED_KIND,
                         summary=f"PR #{iid} pipeline {status or 'no-status'} (not green): {title}",
                         payload=base_payload,
                     )
@@ -311,7 +323,46 @@ class MyPrsScanner:
         if any(not _str_field(signal.payload, "url") for signal in signals):
             logger.warning("my_prs found a PR without a URL; preserving the prior complete inventory")
             return
-        self.inventory_writer(self._inventory_key(), [_inventory_entry(signal) for signal in signals])
+        entries = [self._inventory_entry(signal) for signal in signals]
+        try:
+            self.inventory_writer(self._inventory_key(), entries)
+        except (OSError, ValueError):
+            logger.warning("my_prs could not record its PR inventory; signals are unaffected", exc_info=True)
+
+    def _forge_review_facts(self, url: str) -> tuple[str, str]:
+        ref = pr_ref_from_url(url)
+        if ref is None:
+            return UNKNOWN, UNKNOWN
+        try:
+            state = self.host.get_mr_approvals(repo=ref.slug, pr_iid=ref.pr_id)
+            return approvals_label(state["approvals_left"]), threads_label(state["unresolved_resolvable"])
+        except Exception:
+            logger.warning("my_prs could not read approvals for %s", url, exc_info=True)
+            return UNKNOWN, UNKNOWN
+
+    def _inventory_entry(self, signal: ScanSignal) -> PrInventoryEntry:
+        payload = signal.payload
+        raw = payload.get("raw")
+        pr = raw if isinstance(raw, dict) else {}
+        url = _str_field(payload, "url")
+        ref = pr_ref_from_url(url)
+        status = _str_field(payload, "status")
+        ci = _ci_label(signal.kind, status)
+        approvals, threads = self._forge_review_facts(url) if ci == "green" else (UNKNOWN, UNKNOWN)
+        return PrInventoryEntry(
+            url=url,
+            repo=ref.slug if ref else "unknown repo",
+            iid=ref.pr_id if ref else _int_field(payload, "iid"),
+            title=_str_field(payload, "title"),
+            created_at=_str_field(pr, "created_at", "createdAt"),
+            updated_at=_str_field(pr, "updated_at", "updatedAt"),
+            next_task=my_pr_next_task(signal.kind, ci),
+            decision=signal.kind,
+            ci=ci,
+            approvals=approvals,
+            threads=threads,
+            draft=bool(pr.get("draft")),
+        )
 
     def _inventory_key(self) -> str:
         source = "|".join(sorted(self.allowed_url_prefixes)) or (
@@ -358,34 +409,3 @@ class MyPrsScanner:
                     seen_urls.add(url)
                 prs.append(pr)
         return prs, complete
-
-
-def _inventory_entry(signal: ScanSignal) -> PrInventoryEntry:
-    payload = signal.payload
-    raw = payload.get("raw")
-    pr = raw if isinstance(raw, dict) else {}
-    url = _str_field(payload, "url")
-    ref = pr_ref_from_url(url)
-    status = _str_field(payload, "status")
-    next_tasks = {
-        "my_pr.failed": "Fix red CI",
-        "my_pr.findings_to_fix": "Fix review findings",
-        "my_pr.draft_notes": "Await author response to review findings",
-        "my_pr.manual_action": "Complete manual CI action",
-    }
-    return PrInventoryEntry(
-        url=url,
-        repo=ref.slug if ref else "unknown repo",
-        iid=ref.pr_id if ref else _int_field(payload, "iid"),
-        title=_str_field(payload, "title"),
-        created_at=_str_field(pr, "created_at", "createdAt"),
-        updated_at=_str_field(pr, "updated_at", "updatedAt"),
-        next_task=next_tasks.get(
-            signal.kind, "Review or merge PR" if status in GREEN_STATUSES else "Inspect CI and advance PR"
-        ),
-        decision=signal.kind,
-        ci=status or "unknown",
-        approvals="unknown",
-        threads="unknown",
-        draft=bool(pr.get("draft")),
-    )

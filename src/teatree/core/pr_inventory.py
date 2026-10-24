@@ -13,8 +13,8 @@ from django.utils import timezone
 from teatree.core.models.pull_request import PullRequest
 from teatree.paths import data_dir_root
 
-_MINUTES_PER_HOUR = 60
-_HOURS_PER_DAY = 24
+MINUTES_PER_HOUR = 60
+HOURS_PER_DAY = 24
 _UNKNOWN_TIME = datetime.max.replace(tzinfo=UTC)
 
 
@@ -85,13 +85,13 @@ def write_inventory(
             temporary = Path(stream.name)
             json.dump(payload, stream)
             stream.write("\n")
+        if _read_snapshot(temporary) != snapshot:
+            message = f"PR inventory write did not verify: {temporary}"
+            raise PrInventoryError(message)
         temporary.replace(target)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    if _read_snapshot(target) != snapshot:
-        message = f"PR inventory write did not verify: {target}"
-        raise PrInventoryError(message)
     return target
 
 
@@ -159,12 +159,12 @@ def elapsed_label(value: str | datetime | None, now: datetime) -> str:
     minutes = max(0, int((now - at).total_seconds() // 60))
     if minutes < 1:
         return "< 1 min"
-    if minutes < _MINUTES_PER_HOUR:
+    if minutes < MINUTES_PER_HOUR:
         return f"{minutes} min"
-    hours = minutes // _MINUTES_PER_HOUR
-    if hours < _HOURS_PER_DAY:
+    hours = minutes // MINUTES_PER_HOUR
+    if hours < HOURS_PER_DAY:
         return f"{hours} h"
-    return f"{hours // _HOURS_PER_DAY} d"
+    return f"{hours // HOURS_PER_DAY} d"
 
 
 def open_pr_rows(started_at: datetime, *, now: datetime | None = None) -> list[OpenPrRow]:

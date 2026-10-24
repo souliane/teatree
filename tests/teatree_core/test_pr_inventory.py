@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,7 +7,7 @@ from unittest import TestCase
 
 import pytest
 
-from teatree.core.pr_inventory import PrInventoryEntry, read_inventory, write_inventory
+from teatree.core.pr_inventory import PrInventoryEntry, PrInventoryError, read_inventory, write_inventory
 
 
 def _entry(number: int) -> PrInventoryEntry:
@@ -58,6 +58,20 @@ class PrInventoryTestCase(TestCase):
 
             with pytest.raises(ValueError, match="inventory"):
                 read_inventory(directory=directory)
+
+    def test_invalid_write_is_refused_and_leaves_the_prior_snapshots_readable(self) -> None:
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            write_inventory("teatree", [_entry(1)], directory=directory)
+            wrong_type = replace(_entry(2), iid="2")
+
+            for overlay, entries in (("", [_entry(3)]), ("teatree", [wrong_type])):
+                with self.subTest(overlay=overlay), pytest.raises(PrInventoryError):
+                    write_inventory(overlay, entries, directory=directory)
+
+            snapshots = read_inventory(directory=directory)
+            assert [(row.overlay, [entry.iid for entry in row.entries]) for row in snapshots] == [("teatree", [1])]
+            assert list(directory.glob(".pr-inventory-*")) == []
 
     def test_malformed_snapshot_types_fail_loudly(self) -> None:
         with TemporaryDirectory() as root:
