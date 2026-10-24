@@ -215,7 +215,7 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
     """
     author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(_STATE_PHASE))
     reviewer = Q(role=Ticket.Role.REVIEWER, state__in=tuple(Ticket.pre_ship_states()))
-    open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__state__in=_OPEN_PR_STATES)
+    open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__in=PullRequest.objects.live())
     return list(
         Ticket.objects.filter(author | reviewer)
         .exclude(tasks__status__in=Task.Status.active())
@@ -322,12 +322,6 @@ def _merge_safe_review_after_plan(ticket: Ticket) -> bool:
         result__review_verdict__verdict="merge_safe",
         result__review_verdict__reviewed_sha=head,
     ).exists()
-
-
-#: PR states that count as "open" (a merged PR does not keep a ticket alive).
-_OPEN_PR_STATES = frozenset(
-    {PullRequest.State.OPEN, PullRequest.State.REVIEW_REQUESTED, PullRequest.State.APPROVED},
-)
 
 
 def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:
