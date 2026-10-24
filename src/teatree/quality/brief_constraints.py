@@ -42,7 +42,7 @@ def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
             continue
         for kind, pattern in (
             ("no_migration", r"\bmigrations?\b"),
-            ("no_setting", r"\bsettings?\b"),
+            ("no_setting", r"(?<!-)\bsettings?\b"),
             ("no_public_name", r"\bpublic\s+(?:names?|api|symbols?)\b"),
         ):
             if re.search(pattern, scope):
