@@ -644,7 +644,42 @@ class TestBoundTicketThread(TestCase):
         row.refresh_from_db()
         assert row.loop_response_confirmed_at is not None
 
-    def test_unsettled_command_for_ended_session_queues_one_followup(self) -> None:
+    def test_accepted_command_survives_sender_crash_and_session_end_without_reassignment(self) -> None:
+        prior = self._bound_task()
+        row = self._message("Change the implementation")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": prior.pk, "ticket": prior.ticket_id, "state": "busy", "steerable": True}
+        ]
+        accepted: list[str] = []
+
+        def accept_then_crash(task_pk: int, text: str, *, command_id: str, wait: float) -> None:
+            accepted.append(command_id)
+            raise SystemExit
+
+        client.steer.side_effect = accept_then_crash
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            with pytest.raises(SystemExit):
+                run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+            prior.status = Task.Status.COMPLETED
+            prior.save(update_fields=["status"])
+            PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))
+            client.sessions.return_value = []
+            first = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+            second = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        command = SessionCommand.objects.get(command_id=slack_command_id("", "C1", row.slack_ts))
+        assert accepted == [command.command_id]
+        assert Task.objects.count() == 1
+        assert command.task_id == prior.pk
+        assert command.outcome == "unknown_delivery"
+        assert first.dispatched == second.dispatched == 0
+        assert "unknown_delivery" in backend.replies[0][2]
+
+    def test_unsettled_command_for_ended_session_is_not_reassigned(self) -> None:
         prior = self._bound_task()
         prior.status = Task.Status.COMPLETED
         prior.save(update_fields=["status"])
@@ -664,13 +699,13 @@ class TestBoundTicketThread(TestCase):
             first = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
             second = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
-        followup = Task.objects.exclude(pk=prior.pk).get()
         command = SessionCommand.objects.get(command_id=slack_command_id("", "C1", row.slack_ts))
-        assert first.dispatched == 1
+        assert Task.objects.count() == 1
+        assert first.dispatched == 0
         assert second.dispatched == 0
-        assert command.task_id == followup.pk
-        assert command.outcome == "queued_followup"
-        assert "queued follow-up" in backend.replies[0][2]
+        assert command.task_id == prior.pk
+        assert command.outcome == "unknown_delivery"
+        assert "unknown_delivery" in backend.replies[0][2]
 
     def test_coalesced_reply_confirmation_is_atomic_across_a_crash(self) -> None:
         task = self._bound_task()

@@ -139,7 +139,7 @@ def _pinned_operator_messages(messages: "Sequence[ModelMessage]") -> "list[Model
         and any(
             isinstance(part, UserPromptPart)
             and isinstance(part.content, str)
-            and part.content.startswith("[TeaTree operator input id=")
+            and part.content.startswith(("[TeaTree operator input id=", "[TeaTree operator follow-up id="))
             for part in message.parts
         )
     ]

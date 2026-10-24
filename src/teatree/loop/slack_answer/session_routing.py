@@ -352,7 +352,9 @@ def _no_live_session(
                 f"Task {unsettled.task_id}: rejected (duplicate_mismatch).",
                 kind=PendingChatInjection.AnswerKind.ACK,
             )
-        unsettled.delete()
+        unsettled.outcome = "unknown_delivery"
+        unsettled.save(update_fields=["outcome"])
+        return _replay_bound_command(backend, unit, report, binding, None)
     if unit.lead.answer_kind == PendingChatInjection.AnswerKind.SESSION:
         _unmark_unit_loop_replied(unit)
     if verb == "pause":

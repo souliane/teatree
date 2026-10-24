@@ -110,6 +110,24 @@ class TestLateCompaction:
 
         assert steer in repr(result)
 
+    def test_operator_followup_in_stale_history_survives_verbatim(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "Previous work summarized"
+
+        followup = "[TeaTree operator follow-up id=idle-1] Keep the API stable. [end operator follow-up]"
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelRequest(parts=[UserPromptPart(content=followup)]),
+            ModelResponse(parts=[TextPart(content="old " * 1000)]),
+            ModelRequest(parts=[UserPromptPart(content="continue")]),
+        ]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
+
+        assert followup in repr(result)
+
     def test_superseded_read_is_stubbed_before_summary(self) -> None:
         calls = [
             ModelResponse(parts=[ToolCallPart(tool_name=TOOL_READ, args={"file_path": "/a.py"}, tool_call_id=key)])

@@ -107,8 +107,10 @@ def _native_compaction_env(env: dict[str, str] | None, dispatch: DispatchHarness
     if window is None:
         return env
     child_env = dict(env or {})
-    child_env.setdefault("CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(window))
-    child_env.setdefault("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", str(100 * (window - 16_000) / window))
+    child_env.pop("DISABLE_COMPACT", None)
+    child_env.pop("DISABLE_AUTO_COMPACT", None)
+    child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(window)
+    child_env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(100 * (window - 16_000) / window)
     return child_env
 
 

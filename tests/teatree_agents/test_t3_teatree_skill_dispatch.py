@@ -124,8 +124,18 @@ class TestT3TeatreeSkillDispatch(TestCase):
                 Preflight(stage_skills=[], dispatch=dispatch, skills=[]),
                 phase="coding",
                 handoff=None,
-                credential=DispatchCredential(env={"ANTHROPIC_API_KEY": "key-x"}),
+                credential=DispatchCredential(
+                    env={
+                        "ANTHROPIC_API_KEY": "key-x",
+                        "DISABLE_COMPACT": "1",
+                        "DISABLE_AUTO_COMPACT": "true",
+                        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+                        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "25",
+                    }
+                ),
             )
 
         assert prepared.options.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "200000"
         assert prepared.options.env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "92.0"
+        assert "DISABLE_COMPACT" not in prepared.options.env
+        assert "DISABLE_AUTO_COMPACT" not in prepared.options.env
