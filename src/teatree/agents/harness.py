@@ -50,6 +50,7 @@ from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from teatree.agents.live_control import RejectCode
 from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_pydantic_ai_model
 from teatree.agents.pydantic_ai_config import (
+    ANTHROPIC_CACHE_TTL_SECONDS,
     PYDANTIC_AI_NATIVE_CAPABILITIES,
     PYDANTIC_AI_ROUTER_CAPABILITIES,
     OpenAICompatibleLaneConfig,
@@ -302,7 +303,7 @@ class PydanticAiHarness:
             return resolve_native_anthropic_model(options, self._regulated_path, self._anthropic_credential)
         # Normalise the resolved id to what the configured endpoint actually serves:
         # ``options.model`` is a teatree-abstract-tier default in Claude DASH-form
-        # (the :data:`TIER_MODELS` form) an OpenAI-compatible provider does NOT carry, so it maps
+        # (the :data:`tier_models()` form) an OpenAI-compatible provider does NOT carry, so it maps
         # to the configured ``openai_compatible_model``; an explicit provider-native pin
         # passes through.
         model_name = resolve_pydantic_ai_model(options.model, configured_model=self._backend.model, tier=self._tier)
@@ -344,6 +345,8 @@ class PydanticAiHarness:
         # keeps a bare text Agent (byte-identical to before the tool port). The
         # worktree jail root is ``options.cwd`` (the resolved task cwd).
         config = LaneBToolConfig.from_options(harness_options, phase=self._phase or "")
+        if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
+            config = replace(config, cache_lifetime_seconds=ANTHROPIC_CACHE_TTL_SECONDS)
         toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
         keep_tool_results = CompactionPolicy.for_phase(self._phase).keep_tool_results
         inputs = LiveInputQueue()

@@ -14,7 +14,8 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.urls import resolve, reverse
 
-from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
+from teatree.config.cold_defaults import DEFAULTS_TOML
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.enums import Autonomy
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import UNGROUPED_PATH, setting_comment, setting_group_path
@@ -691,8 +692,8 @@ class TestShippedDefaultColumn(TestCase):
         # The masking contract extends to this column. The shipped table is forced to carry
         # a value for a secret key, so an unmasked column would serialise it.
         ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["supersecretcodename"]})
-        leaky = {**shipped_defaults_table(), "banned_term_registry": {"leak": ["anotherhushword"]}}
-        with patch("teatree.dash.settings_editor.shipped_defaults_table", return_value=leaky):
+        leaky = {**declared_defaults(), "banned_term_registry": {"leak": ["anotherhushword"]}}
+        with patch("teatree.dash.settings_editor.declared_defaults", return_value=leaky):
             body = self._body("banned_term_registry")
         assert "supersecretcodename" not in body
         assert "anotherhushword" not in body

@@ -5,7 +5,9 @@ This is the primitive partition of :mod:`teatree.utils.git`: the three thin
 env-stripping helper. Every sibling git module (``git_branch``, ``git_commit``,
 ``git_status``, ``git_sync``, ``git_worktree``, ``git_remote_ops``) imports its
 runners from here, so the runners live in exactly one place and a test that
-patches the subprocess boundary (``teatree.utils.run``) intercepts all of them.
+patches the subprocess boundary (``teatree.utils.run``) intercepts all of them. That boundary also pins
+``core.fsmonitor`` off and resolves a trusted hooks path for hook-bearing verbs (``teatree.utils.git_pins``),
+so no runner here repeats it.
 """
 
 import contextlib

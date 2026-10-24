@@ -44,6 +44,7 @@ _X_LANE_HEADER = "x-lane"
 LANE_FACTORY = "factory"
 LANE_EVAL = "eval"
 ANTHROPIC_CACHE_TTL = "5m"
+ANTHROPIC_CACHE_TTL_SECONDS = int(ANTHROPIC_CACHE_TTL.removesuffix("m")) * 60
 #: The placeholder an ``openai_compatible_extra_headers`` value may carry; each run substitutes its session id.
 SESSION_PLACEHOLDER = "{session}"
 
@@ -117,7 +118,7 @@ class OpenAICompatibleLaneConfig:
         ``None`` means the credential resolves from ``OPENAI_COMPATIBLE_API_KEY``
         alone (or fails loud naming the setting).
     *   ``model`` — the ``openai_compatible_model`` id an unpinned teatree-native
-        dispatch normalises UP to; ``None`` keeps the ``PYDANTIC_AI_TIER_MODELS``
+        dispatch normalises UP to; ``None`` keeps the ``pydantic_ai_tier_models()``
         default for the dispatch's abstract tier.
     *   ``extra_headers`` — the ``openai_compatible_extra_headers`` map every request carries
         beside ``x-lane``; :data:`SESSION_PLACEHOLDER` in a value becomes the run's session id. A header off

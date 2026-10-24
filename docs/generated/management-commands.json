@@ -76,6 +76,11 @@
       "subcommands": []
     },
     {
+      "help": "Profile real dispatches: read share, resume-context cost and addressable upper bounds.",
+      "name": "cost_profile",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "db",
       "subcommands": [
@@ -1061,6 +1066,24 @@
       "subcommands": []
     },
     {
+      "help": "",
+      "name": "secrets",
+      "subcommands": [
+        {
+          "help": "Report key health without disclosing stored values",
+          "name": "status"
+        },
+        {
+          "help": "List sealed row names without decrypting values",
+          "name": "ls"
+        },
+        {
+          "help": "Classify password-store names without copying their values",
+          "name": "import-pass"
+        }
+      ]
+    },
+    {
       "help": "Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).",
       "name": "seed_loops",
       "subcommands": []
@@ -1088,7 +1111,7 @@
       ]
     },
     {
-      "help": "Render the same settings comparison as the dashboard, including peers and saved snapshots.",
+      "help": "What differs between this box and its peers, and whether it can be read as drift. Exits non-zero only when fewer than two instances answered. A completed comparison succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run.",
       "name": "settings_compare",
       "subcommands": []
     },
@@ -1282,6 +1305,10 @@
         {
           "help": "Backfill ``overlay`` for rows whose attribution disagrees with inference",
           "name": "reconcile-overlay"
+        },
+        {
+          "help": "Record a merge critic envelope for the ticket's dispatched head",
+          "name": "critic-record"
         },
         {
           "help": "Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08)",

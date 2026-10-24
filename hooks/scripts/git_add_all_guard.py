@@ -148,7 +148,7 @@ def handle_block_git_add_all(data: dict) -> bool:
     command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not command:
         return False
-    if not _teatree_bool_setting("git_add_all_gate_enabled", default=True):
+    if not _teatree_bool_setting("git_add_all_gate_enabled"):
         return False
     if not is_whole_tree_stage(command):
         return False

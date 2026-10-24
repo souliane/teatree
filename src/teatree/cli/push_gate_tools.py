@@ -13,7 +13,30 @@ from pathlib import Path
 
 import typer
 
-from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_push_gate, sweep_command
+from teatree.quality.changed_set import ChangedSetError
+from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_brief_constraints, run_push_gate, sweep_command
+from teatree.utils.django_bootstrap import ensure_django
+from teatree.utils.run import CommandFailedError
+
+
+def _brief_for_worktree(repo_root: Path) -> str:
+    ensure_django()
+    from teatree.core.models import PlanArtifact, Task, Worktree  # noqa: PLC0415 — Django is set up at call time
+
+    worktree = Worktree.objects.filter(extra__worktree_path=str(repo_root.resolve())).select_related("ticket").first()
+    if worktree is None:
+        return ""
+    ticket = worktree.ticket
+    plan = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
+    task = Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging")).order_by("-created_at", "-pk").first()
+    return "\n".join(
+        part
+        for part in (
+            plan.plan_text if plan is not None else "",
+            task.execution_reason if task is not None else "",
+        )
+        if part
+    )
 
 
 def _emit_cmd(plan: PushGatePlan, repo_root: Path) -> str:
@@ -59,7 +82,17 @@ def push_gate_command(
         typer.echo(_emit_cmd(plan, cwd))
         return
     if run:
+        try:
+            violations = run_brief_constraints(cwd, base_ref=base, brief=_brief_for_worktree(cwd))
+        except (ChangedSetError, CommandFailedError, OSError) as exc:
+            typer.echo(f"brief constraints could not be verified: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        if violations:
+            for violation in violations:
+                typer.echo(f"brief constraint FAILED ({violation.kind}): {violation.detail}", err=True)
+            raise typer.Exit(code=1)
         result = run_push_gate(plan, repo_root=cwd)
+        typer.echo(f"ast-grep: {result.status}")
         for note in result.notes:
             typer.echo(note)
         if result.astgrep_findings:

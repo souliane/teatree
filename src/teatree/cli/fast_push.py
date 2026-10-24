@@ -3,11 +3,14 @@
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from teatree.core.invocation_cwd import operator_cwd
-from teatree.core.push.fast_push import EMPTY_DELTA_PR_SKIP, FastPusher, FastPushOutcome
+
+if TYPE_CHECKING:
+    from teatree.core.push.fast_push import FastPushOutcome
 
 
 def fast_push(
@@ -23,6 +26,8 @@ def fast_push(
     in-process, fail-closed — and skips every other hook/gate. Any leak
     finding refuses the push and prints the offending path/term.
     """
+    from teatree.core.push.fast_push import FastPusher  # noqa: PLC0415 — only fast-push needs its leak gates
+
     outcome = FastPusher(repo=(operator_cwd() / repo).resolve(), message=message, remaining=remaining).run()
     if json_output:
         typer.echo(json.dumps(asdict(outcome)))
@@ -32,7 +37,9 @@ def fast_push(
         raise typer.Exit(code=1)
 
 
-def _echo_outcome(outcome: FastPushOutcome) -> None:
+def _echo_outcome(outcome: "FastPushOutcome") -> None:
+    from teatree.core.push.fast_push import EMPTY_DELTA_PR_SKIP  # noqa: PLC0415 — only fast-push renders this status
+
     if not outcome.ok:
         typer.echo("fast-push REFUSED — leak gate findings (nothing committed, nothing pushed):")
         for finding in outcome.findings:

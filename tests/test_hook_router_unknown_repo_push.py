@@ -177,11 +177,13 @@ class TestDegradedPathIsAudible:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         repo = _repo_with_remote(tmp_path / "nodjango", "git@github.com:randomuser/randomrepo.git")
-        monkeypatch.setattr(scope_gate, "bootstrap_teatree_django", lambda: False)
+        monkeypatch.setattr(scope_gate, "bootstrap_django_registry", lambda: False)
 
         assert router.handle_block_unknown_repo_push(_push_event("git push origin HEAD", repo)) is False
 
-        assert "SKIPPED is not PASSED" in capsys.readouterr().err
+        stderr = capsys.readouterr().err
+        assert "SKIPPED is not PASSED" in stderr
+        assert "cannot import Django" in stderr
 
     def test_broken_resolver_says_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

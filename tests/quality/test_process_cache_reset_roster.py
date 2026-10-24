@@ -32,6 +32,7 @@ from teatree.config.seed_defaults import _cache as _seed_defaults_cache
 from teatree.config.seed_defaults import reset_seed_defaults_cache
 from teatree.core.backend_factory import _code_host_cache, _messaging_cache, reset_backend_caches
 from teatree.core.gates.pr_budget_forge import _forge_cache, reset_forge_pr_budget_cache
+from teatree.core.models.sealed_secret import _VERIFIED_ROWS, reset_sealed_key_health_cache
 from teatree.hooks import _ssh_alias
 from teatree.loop.overlay_followup_jobs import _INFLIGHT_HOOKS, reset_inflight_hooks
 from teatree.utils.throttled_log import _last_warned, reset_throttle
@@ -187,8 +188,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.eval.cost_observation:suite_budget_from_env": "_reset_suite_budget",
     # The shipped seed tables are read by the `config_setting import` classifier, and tests
     # re-point `DEFAULTS_TOML` at a fixture — a parse outliving its test would classify a
-    # later import against the wrong shipped table. Its `cold_defaults` sibling stays EXEMPT
-    # below because nothing but the resolver reads that one.
+    # later import against the wrong shipped table.
     "teatree.config.seed_defaults:_cache": "reset_seed_defaults_cache",
     # Open descriptors holding kernel flocks on E2E specs checkouts. A CLI run IS the
     # process, so process-lifetime is the right production lifetime — but a test process
@@ -207,6 +207,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.loops.slack_inbound:_dm_recorders": "reset_dm_recorders",
     # The GitHub receiver's per-target secrets and read outcomes; tests swap the fake store under it.
     "teatree.core.views._webhook_secrets:webhook_secrets": "reset_webhook_secrets",
+    "teatree.core.models.sealed_secret:_VERIFIED_ROWS": "reset_sealed_key_health_cache",
 }
 
 #: Caches deliberately NOT reset, each with the reason it is safe to leave alone.
@@ -231,10 +232,6 @@ EXEMPT: dict[str, str] = {
         "app-ready-populated deterministic-phase runner registry (#3570); process-stable — the one test "
         "that varies it patches the binding rather than mutating it"
     ),
-    "teatree.agents.model_tiering:PYDANTIC_AI_TIER_MODELS": (
-        "empty-by-default tier catalog merged UNDER config (#3666), never accumulated at runtime; "
-        "resetting it would clear nothing"
-    ),
     "teatree.core.presence:_FACTORIES": "import-populated presence-factory registry; process-stable",
     "teatree.skill_support.pin_shadow:_running_code_manifest": (
         "@cache of the apm.yml beside the running code; derived from __file__, so process-stable"
@@ -251,18 +248,13 @@ EXEMPT: dict[str, str] = {
     "teatree.config.setting_registries:TOML_OVERLAY_OVERRIDABLE_SETTINGS": (
         "import-populated constant; not mutated at runtime"
     ),
-    "teatree.config.cold_defaults:_cache": (
-        "single-entry mtime-keyed memo of the packaged defaults.toml, self-evicting (clears itself on "
-        "each parse so it holds at most the current mtime); keyed by an immutable-in-production file, "
-        "so resetting it would only force a re-parse of the identical file — it isolates no test state"
-    ),
-    "teatree.config.schema:_NO_INIT_OVERRIDES": (
-        "empty-overrides constant spread into the shipped_defaults() constructor; never mutated at runtime"
-    ),
     "teatree.config.schema:shipped_defaults": (
-        "@lru_cache singleton of the pydantic model built from the packaged defaults.toml; process-stable "
-        "(the file is immutable in production and no test rebinds _DEFAULTS_TOML), so resetting it would "
-        "only rebuild the identical model"
+        "@lru_cache singleton of the pydantic model built from the setting declarations; process-stable "
+        "(declarations are import-time constants), so resetting it would only rebuild the identical model"
+    ),
+    "teatree.config.setting_help:all_setting_help": (
+        "@lru_cache dict derived from the setting declarations; import-time constants no test rebinds, so "
+        "resetting it would only rebuild the identical dict"
     ),
     "teatree.loops.deadlined_tick:_LIVE_TICK_PGIDS": (
         "live tick subprocess PGIDs; process-lifecycle, not a per-test memo"
@@ -413,6 +405,7 @@ class TestProcessCacheResetRoster:
             (_messaging_cache, "sentinel-overlay", reset_backend_caches),
             (_seed_defaults_cache, (Path("sentinel.toml"), 1), reset_seed_defaults_cache),
             (_ssh_alias._CACHE, ("sentinel-alias", "/sentinel-home"), _ssh_alias.reset_ssh_alias_cache),
+            (_VERIFIED_ROWS, ("sentinel", "source", "key", b"fingerprint"), reset_sealed_key_health_cache),
             (_INFLIGHT_HOOKS, "sentinel-overlay", reset_inflight_hooks),
         ]
         for container, key, reset_fn in cases:

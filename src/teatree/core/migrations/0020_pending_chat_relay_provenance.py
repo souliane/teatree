@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0018_forge_ingest_identity"),
+        ("core", "0019_merge_sealedsecret_forge_ingest"),
     ]
 
     operations = [

@@ -37,6 +37,10 @@ Edit the source command, not this file.
 
 Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 
+## `cost_profile`
+
+Profile real dispatches: read share, resume-context cost and addressable upper bounds.
+
 ## `db`
 
 | Subcommand | Description |
@@ -536,6 +540,14 @@ Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
 
 Signal *pid* only if it maps to a dead target AND is confirmed non-live.
 
+## `secrets`
+
+| Subcommand | Description |
+| --- | --- |
+| `status` | Report key health without disclosing stored values |
+| `ls` | List sealed row names without decrypting values |
+| `import-pass` | Classify password-store names without copying their values |
+
 ## `seed_loops`
 
 Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).
@@ -553,7 +565,7 @@ Session-lifecycle operations.
 
 ## `settings_compare`
 
-Render the same settings comparison as the dashboard, including peers and saved snapshots.
+What differs between this box and its peers, and whether it can be read as drift. Exits non-zero only when fewer than two instances answered. A completed comparison succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run.
 
 ## `shipped_seed`
 
@@ -634,6 +646,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `sweep-finish` | Close a sweep run, persisting its changed-ticket count — zero included |
 | `sweep-trend` | Report the changed-ticket count series, the zero streak, and any unfinished runs |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
+| `critic-record` | Record a merge critic envelope for the ticket's dispatched head |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
 | `return-gaps` | Return guarded legacy gap members to the dream umbrella |
 | `fold-check` | Prove a host body still carries the folded member's substance (#4344) |

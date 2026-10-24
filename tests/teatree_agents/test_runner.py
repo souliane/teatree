@@ -22,7 +22,7 @@ import teatree.core.worktree.checkout_fence as checkout_fence_mod
 from teatree.agents._runner_env import system_child_env
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
-from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
+from teatree.agents.model_tiering import tier_effort, tier_models
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.agents.runner import (
     LoopWatchdog,
@@ -58,6 +58,7 @@ from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import rate_limit_event as _rate_limit_event
 from tests.teatree_agents._sdk_fake import result_message as _result_message
 from tests.teatree_agents._sdk_fake import success_stream as _success_stream
+from tests.teatree_agents.test_model_tiering import _seeded_db
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
@@ -1548,24 +1549,24 @@ class TestBuildOptions(TestCase):
 
     def test_retrospecting_runs_on_frontier(self) -> None:
         options = self._options_for_phase("retrospecting")
-        assert options.model == TIER_MODELS["frontier"]
+        assert options.model == tier_models()["frontier"]
 
     def test_reviewing_runs_on_frontier(self) -> None:
         options = self._options_for_phase("reviewing")
-        assert options.model == TIER_MODELS["frontier"]
+        assert options.model == tier_models()["frontier"]
 
     def test_coding_runs_on_frontier(self) -> None:
         # The redesign maps coding to the frontier tier (was inherit/None before).
         options = self._options_for_phase("coding")
-        assert options.model == TIER_MODELS["frontier"]
+        assert options.model == tier_models()["frontier"]
 
     def test_requesting_review_runs_on_cheap(self) -> None:
         options = self._options_for_phase("requesting_review")
-        assert options.model == TIER_MODELS["cheap"]
+        assert options.model == tier_models()["cheap"]
 
     def test_testing_runs_on_balanced(self) -> None:
         options = self._options_for_phase("testing")
-        assert options.model == TIER_MODELS["balanced"]
+        assert options.model == tier_models()["balanced"]
 
     def test_permission_mode_bypasses_prompts(self) -> None:
         options = self._options_for_phase("coding")
@@ -1594,17 +1595,15 @@ class TestBuildOptions(TestCase):
         # adaptive thinking explicitly AND the frontier-tier effort (xhigh).
         options = self._options_for_phase("coding")
         assert options.thinking == {"type": "adaptive"}
-        assert options.effort == TIER_EFFORT["frontier"]
+        assert options.effort == tier_effort()["frontier"]
 
-    def test_balanced_phase_pins_adaptive_thinking_and_xhigh_effort(self) -> None:
-        # A balanced (Sonnet) phase supports thinking and carries the balanced-tier
-        # effort (xhigh).
+    def test_balanced_phase_pins_adaptive_thinking_and_high_effort(self) -> None:
         options = self._options_for_phase("testing")
         assert options.thinking == {"type": "adaptive"}
-        assert options.effort == TIER_EFFORT["balanced"]
+        assert options.effort == "high"
 
     def test_cheap_phase_pins_no_effort(self) -> None:
-        # The cheap tier has no TIER_EFFORT entry, so the SDK default effort applies.
+        # The cheap tier has no tier_effort() entry, so the SDK default effort applies.
         options = self._options_for_phase("requesting_review")
         assert options.thinking == {"type": "adaptive"}
         assert options.effort is None
@@ -1679,7 +1678,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
             config={"agent_skill_models": {"code-review": []}},
         )
         # requesting_review's cheap phase default stands; the inherit floor is a no-op.
-        assert options.model == TIER_MODELS["cheap"]
+        assert options.model == tier_models()["cheap"]
 
     def test_session_effort_does_not_leak_into_headless(self) -> None:
         # A headless SDK run's effort comes from the per-TIER map, never from the
@@ -1810,7 +1809,7 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
     ``agent_harness=pydantic_ai`` + ``agent_harness_provider=anthropic_api`` — a pair
     :meth:`~teatree.config.AgentHarnessProvider.valid_for` accepts, the ``ConfigSetting``
     cross-key write gate admits, and ``resolve_harness`` deliberately passes.
-    ``PHASE_HARNESS`` then pins the verification phases (``reviewing`` /
+    ``agent_phase_harness`` then pins the verification phases (``reviewing`` /
     ``requesting_review`` / ``testing``) to ``claude_sdk``, flipping Layer 1 without
     flipping Layer 2 — so the claude_sdk-scoped child-env resolver saw a provider that
     is invalid under the harness it was NOW running and refused every verification
@@ -1818,10 +1817,11 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
         monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_skill_models={})
 
     def setUp(self) -> None:
         self.ticket = planned_ticket()
@@ -1839,7 +1839,7 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
             with self.subTest(phase=phase):
                 attempt = self._dispatch(phase)
                 assert "not valid under agent_harness" not in attempt.error
-                assert attempt.exit_code == 0
+                assert attempt.exit_code == 0, attempt.error
 
     def test_the_flipped_layer_2_pin_is_dropped_loudly(self) -> None:
         # Never silent: the operator's Layer-2 pin was made for the CONFIGURED
@@ -1858,8 +1858,9 @@ class TestGenuinelyInvalidHarnessProviderPairStillFailsDispatch(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_skill_models={})
 
     def setUp(self) -> None:
         self.ticket = planned_ticket()

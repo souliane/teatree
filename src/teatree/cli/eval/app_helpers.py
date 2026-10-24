@@ -30,8 +30,8 @@ from teatree.eval.summary_markdown import render_summary_markdown
 
 #: The tiers the ``--benchmark`` matrix compares, strongest → cheapest, so the
 #: matrix columns read in capability order. Resolved to concrete models through
-#: the single TIER_MODELS constant at run time — so the benchmark adopts a new
-#: model the instant TIER_MODELS (or [agent.tier_models]) changes, no flag edit.
+#: the single tier_models() constant at run time — so the benchmark adopts a new
+#: model the instant tier_models() (or [agent.tier_models]) changes, no flag edit.
 BENCHMARK_TIERS: tuple[str, ...] = ("frontier", "balanced", "cheap")
 
 #: The ``agent_harness_provider`` values ``t3 eval run --credential`` accepts — the two
@@ -49,7 +49,7 @@ def _benchmark_models() -> str:
 
     Resolves :data:`BENCHMARK_TIERS` through :func:`resolve_tier` so the benchmark
     runs every scenario against the concrete model behind each of the three
-    tiers, once per distinct model. The single source of truth (``TIER_MODELS`` /
+    tiers, once per distinct model. The single source of truth (``tier_models()`` /
     ``[agent.tier_models]``) decides the models — adopting a new one needs no
     benchmark-flag edit.
     """

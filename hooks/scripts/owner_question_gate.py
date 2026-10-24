@@ -67,7 +67,7 @@ def _owner_reads_this_turn(data: dict) -> bool:
 def _gate_enabled() -> bool:
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("owner_question_gate_enabled", default=True)
+    return _teatree_bool_setting("owner_question_gate_enabled")
 
 
 def _sanctioned_prose(data: dict, text: str) -> bool:

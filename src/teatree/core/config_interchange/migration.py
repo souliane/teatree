@@ -21,7 +21,8 @@ from typing import Any
 import tomlkit
 from django.db import transaction
 
-from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
+from teatree.config.cold_defaults import DEFAULTS_TOML
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.defaults_snapshot import default_category_keys
 from teatree.config.defaults_snapshot import render_toml as render_shipped_file
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
@@ -202,7 +203,7 @@ def _filled_with_defaults(
     """
     carried = default_category_keys()
     eligible = carried if default_keys_only else _teatree_table_keys()
-    shipped = shipped_defaults_table()
+    shipped = declared_defaults()
     withheld = {row.key for row in guard.redacted if row.scope == GLOBAL_SCOPE}
     filled = dict(rows)
     for key, entry in resolve_settings(sorted(eligible - set(rows)), persisted_only=True).items():

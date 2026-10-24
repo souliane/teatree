@@ -37,6 +37,8 @@ async def notify_user(text: str, *, kind: str = "info", idempotency_key: str) ->
     one merge request read as an unregistered alarm and was recorded rather than
     delivered. An alarm still earns its DM by registering in
     :data:`~teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS`.
+
+    Treat any ``reason`` other than ``already_sent`` as the owner NOT having been told.
     """
     if kind == NotifyKind.QUESTION:
         raise ToolError(OWNER_QUESTION_ROUTE)

@@ -48,20 +48,10 @@ from hooks.scripts.teatree_settings import teatree_int_setting
 
 _TRACEBACK_SIGNATURE = "Traceback (most recent call last):"
 
-#: Time allowance for a ``t3 tool …`` validator subprocess, in seconds. The floor
-#: is the validator's own cost, dominated by the ``t3`` CLI's cold start: ~13s
-#: unloaded and 25-50s under concurrent load on the reference box. 60s clears the
-#: loaded range with headroom, and an allowance still too small on some future
-#: slower box now degrades to warn-and-allow rather than to a silent deny — the
-#: knob below is the fix, not a hardcoded bump.
-_HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS = 60
-
 
 def validator_timeout_seconds() -> int:
     """The DB-home ``[teatree] hook_validator_timeout_seconds`` allowance."""
-    return teatree_int_setting(
-        "hook_validator_timeout_seconds", default=_HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS, minimum=1
-    )
+    return teatree_int_setting("hook_validator_timeout_seconds", minimum=1)
 
 
 def run_validator(

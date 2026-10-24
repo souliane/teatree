@@ -90,9 +90,12 @@ def register_control_db_alias(alias: str, db_file: Path) -> None:
     assert db_file.read_bytes()[18] == 2
 
 
-def register_migrated_sqlite_alias(alias: str, db_file: Path, template: Path | None) -> None:
+def register_migrated_sqlite_alias(
+    alias: str, db_file: Path, template: Path | None, *, options: dict[str, object] | None = None
+) -> None:
     """Register ``alias`` at head: a copy of the session's from-zero ``template``, else a migrate from zero."""
-    register_sqlite_alias(alias, db_file)
+    engine = SQLITE_BOUNDARY_ENGINE if options == SQLITE_WRITE_SERIALIZATION_OPTIONS else "django.db.backends.sqlite3"
+    register_sqlite_alias(alias, db_file, options=options, engine=engine)
     if template is None:
         with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
             call_command("migrate", "--no-input", database=alias, verbosity=0)

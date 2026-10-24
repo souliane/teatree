@@ -37,6 +37,7 @@ from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveChe
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.checks_admission import ReviewVerdictError, assert_checks_admit_merge_safe, live_checks_reader
 from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.core.models.finding_standard import normalize_finding_kind
 from teatree.core.models.merge_clear import SHA_FULL_LEN, ClearIssuanceError, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.reviewer_identity import (
@@ -65,6 +66,7 @@ class FindingDict(TypedDict):
     summary: str
     file: str
     line: int
+    kind: str
 
 
 def _coerce_line(value: object) -> int:
@@ -89,9 +91,19 @@ class Finding:
     summary: str
     file: str = ""
     line: int = 0
+    kind: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", normalize_finding_kind(self.kind, self.severity))
 
     def as_dict(self) -> FindingDict:
-        return {"severity": self.severity, "summary": self.summary, "file": self.file, "line": self.line}
+        return {
+            "severity": self.severity,
+            "summary": self.summary,
+            "file": self.file,
+            "line": self.line,
+            "kind": self.kind,
+        }
 
     @classmethod
     def from_dict(cls, raw: "Mapping[str, object]") -> "Finding":
@@ -100,6 +112,7 @@ class Finding:
             summary=str(raw.get("summary", "")),
             file=str(raw.get("file", "")),
             line=_coerce_line(raw.get("line")),
+            kind=str(raw.get("kind", "")),
         )
 
     def location(self) -> str:

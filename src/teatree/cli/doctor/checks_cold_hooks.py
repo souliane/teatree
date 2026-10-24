@@ -75,6 +75,23 @@ except Exception as exc:
     print(json.dumps({{"status": "probe_failed", "error": exc.__class__.__name__ + ": " + str(exc)}}))
 """
 
+_ORM_PROBE = """
+import json, sys
+sys.path.insert(0, {plugin_root!r})
+sys.path.insert(0, {plugin_root!r} + "/src")
+try:
+    from hooks.scripts.django_bootstrap import _django_setup, _probe_orm
+    from teatree.hooks.orm_health import hook_venue, record_orm_health
+    _django_setup()
+    status, db_path, cause = _probe_orm()
+    record_orm_health(status, db_path, "" if cause is None else str(cause))
+    print(json.dumps({{"status": status, "interpreter": sys.executable, "db_path": db_path,
+                    "venue": hook_venue(), "cause": "" if cause is None else str(cause)}}))
+except Exception as exc:
+    print(json.dumps({{"status": "error", "interpreter": sys.executable, "db_path": "unresolved",
+                    "cause": type(exc).__name__ + ": " + str(exc)}}))
+"""
+
 _PROBE_TIMEOUT_SECONDS = 30
 
 # ``HookResolution.status`` vocabulary.
@@ -386,3 +403,46 @@ def _check_autoload_engages_platform_skill() -> bool:
         f"keep loading it by hand. Re-run `t3 setup`, then re-run `t3 doctor check`.",
     )
     return False
+
+
+def _check_hook_orm_reachable() -> bool:
+    """Probe ORM access under the hook interpreter and report other recent venue failures."""
+    import teatree  # noqa: PLC0415 — resolve the installed hook root at call time
+    from teatree.hooks.orm_health import read_orm_health  # noqa: PLC0415 — deferred doctor probe
+
+    repo_root = Path(teatree.__file__).resolve().parents[2]
+    live = _run_hook_probe(repo_root, _ORM_PROBE.format(plugin_root=str(repo_root)))
+    try:
+        records = read_orm_health()
+    except (OSError, ValueError) as exc:
+        typer.echo(f"WARN  Hook ORM health records could not be read ({exc}).")
+        records = []
+    if live is not None:
+        records = [
+            live,
+            *(
+                r
+                for r in records
+                if (r.get("venue"), r.get("interpreter")) != (live.get("venue"), live.get("interpreter"))
+            ),
+        ]
+    unreachable = [record for record in records if record.get("status") == "unreachable"]
+    if unreachable:
+        for record in unreachable:
+            typer.echo(
+                f"FAIL  Hook ORM unreachable under {record.get('interpreter', 'unknown interpreter')} "
+                f"({record.get('venue', 'unknown venue')}); control DB {record.get('db_path', 'unknown path')}: "
+                f"{record.get('cause', 'no cause recorded')}. The ORM-backed hook gates were SKIPPED."
+            )
+        return False
+    errors = [record for record in records if record.get("status") != "ok"]
+    for record in errors:
+        typer.echo(
+            f"FAIL  Hook ORM probe failed under {record.get('interpreter', 'unknown interpreter')} "
+            f"({record.get('venue', 'unknown venue')}); control DB {record.get('db_path', 'unknown path')}: "
+            f"{record.get('cause', 'unknown probe failure')}."
+        )
+    if live is None and not errors:
+        typer.echo("WARN  Hook ORM reachability UNVERIFIED: the hook-interpreter ORM probe could not run.")
+        return False
+    return not errors

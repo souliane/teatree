@@ -863,7 +863,7 @@ class TestEnsureEditableIfContributing:
             patch.object(config_mod, "get_effective_settings") as mock_full,
         ):
             _ensure_editable_if_contributing()
-        mock_cold.assert_called_once_with("contribute", default=False)
+        mock_cold.assert_called_once_with("contribute")
         mock_full.assert_not_called()
 
     def test_makes_teatree_editable(self) -> None:

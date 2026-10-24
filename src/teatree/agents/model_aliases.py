@@ -2,7 +2,7 @@
 
 ``claude --model opus`` (and ``t3 eval run --models opus``) names a model
 FAMILY, which the CLI resolves to whatever generation of that family is current.
-:data:`~teatree.agents.model_tiering.TIER_MODELS` is teatree's answer to the same
+:data:`~teatree.agents.model_tiering.tier_models()` is teatree's answer to the same
 question, so consumers derive the alias map from it rather than keeping a second
 copy: a stale copy makes a lane REQUEST the previous generation while the
 transcript REPORTS the current one, and every id-keyed comparison downstream —
@@ -29,7 +29,7 @@ def family_alias_models() -> dict[str, str]:
     override does not change what ``opus`` means to the CLI.
     """
     aliases: dict[str, str] = {}
-    for model_id in model_tiering.TIER_MODELS.values():
+    for model_id in model_tiering.tier_models().values():
         family = tier_of_model(model_id) if model_id else UNPRICED_TIER
         if family != UNPRICED_TIER:
             aliases[family] = model_id

@@ -30,11 +30,15 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import hooks.scripts.hook_router as router
+from scripts.hooks import generate_defaults_toml as defaults_generator
+from teatree.config.cold_defaults import DEFAULTS_TOML
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.host_projection import ProjectionPublisher
 from teatree.config.setting_parsers import _parse_str_list, _parse_strict_bool
 from teatree.loop.statusline_render import StatuslineEntry, StatuslineZones, default_path, render
@@ -325,6 +329,35 @@ def test_the_consumer_and_its_dependencies_are_present() -> None:
     assert _SCRIPT.is_file()
     assert shutil.which("jq"), "statusline.sh parses its stdin payload with jq"
     assert shutil.which("sqlite3"), "the settings tier under test IS the sqlite3 CLI read"
+
+
+def test_the_shell_uses_the_declared_autoload_default_when_the_store_is_empty(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = sandbox / "statusline.sh"
+    shutil.copy2(_SCRIPT, script)
+    defaults_file = sandbox / "defaults.toml"
+    shutil.copy2(DEFAULTS_TOML, defaults_file)
+    monkeypatch.setattr(defaults_generator, "STATUSLINE_SH", script, raising=False)
+    monkeypatch.setattr(defaults_generator, "DEFAULTS_TOML", defaults_file)
+    monkeypatch.setattr(
+        defaults_generator, "declared_defaults", lambda: {**declared_defaults(), "autoload": True}, raising=False
+    )
+    monkeypatch.setattr(defaults_generator.generated_doc_staging, "stage", lambda _path: None)
+    monkeypatch.setattr(sys.modules[__name__], "_SCRIPT", script)
+
+    assert defaults_generator.main(["--write"]) == 0
+    target = sandbox / "statusline.txt"
+    render(StatuslineZones(anchors=["[acme] declared default chip"]), target=target, colorize=False)
+    result = _run_shell(sandbox, statusline_file=target, autoload_env=None, config_db=sandbox / "absent.sqlite3")
+
+    assert result.returncode == 0, result.stderr
+    assert "declared default chip" in _strip_ansi(result.stdout)
+
+
+def test_committed_statusline_default_matches_the_generated_block() -> None:
+    committed = _SCRIPT.read_text(encoding="utf-8")
+    assert defaults_generator.render_statusline_default(committed) == committed
 
 
 class TestStatuslineReadsTheProjectionWhenTheDbIsNotOnThisHost:

@@ -15,6 +15,7 @@ from django.test import TestCase
 from teatree.core.intake.factory_admission import resolve_umbrella_labels
 from teatree.core.models import (
     ImplementedIssueMarker,
+    IntakeScanCursor,
     Ticket,
     TrustedIdentity,
     UnclaimedIntakeCandidate,
@@ -771,6 +772,62 @@ class IssueIntakeAgeOrderingTests(_PublicRepoTestCase):
     OLD = "https://github.com/souliane/teatree/issues/4188"
     NEW = "https://github.com/souliane/teatree/issues/4234"
     NEWEST = "https://github.com/souliane/teatree/issues/4239"
+
+    def test_an_older_nit_waits_behind_a_real_issue_for_the_last_slot(self) -> None:
+        host = _Host(
+            authored={
+                OWNER: [
+                    _issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z", labels=["nit", "t3-auto"]),
+                    _issue(self.NEW, author=OWNER, created_at="2026-08-04T09:00:00Z"),
+                ]
+            }
+        )
+
+        signals = self._scanner(host, max_concurrent=1).scan()
+
+        assert [signal.payload["url"] for signal in signals] == [self.NEW]
+
+    def test_a_nit_is_admitted_when_no_real_issue_waits(self) -> None:
+        host = _Host(
+            authored={OWNER: [_issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z", labels=["nit"])]}
+        )
+
+        signals = self._scanner(host, max_concurrent=1).scan()
+
+        assert [signal.payload["url"] for signal in signals] == [self.OLD]
+
+    def test_an_in_flight_nit_does_not_consume_a_real_issues_start_slot(self) -> None:
+        host = _Host(
+            authored={OWNER: [_issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z", labels=["nit"])]}
+        )
+        with (
+            patch("teatree.core.fleet.wire.resolve_claim_repo", return_value=""),
+            patch("teatree.core.fleet.wire.heartbeat_inflight_claims"),
+        ):
+            assert [signal.payload["url"] for signal in self._scanner(host, max_concurrent=1).scan()] == [self.OLD]
+            assert ImplementedIssueMarker.objects.filter(issue_url=self.OLD, overlay=self.OVERLAY).exists()
+            Ticket.objects.create(issue_url=self.OLD, overlay=self.OVERLAY, state=Ticket.State.WORK_STARTED)
+            host.authored[OWNER].append(_issue(self.NEW, author=OWNER, created_at="2026-08-04T09:00:00Z"))
+
+            signals = self._scanner(host, max_concurrent=1).scan()
+
+        marker = ImplementedIssueMarker.objects.get(issue_url=self.OLD, overlay=self.OVERLAY)
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
+        assert [signal.payload["url"] for signal in signals] == [self.NEW]
+
+    def test_resume_rotation_still_places_nits_after_real_issues(self) -> None:
+        host = _Host(
+            authored={
+                OWNER: [
+                    _issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z"),
+                    _issue(self.NEW, author=OWNER, created_at="2026-08-02T09:00:00Z"),
+                    _issue(self.NEWEST, author=OWNER, created_at="2026-08-03T09:00:00Z", labels=["nit"]),
+                ]
+            }
+        )
+        IntakeScanCursor.objects.record_pass(self.OVERLAY, last_issue_url=self.OLD, complete=False)
+        signals = self._scanner(host, max_concurrent=0).scan()
+        assert [signal.payload["url"] for signal in signals] == [self.NEW, self.OLD, self.NEWEST]
 
     def test_the_oldest_issue_wins_the_slot_across_the_merged_queries(self) -> None:
         """The single free slot goes to the oldest, though its query ran LAST.

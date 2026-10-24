@@ -16,7 +16,7 @@
 # puts the sibling `src/` on `sys.path` and calls `django.setup()`, but Django
 # itself must come from the INTERPRETER — and teatree is installed into a uv-tool
 # venv, not into the system python a bare `python3` resolves to. On such a host
-# the bootstrap returns False and EVERY DB-backed handler silently no-ops: the
+# the bootstrap returns False, reports SKIPPED, and DB-backed handlers no-op: the
 # SessionStart hand-off drain, the away-mode `DeferredQuestion` recorder, pending
 # chat injections, the loop-owner/registration readers, and the standing-goal /
 # orchestrator-investigation / unknown-repo-push gates. Nothing errors — the work

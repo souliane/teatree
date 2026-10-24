@@ -31,13 +31,13 @@ sub-agent spawn through
 
 ``agent_tier_models`` mirrors ``agent_skill_models``: each entry overrides the
 concrete model id a tier resolves to, merged OVER the
-:data:`teatree.agents.model_tiering.TIER_MODELS` shipped default. It is the
+:data:`teatree.agents.model_tiering.tier_models()` shipped default. It is the
 config escape hatch for the "single source of truth" model constant — adopting a
 new model is one DB row, with no code edit.
 
 ``agent_tier_effort`` mirrors ``agent_tier_models`` exactly: each entry
 overrides the reasoning effort an abstract tier spawns with, merged OVER the
-:data:`teatree.agents.model_tiering.TIER_EFFORT` shipped default. Each value
+:data:`teatree.agents.model_tiering.tier_effort()` shipped default. Each value
 must be a member of :data:`EFFORT_SCALE` (an off-scale value is dropped, matching
 the ``agent_tier_models`` tolerance), so a malformed override never poisons the
 shipped per-tier effort.
@@ -123,24 +123,24 @@ class AgentConfig:
         Route entries optionally pin a provider and expose a tier used to
         enforce scalar floors from the other loaded skills.
     *   ``tier_models`` — abstract-tier-name → concrete model id, merged OVER
-        :data:`teatree.agents.model_tiering.TIER_MODELS`. The config escape hatch
+        :data:`teatree.agents.model_tiering.tier_models()`. The config escape hatch
         for the single model constant: adopting a new model for a tier is one DB
-        row. Empty by default → the shipped :data:`TIER_MODELS` stands unchanged.
+        row. Empty by default → the shipped :data:`tier_models()` stands unchanged.
         Mirrors ``skill_models`` (a typed ``agent_tier_models`` dict); a
         non-dict value or a non-string entry value yields no override.
     *   ``pydantic_ai_tier_models`` — the ``tier_models`` sibling for the
         ``pydantic_ai`` (OpenAI-compatible) harness: abstract-tier-name → provider-native
         model/router-handle id, merged OVER
-        :data:`teatree.agents.model_tiering.PYDANTIC_AI_TIER_MODELS`. Distinct from
+        :func:`teatree.config.registries.pydantic_ai_tier_models`. Distinct from
         ``tier_models`` because the two harnesses target different catalogs — the
         ``claude_sdk`` harness serves Claude dash-form ids, the ``pydantic_ai``
         harness serves the provider's own prefixed ids. Empty by default → the
         shipped router-handle default stands. Same mechanics/tolerance as
         ``tier_models``.
     *   ``tier_effort`` — abstract-tier-name → reasoning effort, merged OVER
-        :data:`teatree.agents.model_tiering.TIER_EFFORT`. The per-tier reasoning
+        :data:`teatree.agents.model_tiering.tier_effort()`. The per-tier reasoning
         dial that reaches every sub-agent spawn. Empty by default → the shipped
-        :data:`TIER_EFFORT` stands unchanged. Mirrors ``tier_models`` (a typed
+        :data:`tier_effort()` stands unchanged. Mirrors ``tier_models`` (a typed
         ``agent_tier_effort`` dict); a non-dict value, a non-string entry,
         or a value off :data:`EFFORT_SCALE` yields no override.
     *   ``session_model`` — the interactive main-agent ``--model`` pin, or
@@ -168,7 +168,7 @@ class AgentConfig:
         phase (e.g. ``"reviewing"``). Each value is an :class:`AgentHarness`
         (flip the pin) or ``None`` (an explicit unpin — the phase drops back to
         the configured ``agent_harness``). Merged OVER
-        :data:`teatree.agents.model_tiering.PHASE_HARNESS` (the verification-phase
+        :func:`teatree.config.registries.phase_harness_defaults` (the verification-phase
         ``claude_sdk`` pin) by :func:`~teatree.agents.model_tiering.resolve_phase_harness`,
         so an EMPTY map is byte-identical to the shipped pin — a full swap of the
         verification checker onto ``pydantic_ai`` becomes one ``agent_phase_harness``
@@ -195,7 +195,7 @@ def _phase_harness_from(raw: object) -> dict[str, AgentHarness | None]:
     ``pydantic_ai`` — the phase is PINNED to that transport) or an inherit
     sentinel (``""`` / ``default`` / ``inherit`` — the phase is explicitly
     UNPINNED, dropping back to the configured ``agent_harness`` even when the
-    shipped :data:`teatree.agents.model_tiering.PHASE_HARNESS` default would pin
+    shipped ``agent_phase_harness`` declaration would pin
     it). The unpin case is kept as an explicit ``None`` entry (distinct from an
     absent key) so :func:`~teatree.agents.model_tiering.resolve_phase_harness`
     can tell "override to no-pin" apart from "no override at all".
@@ -293,7 +293,7 @@ def _tier_models_from(raw: object) -> dict[str, str]:
     Each entry overrides the concrete model id a tier resolves to. A non-dict
     value yields an empty map, and a non-string-or-blank entry value is skipped —
     the same tolerance as ``skill_models`` — so a malformed override never
-    poisons the shipped :data:`teatree.agents.model_tiering.TIER_MODELS` default.
+    poisons the shipped :data:`teatree.agents.model_tiering.tier_models()` default.
     """
     if not isinstance(raw, dict):
         return {}
@@ -310,7 +310,7 @@ def _pydantic_ai_tier_models_from(raw: object) -> dict[str, str]:
     The ``pydantic_ai`` sibling of :func:`_tier_models_from` — identical
     tolerance (non-dict → empty, a non-string-or-blank entry skipped) so a
     malformed override never poisons the shipped
-    :data:`teatree.agents.model_tiering.PYDANTIC_AI_TIER_MODELS` default.
+    :func:`teatree.config.registries.pydantic_ai_tier_models` default.
     """
     return _tier_models_from(raw)
 
@@ -323,7 +323,7 @@ def _tier_effort_from(raw: object) -> dict[str, str]:
     :data:`EFFORT_SCALE` (case- and whitespace-insensitive). A non-string, blank,
     or off-scale value is skipped — the same fail-to-defaults tolerance — so a
     malformed override never poisons the shipped
-    :data:`teatree.agents.model_tiering.TIER_EFFORT` default.
+    :data:`teatree.agents.model_tiering.tier_effort()` default.
     """
     if not isinstance(raw, dict):
         return {}

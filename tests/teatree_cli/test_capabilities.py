@@ -44,6 +44,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
     from teatree.core.management.commands import (  # noqa: PLC0415
         _worktree_adopt_command,
         checking,
+        cost_profile,
         do,
         dream,
         e2e,
@@ -100,6 +101,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree pr discharge-pending": pr.Command.discharge_pending,
         "teatree review apply-reviewer-policy": review.Command.apply_reviewer_policy,
         "teatree ticket backfill-clears": ticket.Command.backfill_clears,
+        "teatree ticket critic-record": ticket.Command.critic_record,
         "teatree ticket list-clears": ticket.Command.list_clears,
         "teatree ticket dead-rows": ticket.Command.dead_rows,
         "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,
@@ -122,6 +124,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         # replaces the class ``handle`` attribute with a generic wrapper, so its
         # real params live on the registered typer callback, not on ``Command.handle``.
         "teatree do": do.Command.typer_app.registered_commands[0].callback,
+        "teatree cost_profile": cost_profile.Command.typer_app.registered_commands[0].callback,
         "doctor check": cli_doctor_app.check,
         "cost": cli_cost.cost,
         "tokens": cli_tokens.tokens,

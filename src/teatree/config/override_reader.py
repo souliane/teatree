@@ -226,6 +226,26 @@ def load_global_rows() -> tuple[dict[str, Any], bool]:
     return _read_scope_rows(GLOBAL_SCOPE_LABEL, read, {})
 
 
+def fold_overlay_rows(scope_values: Mapping[str, Mapping[str, StoredRowValue]], overlay_name: str) -> OverlayRows:
+    canonical = OverlayEntry.canonical_overlay_name(overlay_name)
+    aliases = sorted(
+        scope
+        for scope in scope_values
+        if scope != overlay_name and OverlayEntry.canonical_overlay_name(scope) == canonical
+    )
+    merged: dict[str, StoredRowValue] = {}
+    scopes: dict[str, str] = {}
+    for scope in (*aliases, overlay_name):
+        rows = scope_values.get(scope, {})
+        merged.update(rows)
+        scopes.update(dict.fromkeys(rows, scope))
+    return OverlayRows(merged, scopes)
+
+
+def column_spelling(spellings: set[str], registered: set[str]) -> str:
+    return next(iter(sorted(spellings & registered)), min(spellings))
+
+
 def load_overlay_rows(overlay_name: str = "") -> tuple[OverlayRows, bool]:
     """Read the active overlay's rows and source scopes, alias-tolerant.
 
@@ -245,20 +265,10 @@ def load_overlay_rows(overlay_name: str = "") -> tuple[OverlayRows, bool]:
 
     def read() -> OverlayRows:
         model = apps.get_model("core", "ConfigSetting")
-        canonical = OverlayEntry.canonical_overlay_name(overlay_name)
         scope_values: dict[str, dict[str, StoredRowValue]] = {}
         for scope, key, value in model.objects.exclude(scope="").values_list("scope", "key", "value"):
-            if scope == overlay_name or OverlayEntry.canonical_overlay_name(scope) == canonical:
-                scope_values.setdefault(scope, {})[key] = value
-        merged: dict[str, StoredRowValue] = {}
-        scopes: dict[str, str] = {}
-        for scope in sorted(scope_values):
-            if scope != overlay_name:
-                merged.update(scope_values[scope])
-                scopes.update(dict.fromkeys(scope_values[scope], scope))
-        merged.update(scope_values.get(overlay_name, {}))
-        scopes.update(dict.fromkeys(scope_values.get(overlay_name, {}), overlay_name))
-        return OverlayRows(merged, scopes)
+            scope_values.setdefault(scope, {})[key] = value
+        return fold_overlay_rows(scope_values, overlay_name)
 
     return _read_scope_rows(OVERLAY_SCOPE_LABEL, read, empty, log_label=f"overlay {overlay_name!r}")
 
@@ -267,7 +277,9 @@ __all__ = [
     "GLOBAL_SCOPE_LABEL",
     "OVERLAY_SCOPE_LABEL",
     "OverlayRows",
+    "column_spelling",
     "config_store_readable",
+    "fold_overlay_rows",
     "load_global_rows",
     "load_overlay_rows",
 ]

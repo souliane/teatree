@@ -438,8 +438,10 @@ class TestTheSurface(NotionWriteCase):
         assert tools["notion_property_set"].annotations.destructive_hint is True
         assert tools["notion_archive"].annotations.read_only_hint is False
 
-    def test_the_server_instructions_name_both_new_tools(self) -> None:
-        instructions = self.server.instructions or ""
+    def test_the_new_tools_describe_their_dry_run_and_approval_rule(self) -> None:
+        tools = async_to_sync(self._tools)()
 
-        assert "- notion_archive(page, archived, dry_run, overlay):" in instructions
-        assert "- notion_property_set(page, name, value, dry_run, overlay):" in instructions
+        assert "archived=false" in tools["notion_archive"].description
+        assert "approval" in tools["notion_archive"].description
+        assert "no plain-text form" in tools["notion_property_set"].description
+        assert "approval" in tools["notion_property_set"].description

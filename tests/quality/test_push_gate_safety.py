@@ -175,6 +175,7 @@ class TestR7Unclassifiable:
             astgrep_scanner=_raise,
         )
         assert result.astgrep_deferred is True
+        assert result.status == "DEFERRED"
         assert result.ok is True, "a missing ast-grep engine must not wedge the push"
         assert any("ast-grep" in note.lower() for note in result.notes)
 
@@ -422,3 +423,26 @@ class TestReportShape:
 def test_plan_is_frozen(plan: PushGatePlan) -> None:
     with pytest.raises(AttributeError):
         plan.is_full = not plan.is_full  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
+
+
+def test_zero_declared_rules_is_a_failure_not_an_engine_deferral(tmp_path: Path) -> None:
+    plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")))
+
+    result = run_push_gate(plan, repo_root=tmp_path, doctest_runner=_sweep_passed)
+
+    assert result.ok is False
+    assert result.astgrep_deferred is False
+    assert result.status == "NO_RULES"
+    assert result.exit_code != 0
+    assert any("no blocking rules" in note.lower() for note in result.notes)
+
+
+def test_clean_and_deferred_scans_have_distinct_statuses(tmp_path: Path) -> None:
+    plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")))
+    (tmp_path / ".ast-grep" / "blocking").mkdir(parents=True)
+    (tmp_path / ".ast-grep" / "blocking" / "rule.yml").write_text("id: rule\n", encoding="utf-8")
+
+    clean = run_push_gate(plan, repo_root=tmp_path, doctest_runner=_sweep_passed, astgrep_scanner=lambda *_a, **_k: [])
+
+    assert clean.ok is True
+    assert clean.status == "CLEAN"

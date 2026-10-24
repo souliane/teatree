@@ -52,6 +52,7 @@ from hooks.scripts.additional_context import emit_additional_context
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.brief_anchor_gate import handle_brief_anchor_lint
+from hooks.scripts.cache_wait_advisory import handle_warn_cache_wait
 from hooks.scripts.checkout_placement_gate import handle_block_worktree_checkout
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
@@ -122,8 +123,10 @@ from hooks.scripts.merged_detection_probe_gate import handle_warn_merged_detecti
 from hooks.scripts.mr_cli_fields import extract_api_mr_fields, extract_cli_mr_fields
 from hooks.scripts.mr_validator import handle_validate_mr_metadata
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
+from hooks.scripts.orchestration_boundary_signals import HELP_OR_VERSION_RE as _HELP_OR_VERSION_RE
+from hooks.scripts.orchestration_boundary_signals import NEVER_HELP_EXEMPT_RE as _NEVER_HELP_EXEMPT_RE
+from hooks.scripts.orchestration_boundary_signals import ORCHESTRATOR_HEAVY_BASH_RE as _ORCHESTRATOR_HEAVY_BASH_RE
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
-from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
 from hooks.scripts.orchestrator_delegation_gate import handle_block_undelegated_investigation
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
@@ -394,7 +397,7 @@ def _danger_gate_fail_open_enabled() -> bool:
     Read through the Django-free cold reader, so a deny never boots Django; any
     unreadable or non-bool value fails CLOSED to disabled, never relaxing every gate.
     """
-    return _teatree_bool_setting("danger_gate_fail_open", default=False)
+    return _teatree_bool_setting("danger_gate_fail_open")
 
 
 def _fail_open_or_deny(data: dict, reason: str, *, gate_id: str | None = None) -> bool:
@@ -798,7 +801,7 @@ def _skill_loading_gate_enabled() -> bool:
     a code edit). See :func:`_teatree_bool_setting` for the shared bare-boolean
     semantics.
     """
-    return _teatree_bool_setting("skill_loading_gate_enabled", default=True)
+    return _teatree_bool_setting("skill_loading_gate_enabled")
 
 
 def handle_enforce_skill_loading(data: dict) -> bool:
@@ -888,7 +891,7 @@ def _plan_edit_gate_enabled() -> bool:
     (``t3 <overlay> gate plan disable``, never a code edit). See
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    return _teatree_bool_setting("plan_edit_gate_enabled", default=True)
+    return _teatree_bool_setting("plan_edit_gate_enabled")
 
 
 # ── PreToolUse: protect-default-branch ─────────────────────────────
@@ -1591,65 +1594,6 @@ _PYTEST_TARGETED_RE = re.compile(
     r"|::"  # a node-id (path::Class::test)
     r"|(?:^|\s)\S*\.py(?:::|\s|$)"  # a specific .py file path
 )
-# HEAVY / long-running Bash shapes the main agent should not run inline.
-# This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
-# the escape hatch is ``run_in_background: true`` (or, for a whole class
-# of work, dispatching a sub-agent), plus a per-call ``[gate-escape:orchestrator_bash: <reason>]``
-# marker. When in doubt the command is ALLOWED — only an explicit match
-# here, foreground, is gated. Patterns cover: Python/test runners, the
-# interactive Django shells (``manage.py shell``/``shell_plus``/``dbshell``
-# — the original 1h-hung RED-FLAG incident #1178), language/asset builds,
-# dev servers, browser E2E (``playwright test``, ``nx run …:e2e`` AND bare
-# ``nx e2e <target>``), container image AND compose builds (``docker
-# build`` / ``docker compose build``), package installs/sync, long sleeps,
-# full-tree recursive sweeps (the shapes that actually wedge a session).
-# ``manage.py migrate`` is gated elsewhere (the ``_BLOCKED_COMMANDS``
-# t3-CLI redirect); short ``t3 loop tick``/``ci``/``doctor`` are NOT slow
-# and are deliberately not listed. Fast, BOUNDED ops are never matched
-# (#3253): read-only git (``status``/``log``/``diff``/``show``/``fetch``),
-# a bounded ``git push`` (a small-branch push is seconds — the pre-push
-# hook only ever runs the fast early signal, never the full suite), and a
-# bare ``--help``/``--version`` query of any verb. A TARGETED ``pytest``
-# run is exempted in :func:`_deny_heavy_main_agent_bash` (the verb still
-# matches here; the whole-suite-vs-targeted split is applied at deny time).
-_ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
-    r"(?:" + _PYTEST_VERB_RE + r"|"
-    r"\btox\b|"
-    r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
-    r"manage\.py\s+runserver|"
-    r"manage\.py\s+(?:shell|shell_plus|dbshell)\b|"
-    r"\bnx\s+(?:serve|run|e2e)\b|"
-    r"docker\s+compose\s+(?:up|build)|"
-    r"\bdocker\s+build\b|"
-    r"(?:npx\s+)?playwright\s+test|"
-    r"\bnpm\s+(?:run|install|ci)\b|"
-    r"\b(?:pipenv|pip)\s+install\b|"
-    r"\buv\s+sync\b|"
-    r"vite\s+build|"
-    r"\bwebpack\b|"
-    r"\bcargo\s+(?:build|test)\b|"
-    r"\bmake\b|"
-    r"\bsleep\s+\d{2,}|"
-    r"\bfind\s+\S+.*-exec\b|"
-    r"\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b"
-    r")",
-)
-
-# A heavy verb invoked purely to print its ``--help``/``-h``/``--version`` (and
-# exit immediately) is trivially fast and read-only — NOT the long-running shape
-# this gate guards (``t3 dream run --help``, ``docker build --help``,
-# ``pytest -h``). The lookahead requires the flag to be a complete token so a
-# recursive ``ls -lhR`` (a flag bundle, not a help query) is not mistaken for one.
-_HELP_OR_VERSION_RE = re.compile(r"(?:^|\s)(?:--help|-h|--version)(?=\s|$)")
-
-# Heavy shapes a help token must NEVER exempt, because the token does not belong
-# to the heavy verb's own fast --help path:
-#   * ``find … -exec <cmd> …`` — a ``-h`` after ``-exec`` is the EXEC'd command's
-#     flag (``grep -h`` = suppress filename, ``rm -h`` / ``chmod -h``, ``du -h`` =
-#     human-readable), NOT a help query; the find-sweep itself is still heavy.
-#   * recursive ``ls …R…`` — its ``-h`` is the human-readable flag bundle.
-# Reuses the exact heavy sub-patterns so the two regexes can never drift.
-_NEVER_HELP_EXEMPT_RE = re.compile(r"\bfind\s+\S+.*-exec\b|\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b")
 
 
 def _is_orchestration_action(data: dict) -> bool:
@@ -1679,7 +1623,7 @@ def _orchestrator_bash_gate_enabled() -> bool:
     user disable it with one config line (never a code edit). See
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    return _teatree_bool_setting("orchestrator_bash_gate_enabled", default=True)
+    return _teatree_bool_setting("orchestrator_bash_gate_enabled")
 
 
 def _orchestrator_boundary_agent_gate_enabled() -> bool:
@@ -1710,7 +1654,7 @@ def _orchestrator_boundary_agent_gate_enabled() -> bool:
     protective default; only an explicit bare ``false`` is the kill-switch. See
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    return _teatree_bool_setting("orchestrator_boundary_agent_gate_enabled", default=True)
+    return _teatree_bool_setting("orchestrator_boundary_agent_gate_enabled")
 
 
 def _deny_foreground_agent_dispatch(data: dict) -> bool:
@@ -1911,8 +1855,6 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
 _TURN_TOOL_COUNT_SUFFIX = "turn-tool-count"
 _TURN_NUDGED_SUFFIX = "turn-budget-nudged"
 _TURN_START_SUFFIX = "turn-start-monotonic"
-_DEFAULT_ORCHESTRATOR_TURN_BUDGET = 25
-_DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS = 180
 
 
 def _orchestrator_turn_budget() -> int:
@@ -1924,7 +1866,7 @@ def _orchestrator_turn_budget() -> int:
     with one config line, never a code edit — while a below-zero or non-int value
     falls back to the default.
     """
-    return _teatree_int_setting("orchestrator_turn_budget", default=_DEFAULT_ORCHESTRATOR_TURN_BUDGET, minimum=0)
+    return _teatree_int_setting("orchestrator_turn_budget", minimum=0)
 
 
 def _orchestrator_turn_wall_clock_threshold() -> int:
@@ -1936,9 +1878,7 @@ def _orchestrator_turn_wall_clock_threshold() -> int:
     disables the wall-clock dimension with one config line — while a below-zero or
     non-int value falls back to the default.
     """
-    return _teatree_int_setting(
-        "orchestrator_turn_wall_clock_seconds", default=_DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS, minimum=0
-    )
+    return _teatree_int_setting("orchestrator_turn_wall_clock_seconds", minimum=0)
 
 
 def handle_reset_turn_tool_budget(data: dict) -> None:
@@ -3509,6 +3449,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_unfit_question,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,
+        handle_warn_cache_wait,
     ],
     "PostToolUse": [
         handle_track_classifier_denial,

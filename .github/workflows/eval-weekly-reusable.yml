@@ -333,7 +333,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.294
+          npm install -g @anthropic-ai/claude-code@2.1.300
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -383,7 +383,7 @@ jobs:
       # credential (below) is forwarded in via docker's `-e` pass-through, mirroring
       # `eval.yml`'s `T3_AGENT_HARNESS_PROVIDER` resolution exactly. `--benchmark` runs
       # every (lane/shard-filtered) scenario against ALL THREE tier models
-      # (frontier/balanced/cheap, resolved through the single TIER_MODELS constant)
+      # (frontier/balanced/cheap, resolved through `tier_models()`)
       # and renders the comparison matrix + a self-contained HTML dashboard — the
       # canonical weekly benchmark. `--require-executed` is UNCONDITIONAL so an
       # all-skipped run exits non-zero. `--lane`/`--shard` scope the leg to its one

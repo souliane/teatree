@@ -56,7 +56,7 @@ def _completion_claim_gate_enabled() -> bool:
     """
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("completion_claim_gate_enabled", default=True)
+    return _teatree_bool_setting("completion_claim_gate_enabled")
 
 
 def handle_completion_claim_gate(data: dict) -> bool | None:

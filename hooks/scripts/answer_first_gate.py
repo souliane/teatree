@@ -53,7 +53,7 @@ _QUOTED_BLOCK_RE = re.compile(r"^[ \t]*>.*(?:\n|$)", re.MULTILINE)
 def _gate_enabled() -> bool:
     from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
 
-    return teatree_bool_setting("answer_first_gate_enabled", default=True)
+    return teatree_bool_setting("answer_first_gate_enabled")
 
 
 def user_words_only(text: str) -> str:

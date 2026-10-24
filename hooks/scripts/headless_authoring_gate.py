@@ -93,7 +93,7 @@ def _gate_enabled() -> bool:
     """Whether the gate is on (default True). ``headless_authoring_gate_enabled = false`` disables it."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("headless_authoring_gate_enabled", default=True)
+    return _teatree_bool_setting("headless_authoring_gate_enabled")
 
 
 def _targets_teatree_repo(file_path: str) -> bool:

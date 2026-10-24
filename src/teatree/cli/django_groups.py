@@ -8,6 +8,15 @@ a focused module; the group type itself is :class:`~teatree.cli.django_group.Dja
 from teatree.cli.django_group import DjangoGroup
 
 DJANGO_GROUPS: dict[str, DjangoGroup] = {
+    "secrets": DjangoGroup(
+        "Inspect sealed credentials and plan a password-store import.",
+        [
+            ("status", "Show sealed-store key health and key IDs."),
+            ("ls", "List sealed entry names."),
+            ("import-pass", "Classify password-store entries without copying values."),
+        ],
+        core_dispatch=True,
+    ),
     "worktree": DjangoGroup(
         "Per-worktree FSM operations.",
         [
