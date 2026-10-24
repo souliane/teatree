@@ -224,6 +224,21 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
     )
 
 
+def idle_started_author_tickets(*, now: datetime, threshold_hours: int) -> list[Ticket]:
+    """Author tickets idle past *threshold_hours* with no active task or live PR, whose newest task was not cancelled.
+
+    The read-only half of the frozen class, for callers that hold on an idle ticket instead of
+    re-dispatching it. A reviewer ticket is someone else's PR, so it never counts as started work.
+    """
+    return [
+        ticket
+        for ticket in _live_tickets_with_nothing_in_flight()
+        if ticket.role == Ticket.Role.AUTHOR
+        and not ticket.newest_task_was_cancelled()
+        and _is_idle(ticket, now=now, threshold_hours=threshold_hours)
+    ]
+
+
 def _warn_unknown_states() -> None:
     unknown = (
         Ticket.objects.exclude(state__in=Ticket.State.values).values("state").annotate(n=Count("pk")).order_by("state")

@@ -189,6 +189,13 @@ class _IssueImplementerLoopSettings:
             parse=_parse_strict_float,
         ),
     )
+    issue_intake_idle_hold_hours: int = setting(
+        0,
+        spec=SettingSpec(
+            help="hours a started ticket may sit idle before intake claims nothing new; 0 is off",
+            parse=_parse_strict_int,
+        ),
+    )
 
 
 @dataclass
