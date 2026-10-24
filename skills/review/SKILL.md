@@ -335,7 +335,8 @@ t3 slack react <channel> <ts> <emoji>          # e.g. t3 slack react C_REVIEW 17
 ```
 
 The verdict → emoji mapping is the one `teatree.loop.review_done_reactions.emit_review_done_reactions`
-posts, so a hand-issued reaction matches what the loop would have emitted:
+posts, so a hand-issued reaction matches what the loop would have emitted. The loop reacts on a colleague's
+merge request only; the operator's own gets none:
 
 | verdict | emoji argument |
 | --- | --- |

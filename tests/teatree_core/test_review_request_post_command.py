@@ -15,7 +15,7 @@ import os
 import shlex
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,8 +31,10 @@ from teatree.core.egress_transport import EgressKind, suppress_on_behalf_egress
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import (
     ConfigSetting,
+    MergeClear,
     OnBehalfApproval,
     OnBehalfAudit,
+    PullRequest,
     ReviewEvidence,
     ReviewRequestPost,
     SendAudit,
@@ -319,11 +321,16 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
         # The gate runs first — no ReviewRequestPost claim was taken.
         assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
 
-    def test_refused_when_ticket_id_or_head_sha_missing(self) -> None:
-        with (
-            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-        ):
-            code, payload = _run(supply_gate_evidence=False)  # no --ticket-id / --head-sha
+    def test_refused_when_a_ticket_id_is_given_without_a_head_sha(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        with patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET):
+            code, payload = _run("--ticket-id", str(ticket.pk), supply_gate_evidence=False)
+        assert code == 2
+        assert payload["reason"] == "anti_vacuity_not_attested"
+
+    def test_refused_when_the_ticket_id_names_no_ticket(self) -> None:
+        with patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET):
+            code, payload = _run("--ticket-id", "999999", "--head-sha", _SHA, supply_gate_evidence=False)
         assert code == 2
         assert payload["reason"] == "anti_vacuity_not_attested"
 
@@ -388,6 +395,153 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
             patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
         ):
             result = CliRunner().invoke(app, argv)
+
+        assert result.exit_code == 0, result.output
+        assert '"action": "post"' in result.output
+        assert len(backend.posts) == 1
+
+
+class TestReviewRequestPostTicketScope(_DataDirMixin, TestCase):
+    """The ticket gates read the ticket that owns the merge request; an unowned one skips them (#5506)."""
+
+    @contextlib.contextmanager
+    def _postable(self, backend: _FakeBackend) -> Generator[None]:
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            yield
+
+    def _approve(self) -> None:
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+
+    def _owning_ticket(
+        self, *, state: str = Ticket.State.REVIEW_REQUESTED, attested: bool = True, reviewed: bool = True
+    ) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree", state=state, issue_url="https://gitlab.com/org/repo/-/issues/17"
+        )
+        PullRequest.objects.create(ticket=ticket, url=_MR_URL, repo="org/repo", iid="385")
+        if attested:
+            ticket.record_anti_vacuity_attestation(_SHA, "ACs checked against diff", [], no_new_tests=True)
+        if reviewed:
+            ReviewEvidence.record(
+                ticket=ticket,
+                kind=ReviewEvidence.Kind.COLD_REVIEW,
+                reviewer_identity="reviewer-bob",
+                verdict="merge_safe",
+                head_sha=_SHA,
+            )
+        return ticket
+
+    def test_a_merge_request_no_ticket_owns_posts_without_a_ticket_id(self) -> None:
+        self._approve()
+        backend = _FakeBackend()
+
+        with self._postable(backend):
+            code, payload = _run("--title", "t", supply_gate_evidence=False)
+
+        assert (code, payload["action"]) == (0, "post"), payload
+        assert len(backend.posts) == 1
+
+    def test_a_merge_request_no_ticket_owns_still_needs_the_approval(self) -> None:
+        backend = _FakeBackend()
+
+        with self._postable(backend):
+            code, payload = _run("--title", "t", supply_gate_evidence=False)
+
+        assert (code, payload["reason"]) == (2, "on_behalf_not_approved")
+        assert backend.posts == []
+
+    def test_a_draft_merge_request_no_ticket_owns_is_refused_as_a_draft(self) -> None:
+        self._approve()
+        backend = _FakeBackend()
+
+        with self._postable(backend), patch(_FORGE, return_value=_DraftProbeHost(DraftState.DRAFT)):
+            code, payload = _run("--title", "t", supply_gate_evidence=False)
+
+        assert (code, payload["reason"]) == (2, "draft_mr")
+        assert backend.posts == []
+
+    def test_the_owning_ticket_must_attest_the_head_when_no_ticket_id_is_given(self) -> None:
+        self._owning_ticket(attested=False)
+        self._approve()
+        backend = _FakeBackend()
+
+        with self._postable(backend):
+            code, payload = _run("--head-sha", _SHA, supply_gate_evidence=False)
+
+        assert (code, payload["reason"]) == (2, "anti_vacuity_not_attested")
+        assert backend.posts == []
+
+    def test_the_owning_ticket_needs_a_head_sha_when_no_ticket_id_is_given(self) -> None:
+        self._owning_ticket()
+        self._approve()
+        backend = _FakeBackend()
+
+        with self._postable(backend):
+            code, payload = _run(supply_gate_evidence=False)
+
+        assert (code, payload["reason"]) == (2, "anti_vacuity_not_attested")
+        assert backend.posts == []
+
+    def test_the_owning_ticket_must_be_reviewed_when_no_ticket_id_is_given(self) -> None:
+        self._owning_ticket(state=Ticket.State.CODED, reviewed=False)
+        self._approve()
+        backend = _FakeBackend()
+
+        with self._postable(backend):
+            code, payload = _run("--head-sha", _SHA, supply_gate_evidence=False)
+
+        assert (code, payload["reason"]) == (2, "ticket_not_reviewed")
+        assert backend.posts == []
+
+    def test_a_fully_evidenced_owning_ticket_posts_and_files_the_permalink_under_it(self) -> None:
+        self._owning_ticket()
+        self._approve()
+        backend = _FakeBackend()
+
+        with self._postable(backend):
+            code, payload = _run("--head-sha", _SHA, "--title", "t", supply_gate_evidence=False)
+
+        assert (code, payload["action"]) == (0, "post"), payload
+        assert (self._tmp / "tickets" / "17" / "mr_review_messages.json").exists()
+
+    def test_a_ticket_found_only_through_its_merge_clear_is_still_gated(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=385,
+            slug="org/repo",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+        self._approve()
+        backend = _FakeBackend()
+
+        with self._postable(backend):
+            code, payload = _run("--head-sha", _SHA, supply_gate_evidence=False)
+
+        assert (code, payload["reason"]) == (2, "anti_vacuity_not_attested")
+        assert backend.posts == []
+
+    def test_the_cli_posts_a_merge_request_with_no_ticket_flags(self) -> None:
+        self._approve()
+        backend = _FakeBackend()
+
+        def run_command(*args: str, overlay_name: str) -> None:
+            assert overlay_name
+            call_command(*args)
+
+        with (
+            self._postable(backend),
+            patch("teatree.cli.review.request._overlay_name_for_mr", return_value="t3-acme"),
+            patch("teatree.cli.review.request.managepy_core", side_effect=run_command),
+        ):
+            result = CliRunner().invoke(app, ["review-request", "post", "--mr-url", _MR_URL, "--approver", "souliane"])
 
         assert result.exit_code == 0, result.output
         assert '"action": "post"' in result.output
@@ -877,8 +1031,6 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         ``_MR_URL`` ends in ``/385`` (the MR iid); the owning ticket is issue
         ``17``. The permalink must land under ``tickets/17/``, not ``tickets/385/``.
         """
-        from teatree.core.models import PullRequest  # noqa: PLC0415
-
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
             state=Ticket.State.REVIEW_REQUESTED,
