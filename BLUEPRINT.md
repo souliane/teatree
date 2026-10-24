@@ -872,8 +872,10 @@ post-write result.
   reporting success.
 - **Dedupe before create.** `create_or_extend` reads every OPEN issue on the repo
   (`CodeHostBackend.list_repo_open_issues`, paginated) and refuses to file until each
-  is judged. A fitting ticket is extended; a new one carries a `## Dedupe check`
-  section naming every rejected candidate and why. A fitting ticket somebody ELSE
+  is judged. A fitting ticket is extended; a new one's body stays the supplied body.
+  Every completed outcome records the live candidates, decisions and reasons in a
+  private `SendAudit` row with the `other` channel and an audit-only verdict; the
+  retention pass removes these rows after 30 days. A fitting ticket somebody ELSE
   filed returns `external_conflict` — neither edited nor duplicated.
 - **A deterministic filer judges mechanically, it does not skip the pass.**
   `create_or_extend_by_marker` fits a candidate iff its body carries the caller's

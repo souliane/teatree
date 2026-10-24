@@ -56,6 +56,9 @@ logger = logging.getLogger(__name__)
 #: Placeholder a redacted whole-token match is replaced with.
 REDACTION_PLACEHOLDER = "[redacted]"
 
+#: Destination prefix of the audit-only rows that hold a private issue judgment.
+PRIVATE_JUDGMENT_DESTINATION_PREFIX = "private-judgment:"
+
 #: How much of the payload is kept in the audit row's non-sensitive preview.
 _PAYLOAD_SUMMARY_CHARS = 200
 
@@ -290,8 +293,10 @@ def _safe_redact(request: SendRequest) -> tuple[str, tuple[str, ...]]:
         return request.payload, ()
 
 
-def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
-    """Write the per-send :class:`SendAudit` row — best-effort, never raises.
+def _record_audit(
+    request: SendRequest, verdict: SendVerdict | None, *, summary_chars: int | None = _PAYLOAD_SUMMARY_CHARS
+) -> None:
+    """Write the :class:`SendAudit` row; a missing verdict denotes private data.
 
     Fields are pre-truncated to their column widths here (SQLite does not enforce
     ``max_length``, and a Postgres backend would otherwise raise on an overlong
@@ -308,13 +313,13 @@ def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
                 action=request.action[:64],
                 target=request.target[:512],
                 overlay=overlay[:255],
-                allowlist_verdict=_audit_verdict(verdict),
-                redaction_applied=verdict.payload_redacted,
-                redaction_matches=list(verdict.redaction_matches),
+                allowlist_verdict=_audit_verdict(verdict) if verdict is not None else SendAudit.Verdict.WARNED,
+                redaction_applied=verdict.payload_redacted if verdict is not None else False,
+                redaction_matches=list(verdict.redaction_matches) if verdict is not None else [],
                 provenance=request.provenance[:32],
                 authorized_by=request.authorized_by[:255],
                 agent_session_id=(current_session_id() or "")[:255],
-                payload_summary=request.payload[:_PAYLOAD_SUMMARY_CHARS],
+                payload_summary=request.payload[:summary_chars],
             )
     except DatabaseError as exc:
         logger.warning("send_proxy: audit write failed for destination=%s: %s", request.destination, exc)
@@ -392,6 +397,18 @@ def forge_from_url(url: str) -> str:
     return ""
 
 
+def record_private_audit(*, forge: str, repo: str, action: str, target: str, text: str) -> None:
+    """Keep a full issue judgment in the control DB without routing it to a forge."""
+    request = SendRequest(
+        channel=SendChannel.OTHER,
+        destination=f"{PRIVATE_JUDGMENT_DESTINATION_PREFIX}{forge}:{repo.strip()}",
+        payload=text,
+        action=action,
+        target=target,
+    )
+    _record_audit(request, None, summary_chars=None)
+
+
 def route_forge_write(*, forge: str, repo: str, text: str, action: str, target: str) -> str:
     """Screen one outbound forge body through the leak gate + #117 send-proxy, or refuse.
 
@@ -434,6 +451,7 @@ def route_forge_write(*, forge: str, repo: str, text: str, action: str, target: 
 
 
 __all__ = [
+    "PRIVATE_JUDGMENT_DESTINATION_PREFIX",
     "REDACTION_PLACEHOLDER",
     "OutboundBlockedError",
     "OutboundLeakError",
@@ -445,6 +463,7 @@ __all__ = [
     "destination_allowed",
     "forge_from_url",
     "read_posting_credential",
+    "record_private_audit",
     "redact_payload",
     "route_forge_write",
     "route_send",
