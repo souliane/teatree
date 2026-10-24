@@ -174,6 +174,8 @@ class TestMainAgentHeavyBashBlocked:
             "bash -c 'date; pytest'",
             "find . -name '*.py' -exec grep -l TODO {} ;",
             "ls -laR /Users/dev/workspace",
+            "# don't\nuv run pytest\n# it's",
+            "echo \\'first && make all \\'last",
         ],
     )
     def test_heavy_main_agent_bash_blocked(self, command: str) -> None:
@@ -198,6 +200,11 @@ class TestFileWritingHeredocs:
             "cat >> run.sh <<-EOF\n\tmake lint\n\tEOF",
             "tee run.sh <<EOF\nuv run pytest\nEOF",
             "mkdir -p scripts && cat > scripts/run.sh <<EOF\nuv run pytest\nEOF",
+            "cat > run.sh << 'EOF'\nuv run pytest\nEOF",
+            "tee run.sh << EOF\nuv run pytest\nEOF",
+            "gh pr create --body \"$(cat <<'EOF'\n`uv run pytest`\nEOF\n)\"",
+            "git commit -m \"$(cat <<'EOF'\n`uv run pytest`\nEOF\n)\"",
+            "gh pr create --body \"$(cat <<'EOF'\n`make lint`\nEOF\n)\"",
         ],
     )
     def test_writing_a_file_does_not_execute_its_body(self, command: str) -> None:
@@ -221,6 +228,7 @@ class TestFileWritingHeredocs:
             "python3 - <<'OUTER'\ncat > run.sh <<'INNER'\nuv run pytest\nINNER\nOUTER",
             "tee run.sh <<EOF | bash\nuv run pytest\nEOF",
             "tee run.sh <<EOF >(bash)\nuv run pytest\nEOF",
+            "cat > run.sh << 'EOF'\nuv run pytest\nEOF\nbash run.sh",
         ],
     )
     def test_executable_or_unclosed_heredoc_still_denies(self, command: str) -> None:
@@ -239,6 +247,7 @@ class TestHeavyWordIsNotACommand:
             "ps -eo pid,etime,stat,cmd | rg 'test-affected|pytest|uv run' | head -20",
             'echo "CI runs | pytest on shard 3"',
             "echo \\`pytest\\`",
+            "command -v pytest",
         ],
     )
     def test_identifier_or_argument_passes(self, command: str) -> None:
@@ -256,6 +265,16 @@ class TestHeavyWordIsNotACommand:
             "sudo -E make all",
             "env FOO=1 make all",
             "nohup make all",
+            "uv run tox",
+            "uvx tox",
+            "poetry run tox",
+            "python3 -m tox",
+            "npx webpack",
+            "uv run make all",
+            "timeout 600 make all",
+            "xargs make",
+            "bash -lc 'make all'",
+            "if true; then make all; fi",
         ],
     )
     def test_real_heavy_verb_still_denies(self, command: str) -> None:
