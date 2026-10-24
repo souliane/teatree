@@ -75,6 +75,18 @@ class SkillAssuranceGapTests(TestCase):
             "skill-delivery-gap": 1,
         }
 
+    def test_case_changed_completion_marker_still_counts_as_gap(self) -> None:
+        for summary in (
+            f"{NOOP_OVER_COMPLETED_MARKER.upper()}lease lost",
+            f"built the thing — {NOOP_OVER_COMPLETED_MARKER.upper()}lease lost",
+        ):
+            with self.subTest(summary=summary):
+                attempt = self._gap_attempt(summary=summary)
+                reports = SkillAssuranceGapDetector(overlay_name="t3-teatree").detect()
+                assert len(reports) == 1
+                assert reports[0].payload["count"] == 1
+                attempt.delete()
+
     def test_non_verdict_attempts_do_not_evict_an_older_gap(self) -> None:
         self._gap_attempt()
         task = TaskFactory(ticket=TicketFactory(overlay="t3-teatree"))

@@ -76,9 +76,11 @@ class SkillAssuranceGapDetector:
         rows = rows.exclude(failure_kind=FailureKind.USAGE_LIMIT_PARKED)
         rows = rows.exclude(
             Q(result__summary__isnull=False)
-            & (
-                Q(result__summary__startswith=NOOP_OVER_COMPLETED_MARKER)
-                | Q(result__summary__icontains=f" — {NOOP_OVER_COMPLETED_MARKER}")
+            & Q(
+                result__summary__regex=(
+                    rf"^{re.escape(NOOP_OVER_COMPLETED_MARKER)}"
+                    rf"|{re.escape(f' — {NOOP_OVER_COMPLETED_MARKER}')}"
+                )
             )
         )
         rows = rows.exclude(num_turns=0, result__skill_assurance__status="unverified")
