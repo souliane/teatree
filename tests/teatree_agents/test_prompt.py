@@ -19,7 +19,7 @@ from teatree.agents.skill_assurance import SkillDispatchError, assess_skill_disp
 from teatree.agents.skill_bundle import resolve_skill_bundle, stage_skills_for_dispatch
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.config.settings import UserSettings
-from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import LandscapeArtifact, Session, SessionCommand, Task, TaskAttempt, Ticket
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.core.models.task_handoff import RESUME_CONTINUATION_CLAUSE, schedule_resume
 
@@ -27,6 +27,18 @@ from teatree.core.models.task_handoff import RESUME_CONTINUATION_CLAUSE, schedul
 
 
 class TestBuildTaskPrompt(TestCase):
+    def test_queued_operator_message_reaches_the_same_task_prompt(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/42")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        SessionCommand.objects.create(
+            command_id="queued-42", ticket=ticket, task=task, text="Keep the API stable", outcome="queued"
+        )
+        other = Task.objects.create(ticket=ticket, session=session, phase="testing")
+
+        assert "Keep the API stable" in build_task_prompt(task)
+        assert "Keep the API stable" not in build_task_prompt(other)
+
     def test_basic(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/42")
         session = Session.objects.create(ticket=ticket)
