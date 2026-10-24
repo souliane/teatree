@@ -1,6 +1,7 @@
 """A run's stream capture, and which endings count as a run cut short."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -34,6 +35,30 @@ def test_collect_ignores_an_early_ack_and_keeps_the_real_result() -> None:
     assert outcome.result_message.num_turns == 2
     assert failure_reason(outcome) is None
     assert client.prompts == ["continue"]
+
+
+def test_stalled_ack_is_cancelled_without_a_refused_resume_result() -> None:
+    ack = result_message(num_turns=0)
+
+    class StalledClient(ScriptedResponseClient):
+        async def receive_response(self) -> AsyncIterator[object]:
+            self.receive_calls += 1
+            yield ack
+            await asyncio.Event().wait()
+
+    client = StalledClient([])
+    inputs = LiveInputQueue()
+    capture = StreamCapture()
+    session = ClaudeSdkSession(client, inputs)
+
+    async def run() -> None:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(_collect(session, "continue", capture), timeout=0.1)
+
+    asyncio.run(run())
+    assert client.receive_calls == 1
+    assert capture.result_message is None
+    assert inputs._ended is None
 
 
 class TestStreamCapture:

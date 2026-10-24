@@ -108,7 +108,12 @@ def test_an_early_clean_zero_turn_result_does_not_hide_the_real_turn() -> None:
     client = ScriptedResponseClient([ack, answer, result])
     session = ClaudeSdkSession(client, LiveInputQueue())
 
-    assert asyncio.run(_collect_messages(session)) == [answer, result]
+    async def run() -> list[object]:
+        await session.query("new prompt")
+        return await _collect_messages(session)
+
+    assert asyncio.run(run()) == [answer, result]
+    assert client.prompts == ["new prompt"]
     assert client.receive_calls == 2
 
 
@@ -117,8 +122,37 @@ def test_a_clean_zero_turn_result_is_released_once_at_eof() -> None:
     client = ScriptedResponseClient([ack])
     session = ClaudeSdkSession(client, LiveInputQueue())
 
-    assert asyncio.run(_collect_messages(session)) == [ack]
+    async def run() -> None:
+        assert await _collect_messages(session) == [ack]
+        with pytest.raises(SteerRejectedError) as error:
+            await session.steer("after EOF", input_id="after-eof", wait=1)
+        assert error.value.code is RejectCode.TURN_ENDED
+
+    asyncio.run(run())
     assert client.receive_calls == 2
+
+
+def test_early_ack_hold_yields_to_scheduled_cancellation() -> None:
+    ack = result_message(num_turns=0)
+
+    class RepeatingClient(ScriptedResponseClient):
+        async def receive_response(self) -> AsyncIterator[object]:
+            self.receive_calls += 1
+            if self.receive_calls == 1:
+                asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
+            else:
+                raise AssertionError
+            yield ack
+
+    client = RepeatingClient([])
+    session = ClaudeSdkSession(client, LiveInputQueue())
+
+    async def run() -> None:
+        with pytest.raises(asyncio.CancelledError):
+            await _collect_messages(session)
+
+    asyncio.run(run())
+    assert client.receive_calls == 1
 
 
 @pytest.mark.parametrize("assistant_before", [False, True])
