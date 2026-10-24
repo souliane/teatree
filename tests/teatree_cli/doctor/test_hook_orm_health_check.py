@@ -60,7 +60,7 @@ def test_missing_django_on_host_makes_container_doctor_fail(
         raise ModuleNotFoundError
 
     monkeypatch.setattr(django_bootstrap, "_django_setup", missing_django)
-    monkeypatch.setattr(django_bootstrap, "_MISSING_CAPABILITY_WARNED", False)
+    monkeypatch.setattr(django_bootstrap, "_EMITTED_NOTES", set())
     assert django_bootstrap.bootstrap_teatree_django() is False
 
     monkeypatch.setattr(orm_health, "hook_venue", lambda: "container")

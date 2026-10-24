@@ -21,6 +21,7 @@ Cold-import safe: stdlib only at module top — never Django / ``teatree.core``.
 
 import sys
 
+from hooks.scripts.django_bootstrap import orm_failures
 from hooks.scripts.gate_result import warn_gate_skipped
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
@@ -36,8 +37,8 @@ def handle_subagent_stop_release(data: dict) -> None:
     that id purely for idempotency — the seat is taken before the harness has assigned
     one, so no seat can be bound to its agent at birth.
 
-    Best-effort: an unbootstrappable Django, a release failure, or any internal error
-    leaves the seat to its window rather than propagating out of ``SubagentStop``.
+    Best-effort: an unbootstrappable Django or an ORM failure leaves the seat to its window
+    (reported as SKIPPED); any other error reaches the router's crash boundary, which allows.
     """
     try:
         session_id = str(data.get("session_id") or "").strip()
@@ -52,6 +53,6 @@ def handle_subagent_stop_release(data: dict) -> None:
         from teatree.core.dispatch_admission import release_interactive_dispatch  # noqa: PLC0415 — deferred: post-setup
 
         release_interactive_dispatch(session_id=session_id, agent_id=agent_id)
-    except Exception as exc:  # noqa: BLE001 — crash-proof hook: a release bug must never break SubagentStop
+    except orm_failures() as exc:
         warn_gate_skipped("dispatch seat release", f"the ORM release failed ({type(exc).__name__}: {exc})")
         return

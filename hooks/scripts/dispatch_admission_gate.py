@@ -27,15 +27,18 @@ NEVER-LOCKOUT: the deny routes through the router's shared
 ``_fail_open_or_deny`` chokepoint (back-imported lazily), so the always-allowed
 self-rescue commands and the master ``danger_gate_fail_open`` switch relax it;
 a per-call ``[gate-escape:dispatch_admission: <reason>]`` token in the dispatch prompt allows one
-call (an empty reason does not); and ANY internal error, an unbootstrappable
-Django and an unimportable ``teatree`` all fail OPEN.
+call (an empty reason does not); and an unbootstrappable Django, an unimportable
+``teatree`` and an ORM failure all fail OPEN, the last reported as SKIPPED. Any other error
+reaches the router's crash boundary, which allows.
 
 Cold-import safe: the module top imports only stdlib plus the already-extracted
-``orchestration_boundary_signals`` sibling — never Django / ``teatree.core``.
+``django_bootstrap``, ``gate_result`` and ``orchestration_boundary_signals`` siblings
+— never Django / ``teatree.core``.
 """
 
 import sys
 
+from hooks.scripts.django_bootstrap import orm_failures
 from hooks.scripts.gate_result import warn_gate_skipped
 from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS, call_is_from_subagent
 
@@ -93,7 +96,7 @@ def handle_dispatch_admission(data: dict) -> bool:
         if data.get("tool_name") not in DISPATCH_TOOLS:
             return False
         reason = _denied_reason(apply_ceiling=not call_is_from_subagent(data), session_id=_session_of(data))
-    except Exception as exc:  # noqa: BLE001 — crash-proof hook: a gate bug must never wedge the dispatch
+    except orm_failures() as exc:
         warn_gate_skipped("dispatch admission", f"the ORM probe failed ({type(exc).__name__}: {exc})")
         return False
     if reason is None:

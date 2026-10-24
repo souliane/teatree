@@ -7,6 +7,7 @@ dispatch RATE rather than the live population it is written to bound.
 """
 
 import pytest
+from django.db import OperationalError
 
 import hooks.scripts.dispatch_seat_release as release_arm
 import hooks.scripts.django_bootstrap as bootstrap
@@ -18,6 +19,10 @@ _MUST_NOT_RELEASE = "no seat should have been released"
 
 
 def _exploding_release(*, session_id: str, agent_id: str) -> bool:
+    raise OperationalError(_EXPLODED)
+
+
+def _buggy_release(*, session_id: str, agent_id: str) -> bool:
     raise RuntimeError(_EXPLODED)
 
 
@@ -27,6 +32,11 @@ def _must_not_release(*, session_id: str, agent_id: str) -> bool:
 
 def _stop(**extra: object) -> dict:
     return {"session_id": "sess-4129", "agent_id": "a-1", **extra}
+
+
+@pytest.fixture(autouse=True)
+def _readable_orm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bootstrap, "bootstrap_teatree_django", lambda: True)
 
 
 class TestSeatRelease:
@@ -51,9 +61,19 @@ class TestSeatRelease:
         monkeypatch.setattr(core, "release_interactive_dispatch", _must_not_release)
         release_arm.handle_subagent_stop_release(_stop())
 
-    def test_an_internal_error_never_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_orm_failure_is_reported_and_never_propagates(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         monkeypatch.setattr(core, "release_interactive_dispatch", _exploding_release)
         release_arm.handle_subagent_stop_release(_stop())
+        err = capsys.readouterr().err
+        assert "SKIPPED" in err
+        assert f"OperationalError: {_EXPLODED}" in err
+
+    def test_a_release_bug_outside_the_orm_failures_is_not_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(core, "release_interactive_dispatch", _buggy_release)
+        with pytest.raises(RuntimeError, match=_EXPLODED):
+            release_arm.handle_subagent_stop_release(_stop())
 
 
 class TestRegistration:
