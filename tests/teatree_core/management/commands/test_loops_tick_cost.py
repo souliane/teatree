@@ -4,7 +4,7 @@ import datetime as dt
 import io
 from collections.abc import Generator
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import django.test
 from django.core.management import call_command
@@ -16,17 +16,17 @@ from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
 
 
 @contextmanager
-def _worker_tick(report: TickReport, *, owns_lease: bool = True) -> Generator[None]:
+def _worker_tick(report: TickReport, *, owns_lease: bool = True) -> Generator[MagicMock]:
     with (
         patch.dict("os.environ", {TICK_SUBPROCESS_ENV_MARKER: "1"}),
+        patch("os._exit") as hard_exit,
         patch.object(LoopLease.objects, "claim_ownership", return_value=(owns_lease, "me")),
         patch.object(LoopLease.objects, "acquire", return_value=True),
         patch.object(LoopLease.objects, "release"),
         patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
         patch("teatree.loop.tick.run_tick", return_value=report),
-        patch("teatree.core.management.commands.loops_tick.Command._hard_exit_if_subprocess"),
     ):
-        yield
+        yield hard_exit
 
 
 class TestTickCostRecording(django.test.TestCase):
@@ -53,3 +53,16 @@ class TestTickCostRecording(django.test.TestCase):
         sampled = self._run_tick(TickReport(started_at=dt.datetime.now(dt.UTC)), owns_lease=False)
 
         assert sampled == {"idle": True, "busy": False}
+
+    def test_the_cost_is_recorded_before_the_worker_hard_exit(self) -> None:
+        idle_when_exiting: list[float | None] = []
+
+        def _read_cost(status: int) -> None:
+            idle_when_exiting.append(Loop.objects.get(name="probe").idle_cpu_seconds)
+
+        with _worker_tick(TickReport(started_at=dt.datetime.now(dt.UTC))) as hard_exit:
+            hard_exit.side_effect = _read_cost
+            call_command("loops_tick", loop="probe", stdout=io.StringIO(), stderr=io.StringIO())
+
+        assert hard_exit.call_count == 1
+        assert idle_when_exiting[0] is not None
