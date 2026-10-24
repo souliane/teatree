@@ -218,6 +218,27 @@ class TestOrmProbeFailures(TestCase):
             self._bootstrap_with_failing_query(AttributeError("a bug in the probe"))
 
 
+class TestRegistryOnlyBootstrap:
+    def test_an_unreadable_control_db_does_not_skip_a_gate_that_never_reads_it(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(
+            django_bootstrap, "_probe_orm", lambda: ("unreachable", "/missing/db", FileNotFoundError("/missing/db"))
+        )
+
+        assert django_bootstrap.bootstrap_django_registry() is True
+        assert capsys.readouterr().err == ""
+        assert django_bootstrap.bootstrap_teatree_django() is False
+
+    def test_a_django_less_interpreter_still_skips_it_audibly(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _break_django_setup(monkeypatch)
+
+        assert django_bootstrap.bootstrap_django_registry() is False
+        assert "cannot import Django" in capsys.readouterr().err
+
+
 class TestSuccessIsSilent(TestCase):
     def test_successful_bootstrap_says_nothing(self) -> None:
         stderr = io.StringIO()

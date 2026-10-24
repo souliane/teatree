@@ -28,10 +28,7 @@ _PLUGIN_ROOT = Path(router.__file__).resolve().parents[2]
 _REAL_DENIED_REASON = gate._denied_reason
 
 
-@pytest.fixture(autouse=True)
-def _governor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default: the governor is silent, so only a test that brakes sees a deny."""
-    monkeypatch.setattr(gate, "_denied_reason", lambda *, apply_ceiling, session_id="": None)
+pytestmark = pytest.mark.usefixtures("admission_governor_admits")
 
 
 def _braking(monkeypatch: pytest.MonkeyPatch) -> list[bool]:

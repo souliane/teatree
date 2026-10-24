@@ -86,7 +86,7 @@ def _setup_failed(exc: BaseException) -> bool:
     return False
 
 
-def bootstrap_teatree_django() -> bool:
+def bootstrap_django_registry() -> bool:
     src_dir = Path(__file__).resolve().parents[2] / "src"
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
@@ -96,6 +96,12 @@ def bootstrap_teatree_django() -> bool:
         return _setup_failed(exc)
     except orm_failures() as exc:
         return _setup_failed(exc)
+    return True
+
+
+def bootstrap_teatree_django() -> bool:
+    if not bootstrap_django_registry():
+        return False
     status, db_path, cause = _probe_orm()
     if os.environ.get("DJANGO_SETTINGS_MODULE") == "teatree.settings":
         _record_health(status, db_path, "" if cause is None else f"{type(cause).__name__}: {cause}")
