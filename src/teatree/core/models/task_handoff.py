@@ -20,6 +20,7 @@ from teatree.core.modelkit.question_card import QuestionCard, match_action_optio
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import refuse_unplanned_mint
+from teatree.core.models.question_actions import DELEGATION_SKIPPED_ACTION
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
@@ -65,9 +66,9 @@ def delegate_answer(question_id: int, answer: str, *, resolver_id: str, evidence
             raise DelegatedAnswerError(message)
         skipped = _delegation_skip_reason(row, answer)
         if skipped:
-            if not DeferredQuestionAudit.objects.filter(question=row, action="delegation_skipped").exists():
+            if not DeferredQuestionAudit.objects.filter(question=row, action=DELEGATION_SKIPPED_ACTION).exists():
                 DeferredQuestionAudit.objects.create(
-                    question=row, action="delegation_skipped", resolver_id=resolver_id, note=f"Rule -1: {skipped}"
+                    question=row, action=DELEGATION_SKIPPED_ACTION, resolver_id=resolver_id, note=f"Rule -1: {skipped}"
                 )
         else:
             applied = row.apply_answer(answer, resolved_via=DeferredQuestion.ResolvedVia.DELEGATED)

@@ -35,6 +35,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.question_actions import DELEGATION_SKIPPED_ACTION
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.task_handoff import DelegatedAnswerError, delegate_answer
 from teatree.core.notify import NotifyKind, notify_user
@@ -366,7 +367,7 @@ class Command(MachineOutputCommand):
         try:
             row = delegate_answer(question_id, text, resolver_id=resolver_id, evidence=evidence)
         except DelegatedAnswerError as exc:
-            if DeferredQuestionAudit.objects.filter(question_id=question_id, action="delegation_skipped").exists():
+            if DeferredQuestionAudit.objects.filter(question_id=question_id, action=DELEGATION_SKIPPED_ACTION).exists():
                 reason = str(exc)
                 transaction.on_commit(
                     lambda: notify_user(

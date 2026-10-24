@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 
 ACTION_OUTCOMES = ("carried_out", "declined", "refused")
+DELEGATION_SKIPPED_ACTION = "delegation_skipped"
 
 
 def is_action_question(row: "DeferredQuestion") -> bool:
@@ -62,10 +63,8 @@ def _held_decision(
 ) -> "DeferredQuestion | None":
     fingerprint = question_fingerprint(question)
     for row in marked.filter(audience=marked.model.Audience.OWNER_QUESTION):
-        if row.dismissed_at is not None:
-            if question_fingerprint(row.question) == fingerprint:
-                return row
-        elif _facts_unchanged(row, evidence, options_json):
+        reworded = row.dismissed_at is not None and question_fingerprint(row.question) != fingerprint
+        if not reworded and _facts_unchanged(row, evidence, options_json):
             return row
     _supersede(pending)
     return None
@@ -119,6 +118,19 @@ class DeferredQuestionQuerySet(models.QuerySet["DeferredQuestion"]):
                 evidence__has_key="action",
             )
             .exclude(audits__action__in=ACTION_OUTCOMES)
+            .order_by("answered_at", "pk")
+        )
+
+    def awaiting_ledger_application(self) -> Self:
+        return (
+            self.filter(
+                audience=self.model.Audience.OWNER_QUESTION,
+                answered_at__isnull=False,
+                applied_at__isnull=True,
+                parked_task__isnull=True,
+                session_id="",
+            )
+            .exclude(evidence__has_key="action")
             .order_by("answered_at", "pk")
         )
 

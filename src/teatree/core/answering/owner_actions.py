@@ -29,6 +29,8 @@ from teatree.core.worktree.checkout_attest import (
 )
 
 logger = logging.getLogger(__name__)
+LEDGER_APPLIED_ACTION = "applied"
+_LEDGER_RESOLVER = "owner_actions"
 _RETRY_AFTER = timedelta(minutes=5)
 _EXPIRES_AFTER = timedelta(hours=24)
 
@@ -228,6 +230,28 @@ def _tell_owner(row: DeferredQuestion, reason: str, *, event: str = "outcome") -
         logger.exception("Could not notify owner of refused action %s", row.pk)
 
 
+def _apply_to_ledger(row: DeferredQuestion) -> str | None:
+    with transaction.atomic():
+        locked = DeferredQuestion.objects.select_for_update().filter(pk=row.pk, applied_at__isnull=True).first()
+        if locked is None:
+            return None
+        answer = DeferredQuestionAudit.objects.owner_answer(locked)
+        DeferredQuestionAudit.objects.create(
+            question=locked,
+            action=LEDGER_APPLIED_ACTION,
+            answer_text=locked.answer_text,
+            resolver_id=_resolver(answer) or _LEDGER_RESOLVER,
+            note="Recorded in the decision ledger; the code that asked reads it instead of asking again.",
+        )
+        DeferredQuestion.objects.filter(pk=locked.pk).update(applied_at=timezone.now())
+    return f"{LEDGER_APPLIED_ACTION} {row.pk}"
+
+
+def apply_scanner_decisions() -> list[str]:
+    applied = (_apply_to_ledger(row) for row in DeferredQuestion.objects.awaiting_ledger_application())
+    return [outcome for outcome in applied if outcome is not None]
+
+
 def carry_out_owner_actions() -> list[str]:
     results: list[str] = []
     for row in DeferredQuestion.objects.awaiting_action_outcome():
@@ -255,4 +279,4 @@ def carry_out_owner_actions() -> list[str]:
         results.append(f"{decision.outcome.replace('_', ' ')} {row.pk}")
         if decision.notify:
             _tell_owner(row, decision.note)
-    return results
+    return [*results, *apply_scanner_decisions()]

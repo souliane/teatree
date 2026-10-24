@@ -41,6 +41,40 @@ class TestResolvedSignalIdentity(TestCase):
         assert repeated.dismissed_reason == "The step is obsolete"
         assert DeferredQuestion.objects.count() == 1
 
+    def test_changed_named_fact_after_a_dismissal_creates_a_new_signal(self) -> None:
+        first = DeferredQuestion.record(
+            "Should this bounded step run?", dedupe_marker="decision:ticket-1:step", card=owner_card()
+        )
+        first.mark_stale("The step is obsolete", resolver_id="test")
+
+        changed = DeferredQuestion.record(
+            "Should this bounded step run?",
+            dedupe_marker="decision:ticket-1:step",
+            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "The measured cost changed."),
+        )
+
+        assert changed.pk != first.pk
+        assert changed.is_pending
+
+    def test_changed_option_effect_after_a_dismissal_creates_a_new_signal(self) -> None:
+        card = owner_card()
+        first = DeferredQuestion.record("Should this bounded step run?", dedupe_marker="step:bounded", card=card)
+        first.mark_stale("The step is obsolete", resolver_id="test")
+        changed_card = replace(
+            card,
+            options=(
+                CardOption("Yes", "I set a standing rule.", recommended=True, effect="standing"),
+                CardOption("No", "I leave it as it is."),
+            ),
+        )
+
+        changed = DeferredQuestion.record(
+            "Should this bounded step run?", dedupe_marker="step:bounded", card=changed_card
+        )
+
+        assert changed.pk != first.pk
+        assert changed.is_pending
+
     def test_changed_named_fact_creates_a_new_signal(self) -> None:
         first = DeferredQuestion.record(
             "Should this bounded step run?", dedupe_marker="decision:ticket-1:step", card=owner_card()

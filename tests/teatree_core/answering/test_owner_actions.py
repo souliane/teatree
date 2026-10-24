@@ -48,7 +48,9 @@ from teatree.core.worktree.checkout_state import checkout_state
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer, bind_reply, resolve_answer
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
+from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
+from tests._owner_channel import answer_on_slack, owner_card
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
 from tests.teatree_loop.test_question_binding import _statement
@@ -751,3 +753,49 @@ class TestActionIdentity(TestCase):
         assert DeferredQuestionAudit.objects.get(question=row, action="refused").note == (
             "The action card no longer matches its recorded request."
         )
+
+
+class TestScannerDecisionCards(TestCase):
+    """A decision card nothing waits on is applied by the scanner pass: its answer binds the ledger."""
+
+    def _answered(self, marker: str = "decision:scan-1", **fields: object) -> DeferredQuestion:
+        row = DeferredQuestion.record(
+            "Should the stale override be lifted?", dedupe_marker=marker, card=owner_card(), **fields
+        )
+        answer_on_slack(row, "Yes")
+        row.refresh_from_db()
+        return row
+
+    def test_an_answered_scanner_decision_is_applied_once_and_answers_the_next_ask(self) -> None:
+        row = self._answered()
+        assert row.applied_at is None
+
+        assert [signal.summary for signal in OwnerActionScanner().scan()] == [f"applied {row.pk}"]
+
+        row.refresh_from_db()
+        assert row.applied_at is not None
+        assert DeferredQuestionAudit.objects.get(question=row, action="applied").answer_text == "Yes"
+        assert OwnerActionScanner().scan() == []
+        assert DeferredQuestion.record(row.question, dedupe_marker=row.dedupe_marker, card=owner_card()).pk == row.pk
+
+    def test_a_pending_or_dismissed_scanner_decision_is_not_applied(self) -> None:
+        pending = DeferredQuestion.record("Should the first thing run?", dedupe_marker="decision:a", card=owner_card())
+        dismissed = DeferredQuestion.record(
+            "Should the second thing run?", dedupe_marker="decision:b", card=owner_card()
+        )
+        dismissed.mark_stale("The thing is obsolete", resolver_id="test")
+
+        assert OwnerActionScanner().scan() == []
+
+        pending.refresh_from_db()
+        dismissed.refresh_from_db()
+        assert pending.applied_at is None
+        assert dismissed.applied_at is None
+
+    def test_a_card_with_a_waiting_task_or_a_session_mailbox_is_left_to_its_own_handler(self) -> None:
+        waiting = self._answered("decision:task", parked_task=TaskFactory(ticket=TicketFactory(), phase="coding"))
+        mailbox = self._answered("decision:session", session_id="session-1")
+
+        assert OwnerActionScanner().scan() == []
+
+        assert not DeferredQuestionAudit.objects.filter(question__in=[waiting, mailbox], action="applied").exists()
