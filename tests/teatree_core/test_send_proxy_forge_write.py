@@ -55,7 +55,23 @@ class TestPrivateForgeAudit(TestCase):
         row = SendAudit.objects.get(action="github_issue_create_judgment")
         assert row.payload_summary == text
         assert row.target == "https://github.com/acme/unlisted/issues/5"
-        assert row.destination == "github:acme/unlisted"
+        assert row.destination == "private-judgment:github:acme/unlisted"
+        assert row.channel == SendChannel.OTHER.value
+        assert row.allowlist_verdict == SendAudit.Verdict.WARNED
+
+    def test_private_judgment_with_numeric_project_id_never_raises(self) -> None:
+        record_private_audit(
+            forge="gitlab",
+            repo="12345",
+            action="issue_create_judgment",
+            target="https://gitlab.com/acme/widgets/-/issues/5",
+            text="candidate rejected: unrelated",
+        )
+        row = SendAudit.objects.get(action="issue_create_judgment")
+        assert row.payload_summary == "candidate rejected: unrelated"
+        assert row.channel == SendChannel.OTHER.value
+        assert row.destination == "private-judgment:gitlab:12345"
+        assert row.allowlist_verdict == SendAudit.Verdict.WARNED
 
     def test_database_failure_does_not_raise(self) -> None:
         with patch("teatree.core.models.send_audit.SendAudit.objects.create", side_effect=DatabaseError("unavailable")):

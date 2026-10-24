@@ -404,6 +404,57 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert host.creates[0]["body"] == "body"
         assert "0 candidates judged" in SendAudit.objects.get(action="issue_create_judgment").payload_summary
 
+    def test_a_gitlab_nit_issue_forwards_discussion_resolution_fields(self) -> None:
+        host = _FakeHost({})
+        outcome = create_or_extend(
+            host=host,
+            draft=IssueDraft(
+                repo=_REPO,
+                title="NIT follow-up",
+                body="Review the inline points.",
+                labels=("nit", "t3-auto"),
+                merge_request_to_resolve_discussions_of=42,
+                discussion_to_resolve="discussion-7",
+            ),
+            decisions=[],
+        )
+        assert outcome.kind == "created_new"
+        assert host.creates[0]["merge_request_to_resolve_discussions_of"] == 42
+        assert host.creates[0]["discussion_to_resolve"] == "discussion-7"
+
+    def test_audit_records_each_live_candidate_reason_and_ignores_stale_urls(self) -> None:
+        host = self._landscape()
+        fitting = "https://gitlab.com/acme/widgets/-/issues/1"
+        outcome = create_or_extend(
+            host=host,
+            draft=IssueDraft(repo=_REPO, title="same thing", body="body"),
+            decisions=[
+                CreateDecision(candidate_url=fitting, fits=True, reason="same request"),
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/2", reason="different"),
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/99", reason="stale"),
+            ],
+        )
+        assert outcome.kind == "extended_existing"
+        summary = SendAudit.objects.get(action="issue_create_judgment").payload_summary
+        assert "2 candidates judged" in summary
+        assert f"{fitting} fits: same request" in summary
+        assert "issues/99" not in summary
+
+    def test_stale_fitting_decision_cannot_redirect_a_live_backlog_create(self) -> None:
+        host = self._landscape()
+        outcome = create_or_extend(
+            host=host,
+            draft=IssueDraft(repo=_REPO, title="new topic", body="body"),
+            decisions=[
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/1", reason="different"),
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/2", reason="unrelated"),
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/99", fits=True),
+            ],
+        )
+        assert outcome.kind == "created_new"
+        assert len(host.creates) == 1
+        assert host.updates == []
+
     def test_an_unjudged_open_candidate_refuses_the_create(self) -> None:
         """Skipping the landscape pass is the failure mode; silence is not a rejection."""
         host = self._landscape()

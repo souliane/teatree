@@ -30,7 +30,15 @@ from django.utils import timezone
 from teatree.config import get_effective_settings
 from teatree.config.settings import UserSettings
 from teatree.core.factory.factory_signals import FACTORY_LOOKBACK_DAYS
-from teatree.core.models import BotPing, IncomingEvent, IntentClassification, ReplyDispatch, Task, TaskAttempt
+from teatree.core.models import (
+    BotPing,
+    IncomingEvent,
+    IntentClassification,
+    ReplyDispatch,
+    SendAudit,
+    Task,
+    TaskAttempt,
+)
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import PARK_ATTEMPT_RETENTION_DAYS
 from teatree.core.retention.slack_rows import (
@@ -68,6 +76,7 @@ TRANSITION_TABLE = "TicketTransition"
 TASK_RESULT_TABLE = "DBTaskResult"
 PENDING_DM_TABLE = "PendingChatInjection"
 SENT_TEXT_TABLE = "BotPing (sent text)"
+PRIVATE_JUDGMENT_TABLE = "SendAudit (private judgment)"
 
 _NO_RESULT_TABLE = "the default task backend does not store results in the DB"
 
@@ -148,6 +157,10 @@ def _closed_ticket_non_edges(_cutoff: dt.datetime) -> models.QuerySet:
     return TicketTransition.objects.prunable()
 
 
+def _private_judgments(cutoff: dt.datetime) -> models.QuerySet:
+    return SendAudit.objects.filter(destination__startswith="private-judgment:", created_at__lt=cutoff)
+
+
 def _task_attempts(tasks: models.QuerySet, moment: dt.datetime) -> int:
     parks = TaskAttempt.objects.prunable_parks(moment - dt.timedelta(days=PARK_ATTEMPT_RETENTION_DAYS))
     return TaskAttempt.objects.filter(task__in=tasks).exclude(pk__in=parks).count()
@@ -188,6 +201,7 @@ def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:
         ),
         Lane(TRANSITION_TABLE, 0, _closed_ticket_non_edges, aged=False),
         *_slack_lanes(),
+        Lane(PRIVATE_JUDGMENT_TABLE, POST_MORTEM_RETENTION_DAYS, _private_judgments),
     )
 
 

@@ -9,8 +9,8 @@ goes.
 Five rules, each enforced here rather than in an agent-authored skill:
 
 1.  **Dedupe before create.** :func:`create_or_extend` refuses to file until every
-    OPEN ticket in the repo has been judged. A fitting ticket is extended; a new
-    one keeps every rejected candidate and why in a private audit row.
+    OPEN ticket in the repo has been judged. A fitting ticket is extended; each
+    completed outcome keeps its live candidate judgments in a private audit row.
 2.  **No requirement comments.** :func:`record_issue_note` takes a closed
     :class:`NotePurpose`. The four normative purposes append a dated description
     section; only ``status`` and ``evidence`` remain comments. There is no untyped
@@ -53,10 +53,11 @@ from enum import StrEnum
 from typing import Literal
 
 from teatree.core.backend_protocols import CodeHostBackend, IssueResolutionSpec
+from teatree.core.issue_judgment_audit import record_issue_judgment
 from teatree.core.issue_writes.section_removal import DescriptionRemoval
 from teatree.core.issue_writes.section_removal import remove_description_section as _remove_description_section
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
-from teatree.core.send_proxy import forge_from_url, record_private_audit, route_forge_write
+from teatree.core.send_proxy import forge_from_url, route_forge_write
 from teatree.types import RawAPIDict
 from teatree.utils.url_slug import project_slug_from_ref
 
@@ -438,7 +439,7 @@ def create_or_extend_by_marker(
         CreateDecision(
             candidate_url=url,
             fits=marker in _description_of(issue),
-            reason="" if marker in _description_of(issue) else f"does not carry the marker {marker}",
+            reason=f"marker {marker} {'found' if marker in _description_of(issue) else 'missing'}",
         )
         for url, issue in live.items()
     ]
@@ -469,7 +470,7 @@ def _commit(
         msg = f"refusing to file on {draft.repo}: {len(unjudged)} open ticket(s) unjudged — {', '.join(unjudged)}"
         raise ValueError(msg)
 
-    fitting = [decision for decision in decisions if decision.fits]
+    fitting = [decision for decision in decisions if decision.fits and decision.candidate_url in live]
     if fitting:
         outcome = _extend(host=host, target=fitting[0].candidate_url, draft=draft, sweep_run_id=sweep_run_id)
     else:
@@ -479,13 +480,7 @@ def _commit(
             raise ValueError(msg)
         outcome = _create(host=host, draft=draft, sweep_run_id=sweep_run_id)
 
-    record_private_audit(
-        forge=draft.forge or forge_from_url(outcome.issue_url),
-        repo=draft.repo,
-        action=f"{draft.action}_judgment",
-        target=outcome.issue_url,
-        text=_judgment_record(decisions, outcome),
-    )
+    record_issue_judgment(draft=draft, outcome=outcome, decisions=decisions, live_urls=live)
     return outcome
 
 
@@ -536,15 +531,6 @@ def _create(*, host: CodeHostBackend, draft: IssueDraft, sweep_run_id: str) -> C
     issue_url = _issue_url_of(raw)
     _record_sweep_change(sweep_run_id, issue_url)
     return CreateOutcome(kind="created_new", issue_url=issue_url)
-
-
-def _judgment_record(decisions: Sequence[CreateDecision], outcome: CreateOutcome) -> str:
-    lines = [f"{outcome.kind} {outcome.issue_url}: {len(decisions)} candidates judged"]
-    lines.extend(
-        f"{decision.candidate_url} {'fits' if decision.fits else f'rejected: {decision.reason.strip()}'}"
-        for decision in decisions
-    )
-    return "\n".join(lines)
 
 
 def _raise_on_transport_error(raw: RawAPIDict) -> RawAPIDict:

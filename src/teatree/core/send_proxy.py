@@ -291,9 +291,9 @@ def _safe_redact(request: SendRequest) -> tuple[str, tuple[str, ...]]:
 
 
 def _record_audit(
-    request: SendRequest, verdict: SendVerdict, *, summary_chars: int | None = _PAYLOAD_SUMMARY_CHARS
+    request: SendRequest, verdict: SendVerdict | None, *, summary_chars: int | None = _PAYLOAD_SUMMARY_CHARS
 ) -> None:
-    """Write the per-send :class:`SendAudit` row — best-effort, never raises.
+    """Write the :class:`SendAudit` row; a missing verdict denotes private data.
 
     Fields are pre-truncated to their column widths here (SQLite does not enforce
     ``max_length``, and a Postgres backend would otherwise raise on an overlong
@@ -310,9 +310,9 @@ def _record_audit(
                 action=request.action[:64],
                 target=request.target[:512],
                 overlay=overlay[:255],
-                allowlist_verdict=_audit_verdict(verdict),
-                redaction_applied=verdict.payload_redacted,
-                redaction_matches=list(verdict.redaction_matches),
+                allowlist_verdict=_audit_verdict(verdict) if verdict is not None else SendAudit.Verdict.WARNED,
+                redaction_applied=verdict.payload_redacted if verdict is not None else False,
+                redaction_matches=list(verdict.redaction_matches) if verdict is not None else [],
                 provenance=request.provenance[:32],
                 authorized_by=request.authorized_by[:255],
                 agent_session_id=(current_session_id() or "")[:255],
@@ -396,15 +396,14 @@ def forge_from_url(url: str) -> str:
 
 def record_private_audit(*, forge: str, repo: str, action: str, target: str, text: str) -> None:
     """Keep a full issue judgment in the control DB without routing it to a forge."""
-    channel = channel_for_forge(forge)
     request = SendRequest(
-        channel=channel,
-        destination=f"{channel.value}:{normalized_forge_repo(repo)}",
+        channel=SendChannel.OTHER,
+        destination=f"private-judgment:{forge}:{repo.strip()}",
         payload=text,
         action=action,
         target=target,
     )
-    _record_audit(request, SendVerdict(allowed=True, payload=text, allowlist_ok=True), summary_chars=None)
+    _record_audit(request, None, summary_chars=None)
 
 
 def route_forge_write(*, forge: str, repo: str, text: str, action: str, target: str) -> str:
