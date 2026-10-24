@@ -50,6 +50,7 @@ from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from teatree.agents.live_control import RejectCode
 from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_pydantic_ai_model
 from teatree.agents.pydantic_ai_config import (
+    ANTHROPIC_CACHE_TTL_SECONDS,
     PYDANTIC_AI_NATIVE_CAPABILITIES,
     PYDANTIC_AI_ROUTER_CAPABILITIES,
     OpenAICompatibleLaneConfig,
@@ -344,6 +345,8 @@ class PydanticAiHarness:
         # keeps a bare text Agent (byte-identical to before the tool port). The
         # worktree jail root is ``options.cwd`` (the resolved task cwd).
         config = LaneBToolConfig.from_options(harness_options, phase=self._phase or "")
+        if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
+            config = replace(config, cache_lifetime_seconds=ANTHROPIC_CACHE_TTL_SECONDS)
         toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
         keep_tool_results = CompactionPolicy.for_phase(self._phase).keep_tool_results
         inputs = LiveInputQueue()

@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts.cache_wait_advisory import handle_warn_cache_wait
 from hooks.scripts.hook_router import (
     _ORCHESTRATOR_HEAVY_BASH_RE,
     handle_enforce_orchestrator_boundary,
@@ -409,22 +410,28 @@ class TestWiredInChains:
     def test_reset_handler_wired_first_at_turn_end(self) -> None:
         assert router._HANDLERS["Stop"][0] is handle_reset_turn_tool_budget
 
-    def test_nudge_handler_wired_last_in_pretooluse(self) -> None:
-        # Last so it only prints additionalContext on a non-denied call (a
-        # deny earlier in the chain short-circuits before it runs).
+    def test_the_non_denying_emitters_are_wired_last_in_pretooluse(self) -> None:
+        # Last so they only print additionalContext on a non-denied call (a
+        # deny earlier in the chain short-circuits before they run); the
+        # cache-wait advisory yields to the nudge, so a call writes one object.
         chain = router._HANDLERS["PreToolUse"]
-        assert handle_orchestrator_turn_budget_nudge is chain[-1]
+        assert chain[-2:] == [handle_orchestrator_turn_budget_nudge, handle_warn_cache_wait]
 
 
 class TestTheRouterWritesOneModelVisibleObject:
     """What reaches Claude Code is the router's whole stdout for the call, so it must be ONE valid object."""
 
     @staticmethod
-    def _over_budget_call(command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> str:
+    def _over_budget_call(
+        command: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        **payload_fields: object,
+    ) -> str:
         budget = effective_default("orchestrator_turn_budget")
         assert isinstance(budget, int)
         (router.STATE_DIR / f"s-corpus.{router._TURN_TOOL_COUNT_SUFFIX}").write_text(str(budget - 1), encoding="utf-8")
-        payload = {**_main_tool("Bash", command=command), "hook_event_name": "PreToolUse"}
+        payload = {**_main_tool("Bash", command=command), "hook_event_name": "PreToolUse", **payload_fields}
         monkeypatch.setattr("sys.argv", ["hook_router.py", "--event", "PreToolUse"])
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
         with contextlib.suppress(SystemExit):
@@ -446,3 +453,17 @@ class TestTheRouterWritesOneModelVisibleObject:
         decision = json.loads(stdout)["hookSpecificOutput"]
         assert decision["permissionDecision"] == "deny"
         assert "additionalContext" not in decision
+
+    def test_an_over_budget_cache_expiring_wait_still_writes_one_object(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        usage = {"input_tokens": 60_000}
+        transcript.write_text(json.dumps({"type": "assistant", "message": {"usage": usage}}) + "\n", encoding="utf-8")
+        monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
+
+        stdout = self._over_budget_call("gh run watch 1", monkeypatch, capsys, transcript_path=str(transcript))
+
+        assert "orchestrator-responsiveness" in _model_visible_nudge(stdout)

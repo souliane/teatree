@@ -59,6 +59,7 @@ from teatree.agents.pydantic_ai_config import (
     LANE_EVAL,
     LANE_FACTORY,
     OpenAICompatibleLaneConfig,
+    PydanticAiBinding,
     PydanticAiModelConfig,
     build_openai_compatible_provider,
 )
@@ -80,6 +81,22 @@ if TYPE_CHECKING:
 
 if TYPE_CHECKING:
     from claude_agent_sdk.types import McpStdioServerConfig
+
+
+@pytest.mark.parametrize(
+    ("binding", "expected_seconds"),
+    [(PydanticAiBinding.NATIVE_ANTHROPIC, 300), (PydanticAiBinding.ROUTER, None)],
+)
+def test_shell_cache_lifetime_tracks_model_binding(binding: PydanticAiBinding, expected_seconds: int | None) -> None:
+    harness = PydanticAiHarness(model=TestModel(), phase="coding", config=PydanticAiModelConfig(binding=binding))
+    with patch.object(harness_mod, "build_lane_b_toolsets", wraps=harness_mod.build_lane_b_toolsets) as build:
+
+        async def drive() -> None:
+            async with harness.open(ClaudeAgentOptions()):
+                pass
+
+        asyncio.run(drive())
+    assert build.call_args.args[0].cache_lifetime_seconds == expected_seconds
 
 
 def test_concrete_impls_satisfy_the_harness_protocols() -> None:
