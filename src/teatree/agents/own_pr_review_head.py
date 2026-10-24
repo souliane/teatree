@@ -14,6 +14,7 @@ from enum import StrEnum
 from functools import partial
 from hashlib import sha256
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from django.db import transaction
 from django.utils import timezone
@@ -33,7 +34,7 @@ from teatree.core.models.worktree_occupancy import task_holder_id
 from teatree.core.review.live_head import live_head_at
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.utils import git
-from teatree.utils.git_remote import slug_from_remote
+from teatree.utils.git_remote import host_from_remote, slug_from_remote
 from teatree.utils.git_run import git_env_non_interactive, run_with_status
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import CommandFailedError, TimeoutExpired
@@ -53,6 +54,7 @@ class HoldCause(StrEnum):
     FORGE_UNREADABLE = "the forge did not answer for"
     STATE_UNKNOWN = "the forge did not say whether the pull request is open"
     HEAD_UNREADABLE = "the forge did not name the pull request head"
+    HEAD_MOVED = "the forge head moved during alignment"
     NO_CHECKOUT = "the ticket has no checkout on disk"
     OTHER_ORIGIN = "the ticket's checkout has another origin:"
     WRONG_BRANCH = "the ticket's checkout is not on the ticket branch, it is on"
@@ -109,8 +111,19 @@ class _OwnPrHead:
             return
         head = self._forge_head()
         worktree = self._worktree()
-        if self._git(worktree.worktree_path, "rev-parse", "--verify", "HEAD") != head:
-            self._advance(worktree, forge, head)
+        path = worktree.worktree_path
+        before = self._state(path)
+        local = self._git(path, "rev-parse", "--verify", "HEAD")
+        if local != head and before.branch != worktree.branch:
+            raise _ReviewHeldError(HoldCause.WRONG_BRANCH, before.branch)
+        if before.dirty:
+            raise _ReviewHeldError(HoldCause.UNCOMMITTED, unsaved_state=f"{head}:{before.digest}")
+        if local != head:
+            self._advance(worktree, forge, head, local, before)
+        else:
+            self._require_checks(forge)
+        if self._forge_head() != head:
+            raise _ReviewHeldError(HoldCause.HEAD_MOVED)
         self.task.ticket.rearm_review_at(head)
 
     def _settled(self, forge: CodeHostQuery) -> bool:
@@ -136,25 +149,21 @@ class _OwnPrHead:
         worktree = dispatch_worktree(self.task.ticket)
         if worktree is None:
             raise _ReviewHeldError(HoldCause.NO_CHECKOUT)
-        origin = slug_from_remote(git.config_value(repo=worktree.worktree_path, key="remote.origin.url"))
-        if origin.casefold() != self.ref.slug.casefold():
+        origin_url = git.config_value(repo=worktree.worktree_path, key="remote.origin.url")
+        origin = slug_from_remote(origin_url)
+        host = host_from_remote(origin_url)
+        ticket_host = (urlsplit(self.task.ticket.issue_url).hostname or "").lower()
+        if origin.casefold() != self.ref.slug.casefold() or not host or host != ticket_host:
             raise _ReviewHeldError(HoldCause.OTHER_ORIGIN, origin or "none")
         return worktree
 
-    def _advance(self, worktree: Worktree, forge: CodeHostQuery, head: str) -> None:
+    def _advance(self, worktree: Worktree, forge: CodeHostQuery, head: str, local: str, before: CheckoutState) -> None:
         path = worktree.worktree_path
-        before = self._state(path)
         unsaved = f"{head}:{before.digest}"
-        if before.branch != worktree.branch:
-            raise _ReviewHeldError(HoldCause.WRONG_BRANCH, before.branch)
-        if before.dirty:
-            raise _ReviewHeldError(HoldCause.UNCOMMITTED, unsaved_state=unsaved)
         self._fetch_pull_head(path, head)
-        if not self._is_behind(path, head):
+        if not self._is_behind(path, local, head):
             raise _ReviewHeldError(HoldCause.UNPUSHED, unsaved_state=unsaved)
-        checks = self._read("the required checks", forge.required_checks_status)
-        if checks in REFUSING_CHECK_VERDICTS:
-            raise _ReviewHeldError(HoldCause.CHECKS, checks)
+        self._require_checks(forge)
         self._require_quiet_checkout(path)
         if self._state(path).digest != before.digest:
             raise _ReviewHeldError(HoldCause.CHANGED)
@@ -164,30 +173,30 @@ class _OwnPrHead:
             raise _ReviewHeldError(HoldCause.NOT_LANDED)
         self._carry_attestation(worktree, before.digest, after.digest)
 
+    def _require_checks(self, forge: CodeHostQuery) -> None:
+        checks = self._read("the required checks", forge.required_checks_status)
+        if checks in REFUSING_CHECK_VERDICTS:
+            raise _ReviewHeldError(HoldCause.CHECKS, checks)
+
     def _fetch_pull_head(self, path: str, head: str) -> None:
-        try:
-            fetched = run_with_status(
-                repo=path,
-                args=["fetch", "--no-tags", "origin", self.ref.head_ref],
-                env=git_env_non_interactive(),
-                timeout=_FETCH_TIMEOUT_SECONDS,
-            )
-        except _GIT_FAILURES as exc:
-            raise _ReviewHeldError(HoldCause.FETCH_FAILED, type(exc).__name__) from exc
-        if fetched.returncode != 0:
-            raise _ReviewHeldError(HoldCause.FETCH_FAILED, f"git exited {fetched.returncode}")
+        fetch = partial(
+            run_with_status,
+            repo=path,
+            args=["fetch", "--no-tags", "origin", self.ref.head_ref],
+            env=git_env_non_interactive(),
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+        if (returncode := self._guarded(HoldCause.FETCH_FAILED, "git fetch", fetch).returncode) != 0:
+            raise _ReviewHeldError(HoldCause.FETCH_FAILED, f"git exited {returncode}")
         if self._git(path, "rev-parse", "--verify", "FETCH_HEAD^{commit}") != head:
             raise _ReviewHeldError(HoldCause.FETCHED_OTHER)
 
-    @staticmethod
-    def _is_behind(path: str, head: str) -> bool:
-        try:
-            result = run_with_status(repo=path, args=["merge-base", "--is-ancestor", "HEAD", head])
-        except _GIT_FAILURES as exc:
-            raise _ReviewHeldError(HoldCause.NOT_COMPARABLE, type(exc).__name__) from exc
-        if result.returncode not in {0, 1}:
-            raise _ReviewHeldError(HoldCause.NOT_COMPARABLE, f"git exited {result.returncode}")
-        return result.returncode == 0
+    def _is_behind(self, path: str, local: str, head: str) -> bool:
+        compare = partial(run_with_status, repo=path, args=["merge-base", "--is-ancestor", local, head])
+        returncode = self._guarded(HoldCause.NOT_COMPARABLE, "git merge-base", compare).returncode
+        if returncode not in {0, 1}:
+            raise _ReviewHeldError(HoldCause.NOT_COMPARABLE, f"git exited {returncode}")
+        return returncode == 0
 
     @staticmethod
     def _require_quiet_checkout(path: str) -> None:
@@ -198,25 +207,30 @@ class _OwnPrHead:
             raise _ReviewHeldError(HoldCause.BUSY)
 
     def _state(self, path: str) -> CheckoutState:
-        try:
-            return checkout_state(Path(path), ticket=self.task.ticket)
-        except _GIT_FAILURES as exc:
-            raise _ReviewHeldError(HoldCause.UNREADABLE_CHECKOUT, type(exc).__name__) from exc
+        return self._guarded(
+            HoldCause.UNREADABLE_CHECKOUT, "state", partial(checkout_state, Path(path), ticket=self.task.ticket)
+        )
+
+    def _git(self, path: str, *args: str) -> str:
+        return self._guarded(
+            HoldCause.UNREADABLE_CHECKOUT, f"git {args[0]}", partial(git.run_strict, repo=path, args=list(args))
+        )
 
     @staticmethod
-    def _git(path: str, *args: str) -> str:
+    def _guarded[T](cause: HoldCause, what: str, call: Callable[[], T]) -> T:
         try:
-            return git.run_strict(repo=path, args=list(args))
+            return call()
         except _GIT_FAILURES as exc:
-            raise _ReviewHeldError(HoldCause.UNREADABLE_CHECKOUT, f"git {args[0]} {type(exc).__name__}") from exc
+            raise _ReviewHeldError(cause, f"{what} {type(exc).__name__}") from exc
 
     def _carry_attestation(self, worktree: Worktree, before: str, after: str) -> None:
         worktree.refresh_from_db()
         extra = worktree.get_extra()
         if extra.get("attested_state") != before:
             return
-        custody = Custody.from_extra(extra)
-        reanchored = Custody.reanchored(after, custody, task_holder_id(self.task), self.task.claimed_by_session)
+        reanchored = Custody.reanchored(
+            after, Custody.from_extra(extra), task_holder_id(self.task), self.task.claimed_by_session
+        )
         worktree.merge_extra(set_keys={"attested_state": after, "checkout_custody": reanchored.as_dict()})
 
 
