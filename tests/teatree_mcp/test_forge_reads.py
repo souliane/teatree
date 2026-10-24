@@ -4,7 +4,7 @@ Each new tool rides an existing :class:`~teatree.core.backend_protocols.CodeHost
 method (no protocol change), resolved through the same ``_forge_client`` seam the
 shipped forge reads use. A scripted fake backend keeps the tools hermetic — no
 ``gh`` / ``glab`` binary, no network — while proving each tool forwards the right
-arguments and returns the backend payload verbatim.
+arguments and returns the intended public payload.
 """
 
 from typing import Any
