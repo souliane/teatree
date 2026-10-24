@@ -115,6 +115,13 @@ class TestToolRegistration(TestCase):
         assert "leak" in (tools["github_issue_create"].description or "").lower()
         assert "never returns an empty list" in (tools["slack_thread_replies"].description or "")
 
+    def test_the_relay_and_notify_descriptions_say_when_to_use_them_and_how_to_read_a_refusal(self) -> None:
+        tools, _, _ = _surface(read_only=False, connectors=OverlayConnectors())
+        relay = tools["pending_chat_relay"].description or ""
+        assert "factory Slack is live" in relay
+        assert "t3-relay-refused" in relay
+        assert "already_sent" in (tools["notify_user"].description or "")
+
 
 class TestStandingInstructionsCarryPolicyOnly(TestCase):
     """The fixed prefix every session pays: tool text lives on the tool, never in the standing instructions."""
