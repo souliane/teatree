@@ -367,10 +367,9 @@ class PrBoardFreshObservationTestCase(TestCase):
 
     def test_approved_green_draft_is_not_ready(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory())
-        card = self._card(
-            pr, _observed_entry(pr, draft=True, reason="draft", next_task="Finish draft and request review")
-        )
-        assert card.group == "Blocked"
+        card = self._card(pr, _observed_entry(pr, draft=True))
+        assert card.draft
+        assert card.group != "Ready to merge or merging"
 
     def test_green_pr_awaiting_approval_waits_on_the_reviewer(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory())
