@@ -15,6 +15,7 @@ from tests.conformance._src_tree import src_modules
 
 _WRITES = {"create_issue", "update_issue", "post_issue_comment"}
 _JUDGMENT_NAMES = {"decisions", "CreateDecision", "rejected", "judgment"}
+_MIN_WRITERS = 4
 _PUBLIC_AUDIT_TEXT = re.compile(r"rejected candidates|dedupe check", re.IGNORECASE)
 
 
@@ -59,7 +60,7 @@ def _violations(modules: Iterable[tuple[Path, ast.Module]]) -> tuple[int, list[s
 
 def test_forge_writers_cannot_format_judgments_into_public_text() -> None:
     writers, failures = _violations(src_modules())
-    assert writers > 0
+    assert writers >= _MIN_WRITERS
     assert failures == []
 
 

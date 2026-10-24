@@ -7,8 +7,8 @@ reaches it while that task is active); the FAILED, then the COMPLETED ``Task`` r
 quiescent tickets (:mod:`teatree.core.retention.ticket_history`) with their attempts by
 CASCADE, so failed history goes before completed history; ``BotPing`` payloads, blanked
 rather than deleted because dedup reads the key and status; settled ``IncomingEvent``
-rows; ``TicketTransition`` rows that record no edge on a finished ticket; ``DBTaskResult``
-through ``django_tasks_db``'s own prune.
+rows; ``TicketTransition`` rows that record no edge on a finished ticket; private issue-judgment ``SendAudit``
+rows older than 30 days; ``DBTaskResult`` through ``django_tasks_db``'s own prune.
 
 Every lane deletes through the ORM, in short committed batches of pks re-filtered through
 its predicate, so a batch holds the write lock briefly and an interrupted pass only leaves
@@ -55,6 +55,7 @@ from teatree.core.retention.task_results import (
     task_results_are_stored_in_the_db,
 )
 from teatree.core.retention.ticket_history import prunable_tasks
+from teatree.core.send_proxy import PRIVATE_JUDGMENT_DESTINATION_PREFIX
 
 #: Rows per committed batch: small enough that a competing writer waits well under SQLite's busy timeout.
 BATCH_SIZE = 200
@@ -158,7 +159,7 @@ def _closed_ticket_non_edges(_cutoff: dt.datetime) -> models.QuerySet:
 
 
 def _private_judgments(cutoff: dt.datetime) -> models.QuerySet:
-    return SendAudit.objects.filter(destination__startswith="private-judgment:", created_at__lt=cutoff)
+    return SendAudit.objects.filter(destination__startswith=PRIVATE_JUDGMENT_DESTINATION_PREFIX, created_at__lt=cutoff)
 
 
 def _task_attempts(tasks: models.QuerySet, moment: dt.datetime) -> int:

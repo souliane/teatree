@@ -56,6 +56,9 @@ logger = logging.getLogger(__name__)
 #: Placeholder a redacted whole-token match is replaced with.
 REDACTION_PLACEHOLDER = "[redacted]"
 
+#: Destination prefix of the audit-only rows that hold a private issue judgment.
+PRIVATE_JUDGMENT_DESTINATION_PREFIX = "private-judgment:"
+
 #: How much of the payload is kept in the audit row's non-sensitive preview.
 _PAYLOAD_SUMMARY_CHARS = 200
 
@@ -398,7 +401,7 @@ def record_private_audit(*, forge: str, repo: str, action: str, target: str, tex
     """Keep a full issue judgment in the control DB without routing it to a forge."""
     request = SendRequest(
         channel=SendChannel.OTHER,
-        destination=f"private-judgment:{forge}:{repo.strip()}",
+        destination=f"{PRIVATE_JUDGMENT_DESTINATION_PREFIX}{forge}:{repo.strip()}",
         payload=text,
         action=action,
         target=target,
@@ -448,6 +451,7 @@ def route_forge_write(*, forge: str, repo: str, text: str, action: str, target: 
 
 
 __all__ = [
+    "PRIVATE_JUDGMENT_DESTINATION_PREFIX",
     "REDACTION_PLACEHOLDER",
     "OutboundBlockedError",
     "OutboundLeakError",

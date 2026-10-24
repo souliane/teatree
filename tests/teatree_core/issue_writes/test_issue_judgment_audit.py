@@ -28,6 +28,18 @@ class TestIssueJudgmentAudit(TestCase):
         assert f"{rejected} rejected: different topic" in row.payload_summary
         assert "issues/3" not in row.payload_summary
 
+    def test_the_drafts_forge_names_the_destination_when_the_url_does_not(self) -> None:
+        url = "https://git.example.com/acme/widgets/-/issues/1"
+        record_issue_judgment(
+            draft=IssueDraft(repo="acme/widgets", title="t", body="b", forge="gitlab"),
+            outcome=CreateOutcome(kind="created_new", issue_url=url),
+            decisions=[],
+            live_urls=(),
+        )
+        assert (
+            SendAudit.objects.get(action="issue_create_judgment").destination == "private-judgment:gitlab:acme/widgets"
+        )
+
     def test_missing_rejection_reason_is_not_labeled_as_a_fit(self) -> None:
         fitting = "https://gitlab.com/acme/widgets/-/issues/1"
         rejected = "https://gitlab.com/acme/widgets/-/issues/2"

@@ -406,6 +406,7 @@ class TestCreateOrExtend(_HygieneTestCase):
 
     def test_a_gitlab_nit_issue_forwards_discussion_resolution_fields(self) -> None:
         host = _FakeHost({})
+
         outcome = create_or_extend(
             host=host,
             draft=IssueDraft(
@@ -418,6 +419,7 @@ class TestCreateOrExtend(_HygieneTestCase):
             ),
             decisions=[],
         )
+
         assert outcome.kind == "created_new"
         assert host.creates[0]["merge_request_to_resolve_discussions_of"] == 42
         assert host.creates[0]["discussion_to_resolve"] == "discussion-7"
@@ -572,6 +574,7 @@ class TestCreateOrExtend(_HygieneTestCase):
                     CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/2", reason="b"),
                 ],
             )
+        assert SendAudit.objects.count() == 0, "a write the forge refused must leave no judgment record"
 
 
 class TestSweepCountsWhatItFiles(_HygieneTestCase):
