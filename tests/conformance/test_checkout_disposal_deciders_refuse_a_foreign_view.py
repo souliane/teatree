@@ -2,10 +2,9 @@
 
 The fixture is the #3967 incident, built with real git: a checkout created by a
 clone this context cannot reach, so its ``.git`` file records an absolute admin
-dir that resolves to nothing here. git answers ``fatal: not a git repository``
-there in the same words it uses for a directory that never held one — which is
-the whole trap, and why the fixture-validity test below asserts that naive
-reading is exactly what a bare probe produces.
+dir that resolves to nothing here. git rejects it as either ``not a git repository``
+or an invalid gitfile, depending on its version. Both mean a bare probe cannot
+distinguish a foreign checkout from a directory that never held one.
 
 Each entry below is a production decider whose answer can authorise removing or
 re-creating a checkout. Every one of them must decline on this directory: absence
@@ -92,7 +91,10 @@ class TestNoDeciderDisposesOfAForeignViewCheckout(TestCase):
         )
 
         assert probe.returncode != 0
-        assert "not a git repository" in probe.stderr.lower(), "fixture invalid — it must read as dead to git"
+        assert any(
+            message in probe.stderr.lower()
+            for message in ("not a git repository", "gitfile does not point to a valid repository")
+        ), "fixture invalid — it must read as dead to git"
 
     def test_no_decider_authorises_disposal(self) -> None:
         authorising = [name for name, decides in self._deciders().items() if decides()]
