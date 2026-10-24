@@ -9,6 +9,7 @@ from time import monotonic
 from teatree.agents.harness import HarnessSession
 from teatree.agents.live_control import MAX_FOLLOW_UP_TURNS, FollowUp, FollowUpSession, LiveSessionController
 from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, drain_turn
+from teatree.core.models.task_attempt import RESUME_CONTEXT_CAP_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,13 @@ class IdleWindowBudget:
 
 def can_idle(session: HarnessSession, outcome: HarnessOutcome, live: LiveSessionController) -> bool:
     result = outcome.result_message
+    fits_resume_cap = outcome.context_tokens is None or outcome.context_tokens <= RESUME_CONTEXT_CAP_TOKENS
+    if not fits_resume_cap:
+        logger.info("Task %s: no idle window, conversation is %s tokens", live.task.pk, outcome.context_tokens)
     return (
         isinstance(session, FollowUpSession)
         and live.state != "closed"
+        and fits_resume_cap
         and outcome.stuck_reason is None
         and not outcome.compaction_stopped
         and not outcome.cut_short

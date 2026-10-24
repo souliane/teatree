@@ -556,7 +556,7 @@ class Task(models.Model):
         A conversation the last run EXHAUSTED carries nothing either, and FRESH rather than the
         stored discriminator: a needs-input run that filled the window filled the parent's own
         conversation, which is the very history it was continuing. So does one the retry cannot
-        continue: served by the CLI's fallback model, or with no room left for another prompt (#4874).
+        continue: served by the CLI's fallback model, past the resume cap, or with no room for another prompt (#4874).
         """
         last_attempt = self.attempts.order_by("-pk").first()
         if last_attempt is not None and (

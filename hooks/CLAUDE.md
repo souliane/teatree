@@ -2,6 +2,8 @@
 
 See the root [`CLAUDE.md`](../CLAUDE.md) for the code-quality bar. This file adds only what is specific to `hooks/`.
 
+The cache-wait PreToolUse advisory applies to interactive main-agent Bash calls with at least 50,000 conversation tokens. It recognizes declared long foreground waits, emits at most one JSON payload for a call, and never denies. A blocking orchestrator gate still takes precedence.
+
 ## Default-allow — a gate refuses four things, and nothing else
 
 Developing teatree, and the factory built out of it, is ALLOWED BY DEFAULT. Editing, testing, committing, pushing, merging, running the `t3` CLI, provisioning worktrees, refreshing a local database, dispatching agents — none of that is a gate's business. **A gate that refuses ordinary development work is a defect to fix here, not a rule to obey**: take the per-call escape or the kill-switch from § "Escape markers & kill-switches", finish the work, then fix the gate.
