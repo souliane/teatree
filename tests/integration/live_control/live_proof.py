@@ -55,7 +55,8 @@ def options(kind: str, phase: str, cwd: str) -> ClaudeAgentOptions:
         configured = ClaudeAgentOptions(
             model="gpt-5.6-sol", permission_mode="bypassPermissions", cwd=cwd, setting_sources=[], max_turns=12
         )
-    _wire_teatree_mcp_server(configured, phase=phase)
+    if kind == "claude_sdk":
+        _wire_teatree_mcp_server(configured, phase=phase)
     return configured
 
 

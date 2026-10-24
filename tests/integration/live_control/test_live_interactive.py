@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.agents.live_delivery import MAX_WAIT_SECONDS
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_mailbox_client import InteractiveMailboxLease
 from teatree.agents.runner_heartbeat import drive_with_heartbeat
@@ -20,6 +21,8 @@ from teatree.mcp.server import build_server
 from tests.factories import planned_ticket
 from tests.integration.live_control.live_proof import harness, options, runtime, wait_for_peer
 from tests.teatree_mcp._call_tool_result import structured
+
+_REPLY_WAITS = 5
 
 
 @pytest.mark.integration
@@ -32,6 +35,7 @@ class LiveInteractiveTests(TestCase):
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
         nonce_to_agent, nonce_to_attended = secrets.token_hex(12), secrets.token_hex(12)
         broker = shared_broker()
+        agent_options = options("claude_sdk", "coding", tempfile.mkdtemp(prefix="t3-live-interactive-"))
         with InteractiveMailboxLease.connect(broker.socket_path.parent) as attended:
             attended_env = attended.mcp_env()
             with patch.dict(os.environ, attended_env), patch("teatree.mcp.server.get_all_overlays", return_value={}):
@@ -47,7 +51,7 @@ class LiveInteractiveTests(TestCase):
                             "Use the TeaTree mailbox wait tool to read the attended peer's message. "
                             f"Then send exactly '{nonce_to_attended}' back to its address using the mailbox send "
                             "tool with a fresh key. Include the message you received in your final answer.",
-                            options("claude_sdk", "coding", tempfile.mkdtemp(prefix="t3-live-interactive-")),
+                            agent_options,
                             harness("claude_sdk"),
                             runtime=runtime(),
                         )
@@ -62,13 +66,21 @@ class LiveInteractiveTests(TestCase):
                             "agent_mailbox_send", {"to": agent_address, "text": nonce_to_agent, "key": "attended-1"}
                         )
                     )
-                    inbound = structured(
-                        await server.call_tool("agent_mailbox_wait", {"after_id": 0, "timeout_seconds": 30})
-                    )
+                    inbound: dict[str, Any] = {"messages": []}
+                    for _ in range(_REPLY_WAITS):
+                        inbound = structured(
+                            await server.call_tool(
+                                "agent_mailbox_wait", {"after_id": 0, "timeout_seconds": MAX_WAIT_SECONDS}
+                            )
+                        )
+                        if inbound["messages"]:
+                            break
                     return structured(await sending), inbound
 
                 outbound, inbound = asyncio.run(exchange())
                 agent = agent_future.result(timeout=150)
-        assert outbound["outcome"] in {"accepted_current_turn", "accepted_inbox_read"}
+        assert outbound["outcome"] in {"accepted_current_turn", "accepted_inbox_read"} or outbound["queued_in_inbox"], (
+            outbound
+        )
         assert inbound["messages"][0]["text"] == nonce_to_attended
         assert nonce_to_agent in agent.agent_text

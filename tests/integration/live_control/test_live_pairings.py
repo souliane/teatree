@@ -10,6 +10,7 @@ from tests.integration.live_control.live_proof import run_pair
 
 @pytest.mark.integration
 @pytest.mark.timeout(360)
+@pytest.mark.usefixtures("pass_store")
 class LivePairingsTests(TestCase):
     def setUp(self) -> None:
         super().setUp()

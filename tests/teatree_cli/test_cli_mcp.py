@@ -159,6 +159,16 @@ class TestServeCommand:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_ROOT = _REPO_ROOT / "src"
 _SERVE_DRIVER = "from teatree.cli.mcp import serve; serve()"
+_WORKER_SCRIPT = (
+    "import json,sys\n"
+    "from pathlib import Path\n"
+    "from teatree.agents.live_mailbox import LiveMailboxBroker\n"
+    "with LiveMailboxBroker(runtime_dir=Path(sys.argv[1])) as broker:\n"
+    " identity=broker.register(room='ticket-1',harness='claude_sdk',label='worker-agent')\n"
+    " print(json.dumps({'socket':str(identity.socket_path),'address':identity.address,"
+    "'token':identity.token}),flush=True)\n"
+    " sys.stdin.readline()\n"
+)
 
 
 def _clean_env(data_home: Path) -> dict[str, str]:
@@ -223,16 +233,6 @@ class TestServeSubprocessSmoke:
         }
 
     def test_attended_stdio_child_joins_worker_and_exchanges_a_nonce(self) -> None:
-        worker_script = (
-            "import json,sys\n"
-            "from pathlib import Path\n"
-            "from teatree.agents.live_mailbox import LiveMailboxBroker\n"
-            "with LiveMailboxBroker(runtime_dir=Path(sys.argv[1])) as broker:\n"
-            " identity=broker.register(room='ticket-1',harness='claude_sdk',label='worker-agent')\n"
-            " print(json.dumps({'socket':str(identity.socket_path),'address':identity.address,"
-            "'token':identity.token}),flush=True)\n"
-            " sys.stdin.readline()\n"
-        )
         with tempfile.TemporaryDirectory(prefix="t3m-", dir="/tmp") as root:
             directory = Path(root)
             env = _clean_env(directory / "xdg")
@@ -240,7 +240,7 @@ class TestServeSubprocessSmoke:
             env["T3_MCP_DELEGATED"] = "1"
             _migrate(env)
             worker = subprocess.Popen(
-                [sys.executable, "-c", worker_script, str(directory / "control" / "live"), "t3", "worker"],
+                [sys.executable, "-c", _WORKER_SCRIPT, str(directory / "control" / "live"), "t3", "worker"],
                 env=env,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
