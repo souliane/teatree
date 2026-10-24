@@ -26,6 +26,7 @@ class ConstraintViolation:
 
 
 _NEGATIVE = re.compile(r"\b(?:no|do\s+not|don't|must\s+not|without)\b([^.;\n]{0,120})", re.IGNORECASE)
+_OBSERVED_ABSENCE = re.compile(r"\b(?:finds|found|shows|showed|reports|reported)\s+$", re.IGNORECASE)
 _EXAMPLE_GROUP = re.compile(r"\b(?:closed\s+grammar|for\s+example|e\.g\.|such\s+as)\s*\([^()\n]*\)", re.IGNORECASE)
 _PATH = r"([\w./-]+\.(?:py|md|toml|yaml|yml|json|cfg|ini))"
 _KEEP = re.compile(rf"\b(?:keep|leave)\s+{_PATH}\s+unchanged\b", re.IGNORECASE)
@@ -37,6 +38,8 @@ def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
     text = _EXAMPLE_GROUP.sub("", text)
     found: dict[tuple[ConstraintKind, str], BriefConstraint] = {}
     for match in _NEGATIVE.finditer(text):
+        if match.group(0).lower().startswith("no") and _OBSERVED_ABSENCE.search(text[: match.start()]):
+            continue
         scope = match.group(1).lower()
         if scope.lstrip().startswith("forget to "):
             continue

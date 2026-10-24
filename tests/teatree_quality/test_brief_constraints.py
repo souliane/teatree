@@ -32,6 +32,15 @@ def test_do_not_forget_is_not_a_negative_setting_constraint() -> None:
     assert extract_constraints("Do not forget to update the settings docs.") == ()
 
 
+def test_search_result_absence_is_not_a_plan_constraint() -> None:
+    brief = "git grep finds no intake-repo setting anywhere in src/. Do not add a migration."
+    assert {item.kind for item in extract_constraints(brief)} == {"no_migration"}
+    assert {item.kind for item in extract_constraints(brief + " Do not add a setting.")} == {
+        "no_migration",
+        "no_setting",
+    }
+
+
 def test_an_import_is_not_a_new_public_definition() -> None:
     path = "src/teatree/core/example.py"
     changes = ChangedSet((ChangeEntry("M", path),), "origin/main")
