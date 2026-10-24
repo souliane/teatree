@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.self_review import SelfReview
 from teatree.core.models.task import Task
@@ -96,6 +97,7 @@ def enqueue_phase_task_once(
 
 
 def phase_eligible(ticket: Ticket, phase: str) -> bool:
+    phase = normalize_phase(phase)
     state = str(ticket.state)
     if ticket.role == Ticket.Role.REVIEWER:
         return phase == "reviewing" and state in transition_source_states("mark_reviewed_externally")
