@@ -20,11 +20,15 @@ read by ``_call_is_from_subagent``.
 
 import json
 import sqlite3
+import sys
+import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 import hooks.scripts.hook_router as router
+import hooks.scripts.orchestration_boundary_signals as signals
 from hooks.scripts.hook_router import (
     _call_is_from_subagent,
     _is_orchestration_action,
@@ -234,6 +238,7 @@ class TestFileWritingHeredocs:
             "tee run.sh <<EOF | bash\nuv run pytest\nEOF",
             "tee run.sh <<EOF >(bash)\nuv run pytest\nEOF",
             "cat > run.sh << 'EOF'\nuv run pytest\nEOF\nbash run.sh",
+            "cat > run.sh <<EOF\nuv run pytest\nEOF\nbash run.sh; echo done",
         ],
     )
     def test_executable_or_unclosed_heredoc_still_denies(self, command: str) -> None:
@@ -256,6 +261,8 @@ class TestHeavyWordIsNotACommand:
             "command -V pytest",
             "command -v make",
             "command -v tox",
+            "echo '$(pytest)' \"$(date)\"",
+            "echo '`pytest`' `date`",
         ],
     )
     def test_identifier_or_argument_passes(self, command: str) -> None:
@@ -288,6 +295,51 @@ class TestHeavyWordIsNotACommand:
     )
     def test_real_heavy_verb_still_denies(self, command: str) -> None:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestHeavyScanStaysBounded:
+    @pytest.mark.parametrize("span", ["$(date)", "`date`"])
+    def test_thousands_of_substitutions_scan_in_bounded_time(self, span: str) -> None:
+        command = "echo " + " ".join([span] * 5000)
+        started = time.perf_counter()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.perf_counter() - started < 2.0
+
+    def test_thousands_of_file_writing_heredocs_scan_in_bounded_time(self) -> None:
+        command = "\n".join(f"cat > f{i} <<EOF{i}\nbody\nEOF{i}" for i in range(2000))
+        started = time.perf_counter()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.perf_counter() - started < 2.0
+
+    def test_a_long_blank_line_run_scans_in_bounded_time(self) -> None:
+        command = "echo a" + "\n" * 8000 + "echo done"
+        started = time.perf_counter()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.perf_counter() - started < 2.0
+
+    def test_a_verb_after_a_long_blank_line_run_still_denies(self) -> None:
+        command = "echo a" + "\n" * 8000 + "uv run pytest"
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestShellLexerUnavailable:
+    @pytest.fixture(autouse=True)
+    def _lexer_cannot_be_imported(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        monkeypatch.delattr("teatree.hooks.shell_tokens", raising=False)
+        monkeypatch.setitem(sys.modules, "teatree.hooks.shell_tokens", None)
+        signals._shell_tokens.cache_clear()
+        signals.heavy_command_text.cache_clear()
+        yield
+        monkeypatch.undo()
+        signals._shell_tokens.cache_clear()
+        signals.heavy_command_text.cache_clear()
+
+    def test_the_raw_command_is_scanned_and_a_heavy_verb_still_denies(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest")) is True
+        assert "shell lexer unavailable" in capsys.readouterr().err
+
+    def test_a_light_command_still_passes(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("git status")) is False
 
 
 class TestHeavyBashEscapeHatch:

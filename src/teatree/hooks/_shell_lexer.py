@@ -28,7 +28,7 @@ The returned :class:`Token` carries the decoded VALUE plus the SHAPE
 attached short options (``-d'{...}'``) correctly.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
@@ -70,13 +70,13 @@ class HeredocBody:
     end: int
 
 
-def raw_substitution_sees_live(raw: str, openers: tuple[str, ...], report_from: int = 0) -> bool:
-    """Quote-aware walk: True iff any ``openers`` marker in ``raw`` is LIVE.
+def live_substitution_starts(raw: str, openers: tuple[str, ...]) -> Iterator[int]:
+    """Quote-aware walk: yield the index of every LIVE ``openers`` marker in ``raw``.
 
     A command/process substitution (``$(...)``, ``<(...)``, ``>(...)``) or a
     backtick command substitution is expanded by bash only when it is unquoted
     or inside DOUBLE quotes; inside SINGLE quotes it is inert literal text bash
-    passes verbatim. Both pre-publish raw-span walkers share this state machine
+    passes verbatim. Every pre-publish raw-span walker shares this state machine
     so they classify a substitution identically. It tracks ``in_single`` and
     ``in_double`` over the verbatim source span:
 
@@ -92,32 +92,27 @@ def raw_substitution_sees_live(raw: str, openers: tuple[str, ...], report_from: 
         single-quoted region (unquoted OR double-quoted, both of which bash
         expands); INERT only inside a genuinely single-quoted span.
 
-    Returns True on the first live marker, else False. Markers are matched as
-    literal prefixes, so a single-character backtick opener composes with the
-    two-character ``$(`` / ``<(`` / ``>(`` family. ``report_from`` narrows which
-    markers are REPORTED, never which characters are walked -- a value-only
-    slice of ``raw`` would lose the quote state opened before it.
+    Markers are matched as literal prefixes, so a single-character backtick
+    opener composes with the two-character ``$(`` / ``<(`` / ``>(`` family.
     """
     in_single = False
     in_double = False
-    i = 0
-    n = len(raw)
-    while i < n:
-        ch = raw[i]
+    for i, ch in enumerate(raw):
         if ch == "'" and not in_double:
             in_single = not in_single
-            i += 1
-            continue
-        if ch == '"' and not in_single:
+        elif ch == '"' and not in_single:
             in_double = not in_double
-            i += 1
-            continue
-        if not in_single and i >= report_from:
-            for opener in openers:
-                if raw.startswith(opener, i):
-                    return True
-        i += 1
-    return False
+        elif not in_single and any(raw.startswith(opener, i) for opener in openers):
+            yield i
+
+
+def raw_substitution_sees_live(raw: str, openers: tuple[str, ...], report_from: int = 0) -> bool:
+    """True iff a LIVE ``openers`` marker opens at or after ``report_from``.
+
+    ``report_from`` narrows which markers are REPORTED, never which characters are walked -- a value-only
+    slice of ``raw`` would lose the quote state opened before it.
+    """
+    return any(start >= report_from for start in live_substitution_starts(raw, openers))
 
 
 # Metacharacters that act as command separators in bash. Two-char

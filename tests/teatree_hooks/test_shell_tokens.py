@@ -4,7 +4,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from teatree.hooks.shell_tokens import HeredocBody, TokenKind, raw_substitution_sees_live, tokenize
+from teatree.hooks.shell_tokens import (
+    HeredocBody,
+    TokenKind,
+    live_substitution_starts,
+    raw_substitution_sees_live,
+    tokenize,
+)
 
 
 def test_public_shell_tokens_expose_heredoc_and_substitution_contract() -> None:
@@ -14,6 +20,11 @@ def test_public_shell_tokens_expose_heredoc_and_substitution_contract() -> None:
     assert bodies[0].body == "plain text\n"
     assert bodies[0].quoted is True
     assert raw_substitution_sees_live('"$(echo hi)"', ("$(",)) is True
+
+
+def test_live_substitution_starts_names_each_live_marker_and_skips_single_quoted_ones() -> None:
+    raw = "echo '$(inert)' \"$(live)\" $(bare)"
+    assert list(live_substitution_starts(raw, ("$(",))) == [raw.index("$(live"), raw.index("$(bare")]
 
 
 def test_hooks_package_imports_without_lexer_in_minimal_tree(tmp_path: Path) -> None:
