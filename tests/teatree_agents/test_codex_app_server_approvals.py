@@ -27,6 +27,8 @@ from teatree.agents.codex_post_tool import report_completed_item
 from teatree.agents.codex_shared_app_server import SharedCodexAppServer, SharedCodexSession
 from teatree.agents.harness import AgentHarness
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessSpec, register_harness, select_harness
+from teatree.agents.live_mailbox import LiveMailboxBroker
+from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.core.models import Session, Task
 from teatree.forge_credentials import FORGE_TOKEN_ENV_KEYS, ROUTED_GH_KEY_ENV
 from tests.factories import planned_ticket
@@ -80,6 +82,14 @@ for line in sys.stdin:
         result = {}
     send({"id": request_id, "result": result})
     if method != "turn/start":
+        continue
+    if scenario == "mailbox":
+        thread_id = request["params"]["threadId"]
+        send({"id": 600 + int(thread_id.rsplit("-", 1)[1]), "method": "item/tool/call", "params": {
+            "threadId": thread_id, "tool": "agent_mailbox_self", "arguments": {}}})
+        read_decision()
+        send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {
+            "id": "turn-1", "status": "completed", "items": []}}})
         continue
     if scenario == "inflight":
         send({"id": 500, "method": "item/commandExecution/requestApproval", "params": {
@@ -356,6 +366,54 @@ def test_child_and_unknown_approvals_preserve_other_shared_session(
     assert any(
         message.get("method") == "turn/start" and message["params"]["threadId"] == "thread-2" for message in messages
     )
+
+
+def test_shared_codex_threads_answer_mailbox_calls_with_their_own_identity(
+    tmp_path: Path, worker_options: CodexAppServerOptions
+) -> None:
+    command, log = _server_command(tmp_path, "mailbox")
+    manager = SharedCodexAppServer(code_home=tmp_path / "home", cache=_FakeCache(), command=command, process_env={})
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
+        first_identity = broker.register(room="one", harness="codex_app_server", label="first")
+        second_identity = broker.register(room="two", harness="codex_app_server", label="second")
+        first_options = replace(
+            worker_options,
+            core=replace(worker_options.core, mailbox=MailboxClient(first_identity.socket_path, first_identity.token)),
+            mailbox_phase="coding",
+        )
+        second_options = replace(
+            worker_options,
+            core=replace(
+                worker_options.core, mailbox=MailboxClient(second_identity.socket_path, second_identity.token)
+            ),
+            mailbox_phase="coding",
+        )
+        first = SharedCodexSession(first_options, manager=manager, resume=None)
+        second = SharedCodexSession(second_options, manager=manager, resume=None)
+
+        async def run() -> None:
+            await first.start()
+            await second.start()
+            try:
+                await first.query("identify")
+                _ = [message async for message in first.receive_response()]
+                await second.query("identify")
+                _ = [message async for message in second.receive_response()]
+            finally:
+                await first.close()
+                await second.close()
+
+        try:
+            asyncio.run(run())
+        finally:
+            manager.close()
+    messages = [json.loads(line) for line in log.read_text().splitlines()]
+    addresses = {
+        message["id"]: json.loads(message["result"]["contentItems"][0]["text"])["address"]
+        for message in messages
+        if message.get("id") in {601, 602} and "result" in message
+    }
+    assert addresses == {601: first_identity.address, 602: second_identity.address}
 
 
 class _FakeCache:

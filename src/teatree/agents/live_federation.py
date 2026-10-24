@@ -245,11 +245,16 @@ async def verified_sender(request: Mapping[str, object], *, own_socket: Path, co
         msg = "Peer relay source could not be verified"
         raise FederationRefusedError(msg)
     sender = verified.get("sender")
-    if (
-        not isinstance(sender, dict)
-        or sender.get("address") != address
-        or any(not isinstance(sender.get(field), str) for field in ("ticket", "harness", "label"))
-    ):
+    if isinstance(sender, dict):
+        fields_valid = sender.get("address") == address and all(
+            isinstance(sender.get(field), str) for field in ("harness", "label")
+        )
+        ticket_valid = (
+            "ticket" not in sender if sender.get("harness") == "interactive" else isinstance(sender.get("ticket"), str)
+        )
+    else:
+        fields_valid = ticket_valid = False
+    if not fields_valid or not ticket_valid:
         msg = "Peer relay sender is not active"
         raise FederationRefusedError(msg)
     return cast("PeerIdentity", sender)

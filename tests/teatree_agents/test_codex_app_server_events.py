@@ -3,14 +3,71 @@
 import asyncio
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents import codex_app_server_events, codex_app_server_options
-from teatree.agents.codex_app_server_events import CodexToolEvents
+from teatree.agents.codex_app_server_events import CodexToolEvents, dynamic_mailbox_tools, mailbox_tool_result
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
+from teatree.agents.live_mailbox_client import MailboxClient
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [
+        (None, {"agent_mailbox_self", "agent_mailbox_peers"}),
+        (
+            "planning",
+            {
+                "agent_mailbox_self",
+                "agent_mailbox_peers",
+                "agent_mailbox_send",
+                "agent_mailbox_inbox",
+                "agent_mailbox_wait",
+            },
+        ),
+        (
+            "coding",
+            {
+                "agent_mailbox_self",
+                "agent_mailbox_peers",
+                "agent_mailbox_send",
+                "agent_mailbox_inbox",
+                "agent_mailbox_wait",
+            },
+        ),
+        (
+            "shipping",
+            {
+                "agent_mailbox_self",
+                "agent_mailbox_peers",
+                "agent_mailbox_send",
+                "agent_mailbox_inbox",
+                "agent_mailbox_wait",
+            },
+        ),
+    ],
+)
+def test_dynamic_mailbox_tool_grants_cover_read_only_and_mcp_write_phases(
+    phase: str | None, expected: set[str]
+) -> None:
+    assert {tool["name"] for tool in dynamic_mailbox_tools(phase)} == expected
+
+
+def test_namespaced_codex_tool_call_cannot_reach_the_mailbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+    options = CodexAppServerOptions.from_sdk_options(
+        ClaudeAgentOptions(cwd="/work", permission_mode="bypassPermissions")
+    )
+    mailbox = MailboxClient(Path("/tmp/no-such-mailbox.sock"), "private-token")
+    options = replace(options, core=replace(options.core, mailbox=mailbox), mailbox_phase="coding")
+    request = {"namespace": "other", "threadId": "thread-1", "tool": "agent_mailbox_self", "arguments": {}}
+
+    assert asyncio.run(mailbox_tool_result(request, {"thread-1": options})) is None
 
 
 @pytest.fixture(autouse=True)

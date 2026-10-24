@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from teatree.agents.live_control import PeerIdentity
+from teatree.agents.live_delivery import InboxPage, SendReceipt
 from teatree.agents.live_federation import (
     FederationRefusedError,
     WorkerGoneError,
@@ -18,7 +20,30 @@ from teatree.agents.live_federation import (
     verified_sender,
 )
 from teatree.agents.live_mailbox import LiveMailboxBroker, reset_shared_brokers
+from teatree.agents.live_mailbox_client import InteractiveMailboxLease
 from teatree.mcp.agent_mailbox import MailboxClient
+
+
+def test_attended_peer_discovers_and_messages_an_agent_on_another_worker(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path),
+        InteractiveMailboxLease.connect(tmp_path) as attended,
+        LiveMailboxBroker(runtime_dir=tmp_path) as second,
+    ):
+        agent = second.register(room="ticket-2", harness="claude_sdk", label="coder")
+        attended_client = MailboxClient(attended.socket_path, attended.token)
+        agent_client = MailboxClient(agent.socket_path, agent.token)
+
+        async def exchange() -> tuple[list[PeerIdentity], SendReceipt, InboxPage]:
+            peers = await attended_client.peers()
+            sending = asyncio.create_task(attended_client.send(agent.address, "nonce-b", "remote-1"))
+            received = await agent_client.wait(timeout_seconds=2)
+            return peers, await sending, received
+
+        peers, receipt, received = asyncio.run(exchange())
+        assert any(peer["address"] == agent.address for peer in peers)
+        assert receipt["outcome"] == "accepted_inbox_read"
+        assert received["messages"][0]["text"] == "nonce-b"
 
 
 def test_peer_from_another_pid_namespace_requires_a_matching_source_broker_proof(tmp_path: Path) -> None:

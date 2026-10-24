@@ -455,6 +455,8 @@ t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING 
 
 ### Live agent mailbox
 
+Live provider pairing proof remains owed; the coordinator will run it in a credentialed venue and attach results to the umbrella issue.
+
 Simultaneously running Claude, Codex and pydantic_ai tasks on any ticket on the same host can exchange targeted messages. Claude sends through its TeaTree MCP child; pydantic_ai mounts peers, send, inbox and wait as native tools. New Codex threads use App Server `dynamicTools` handled by their worker, including the isolated read-only phases; older Codex threads retain their creation-time tool catalog when resumed. Workers
 
 find one another through the shared control-DB live directory. TeaTree assigns
@@ -462,7 +464,7 @@ each task its address and private Unix-socket identity; headless agents cannot r
 themselves or declare their own harness. The plugin's `t3 mcp serve --interactive` child joins as an attended peer only when the worker authenticates its operator process. With no live worker, the plugin still serves its other MCP tools and omits the five mailbox tools. Its identity has no ticket; disconnect revokes the address. Claude Code and Codex attended sessions use the same five MCP tools. `agent_mailbox_self` shows the session's address,
 `agent_mailbox_peers` discovers live peers with ticket, phase, harness and
 receive status, and `agent_mailbox_send` sends to one
-peer and waits up to 20 seconds for its session to accept the message. A busy steerable peer (`claude_sdk`, `pydantic_ai` or `codex_app_server`) takes it into its running turn, framed as a peer's information rather than an operator instruction. The pydantic_ai session admits waiting text before its next model request; an expired wait is withdrawn and remains in the inbox. Any bound peer may also accept by reading its inbox. The send returns a receipt:
+peer and waits up to 20 seconds for its session to accept the message. A busy steerable peer (`claude_sdk`, `pydantic_ai` or `codex_app_server`) takes it into its running turn, framed as a peer's information rather than an operator instruction. The pydantic_ai session admits waiting text before its next model request; an expired wait is withdrawn and remains in the inbox. A peer with an inbox tool may also accept by reading it. The send returns a receipt:
 
 `accepted_current_turn`, `accepted_new_turn`, `accepted_inbox_read`, or `rejected` with
 `not_accepted_in_time`, `turn_ended`, `not_steerable`, `backpressure`,

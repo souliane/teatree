@@ -3,6 +3,7 @@
 import asyncio
 import json
 import multiprocessing
+import os
 import shlex
 import socket
 import sqlite3
@@ -13,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
-from contextlib import closing, nullcontext
+from contextlib import closing, nullcontext, suppress
 from dataclasses import replace
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -45,7 +46,7 @@ from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_client import LiveClient
 from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
-from teatree.agents.live_ingress import PeerRole
+from teatree.agents.live_ingress import PeerCredentials, PeerRole
 from teatree.agents.live_mailbox import (
     LiveMailboxBroker,
     MailboxIdentity,
@@ -172,17 +173,38 @@ def test_worker_descendant_cannot_join_as_an_attended_peer(broker: LiveMailboxBr
     assert broker.identities() == []
 
 
+@pytest.mark.parametrize("case", ["another_uid", "unreadable_credentials"])
+def test_attended_join_refuses_untrusted_peer_credentials(broker: LiveMailboxBroker, tmp_path: Path, case: str) -> None:
+    credentials = PeerCredentials(os.getpid(), os.getuid() + 1) if case == "another_uid" else None
+    with (
+        patch("teatree.agents.live_mailbox.peer_credentials", return_value=credentials),
+        pytest.raises(MailboxError, match="permission_denied"),
+    ):
+        InteractiveMailboxLease.connect(tmp_path)
+    assert broker.identities() == []
+
+
 def test_attended_join_skips_an_untrusted_socket_before_the_live_worker(
     broker: LiveMailboxBroker, tmp_path: Path
 ) -> None:
     untrusted = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     untrusted.bind(str(tmp_path / "w-0000.sock"))
     untrusted.listen()
+
+    def answer_as_rogue() -> None:
+        peer, _ = untrusted.accept()
+        with peer, suppress(BrokenPipeError):
+            peer.sendall(b'{"result":{"address":"rogue","token":"rogue"}}\n')
+
+    rogue = threading.Thread(target=answer_as_rogue, daemon=True)
+    rogue.start()
     try:
         with InteractiveMailboxLease.connect(tmp_path) as joined:
             assert broker.identity_of(joined.address) is not None
+            assert joined.address != "rogue"
     finally:
         untrusted.close()
+        rogue.join(timeout=2)
 
 
 @pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
@@ -1360,6 +1382,22 @@ def test_a_pydantic_task_without_mailbox_tools_refuses_peer_delivery(broker: Liv
             "recipient_cannot_receive",
             False,
         )
+
+
+@pytest.mark.parametrize(("phase", "can_receive"), [("scoping", False), ("planning", True), ("coding", True)])
+def test_codex_receipt_reflects_phase_mailbox_grant(
+    broker: LiveMailboxBroker, phase: str, *, can_receive: bool
+) -> None:
+    task = LiveTask(pk=8, ticket=3, phase=phase, harness="codex_app_server", model="m")
+    sender = broker.register(room="3", harness="claude_sdk", label="sender")
+    with bound_task_mailbox(ClaudeAgentOptions(), task, broker=broker) as recipient:
+        assert recipient is not None
+        client = MailboxClient(sender.socket_path, sender.token)
+        peer = next(peer for peer in invoke(client, "peers") if peer["address"] == recipient.address)
+        assert peer["can_receive"] is can_receive
+        if not can_receive:
+            receipt = invoke(client, "send", to=recipient.address, text="hello", key="one", timeout_seconds=0.01)
+            assert (receipt["code"], receipt["queued_in_inbox"]) == ("recipient_cannot_receive", False)
 
 
 class _PydanticHttpScenario:

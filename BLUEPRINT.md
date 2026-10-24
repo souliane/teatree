@@ -703,10 +703,11 @@ re-run instead of quote.
 **Live agent mailbox** (`src/teatree/agents/live_mailbox.py`, `src/teatree/mcp/agent_mailbox.py`):
 five tools appear in a Claude task's TeaTree MCP child; pydantic_ai mounts peers, send, inbox and wait natively beside its other toolsets. New Codex threads expose five App Server `dynamicTools` through a thread-scoped worker handler; older Codex threads retain their creation-time tool catalog when resumed. The runner assigns an unguessable
 identity and ticket metadata, passes only that task's token to its child, and revokes the identity
-on exit. The plugin's `t3 mcp serve --interactive` joins as an operator-authenticated attended peer with no ticket metadata; its held socket connection revokes the identity on disconnect. With no live worker, the plugin keeps its other MCP tools and omits mailbox tools. Headless worker descendants cannot join. Agents can discover live peers across tickets and same-host workers, send to one peer, and
+on exit. The plugin's `t3 mcp serve --interactive` joins as an operator-authenticated attended peer with no ticket metadata; its held socket connection revokes the identity on disconnect. With no live worker, the plugin keeps its other MCP tools and omits mailbox tools. Headless worker descendants cannot join: the check uses same-uid credentials and process ancestry, with the container as the boundary. Agents can discover live peers across tickets and same-host workers, send to one peer, and
 read or briefly wait for their own inbox. Headless agents cannot register themselves or leave a message for a parked task. An idle
 `claude_sdk` peer can start one new turn during its bounded window; a parked task
 is never woken by a live message.
+Live provider pairing proof is still owed and will be attached to the umbrella issue after a credentialed run.
 
 Mailbox messaging is not a repository write. `agent_mailbox_self` and `agent_mailbox_peers`
 are read tools for every phase that mounts this server. `agent_mailbox_send`,
