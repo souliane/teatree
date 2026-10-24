@@ -460,6 +460,32 @@ class TestResolveWorktreeRejectsMainClone(TestCase):
             resolve_worktree()
 
 
+class TestResolveWorktreeExactMatchBeatsAncestorEnvCache(TestCase):
+    """A row recorded at the exact path wins over an ancestor directory's env cache."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def test_exact_row_beats_env_cache_of_ancestor_dir(self) -> None:
+        root = self._tmp_path / "workspaces"
+        checkout = root / "ticket" / "repo"
+        checkout.mkdir(parents=True)
+        stray = Worktree.objects.create(
+            ticket=Ticket.objects.create(), repo_path="workspaces", extra={"worktree_path": str(root)}
+        )
+        wanted = Worktree.objects.create(
+            ticket=Ticket.objects.create(), repo_path="org/repo", extra={"worktree_path": str(checkout)}
+        )
+        envfile = root.parent / ".t3-cache" / root.name / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True)
+        envfile.write_text(f"TICKET_DIR={root}\n", encoding="utf-8")
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(checkout))
+
+        assert resolve_worktree().pk == wanted.pk != stray.pk
+
+
 class TestWarnCwdMismatch(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, caplog: pytest.LogCaptureFixture) -> None:

@@ -128,6 +128,15 @@ def _find_env_cache(cwd: str) -> Path | None:
     return None
 
 
+def _match_exact_path(path: str) -> Worktree | None:
+    """Find the Worktree whose ``extra["worktree_path"]`` equals *path* (DB-level JSON lookup)."""
+    for candidate in _candidate_paths(path):
+        exact = Worktree.objects.filter(extra__worktree_path=candidate).first()
+        if exact is not None:
+            return exact
+    return None
+
+
 def match_worktree_by_path(path: str) -> Worktree | None:
     """Find a Worktree whose ``extra["worktree_path"]`` matches or contains *path*.
 
@@ -136,11 +145,9 @@ def match_worktree_by_path(path: str) -> Worktree | None:
     Tries both the original and symlink-resolved path to handle macOS
     ``/var`` → ``/private/var`` differences.
     """
-    # Fast path: exact match via DB-level JSON lookup
-    for candidate in _candidate_paths(path):
-        exact = Worktree.objects.filter(extra__worktree_path=candidate).first()
-        if exact is not None:
-            return exact
+    exact = _match_exact_path(path)
+    if exact is not None:
+        return exact
 
     # Walk up from path to find a parent that matches a stored worktree_path.
     # This handles being inside a subdirectory of a worktree.
@@ -550,6 +557,11 @@ def resolve_worktree(path: str = "", ticket_hint: Ticket | None = None) -> Workt
     resolved worktree that is stuck on a synthetic ``auto:`` ticket.
     """
     cwd = str(Path(path).resolve()) if path else _get_user_cwd()
+
+    # 0. A row recorded at exactly this path beats any ancestor directory's env cache.
+    exact = _match_exact_path(cwd)
+    if exact is not None:
+        return _finalize_matched(exact, cwd, ticket_hint)
 
     # 1. Walk up from CWD to the .t3-cache/ sibling holding the env cache
     #    (out-of-repo, never copied into a repo tree, since #3097).
