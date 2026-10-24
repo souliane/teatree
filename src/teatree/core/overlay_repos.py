@@ -1,8 +1,7 @@
-"""The one answer to "which forge repos does this overlay work in?".
+"""The full set of forge repos an overlay works in.
 
-Both the intake scanner (which issues to claim) and the external-outcome measure
-(which repos' merges count as output) need the same slug set, and a second
-derivation would let the two disagree about what the factory's own repos are.
+Issue intake uses this set when its configured repo list is empty; external
+outcomes and other overlay-wide consumers always use the full set.
 """
 
 from typing import TYPE_CHECKING
@@ -14,12 +13,13 @@ if TYPE_CHECKING:
 
 
 def owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
-    """The ``owner/name`` slugs of the repos this overlay works in — the intake scope.
+    """The ``owner/name`` slugs of the repos this overlay works in.
 
     Unions the overlay's followup repos (where the factory files and picks up issues)
     with its declared merge-candidate working repos (e.g. an ``e2e`` companion), each
     normalized up to ``owner/repo``. An overlay with no repo declarations (or none at
-    all) yields ``()`` — the scanner then keeps the pre-scope global author search.
+    all) yields ``()`` — with no configured intake list, the scanner then keeps
+    the pre-scope global author search.
     """
     if overlay is None:
         return ()

@@ -190,7 +190,7 @@ class IssueIntakeScanner:
     trusted_authors: tuple[str, ...] = field(default_factory=tuple)
     identities: tuple[str, ...] = field(default_factory=tuple)
     exclude_labels: tuple[str, ...] = field(default_factory=tuple)
-    #: The overlay's OWN repo slugs (``owner/name``). Every discovery query is
+    #: The selected repo slugs (``owner/name``). Every discovery query is
     #: scoped to them. Empty keeps the pre-scope global search (back-compat).
     repo_slugs: tuple[str, ...] = field(default_factory=tuple)
     name: str = "issue_intake"
