@@ -15,12 +15,14 @@ invocation starts from (the technique of
 ``tests/teatree_cli/test_review_django_bootstrap.py``).
 """
 
+import io
 import os
 import stat
 import subprocess
 import sys
+from contextlib import ExitStack, redirect_stderr
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
@@ -29,6 +31,7 @@ from teatree.cli.setup import command as setup_command
 from teatree.cli.setup.statusline_installer import StatuslineInstall
 from teatree.provisioning.skill_clone_install import CloneInstall
 from teatree.provisioning.skills_cli import SkillsCliCommandError
+from tests._hermetic_agent_host import HermeticHostCase
 from tests._unreadable_apm_manifest import unreadable_running_manifest
 
 _RUN_SETUP_PROBE = """
@@ -340,3 +343,74 @@ class TestSetupCommandIsImportSafePreBootstrap:
         )
         assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
         assert "setup-import-ok" in result.stdout
+
+
+class TestPluginRegistrationGatesStrictReadiness(HermeticHostCase):
+    """Strict readiness waits on the plugin of every credentialed agent tool, and on both when none is."""
+
+    def provision(
+        self, *, claude_registers: bool, codex_registers: bool, skills_ready: bool = True
+    ) -> tuple[bool, str, list[str]]:
+        installed: list[str] = []
+
+        def registrar(tool: str, *, registers: bool) -> MagicMock:
+            def install() -> bool:
+                installed.append(tool)
+                return registers
+
+            return MagicMock(return_value=MagicMock(install=install))
+
+        stderr = io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(redirect_stderr(stderr))
+            mandated = stack.enter_context(patch.object(setup_command, "MandatedSkillProvisioner"))
+            mandated.return_value.provision.return_value = skills_ready
+            stack.enter_context(patch.object(setup_command, "SkillsCli"))
+            stack.enter_context(patch.object(setup_command, "install_declared_sources", return_value=[]))
+            stack.enter_context(patch.object(setup_command, "demanded_skill_names", return_value=()))
+            stack.enter_context(patch.object(setup_command, "refresh_inventory_receipt"))
+            stack.enter_context(patch.object(setup_command, "SkillPinAuditor"))
+            stack.enter_context(patch.object(setup_command, "get_data_dir", return_value=self.home / "data"))
+            stack.enter_context(patch.object(setup_command, "PyrightPluginRegistrar"))
+            stack.enter_context(patch.object(setup_command, "McpServerRegistrar"))
+            stack.enter_context(
+                patch.object(setup_command, "PluginRegistrar", registrar("claude", registers=claude_registers))
+            )
+            stack.enter_context(
+                patch.object(setup_command, "CodexPluginRegistrar", registrar("codex", registers=codex_registers))
+            )
+            ready = setup_command._provision_agent_skills(self.home / "repo", harness_exclusions=[], skip_plugin=False)
+        return ready, stderr.getvalue(), installed
+
+    def test_a_credentialed_claude_is_ready_when_only_codex_fails_to_register(self) -> None:
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+
+        ready, _stderr, _installed = self.provision(claude_registers=True, codex_registers=False)
+
+        assert ready
+
+    def test_a_credentialed_codex_that_fails_to_register_is_not_ready_and_is_named(self) -> None:
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        (self.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+
+        ready, stderr, _installed = self.provision(claude_registers=True, codex_registers=False)
+
+        assert not ready
+        assert "codex" in stderr
+
+    def test_a_host_with_no_credentials_waits_on_both_plugins(self) -> None:
+        assert not self.provision(claude_registers=False, codex_registers=True)[0]
+        assert not self.provision(claude_registers=True, codex_registers=False)[0]
+        assert self.provision(claude_registers=True, codex_registers=True)[0]
+
+    def test_both_plugins_are_registered_even_when_the_first_fails(self) -> None:
+        _ready, _stderr, installed = self.provision(claude_registers=False, codex_registers=True)
+
+        assert installed == ["claude", "codex"]
+
+    def test_unready_skills_still_block_when_both_plugins_register(self) -> None:
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+
+        ready, _stderr, _installed = self.provision(claude_registers=True, codex_registers=True, skills_ready=False)
+
+        assert not ready

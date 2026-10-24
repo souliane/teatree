@@ -4358,8 +4358,9 @@ Usage: t3 setup [OPTIONS] [COMMAND] [ARGS]...
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --skip-plugin                  Skip Claude and Codex plugin registration.    │
 │ --strict-agent-skills          Exit non-zero unless required skills,         │
-│                                inventory, and both TeaTree plugins are       │
-│                                ready.                                        │
+│                                inventory, and the TeaTree plugins of the     │
+│                                credentialed agent tools (both when none is)  │
+│                                are ready.                                    │
 │ --write-automode               Deep-merge the committed Claude-settings      │
 │                                template (recommended autoMode grants +       │
 │                                managed keys) into ~/.claude/settings.json.   │
