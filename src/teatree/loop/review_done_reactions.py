@@ -84,9 +84,13 @@ def emit_review_done_reactions(
 
 
 def _colleague_authored(mr_url: str) -> bool:
-    overlay = overlay_for_mr_url(mr_url) or None
-    identities = get_effective_settings(overlay).user_identity_aliases
-    return is_self_authored(mr_url, code_host_from_overlay(overlay), identities) is False
+    try:
+        overlay = overlay_for_mr_url(mr_url) or None
+        identities = get_effective_settings(overlay).user_identity_aliases
+        return is_self_authored(mr_url, code_host_from_overlay(overlay), identities) is False
+    except Exception:
+        logger.exception("emit_review_done_reactions: authorship dependencies unreadable for %s", mr_url)
+        return False
 
 
 def _live_message(messaging: "MessagingBackend", *, channel: str, ts: str) -> "RawAPIDict | None":

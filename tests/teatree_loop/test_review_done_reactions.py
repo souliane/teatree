@@ -7,6 +7,7 @@ passes every other case here.
 
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -76,4 +77,16 @@ class TestTheReactionFollowsTheAuthor(TestCase):
         for case, forge in unreadable.items():
             with self.subTest(case):
                 assert self._emit(forge) == []
+                self._assert_nothing_reacted()
+
+    def test_unreadable_authorship_dependencies_get_no_reaction(self) -> None:
+        for dependency in ("get_effective_settings", "code_host_from_overlay"):
+            with (
+                self.subTest(dependency),
+                patch(f"teatree.loop.review_done_reactions.{dependency}", side_effect=RuntimeError("unavailable")),
+            ):
+                assert (
+                    emit_review_done_reactions(slug=_SLUG, pr_id=_PR_ID, emojis=("eyes",), messaging=self.messaging)
+                    == []
+                )
                 self._assert_nothing_reacted()
