@@ -91,12 +91,26 @@ def _call(tool: str, args: dict[str, Any], fake: _FakeForge) -> Any:
 
 
 class TestForgeReadTools(TestCase):
-    def test_issue_search_forwards_repo_and_query(self) -> None:
+    def test_issue_search_returns_bounded_summaries_without_bodies(self) -> None:
         fake = _FakeForge()
-        result = _call("github_issue_search", {"repo": "acme/widgets", "query": "flaky"}, fake)
+        rows = [
+            {
+                "number": index,
+                "title": f"issue {index}",
+                "state": "open",
+                "updated_at": "2026-10-24",
+                "body": "x" * 20_000,
+            }
+            for index in range(12)
+        ]
+        with patch.object(fake, "search_open_issues", return_value=rows) as search:
+            result = _call("github_issue_search", {"repo": "acme/widgets", "query": "flaky"}, fake)
 
-        assert result == [{"number": 7, "title": "flaky test"}]
-        assert fake.calls[0] == ("search_open_issues", {"repo": "acme/widgets", "query": "flaky"})
+        assert result == [
+            {"number": index, "title": f"issue {index}", "state": "open", "updated_at": "2026-10-24"}
+            for index in range(10)
+        ]
+        search.assert_called_once_with(repo="acme/widgets", query="flaky")
 
     def test_issue_list_assigned_forwards_assignee(self) -> None:
         fake = _FakeForge()

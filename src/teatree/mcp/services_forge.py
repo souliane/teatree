@@ -317,10 +317,19 @@ def _register_pr_reads(server: MCPServer, service: Service, prefix: str) -> None
 
 def _register_search_reads(server: MCPServer, service: Service, prefix: str) -> None:
     async def issue_search(repo: str, query: str) -> list[dict[str, Any]]:
-        """Open issues in *repo* matching *query* (dup-check)."""
-        return await sync_to_async(
+        """Up to ten open issue summaries in *repo* matching *query*."""
+        issues = await sync_to_async(
             lambda: _forge_client(service).search_open_issues(repo=repo, query=query), thread_sensitive=True
         )()
+        return [
+            {
+                "number": issue.get("number", issue.get("iid")),
+                "title": issue.get("title"),
+                "state": issue.get("state"),
+                "updated_at": issue.get("updated_at"),
+            }
+            for issue in issues[:10]
+        ]
 
     async def issue_list_assigned(assignee: str) -> list[dict[str, Any]]:
         """Open issues assigned to *assignee*."""
