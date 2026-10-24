@@ -15,6 +15,7 @@ import shutil
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Final
 
 from pydantic_ai.toolsets.function import FunctionToolset
@@ -149,6 +150,7 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
             raise ShellDeniedError(msg)
         # ``expected_codes=None`` accepts any exit code — the tool REPORTS the
         # exit status to the model rather than raising on a non-zero one.
+        started = monotonic() if config.cache_lifetime_seconds is not None else None
         try:
             result = run_allowed_to_fail(
                 [shell_bin, "-c", command],
@@ -162,7 +164,17 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
             # TaskAttempt.error record, not just the model's own turn.
             msg = f"command timed out after {exc.timeout}s: {redact_secrets(command)}"
             raise ShellTimeoutError(msg) from exc
-        return keeper.cap(f"exit={result.returncode}\n{result.stdout}{result.stderr}")
+        output = keeper.cap(f"exit={result.returncode}\n{result.stdout}{result.stderr}")
+        if (
+            started is not None
+            and config.cache_lifetime_seconds is not None
+            and monotonic() - started >= config.cache_lifetime_seconds
+        ):
+            return output + (
+                "\n[cache-wait] This foreground command may have expired the prompt cache; "
+                "run long waits in background."
+            )
+        return output
 
     # Exposed to the model as ``Bash`` (the skill/SDK vocabulary) so a skill saying
     # ``Bash`` names this tool; the pythonic ``shell`` function name stays local.
