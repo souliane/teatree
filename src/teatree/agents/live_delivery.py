@@ -1,18 +1,28 @@
-"""One peer message on its way to a live session: the first acceptance settles it and becomes its receipt."""
+"""Live mailbox delivery and participant state."""
 
 import asyncio
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NoReturn, TypedDict
+from typing import NoReturn, Protocol, TypedDict
 
-from teatree.agents.live_control import MAX_INPUT_BYTES, ControlOutcome, RejectCode
+from teatree.agents.live_control import (
+    MAX_INPUT_BYTES,
+    ControlOutcome,
+    ControlReceipt,
+    LiveTask,
+    PeerIdentity,
+    RejectCode,
+)
 
 MAX_WAIT_SECONDS = 20
 MAX_KEY_BYTES = 128
 MAX_SENT_KEYS = 1_000
+_MAX_INBOX_MESSAGES = 1_000
 MAILBOX_SOCKET_ENV = "T3_AGENT_MAILBOX_SOCKET"
 MAILBOX_AUTH_ENV = "T3_AGENT_MAILBOX_TOKEN"
+MAILBOX_PHASE_ENV = "T3_AGENT_MAILBOX_PHASE"
 
 
 def _redacted_token_repr(_value: str) -> str:
@@ -50,6 +60,29 @@ class MailboxIdentity:
 
     def mcp_env(self) -> dict[str, str]:
         return {MAILBOX_SOCKET_ENV: str(self.socket_path), MAILBOX_AUTH_ENV: MailboxToken(self.token)}
+
+
+class PeerDescriptor(Protocol):
+    address: str
+    harness: str
+    label: str
+    can_receive: bool
+    room: str
+    phase: str
+
+
+def peer_identity(peer: PeerDescriptor) -> PeerIdentity:
+    identity: PeerIdentity = {
+        "address": peer.address,
+        "harness": peer.harness,
+        "label": peer.label,
+        "can_receive": peer.can_receive,
+    }
+    if peer.room:
+        identity["ticket"] = peer.room
+    if peer.phase:
+        identity["phase"] = peer.phase
+    return identity
 
 
 def send_fields(request: MailboxRequest) -> tuple[str, str, str, float]:
@@ -117,6 +150,18 @@ class PeerDelivery:
     unknown_reported: bool = False
     queued_in_inbox: bool = True
 
+    def record_push(self, receipt: ControlReceipt) -> None:
+        self.push_outcome = receipt.outcome
+        if receipt.outcome is ControlOutcome.UNKNOWN_DELIVERY:
+            return
+        if (
+            receipt.outcome is ControlOutcome.REJECTED
+            and receipt.code is RejectCode.NOT_ACCEPTED_IN_TIME
+            and self.queued_in_inbox
+        ):
+            return
+        self.settle(receipt.outcome, receipt.code)
+
     def settle(self, outcome: ControlOutcome, code: RejectCode | None = None) -> None:
         """Keep the first verdict; a push still waiting for the turn's boundary is withdrawn."""
         if self.settled.done():
@@ -143,3 +188,26 @@ class PeerDelivery:
             "code": code.value if code else None,
             "queued_in_inbox": self.queued_in_inbox,
         }
+
+
+@dataclass(slots=True)
+class _Participant:
+    address: str
+    token: str = field(repr=False)
+    room: str
+    harness: str
+    label: str
+    phase: str = ""
+    can_receive: bool = True
+    task: LiveTask | None = None
+    reads_inbox: bool = True
+    inbox: deque[InboxMessage] = field(default_factory=lambda: deque(maxlen=_MAX_INBOX_MESSAGES))
+    sent: dict[str, PeerDelivery] = field(default_factory=dict)
+    remote_sent: RemoteReceipts = field(default_factory=RemoteReceipts)
+    dropped_before: int = 0
+    waiting: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PushOnlyTask:
+    task: LiveTask

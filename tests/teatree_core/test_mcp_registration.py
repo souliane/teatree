@@ -4,13 +4,15 @@ import json
 from pathlib import Path
 
 from teatree.core.mcp_registration import (
+    EXPECTED_ARGS,
+    PLUGIN_ARGS,
     TEATREE_MCP_SERVER_NAME,
     mcp_json_path,
     read_declared_mcp_servers,
     verify_teatree_mcp_registration,
 )
 
-_VALID_ENTRY = {"command": "t3", "args": ["mcp", "serve"]}
+_VALID_ENTRY = {"command": "t3", "args": ["mcp", "serve", "--interactive"]}
 
 
 class TestMcpJsonPath:
@@ -49,6 +51,10 @@ class TestReadDeclaredMcpServers:
 
 
 class TestVerifyTeatreeMcpRegistration:
+    def test_plugin_and_headless_launches_are_distinct(self) -> None:
+        assert EXPECTED_ARGS == ("mcp", "serve")
+        assert PLUGIN_ARGS == ("mcp", "serve", "--interactive")
+
     def test_ok_when_entry_matches_expected_shape(self, tmp_path: Path) -> None:
         (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {TEATREE_MCP_SERVER_NAME: _VALID_ENTRY}}))
 

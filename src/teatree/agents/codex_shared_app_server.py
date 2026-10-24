@@ -220,7 +220,7 @@ class SharedCodexAppServer:
                 self._idle_task.cancel()
                 self._idle_task = None
             method = "thread/resume" if resume else "thread/start"
-            params = _thread_params(options)
+            params = _thread_params(options, resuming=bool(resume))
             if resume:
                 params = {"threadId": resume, **params}
             response = await self._required_transport().request_protocol(method, params)
