@@ -148,6 +148,7 @@ class ClaudeSdkSession:
                 self._inputs.end(RejectCode.TURN_ENDED)
                 yield held_ack
                 return
+            await asyncio.sleep(0)
 
     async def interrupt(self) -> None:
         await self._client.interrupt()
