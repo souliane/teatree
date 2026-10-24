@@ -435,7 +435,9 @@ def maybe_park_for_active_window(task: Task, *, lane: str, now: datetime | None 
     return record_park(task, reason=reason, not_before=window.resets_at)
 
 
-def record_park(task: Task, *, reason: str, not_before: datetime, usage: "AttemptUsage | None" = None) -> TaskAttempt:
+def record_park(
+    task: Task, *, reason: str, not_before: datetime, usage: "AttemptUsage | None" = None, summary: str = ""
+) -> TaskAttempt:
     """Record the parked ``TaskAttempt`` and return the task to the queue (never fail it).
 
     The park sibling of ``headless._record_failure``: it creates the audit attempt with the
@@ -458,7 +460,7 @@ def record_park(task: Task, *, reason: str, not_before: datetime, usage: "Attemp
         ended_at=timezone.now(),
         exit_code=1,
         error=reason,
-        result=with_transport_records(None, usage),
+        result=with_transport_records({"summary": summary} if summary else None, usage),
         **usage_fields(usage),
     )
     if usage is not None:

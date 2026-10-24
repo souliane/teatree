@@ -12,7 +12,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
 )
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.task_repair_queries import adjacent_work_attempts, repair_iterations, repair_observations
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, REVIEW_HELD_PREFIX
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 
 _CAPACITY_DIP = LimitMatch(phrase="5-hour limit", cause=LimitCause.SUBSCRIPTION_SESSION).as_reason()
@@ -71,6 +71,16 @@ class TestRepairQueries(TestCase):
 
         assert [attempt.pk for attempt in work] == [source.pk, latest.pk]
         assert adjacent_work_attempts(work, observations) == []
+
+    def test_a_review_hold_is_a_park_and_never_a_repair_iteration(self) -> None:
+        task = self._phase_task()
+        held = _failed(task, f"{REVIEW_HELD_PREFIX}the review waits")
+        worked = _failed(task, "route refusal")
+        queryset = TaskAttempt.objects.filter(task=task)
+
+        assert list(queryset.parks()) == [held]
+        assert [attempt.pk for attempt in repair_iterations(queryset)] == [worked.pk]
+        assert [attempt.pk for attempt in repair_observations(queryset)] == [worked.pk]
 
     def test_a_capacity_dip_between_identical_failures_keeps_them_adjacent(self) -> None:
         task = self._phase_task()

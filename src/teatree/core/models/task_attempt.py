@@ -1,5 +1,6 @@
 from datetime import datetime
-from functools import partial
+from functools import partial, reduce
+from operator import or_
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from django.db import models, transaction
@@ -9,12 +10,7 @@ from teatree.core.modelkit.gate_registry import get
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.task import Task
 from teatree.core.models.task_repair_queries import next_repair_iteration
-from teatree.core.models.usage_window_state import (
-    CHECKOUT_PARKED_PREFIX,
-    LIMIT_PARKED_PREFIX,
-    OPERATOR_PAUSED_PREFIX,
-    PARK_ERROR_PREFIXES,
-)
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, PARK_ERROR_PREFIXES
 from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.core.telemetry.admission import LifecycleEvent, record_lifecycle_event
 from teatree.utils.session_ref import session_ref
@@ -42,11 +38,7 @@ CANDIDATE_FAULT_KINDS = frozenset(
 READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
 
 
-PARK_ERROR_Q = (
-    models.Q(error__startswith=LIMIT_PARKED_PREFIX)
-    | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
-    | models.Q(error__startswith=OPERATOR_PAUSED_PREFIX)
-)
+PARK_ERROR_Q = reduce(or_, (models.Q(error__startswith=prefix) for prefix in PARK_ERROR_PREFIXES))
 
 
 class TaskAttemptQuerySet(models.QuerySet):
