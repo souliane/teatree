@@ -15,6 +15,7 @@ from typing import Annotated
 
 import typer
 
+from teatree.agents.live_mailbox_client import InteractiveMailboxLease, NoLiveWorkerError
 from teatree.cli.mcp_owning_domain import delegate_to_owning_domain
 from teatree.core.mcp_registration import ALLOW_WRITE_ARG, READ_ONLY_ARG, read_only_serve_flags
 from teatree.mcp.serve_lifecycle import reap_orphaned_servers, start_parent_death_watch
@@ -65,10 +66,6 @@ def serve(
     start_parent_death_watch()
     ensure_django()
 
-    from teatree.agents.live_mailbox_client import (  # noqa: PLC0415 — deferred: CLI startup
-        InteractiveMailboxLease,
-        NoLiveWorkerError,
-    )
     from teatree.cli.notion_mcp_seam import register as register_notion_seam  # noqa: PLC0415 — deferred: loads the SDK
     from teatree.mcp.server import build_server  # noqa: PLC0415 — deferred: keeps CLI startup light
 
@@ -78,16 +75,6 @@ def serve(
     except NoLiveWorkerError as exc:
         logger.warning("Attended mailbox unavailable: %s", exc)
         lease = None
-    previous = {name: os.environ.get(name) for name in lease.mcp_env()} if lease is not None else {}
-    try:
-        if lease is not None:
-            os.environ.update(lease.mcp_env())
-        build_server(read_only=read_only, allowed_writes=allowed_writes).run("stdio")
-    finally:
-        for name, value in previous.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
-        if lease is not None:
-            lease.__exit__(None, None, None)
+    if lease is not None:
+        os.environ.update(lease.mcp_env())
+    build_server(read_only=read_only, allowed_writes=allowed_writes).run("stdio")

@@ -207,6 +207,12 @@ def test_attended_join_skips_an_untrusted_socket_before_the_live_worker(
         rogue.join(timeout=2)
 
 
+def test_only_an_attended_identity_may_register_without_a_ticket(broker: LiveMailboxBroker) -> None:
+    with pytest.raises(ValueError, match="room, harness, and label are required"):
+        broker.register(room="", harness="claude_sdk", label="agent")
+    assert broker.identities() == []
+
+
 @pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
 def test_a_read_only_phase_sends_and_receives_through_the_real_server(broker: LiveMailboxBroker, phase: str) -> None:
     app = typer.Typer()

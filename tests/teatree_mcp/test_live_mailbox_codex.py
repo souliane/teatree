@@ -76,7 +76,7 @@ for line in sys.stdin:
         continue
     if method == "account/read":
         result = {"account": {"type": "chatgpt"}}
-    elif method == "thread/start":
+    elif method in ("thread/start", "thread/resume"):
         result = {"thread": {"id": "thread-1"}}
     elif method == "mcpServerStatus/list":
         result = {"data": [], "nextCursor": None}
@@ -196,6 +196,27 @@ def test_codex_dynamic_tools_send_a_peer_nonce_through_the_worker(tmp_path: Path
     }
     assert received[0]["text"] == "nonce-from-codex"
     assert any("accepted_inbox_read" in str(message) for message in messages)
+
+
+def test_a_resumed_codex_thread_keeps_the_tool_catalog_it_was_created_with(tmp_path: Path) -> None:
+    script, log = _fake_server(tmp_path)
+    options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={})
+    task = LiveTask(pk=7, ticket=3, phase="planning", harness="codex_app_server", model="codex")
+
+    async def run() -> None:
+        with LiveMailboxBroker(runtime_dir=tmp_path) as broker, bound_task_mailbox(options, task, broker=broker):
+            session = CodexAppServerSession(
+                CodexAppServerOptions.from_sdk_options(options),
+                resume="thread-1",
+                code_home=tmp_path,
+                command=(sys.executable, str(script), str(log), "accept"),
+            )
+            await session.start()
+            await session.close()
+
+    asyncio.run(run())
+    [resumed] = _requests(log, "thread/resume")
+    assert "dynamicTools" not in resumed["params"]
 
 
 def test_codex_dynamic_tool_rejects_another_thread(tmp_path: Path) -> None:

@@ -171,6 +171,24 @@ def test_a_verified_source_cannot_substitute_another_sender_address(tmp_path: Pa
         asyncio.run(verified_sender(request, own_socket=tmp_path / "w-own.sock", connected_pid=7))
 
 
+@pytest.mark.parametrize(
+    "ticket_claim",
+    [{"harness": "claude_sdk"}, {"harness": "interactive", "ticket": "first"}],
+    ids=["agent_without_a_ticket", "attended_with_a_ticket"],
+)
+def test_a_sender_whose_ticket_does_not_match_its_harness_is_refused(
+    tmp_path: Path, ticket_claim: dict[str, str]
+) -> None:
+    request = {"source_socket": str(tmp_path / "w-source.sock"), "source_address": "claimed"}
+    identity = {"pid": 7, "sender": {"address": "claimed", "label": "peer", **ticket_claim}}
+
+    with (
+        patch("teatree.agents.live_federation.call", new_callable=AsyncMock, return_value=identity),
+        pytest.raises(FederationRefusedError, match="sender is not active"),
+    ):
+        asyncio.run(verified_sender(request, own_socket=tmp_path / "w-own.sock", connected_pid=7))
+
+
 def test_a_relay_key_cannot_be_reused_for_different_text(tmp_path: Path) -> None:
     with (
         LiveMailboxBroker(runtime_dir=tmp_path) as source,

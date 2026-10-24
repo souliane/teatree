@@ -90,6 +90,21 @@ class TestServeCommand:
         assert result.exit_code == 1
         build_mock.assert_not_called()
 
+    def test_the_interactive_flag_reaches_the_delegation(self) -> None:
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.cli.mcp.delegate_to_owning_domain") as delegate_mock,
+            patch(
+                "teatree.agents.live_mailbox_client.InteractiveMailboxLease.connect",
+                side_effect=NoLiveWorkerError("offline"),
+            ),
+            patch("teatree.mcp.server.build_server"),
+        ):
+            result = runner.invoke(_app, ["--interactive"])
+
+        assert result.exit_code == 0
+        delegate_mock.assert_called_once_with(["--interactive"])
+
     def test_the_read_only_flag_reaches_the_server_and_the_delegation(self) -> None:
         with (
             patch("teatree.cli.mcp.ensure_django"),

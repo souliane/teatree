@@ -371,6 +371,25 @@ def test_peer_pushes_never_spend_the_operator_receipt_budget() -> None:
     assert controller.known_receipt("peer-0", "peer 0") is None
 
 
+def test_drain_waits_for_a_peer_push_still_inside_the_session() -> None:
+    session = _HoldingSession()
+    controller = _controller(session)
+
+    async def drain_while_a_push_is_held() -> tuple[bool, ControlReceipt]:
+        pushing = asyncio.create_task(controller.push("peer", command_id="peer-1", wait=1))
+        await asyncio.sleep(0)
+        draining = asyncio.create_task(controller.drain())
+        await asyncio.sleep(0)
+        session.release.set()
+        await draining
+        return pushing.done(), await pushing
+
+    push_finished_before_drain_returned, receipt = asyncio.run(drain_while_a_push_is_held())
+
+    assert push_finished_before_drain_returned
+    assert receipt.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+
+
 def test_peers_fill_only_their_own_pending_slots_and_never_starve_an_operator_steer() -> None:
     session = _HoldingSession()
     controller = _controller(session)
