@@ -60,7 +60,8 @@ class CeilingSalvage:
         """Record the envelope a cut-short run finished; ``None`` leaves the outcome to the ordinary recording."""
         produced = _produced_result(outcome)
         if (
-            not outcome.cut_short
+            outcome.paused
+            or not outcome.cut_short
             or not produced
             or check_evidence(produced, self.phase)
             or Task.objects.filter(pk=task.pk, status=Task.Status.COMPLETED).exists()
