@@ -20,12 +20,14 @@ from teatree.core.models import (
     ThreadBinding,
     Ticket,
 )
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.thread_binding import slack_command_id
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource, read_inbound
 from teatree.loop.slack_answer import session_routing as routing_mod
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work
 from teatree.loop.slack_answer.session_routing import SLACK_STEER_WAIT_SECONDS
+from tests._owner_channel import owner_card
 from tests.teatree_loop.slack_answer.test_cycle import _BOT_UID, _USER_UID, RecordingBackend, _resolver
 
 
@@ -847,12 +849,18 @@ class TestBoundTicketThread(TestCase):
         assert report.answered_question == 1
         assert question.answer_text == "Use the new API"
         client.steer.assert_not_called()
+        assert backend.replies == []
 
     def test_question_card_answer_resolves_when_sibling_is_pending(self) -> None:
         parked = self._bound_task()
         Task.objects.create(ticket=parked.ticket, session=parked.session, phase="coding")
         question = DeferredQuestion.record(
-            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, task_session=parked.session
+            "Which API?",
+            slack_ts="100.0",
+            slack_channel="C1",
+            parked_task=parked,
+            task_session=parked.session,
+            card=owner_card(),
         )
         row = self._message("Use the new API")
         backend = RecordingBackend()
@@ -860,18 +868,30 @@ class TestBoundTicketThread(TestCase):
         client = Mock(unreachable={})
         client.sessions.return_value = []
 
-        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+        with (
+            patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client),
+            patch(
+                "teatree.core.models.task_handoff.schedule_resume", side_effect=NoPlanArtifactError("no plan")
+            ) as resume,
+        ):
             report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
         question.refresh_from_db()
         assert report.answered_question == 1
         assert question.answer_text == "Use the new API"
-        assert "resum" in backend.replies[0][2].lower()
+        resume.assert_called_once()
+        assert Task.objects.count() == 2
+        assert "resume path requested" in backend.replies[0][2].lower()
 
     def test_question_resume_notice_retries_after_slack_readback_failure(self) -> None:
         parked = self._bound_task()
         question = DeferredQuestion.record(
-            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, task_session=parked.session
+            "Which API?",
+            slack_ts="100.0",
+            slack_channel="C1",
+            parked_task=parked,
+            task_session=parked.session,
+            card=owner_card(),
         )
         row = self._message("Use the new API")
         backend = RecordingBackend(read_after_post=False)
@@ -890,7 +910,8 @@ class TestBoundTicketThread(TestCase):
         assert first.errors == 1
         assert second.answered_question == 1
         assert question.answer_text == "Use the new API"
-        assert Task.objects.count() == 1
+        assert Task.objects.count() == 2
+        assert Task.objects.exclude(pk=parked.pk).get().parent_task_id == parked.pk
         assert len(backend.replies) == 2
         assert "resum" in backend.replies[-1][2].lower()
         assert row.loop_response_confirmed_at is not None
@@ -898,7 +919,12 @@ class TestBoundTicketThread(TestCase):
     def test_question_resume_notice_retries_after_slack_post_exception(self) -> None:
         parked = self._bound_task()
         question = DeferredQuestion.record(
-            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, task_session=parked.session
+            "Which API?",
+            slack_ts="100.0",
+            slack_channel="C1",
+            parked_task=parked,
+            task_session=parked.session,
+            card=owner_card(),
         )
         row = self._message("Use the new API")
         backend = RecordingBackend(post_reply_raises=True)
@@ -916,7 +942,8 @@ class TestBoundTicketThread(TestCase):
         assert first.errors == 1
         assert second.answered_question == 1
         assert question.answer_text == "Use the new API"
-        assert Task.objects.count() == 1
+        assert Task.objects.count() == 2
+        assert Task.objects.exclude(pk=parked.pk).get().parent_task_id == parked.pk
         assert len(backend.replies) == 1
         assert "resum" in backend.replies[0][2].lower()
         assert row.loop_response_confirmed_at is not None

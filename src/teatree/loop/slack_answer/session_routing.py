@@ -172,7 +172,7 @@ def _command_reply(command: SessionCommand) -> str:
     outcome = {
         "queued_followup": "queued follow-up (answering task)",
         "queued_resume": "queued follow-up (same task)",
-        "answered_resume": "resuming same task from this answer",
+        "answered_resume": "resume path requested from this answer",
         "queued": "queued for the same task's next run",
     }.get(command.outcome, command.outcome)
     code = f" ({command.code})" if command.code else ""

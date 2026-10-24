@@ -54,7 +54,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.models import PendingChatInjection, SessionCommand, ThreadBinding
+from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
 from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, read_inbound
@@ -465,7 +465,7 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
         _unmark_unit_loop_replied(unit)
         return False
     parked_task = bound.question.parked_task
-    if parked_task is not None:
+    if parked_task is not None and bound.question.audience == DeferredQuestion.Audience.OWNER_QUESTION:
         command, _ = SessionCommand.objects.get_or_create(
             command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts),
             defaults={
