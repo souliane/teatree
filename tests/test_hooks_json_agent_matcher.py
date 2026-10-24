@@ -67,3 +67,15 @@ def test_existing_pretooluse_matchers_preserved() -> None:
         "mcp__glab__glab_mr_.*",
     ):
         assert expected in covered, f"existing PreToolUse coverage of {expected!r} must be preserved"
+
+
+def test_task_dispatch_reaches_both_router_events_without_taskcreate() -> None:
+    config = json.loads(_HOOKS_JSON.read_text(encoding="utf-8"))
+    for event in ("PreToolUse", "PostToolUse"):
+        routed = [
+            entry["matcher"].split("|")
+            for entry in config["hooks"][event]
+            if any("hook_router.py" in hook.get("command", "") for hook in entry["hooks"])
+        ]
+        assert any("Task" in tools for tools in routed)
+        assert any("Task" in tools and "TaskCreate" not in tools for tools in routed)

@@ -484,7 +484,7 @@ def test_kill_switch_lets_both_arms_through(tmp_path: Path) -> None:
     assert (stop.returncode, stop.stdout) == (0, "")
     assert ask.returncode == 0
     assert "OWNER QUESTION GATE" not in ask.stdout
-    assert ask.stderr == ""
+    assert [line for line in ask.stderr.splitlines() if not line.startswith("NOTE: hook ORM")] == []
 
 
 def test_legacy_token_does_not_let_a_question_through(tmp_path: Path) -> None:

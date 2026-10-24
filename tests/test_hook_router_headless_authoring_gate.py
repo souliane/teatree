@@ -32,6 +32,8 @@ from teatree.core.models.gate_escape import GateEscape
 from tests._gate_escape_audit import audited_escape
 from tests._git_repo import make_git_repo, run_git
 
+pytestmark = pytest.mark.usefixtures("admission_governor_admits")
+
 #: The env an INTERACTIVE Claude Code CLI session presents. The SDK transport sets
 #: ``CLAUDE_CODE_ENTRYPOINT=sdk-py`` and strips ``CLAUDECODE`` from the child env, so these
 #: two keys are what separate a human-driven session from every SDK embedding.

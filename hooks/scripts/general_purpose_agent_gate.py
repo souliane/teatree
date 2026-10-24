@@ -31,14 +31,12 @@ import re
 import sys
 
 from hooks.scripts.managed_repo import overlays_registry
+from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("general_purpose_agent_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.general_purpose_agent_gate", sys.modules[__name__])
-
-#: The two harness tool names that spawn a sub-agent.
-DISPATCH_TOOLS = frozenset({"Agent", "Task"})
 
 #: An absent or empty ``subagent_type`` defaults to this one.
 BLANK_SUBAGENT_TYPE = "general-purpose"
