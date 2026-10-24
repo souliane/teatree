@@ -29,3 +29,11 @@ def test_codex_mailbox_descriptions_include_the_worker_inbox() -> None:
     assert "worker retains their inbox" in codex
     assert "inbox" in INSTRUCTIONS
     assert "inbox" in (MailboxClient.send.__doc__ or "")
+    for text in descriptions:
+        assert "not_accepted_in_time" in text
+        assert "queued_in_inbox" in text
+        assert "same key retry keeps waiting" in text
+        assert "settled rejection" in text
+        assert "same key retry returns it immediately" in text
+        assert "queued_in_inbox true" in text.replace("`", "")
+        assert "queued_in_inbox false" in text.replace("`", "")

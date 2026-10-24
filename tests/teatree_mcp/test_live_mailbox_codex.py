@@ -20,7 +20,7 @@ from teatree.agents.codex_shared_app_server import SharedCodexAppServer
 from teatree.agents.codex_turn_steering import CodexTurnSteering
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.live_binding import bound_task_mailbox
-from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
+from teatree.agents.live_control import ControlReceipt, LiveFence, LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_delivery import InboxMessage, SendReceipt
 from teatree.agents.live_mailbox import LiveMailboxBroker, PushOnlyTask
 from teatree.agents.live_registry import LiveSessionRegistry
@@ -459,6 +459,43 @@ def test_a_push_only_peer_never_claims_an_inbox_copy() -> None:
             inbox = list(broker._by_token[recipient.token].inbox)
         assert receipt["queued_in_inbox"] is False
         assert inbox == []
+
+
+def test_a_push_only_timeout_returns_its_settled_rejection_on_same_key_retry(tmp_path: Path) -> None:
+    class RejectedPushRegistry:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def push(
+            self, task_pk: int, framed: str, *, command_id: str, wait: float, fence: LiveFence
+        ) -> ControlReceipt:
+            self.calls += 1
+            return ControlReceipt.rejected(command_id, task_pk, RejectCode.NOT_ACCEPTED_IN_TIME)
+
+    registry = RejectedPushRegistry()
+    task = LiveTask(pk=7, ticket=3, phase="coding", harness="codex_app_server", model="codex")
+    with LiveMailboxBroker(runtime_dir=tmp_path, registry=lambda: registry) as broker:
+        recipient = broker.register(room="3", harness="codex_app_server", label="recipient", task=PushOnlyTask(task))
+        sender = broker.register(room="3", harness="claude_sdk", label="sender")
+        client = MailboxClient(sender.socket_path, sender.token)
+
+        async def exchange() -> tuple[SendReceipt, SendReceipt, float]:
+            first = await client.send(recipient.address, "nonce-5417", "once", timeout_seconds=0.05)
+            start = time.monotonic()
+            retried = await client.send(recipient.address, "nonce-5417", "once", timeout_seconds=1)
+            return first, retried, time.monotonic() - start
+
+        first, retried, elapsed = asyncio.run(exchange())
+        assert list(broker._by_token[recipient.token].inbox) == []
+
+    assert first == retried
+    assert (first["outcome"], first["code"], first["queued_in_inbox"]) == (
+        "rejected",
+        "not_accepted_in_time",
+        False,
+    )
+    assert registry.calls == 1
+    assert elapsed < 0.5
 
 
 def test_a_push_queued_for_an_old_participant_is_stale_in_the_new_attempt(tmp_path: Path) -> None:

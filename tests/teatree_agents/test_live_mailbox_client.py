@@ -57,6 +57,20 @@ def test_attended_join_reports_when_no_worker_is_live(tmp_path: Path) -> None:
         InteractiveMailboxLease.connect(tmp_path)
 
 
+def test_attended_join_rejects_a_worker_that_closes_without_a_reply(tmp_path: Path) -> None:
+    (tmp_path / "w-source.sock").touch()
+    connected = Mock()
+    connected.recv.side_effect = [b"", AssertionError("receive retried after EOF")]
+    with (
+        patch("teatree.agents.live_mailbox_client.socket.socket", return_value=connected),
+        patch("teatree.agents.live_mailbox_client._require_trusted_worker"),
+        pytest.raises(MailboxError, match="Interactive mailbox join returned invalid data"),
+    ):
+        InteractiveMailboxLease.connect(tmp_path)
+    connected.recv.assert_called_once()
+    connected.close.assert_called_once()
+
+
 @pytest.mark.parametrize("failure_stage", ["connect", "after_reply"])
 def test_attended_join_closes_socket_on_unexpected_error(tmp_path: Path, failure_stage: str) -> None:
     (tmp_path / "w-source.sock").touch()

@@ -23,7 +23,9 @@ TOOL_SEAMS = {
 INSTRUCTIONS = (
     "Mailbox tools: agent_mailbox_self, agent_mailbox_peers, agent_mailbox_send, agent_mailbox_inbox, "
     "agent_mailbox_wait\n"
-    "- acceptance is not obedience; retry with the same key, never a new one.\n"
+    "- acceptance is not obedience; a new key sends a second copy.\n"
+    "- With queued_in_inbox true, not_accepted_in_time remains queued and a same key retry keeps waiting. "
+    "With queued_in_inbox false, it is a settled rejection and a same key retry returns it immediately.\n"
     "- A new Codex thread can read its worker inbox; resumed threads use push only.\n"
     "- A pydantic_ai peer uses native inbox tools.\n"
     "- An idle claude_sdk peer can be woken once during its bounded live window; send returns accepted_new_turn.\n"
