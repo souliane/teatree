@@ -1,6 +1,6 @@
-"""Scoped per-repo git identity for public ``souliane/*`` repos (#762).
+"""Scoped per-repo git identity for public GitHub repos (#762).
 
-Single source of truth: commits on PUBLIC ``souliane/*`` repos use a
+Single source of truth: commits on PUBLIC GitHub repos use a
 GitHub ``users.noreply.github.com`` author identity rather than the
 machine's inherited git identity. Strictly scoped by remote host AND
 visibility — non-github (e.g. GitLab) and private remotes are excluded
@@ -100,34 +100,13 @@ def is_github_host(remote: str) -> bool:
 
 
 def is_public_github_remote(remote: str) -> bool:
-    """True iff ``remote``'s GitHub repo is PUBLIC (visibility-based, #785).
+    """True iff ``remote``'s GitHub repo is PUBLIC, as ``gh repo view`` reports it (#785).
 
-    The proactive noreply-identity setter used to gate on a hardcoded
-    ``souliane`` owner while the reactive pre-push backstop
-    (``refuse-public-push-with-leak.sh``) resolves visibility via
-    ``gh repo view --json visibility``. The two disagreed: a PUBLIC
-    repo owned by another account (an overlay's own public repo) never
-    got the proactive identity, then hard-failed at push when the
-    visibility-based reactive hook fired. This predicate resolves
-    visibility the SAME way the hook does, so both layers cover every
-    public GitHub repo identically.
-
-    Fail-safe: a missing/malformed slug, an unavailable ``gh``, or any
-    non-``PUBLIC`` / unknown visibility returns ``False`` — the
-    proactive setter then leaves the inherited identity untouched. That
-    matches the reactive hook's "unknown ⇒ pass" stance (it does not
-    block on unknown either), so no hard-fail asymmetry is introduced.
-
-    Host-aware (#2655): the slug parser strips the host, so a GitLab
-    remote (``git@gitlab.com:acme-eng/widget.git``) collapses to a bare
-    ``acme-eng/widget`` that ``gh repo view`` would then resolve against
-    **github.com**. If a public github.com repo happened to exist at that
-    owner/repo, a GitLab clone would be stamped with the public GitHub
-    noreply identity rather than its inherited identity. The host guard
-    short-circuits any non-github host to ``False`` BEFORE the ``gh``
-    call, so a gitlab/bitbucket remote is never queried — nor stamped —
-    as github. Callers must therefore pass the full remote URL (host
-    intact), never the host-stripped slug.
+    A malformed slug, a non-github host (never queried: the parser strips the host, so a GitLab remote would
+    resolve its bare ``owner/repo`` against github.com, #2655) or a ``gh`` that exits non-zero returns ``False``,
+    leaving the inherited identity in place; a missing ``gh`` binary raises. The pre-push gate
+    (``refuse-public-push-with-leak.sh``) fails CLOSED on a remote whose visibility it cannot confirm.
+    Callers pass the full remote URL, never the host-stripped slug.
     """
     if not remote:
         return False
@@ -164,7 +143,7 @@ def set_local_noreply_identity(repo_path: str) -> None:
     clone-local, not per-worktree-isolated). Global/XDG config is never
     touched, so every commit path uses the configured noreply identity
     instead of the inherited one. Caller guarantees ``repo_path`` is a
-    public souliane/* clone or worktree.
+    public GitHub clone or worktree.
     """
     name, email = canonical_noreply_identity()
     git.run(repo=repo_path, args=["config", "--local", "user.name", name])
