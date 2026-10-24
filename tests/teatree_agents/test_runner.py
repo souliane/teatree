@@ -1597,12 +1597,10 @@ class TestBuildOptions(TestCase):
         assert options.thinking == {"type": "adaptive"}
         assert options.effort == tier_effort()["frontier"]
 
-    def test_balanced_phase_pins_adaptive_thinking_and_xhigh_effort(self) -> None:
-        # A balanced (Sonnet) phase supports thinking and carries the balanced-tier
-        # effort (xhigh).
+    def test_balanced_phase_pins_adaptive_thinking_and_high_effort(self) -> None:
         options = self._options_for_phase("testing")
         assert options.thinking == {"type": "adaptive"}
-        assert options.effort == tier_effort()["balanced"]
+        assert options.effort == "high"
 
     def test_cheap_phase_pins_no_effort(self) -> None:
         # The cheap tier has no tier_effort() entry, so the SDK default effort applies.

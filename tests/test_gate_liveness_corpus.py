@@ -1800,6 +1800,8 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict |
         # always returns ``False``); pinned structurally to have no deny path by
         # ``tests/test_merged_detection_probe_gate.py``.
         router.handle_warn_merged_detection_probe,
+        # Cache-wait advice emits context and always returns False; it never denies.
+        router.handle_warn_cache_wait,
     }
 )
 
