@@ -114,7 +114,6 @@ class _Heartbeat:
                 if self.live.idle:
                     await self._close_idle_on_drain()
                     continue
-                await self._restate_directions()
                 # An interrupted run holds its claim until it ends, so only the lease is renewed from here on.
                 if self.breach or await self._checkpointed():
                     continue
@@ -151,7 +150,7 @@ class _Heartbeat:
             logger.warning("Heartbeat failed for task %s", self.task.pk, exc_info=True)
         return False
 
-    async def _restate_directions(self) -> None:
+    async def restate_directions(self) -> None:
         try:
             await self.live.restate_after_compaction()
         except Exception:
@@ -240,6 +239,7 @@ async def drive_with_heartbeat(
             beat = _Heartbeat(
                 task=task, runtime=runtime, live=live, capture=capture, usage=usage, started_at=started_at
             )
+            capture.on_compaction = beat.restate_directions
             heartbeat_task = asyncio.create_task(beat.run())
             try:
                 timeout = runtime.watchdog.max_runtime_seconds or None

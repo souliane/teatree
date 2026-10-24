@@ -105,9 +105,10 @@ class LateHistoryCompactor:
             result = [elided[0], summarized, *pinned, *elided[start:]]
             if _estimated_tokens(result) <= target or start >= len(elided) - 1:
                 return result
-            start, result, pair_boundary = _reduce_recent_history(elided, start, summarized, target)
-            if pair_boundary:
+            reduced_start = _reduce_recent_history(elided, start, summarized, target)
+            if reduced_start == start:
                 return result
+            start = reduced_start
 
 
 def _rewind_to_complete_pair(messages: "Sequence[ModelMessage]", start: int) -> int:
@@ -116,20 +117,19 @@ def _rewind_to_complete_pair(messages: "Sequence[ModelMessage]", start: int) -> 
     return start
 
 
-def _reduce_recent_history(
-    messages: "Sequence[ModelMessage]", start: int, summary: ModelRequest, target: int
-) -> "tuple[int, list[ModelMessage], bool]":
+def _reduce_recent_history(messages: "Sequence[ModelMessage]", start: int, summary: ModelRequest, target: int) -> int:
     result = [messages[0], summary, *_pinned_operator_messages(messages[1:start]), *messages[start:]]
     while start < len(messages) - 1 and _estimated_tokens(result) > target:
-        start += 1
-        while start < len(messages) - 1 and _tool_result_ids(messages[start]) - _tool_call_ids(messages[start:]):
-            start += 1
-        if _tool_result_ids(messages[start]) - _tool_call_ids(messages[start:]):
-            start = _rewind_to_complete_pair(messages, start)
-            result = [messages[0], summary, *_pinned_operator_messages(messages[1:start]), *messages[start:]]
-            return start, result, True
+        candidate = start + 1
+        while candidate < len(messages) - 1 and _tool_result_ids(messages[candidate]) - _tool_call_ids(
+            messages[candidate:]
+        ):
+            candidate += 1
+        if _tool_result_ids(messages[candidate]) - _tool_call_ids(messages[candidate:]):
+            break
+        start = candidate
         result = [messages[0], summary, *_pinned_operator_messages(messages[1:start]), *messages[start:]]
-    return start, result, False
+    return start
 
 
 def _pinned_operator_messages(messages: "Sequence[ModelMessage]") -> "list[ModelRequest]":

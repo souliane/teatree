@@ -640,11 +640,13 @@ def test_a_steer_taken_before_a_drain_checkpoint_stays_delivered_and_the_run_is_
 class _CompactingSession(_OperatorSteerableSession):
     """Takes operator input, then reports the CLI compacting; it ends only once the directions are restated."""
 
-    def __init__(self) -> None:
+    def __init__(self, restatement_timeout: float = 5, boundary_delay: float = 0) -> None:
         super().__init__()
         self.texts: list[str] = []
         self._taken = asyncio.Event()
         self._restated = asyncio.Event()
+        self.restatement_timeout = restatement_timeout
+        self.boundary_delay = boundary_delay
 
     async def steer(self, text: str, *, input_id: str, wait: float) -> None:
         await super().steer(text, input_id=input_id, wait=wait)
@@ -653,8 +655,9 @@ class _CompactingSession(_OperatorSteerableSession):
 
     async def receive_response(self) -> AsyncIterator[Any]:
         await self._taken.wait()
+        await asyncio.sleep(self.boundary_delay)
         yield SystemMessage(subtype="compact_boundary", data={})
-        await asyncio.wait_for(self._restated.wait(), timeout=5)
+        await asyncio.wait_for(self._restated.wait(), timeout=self.restatement_timeout)
         yield result_message(session_id=_SESSION)
 
 
@@ -672,6 +675,26 @@ def test_a_compaction_mid_run_restates_the_accepted_direction_into_the_same_turn
     assert restated.startswith("compact:")
     assert "stop and report" in session.texts[1]
     assert outcome.result_message is not None
+
+
+def test_a_compaction_restates_before_the_next_stream_frame_without_a_heartbeat() -> None:
+    session = _CompactingSession(restatement_timeout=0.01, boundary_delay=0.05)
+
+    def steer_once(_task: Task) -> None:
+        if not session.steered:
+            session.operator_steer("c-1")
+
+    outcome = _drive(
+        session,
+        drain_reason=lambda: "",
+        renew_lease=steer_once,
+        ceilings=_Ceilings(heartbeat_interval=0.1),
+        task=Task(pk=_TASK_PK, phase="coding"),
+    )
+
+    assert outcome.result_message is not None
+    assert len(session.steered) == 2
+    assert session.steered[1].startswith("compact:")
 
 
 def test_the_runner_wires_the_gate_read_off_the_event_loop_into_every_run() -> None:

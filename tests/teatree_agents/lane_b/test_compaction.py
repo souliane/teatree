@@ -91,6 +91,30 @@ class TestLateCompaction:
         assert "Earlier conversation summary:" in repr(result[1])
         assert compaction_mod._estimated_tokens(result) < 14_000
 
+    def test_rewound_tool_pair_summarizes_every_skipped_recent_message(self) -> None:
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "earlier work"
+
+        recent = "recent direction: preserve the API"
+        history: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="task" * 360)]),
+            ModelResponse(parts=[TextPart(content="old " * 1000)]),
+            ModelRequest(parts=[UserPromptPart(content=recent)]),
+            _tool_call("last"),
+            _big_return("last", 400),
+        ]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1000), usage=RunUsage())
+
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
+
+        assert recent in summaries[-1]
+        assert _orphaned_return_ids(result) == []
+        assert result[-1] == history[-1]
+
     def test_native_and_one_million_suffix_window_fallbacks(self) -> None:
         assert compaction_mod.context_window_for_model("anthropic/claude-opus-4-7", None) == 1_000_000
         assert compaction_mod.context_window_for_model("router/unknown[1m]", None) == 1_000_000

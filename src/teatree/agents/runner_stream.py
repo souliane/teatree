@@ -7,7 +7,7 @@ hands over every text block it had already written.
 
 import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -123,6 +123,7 @@ class StreamCapture:
     model_fallbacks: list[Mapping[str, object]] = field(default_factory=list)
     context_tokens: int | None = None
     compactions: int = 0
+    on_compaction: Callable[[], Awaitable[None]] | None = None
     open_tools: dict[str, tuple[str, float]] = field(default_factory=dict)
     last_event_at: float | None = None
 
@@ -226,7 +227,10 @@ async def _collect(session: HarnessSession, prompt: str, capture: StreamCapture 
 async def drain_turn(session: HarnessSession, capture: StreamCapture) -> HarnessOutcome:
     interrupted = False
     async for message in session.receive_response():
+        prior_compactions = capture.compactions
         capture.observe(message)
+        if capture.compactions > prior_compactions and capture.on_compaction is not None:
+            await capture.on_compaction()
         if capture.round_handoff and not interrupted:
             await session.interrupt()
             interrupted = True
