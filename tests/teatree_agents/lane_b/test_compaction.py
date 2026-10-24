@@ -91,6 +91,27 @@ class TestLateCompaction:
         assert "Earlier conversation summary:" in repr(result[1])
         assert compaction_mod._estimated_tokens(result) < 14_000
 
+    def test_initial_rewind_keeps_large_tool_call_with_small_return(self) -> None:
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "older work"
+
+        call = ModelResponse(parts=[ToolCallPart(tool_name="shell", args={"command": "x" * 4_000}, tool_call_id="c1")])
+        returned = _tool_return("c1")
+        history: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelResponse(parts=[TextPart(content="old " * 1_000)]),
+            call,
+            returned,
+        ]
+        ctx = SimpleNamespace(context_window_used=None, model=SimpleNamespace(context_window=1_000), usage=RunUsage())
+
+        result = asyncio.run(compaction_mod.LateHistoryCompactor(summarize, reserve_tokens=160)(ctx, history))
+
+        assert "Earlier conversation summary:" in repr(result[1])
+        assert result[-1] is returned
+        assert _orphaned_return_ids(result) == []
+
     def test_rewound_tool_pair_summarizes_every_skipped_recent_message(self) -> None:
         summaries: list[str] = []
 
