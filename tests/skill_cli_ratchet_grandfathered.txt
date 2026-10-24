@@ -73,6 +73,8 @@ skills/review/references/giving-review-investigation.md::glab mr list
 skills/review/references/posting-review-comments.md::t3 review post-comment
 skills/rules/SKILL.md::gh run watch
 skills/rules/SKILL.md::glab ci status
+skills/rules/SKILL.md::t3 notify send
+skills/rules/SKILL.md::t3 slack react
 skills/rules/references/classifier-denial-escalation.md::gh api
 skills/rules/references/classifier-denial-escalation.md::gh issue create
 skills/rules/references/leak-remediation.md::gh repo view

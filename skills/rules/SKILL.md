@@ -105,15 +105,15 @@ Load the `/t3-<overlay>` playbook for any overlay-repo task before touching code
 
 ## No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)
 
-Anything published under the user's identity must never carry an AI signature — no `Co-Authored-By` agent trailer, no "Generated with" or "Sent using Claude" footer. Full text: `skills/rules/references/on-behalf-posting.md`.
+Posts under the user's identity must never carry an AI signature, including `Co-Authored-By`, "Generated with" or "Sent using Claude". Full text: `skills/rules/references/on-behalf-posting.md`.
 
 ## Ask Before Posting on the User's Behalf (Non-Negotiable)
 
-Posture (`t3 loop preset use`) gates posts, approvals and reactions; you must ask when blocked. Drafts, self-DMs and own-MR replies are exempt. Routes: `t3 <overlay> notify post`, `t3 slack react`, `t3 <overlay> notify send`, `t3 review reply-to-discussion`. Full text: `skills/rules/references/on-behalf-posting.md`.
+Posture (`t3 loop preset use`) gates posts, approvals and reactions; you must ask when blocked. Drafts, self-DMs and own-MR replies are exempt. Routes: `t3 <overlay> notify post`; `mcp__teatree__slack_react` (`t3 slack react` fallback); `mcp__teatree__notify_user` (`t3 <overlay> notify send` fallback); `t3 review reply-to-discussion`. Full text: `skills/rules/references/on-behalf-posting.md`.
 
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 
-PR comment posting is serialized — one poster at a time — and the orchestrator dispatches each `mcp__teatree__review_post_comment` / `t3 review post-comment` to a sub-agent, never posting itself. Full text: `skills/rules/references/on-behalf-posting.md`.
+Serialize PR comments: the orchestrator must dispatch `mcp__teatree__review_post_comment` / `t3 review post-comment` to a sub-agent, never post itself. Full text: `skills/rules/references/on-behalf-posting.md`.
 
 ## Evidence Comes From the Deployed Environment (Non-Negotiable)
 
