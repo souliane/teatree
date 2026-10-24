@@ -48,9 +48,11 @@ from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.pytest_resource_contract import (
     TOTAL_TEST_WORKERS_PER_CORE,
     PoolUnavailableError,
+    SelectionContext,
     SlotLease,
     WorkerSlotPool,
     bounded_auto_workers,
+    ci_environment_enabled,
     oversized_selection_refusal,
     worker_pool_root,
 )
@@ -182,10 +184,14 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     try:
         refusal = oversized_selection_refusal(
             config.args,
-            root=config.rootpath,
-            sharded=sharded,
-            tach_active=tach_active,
-            full_selected=bool(config.getoption("teatree_selected_full")),
+            context=SelectionContext(
+                root=config.rootpath,
+                sharded=sharded,
+                tach_active=tach_active,
+                full_selected=bool(config.getoption("teatree_selected_full")),
+                invocation_dir=config.invocation_params.dir,
+                in_ci=ci_environment_enabled(os.environ.get("CI")),
+            ),
         )
     except DurationsUnreadableError as exc:
         raise pytest.UsageError(str(exc)) from exc

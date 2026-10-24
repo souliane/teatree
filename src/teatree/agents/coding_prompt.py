@@ -14,7 +14,6 @@ from teatree.agents.skill_injection import _ALWAYS_FULL_SKILLS, _explicit_load_n
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _VERIFY_GATES_COMMAND = "t3 tool verify-gates"
-_AFFECTED_TESTS_COMMAND = "bash dev/test-affected.sh"
 
 # Without this the builder falls back to the whole suite, so every ticket paid for the
 # run CI is about to make anyway — measured at ~85 minutes of a 3.5h cycle (#3994).

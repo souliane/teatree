@@ -239,12 +239,18 @@ class TestPhaseTestSelection(TestCase):
         assert "bash dev/test-affected.sh" in brief
 
     def test_reviewing_scopes_mutation_and_reads_ci_at_the_head(self) -> None:
-        for read_only_venue in (False, True):
-            brief = "\n".join(phase_specific_lines(_task("reviewing"), [], read_only_venue=read_only_venue))
-            assert "t3 tool affected-tests" in brief
-            assert "bash dev/test-affected.sh" in brief
-            assert "node ids" in brief
-            assert "check-runs" in brief
+        brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
+        assert "t3 tool affected-tests" in brief
+        assert "bash dev/test-affected.sh" in brief
+        assert "node ids" in brief
+        assert "check-runs" in brief
+
+    def test_read_only_review_uses_supplied_evidence_without_commands(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("reviewing"), [], read_only_venue=True))
+        assert "Use the supplied check-runs" in brief
+        assert "t3 tool affected-tests" not in brief
+        assert "bash dev/test-affected.sh" not in brief
+        assert "run only the pinned test" not in brief
 
 
 class TestTestingPhaseBranchCurrency(TestCase):

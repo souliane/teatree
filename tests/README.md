@@ -17,9 +17,9 @@
 
 ```bash
 bash dev/test-affected.sh              # the diff-scoped lane — the local default (`--full` for the whole suite)
-uv run pytest tests/teatree_core/      # specific module
+uv run pytest tests/teatree_core/test_resolve.py -x -q   # specific file
 uv run pytest tests/teatree_core/test_resolve.py -x -q   # single file; -x stops on first failure
-bash dev/ci-parity-fast.sh             # pre-push inner loop: scoped prek + makemigrations + affected tests + push gate
+bash dev/ci-parity-fast.sh             # SCOPED pre-push lane: prek + makemigrations + affected tests + push gate
 bash dev/test-cov.sh                   # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
 ```
 
