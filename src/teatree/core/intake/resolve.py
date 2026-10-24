@@ -2,6 +2,7 @@
 
 Resolution order:
 
+0. Match CWD exactly against ``Worktree.extra["worktree_path"]``
 1. Walk up from CWD to the worktree's out-of-repo ``.t3-cache/`` sibling
     holding the env cache → parse ``TICKET_DIR`` → match against
     ``Worktree.extra["worktree_path"]``
