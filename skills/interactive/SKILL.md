@@ -17,7 +17,7 @@ The shared Claude Code and Codex side of teatree: how skills reach an attended a
 
 This applies only to this attended session, below Rules 0-5. A headless factory run never answers a card addressed to the owner in his place.
 
-Read `t3 <overlay> questions list --all --json` before asking. Honor an answered or dismissed card with the same underlying facts; apply its recorded decision when action remains, and do not ask again. Changed facts require a fresh read-only investigation.
+Read pending cards with `mcp__teatree__question_list`, then use `t3 <overlay> questions list --all --json` for answered or dismissed cards, which the MCP list omits. Honor a settled card with the same underlying facts; apply its recorded decision when action remains, and do not ask again. Changed facts require a fresh read-only investigation.
 
 When the facts settle a card without crossing an owner limit, take the sanctioned action, then record the facts and action with `t3 <overlay> questions dismiss <id> --resolver agent:interactive --reason '<facts read, action taken>'`. Tell the owner what was done in one line. For a checkout card, re-read the branch and forge head, confirm the checkout is clean, has no merge or conflict in progress, and has no process inside it; only then use `t3 <overlay> worktree attest <path>` before dismissing the card. If the proof fails, leave the checkout untouched and report why.
 
