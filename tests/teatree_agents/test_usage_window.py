@@ -42,6 +42,7 @@ from teatree.core.models import (
 )
 from teatree.core.models.anthropic_token_usage import REJECTED_STATUS, TokenHealthReading
 from teatree.core.models.config_setting import ConfigSetting
+from teatree.core.models.task_repair_queries import phase_attempts
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import fake_sdk, result_message
@@ -192,8 +193,6 @@ class TestParkTaskOnLimit(django.test.TestCase):
         assert task.not_before is None
 
     def test_parked_attempt_excluded_from_repair_budget(self) -> None:
-        from teatree.core.models.task_repair import phase_attempts  # noqa: PLC0415 — deferred (test-local)
-
         task = _claimed_task()
         park_task_on_limit(task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION)
         assert phase_attempts(task) == []

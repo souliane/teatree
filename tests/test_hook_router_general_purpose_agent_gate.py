@@ -72,6 +72,7 @@ def _chain_denies(tool_input: dict, *, tool_name: str = "Agent") -> bool:
         return any(handler(event) for handler in router._HANDLERS["PreToolUse"])
 
 
+@pytest.mark.usefixtures("admission_governor_admits")
 class TestRegisteredChainRefusesTheBlankDispatch:
     """The anti-vacuous proof: BEFORE this gate no registered handler said no."""
 
