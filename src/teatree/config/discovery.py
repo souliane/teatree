@@ -26,7 +26,7 @@ _SCANNED_ONCE: ContextVar[list[tuple[EntryPoint, ...]] | None] = ContextVar(
 
 
 def overlay_entry_points() -> tuple[EntryPoint, ...]:
-    """The installed ``teatree.overlays`` entry points; one scan per :func:`overlay_entry_points_scanned_once` block."""
+    """The installed ``teatree.overlays`` entry points; one scan per scoped block, on the thread that entered it."""
     from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
 
     kept = _SCANNED_ONCE.get()
@@ -44,6 +44,7 @@ def overlay_entry_points_scanned_once() -> Generator[None]:
 
     For a caller whose installed distributions cannot change while it runs — the loop tick enters it after
     the self-update reinstall drain. Nothing else is memoized, so a settings or preset write stays visible.
+    The scope is a ``ContextVar``: threads started inside the block do not inherit it and scan per read.
     """
     token = _SCANNED_ONCE.set([])
     try:

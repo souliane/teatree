@@ -11,6 +11,7 @@ is mocked (represents installed overlay packages).
 """
 
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -499,3 +500,16 @@ class TestOverlayEntryPointsScannedOnce:
             discover_overlays()
 
         assert after.call_count == 1
+
+    def test_a_thread_started_inside_the_block_scans_for_itself(self, config_db: Path) -> None:
+        del config_db
+        with (
+            patch("importlib.metadata.entry_points", return_value=[]) as scan,
+            overlay_entry_points_scanned_once(),
+        ):
+            discover_overlays()
+            thread = threading.Thread(target=discover_overlays)
+            thread.start()
+            thread.join()
+
+        assert scan.call_count == 2
