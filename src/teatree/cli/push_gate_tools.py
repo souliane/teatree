@@ -92,6 +92,7 @@ def push_gate_command(
                 typer.echo(f"brief constraint FAILED ({violation.kind}): {violation.detail}", err=True)
             raise typer.Exit(code=1)
         result = run_push_gate(plan, repo_root=cwd)
+        typer.echo(f"ast-grep: {result.status}")
         for note in result.notes:
             typer.echo(note)
         if result.astgrep_findings:

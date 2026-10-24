@@ -73,7 +73,7 @@
         ]
       },
       {
-        "matcher": "Agent",
+        "matcher": "Agent|Task",
         "hooks": [
           {
             "type": "command",
@@ -95,7 +95,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Write|Edit|Read|Grep|Glob|TodoWrite|Agent",
+        "matcher": "Bash|Write|Edit|Read|Grep|Glob|TodoWrite|Agent|Task",
         "hooks": [
           {
             "type": "command",

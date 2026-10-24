@@ -15,8 +15,8 @@ from django_typer.management import TyperCommand, command
 from teatree.core.machine_output import emit
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import TaskAttempt, Ticket
+from teatree.core.models.task_repair_queries import repair_iterations
 from teatree.core.repair_loop import max_phase_iterations
-from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 
 
 class PhaseBudgetRow(TypedDict):
@@ -54,18 +54,14 @@ def phase_budget_rows(ticket: Ticket) -> list[PhaseBudgetRow]:
     and gerund ``reviewing`` collapse into one row, matching how the repair-loop
     counts a ticket-phase. ``max`` is the configured iteration cap. Scheduling-event
     attempts (limit-parks, recoverable-exhaustion dips) are EXCLUDED so the displayed
-    count matches the budget query ``task_repair.phase_attempts`` — a usage-window park
+    count matches the budget query ``task_repair_queries.phase_attempts`` — a usage-window park
     is not a work iteration, so counting it inflated ``attempt N/max`` past the cap (#3689).
     """
     cap = max_phase_iterations()
     counts: dict[str, int] = {}
     first_pk: dict[str, int] = {}
-    attempts = (
-        TaskAttempt.objects.filter(task__ticket_id=ticket.pk).excluding_parks().select_related("task").order_by("pk")
-    )
-    for attempt in attempts:
-        if recoverable_exhaustion_cause(attempt.error) is not None:
-            continue
+    attempts = TaskAttempt.objects.filter(task__ticket_id=ticket.pk).select_related("task")
+    for attempt in repair_iterations(attempts):
         phase = normalize_phase(attempt.task.phase) or "(none)"
         counts[phase] = counts.get(phase, 0) + 1
         first_pk.setdefault(phase, attempt.pk)
