@@ -1,11 +1,14 @@
 """Terminal question lookup and the existing same-run supersession scope."""
 
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 
 DECIDED_WINDOW = timedelta(days=30)
+_logger = logging.getLogger(__name__)
 
 
 def run_id(data: Mapping[str, object]) -> str:
@@ -20,26 +23,34 @@ def supersede_pending_questions(data: Mapping[str, object]) -> None:
     if not bootstrap_teatree_django():
         return
     try:
-        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — ORM after bootstrap
+        question_model = import_module("teatree.core.models.deferred_question").DeferredQuestion
 
-        for prior in DeferredQuestion.supersedable(session_id=str(data.get("session_id", "")), run_id=run_id(data)):
+        for prior in question_model.supersedable(session_id=str(data.get("session_id", "")), run_id=run_id(data)):
             prior.mark_stale("superseded by an in-client question")
-    except Exception:  # noqa: BLE001 — preserve crash-proof hook behavior
+    except Exception:
+        _logger.exception("Question supersession failed")
         return
+
+
+def lookup_terminal_question(question: str, options_hash: str) -> tuple[int, str] | None:
+    try:
+        return resolved_terminal_question(question, options_hash)
+    except Exception:
+        _logger.exception("Question ledger read failed")
+        return None
 
 
 def resolved_terminal_question(question: str, options_hash: str) -> tuple[int, str] | None:
     if not question or not bootstrap_teatree_django():
         return None
-    from django.db import connection  # noqa: PLC0415 — ORM after bootstrap
-
-    from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — ORM after bootstrap
+    connection = import_module("django.db").connection
+    question_model = import_module("teatree.core.models.deferred_question").DeferredQuestion
 
     introspection = connection.introspection
-    if DeferredQuestion not in introspection.installed_models(introspection.table_names()):
+    if question_model not in introspection.installed_models(introspection.table_names()):
         return None
     row = (
-        DeferredQuestion.objects.decided_since(datetime.now(UTC) - DECIDED_WINDOW)
+        question_model.objects.decided_since(datetime.now(UTC) - DECIDED_WINDOW)
         .filter(question=question, options_hash=options_hash)
         .order_by("-created_at", "-pk")
         .first()

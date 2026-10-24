@@ -151,7 +151,7 @@ from hooks.scripts.question_gates import (
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
 from hooks.scripts.question_handback import hand_back_context, handle_hand_back_answers
-from hooks.scripts.question_ledger import resolved_terminal_question
+from hooks.scripts.question_ledger import lookup_terminal_question
 from hooks.scripts.question_ledger import run_id as _run_id
 from hooks.scripts.question_ledger import supersede_pending_questions as _supersede_pending_questions
 from hooks.scripts.quote_scanner_verdict_io import quote_scanner_high_block_message as _quote_high_block_message
@@ -3100,11 +3100,7 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
         return False
     first = _first_question(data)
     options = first.get("options", []) if isinstance(first.get("options"), list) else []
-    try:
-        resolved = resolved_terminal_question(str(first.get("question", "")).strip(), _options_hash(options))
-    except Exception as exc:  # noqa: BLE001 — a hook must report unreadable state and preserve the tool path
-        sys.stderr.write(f"Question ledger read failed: {exc}\n")
-        resolved = None
+    resolved = lookup_terminal_question(str(first.get("question", "")).strip(), _options_hash(options))
     if resolved is not None:
         row_id, decision = resolved
         return emit_pretooluse_deny(
