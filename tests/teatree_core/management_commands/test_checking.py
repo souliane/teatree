@@ -391,6 +391,7 @@ class TestCheckingRemaining:
         assert remaining["eta"]["p80_minutes"] == pytest.approx(118.2)
         assert "1h03m\u20131h58m" in remaining["items"][0]["detail"]
         assert "1h03m\u20131h58m" in payload["terse"]
+        assert all(item["detail"] in payload["terse"] for item in remaining["items"])
         assert {row["step"] for row in remaining["durations"]} == {"reviewing", "merge", "deploy"}
         assert all(row["n"] == 5 and row["window"] == "24h" for row in remaining["durations"])
 
@@ -766,6 +767,23 @@ class TestCheckingRemaining:
         payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
         item = next(row for row in payload["remaining"]["items"] if row["label"] == "#1200")
         assert item["steps"] == ["deploy"]
+        assert "then" not in item["detail"]
+
+    def test_held_work_is_listed_after_active_work(self, checkpoint_file: Path) -> None:
+        active = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1300", state=Ticket.State.CODED
+        )
+        Task.objects.create(ticket=active, session=Session.objects.create(ticket=active), phase="testing")
+        halted = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1301", state=Ticket.State.CODED
+        )
+        failed = Task.objects.create(
+            ticket=halted, session=Session.objects.create(ticket=halted), phase="testing", status=Task.Status.FAILED
+        )
+        TaskAttempt.objects.create(task=failed, ended_at=timezone.now(), exit_code=1, error="agent crashed")
+        self._open_pr()
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        assert [row["label"] for row in payload["remaining"]["items"][2:]] == ["acme/widgets#601", "#1300", "#1301"]
 
     def test_remaining_read_has_no_sql_writes(self, checkpoint_file: Path) -> None:
         self._open_pr()

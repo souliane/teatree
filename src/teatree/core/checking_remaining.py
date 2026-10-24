@@ -27,6 +27,7 @@ STEP_PHASE = {
 }
 POST_PR = ("independent review", "merge", "deploy")
 PHASE_LABEL = {"reviewing": "factory review", "coding": "coding"}
+HELD_BASES = frozenset({"halted", "blocked", "waiting on you"})
 
 
 class RemainingItemDict(CheckItemDict):
@@ -370,7 +371,8 @@ def _work_item(
         current = f"{steps[0]} (queued, {ahead} ahead)"
     else:
         current = steps[0]
-    detail = f"{status}now: {current}; then {', '.join(steps[1:])} · {eta_text}{overlay_tag}"
+    later = f"; then {', '.join(steps[1:])}" if len(steps) > 1 else ""
+    detail = f"{status}now: {current}{later} · {eta_text}{overlay_tag}"
     return RemainingItem(
         label=f"{pr.repo}#{pr.iid}" if pr else f"#{ticket.ticket_number}",
         url=pr.url if pr else ticket_url(ticket),
@@ -414,15 +416,12 @@ def _duration_dict(history: StepHistory, step: str) -> dict:
 
 def _summarize(snapshot: RemainingSnapshot, items: list[RemainingItem], dormant: int) -> RemainingGroup:
     known = [item.eta for item in items if item.eta["median_minutes"] is not None]
-    unknown = sum(
-        item.eta["median_minutes"] is None and item.eta["basis"] not in {"halted", "blocked", "waiting on you"}
-        for item in items
-    )
-    held = Counter(item.eta["basis"] for item in items if item.eta["basis"] in {"halted", "blocked", "waiting on you"})
+    unknown = sum(item.eta["median_minutes"] is None and item.eta["basis"] not in HELD_BASES for item in items)
+    held = Counter(item.eta["basis"] for item in items if item.eta["basis"] in HELD_BASES)
     unknown_bases = {
         item.eta["basis"]
         for item in items
-        if item.eta["median_minutes"] is None and item.eta["basis"] not in {"halted", "blocked", "waiting on you"}
+        if item.eta["median_minutes"] is None and item.eta["basis"] not in HELD_BASES
     }
     if known:
         basis = "maximum known item range; unknown and held items excluded"
@@ -514,7 +513,8 @@ def gather_remaining(*, now: datetime, overlay_names: list[str], tag_overlays: b
     )
     if not work and not snapshot.active and not snapshot.owner_questions:
         return empty_remaining()
-    items = [
-        _work_item(snapshot, ticket, pr, active_by_ticket.get(ticket.pk, []), owner_task_ids) for ticket, pr in work
-    ]
+    items = sorted(
+        (_work_item(snapshot, ticket, pr, active_by_ticket.get(ticket.pk, []), owner_task_ids) for ticket, pr in work),
+        key=lambda item: 2 if item.eta["basis"] in HELD_BASES else int(item.kind != "pr"),
+    )
     return _summarize(snapshot, items, dormant)
