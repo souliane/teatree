@@ -31,7 +31,7 @@
 - Push brief: retain the newest claimed coding or debugging task's constraints; otherwise use the newest completed task. Pending and failed tasks cannot constrain the push. Test each state and claimed precedence through `_brief_for_worktree`.
 - Compaction: assert the reduced history stays below the measured bound on the tool-pair test; remove the skip-forward loop temporarily to prove the assertion fails.
 - Unsettled command: test that a changed ticket or text is rejected without settling or dispatching; replace the mismatch condition temporarily to prove the test fails.
-- Bound question answer: the recorded plan's D5 requires the thread to say when the ended task resumes. Record a settled `SessionCommand` for the notice, confirm it in the thread, and replay it if Slack read-back fails. Assert both delivery and retry through the public cycle.
+- Bound question answer: the recorded plan's D5 requires the thread to say when the ended task resumes. Record a settled `SessionCommand` for the notice, confirm it in the thread, and replay it if Slack posting or read-back fails. Assert delivery and both retries through the public cycle.
 
 ## Open questions & assumptions
 
