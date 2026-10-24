@@ -1,6 +1,6 @@
-"""Scoped per-repo git identity for public ``souliane/*`` repos (#762).
+"""Scoped per-repo git identity for public GitHub repos (#762).
 
-Single source of truth: commits on PUBLIC ``souliane/*`` repos use a
+Single source of truth: commits on PUBLIC GitHub repos use a
 GitHub ``users.noreply.github.com`` author identity rather than the
 machine's inherited git identity. Strictly scoped by remote host AND
 visibility — non-github (e.g. GitLab) and private remotes are excluded
@@ -143,7 +143,7 @@ def set_local_noreply_identity(repo_path: str) -> None:
     clone-local, not per-worktree-isolated). Global/XDG config is never
     touched, so every commit path uses the configured noreply identity
     instead of the inherited one. Caller guarantees ``repo_path`` is a
-    public souliane/* clone or worktree.
+    public GitHub clone or worktree.
     """
     name, email = canonical_noreply_identity()
     git.run(repo=repo_path, args=["config", "--local", "user.name", name])
