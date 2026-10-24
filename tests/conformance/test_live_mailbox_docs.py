@@ -20,6 +20,11 @@ def test_attended_join_and_codex_outbound_are_described() -> None:
         assert "creation-time tool catalog" in text
     assert "agent_mailbox_send" in interactive
     assert "agent_mailbox_wait" in interactive
+    assert "queued_in_inbox true" in readme.replace("`", "")
+    assert "same key retry keeps waiting" in readme
+    assert "queued_in_inbox false" in readme.replace("`", "")
+    assert "same key retry returns it immediately" in readme
+    assert "a new key sends a second copy" in readme.lower()
 
 
 def test_codex_mailbox_descriptions_include_the_worker_inbox() -> None:

@@ -474,9 +474,10 @@ peer and waits up to 20 seconds for its session to accept the message. A busy st
 `not_accepted_in_time`, `turn_ended`, `not_steerable`, `backpressure`,
 `too_large`, `session_closed`, `stale_command`, `dropped_unread` or `recipient_cannot_receive`.
 A mid-push failure returns `unknown_delivery`. The receipt says whether the text
-remains in the recipient's inbox, including after a current-turn push. Retrying
-the same key waits on the original message instead of sending a second copy, and
-at most four sends per peer wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
+remains in the recipient's inbox, including after a current-turn push. With
+`queued_in_inbox` true, `not_accepted_in_time` remains queued and a same key retry keeps waiting.
+With `queued_in_inbox` false, it is a settled rejection and a same key retry returns it immediately.
+A new key sends a second copy; at most four sends per peer wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
 and acknowledge them. Acceptance is not obedience: the model decides what to do
 with the message. An idle `claude_sdk` peer can take one new turn during its
 60-second idle window; a parked task cannot be woken. Delivery is live-only:
