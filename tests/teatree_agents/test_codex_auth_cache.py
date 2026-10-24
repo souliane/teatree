@@ -20,6 +20,8 @@ from teatree.agents.codex_auth_cache import (
     store_auth_cache_from_reader,
 )
 
+pytestmark = pytest.mark.usefixtures("pass_store")
+
 
 def _encoded(raw: bytes) -> str:
     return base64.b64encode(raw).decode("ascii")

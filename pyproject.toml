@@ -33,7 +33,7 @@ dependencies = [
   # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
-  "claude-agent-sdk==0.2.165",
+  "claude-agent-sdk==0.2.167",
   # Imported directly (cli/command_tree.py:25 and three more) yet only ever
   # arrived transitively through typer/django-typer, so nothing pinned it.
   # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
@@ -51,6 +51,7 @@ dependencies = [
   # PreToolUse hook used to treat that crash as a coverage finding (#122).
   "coverage>=7",
   "croniter>=6.2.2",
+  "cryptography>=50.0.2,<51",
   "django>=6.1,<6.2",
   "django-fsm-2>=4,<5",
   # Bounded below the next major because teatree.core shadows its

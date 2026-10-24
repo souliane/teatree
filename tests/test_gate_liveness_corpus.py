@@ -36,6 +36,7 @@ silently gaining phantom status without a deliberate update FAILS the build.
 
 import json
 import re
+import shutil
 import sqlite3
 import subprocess
 from collections.abc import Callable, Iterator
@@ -104,7 +105,10 @@ class GateContext:
         deterministic without a real ``t3`` on PATH: ``which`` resolves and
         ``subprocess.run`` returns a fixed :class:`CompletedProcess`.
         """
-        self.monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        real_which = shutil.which
+        self.monkeypatch.setattr(
+            router.shutil, "which", lambda name: "/usr/local/bin/t3" if name == "t3" else real_which(name)
+        )
         result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
         real_run = subprocess.run
 
@@ -1792,6 +1796,8 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict |
         # always returns ``False``); pinned structurally to have no deny path by
         # ``tests/test_merged_detection_probe_gate.py``.
         router.handle_warn_merged_detection_probe,
+        # Cache-wait advice emits context and always returns False; it never denies.
+        router.handle_warn_cache_wait,
     }
 )
 

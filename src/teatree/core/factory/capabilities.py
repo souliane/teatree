@@ -325,6 +325,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json for the watchdog; --slack-roundtrip adds the deep live Slack round-trip probe (#3411)",
     ),
     Capability("cost", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree cost_profile",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="1 names why no profile can be built: no real dispatches, no context_tokens, or an unreadable store",
+    ),
     Capability("tokens", json_output=True, exit_codes=("0",)),
     Capability(
         "push",

@@ -133,6 +133,19 @@ postures, not which one is the default. The env var `T3_MODE` overrides the stor
 DB-home value. Unknown values raise `ValueError` — typos never silently downgrade to
 a less-safe mode.
 
+### 10.1.0 Staged sealed credential store
+
+The `teatree.utils.secrets` facade now has one swappable `SecretStore` slot.
+`PassStore` remains the production default while the migration is staged; tests
+install `MemoryStore` so they cannot read an operator's `pass` store. The new
+`DbStore` keeps AES-256-GCM sealed values in `SealedSecret` rows on the control
+DB, with the installation master key in a mode-0600 file beside that database.
+`T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override;
+it is never a `ConfigSetting` row. `t3 <overlay> secrets status`, `ls` and
+`import-pass` provide read-only key-health diagnostics and a names-only import
+inventory. No production reader or writer reaches the sealed rows: `DbStore` is
+not installed, and `import-pass` copies nothing.
+
 ### 10.1.1 Per-Overlay Setting Overrides
 
 **Setting-home partition ([#1775](https://github.com/souliane/teatree/issues/1775)).**
@@ -526,7 +539,7 @@ the default (no flag).
 **`[agent.tier_effort]` (per-abstract-tier spawn effort).** The effort parallel
 of `[agent.tier_models]`: overrides the reasoning effort an abstract tier spawns
 with, merged OVER the shipped `registries.tier_effort()`
-(`{"frontier": "xhigh", "balanced": "xhigh"}`; `cheap`/Haiku is absent → no
+(`{"frontier": "xhigh", "balanced": "high"}`; `cheap`/Haiku is absent → no
 effort). `resolve_spawn_effort(phase)` resolves phase → tier → effort through the
 same `[agent.phase_models]` override mechanism as the model, so a phase
 downgraded to a cheaper tier drops model and effort together. Each value must be

@@ -76,6 +76,11 @@
       "subcommands": []
     },
     {
+      "help": "Profile real dispatches: read share, resume-context cost and addressable upper bounds.",
+      "name": "cost_profile",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "db",
       "subcommands": [
@@ -1055,6 +1060,24 @@
       "help": "Signal *pid* only if it maps to a dead target AND is confirmed non-live.",
       "name": "safe_kill",
       "subcommands": []
+    },
+    {
+      "help": "",
+      "name": "secrets",
+      "subcommands": [
+        {
+          "help": "Report key health without disclosing stored values",
+          "name": "status"
+        },
+        {
+          "help": "List sealed row names without decrypting values",
+          "name": "ls"
+        },
+        {
+          "help": "Classify password-store names without copying their values",
+          "name": "import-pass"
+        }
+      ]
     },
     {
       "help": "Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).",

@@ -58,6 +58,7 @@ class TestAgentCommandBootstrapsDjango:
             "\n"
             "runner = CliRunner()\n"
             "with patch('shutil.which', return_value='/usr/bin/claude'), \\\n"
+            "     patch('teatree.cli._maybe_show_update_notice'), \\\n"
             "     patch.object(agent_mod.os, 'execvp') as execvp:\n"
             "    result = runner.invoke(app, ['agent', 'fix the sync bug'])\n"
             "if result.exception is not None:\n"
@@ -95,10 +96,12 @@ class TestAgentHelpIsBootstrapSafe:
 
     def test_agent_help_does_not_raise_improperly_configured(self, tmp_path: Path) -> None:
         probe = (
+            "from unittest.mock import patch\n"
             "from typer.testing import CliRunner\n"
             "from teatree.cli import app\n"
             "\n"
-            "result = CliRunner().invoke(app, ['agent', '--help'])\n"
+            "with patch('teatree.cli._maybe_show_update_notice'):\n"
+            "    result = CliRunner().invoke(app, ['agent', '--help'])\n"
             "assert result.exit_code == 0, result.output\n"
             "assert 'Launch the configured agent' in result.output, result.output\n"
         )

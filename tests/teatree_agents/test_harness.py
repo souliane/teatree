@@ -59,6 +59,7 @@ from teatree.agents.pydantic_ai_config import (
     LANE_EVAL,
     LANE_FACTORY,
     OpenAICompatibleLaneConfig,
+    PydanticAiBinding,
     PydanticAiModelConfig,
     build_openai_compatible_provider,
 )
@@ -80,6 +81,22 @@ if TYPE_CHECKING:
 
 if TYPE_CHECKING:
     from claude_agent_sdk.types import McpStdioServerConfig
+
+
+@pytest.mark.parametrize(
+    ("binding", "expected_seconds"),
+    [(PydanticAiBinding.NATIVE_ANTHROPIC, 300), (PydanticAiBinding.ROUTER, None)],
+)
+def test_shell_cache_lifetime_tracks_model_binding(binding: PydanticAiBinding, expected_seconds: int | None) -> None:
+    harness = PydanticAiHarness(model=TestModel(), phase="coding", config=PydanticAiModelConfig(binding=binding))
+    with patch.object(harness_mod, "build_lane_b_toolsets", wraps=harness_mod.build_lane_b_toolsets) as build:
+
+        async def drive() -> None:
+            async with harness.open(ClaudeAgentOptions()):
+                pass
+
+        asyncio.run(drive())
+    assert build.call_args.args[0].cache_lifetime_seconds == expected_seconds
 
 
 def test_concrete_impls_satisfy_the_harness_protocols() -> None:
@@ -1400,9 +1417,10 @@ class TestVerifierPinnedToClaude(TestCase):
     """A verification phase stays on claude_sdk even when pydantic_ai is configured (plan §4 #2)."""
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_phase_harness={})
 
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
@@ -1431,10 +1449,11 @@ class TestResolveDispatchProvider(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
         monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_phase_harness={})
 
     def test_no_configured_pin_stays_unpinned(self) -> None:
         assert resolve_dispatch_harness(phase="testing").provider is None

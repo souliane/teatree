@@ -51,7 +51,7 @@ def worker() -> Iterator[None]:
 
 
 @pytest.fixture
-def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeExecutor:
+def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pass_store: None) -> FakeExecutor:
     executor = FakeExecutor(tmp_path)
     for key, value in executor.install().items():
         monkeypatch.setenv(key, value)
@@ -142,6 +142,7 @@ def test_shared_worker_server_refuses_attested_options(
     assert manager.stopped
 
 
+@pytest.mark.usefixtures("pass_store")
 class TestAPinnedCodexHarnessNeverRunsPlanningWithoutAnExecutor(TestCase):
     def _planning_task(self) -> Task:
         ConfigSetting.objects.set_value("agent_harness", "codex_app_server")

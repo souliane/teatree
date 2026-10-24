@@ -420,6 +420,7 @@ t3 teatree pr create            # create a pull request with metadata validation
 t3 teatree followup sync        # sync tickets and PRs from code host
 t3 goal set/list/clear          # register / list / clear a standing verified-green goal (a Stop-gate blocks a loop turn ending "as done" while the goal's check command is red)
 t3 cost                         # cycle-to-date SDK-equivalent spend + effective-token (ET) totals, split by subscription/metered lane
+t3 cost-profile [--since ISO-8601] [--json]  # profile real dispatches: cache read share, context size, and addressable spend bounds
 t3 capabilities --json          # machine-readable registry of which t3 commands emit JSON and their exit-code contract (a front-end drives teatree from this)
 t3 speak                        # read text aloud on local speakers per [teatree.speak] (no-op unless local = all)
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)

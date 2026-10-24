@@ -28,24 +28,13 @@ if TYPE_CHECKING:
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 
-INSTRUCTIONS = (
-    "- sharepoint_list(subpath, recursive): entries in the read-only SharePoint "
-    "document library under subpath (Path/Name/Size/IsDir/ModTime).\n"
-    "- sharepoint_cat(file_path): stream one library file's contents as text.\n"
-    "- sharepoint_verify_link(folder_path): the stable ?id= deep-link for a "
-    "folder path plus whether it really exists on the live library — use to "
-    "validate links before pasting them into outgoing docs.\n"
-    "- sharepoint_verify_read_only(): assert the remote refuses writes (the "
-    "OAuth read-only scope contract)."
-)
-
 
 def _client() -> "SharePointReadClient":
     return SHAREPOINT.resolve()
 
 
 async def _sharepoint_list(subpath: str = "", *, recursive: bool = True) -> list[SharePointEntry]:
-    """Entries under *subpath* in the read-only SharePoint document library."""
+    """Entries under *subpath* in the read-only SharePoint library: Path/Name/Size/IsDir/ModTime."""
     return await sync_to_async(lambda: _client().list_files(subpath, recursive=recursive), thread_sensitive=True)()
 
 

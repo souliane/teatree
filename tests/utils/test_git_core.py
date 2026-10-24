@@ -99,6 +99,8 @@ def test_git_high_level_operations(monkeypatch: pytest.MonkeyPatch) -> None:
         **_kwargs: object,
     ) -> CompletedProcess[str]:
         calls.append(list(args))
+        if "--git-common-dir" in args:
+            return CompletedProcess(args, 0, "/tmp/r/.git\n", "")
         if "merge-base" in args:
             return CompletedProcess(args, 0, "abc123\n", "")
         if "rev-list" in args:
@@ -107,7 +109,7 @@ def test_git_high_level_operations(monkeypatch: pytest.MonkeyPatch) -> None:
             return CompletedProcess(args, 0, "abc feat one\ndef feat two\n", "")
         if "status" in args:
             return CompletedProcess(args, 0, " M file.py\n", "")
-        return CompletedProcess(args, 0, "", "")
+        return CompletedProcess(args, 1 if args[-3:] == ["--show-scope", "--get", "core.hooksPath"] else 0, "", "")
 
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
@@ -167,7 +169,17 @@ def test_fetch_without_ref(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     git.fetch("/tmp/r")
-    assert calls[-1] == ["git", "-C", "/tmp/r", "fetch", "origin"]
+    assert calls[-1] == [
+        "git",
+        "-C",
+        "/tmp/r",
+        "-c",
+        "core.fsmonitor=",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "fetch",
+        "origin",
+    ]
 
 
 def test_remote_url_returns_url(monkeypatch: pytest.MonkeyPatch) -> None:

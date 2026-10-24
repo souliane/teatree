@@ -25,6 +25,7 @@ from teatree.agents.session_lineage import resume_session_id
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.task_attempt import RESUME_CONTEXT_CAP_TOKENS
 from teatree.core.models.task_handoff import (
     RESUME_ANSWER_PREFIX,
     RESUME_CONTINUATION_CLAUSE,
@@ -316,3 +317,50 @@ class TestAnOwnerActionCardResumesNothing(TestCase):
                 assert answered is not None
 
                 assert (resume_on_answer(answered, task) is not None) == resumes
+
+
+class TestAnOverCapParentResumesFresh(TestCase):
+    """A needs-input parent whose conversation outgrew the resume cap answers FRESH, carrying the exchange."""
+
+    QUESTION = "Which vault entry should the deploy use?"
+    ANSWER = "use the vault entry"
+
+    def _answered(self, context_tokens: int) -> tuple[Task, Task]:
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        TaskAttempt.objects.create(
+            task=task,
+            result=owner_stop(self.QUESTION, "credentials"),
+            context_tokens=context_tokens,
+            context_window_tokens=1_000_000,
+        )
+        ticket.merge_extra(merge_into_dicts={"pydantic_ai_threads": {str(task.pk): "stored-thread"}})
+        task.complete()
+        answered = DeferredQuestion.objects.get(parked_task=task).apply_answer(
+            self.ANSWER, resolved_via=DeferredQuestion.ResolvedVia.SLACK
+        )
+        child = resume_on_answer(answered, task) if answered is not None else None
+        assert child is not None
+        return task, child
+
+    def test_an_over_cap_parent_yields_a_fresh_child_carrying_the_question_and_the_answer(self) -> None:
+        _, child = self._answered(RESUME_CONTEXT_CAP_TOKENS + 1)
+
+        assert child.session_continuation == Task.SessionContinuation.FRESH
+        prompt = dispatch_reason(child)
+        assert self.ANSWER in prompt
+        assert self.QUESTION in prompt
+        assert RESUME_CONTINUATION_CLAUSE not in prompt
+
+    def test_an_over_cap_parent_loses_its_stored_thread(self) -> None:
+        task, _ = self._answered(RESUME_CONTEXT_CAP_TOKENS + 1)
+
+        assert not task.ticket.has_task_thread(int(task.pk))
+
+    def test_an_under_cap_parent_still_resumes_its_own_conversation(self) -> None:
+        task, child = self._answered(RESUME_CONTEXT_CAP_TOKENS)
+
+        assert child.session_continuation == Task.SessionContinuation.PARENT
+        assert child.execution_reason == f"{RESUME_ANSWER_PREFIX} {self.ANSWER}."
+        assert RESUME_CONTINUATION_CLAUSE in dispatch_reason(child)
+        assert task.ticket.has_task_thread(int(task.pk))

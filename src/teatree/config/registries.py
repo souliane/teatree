@@ -212,7 +212,7 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
     ),
     "agent_tier_effort": ColdHookSetting(
         _parse_registry_dict,
-        default={"frontier": "xhigh", "balanced": "xhigh"},
+        default={"frontier": "xhigh", "balanced": "high"},
         help="reasoning effort per cost tier",
         stored=dict[str, Any],
         category=Category.PERSONAL,

@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 #: Room a resume needs beyond the conversation: teatree's dispatch prompts measure 39k-78k tokens (#4817).
 RESUME_HEADROOM_TOKENS = 80_000
 
+#: A conversation past this size is neither resumed nor held open for follow-ups: each turn re-reads it.
+RESUME_CONTEXT_CAP_TOKENS = 200_000
+
 #: The columns an attempt's billed spend lives in — the cost ledger no park bookkeeping may fold or prune away.
 BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
 
@@ -51,6 +54,22 @@ class TaskAttemptQuerySet(models.QuerySet):
 
     def excluding_parks(self) -> "TaskAttemptQuerySet":
         return self.exclude(PARK_ERROR_Q)
+
+    def real_dispatches(self) -> "TaskAttemptQuerySet":
+        return (
+            self.excluding_parks()
+            .filter(output_tokens__isnull=False, usage_unknown=False)
+            .select_related("task", "task__parent_task")
+        )
+
+    def context_trail(self) -> dict[int, list[tuple[int, int | None]]]:
+        """Each task's non-park attempts as ``(attempt id, context_tokens)``, oldest first."""
+        trail: dict[int, list[tuple[int, int | None]]] = {}
+        for task_id, attempt_id, context in (
+            self.excluding_parks().order_by("task_id", "pk").values_list("task_id", "pk", "context_tokens")
+        ):
+            trail.setdefault(task_id, []).append((attempt_id, context))
+        return trail
 
     def _since_last_park(self) -> "TaskAttemptQuerySet":
         last_park = (
@@ -500,9 +519,14 @@ class TaskAttempt(models.Model):
         """Whether resuming this attempt's conversation hits a wall a fresh one avoids (#4874)."""
         if self.model_fell_back:
             return True
-        if self.context_tokens is None or self.context_window_tokens is None:
+        if self.context_tokens is None:
             return False
-        return self.context_tokens + RESUME_HEADROOM_TOKENS > self.context_window_tokens
+        if self.context_tokens > RESUME_CONTEXT_CAP_TOKENS:
+            return True
+        return (
+            self.context_window_tokens is not None
+            and self.context_tokens + RESUME_HEADROOM_TOKENS > self.context_window_tokens
+        )
 
     def _stamp_repair_loop_fields(self) -> None:
         """Stamp the iteration counter + error fingerprint on insert (#2009).

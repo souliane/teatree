@@ -39,6 +39,8 @@ from tests.teatree_agents._executor_fakes import (
     worker_fixture,
 )
 
+pytestmark = pytest.mark.usefixtures("pass_store")
+
 _CHECKOUT = "/home/<user>/teatree-deploy"
 _CHECKOUT_GIT = f"{_CHECKOUT}/.git"
 
