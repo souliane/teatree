@@ -15,9 +15,25 @@
 # tests/conformance/test_task_created_is_a_task_list_event.py, which derives the surface
 # from the router's registration. Full rationale + rejected alternatives: _anchor_prose.py.
 
+["An attended session may attest under"]
+radius = 180
+"skills/workspace/SKILL.md" = ["4960e66693e73b4f"]
+"docs/blueprint/worktree-occupancy.md" = ["0a1588e7e8872b15"]
+
+["An attended session may attest under".coverage]
+"skills/workspace/SKILL.md" = 396
+"docs/blueprint/worktree-occupancy.md" = 396
+
+["For a checkout card,"]
+radius = 1300
+"skills/interactive/SKILL.md" = ["9a18af6b4f18292c"]
+
+["For a checkout card,".coverage]
+"skills/interactive/SKILL.md" = 2620
+
 ["Only an attended session may answer"]
 radius = 180
-"BLUEPRINT.md" = ["742a25388d88a1f1"]
+"BLUEPRINT.md" = ["af1d47e0b793b3f8"]
 
 ["Only an attended session may answer".coverage]
 "BLUEPRINT.md" = 395

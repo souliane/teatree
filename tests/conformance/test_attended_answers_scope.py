@@ -39,7 +39,8 @@ def test_attended_answer_uses_interactive_resolver() -> None:
         "expected head",
         "clean tree",
         "no merge in progress",
-        "no process with its cwd inside",
+        "working directory, an open file, a mapped file, or a bound socket",
+        "host process table is unusable",
         "pseudo-terminal",
         "clean environment",
         "audit trail reads as a direct owner command",
@@ -51,18 +52,48 @@ def test_checkout_card_attestation_route_names_each_condition(fact: str) -> None
     assert fact in _answer_policy()
 
 
+def _assert_prose_peg(anchor: str, path: str, *, expected_paths: set[str] | None = None) -> list[str]:
+    ledger = load_ledger(anchor)
+    assert set(ledger.pegs) == (expected_paths or {path})
+    prose = (ROOT / path).read_text(encoding="utf-8")
+    actual = window_digests(prose, anchor, ledger.radius)
+    assert actual
+    assert [sha for sha, _window in actual] == list(ledger.pegs[path])
+    assert covered_bytes(prose, anchor, ledger.radius) == ledger.coverage[path]
+    return [window for _sha, window in actual]
+
+
 @pytest.mark.parametrize(
     "anchor",
     ["This hold requires the owner's per-PR authorization", "Only an attended session may answer"],
 )
 def test_blueprint_owner_rule_clauses_are_pegged(anchor: str) -> None:
-    ledger = load_ledger(anchor)
-    assert set(ledger.pegs) == {"BLUEPRINT.md"}
-    prose = (ROOT / "BLUEPRINT.md").read_text(encoding="utf-8")
-    actual = window_digests(prose, anchor, ledger.radius)
-    assert actual
-    assert [sha for sha, _window in actual] == list(ledger.pegs["BLUEPRINT.md"])
-    assert covered_bytes(prose, anchor, ledger.radius) == ledger.coverage["BLUEPRINT.md"]
+    _assert_prose_peg(anchor, "BLUEPRINT.md")
+
+
+def test_checkout_card_paragraph_is_pegged() -> None:
+    windows = _assert_prose_peg("For a checkout card,", "skills/interactive/SKILL.md")
+    paragraph = (
+        "When the facts settle a card"
+        + SKILL.read_text(encoding="utf-8").split("\n\nWhen the facts settle a card", 1)[1].split("\n\n", 1)[0]
+    )
+    assert any(paragraph in window for window in windows)
+
+
+@pytest.mark.parametrize(
+    ("anchor", "path"),
+    [
+        ("An attended session may attest under", "skills/workspace/SKILL.md"),
+        ("An attended session may attest under", "docs/blueprint/worktree-occupancy.md"),
+    ],
+    ids=["workspace", "worktree-occupancy"],
+)
+def test_checkout_route_reconciliation_is_pegged(anchor: str, path: str) -> None:
+    _assert_prose_peg(
+        anchor,
+        path,
+        expected_paths={"skills/workspace/SKILL.md", "docs/blueprint/worktree-occupancy.md"},
+    )
 
 
 @pytest.mark.parametrize(
@@ -93,7 +124,7 @@ def test_headless_rules_do_not_answer_owner_cards(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [ROOT / "skills"])
     rendered = skill_injection.read_only_venue_skill_contents(["rules"], {"rules"})
     assert "0. **Nothing may endanger security or leak:**" in rendered
-    for retired in ("Rule " + "-1", "Impersonate", "in the owner" + "'s place"):
+    for retired in ("Rule " + "-1", "Impersonate", "in the owner" + "'s place", "in his place"):
         assert retired not in rendered
 
 

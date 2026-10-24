@@ -77,6 +77,7 @@ SHA_FULL_LEN = 40
 # relative to the working-tree root, which in a fork that vendors core is the
 # fork root — so :func:`_substrate_candidates` tests the de-vendored form too,
 # without which every prefix here is dead code in such a fork.
+# ``skills/rules/RULES.md`` is an exact path because it governs every dispatch.
 _SUBSTRATE_PATH_PREFIXES = (
     "src/teatree/core/merge/",
     "src/teatree/core/models/merge_clear.py",
@@ -123,7 +124,8 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
     classifier (``author_trust.py``), the intake/admission trust boundary
     (``factory_admission.py`` / ``issue_intake.py`` / ``stranger_pr.py`` /
     ``scanner_factories.py``), the autonomy/trust config (``config/``), the
-    on-behalf gate (``on_behalf_gate.py``) and the safety hooks (``hooks/``) — and
+    on-behalf gate (``on_behalf_gate.py``), the safety hooks (``hooks/``), and
+    ``skills/rules/RULES.md`` by exact path — and
     schema migrations (``core/migrations/``, incl. destructive DROP / data
     rewrites, which mutate the durable governance store). Directory/file prefixes
     match after stripping a leading ``./`` or ``/``; the bare governance file
