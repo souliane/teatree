@@ -145,7 +145,10 @@ class _LoopFlagAndCredentialSettings:
     # core plugin files (formerly ``T3_CONTRIBUTE``). ``T3_CONTRIBUTE`` env wins.
     contribute_plugin_dir: bool = setting(
         default=False,
-        spec=SettingSpec(help="directory holding the plugin a contribute run writes to", parse=_parse_strict_bool),
+        spec=SettingSpec(
+            help="pass --plugin-dir to the launched agent so a contribute run edits this checkout",
+            parse=_parse_strict_bool,
+        ),
     )
     # Per-account ``pass`` routing for the two Anthropic credentials
     # (``teatree.llm.credentials``): an ORDERED LIST of ``pass`` entries the routing

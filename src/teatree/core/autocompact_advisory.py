@@ -147,6 +147,10 @@ def _is_kill_switch_model(model: str | None) -> bool:
     return model.strip().lower().removesuffix(_LONG_CONTEXT_SUFFIX) in _KILL_SWITCH_MODELS
 
 
+def native_context_window(model: str | None) -> int | None:
+    return _NATIVE_1M_WINDOW_TOKENS if _is_kill_switch_model(model) else None
+
+
 def has_pct_override(config: AutocompactConfig) -> bool:
     """Return True iff ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`` is set to a usable number.
 

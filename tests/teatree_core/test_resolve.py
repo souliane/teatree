@@ -445,7 +445,7 @@ class TestResolveWorktreeRejectsMainClone(TestCase):
             resolve_worktree()
 
     def test_step2_main_clone_guard_still_fires(self) -> None:
-        """Step 2 keeps refusing a main clone after the guard is shared."""
+        """A direct CWD row still refuses a main clone."""
         main_clone = self._make_main_clone("teatree")
         ticket = Ticket.objects.create()
         Worktree.objects.create(
@@ -458,6 +458,60 @@ class TestResolveWorktreeRejectsMainClone(TestCase):
 
         with pytest.raises(WorktreeNotFoundError, match="Refusing to operate on main clone"):
             resolve_worktree()
+
+
+class TestResolveWorktreeExactMatchBeatsAncestorEnvCache(TestCase):
+    """A row recorded at the exact path wins over an ancestor directory's env cache."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def test_exact_row_beats_env_cache_of_ancestor_dir(self) -> None:
+        root = self._tmp_path / "workspaces"
+        checkout = root / "ticket" / "repo"
+        checkout.mkdir(parents=True)
+        stray = Worktree.objects.create(
+            ticket=Ticket.objects.create(), repo_path="workspaces", extra={"worktree_path": str(root)}
+        )
+        wanted = Worktree.objects.create(
+            ticket=Ticket.objects.create(), repo_path="org/repo", extra={"worktree_path": str(checkout)}
+        )
+        envfile = root.parent / ".t3-cache" / root.name / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True)
+        envfile.write_text(f"TICKET_DIR={root}\n", encoding="utf-8")
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(checkout))
+
+        assert resolve_worktree().pk == wanted.pk != stray.pk
+
+    def test_child_row_does_not_match_parent_path(self) -> None:
+        parent = self._tmp_path / "parent"
+        child = parent / "child"
+        child.mkdir(parents=True)
+        Worktree.objects.create(ticket=Ticket.objects.create(), repo_path="child", extra={"worktree_path": str(child)})
+
+        with pytest.raises(WorktreeNotFoundError):
+            resolve_worktree(str(parent))
+
+    def test_env_cache_beats_ancestor_row_for_subdirectory_cwd(self) -> None:
+        root = self._tmp_path / "workspaces"
+        ancestor_path = root / "row-a"
+        cwd = ancestor_path / "src"
+        cwd.mkdir(parents=True)
+        other_path = root / "row-b"
+        other_path.mkdir()
+        ancestor = Worktree.objects.create(
+            ticket=Ticket.objects.create(), repo_path="row-a", extra={"worktree_path": str(ancestor_path)}
+        )
+        wanted = Worktree.objects.create(
+            ticket=Ticket.objects.create(), repo_path="row-b", extra={"worktree_path": str(other_path)}
+        )
+        envfile = root / ".t3-cache" / ancestor_path.name / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True)
+        envfile.write_text(f"TICKET_DIR={other_path}\n", encoding="utf-8")
+
+        assert resolve_worktree(str(cwd)).pk == wanted.pk != ancestor.pk
 
 
 class TestWarnCwdMismatch(TestCase):
