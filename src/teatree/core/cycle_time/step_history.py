@@ -32,7 +32,6 @@ class StepEstimate:
     source: str
     basis: str
     samples: tuple[float, ...]
-    p80_samples: tuple[float, ...]
 
     @classmethod
     def measured(cls, step: str, values: list[float], window: str) -> "StepEstimate":
@@ -45,7 +44,6 @@ class StepEstimate:
             source=SOURCE.get(step, TASK_SOURCE),
             basis="measured",
             samples=tuple(values),
-            p80_samples=tuple(values),
         )
 
     def to_dict(self) -> dict[str, str | float | int]:
@@ -145,7 +143,6 @@ class StepHistory:
             source=source,
             basis=basis,
             samples=tuple(median_choice[3]),
-            p80_samples=tuple(p80_choice[3]),
         )
 
     def _candidate_sources(self) -> list[tuple[str, list[float], str]]:
