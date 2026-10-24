@@ -15,6 +15,29 @@
 # tests/conformance/test_task_created_is_a_task_list_event.py, which derives the surface
 # from the router's registration. Full rationale + rejected alternatives: _anchor_prose.py.
 
+["An attended session may attest under"]
+radius = 180
+"skills/workspace/SKILL.md" = ["4960e66693e73b4f"]
+"docs/blueprint/worktree-occupancy.md" = ["0a1588e7e8872b15"]
+
+["An attended session may attest under".coverage]
+"skills/workspace/SKILL.md" = 396
+"docs/blueprint/worktree-occupancy.md" = 396
+
+["For a checkout card,"]
+radius = 1300
+"skills/interactive/SKILL.md" = ["9a18af6b4f18292c"]
+
+["For a checkout card,".coverage]
+"skills/interactive/SKILL.md" = 2620
+
+["Only an attended session may answer"]
+radius = 180
+"BLUEPRINT.md" = ["af1d47e0b793b3f8"]
+
+["Only an attended session may answer".coverage]
+"BLUEPRINT.md" = 395
+
 [TaskCreated]
 # 400, not 300: at 300 the `ONE gate rides this event: handle_...` sentence in hooks/CLAUDE.md
 # sat 327 chars from its nearest anchor, so the load-bearing bullet's own handler name was
@@ -96,3 +119,10 @@ radius = 400
 "hooks/scripts/task_created_deny.py" = 3985
 "skills/checking/SKILL.md" = 811
 "src/teatree/eval/session_transcript.py" = 811
+
+["This hold requires the owner's per-PR authorization"]
+radius = 180
+"BLUEPRINT.md" = ["00c311e2c9fe3e2b"]
+
+["This hold requires the owner's per-PR authorization".coverage]
+"BLUEPRINT.md" = 411

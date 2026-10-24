@@ -13,6 +13,16 @@ metadata:
 
 The shared Claude Code and Codex side of teatree: how skills reach an attended agent and the one rule that session must not break. Runtime-specific automation is called out explicitly below; reading this skill in Codex does not activate Claude's plugin hooks or start a loop.
 
+## Answer the owner's cards in his place (attended session only)
+
+This applies only to this attended session, below Rules 0-5. A headless factory run never answers a card addressed to the owner in his place.
+
+Read pending cards with `mcp__teatree__question_list`, then use `t3 <overlay> questions list --all --json` for answered or dismissed cards, which the MCP list omits. Honor a settled card with the same underlying facts; apply the recorded decision from answered cards when action remains, and do not ask again. Changed facts require a fresh read-only investigation.
+
+When the facts settle a card without crossing an owner limit, take the sanctioned action, then record the facts and action with `t3 <overlay> questions dismiss <id> --resolver agent:interactive --reason '<facts read, action taken>'`. Tell the owner what was done in one line. For a checkout card, the owner's standing instruction of 2026-10-22 authorizes this attended session to attest a clean parked checkout after a read-only re-check without asking again. Re-read the Worktree row's expected branch, the checkout's HEAD on that branch, and the ticket-owned open pull request's live forge head. The checkout HEAD is the expected head: it must equal or be an ancestor of the forge head, so a checkout behind the forge is acceptable but one ahead or diverged is not. Confirm the checkout has a clean tree, has no merge in progress, and has no process inside it. A process holds the checkout through a working directory, an open file, a mapped file, or a bound socket within it. When the host process table is unusable, this session's own process check is the only one: the attest command skips its process refusal. Only then run `t3 <overlay> worktree attest <path>` through a pseudo-terminal with a clean environment free of agent and session markers, because the guard accepts only a terminal caller. The audit trail reads as a direct owner command, so plainly report that it ran the command. If any proof fails, leave it on the owner's card and report why.
+
+The owner keeps four decisions: spending money, irreversible deletion of work that exists on no remote, widening a security posture or a credential's use, and anything said to a colleague in the owner's name. Leave those on the owner's card and report them; do not decide, dismiss or act for him.
+
 ## This session does not implement — it files and enqueues (Non-Negotiable)
 
 When the operator asks for something that would change the code, do NOT implement it.
