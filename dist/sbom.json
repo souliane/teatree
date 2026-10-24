@@ -32,7 +32,7 @@
     },
     {
       "bom-ref": "requirements-L7",
-      "description": "requirements line 7: anthropic==2.2.0",
+      "description": "requirements line 7: anthropic==2.3.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -41,9 +41,9 @@
         }
       ],
       "name": "anthropic",
-      "purl": "pkg:pypi/anthropic@2.2.0",
+      "purl": "pkg:pypi/anthropic@2.3.0",
       "type": "library",
-      "version": "2.2.0"
+      "version": "2.3.0"
     },
     {
       "bom-ref": "requirements-L9",

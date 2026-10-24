@@ -775,7 +775,7 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 override-dependencies = [  ]
 
 [tool.uv.exclude-newer-package]
-anthropic = "2026-10-23T13:10:34Z"
+anthropic = "2026-10-23T23:18:48Z"
 asgiref = "2026-10-23T08:13:15Z"
 certifi = "2026-10-23T11:36:17Z"
 chardet = "2026-10-18T00:06:26Z"
