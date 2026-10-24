@@ -48,9 +48,7 @@ from teatree.core.worktree.checkout_state import checkout_state
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer, bind_reply, resolve_answer
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
-from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
-from tests._owner_channel import answer_on_slack, owner_card
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
 from tests.teatree_loop.test_question_binding import _statement
@@ -90,17 +88,11 @@ class TestCheckoutAttestation(TestCase):
         self.worktree = WorktreeFactory(ticket=self.task.ticket, extra={"worktree_path": str(self.checkout)})
 
     def _park_on_a_foreign_edit(self) -> DeferredQuestion:
-        with (
-            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR),
-            patch("teatree.core.worktree.checkout_fence.notify_user"),
-        ):
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
             verify_task_checkout(self.task, str(self.checkout))
             (self.checkout / "new.txt").write_text("foreign edit")
             assert claim_task_checkout_or_park(self.task) is not None
-        row = ask_owner_to_attest(
-            self.task, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
-        )
-        assert row is not None
+        row = self.task.deferred_questions.get()
         assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
         return row
 
@@ -357,19 +349,16 @@ class TestCheckoutAttestation(TestCase):
 
         assert self._carry_out() == [f"carried out {row.pk}"]
 
-    def test_acceptance_releases_a_later_task_parked_on_the_same_checkout(self) -> None:
+    def test_latest_waiting_task_is_released_by_a_reused_card(self) -> None:
         row = self._park_on_a_foreign_edit()
         later = TaskFactory(ticket=self.task.ticket, phase="coding")
         state = checkout_state(self.checkout)
-        park_task_checkout(later, reason="foreign edit")
-        parked_attempt = later.attempts.order_by("-pk").first()
-        assert parked_attempt is not None
-        parked_attempt.result = {**parked_attempt.result, "checkout_worktree_id": self.worktree.pk}
-        parked_attempt.save(update_fields=["result"])
-        later_card = ask_owner_to_attest(later, CheckoutAttestation(self.worktree, state, host_evidence=True))
-        assert later_card is not None
-        assert later_card.pk != row.pk
-        self._answer(row, "Accept")
+        park_task_checkout(
+            later, reason="foreign edit", attestable=CheckoutAttestation(self.worktree, state, host_evidence=True)
+        )
+        reused = DeferredQuestion.objects.get(pk=row.pk)
+        assert reused.pk == row.pk
+        self._answer(reused, "Accept")
 
         assert self._carry_out() == [f"carried out {row.pk}"]
         self.task.refresh_from_db()
@@ -412,25 +401,15 @@ class TestCheckoutAttestation(TestCase):
         assert self.task.not_before is None
         assert other_task.not_before is not None
 
-    def test_carrying_out_an_owner_action_stamps_that_its_answer_was_applied(self) -> None:
-        row = self._park_on_a_foreign_edit()
-        self._answer(row, "Accept")
-        row.refresh_from_db()
-        assert row.applied_at is None
-
-        assert self._carry_out() == [f"carried out {row.pk}"]
-
-        row.refresh_from_db()
-        assert row.applied_at is not None
-
     def test_accept_keeps_a_declined_step_parked_on_the_same_checkout(self) -> None:
         coding = self._park_on_a_foreign_edit()
         retro = TaskFactory(ticket=self.task.ticket, phase="retro")
-        park_task_checkout(retro, reason="foreign edit")
-        declined = ask_owner_to_attest(
-            retro, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
+        park_task_checkout(
+            retro,
+            reason="foreign edit",
+            attestable=CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True),
         )
-        assert declined is not None
+        declined = retro.deferred_questions.get()
         assert declined.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000200")
         self._answer(declined, "Decline")
         assert self._carry_out() == [f"declined {declined.pk}"]
@@ -451,10 +430,7 @@ class TestCheckoutAttestation(TestCase):
         self.worktree.merge_extra(set_keys={"attested_state": "e" * 64})
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
             assert claim_task_checkout_or_park(self.task) is not None
-        row = ask_owner_to_attest(
-            self.task, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
-        )
-        assert row is not None
+        row = self.task.deferred_questions.get()
         assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
         self._answer(row, "Decline")
         assert self._carry_out() == [f"declined {row.pk}"]
@@ -557,11 +533,7 @@ class TestCheckoutAttestation(TestCase):
         unavailable = ProcessTable(frozenset(), "")
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=unavailable):
             assert claim_task_checkout_or_park(self.task) is not None
-        row = ask_owner_to_attest(
-            self.task, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=False)
-        )
-        assert row is not None
-        assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000100")
+        row = self.task.deferred_questions.get()
         self._answer(row, "Accept")
 
         assert self._carry_out() == [f"carried out {row.pk}"]
@@ -576,7 +548,7 @@ class TestCheckoutAttestation(TestCase):
 
         old.refresh_from_db()
         assert old.dismissed_at is not None
-        assert self.task.deferred_questions.filter(answered_at__isnull=True, dismissed_at__isnull=True).count() == 0
+        assert self.task.deferred_questions.filter(answered_at__isnull=True, dismissed_at__isnull=True).count() == 1
 
     def test_a_checkout_changed_after_the_card_is_refused_with_one_notice(self) -> None:
         row = self._park_on_a_foreign_edit()
@@ -753,46 +725,3 @@ class TestActionIdentity(TestCase):
         assert DeferredQuestionAudit.objects.get(question=row, action="refused").note == (
             "The action card no longer matches its recorded request."
         )
-
-
-class TestScannerDecisionCards(TestCase):
-    """A decision card nothing waits on is applied by the scanner pass: its answer binds the ledger."""
-
-    def _answered(self, marker: str = "decision:scan-1", **fields: object) -> DeferredQuestion:
-        row = DeferredQuestion.record(
-            "Should the stale override be lifted?", dedupe_marker=marker, card=owner_card(), **fields
-        )
-        answer_on_slack(row, "Yes")
-        row.refresh_from_db()
-        return row
-
-    def test_unknown_scanner_decision_is_not_stamped_applied(self) -> None:
-        row = self._answered()
-
-        assert OwnerActionScanner().scan() == []
-
-        row.refresh_from_db()
-        assert row.applied_at is None
-        assert not DeferredQuestionAudit.objects.filter(question=row, action="applied").exists()
-
-    def test_a_pending_or_dismissed_scanner_decision_is_not_applied(self) -> None:
-        pending = DeferredQuestion.record("Should the first thing run?", dedupe_marker="decision:a", card=owner_card())
-        dismissed = DeferredQuestion.record(
-            "Should the second thing run?", dedupe_marker="decision:b", card=owner_card()
-        )
-        dismissed.mark_stale("The thing is obsolete", resolver_id="test")
-
-        assert OwnerActionScanner().scan() == []
-
-        pending.refresh_from_db()
-        dismissed.refresh_from_db()
-        assert pending.applied_at is None
-        assert dismissed.applied_at is None
-
-    def test_a_card_with_a_waiting_task_or_a_session_mailbox_is_left_to_its_own_handler(self) -> None:
-        waiting = self._answered("decision:task", parked_task=TaskFactory(ticket=TicketFactory(), phase="coding"))
-        mailbox = self._answered("decision:session", session_id="session-1")
-
-        assert OwnerActionScanner().scan() == []
-
-        assert not DeferredQuestionAudit.objects.filter(question__in=[waiting, mailbox], action="applied").exists()

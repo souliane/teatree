@@ -36,14 +36,9 @@ from django.utils import timezone
 from teatree import answer_handback
 from teatree.core.modelkit.owner_action import action_marker, is_owner_action_marker
 from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.models.question_actions import (
-    DeferredQuestionAuditQuerySet,
-    DeferredQuestionQuerySet,
-    held_question,
-    mark_escalated,
-)
+from teatree.core.models.question_actions import DeferredQuestionAuditQuerySet, DeferredQuestionQuerySet, held_question
 from teatree.core.models.question_subject import finished_subject_reason
-from teatree.core.models.question_text import options_digest, question_fingerprint
+from teatree.core.models.question_text import options_digest
 from teatree.core.models.question_withheld import carried_wait
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
@@ -81,7 +76,6 @@ class DeferredQuestion(models.Model):
         STALE = "stale", "Stale"
         POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
         AGENT = "agent", "Agent surface"
-        DELEGATED = "delegate", "Delegated under Rule -1"
 
     #: Provenance the server records and checks: a Slack reply by the owner, or the owner's graduated policy.
     OWNER_CHANNELS: ClassVar[frozenset[str]] = frozenset({ResolvedVia.SLACK, ResolvedVia.POLICY})
@@ -141,7 +135,6 @@ class DeferredQuestion(models.Model):
         choices=ResolvedVia.choices,
     )
     applied_at = models.DateTimeField(null=True, blank=True)
-    delivered_at = models.DateTimeField(null=True, blank=True)
     # #4178 age-backstop stamps. An escalation records that a row has sat past the
     # ceiling WITHOUT resolving it — the row stays pending. #4706 bounds that ladder:
     # past question_drain.MAX_ESCALATIONS the sweep drains the row stale with an
@@ -229,15 +222,12 @@ class DeferredQuestion(models.Model):
             raise DeferredQuestionError(message)
         if card is not None and card.options:
             options_json, options_hash = card.options_json(), options_hash or options_digest(card.option_dicts())
-        if card is not None and requested_action is None and not dedupe_marker:
-            subject = parked_task.pk if parked_task is not None else 0
-            dedupe_marker = question_fingerprint(f"owner:{card.decision.value}:{subject}:{clean_question}")
 
         with transaction.atomic():
             marked = cls.objects.select_for_update().filter(dedupe_marker=dedupe_marker).order_by("-created_at", "-pk")
             parked_task, task_session = carried_wait(marked, parked_task, task_session)
             action = card is not None and card.action is not None
-            if dedupe_marker and (held := held_question(marked, clean_question, card=card, options_json=options_json)):
+            if dedupe_marker and (held := held_question(marked, clean_question, owner=card is not None, action=action)):
                 if action and parked_task is not None and held.parked_task_id != parked_task.pk:
                     held.parked_task = parked_task
                     held.save(update_fields=["parked_task"])
@@ -433,7 +423,22 @@ class DeferredQuestion(models.Model):
         ``select_for_update`` re-read is the verify-by-re-read seam — a row a
         concurrent answer resolved first returns ``False`` and is not counted.
         """
-        return mark_escalated(self, note, DeferredQuestionAudit)
+        with transaction.atomic():
+            row = (
+                type(self)
+                .objects.select_for_update()
+                .filter(pk=self.pk, answered_at__isnull=True, dismissed_at__isnull=True)
+                .first()
+            )
+            if row is None:
+                return False
+            row.escalated_at = timezone.now()
+            row.escalation_count += 1
+            row.save(update_fields=["escalated_at", "escalation_count"])
+            DeferredQuestionAudit.objects.create(question=row, action="escalated", note=note)
+            self.escalated_at = row.escalated_at
+            self.escalation_count = row.escalation_count
+            return True
 
     def apply_answer(self, answer: str, *, resolved_via: str) -> "DeferredQuestion | None":
         """Resolve this pending row with *answer*, stamping ``resolved_via``.
@@ -452,9 +457,9 @@ class DeferredQuestion(models.Model):
             return row
 
     def mark_posted(self) -> bool:
-        """Stamp mailbox delivery without claiming the answer had an effect."""
+        """Stamp ``applied_at``: the answer was posted to the asking session's mailbox (not that it was read)."""
         manager = type(self).objects.using(self._state.db)
-        return bool(manager.filter(pk=self.pk, delivered_at__isnull=True).update(delivered_at=timezone.now()))
+        return bool(manager.filter(pk=self.pk, applied_at__isnull=True).update(applied_at=timezone.now()))
 
     def post_to_asking_session(self) -> None:
         try:
