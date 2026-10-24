@@ -220,18 +220,18 @@ class PendingChatInjection(models.Model):
         Gates on ``loop_replied_at`` (the loop's own column, #1075 / Option B),
         NOT ``answered_at``: the loop posting a reply stamps only
         ``loop_replied_at``, so it never claims the agent personally answered.
-        An unconfirmed session claim returns after two minutes so a crashed
-        sender can retry delivery.
+        An unconfirmed session or question claim returns after two minutes so
+        a crashed sender can retry delivery.
 
         Pass ``overlay=""`` to scan every overlay's queue (the v1 single-
         overlay path uses ``overlay=""`` consistently).
         """
-        stale_session = models.Q(
-            answer_kind=cls.AnswerKind.SESSION,
+        stale_delivery = models.Q(
+            answer_kind__in={cls.AnswerKind.SESSION, cls.AnswerKind.QUESTION_REPLY},
             loop_response_confirmed_at__isnull=True,
             loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
         )
-        qs = cls.objects.filter(models.Q(loop_replied_at__isnull=True) | stale_session)
+        qs = cls.objects.filter(models.Q(loop_replied_at__isnull=True) | stale_delivery)
         if overlay:
             qs = qs.filter(overlay=overlay)
         return qs.order_by("received_at")
@@ -255,12 +255,12 @@ class PendingChatInjection(models.Model):
             self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
         return bool(updated)
 
-    def claim_stale_session_reply(self) -> bool:
+    def claim_stale_loop_reply(self) -> bool:
         updated = (
             type(self)
             .objects.filter(
                 pk=self.pk,
-                answer_kind=self.AnswerKind.SESSION,
+                answer_kind__in={self.AnswerKind.SESSION, self.AnswerKind.QUESTION_REPLY},
                 loop_response_confirmed_at__isnull=True,
                 loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
             )

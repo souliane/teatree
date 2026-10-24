@@ -39,7 +39,7 @@ def _mark_unit_loop_replied(unit: "_Unit", kind: str) -> bool:
     logical turn, one loop reply, no orphaned follow-up re-processed alone.
     Stamps only ``loop_replied_at`` (#1075); never ``answered_at``, the agent's own reply.
     """
-    if not unit.lead.mark_loop_replied(kind) and not unit.lead.claim_stale_session_reply():
+    if not unit.lead.mark_loop_replied(kind) and not unit.lead.claim_stale_loop_reply():
         return False
     for follow in unit.rows[1:]:
         follow.mark_loop_replied(kind)
@@ -218,6 +218,16 @@ def _post_bound_reply(
     return True
 
 
+def _uncertain_question_reply(backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport") -> bool:
+    return _post_bound_reply(
+        backend,
+        unit,
+        report,
+        "Answer recorded; receipt uncertain (unknown_delivery).",
+        kind=PendingChatInjection.AnswerKind.QUESTION_REPLY,
+    )
+
+
 def _choice_reply(
     backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", tasks: tuple[int, ...]
 ) -> bool:
@@ -309,6 +319,8 @@ def _replay_bound_command(
         command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts)
     ).first()
     if command is None:
+        if unit.lead.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY and bound_answer is None:
+            return _uncertain_question_reply(backend, unit, report)
         return False
     if not command.outcome:
         return False

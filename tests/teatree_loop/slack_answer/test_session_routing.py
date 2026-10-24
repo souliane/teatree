@@ -948,6 +948,76 @@ class TestBoundTicketThread(TestCase):
         assert "resum" in backend.replies[0][2].lower()
         assert row.loop_response_confirmed_at is not None
 
+    def test_question_resume_notice_replays_after_sender_crash(self) -> None:
+        parked = self._bound_task()
+        question = DeferredQuestion.record(
+            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=owner_card()
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = []
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            with (
+                patch("teatree.loop.slack_answer.cycle._post_live_reply", side_effect=SystemExit),
+                pytest.raises(SystemExit),
+            ):
+                run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+            PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        question.refresh_from_db()
+        row.refresh_from_db()
+        assert report.answered_question == 1
+        assert question.answer_text == "Use the new API"
+        assert Task.objects.count() == 2
+        assert "resume path requested" in backend.replies[0][2].lower()
+        assert row.loop_response_confirmed_at is not None
+
+    def test_question_answer_crash_before_receipt_reports_uncertainty(self) -> None:
+        parked = self._bound_task()
+        question = DeferredQuestion.record(
+            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=owner_card()
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = []
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            with (
+                patch.object(SessionCommand.objects, "get_or_create", side_effect=SystemExit),
+                pytest.raises(SystemExit),
+            ):
+                run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+            PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        question.refresh_from_db()
+        row.refresh_from_db()
+        assert report.dispatched == 0
+        assert question.answer_text == "Use the new API"
+        assert Task.objects.count() == 2
+        assert "unknown_delivery" in backend.replies[0][2]
+        assert row.loop_response_confirmed_at is not None
+
+    def test_stale_question_without_thread_binding_does_not_start_work(self) -> None:
+        row = self._message("Use the new API")
+        assert row.mark_loop_replied(PendingChatInjection.AnswerKind.QUESTION_REPLY)
+        PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        row.refresh_from_db()
+        assert report.dispatched == 0
+        assert "unknown_delivery" in backend.replies[0][2]
+        assert row.loop_response_confirmed_at is not None
+
     def test_finished_session_queues_followup_and_names_the_path(self) -> None:
         prior = self._bound_task()
         prior.status = Task.Status.COMPLETED

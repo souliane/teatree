@@ -32,6 +32,7 @@
 - Compaction: assert the reduced history stays below the measured bound on the tool-pair test; remove the skip-forward loop temporarily to prove the assertion fails.
 - Unsettled command: test that a changed ticket or text is rejected without settling or dispatching; replace the mismatch condition temporarily to prove the test fails.
 - Bound owner-question answer: the recorded plan's D5 requires the thread to name the resume path. Record a settled `SessionCommand` for the notice, confirm it in the thread, and replay it if Slack posting or read-back fails. Say resume was requested because scheduling may fail when a plan is missing; keep internal questions free of a false resume notice. Assert delivery and both retries through the public cycle.
+- Crash after answer application: retry an unconfirmed question claim after two minutes. Replay its settled resume notice when present; otherwise acknowledge uncertain delivery without dispatching new work, including a reply without a ticket binding. Assert the saved answer and absence of duplicate tasks after both crash points.
 
 ## Open questions & assumptions
 
@@ -39,3 +40,4 @@
 - Decided-by-user: the coordinator owns live Claude and Slack experiments and their recorded results.
 - Assumed: a failed task is the terminal cancelled case because Task.Status has no cancelled member.
 - Assumed: the push of this branch's migration was blocked by a queued future rework brief, so the push brief selection is included even though the original plan did not name it.
+- Assumed: an answered question with no stored notice after a sender crash must receive an uncertainty receipt, never be reinterpreted as a new instruction.

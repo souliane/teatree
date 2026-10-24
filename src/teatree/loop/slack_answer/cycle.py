@@ -57,7 +57,7 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
 from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.worktree.survivor_notice import apply_stop_answer
-from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, read_inbound
+from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, memoized_reader, read_inbound
 from teatree.loop.question_binding import apply_bound_answer, bind_reply, configured_owner_id
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.session_routing import (
@@ -66,6 +66,7 @@ from teatree.loop.slack_answer.session_routing import (
     _mark_unit_loop_replied,
     _post_live_reply,
     _reject_foreign_bound_unit,
+    _uncertain_question_reply,
     _unmark_unit_loop_replied,
 )
 from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
@@ -490,16 +491,15 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
     return True
 
 
-def _memoized(reader: InboundReader) -> InboundReader:
-    """One reading per text — the binder's question-guard and the router share it."""
-    cache: dict[str, InboundReading] = {}
-
-    def read(text: str) -> InboundReading:
-        if text not in cache:
-            cache[text] = reader(text)
-        return cache[text]
-
-    return read
+def _answer_or_acknowledge_question(
+    backend: MessagingBackend, unit: _Unit, report: SlackAnswerReport, reader: InboundReader
+) -> bool:
+    if _answer_bound_question(backend, unit, reader):
+        report.answered_question += 1
+        return True
+    if unit.lead.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY:
+        return _uncertain_question_reply(backend, unit, report)
+    return False
 
 
 def _process_unit(
@@ -519,11 +519,10 @@ def _process_unit(
     if _reject_foreign_bound_unit(backend, unit, report, binding):
         return
 
-    read = _memoized(reader)
+    read = memoized_reader(reader)
     if binding is not None and _live_receipt(backend, unit, report, binding, read):
         return
-    if _answer_bound_question(backend, unit, read):
-        report.answered_question += 1
+    if _answer_or_acknowledge_question(backend, unit, report, read):
         return
 
     reading = read(unit.text)
