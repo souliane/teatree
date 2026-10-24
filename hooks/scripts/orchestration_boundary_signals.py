@@ -4,7 +4,7 @@ import re
 import sys
 from functools import lru_cache
 
-from teatree.hooks import HeredocBody, TokenKind, raw_substitution_sees_live, tokenize
+from teatree.hooks.shell_tokens import HeredocBody, TokenKind, raw_substitution_sees_live, tokenize
 
 # Alias both identities so a bare ``from orchestration_boundary_signals import
 # ...`` (the live hook, whose dir is on sys.path) and the
