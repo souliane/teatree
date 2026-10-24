@@ -4,16 +4,30 @@ Split out of :mod:`teatree.agents.pydantic_ai_session` (module-health LOC cap); 
 this module owns the records it reports.
 """
 
+import json
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
-from pydantic_ai.messages import RetryPromptPart, ToolCallPart, ToolReturnPart
+from claude_agent_sdk import AssistantMessage, ToolResultBlock, ToolUseBlock
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.usage import RunUsage
 
 from teatree.llm.anthropic_limits import EgressBlockedError
 from teatree.llm.usage_tee import ROUTER_COST_KEYS, RequestUsage, UsageTee
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterable, Callable, Iterator
+
+    from pydantic_ai.messages import AgentStreamEvent
 
 
 class ToolCallEntry(TypedDict):
@@ -155,3 +169,84 @@ def egress_block_in(exc: BaseException) -> EgressBlockedError | None:
         seen.add(id(current))
         current = current.__cause__ or current.__context__
     return None
+
+
+class StreamedToolCapture:
+    """Record streamed tool events, including work completed before a run fails."""
+
+    def __init__(self, observer: "Callable[[AgentStreamEvent], None] | None" = None) -> None:
+        self._parts: list[ToolCallPart | ToolReturnPart | RetryPromptPart] = []
+        self._calls: list[ToolCallRecord] = []
+        self._observer = observer
+
+    async def consume(self, events: "AsyncIterable[AgentStreamEvent]") -> None:
+        # Keyed on the EVENT, never on the part it exposes: pydantic_ai surfaces ONE
+        # ``ToolCallPart`` through THREE events (``PartStartEvent``, ``PartEndEvent`` and
+        # ``FunctionToolCallEvent``), so a part-typed filter records every call three
+        # times and a turn-budget assertion reads 3x the calls the model actually made.
+        # These two fire exactly once per call and once per result.
+        async for event in events:
+            if self._observer is not None:
+                self._observer(event)
+            if isinstance(event, FunctionToolCallEvent | FunctionToolResultEvent):
+                self._parts.append(event.part)
+            if isinstance(event, FunctionToolCallEvent):
+                self._calls.append(ToolCallRecord.start(event.part))
+            elif isinstance(event, FunctionToolResultEvent) and (call := self._open_call(event.tool_call_id)):
+                call.finish(event.part)
+
+    def blocks(self) -> "Iterator[AssistantMessage]":
+        """The captured parts in the seam's vocabulary, in the order the run produced them."""
+        for part in self._parts:
+            yield _tool_call_message(part) if isinstance(part, ToolCallPart) else _tool_result_message(part)
+
+    def has_tool_calls(self) -> bool:
+        return any(isinstance(part, ToolCallPart) for part in self._parts)
+
+    def trajectory(self) -> list[ToolCallEntry]:
+        """Every tool call the turn made, success or failure, in the order the model issued them."""
+        return [call.as_record() for call in self._calls]
+
+    def _open_call(self, tool_call_id: str) -> ToolCallRecord | None:
+        # Providers may reuse a call id across requests, so a result pairs with the latest unanswered call.
+        return next(
+            (call for call in reversed(self._calls) if call.tool_call_id == tool_call_id and not call.returned), None
+        )
+
+
+def _tool_call_message(part: ToolCallPart) -> AssistantMessage:
+    """One ``ToolCallPart`` as the seam's tool-use message."""
+    return AssistantMessage(
+        content=[ToolUseBlock(id=part.tool_call_id, name=part.tool_name, input=_as_input(part.args))],
+        model="",
+    )
+
+
+def _tool_result_message(part: "ToolReturnPart | RetryPromptPart") -> AssistantMessage:
+    """One tool result as the seam's tool-result message; a ``RetryPromptPart`` is a gate refusal."""
+    if isinstance(part, ToolReturnPart):
+        return AssistantMessage(
+            content=[ToolResultBlock(tool_use_id=part.tool_call_id, content=str(part.content))],
+            model="",
+        )
+    return AssistantMessage(
+        content=[ToolResultBlock(tool_use_id=part.tool_call_id or "", content=retry_text(part), is_error=True)],
+        model="",
+    )
+
+
+def _as_input(args: object) -> dict[str, Any]:
+    """Coerce a ``ToolCallPart.args`` (dict or JSON string) to a plain dict.
+
+    The return feeds ``ToolUseBlock.input``, whose claude_agent_sdk contract is
+    ``dict[str, Any]`` — a tool's arguments are genuinely arbitrary JSON, so the
+    value type is unavoidably dynamic here.
+    """
+    if isinstance(args, dict):
+        return {str(k): v for k, v in args.items()}
+    if isinstance(args, str):
+        with suppress(json.JSONDecodeError):
+            parsed = json.loads(args)
+            if isinstance(parsed, dict):
+                return {str(k): v for k, v in parsed.items()}
+    return {}

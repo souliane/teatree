@@ -122,6 +122,8 @@ class _Heartbeat:
             await asyncio.to_thread(close_thread_db_connections)
 
     def folded(self, outcome: HarnessOutcome) -> HarnessOutcome:
+        if self.live.paused:
+            return replace(outcome, stuck_reason="operator pause", paused=True)
         if self.breach and outcome.stuck_reason is None:
             return replace(
                 outcome, stuck_reason=self.breach[0], lease_lost=self.lease_lost, checkpointed=self.checkpointed
@@ -147,6 +149,12 @@ class _Heartbeat:
         except Exception:
             logger.warning("Heartbeat failed for task %s", self.task.pk, exc_info=True)
         return False
+
+    async def restate_directions(self) -> None:
+        try:
+            await self.live.restate_after_compaction()
+        except Exception:
+            logger.warning("Task %s: directions could not be restated after compaction", self.task.pk, exc_info=True)
 
     async def _checkpointed(self) -> bool:
         try:
@@ -231,6 +239,7 @@ async def drive_with_heartbeat(
             beat = _Heartbeat(
                 task=task, runtime=runtime, live=live, capture=capture, usage=usage, started_at=started_at
             )
+            capture.on_compaction = beat.restate_directions
             heartbeat_task = asyncio.create_task(beat.run())
             try:
                 timeout = runtime.watchdog.max_runtime_seconds or None

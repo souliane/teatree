@@ -28,7 +28,11 @@ def _brief_for_worktree(repo_root: Path) -> str:
         return ""
     ticket = worktree.ticket
     plan = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
-    task = Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging")).order_by("-created_at", "-pk").first()
+    tasks = Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging"))
+    task = (
+        tasks.filter(status=Task.Status.CLAIMED).order_by("-created_at", "-pk").first()
+        or tasks.filter(status=Task.Status.COMPLETED).order_by("-created_at", "-pk").first()
+    )
     return "\n".join(
         part
         for part in (
@@ -92,6 +96,7 @@ def push_gate_command(
                 typer.echo(f"brief constraint FAILED ({violation.kind}): {violation.detail}", err=True)
             raise typer.Exit(code=1)
         result = run_push_gate(plan, repo_root=cwd)
+        typer.echo(f"ast-grep: {result.status}")
         for note in result.notes:
             typer.echo(note)
         if result.astgrep_findings:

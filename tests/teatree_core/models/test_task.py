@@ -462,8 +462,31 @@ class TestAParkedConversationTheRetryCannotContinueStartsFresh(TestCase):
     def test_a_conversation_with_no_room_left_for_another_prompt_is_not_resumed(self) -> None:
         assert self._parked(context_tokens=313_014, context_window_tokens=350_000) == Task.SessionContinuation.FRESH
 
-    def test_a_conversation_on_its_own_model_with_room_left_is_resumed(self) -> None:
-        assert self._parked(context_tokens=313_014, context_window_tokens=1_000_000) == Task.SessionContinuation.SELF
+    def test_a_conversation_over_the_resume_cap_is_not_resumed_though_the_window_has_room(self) -> None:
+        assert self._parked(context_tokens=313_014, context_window_tokens=1_000_000) == Task.SessionContinuation.FRESH
+
+    def test_a_conversation_under_the_resume_cap_on_a_large_window_is_resumed(self) -> None:
+        assert self._parked(context_tokens=150_000, context_window_tokens=1_000_000) == Task.SessionContinuation.SELF
+
+    def test_reopening_a_failed_task_over_the_cap_answers_fresh_and_pending(self) -> None:
+        self._parked(context_tokens=313_014, context_window_tokens=1_000_000)
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.FAILED)
+        self.task.refresh_from_db()
+
+        self.task.reopen()
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.session_continuation == Task.SessionContinuation.FRESH
+
+    def test_a_usage_window_park_over_the_cap_answers_fresh_and_stays_pending(self) -> None:
+        self._parked(context_tokens=313_014, context_window_tokens=1_000_000)
+
+        self.task.park(not_before=timezone.now() + timezone.timedelta(minutes=5))
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.session_continuation == Task.SessionContinuation.FRESH
 
     def test_a_router_resolving_its_handle_to_a_concrete_model_is_not_a_fallback(self) -> None:
         """The metered lane records the router's pick as the model; that is no reason to drop its thread."""

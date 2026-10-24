@@ -44,6 +44,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
     from teatree.core.management.commands import (  # noqa: PLC0415
         _worktree_adopt_command,
         checking,
+        cost_profile,
         do,
         dream,
         e2e,
@@ -89,6 +90,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree live inspect": live.Command.inspect,
         "teatree live steer": live.Command.steer,
         "teatree live follow-up": live.Command.follow_up,
+        "teatree live pause": live.Command.pause,
         # ``signals`` is a bare-``handle`` command (no subcommand token): like
         # ``do``, django-typer replaces ``Command.handle`` with a generic wrapper,
         # so its real ``--json`` param lives on the registered typer callback.
@@ -120,6 +122,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         # replaces the class ``handle`` attribute with a generic wrapper, so its
         # real params live on the registered typer callback, not on ``Command.handle``.
         "teatree do": do.Command.typer_app.registered_commands[0].callback,
+        "teatree cost_profile": cost_profile.Command.typer_app.registered_commands[0].callback,
         "doctor check": cli_doctor_app.check,
         "cost": cli_cost.cost,
         "tokens": cli_tokens.tokens,

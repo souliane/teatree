@@ -9,7 +9,20 @@ import contextlib
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass
+class _EmissionState:
+    stream: object | None = None
+
+
+_emission = _EmissionState()
+
+
+def emitted_to_stdout() -> bool:
+    return _emission.stream is sys.stdout
 
 
 def emit_additional_context(event: str, context: str) -> None:
@@ -28,6 +41,7 @@ def emit_hook_output(output: dict) -> None:
     try:
         json.dump(output, sys.stdout)
         sys.stdout.flush()
+        _emission.stream = sys.stdout
     except BaseException:
         _drop_unwritten()
         raise
@@ -38,4 +52,4 @@ def _drop_unwritten() -> None:
         os.dup2(devnull.fileno(), sys.stdout.fileno())
 
 
-__all__ = ["emit_additional_context", "emit_hook_output"]
+__all__ = ["emit_additional_context", "emit_hook_output", "emitted_to_stdout"]

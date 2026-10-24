@@ -20,6 +20,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from django.db import OperationalError
 from django.test import TestCase
 
 import hooks.scripts.hook_router as router
@@ -122,24 +123,44 @@ class TestAllowsWhenMetOrOutOfScope(_GateTest):
         assert decision == {}
 
 
-class TestCrashProof(_GateTest):
-    def test_internal_error_fails_open(self) -> None:
-        def _boom(_data: dict) -> bool | None:
-            raise RuntimeError
+_GATE_FAILURE = "gate failure"
 
-        with patch.object(gate, "_run", _boom):
+
+class TestCrashProof(_GateTest):
+    def test_orm_failure_fails_open_and_is_reported(self) -> None:
+        def _boom(_data: dict) -> bool | None:
+            raise OperationalError(_GATE_FAILURE)
+
+        stderr = StringIO()
+        with patch.object(gate, "_run", _boom), patch("sys.stderr", stderr):
             result, decision = self._run()
         assert result is None
         assert decision == {}
+        assert "SKIPPED" in stderr.getvalue()
+        assert f"OperationalError: {_GATE_FAILURE}" in stderr.getvalue()
+
+    def test_error_outside_the_orm_failures_is_not_swallowed_and_restores_sys_path(self) -> None:
+        def _boom(_data: dict) -> bool | None:
+            raise RuntimeError(_GATE_FAILURE)
+
+        path_before = list(sys.path)
+        with patch.object(gate, "_run", _boom), self.assertRaisesMessage(RuntimeError, _GATE_FAILURE):
+            self._run()
+        assert sys.path == path_before
 
     def test_unbootstrappable_django_allows(self) -> None:
         # ``_run`` lazily does ``from hooks.scripts.django_bootstrap import
         # bootstrap_teatree_django`` (the canonical package module) — patch it there.
         StandingGoal.objects.set_goal("evals-green", "false")
-        with patch.object(sys.modules["hooks.scripts.django_bootstrap"], "bootstrap_teatree_django", lambda: False):
+        stderr = StringIO()
+        with (
+            patch.object(sys.modules["hooks.scripts.django_bootstrap"], "bootstrap_teatree_django", lambda: False),
+            patch("sys.stderr", stderr),
+        ):
             result, decision = self._run()
         assert result is None
         assert decision == {}
+        assert "SKIPPED" in stderr.getvalue()
 
 
 class TestDefensiveHelpers(_GateTest):

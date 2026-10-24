@@ -19,9 +19,10 @@ kill-switch both ALLOW; an unresolvable cwd/slug fails OPEN; and the deny
 routes through ``_fail_open_or_deny`` so the self-rescue allowlist + master
 fail-open switch + circuit breaker all apply.
 
-``bootstrap_teatree_django`` comes from the shared ``django_bootstrap`` leaf
-(no dependency on ``hook_router``, so it imports at top level). The remaining
-helpers that resolve overlays and emit the deny (``_resolve_cwd_repo``,
+``bootstrap_django_registry`` comes from the shared ``django_bootstrap`` leaf
+(no dependency on ``hook_router``, so it imports at top level). The verdict reads
+overlays and config, never the control DB, so an unreadable ORM must not skip it.
+The remaining helpers that resolve overlays and emit the deny (``_resolve_cwd_repo``,
 ``_fail_open_or_deny``, ``_teatree_bool_setting``) live in ``hook_router`` and
 are imported lazily at call time — ``hook_router`` imports this module at top
 level, so importing it back at top level here would be a cycle.
@@ -31,7 +32,7 @@ import re
 import sys
 from pathlib import Path
 
-from hooks.scripts.django_bootstrap import bootstrap_teatree_django
+from hooks.scripts.django_bootstrap import bootstrap_django_registry
 from hooks.scripts.gate_result import warn_gate_skipped
 from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.mr_cli_fields import strip_quoted_and_heredoc
@@ -105,7 +106,7 @@ def _classify_push_for_cwd(cwd: Path) -> str:
     ``allow`` says so on stderr (:func:`gate_result.warn_gate_skipped`): an
     unvalidated push and a scoped-and-cleared one are the same silence otherwise.
     """
-    if not bootstrap_teatree_django():
+    if not bootstrap_django_registry():
         warn_gate_skipped("unknown-repo push SCOPE", "the hook interpreter cannot import Django")
         return "allow"
     try:

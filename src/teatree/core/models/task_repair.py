@@ -5,15 +5,16 @@ it reads the recorded ``TaskAttempt`` rows of a ticket-phase, applies the pure
 :func:`teatree.core.repair_loop.requeue_verdict`, and on a stall records a
 durable user-facing ``DeferredQuestion``. Split out of ``task.py`` (which is at
 its module-health LOC cap) — the thin ``Task`` methods delegate here. The
-functions take a ``Task`` so they stay free of model-class state.
+budget verdicts take a ``Task`` so they stay free of model-class state.
 """
 
+from typing import TYPE_CHECKING
+
 from teatree.core.forge_url import is_synthetic_ticket_url
-from teatree.core.modelkit.phases import normalize_phase, phase_spellings
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import stall_fingerprints
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.task import Task
-from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.task_repair_queries import adjacent_work_attempts, phase_attempts, ticket_phase_observations
 from teatree.core.repair_loop import (
     IterationStalled,
     MaxIterationsExceeded,
@@ -21,41 +22,12 @@ from teatree.core.repair_loop import (
     reoffer_verdict,
     requeue_verdict,
 )
-from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
+
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
 
 
-def phase_attempts(task: Task) -> list[TaskAttempt]:
-    """The WORK attempts of *task*'s ``(ticket, normalized-phase)``, oldest first.
-
-    Spans the re-queued ``Task`` rows of the same ticket-phase — a re-queue
-    creates a NEW ``Task`` row, so the iteration sequence is keyed on the ticket
-    + canonical phase, not a single ``Task``.
-
-    A usage-window limit-park (Directive #3) is EXCLUDED: its ``TaskAttempt`` records a
-    scheduling event, not a work iteration, so it must not burn the per-phase iteration
-    budget nor trip the identical-failure stall detector during a multi-hour outage.
-
-    A window-recoverable exhaustion FAILURE (subscription session/weekly or a transient
-    rate limit — see :func:`~teatree.llm.anthropic_limits.recoverable_exhaustion_cause`)
-    is EXCLUDED for the same reason: capacity ran out, the run never executed a work
-    iteration. It lands FAILED (not parked) when limit auto-recovery is off or on a
-    non-parking lane, so it carries no ``LIMIT_PARKED_PREFIX`` — counting it would let two
-    identical capacity dips trip the stall detector and spuriously dead-letter the phase.
-    API-credit exhaustion (no timed reset) is NOT excluded: it is a real halt the operator
-    must clear, so it keeps burning the budget and may escalate.
-    """
-    attempts = (
-        TaskAttempt.objects.filter(
-            task__ticket_id=task.ticket_id,
-            task__phase__in=phase_spellings(normalize_phase(task.phase)),
-        )
-        .excluding_parks()
-        .order_by("pk")
-    )
-    return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
-
-
-def check_requeue_allowed(task: Task) -> None:
+def check_requeue_allowed(task: "Task") -> None:
     """Raise if *task*'s ticket-phase may NOT be re-queued; escalate on a terminal verdict.
 
     Applies the pure :func:`~teatree.core.repair_loop.requeue_verdict` to the
@@ -96,7 +68,8 @@ def check_requeue_allowed(task: Task) -> None:
         _escalate_reoffers(task, phase=phase, reoffers=task.reclaim_count)
         raise
     attempts = phase_attempts(task)
-    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
+    adjacent = adjacent_work_attempts(attempts, ticket_phase_observations(task.ticket_id, phase))
+    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in adjacent)
     try:
         requeue_verdict(
             ticket_id=task.ticket_id,
@@ -114,7 +87,7 @@ def check_requeue_allowed(task: Task) -> None:
         raise
 
 
-def _escalate_reoffers(task: Task, *, phase: str, reoffers: int) -> None:
+def _escalate_reoffers(task: "Task", *, phase: str, reoffers: int) -> None:
     """Record a durable ``DeferredQuestion`` for an exhausted re-offer budget.
 
     The signal the re-offer loop had none of: a unit whose outcome nothing records
@@ -136,7 +109,7 @@ def _escalate_reoffers(task: Task, *, phase: str, reoffers: int) -> None:
     )
 
 
-def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
+def _escalate_stall(task: "Task", *, phase: str, iterations: int) -> None:
     """Record a durable ``DeferredQuestion`` for an ``IterationStalled``.
 
     Reuses the §17.1 invariant 9 away-mode escalation queue — surfaced via the
@@ -159,7 +132,7 @@ def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
     )
 
 
-def _escalate_cap(task: Task, *, phase: str, iterations: int) -> None:
+def _escalate_cap(task: "Task", *, phase: str, iterations: int) -> None:
     """Record a durable, deduped ``DeferredQuestion`` for a ``MaxIterationsExceeded``.
 
     The iteration-cap verdict previously dropped the row from the re-queue set

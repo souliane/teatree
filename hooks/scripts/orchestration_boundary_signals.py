@@ -20,6 +20,9 @@ sys.modules.setdefault("orchestration_boundary_signals", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.orchestration_boundary_signals", sys.modules[__name__])
 
 
+DISPATCH_TOOLS = frozenset({"Agent", "Task"})
+
+
 def call_is_from_subagent(data: dict) -> bool:
     """True when the gated tool call originates from a sub-agent.
 

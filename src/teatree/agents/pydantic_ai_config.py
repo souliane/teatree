@@ -44,6 +44,7 @@ _X_LANE_HEADER = "x-lane"
 LANE_FACTORY = "factory"
 LANE_EVAL = "eval"
 ANTHROPIC_CACHE_TTL = "5m"
+ANTHROPIC_CACHE_TTL_SECONDS = int(ANTHROPIC_CACHE_TTL.removesuffix("m")) * 60
 #: The placeholder an ``openai_compatible_extra_headers`` value may carry; each run substitutes its session id.
 SESSION_PLACEHOLDER = "{session}"
 
@@ -188,6 +189,7 @@ class PydanticAiModelConfig:
     tier: str | None = None
     regulated_path: RegulatedPathPolicy | None = None
     anthropic_credential: Credential | None = None
+    context_windows: Mapping[str, int] = field(default_factory=dict)
 
 
 def native_anthropic_model_name(options: HarnessOptions) -> str:

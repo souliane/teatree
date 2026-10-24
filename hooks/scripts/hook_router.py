@@ -52,6 +52,7 @@ from hooks.scripts.additional_context import emit_additional_context
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.brief_anchor_gate import handle_brief_anchor_lint
+from hooks.scripts.cache_wait_advisory import handle_warn_cache_wait
 from hooks.scripts.checkout_placement_gate import handle_block_worktree_checkout
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
@@ -3497,6 +3498,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_unfit_question,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,
+        handle_warn_cache_wait,
     ],
     "PostToolUse": [
         handle_track_classifier_denial,

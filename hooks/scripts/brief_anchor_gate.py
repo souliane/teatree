@@ -23,13 +23,12 @@ import contextlib
 import sys
 from pathlib import Path
 
+from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS
+
 # Alias the bare and ``hooks.scripts.`` identities so a test patching a helper here
 # and the live hook's own import operate on ONE module object.
 sys.modules.setdefault("brief_anchor_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.brief_anchor_gate", sys.modules[__name__])
-
-#: The two harness tool names that spawn a sub-agent.
-DISPATCH_TOOLS = frozenset({"Agent", "Task"})
 
 
 def _gate_enabled() -> bool:
