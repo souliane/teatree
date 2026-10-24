@@ -172,6 +172,7 @@ def _command_reply(command: SessionCommand) -> str:
     outcome = {
         "queued_followup": "queued follow-up (answering task)",
         "queued_resume": "queued follow-up (same task)",
+        "answered_resume": "resuming same task from this answer",
         "queued": "queued for the same task's next run",
     }.get(command.outcome, command.outcome)
     code = f" ({command.code})" if command.code else ""
@@ -316,11 +317,10 @@ def _replay_bound_command(
     else:
         reply = _command_reply(command)
         _apply_live_answer(command, bound_answer, backend)
-    kind = (
-        PendingChatInjection.AnswerKind.DELEGATED
-        if command.outcome == "queued_followup"
-        else PendingChatInjection.AnswerKind.SESSION
-    )
+    kind = {
+        "queued_followup": PendingChatInjection.AnswerKind.DELEGATED,
+        "answered_resume": PendingChatInjection.AnswerKind.QUESTION_REPLY,
+    }.get(command.outcome, PendingChatInjection.AnswerKind.SESSION)
     if not _mark_unit_loop_replied(unit, kind):
         return True
     try:
@@ -333,6 +333,8 @@ def _replay_bound_command(
     _confirm_unit_loop_replied(unit)
     if command.outcome == "queued_followup":
         report.dispatched += 1
+    elif command.outcome == "answered_resume":
+        report.answered_question += 1
     else:
         report.steered += 1
     return True

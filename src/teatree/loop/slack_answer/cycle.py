@@ -464,6 +464,26 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
     if not apply_bound_answer(bound, backend=backend, on_answer=apply_stop_answer):
         _unmark_unit_loop_replied(unit)
         return False
+    parked_task = bound.question.parked_task
+    if parked_task is not None:
+        command, _ = SessionCommand.objects.get_or_create(
+            command_id=slack_command_id(unit.overlay, unit.channel, unit.slack_ts),
+            defaults={
+                "ticket_id": parked_task.ticket_id,
+                "task_id": parked_task.pk,
+                "text": unit.text,
+                "outcome": "answered_resume",
+            },
+        )
+        try:
+            confirmed = _post_live_reply(backend, unit, _command_reply(command))
+        except Exception:
+            _unmark_unit_loop_replied(unit)
+            raise
+        if not confirmed:
+            _unmark_unit_loop_replied(unit)
+            msg = "resume-path receipt was not confirmed by Slack"
+            raise RuntimeError(msg)
     for row in unit.rows:
         row.observe_confirmed_loop_reply()
     _react_done(backend, unit)

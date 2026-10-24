@@ -44,12 +44,25 @@ class TestWorktreeBrief(TestCase):
 
         brief = _brief_for_worktree(Path("/tmp/brief-pending-task"))
 
-        assert brief == "Current plan"
+        assert brief == "Current plan\nNo migration."
         assert "No new setting." not in brief
 
         future.status = Task.Status.CLAIMED
         future.save(update_fields=["status"])
-        assert "No new setting." in _brief_for_worktree(Path("/tmp/brief-pending-task"))
+        assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo new setting."
+
+        future.status = Task.Status.FAILED
+        future.save(update_fields=["status"])
+        assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo migration."
+
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="debugging",
+            status=Task.Status.COMPLETED,
+            execution_reason="No extra migration.",
+        )
+        assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo extra migration."
 
 
 _SCOPED = PushGatePlan(

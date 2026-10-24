@@ -23,10 +23,19 @@
 
 ## 4. Live-system measurement and verification
 
-- Run a real `claude_sdk` child with an explicit small `agent_model_context_windows` value and an operator direction before the compaction threshold. **Named measurement:** capture the child's `compact_boundary` event count and trigger, its observed context usage immediately before the boundary, and whether its post-boundary reply restates the exact operator direction. A zero event count or a missing direction fails the experiment.
-- Record the command, model, configured window, observed event and direction result alongside the plan. Run `bash dev/test-affected.sh`, commit, then run `t3 tool verify-gates --expect-sha <committed HEAD>` and record both measured SHA and exit code. Check required CI at that head without opening another PR.
+- Coordinator: run a real `claude_sdk` child with an explicit small `agent_model_context_windows` value and an operator direction before the compaction threshold. **Named measurement:** capture the child's `compact_boundary` event count and trigger, its observed context usage immediately before the boundary, and whether its post-boundary reply restates the operator direction. A zero event count or a missing direction fails the experiment. The coordinator also owns the real Slack-thread delivery proof.
+- Builder: run `bash dev/test-affected.sh`, commit, then run `t3 tool verify-gates --expect-sha <committed HEAD>` and record both measured SHA and exit code. The coordinator records the live measurements and required CI at the pushed head without opening another PR.
+
+## 5. Independent review findings
+
+- Push brief: retain the newest claimed coding or debugging task's constraints; otherwise use the newest completed task. Pending and failed tasks cannot constrain the push. Test each state and claimed precedence through `_brief_for_worktree`.
+- Compaction: assert the reduced history stays below the measured bound on the tool-pair test; remove the skip-forward loop temporarily to prove the assertion fails.
+- Unsettled command: test that a changed ticket or text is rejected without settling or dispatching; replace the mismatch condition temporarily to prove the test fails.
+- Bound question answer: the recorded plan's D5 requires the thread to say when the ended task resumes. Record a settled `SessionCommand` for the notice, confirm it in the thread, and replay it if Slack read-back fails. Assert both delivery and retry through the public cycle.
 
 ## Open questions & assumptions
 
 - Assumed: an unsettled send with a missing session is ambiguous; `unknown_delivery` is the honest receipt and the original task owns replay.
-- Assumed: the existing Claude credential and model allowance can support the live experiment; if unavailable, report the exact missing capability rather than claiming it ran.
+- Decided-by-user: the coordinator owns live Claude and Slack experiments and their recorded results.
+- Assumed: a failed task is the terminal cancelled case because Task.Status has no cancelled member.
+- Assumed: the push of this branch's migration was blocked by a queued future rework brief, so the push brief selection is included even though the original plan did not name it.

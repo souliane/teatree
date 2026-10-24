@@ -87,6 +87,7 @@ class TestLateCompaction:
 
         assert _orphaned_return_ids(result) == []
         assert "Earlier conversation summary:" in repr(result[1])
+        assert compaction_mod._estimated_tokens(result) < 14_000
 
     def test_native_and_one_million_suffix_window_fallbacks(self) -> None:
         assert compaction_mod.context_window_for_model("anthropic/claude-opus-4-7", None) == 1_000_000
