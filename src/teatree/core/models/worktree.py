@@ -368,6 +368,7 @@ class Worktree(models.Model):
         self,
         *,
         set_keys: "WorktreeExtra | None" = None,
+        pop_keys: "Iterable[str] | None" = None,
         also_set: "WorktreeSiblingFields | None" = None,
     ) -> None:
         """Locked read-modify-write of ``extra``, the counterpart of :meth:`Ticket.merge_extra`.
@@ -393,6 +394,8 @@ class Worktree(models.Model):
             locked = type(self).objects.select_for_update().get(pk=self.pk)
             merged = dict(locked.extra or {})
             merged.update(set_keys or {})
+            for key in pop_keys or ():
+                merged.pop(key, None)
             changed_fields = [field for field, value in (also_set or {}).items() if getattr(locked, field) != value]
             for field, value in (also_set or {}).items():
                 setattr(locked, field, value)

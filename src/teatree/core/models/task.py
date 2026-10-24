@@ -556,7 +556,7 @@ class Task(models.Model):
         A conversation the last run EXHAUSTED carries nothing either, and FRESH rather than the
         stored discriminator: a needs-input run that filled the window filled the parent's own
         conversation, which is the very history it was continuing. So does one the retry cannot
-        continue: served by the CLI's fallback model, or with no room left for another prompt (#4874).
+        continue: served by the CLI's fallback model, past the resume cap, or with no room for another prompt (#4874).
         """
         last_attempt = self.attempts.order_by("-pk").first()
         if last_attempt is not None and (
@@ -636,8 +636,8 @@ class Task(models.Model):
         return children
 
     def phase_iteration_count(self) -> int:
-        """How many attempts this ticket-phase has already recorded (#2009)."""
-        from teatree.core.models.task_repair import phase_attempts  # noqa: PLC0415 — deferred: import cycle
+        """How many executed work iterations this ticket-phase has recorded (#2009)."""
+        from teatree.core.models.task_repair_queries import phase_attempts  # noqa: PLC0415 — deferred: import cycle
 
         return len(phase_attempts(self))
 

@@ -26,7 +26,11 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_gh_token_permissions,
     _check_provision_concurrency_from_host,
 )
-from teatree.cli.doctor.checks_cold_hooks import _check_cold_hook_settings_readable, _check_config_override_tier_healthy
+from teatree.cli.doctor.checks_cold_hooks import (
+    _check_cold_hook_settings_readable,
+    _check_config_override_tier_healthy,
+    _check_hook_orm_reachable,
+)
 from teatree.cli.doctor.checks_db_integrity import _check_database_health
 from teatree.cli.doctor.checks_dead_ticket_rows import check_dead_ticket_rows
 from teatree.cli.doctor.checks_docker import _check_control_db_reachable, _check_t3_launcher_managed
@@ -157,6 +161,7 @@ __all__ = (
     "_check_entrypoint_is_primary_clone",
     "_check_gates_shipped_inert",
     "_check_gh_token_permissions",
+    "_check_hook_orm_reachable",
     "_check_intake_budget_deadlock",
     "_check_intake_pass_incomplete",
     "_check_intent_freshness",

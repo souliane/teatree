@@ -32,7 +32,9 @@ import sys
 import time
 from pathlib import Path
 
+from hooks.scripts.django_bootstrap import orm_failures
 from hooks.scripts.gate_escape import escape_allows
+from hooks.scripts.gate_result import warn_gate_skipped
 
 # Alias both identities so a bare ``from standing_goal_stop_gate import ...`` (the
 # live hook, whose dir is on sys.path) and ``hooks.scripts.standing_goal_stop_gate``
@@ -56,8 +58,9 @@ def handle_standing_goal_stop(data: dict) -> bool | None:
 
     Returns ``True`` (emitting a ``decision: block``) only when an active goal's
     check ran and exited non-zero AND no audited escape was recorded.
-    Otherwise returns ``None`` so the session may end normally. Fail-safe-
-    to-silent: any malformed input or unexpected error returns ``None``.
+    Otherwise returns ``None`` so the session may end normally. An ORM failure
+    is reported as SKIPPED and returns ``None``; any other error reaches the router's
+    crash boundary, which allows the stop.
     """
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
@@ -66,7 +69,8 @@ def handle_standing_goal_stop(data: dict) -> bool | None:
             sys.path.insert(0, str(src_dir))
             added = True
         return _run(data)
-    except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
+    except orm_failures() as exc:
+        warn_gate_skipped("standing goal Stop", f"the ORM check failed ({type(exc).__name__}: {exc})")
         return None
     finally:
         if added:
@@ -96,6 +100,7 @@ def _run(data: dict) -> bool | None:
     if _gate_is_out_of_scope(data):
         return None
     if not bootstrap_teatree_django():
+        warn_gate_skipped("standing goal Stop", "the hook interpreter cannot read the ORM control DB")
         return None
     unmet = _first_unmet_goal()
     if unmet is None:

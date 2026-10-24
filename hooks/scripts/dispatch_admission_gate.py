@@ -27,24 +27,25 @@ NEVER-LOCKOUT: the deny routes through the router's shared
 ``_fail_open_or_deny`` chokepoint (back-imported lazily), so the always-allowed
 self-rescue commands and the master ``danger_gate_fail_open`` switch relax it;
 a per-call ``[gate-escape:dispatch_admission: <reason>]`` token in the dispatch prompt allows one
-call (an empty reason does not); and ANY internal error, an unbootstrappable
-Django and an unimportable ``teatree`` all fail OPEN.
+call (an empty reason does not); and an unbootstrappable Django, an unimportable
+``teatree`` and an ORM failure all fail OPEN, the last reported as SKIPPED. Any other error
+reaches the router's crash boundary, which allows.
 
 Cold-import safe: the module top imports only stdlib plus the already-extracted
-``orchestration_boundary_signals`` sibling — never Django / ``teatree.core``.
+``django_bootstrap``, ``gate_result`` and ``orchestration_boundary_signals`` siblings
+— never Django / ``teatree.core``.
 """
 
 import sys
 
-from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent
+from hooks.scripts.django_bootstrap import orm_failures
+from hooks.scripts.gate_result import warn_gate_skipped
+from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS, call_is_from_subagent
 
 # Alias the bare and ``hooks.scripts.`` identities so the handlers the router
 # re-exports and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("dispatch_admission_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.dispatch_admission_gate", sys.modules[__name__])
-
-#: The two harness tool names that spawn a sub-agent.
-DISPATCH_TOOLS = frozenset({"Agent", "Task"})
 
 
 def _block_message(reason: str) -> str:
@@ -68,6 +69,7 @@ def _denied_reason(*, apply_ceiling: bool, session_id: str = "") -> str | None:
     from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 — deferred: cold-hook import
 
     if not bootstrap_teatree_django():
+        warn_gate_skipped("dispatch admission", "the hook interpreter cannot read the ORM control DB")
         return None
     from teatree.core.dispatch_admission import dispatch_admission_denied_reason  # noqa: PLC0415 — deferred: post-setup
 
@@ -94,7 +96,8 @@ def handle_dispatch_admission(data: dict) -> bool:
         if data.get("tool_name") not in DISPATCH_TOOLS:
             return False
         reason = _denied_reason(apply_ceiling=not call_is_from_subagent(data), session_id=_session_of(data))
-    except Exception:  # noqa: BLE001 — crash-proof hook: a gate bug must never wedge the dispatch
+    except orm_failures() as exc:
+        warn_gate_skipped("dispatch admission", f"the ORM probe failed ({type(exc).__name__}: {exc})")
         return False
     if reason is None:
         return False
