@@ -57,6 +57,7 @@ from typing import Final
 
 from hooks.scripts.existing_artifact import with_open_pr_note
 from hooks.scripts.forge_api_detect import _is_api_create_endpoint_write, _is_existing_pr_metadata_only_edit
+from hooks.scripts.git_pin_args import GIT_PINS, git_executable
 from hooks.scripts.hook_budget import remaining_timeout_s
 from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.mr_cli_fields import extract_mr_target_repo, shlex_flag_value, strip_quoted_and_heredoc
@@ -158,7 +159,7 @@ def _git_probe(repo_dir: Path, args: list[str]) -> str | None:
         return None
     try:
         result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            ["git", "-C", str(repo_dir), *args],  # noqa: S607 — git resolved on PATH, as everywhere else in-hook
+            [git_executable(), *GIT_PINS, "-C", str(repo_dir), *args],
             capture_output=True,
             text=True,
             check=False,

@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from tests._git_repo import git_identity_env, make_git_repo, run_git
+from tests._planted_git_config import plant_exec_config
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _ROOT / "deploy" / "fast-forward-checkout.sh"
@@ -368,6 +369,45 @@ class TestAmbientAutostashCannotOverrideTheVerdict:
 
         assert "would be overwritten by merge" not in pull.stderr
         assert _git(clone, "rev-parse", "HEAD") == _git(clone, "rev-parse", "origin/main")
+
+
+class TestAmbientRebaseCannotOverrideTheFastForward:
+    def test_an_unrelated_dirty_file_survives_the_script(self, repos: tuple[Path, Path]) -> None:
+        clone, work = repos
+        _git(clone, "config", "pull.rebase", "interactive")
+        (clone / "keep.txt").write_text("local work\n", encoding="utf-8")
+
+        result = _run_script(clone)
+
+        assert result.returncode == 0, result.stderr
+        assert _git(clone, "rev-parse", "HEAD") == _git(work, "rev-parse", "HEAD")
+        assert (clone / "keep.txt").read_text(encoding="utf-8") == "local work\n"
+
+    def test_a_bare_pull_under_the_same_config_refuses_the_dirty_tree(self, repos: tuple[Path, Path]) -> None:
+        clone, _ = repos
+        _git(clone, "config", "pull.rebase", "interactive")
+        (clone / "keep.txt").write_text("local work\n", encoding="utf-8")
+
+        pull = subprocess.run(
+            [_GIT, "-C", str(clone), "pull", "--ff-only"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=git_identity_env(),
+        )
+
+        assert pull.returncode != 0
+        assert "rebase" in pull.stderr.lower()
+
+
+def test_fast_forward_does_not_run_planted_git_commands(repos: tuple[Path, Path], tmp_path: Path) -> None:
+    clone, _ = repos
+    planted = plant_exec_config(clone, tmp_path)
+
+    result = _run_script(clone)
+
+    assert result.returncode == 0, result.stderr
+    assert planted.fired == []
 
 
 class TestControl:
