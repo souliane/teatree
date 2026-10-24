@@ -4,9 +4,65 @@ import pytest
 
 from teatree.agents import skill_injection
 from teatree.skill_support.loading import _PHASE_TO_SKILL, SkillLoadingPolicy
+from tests.quality._anchor_prose import covered_bytes, load_ledger, window_digests
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / "skills/interactive/SKILL.md"
+
+
+def _answer_policy() -> str:
+    return (
+        SKILL.read_text(encoding="utf-8").split("## Answer the owner's cards in his place", 1)[1].split("\n## ", 1)[0]
+    )
+
+
+def test_attended_answer_scope_excludes_headless_runs() -> None:
+    assert (
+        "This applies only to this attended session, below Rules 0-5. "
+        "A headless factory run never answers a card addressed to the owner in his place."
+    ) in _answer_policy()
+
+
+def test_checkout_proof_requires_no_process_inside() -> None:
+    assert "and has no process inside it" in _answer_policy()
+
+
+def test_attended_answer_uses_interactive_resolver() -> None:
+    assert "questions dismiss <id> --resolver agent:interactive" in _answer_policy()
+
+
+@pytest.mark.parametrize(
+    "fact",
+    [
+        "standing instruction of 2026-10-22",
+        "read-only re-check",
+        "expected head",
+        "clean tree",
+        "no merge in progress",
+        "no process with its cwd inside",
+        "pseudo-terminal",
+        "clean environment",
+        "audit trail reads as a direct owner command",
+        "plainly report that it ran the command",
+        "leave it on the owner's card",
+    ],
+)
+def test_checkout_card_attestation_route_names_each_condition(fact: str) -> None:
+    assert fact in _answer_policy()
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    ["This hold requires the owner's per-PR authorization", "Only an attended session may answer"],
+)
+def test_blueprint_owner_rule_clauses_are_pegged(anchor: str) -> None:
+    ledger = load_ledger(anchor)
+    assert set(ledger.pegs) == {"BLUEPRINT.md"}
+    prose = (ROOT / "BLUEPRINT.md").read_text(encoding="utf-8")
+    actual = window_digests(prose, anchor, ledger.radius)
+    assert actual
+    assert [sha for sha, _window in actual] == list(ledger.pegs["BLUEPRINT.md"])
+    assert covered_bytes(prose, anchor, ledger.radius) == ledger.coverage["BLUEPRINT.md"]
 
 
 @pytest.mark.parametrize(
@@ -37,7 +93,8 @@ def test_headless_rules_do_not_answer_owner_cards(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [ROOT / "skills"])
     rendered = skill_injection.read_only_venue_skill_contents(["rules"], {"rules"})
     assert "0. **Nothing may endanger security or leak:**" in rendered
-    assert ("Rule " + "-1") not in rendered
+    for retired in ("Rule " + "-1", "Impersonate", "in the owner" + "'s place"):
+        assert retired not in rendered
 
 
 def test_runtime_phases_do_not_load_the_attended_skill(tmp_path: Path) -> None:

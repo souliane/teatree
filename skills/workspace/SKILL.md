@@ -99,6 +99,7 @@ is still working there; a refused factory task parks without spending its
 repair budget and leaves the work intact. When this venue cannot read a usable
 process table, owner attestation admits one dispatch after two matching state
 reads. The next dispatch needs a fresh owner attestation.
+An attended session may attest under the owner's standing instruction after the read-only proof and terminal route in `skills/interactive/SKILL.md`.
 An interrupted factory run is re-attested at the next writer's fence only when
 the recorded custody chain, a clear host process table, and every ticket checkout
 on its recorded branch or the forge-reported head branch of an open pull request
