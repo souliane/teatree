@@ -30,7 +30,9 @@ class TestTeatreeMcpRegistrationDoctorCheck:
         assert "does not declare" in out
 
     def test_a_well_formed_registration_is_ok_silent(self, tmp_path: Path, capsys) -> None:
-        (tmp_path / ".mcp.json").write_text('{"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}}')
+        (tmp_path / ".mcp.json").write_text(
+            '{"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve", "--interactive"]}}}'
+        )
         with patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=tmp_path):
             assert _check_teatree_mcp_registration() is True
         assert capsys.readouterr().out == ""
@@ -41,4 +43,4 @@ class TestTeatreeMcpRegistrationDoctorCheck:
             assert _check_teatree_mcp_registration() is True
         out = capsys.readouterr().out
         assert out.startswith("WARN")
-        assert "expected 't3' ['mcp', 'serve']" in out
+        assert "expected 't3' ['mcp', 'serve', '--interactive']" in out

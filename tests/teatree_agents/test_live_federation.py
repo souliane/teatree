@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from teatree.agents.live_control import PeerIdentity
+from teatree.agents.live_delivery import InboxPage, SendReceipt
 from teatree.agents.live_federation import (
     FederationRefusedError,
     WorkerGoneError,
@@ -18,7 +20,30 @@ from teatree.agents.live_federation import (
     verified_sender,
 )
 from teatree.agents.live_mailbox import LiveMailboxBroker, reset_shared_brokers
+from teatree.agents.live_mailbox_client import InteractiveMailboxLease
 from teatree.mcp.agent_mailbox import MailboxClient
+
+
+def test_attended_peer_discovers_and_messages_an_agent_on_another_worker(tmp_path: Path) -> None:
+    with (
+        LiveMailboxBroker(runtime_dir=tmp_path),
+        InteractiveMailboxLease.connect(tmp_path) as attended,
+        LiveMailboxBroker(runtime_dir=tmp_path) as second,
+    ):
+        agent = second.register(room="ticket-2", harness="claude_sdk", label="coder")
+        attended_client = MailboxClient(attended.socket_path, attended.token)
+        agent_client = MailboxClient(agent.socket_path, agent.token)
+
+        async def exchange() -> tuple[list[PeerIdentity], SendReceipt, InboxPage]:
+            peers = await attended_client.peers()
+            sending = asyncio.create_task(attended_client.send(agent.address, "nonce-b", "remote-1"))
+            received = await agent_client.wait(timeout_seconds=2)
+            return peers, await sending, received
+
+        peers, receipt, received = asyncio.run(exchange())
+        assert any(peer["address"] == agent.address for peer in peers)
+        assert receipt["outcome"] == "accepted_inbox_read"
+        assert received["messages"][0]["text"] == "nonce-b"
 
 
 def test_peer_from_another_pid_namespace_requires_a_matching_source_broker_proof(tmp_path: Path) -> None:
@@ -138,6 +163,35 @@ def test_a_source_broker_rejects_a_proof_for_another_socket(tmp_path: Path) -> N
 def test_a_verified_source_cannot_substitute_another_sender_address(tmp_path: Path) -> None:
     request = {"source_socket": str(tmp_path / "w-source.sock"), "source_address": "claimed"}
     identity = {"pid": 7, "sender": {"address": "other", "ticket": "first", "harness": "claude_sdk", "label": "peer"}}
+
+    with (
+        patch("teatree.agents.live_federation.call", new_callable=AsyncMock, return_value=identity),
+        pytest.raises(FederationRefusedError, match="sender is not active"),
+    ):
+        asyncio.run(verified_sender(request, own_socket=tmp_path / "w-own.sock", connected_pid=7))
+
+
+def test_a_verified_source_without_a_sender_record_is_refused(tmp_path: Path) -> None:
+    request = {"source_socket": str(tmp_path / "w-source.sock"), "source_address": "claimed"}
+    identity = {"pid": 7, "sender": "claimed"}
+
+    with (
+        patch("teatree.agents.live_federation.call", new_callable=AsyncMock, return_value=identity),
+        pytest.raises(FederationRefusedError, match="sender is not active"),
+    ):
+        asyncio.run(verified_sender(request, own_socket=tmp_path / "w-own.sock", connected_pid=7))
+
+
+@pytest.mark.parametrize(
+    "ticket_claim",
+    [{"harness": "claude_sdk"}, {"harness": "interactive", "ticket": "first"}],
+    ids=["agent_without_a_ticket", "attended_with_a_ticket"],
+)
+def test_a_sender_whose_ticket_does_not_match_its_harness_is_refused(
+    tmp_path: Path, ticket_claim: dict[str, str]
+) -> None:
+    request = {"source_socket": str(tmp_path / "w-source.sock"), "source_address": "claimed"}
+    identity = {"pid": 7, "sender": {"address": "claimed", "label": "peer", **ticket_claim}}
 
     with (
         patch("teatree.agents.live_federation.call", new_callable=AsyncMock, return_value=identity),

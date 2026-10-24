@@ -100,9 +100,9 @@ What teatree models, verified against code:
 
 | Check | Verdict |
 |-------|---------|
-| `_check_teatree_mcp_registration` | WARN when the plugin-bundled `.mcp.json` no longer declares `teatree` as `t3 mcp serve` (§ 2.2). |
+| `_check_teatree_mcp_registration` | WARN when the plugin-bundled `.mcp.json` no longer declares `teatree` as `t3 mcp serve --interactive` (§ 2.2). |
 | `_check_declared_services_configured` | FAIL for each service an overlay declares that teatree holds no credentials for, naming the service and the declaring overlays — resolved through the same `SERVICE_CLIENTS` builders the tools use. |
-| `_check_teatree_mcp_liveness` | FAIL when the registered `t3 mcp serve` does not answer a real `initialize`, naming the cause and the remedy. |
+| `_check_teatree_mcp_liveness` | FAIL when the registered `t3 mcp serve --interactive` does not answer a real `initialize`, naming the cause and the remedy. |
 
 A Slack write tool on any MCP server but teatree's is refused at `PreToolUse`
 (`hooks/scripts/mcp_slack_write_guard.py`) and redirected to the `t3` CLI;
@@ -125,7 +125,7 @@ a re-check.
 
 ## 2.2 Teatree's own bundled structured-search MCP server (souliane/teatree#2863)
 
-Teatree ships its own MCP server (`t3 mcp serve`, [#1023](https://github.com/souliane/teatree/issues/1023)) as a **plugin-bundled** server: a `.mcp.json` at the repo root (sibling of `.claude-plugin/`), the same convention official Claude Code plugins use for a bundled server. Claude Code starts a plugin-bundled server automatically once the plugin is enabled — `t3 setup` already enables the plugin (§ 3 below), so no separate `claude mcp add` step registers this one. Its tools surface as `mcp__teatree__*` and are **read + gate-preserving writes**, not read-only: ~13 read tools (`ticket_search`, `ticket_get`, `ticket_list`, `worktree_status`, `pr_for_ticket`, `task_list`, `loop_stats`, `command_search`, `config_setting_get`, `gate_status`, `factory_signals`, …) plus the write suite (`pr_create`, `pr_merge`, `notify_user`, `config_setting_set`, the review-post and per-service forge/slack writes). Each write wraps the exact seam the `t3` CLI calls, so the same FSM / merge / on-behalf / leak gates fire — the server does not expose an ungated write path. Per-service groups register only when an overlay declares the service.
+Teatree ships its own MCP server (`t3 mcp serve --interactive`, [#1023](https://github.com/souliane/teatree/issues/1023)) as a **plugin-bundled** server: a `.mcp.json` at the repo root (sibling of `.claude-plugin/`), the same convention official Claude Code plugins use for a bundled server. Claude Code starts a plugin-bundled server automatically once the plugin is enabled — `t3 setup` already enables the plugin (§ 3 below), so no separate `claude mcp add` step registers this one. Its tools surface as `mcp__teatree__*` and are **read + gate-preserving writes**, not read-only: ~13 read tools (`ticket_search`, `ticket_get`, `ticket_list`, `worktree_status`, `pr_for_ticket`, `task_list`, `loop_stats`, `command_search`, `config_setting_get`, `gate_status`, `factory_signals`, …) plus the write suite (`pr_create`, `pr_merge`, `notify_user`, `config_setting_set`, the review-post and per-service forge/slack writes). Each write wraps the exact seam the `t3` CLI calls, so the same FSM / merge / on-behalf / leak gates fire — the server does not expose an ungated write path. Per-service groups register only when an overlay declares the service.
 
 `teatree.core.mcp_registration.verify_teatree_mcp_registration` is the structural check both `t3 setup` (an `OK`/`WARN` confirmation line) and `t3 doctor check` (`_check_teatree_mcp_registration`) read — the single chokepoint so the two surfaces cannot drift on what "correctly registered" means. Whether the server actually runs is the doctor's liveness check (§ 2.1).
 

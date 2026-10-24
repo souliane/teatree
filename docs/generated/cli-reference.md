@@ -6030,6 +6030,8 @@ Usage: t3 mcp serve [OPTIONS]
 │                            phase without write access launches).             │
 │ --allow-write        TEXT  A write tool a --read-only server still registers │
 │                            (repeatable).                                     │
+│ --interactive              Join the live peer network as an attended         │
+│                            operator session.                                 │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
