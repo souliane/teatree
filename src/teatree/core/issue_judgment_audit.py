@@ -21,7 +21,9 @@ def record_issue_judgment(
     lines = [f"{outcome.kind} {outcome.issue_url}: {len(live_urls)} candidates judged"]
     for decision in live_decisions:
         verdict = "fits" if decision.fits else "rejected"
-        reason = decision.reason.strip() or "caller marked as fitting"
+        reason = decision.reason.strip() or (
+            "caller marked as fitting" if decision.fits else "caller supplied no rejection reason"
+        )
         lines.append(f"{decision.candidate_url} {verdict}: {reason}")
     record_private_audit(
         forge=draft.forge or forge_from_url(outcome.issue_url),
