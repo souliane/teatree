@@ -340,20 +340,20 @@ class CiAccountSwitcher:
         if not token:
             empty = f"no token stored at {account!r} — the CI secret was left untouched"
             raise CiAccountSwitchError(empty)
+        if "\n" in token or "\r" in token:
+            message = f"token at {account!r} contains a newline — the CI secret was left untouched"
+            raise CiAccountSwitchError(message)
         self._put_secret(CI_OAUTH_SECRET, [token])
 
-    def _put_secret(self, name: str, tokens: Sequence[str]) -> None:
+    def _put_secret(self, name: str, tokens: list[str]) -> None:
         """Set secret *name* to *tokens*, one per line, the value on stdin only — gh has no body-file flag."""
         code, out = self._gh(["secret", "set", name, "--repo", self._repo], stdin_text="\n".join(tokens))
         if code != 0:
-            # Keep the actionable gh stderr, but never echo the value supplied on stdin.
-            # The shared sanitizer additionally strips NAME=value/header/query secrets.
             detail = out
-            for token in tokens:
+            for token in sorted((token for token in tokens if token), key=len, reverse=True):
                 detail = detail.replace(token, "[REDACTED]")
-            failed = (
-                f"`gh secret set {name}` failed on {self._repo} (exit {code}): {redact_secrets(detail.strip())[:500]}"
-            )
+            detail = redact_secrets(detail.strip())[:500]
+            failed = f"`gh secret set {name}` failed on {self._repo} (exit {code}): {detail}"
             raise CiAccountSwitchError(failed)
 
     def _record_account(self, account: str) -> None:
