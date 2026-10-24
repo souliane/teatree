@@ -229,6 +229,14 @@ SECRET_WRITES: list[tuple[str, Callable[[GhClient], None]]] = [
 ]
 
 
+def _write_custom_token(secret: str, gh: GhClient, token: str) -> None:
+    switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _account: token)
+    if secret == CI_OAUTH_SECRET:
+        switcher.switch(_live_rows(), run_start=RUN_START, allowlist=(SOULIANE,))
+    else:
+        switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
+
+
 class TestSecretSetArgv:
     @pytest.mark.parametrize(("secret", "write"), SECRET_WRITES)
     def test_the_value_rides_on_stdin_with_no_body_flag(self, secret: str, write: Callable[[GhClient], None]) -> None:
@@ -274,6 +282,47 @@ class TestSecretSetArgv:
         )
         assert retired.returncode != 0
         assert "unknown flag: --body-file" in retired.stderr
+
+    @pytest.mark.parametrize("secret", [CI_OAUTH_SECRET, CI_OAUTH_POOL_SECRET])
+    def test_failed_write_redacts_query_delimited_value(self, secret: str) -> None:
+        token = "secret&tail"
+        gh = FakeGh(fail_on=secret, fail_output=f"failed: token={token}")
+
+        with pytest.raises(CiAccountSwitchError) as caught:
+            _write_custom_token(secret, gh, token)
+
+        assert str(caught.value).endswith(": failed: token=<redacted>")
+        assert not gh.wrote_variable
+
+    @pytest.mark.parametrize("secret", [CI_OAUTH_SECRET, CI_OAUTH_POOL_SECRET])
+    def test_failed_write_sanitizes_other_credentials(self, secret: str) -> None:
+        gh = FakeGh(fail_on=secret, fail_output="GH_TOKEN=value")
+
+        with pytest.raises(CiAccountSwitchError) as caught:
+            _write_custom_token(secret, gh, "separate-secret")
+
+        assert str(caught.value).endswith(": GH_TOKEN=<redacted>")
+
+    @pytest.mark.parametrize("secret", [CI_OAUTH_SECRET, CI_OAUTH_POOL_SECRET])
+    def test_failed_write_limits_error_detail_to_500_characters(self, secret: str) -> None:
+        gh = FakeGh(fail_on=secret, fail_output="x" * 2000)
+
+        with pytest.raises(CiAccountSwitchError) as caught:
+            _write_custom_token(secret, gh, "separate-secret")
+
+        detail = str(caught.value).partition("(exit 1): ")[2]
+        assert detail == "x" * 500
+
+    @pytest.mark.parametrize("secret", [CI_OAUTH_SECRET, CI_OAUTH_POOL_SECRET])
+    def test_failed_write_replaces_value_before_cutting_error(self, secret: str) -> None:
+        token = "secret&tail"
+        gh = FakeGh(fail_on=secret, fail_output="x" * 497 + token)
+
+        with pytest.raises(CiAccountSwitchError) as caught:
+            _write_custom_token(secret, gh, token)
+
+        detail = str(caught.value).partition("(exit 1): ")[2]
+        assert detail == "x" * 497 + "[RE"
 
 
 class TestEmptyAllowlistFailsClosed(TestCase):
