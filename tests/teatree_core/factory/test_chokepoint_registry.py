@@ -38,6 +38,7 @@ _EXPECTED_MERGE_GATES = frozenset(
         "ticket_scoped_gates",
         "not_draft",
         "ci_verdict",
+        "rules_owner_review",
     },
 )
 

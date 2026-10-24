@@ -170,6 +170,11 @@ MERGE_KEYSTONE = GuardedChokepoint(
             callable_path="teatree.core.merge.execution.assert_ci_not_failed",
             purpose="The live required-checks verdict is not FAILED — expedite can never waive it (§17.4.3 step 3).",
         ),
+        GateSpec(
+            name="rules_owner_review",
+            callable_path="teatree.core.merge.rules_owner_review.assert_rules_owner_review",
+            purpose="A change to the rules file needs the owner's approval of the exact live head (#5473).",
+        ),
     ),
 )
 
