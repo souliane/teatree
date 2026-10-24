@@ -165,7 +165,13 @@ def _run_staged_entrypoint(staged: Path, tmp_path: Path, role: str) -> subproces
         "TEATREE_DISK_TMPDIR": str(tmp_path),
     }
     return subprocess.run(
-        [BASH, str(staged / "entrypoint.sh")], env=env, text=True, capture_output=True, timeout=20, check=False
+        [BASH, str(staged / "entrypoint.sh")],
+        env=env,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
     )
 
 

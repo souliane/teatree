@@ -40,7 +40,13 @@ def _entrypoint(tmp_path: Path, role: str, **extra_env: str) -> subprocess.Compl
         **extra_env,
     }
     return subprocess.run(
-        [BASH, str(DEPLOY / "entrypoint.sh")], env=env, capture_output=True, text=True, timeout=20, check=False
+        [BASH, str(DEPLOY / "entrypoint.sh")],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
     )
 
 
