@@ -162,8 +162,10 @@ class MailboxClient:
         (an idle Claude session started a new turn), accepted_inbox_read (the peer read its inbox), or rejected
         with a code: not_accepted_in_time (still queued in the peer's inbox), not_idle, stale_command,
         session_closed or dropped_unread. Acceptance is not obedience. Retry with the same key to keep waiting;
-        a new key sends a second copy. A push-only peer has no inbox copy; its receipt always says
-        queued_in_inbox false. A pydantic_ai peer can use native inbox tools without an MCP session.
+        a new key sends a second copy. A new Codex thread can read its worker inbox; a resumed
+        thread uses push only; its receipt says queued_in_inbox false.
+        Other receipts say whether a message remains queued.
+        A pydantic_ai peer can use native inbox tools without an MCP session.
         An idle Claude peer can be woken once during its bounded live window. An uncertain push is unknown_delivery.
         """
         return cast(

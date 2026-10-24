@@ -101,8 +101,10 @@ A running Codex turn accepts operator input or a peer message through the App Se
 `turn/steer` with its open `expectedTurnId`. TeaTree reports `accepted_current_turn`
 only when the answer names that turn. A timeout, lost answer or turn-end race is
 `unknown_delivery` and is never replayed; an idle or ended turn rejects the input.
-In the worker's Codex sandbox, MCP is unavailable, so the task is a push-only
-mailbox recipient with no inbox copy.
+In the worker's Codex sandbox, MCP is unavailable. New threads receive mailbox
+dynamic tools, and the worker retains their inbox until the task exits. Resumed
+threads keep their creation-time tool catalog; their peer messages use the push
+path without claiming an inbox copy.
 
 ## Forge credential parity
 

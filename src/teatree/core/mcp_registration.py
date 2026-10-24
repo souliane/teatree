@@ -30,7 +30,8 @@ MCP_JSON_FILENAME = ".mcp.json"
 TEATREE_MCP_SERVER_NAME = "teatree"
 EXPECTED_COMMAND = "t3"
 EXPECTED_ARGS = ("mcp", "serve")
-PLUGIN_ARGS = (*EXPECTED_ARGS, "--interactive")
+INTERACTIVE_ARG = "--interactive"
+PLUGIN_ARGS = (*EXPECTED_ARGS, INTERACTIVE_ARG)
 #: Appended for a dispatch whose phase may not write through the server.
 READ_ONLY_ARG = "--read-only"
 #: Names one write tool a read-only server still registers.

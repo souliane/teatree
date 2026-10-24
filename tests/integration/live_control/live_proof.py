@@ -5,7 +5,7 @@ import os
 import secrets
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -69,13 +69,17 @@ def harness(kind: str) -> GuardedHarness:
     )
 
 
-def wait_for_peer(task_pk: int, *, timeout: float = 90) -> str:
+def wait_for_peer(task_pk: int, recipient_future: Future[HarnessOutcome], *, timeout: float = 90) -> str:
     broker = shared_broker()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for peer in broker.identities():
             if peer["label"].endswith(f"task {task_pk}"):
                 return peer["address"]
+        if recipient_future.done():
+            outcome = recipient_future.result()
+            msg = f"task {task_pk} completed before joining the mailbox: {outcome.agent_text}"
+            raise AssertionError(msg)
         time.sleep(0.1)
     msg = f"task {task_pk} did not join the mailbox"
     raise TimeoutError(msg)
@@ -128,7 +132,7 @@ def run_pair(
 
     with patch.object(broker, "_accepted", record), ThreadPoolExecutor(max_workers=1) as pool:
         recipient_future = pool.submit(receive)
-        address = wait_for_peer(recipient_task.pk)
+        address = wait_for_peer(recipient_task.pk, recipient_future)
         seen["sender"] = asyncio.run(
             drive_with_heartbeat(
                 sender_task,

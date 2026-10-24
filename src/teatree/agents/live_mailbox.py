@@ -11,13 +11,13 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
 from typing import NoReturn, Self
 
 from teatree.agents.live_control import ControlOutcome, LiveTask, PeerIdentity, RejectCode, frame_peer_message
 from teatree.agents.live_delivery import (
+    _MAX_INBOX_MESSAGES,
     MAX_WAIT_SECONDS,
     InboxMessage,
     InboxPage,
@@ -25,8 +25,9 @@ from teatree.agents.live_delivery import (
     MailboxRequest,
     MailboxTextTooLargeError,
     PeerDelivery,
-    RemoteReceipts,
+    PushOnlyTask,
     SendReceipt,
+    _Participant,
     peer_identity,
     refused_receipt,
     send_fields,
@@ -53,7 +54,6 @@ from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 
 logger = logging.getLogger(__name__)
 
-_MAX_INBOX_MESSAGES = 1_000
 _MAX_REQUEST_BYTES = 128_000  # JSON escaping can expand a valid 16-KiB body sixfold
 _MAX_PAGE_SIZE = 100
 _MAX_PAGE_BYTES = 1_800_000
@@ -62,29 +62,6 @@ MAX_WAITING_SENDS = 4
 
 def _reject(message: str) -> NoReturn:
     raise ValueError(message)
-
-
-@dataclass(slots=True)
-class _Participant:
-    address: str
-    token: str = field(repr=False)
-    room: str
-    harness: str
-    label: str
-    phase: str = ""
-    can_receive: bool = True
-    task: LiveTask | None = None
-    reads_inbox: bool = True
-    inbox: deque[InboxMessage] = field(default_factory=lambda: deque(maxlen=_MAX_INBOX_MESSAGES))
-    sent: dict[str, PeerDelivery] = field(default_factory=dict)
-    remote_sent: RemoteReceipts = field(default_factory=RemoteReceipts)
-    dropped_before: int = 0
-    waiting: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class PushOnlyTask:
-    task: LiveTask
 
 
 class LiveMailboxBroker:
@@ -111,6 +88,7 @@ class LiveMailboxBroker:
         self._by_address: dict[str, _Participant] = {}
         self._next_message_id = 0
         self._delivery: dict[int, PeerDelivery] = {}
+        self._joined_writers: set[asyncio.StreamWriter] = set()
         self._relay = PeerRelay(self)
 
     @property
@@ -184,6 +162,7 @@ class LiveMailboxBroker:
             can_receive=can_receive,
             task=bound_task,
             reads_inbox=not push_only,
+            inbox=deque(maxlen=_MAX_INBOX_MESSAGES),
         )
         with self._lock:
             self._by_token[participant.token] = participant
@@ -242,6 +221,12 @@ class LiveMailboxBroker:
         self._ready.set()
         async with server:
             await self._stop.wait()
+            server.close()
+            writers = tuple(self._joined_writers)
+            for writer in writers:
+                writer.close()
+            await asyncio.gather(*(writer.wait_closed() for writer in writers))
+            await server.wait_closed()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -287,12 +272,14 @@ class LiveMailboxBroker:
 
     async def _handle_join(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         identity = self._join(writer.get_extra_info("socket"))
+        self._joined_writers.add(writer)
         try:
             payload = {"result": {"address": identity.address, "token": identity.token}}
             writer.write(json.dumps(payload).encode() + b"\n")
             await writer.drain()
             await reader.read()
         finally:
+            self._joined_writers.discard(writer)
             self.unregister(identity.address)
             writer.close()
             await writer.wait_closed()
@@ -306,6 +293,8 @@ class LiveMailboxBroker:
         return await self._dispatch(request)
 
     def _join(self, sock: PeerSocket | None) -> MailboxIdentity:
+        if self._stop is not None and self._stop.is_set():
+            raise IngressRefusedError(RejectCode.SESSION_CLOSED, "Live mailbox broker is stopping")
         role = classify_peer(peer_credentials(sock), worker_pid=os.getpid(), own_uid=os.getuid())
         if role is not PeerRole.OPERATOR:
             raise IngressRefusedError(RejectCode.PERMISSION_DENIED, "Interactive mailbox join requires an operator")

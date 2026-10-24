@@ -15,6 +15,7 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from typer.testing import CliRunner
 
+from teatree.agents.live_delivery import MAILBOX_AUTH_ENV
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError, NoLiveWorkerError
 from teatree.cli.mcp import serve
 from teatree.core.mcp_registration import serve_flags_for_phase
@@ -29,6 +30,30 @@ _app.command()(serve)
 
 
 class TestServeCommand:
+    def test_attended_server_passes_mailbox_identity_without_exporting_its_token(self) -> None:
+        seen: list[tuple[dict[str, object], bool]] = []
+
+        def build(**kwargs: object) -> object:
+            seen.append((kwargs, MAILBOX_AUTH_ENV in os.environ))
+            return type("Server", (), {"run": lambda self, transport: None})()
+
+        with (
+            patch.dict(os.environ),
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.agents.live_mailbox_client.InteractiveMailboxLease.connect") as connect,
+            patch("teatree.mcp.server.build_server", side_effect=build),
+        ):
+            os.environ.pop(MAILBOX_AUTH_ENV, None)
+            connect.return_value.socket_path = Path("/tmp/worker.sock")
+            connect.return_value.token = "test-token"
+            connect.return_value.mcp_env.return_value = {MAILBOX_AUTH_ENV: "test-token"}
+            result = runner.invoke(_app, ["--interactive"])
+
+        assert result.exit_code == 0
+        assert len(seen) == 1
+        assert not seen[0][1]
+        assert seen[0][0]["mailbox_client"].token == "test-token"
+
     def test_the_notion_write_seam_is_registered_before_the_server_is_built(self) -> None:
         factories = []
         original = services_notion._factory_registry.factory

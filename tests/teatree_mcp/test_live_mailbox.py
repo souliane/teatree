@@ -164,6 +164,20 @@ def test_attended_mcp_peer_exchanges_messages_and_disconnect_revokes_identity(
     wait_until(lambda: broker.identity_of(attended.address) is None, "attended peer to disconnect")
 
 
+def test_broker_shutdown_closes_an_attached_attended_lease_and_retires_its_owner(tmp_path: Path) -> None:
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker, InteractiveMailboxLease.connect(tmp_path):
+        socket_path = broker.socket_path
+        owner_path = socket_path.with_suffix(".owner")
+        assert owner_path.exists()
+
+        started = time.monotonic()
+        broker.close()
+
+        assert time.monotonic() - started < 1
+        assert not socket_path.exists()
+        assert not owner_path.exists()
+
+
 def test_worker_descendant_cannot_join_as_an_attended_peer(broker: LiveMailboxBroker, tmp_path: Path) -> None:
     with (
         patch("teatree.agents.live_mailbox.classify_peer", return_value=PeerRole.AGENT),

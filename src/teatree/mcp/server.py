@@ -46,6 +46,7 @@ from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
 from mcp.types import Icon, ToolAnnotations
 
+from teatree.agents.live_mailbox_client import MailboxClient as NeutralMailboxClient
 from teatree.backends.types import Service
 from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
@@ -490,7 +491,12 @@ _READ_TOOLS: dict[str, Callable[..., Awaitable[Any]]] = {
 }
 
 
-def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = frozenset()) -> MCPServer:
+def build_server(
+    *,
+    read_only: bool = False,
+    allowed_writes: frozenset[str] = frozenset(),
+    mailbox_client: NeutralMailboxClient | None = None,
+) -> MCPServer:
     """Assemble a fresh stdio MCP server with the read + gate-preserving write tools.
 
     Returns a new instance on every call (no import-time global) so tests can
@@ -501,13 +507,14 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)
+    mailbox_client = mailbox_client or agent_mailbox.MailboxClient.from_env()
 
     instructions = (
         _PREAMBLE
         + (
             "\n\nLive agent mailbox (busy peers receive now; idle Claude peers can wake within their window):\n"
             + agent_mailbox.INSTRUCTIONS
-            if agent_mailbox.MailboxClient.from_env() is not None
+            if mailbox_client is not None
             else ""
         )
         + "".join(f"\n\nOverlay tools ({name}):\n{group.instructions}" for name, group in overlay_groups)
@@ -523,7 +530,7 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
         if service in declared:
             register_group(server)
     write_tools.register(server)
-    agent_mailbox.register(server)
+    agent_mailbox.register(server, client=mailbox_client)
     # Last, and tool by tool rather than through a registrar the overlay owns:
     # the server is what puts a contributed tool on the surface, so a name it has
     # already given out is refused here rather than silently discarded by mcp.

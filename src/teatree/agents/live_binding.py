@@ -59,11 +59,7 @@ def bound_task_mailbox(
                 room=str(task.ticket),
                 harness=task.harness,
                 label=label,
-                task=(
-                    task
-                    if teatree_stdio is not None or task.harness in {"pydantic_ai", "codex_app_server"}
-                    else PushOnlyTask(task)
-                ),
+                task=PushOnlyTask(task) if task.harness == "codex_app_server" and options.resume else task,
                 can_receive=task.harness not in {"pydantic_ai", "codex_app_server"}
                 or bool(
                     task.phase

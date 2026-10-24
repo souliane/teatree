@@ -200,11 +200,21 @@ def test_codex_dynamic_tools_send_a_peer_nonce_through_the_worker(tmp_path: Path
 
 def test_a_resumed_codex_thread_keeps_the_tool_catalog_it_was_created_with(tmp_path: Path) -> None:
     script, log = _fake_server(tmp_path)
-    options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={})
+    options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={}, resume="thread-1")
     task = LiveTask(pk=7, ticket=3, phase="planning", harness="codex_app_server", model="codex")
 
     async def run() -> None:
-        with LiveMailboxBroker(runtime_dir=tmp_path) as broker, bound_task_mailbox(options, task, broker=broker):
+        with (
+            LiveMailboxBroker(runtime_dir=tmp_path) as broker,
+            bound_task_mailbox(options, task, broker=broker) as peer,
+        ):
+            assert peer is not None
+            assert broker._by_token[peer.token].reads_inbox is False
+            sender = broker.register(room="3", harness="claude_sdk", label="sender")
+            receipt = await MailboxClient(sender.socket_path, sender.token).send(
+                peer.address, "nonce-resumed", "resumed-1", timeout_seconds=0.05
+            )
+            assert receipt["queued_in_inbox"] is False
             session = CodexAppServerSession(
                 CodexAppServerOptions.from_sdk_options(options),
                 resume="thread-1",
