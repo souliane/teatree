@@ -1032,6 +1032,46 @@ class TestBoundTicketThread(TestCase):
         assert "unknown_delivery" in backend.replies[0][2]
         assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
 
+    def test_replayed_answered_resume_failed_post_keeps_question_kind(self) -> None:
+        parked = self._bound_task()
+        SessionCommand.objects.create(
+            command_id=slack_command_id("", "C1", "101.0"),
+            ticket=parked.ticket,
+            task=parked,
+            text="Use the new API",
+            outcome="answered_resume",
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        with patch("teatree.loop.slack_answer.session_routing._post_live_reply", return_value=False):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        row.refresh_from_db()
+        assert row.loop_replied_at is not None
+        assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+
+    def test_replayed_answered_resume_post_exception_keeps_question_kind(self) -> None:
+        parked = self._bound_task()
+        SessionCommand.objects.create(
+            command_id=slack_command_id("", "C1", "101.0"),
+            ticket=parked.ticket,
+            task=parked,
+            text="Use the new API",
+            outcome="answered_resume",
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        with patch("teatree.loop.slack_answer.session_routing._post_live_reply", side_effect=RuntimeError("slack 503")):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        row.refresh_from_db()
+        assert row.loop_replied_at is not None
+        assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+
     def test_question_answer_crash_before_receipt_reports_uncertainty(self) -> None:
         parked = self._bound_task()
         question = DeferredQuestion.record(
