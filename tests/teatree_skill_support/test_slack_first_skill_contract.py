@@ -42,10 +42,8 @@ def test_factory_watch_names_the_relays_read() -> None:
 
 
 def test_the_rules_say_a_relay_receipt_is_the_answer() -> None:
-    rules = (_ROOT / "skills" / "rules" / "SKILL.md").read_text(encoding="utf-8")
     reference = (_ROOT / "skills" / "rules" / "references" / "asking-questions.md").read_text(encoding="utf-8")
 
-    assert RELAY_RECEIPT_MARKER in rules
     assert RELAY_RECEIPT_MARKER in reference
     assert "relay_receipt=True" in reference
     assert f"a `{RELAY_REFUSED_MARKER}` line does not" in reference
