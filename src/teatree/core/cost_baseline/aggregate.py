@@ -70,7 +70,7 @@ class UsageStats:
     total_cost_usd: float
 
 
-def _stats(records: list[AttemptRecord]) -> UsageStats:
+def usage_stats(records: list[AttemptRecord]) -> UsageStats:
     outputs = [float(r.output_tokens) for r in records]
     billed = [float(r.billed_input_tokens) for r in records]
     turns = [float(r.num_turns) for r in records]
@@ -99,7 +99,7 @@ def aggregate_by_phase(records: Iterable[AttemptRecord]) -> dict[str, UsageStats
     groups: dict[str, list[AttemptRecord]] = {}
     for record in records:
         groups.setdefault(record.phase, []).append(record)
-    return {phase: _stats(rows) for phase, rows in sorted(groups.items())}
+    return {phase: usage_stats(rows) for phase, rows in sorted(groups.items())}
 
 
 def aggregate_by_phase_model(records: Iterable[AttemptRecord]) -> dict[tuple[str, str], UsageStats]:
@@ -107,4 +107,4 @@ def aggregate_by_phase_model(records: Iterable[AttemptRecord]) -> dict[tuple[str
     groups: dict[tuple[str, str], list[AttemptRecord]] = {}
     for record in records:
         groups.setdefault((record.phase, record.model), []).append(record)
-    return {key: _stats(rows) for key, rows in sorted(groups.items())}
+    return {key: usage_stats(rows) for key, rows in sorted(groups.items())}
