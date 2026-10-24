@@ -12,7 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from claude_agent_sdk import CLIConnectionError, HookMatcher, ResultMessage
+from claude_agent_sdk import AssistantMessage, CLIConnectionError, HookMatcher, ResultMessage
 from claude_agent_sdk.types import (
     HookCallback,
     HookContext,
@@ -23,6 +23,7 @@ from claude_agent_sdk.types import (
 )
 
 from teatree.agents.live_control import RejectCode, SteerRejectedError
+from teatree.agents.runner_failure_taxonomy import is_refused_resume
 
 if TYPE_CHECKING:
     from teatree.agents.harness import HarnessSession
@@ -124,10 +125,30 @@ class ClaudeSdkSession:
         self._inputs.reopen()
 
     async def receive_response(self) -> AsyncIterator[Any]:
-        async for message in self._client.receive_response():
-            if isinstance(message, ResultMessage):
+        held_ack: ResultMessage | None = None
+        answered = False
+        while True:
+            received = False
+            async for message in self._client.receive_response():
+                received = True
+                if isinstance(message, AssistantMessage):
+                    answered = True
+                    held_ack = None
+                if isinstance(message, ResultMessage):
+                    if not answered and is_refused_resume(message):
+                        held_ack = message
+                        continue
+                    self._inputs.end(RejectCode.TURN_ENDED)
+                    yield message
+                    return
+                yield message
+            if held_ack is None:
+                return
+            if not received:
                 self._inputs.end(RejectCode.TURN_ENDED)
-            yield message
+                yield held_ack
+                return
+            await asyncio.sleep(0)
 
     async def interrupt(self) -> None:
         await self._client.interrupt()

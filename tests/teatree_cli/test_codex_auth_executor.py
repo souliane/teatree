@@ -14,6 +14,8 @@ from teatree.cli.codex import codex_app
 from teatree.utils import run, secrets
 from tests.teatree_agents._executor_fakes import EXECUTOR_ID, WORKER_LOGIN, FakeExecutor
 
+pytestmark = pytest.mark.usefixtures("pass_store")
+
 _FORGET_HOLDS = "teatree.cli.codex_auth._forget_codex_holds"
 
 

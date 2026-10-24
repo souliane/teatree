@@ -37,6 +37,10 @@ Edit the source command, not this file.
 
 Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 
+## `cost_profile`
+
+Profile real dispatches: read share, resume-context cost and addressable upper bounds.
+
 ## `db`
 
 | Subcommand | Description |
@@ -533,6 +537,14 @@ Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
 ## `safe_kill`
 
 Signal *pid* only if it maps to a dead target AND is confirmed non-live.
+
+## `secrets`
+
+| Subcommand | Description |
+| --- | --- |
+| `status` | Report key health without disclosing stored values |
+| `ls` | List sealed row names without decrypting values |
+| `import-pass` | Classify password-store names without copying their values |
 
 ## `seed_loops`
 

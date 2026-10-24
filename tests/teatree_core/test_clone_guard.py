@@ -174,6 +174,7 @@ class TestDoctorAggregation(TestCase):
             buffer = io.StringIO()
             with (
                 patch("teatree.cli.update._collect_repos", return_value=[("repo", clone)]),
+                patch("teatree.cli.doctor.run_checks._check_teatree_mcp_liveness", return_value=True),
                 redirect_stdout(buffer),
             ):
                 ok = doctor_mod.run_doctor_checks()

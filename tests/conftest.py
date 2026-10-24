@@ -15,7 +15,7 @@ import pytest
 from django.conf import settings
 from xdist.workermanage import parse_tx_spec_config
 
-from hooks.scripts import hook_budget
+from hooks.scripts import dispatch_admission_gate, django_bootstrap, hook_budget
 from teatree.agents import live_mailbox
 from teatree.agents.codex_app_server_options import container_is_the_sandbox
 from teatree.agents.codex_read_only_server import reset_executor_app_servers
@@ -26,10 +26,13 @@ from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
 from teatree.config.override_read_health import note_healthy_read
 from teatree.core.admission import machine_load
+from teatree.core.backend_factory import reset_backend_caches
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
+from teatree.core.models.sealed_secret import reset_sealed_key_health_cache
 from teatree.core.models.types import reset_stripped_key_warnings
+from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.review.gitlab_head_pipeline import reset_unmatched_head_reports
 from teatree.core.views._webhook_secrets import reset_webhook_secrets
 from teatree.core.worktree import checkout_fence, occupancy
@@ -54,6 +57,7 @@ from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
 from teatree.utils.ram_probe import available_cpu_count
+from teatree.utils.secrets import PassStore, use_store
 from teatree.utils.work_tree import reset_cwd_cache
 from tests import _session_resource_guard
 from tests._db_template import MIGRATED_TEMPLATE_KEY, build_or_reuse_template, restore_from_template
@@ -62,6 +66,7 @@ from tests._machine_probe import pinned_load_and_cores, pinned_ram_headroom
 from tests._send_gate import TEST_TERM_REGISTRY_JSON
 from tests._speak_thread_sentinel import SpeakThreadSentinel
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
+from tests.secret_memory_store import MemoryStore
 
 # Keep a stale shell DJANGO_SETTINGS_MODULE out of any SUBPROCESS a test spawns. The
 # suite's own settings are pinned by ``--ds`` in pyproject's addopts, because this pop
@@ -248,33 +253,22 @@ def pinned_clock() -> Iterator[dt.datetime]:
 
 
 @pytest.fixture(autouse=True)
-def _clear_backend_caches() -> Iterator[None]:
-    """Clear caches and block real token resolution so tests never call gpg/pass.
-
-    ``backend_factory.reset_backend_caches`` (not the partial
-    ``loader.reset_backend_caches``) is used because only the former
-    also clears ``backend_factory._messaging_cache`` — otherwise a test
-    that builds a real messaging backend leaks it under the empty-overlay
-    key and a later ``notify_user`` (no explicit backend) reuses it,
-    reaching a real ``pass`` subprocess. Patching the canonical
-    ``teatree.utils.secrets.read_pass`` neutralises the whole posting-credential
-    path: the #117 send-path reader ``send_proxy.read_posting_credential`` (every
-    backend constructor routes through it) reaches ``read_pass`` via the module,
-    not a bound import, so the single source-module patch is enough.
-    """
-    import teatree.utils.secrets as _secrets_mod  # noqa: PLC0415
-    from teatree.core.backend_factory import reset_backend_caches  # noqa: PLC0415
-    from teatree.core.overlay_loader import reset_overlay_cache  # noqa: PLC0415
-
-    def _no_pass(_key: str) -> str:
-        return ""
-
+def _clear_backend_caches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
     reset_backend_caches()
     reset_overlay_cache()
-    with patch.multiple(_secrets_mod, read_pass=_no_pass, pass_entry_names=lambda _prefix: frozenset()):
+    reset_sealed_key_health_cache()
+    monkeypatch.setenv("T3_MASTER_KEY_SOURCE", f"file:{tmp_path / 'master.key'}")
+    with use_store(MemoryStore()):
         yield
     reset_backend_caches()
     reset_overlay_cache()
+    reset_sealed_key_health_cache()
+
+
+@pytest.fixture
+def pass_store(_clear_backend_caches: None) -> Iterator[None]:
+    with use_store(PassStore()):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -474,6 +468,21 @@ def _restore_django_settings_module() -> Iterator[None]:
         os.environ.pop("DJANGO_SETTINGS_MODULE", None)
     else:
         os.environ["DJANGO_SETTINGS_MODULE"] = before
+
+
+@pytest.fixture(autouse=True)
+def _hook_orm_probe_reads_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report a readable control DB: the probe's real query would hit pytest-django's DB blocker.
+
+    A test of the probe itself overrides this fixture by name.
+    """
+    monkeypatch.setattr(django_bootstrap, "_probe_orm", lambda: ("ok", ":memory:", None))
+
+
+@pytest.fixture
+def admission_governor_admits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the admission read a PreToolUse chain over an ``Agent``/``Task`` dispatch reaches; it queries the DB."""
+    monkeypatch.setattr(dispatch_admission_gate, "_denied_reason", lambda *, apply_ceiling, session_id="": None)
 
 
 @pytest.fixture(autouse=True)

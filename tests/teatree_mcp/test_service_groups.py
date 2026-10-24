@@ -123,4 +123,4 @@ class TestRegistrarsBindToTheServerType(TestCase):
                 assert _GROUP_BY_SERVICE[service] <= {tool.name for tool in asyncio.run(server.list_tools())}
 
     def test_the_server_wires_those_same_registrars(self) -> None:
-        assert {service: registrar for service, (registrar, _) in _SERVICE_GROUPS.items()} == _REGISTRAR_BY_SERVICE
+        assert _SERVICE_GROUPS == _REGISTRAR_BY_SERVICE

@@ -8,11 +8,14 @@ closes it — the ``PreToolUse`` ``Agent``/``Task`` gate, the only interception
 point a dispatch has (#4216) — plus the never-lockout escapes it ships with.
 """
 
+import json
 import subprocess
 import sys
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from django.db import OperationalError
 
 import hooks.scripts.dispatch_admission_gate as gate
 import hooks.scripts.django_bootstrap as bootstrap
@@ -25,10 +28,7 @@ _PLUGIN_ROOT = Path(router.__file__).resolve().parents[2]
 _REAL_DENIED_REASON = gate._denied_reason
 
 
-@pytest.fixture(autouse=True)
-def _governor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default: the governor is silent, so only a test that brakes sees a deny."""
-    monkeypatch.setattr(gate, "_denied_reason", lambda *, apply_ceiling, session_id="": None)
+pytestmark = pytest.mark.usefixtures("admission_governor_admits")
 
 
 def _braking(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
@@ -47,6 +47,10 @@ _PROBE_EXPLODED = "probe exploded"
 
 
 def _exploding_probe(*, apply_ceiling: bool, session_id: str = "") -> str:
+    raise OperationalError(_PROBE_EXPLODED)
+
+
+def _buggy_probe(*, apply_ceiling: bool, session_id: str = "") -> str:
     raise RuntimeError(_PROBE_EXPLODED)
 
 
@@ -144,11 +148,15 @@ class TestRegistration:
 class TestDeniedReasonSeam:
     """The one place the hook reaches core — the seam every other test patches out."""
 
-    def test_an_unbootstrappable_django_admits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_unbootstrappable_django_admits_and_says_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         monkeypatch.setattr(bootstrap, "bootstrap_teatree_django", lambda: False)
         assert _REAL_DENIED_REASON(apply_ceiling=True) is None
+        assert "the dispatch admission gate did NOT validate this call" in capsys.readouterr().err
 
     def test_it_forwards_the_ceiling_flag_to_core(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(bootstrap, "bootstrap_teatree_django", lambda: True)
         seen: list[bool] = []
         monkeypatch.setattr(
             core,
@@ -184,3 +192,37 @@ class TestColdImport:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "['Agent', 'Task']"
+
+
+def test_orm_probe_error_is_an_audible_skip(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gate, "_denied_reason", _exploding_probe)
+
+    assert gate.handle_dispatch_admission(_agent_dispatch()) is False
+    err = capsys.readouterr().err
+    assert "SKIPPED" in err
+    assert "OperationalError" in err
+
+
+def test_a_probe_bug_outside_the_orm_failures_is_not_swallowed_by_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gate, "_denied_reason", _buggy_probe)
+
+    with pytest.raises(RuntimeError, match=_PROBE_EXPLODED):
+        gate.handle_dispatch_admission(_agent_dispatch())
+
+
+def test_a_probe_bug_reaches_the_router_boundary_loudly_and_the_dispatch_is_allowed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gate, "_denied_reason", _buggy_probe)
+    monkeypatch.setitem(router._HANDLERS, "PreToolUse", [gate.handle_dispatch_admission])
+    monkeypatch.setattr(sys, "argv", ["hook_router.py", "--event", "PreToolUse"])
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps(_agent_dispatch())))
+
+    assert router.main() is None
+
+    captured = capsys.readouterr()
+    assert "Traceback" in captured.err
+    assert f"RuntimeError: {_PROBE_EXPLODED}" in captured.err
+    assert captured.out == ""

@@ -1531,11 +1531,16 @@ def test_every_mailbox_tool_tells_the_agent_what_it_does(broker: LiveMailboxBrok
     mailbox = {name: text for name, text in tools.items() if name.startswith("agent_mailbox_")}
     assert len(mailbox) == 5
     assert all(mailbox.values())
+    assert "harness" in mailbox["agent_mailbox_self"]
+    assert all(word in mailbox["agent_mailbox_peers"] for word in ("ticket", "phase", "harness", "receive status"))
     assert "accepted_current_turn" in mailbox["agent_mailbox_send"]
     for receipt in ("accepted_new_turn", "not_idle", "stale_command", "unknown_delivery"):
         assert receipt in mailbox["agent_mailbox_send"]
     assert "queued_in_inbox false" in mailbox["agent_mailbox_send"]
     assert "same key" in mailbox["agent_mailbox_send"]
+    assert "idle Claude peer" in mailbox["agent_mailbox_send"]
+    assert "in order" in mailbox["agent_mailbox_inbox"]
+    assert "20 seconds" in mailbox["agent_mailbox_wait"]
     assert all("acknowledges" in mailbox[name] for name in ("agent_mailbox_inbox", "agent_mailbox_wait"))
     assert "parked task is never woken" in mailbox["agent_mailbox_wait"]
     assert "acceptance is not obedience" in INSTRUCTIONS

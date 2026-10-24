@@ -31,6 +31,8 @@ from tests.teatree_agents._executor_fakes import (
     attested,
 )
 
+pytestmark = pytest.mark.usefixtures("pass_store")
+
 _PLANNING = ClaudeAgentOptions(
     cwd=EXAMPLE_ROOT, permission_mode="bypassPermissions", disallowed_tools=["Write", "Edit", "NotebookEdit"]
 )
@@ -141,7 +143,9 @@ def test_executor_store_persists_a_rotated_login(fake: FakeExecutor) -> None:
     asyncio.run(_turn())
 
     assert fake.stored(EXECUTOR_LOGIN_ENTRY)["last_refresh"] == "2026-10-12T09:00:00Z"
-    assert fake.pass_writes == [EXECUTOR_LOGIN_ENTRY]
+    assert len(fake.pass_writes) == 2
+    assert fake.pass_writes[0].startswith(f"{EXECUTOR_LOGIN_ENTRY}.bak-")
+    assert fake.pass_writes[1] == EXECUTOR_LOGIN_ENTRY
 
 
 def test_home_is_kept_when_persist_fails(fake: FakeExecutor) -> None:
@@ -334,8 +338,10 @@ def test_executor_never_takes_the_worker_lease_or_login(fake: FakeExecutor, tmp_
     finally:
         os.close(fd)
 
-    assert fake.pass_entries == {EXECUTOR_LOGIN_ENTRY}
-    assert fake.pass_writes == [EXECUTOR_LOGIN_ENTRY]
+    assert len(fake.pass_entries) == 2
+    assert EXECUTOR_LOGIN_ENTRY in fake.pass_entries
+    assert any(entry.startswith(f"{EXECUTOR_LOGIN_ENTRY}.bak-") for entry in fake.pass_entries)
+    assert fake.pass_writes[-1] == EXECUTOR_LOGIN_ENTRY
     assert fake.stored(CODEX_AUTH_PASS_ENTRY) == WORKER_LOGIN
     assert all("worker-codex-home" not in json.dumps(call) for call in fake.calls)
 

@@ -58,6 +58,7 @@ from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import rate_limit_event as _rate_limit_event
 from tests.teatree_agents._sdk_fake import result_message as _result_message
 from tests.teatree_agents._sdk_fake import success_stream as _success_stream
+from tests.teatree_agents.test_model_tiering import _seeded_db
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
@@ -1596,12 +1597,10 @@ class TestBuildOptions(TestCase):
         assert options.thinking == {"type": "adaptive"}
         assert options.effort == tier_effort()["frontier"]
 
-    def test_balanced_phase_pins_adaptive_thinking_and_xhigh_effort(self) -> None:
-        # A balanced (Sonnet) phase supports thinking and carries the balanced-tier
-        # effort (xhigh).
+    def test_balanced_phase_pins_adaptive_thinking_and_high_effort(self) -> None:
         options = self._options_for_phase("testing")
         assert options.thinking == {"type": "adaptive"}
-        assert options.effort == tier_effort()["balanced"]
+        assert options.effort == "high"
 
     def test_cheap_phase_pins_no_effort(self) -> None:
         # The cheap tier has no tier_effort() entry, so the SDK default effort applies.
@@ -1818,10 +1817,11 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
         monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_skill_models={})
 
     def setUp(self) -> None:
         self.ticket = planned_ticket()
@@ -1839,7 +1839,7 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
             with self.subTest(phase=phase):
                 attempt = self._dispatch(phase)
                 assert "not valid under agent_harness" not in attempt.error
-                assert attempt.exit_code == 0
+                assert attempt.exit_code == 0, attempt.error
 
     def test_the_flipped_layer_2_pin_is_dropped_loudly(self) -> None:
         # Never silent: the operator's Layer-2 pin was made for the CONFIGURED
@@ -1858,8 +1858,9 @@ class TestGenuinelyInvalidHarnessProviderPairStillFailsDispatch(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_skill_models={})
 
     def setUp(self) -> None:
         self.ticket = planned_ticket()

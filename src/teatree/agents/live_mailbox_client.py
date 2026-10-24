@@ -148,11 +148,11 @@ class MailboxClient:
             raise MailboxError(_UNAVAILABLE) from exc
 
     async def self_identity(self) -> PeerIdentity:
-        """Return the address TeaTree assigned to this running task."""
+        """Return this session's TeaTree-assigned address and harness; an attended session has no ticket."""
         return cast("PeerIdentity", await self._request("self"))
 
     async def peers(self) -> list[PeerIdentity]:
-        """List live TeaTree tasks on this host."""
+        """List live TeaTree tasks on this host with ticket, phase, harness and receive status."""
         return cast("list[PeerIdentity]", await self._request("peers"))
 
     async def send(self, to: str, text: str, key: str, *, timeout_seconds: float = 20) -> SendReceipt:
@@ -164,7 +164,7 @@ class MailboxClient:
         session_closed or dropped_unread. Acceptance is not obedience. Retry with the same key to keep waiting;
         a new key sends a second copy. A push-only peer has no inbox copy; its receipt always says
         queued_in_inbox false. A pydantic_ai peer can use native inbox tools without an MCP session.
-        An uncertain push is unknown_delivery.
+        An idle Claude peer can be woken once during its bounded live window. An uncertain push is unknown_delivery.
         """
         return cast(
             "SendReceipt", await self._request("send", to=to, text=text, key=key, timeout_seconds=timeout_seconds)
@@ -177,9 +177,9 @@ class MailboxClient:
         return page
 
     async def inbox(self, *, after_id: int = 0, limit: int = 50) -> InboxPage:
-        """Read messages addressed to this task, which acknowledges them to their senders; keep next_cursor."""
+        """Read addressed messages in order; this acknowledges them to their senders; keep next_cursor."""
         return await self._read_and_ack("inbox", after_id=after_id, limit=limit)
 
     async def wait(self, *, after_id: int = 0, timeout_seconds: float = 20) -> InboxPage:
-        """Wait briefly for mail, which acknowledges what it returns; a parked task is never woken."""
+        """Wait at most 20 seconds for mail; this acknowledges what it returns; a parked task is never woken."""
         return await self._read_and_ack("wait", after_id=after_id, timeout_seconds=timeout_seconds)

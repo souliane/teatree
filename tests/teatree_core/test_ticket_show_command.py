@@ -12,6 +12,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.core.management.commands._ticket_show import TicketShowResult, render_ticket_show
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, LEASE_EXPIRED_PREFIX, PLAN_STALE_PREFIX
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from tests.factories import merge_void
@@ -73,6 +74,23 @@ class TicketShowTest(TestCase):
         phases = cast("list[dict[str, object]]", result["phases"])
         coding_row = next(row for row in phases if row["phase"] == "coding")
         assert coding_row["attempts"] == 2
+
+    def test_show_uses_the_repair_iteration_filter(self) -> None:
+        ticket = Ticket.objects.create()
+        coding = self._phase_task(ticket, phase="coding")
+        for error in (
+            f"{CANCELLED_PREFIX}operator",
+            f"{LEASE_EXPIRED_PREFIX}worker died",
+            f"{PLAN_STALE_PREFIX}base moved",
+        ):
+            _failed_attempt(coding, error=error)
+        _failed_attempt(coding, error="actual work failed")
+
+        result = cast("dict[str, object]", call_command("ticket", "show", str(ticket.pk)))
+        phases = cast("list[dict[str, object]]", result["phases"])
+
+        assert coding.phase_iteration_count() == 1
+        assert phases == [{"phase": "coding", "attempts": 1, "max": 5}]
 
     def test_show_renders_attempt_n_max_string(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/2")

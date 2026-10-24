@@ -34,7 +34,12 @@ from teatree.quality.regression_catalog import (
     load_manifest,
     manifest_path,
 )
-from teatree.quality.regression_scan import AstGrepUnavailableError, astgrep_invocable, scan_findings
+from teatree.quality.regression_scan import (
+    AstGrepUnavailableError,
+    NoBlockingRulesError,
+    astgrep_invocable,
+    scan_findings,
+)
 
 
 def _fake_completed(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -383,8 +388,13 @@ class TestAstGrepEngineBranches:
 
     def test_scan_findings_raises_when_no_rules(self, tmp_path: Path) -> None:
         (tmp_path / "blocking").mkdir()
-        with _patch_which("ast-grep"), pytest.raises(AstGrepUnavailableError, match="no ast-grep rules"):
+        with _patch_which("ast-grep"), pytest.raises(NoBlockingRulesError, match="no ast-grep rules"):
             scan_findings(tmp_path / "blocking")
+
+    def test_empty_scope_does_not_hide_missing_rules(self, tmp_path: Path) -> None:
+        (tmp_path / "blocking").mkdir()
+        with pytest.raises(NoBlockingRulesError, match="no ast-grep rules"):
+            scan_findings(tmp_path / "blocking", paths=[])
 
 
 class TestScanFindingsPathScoping:
