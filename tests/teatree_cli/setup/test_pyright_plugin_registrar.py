@@ -10,6 +10,7 @@ rather than aborting setup.
 
 import json
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 
@@ -33,12 +34,9 @@ class TestPyrightPluginRegistrarInstall:
 
         calls: list[list[str]] = []
 
-        class _Result:
-            returncode = 0
-
-        def _run(cmd: list[str], **_kwargs: object) -> _Result:
+        def _run(cmd: list[str], **_kwargs: object) -> CompletedProcess[str]:
             calls.append(cmd)
-            return _Result()
+            return CompletedProcess(cmd, 0, "", "")
 
         monkeypatch.setattr("subprocess.run", _run)
 
@@ -79,10 +77,7 @@ class TestPyrightPluginRegistrarInstall:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/claude")
 
-        class _Result:
-            returncode = 1  # marketplace add fails (offline)
-
-        monkeypatch.setattr("subprocess.run", lambda _cmd, **_kwargs: _Result())
+        monkeypatch.setattr("subprocess.run", lambda cmd, **_kwargs: CompletedProcess(cmd, 1, "", ""))
 
         assert PyrightPluginRegistrar().install() is False  # non-fatal
         out = capsys.readouterr().out
@@ -141,12 +136,9 @@ class TestPyrightLangserverProvision:
 
         calls: list[list[str]] = []
 
-        class _Result:
-            returncode = 0
-
-        def _run(cmd: list[str], **_kwargs: object) -> _Result:
+        def _run(cmd: list[str], **_kwargs: object) -> CompletedProcess[str]:
             calls.append(cmd)
-            return _Result()
+            return CompletedProcess(cmd, 0, "", "")
 
         monkeypatch.setattr("subprocess.run", _run)
 

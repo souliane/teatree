@@ -27,6 +27,8 @@
 # and if it blocks the merge the deploy fails loud NAMING each file and the
 # recovery command, instead of a raw git error that identifies neither.
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "$SCRIPT_DIR/git-pins.sh"
 
 USAGE="usage: fast-forward-checkout.sh --fetch-only <repo-root> | fast-forward-checkout.sh <repo-root> [<commit>]"
 
@@ -144,10 +146,11 @@ done
 # `merge.autostash` in the operator's own git config would silently stash the dirt this
 # script just decided to RETAIN, merge, and re-apply — leaving conflict markers in a
 # tree the contract above promises to leave untouched. Pinned off so the verdict is
-# this script's, not the ambient config's.
+# this script's, not the ambient config's. ``pull.rebase`` is pinned off too, so
+# unrelated tracked dirt cannot divert a fast-forward into rebase's clean-tree rule.
 if [ -n "$TARGET_COMMIT" ]; then
     git -C "$TOPLEVEL" -c merge.autostash=false merge --ff-only "$TARGET_COMMIT" && exit 0
-elif git -C "$TOPLEVEL" -c merge.autostash=false -c rebase.autostash=false pull --ff-only; then
+elif git -C "$TOPLEVEL" -c merge.autostash=false -c rebase.autostash=false -c pull.rebase=false pull --ff-only; then
     exit 0
 fi
 

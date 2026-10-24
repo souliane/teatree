@@ -35,7 +35,7 @@ def test_bootstrap_and_overridable_registries_are_disjoint() -> None:
 
 
 def test_known_bootstrap_keys_are_present() -> None:
-    assert {"DATABASE_URL", "data_dir", "DJANGO_SETTINGS_MODULE"} == BOOTSTRAP_ENV_ONLY_SETTINGS
+    assert {"DATABASE_URL", "data_dir", "DJANGO_SETTINGS_MODULE", "T3_MASTER_KEY_SOURCE"} == BOOTSTRAP_ENV_ONLY_SETTINGS
 
 
 class TestBootstrapKeyWriteRefusal(TestCase):

@@ -1,10 +1,6 @@
-"""``pass`` password store helpers — write_pass.
+"""The password-store facade and its pass-backed adapter."""
 
-Note: ``read_pass`` is globally patched by the autouse ``_clear_backend_caches``
-fixture in ``tests/conftest.py`` (to block real ``gpg``/``pass`` calls), so we
-only exercise ``write_pass`` here, which is what's currently uncovered.
-"""
-
+from collections.abc import Iterator
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -13,9 +9,14 @@ import pytest
 
 from teatree.utils import secrets
 from teatree.utils.run import CommandFailedError
+from teatree.utils.secrets import PassStore, SecretNotFoundError, SecretStoreError, pass_entry_names, use_store
+from tests.secret_memory_store import MemoryStore
 
-# conftest patches the module attribute; this binding keeps the real lister.
-from teatree.utils.secrets import pass_entry_names
+
+@pytest.fixture(autouse=True)
+def _pass_store(_clear_backend_caches: None) -> Iterator[None]:
+    with use_store(PassStore()):
+        yield
 
 
 class TestWritePass:
@@ -217,3 +218,79 @@ class TestPassEntryNames:
 
         with pytest.raises(secrets.SecretStoreError, match="teatree/github-webhook"):
             pass_entry_names("teatree/github-webhook")
+
+
+class TestMessagesMatchMain:
+    """Operator-facing texts are pinned to main's literals while the store moves under them."""
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            (
+                SecretStoreError.timed_out("team/token", 20.0),
+                (
+                    "reading secret 'team/token' from the `pass` password store timed out after 20s — the gpg agent "
+                    "is wedged or unreachable (check $GNUPGHOME, then `gpgconf --kill all`); raise "
+                    "T3_KEYRING_READ_TIMEOUT_SECONDS only when a slow smartcard genuinely needs longer"
+                ),
+            ),
+            (
+                SecretStoreError.refused_empty("team/token"),
+                "refusing to write an empty value to 'team/token' in the `pass` password store",
+            ),
+            (
+                SecretStoreError.not_backed_up("team/token", "team/token.bak-20260101T000000Z"),
+                (
+                    "could not back up the existing value of 'team/token' to 'team/token.bak-20260101T000000Z' — "
+                    "refusing to overwrite an entry on a store that is not version-controlled and whose prior value "
+                    "would be unrecoverable"
+                ),
+            ),
+            (SecretStoreError.not_written("team/token"), "`pass insert team/token` failed — nothing was stored"),
+            (
+                SecretStoreError.unlisted("team", PermissionError()),
+                "listing 'team' in the `pass` password store failed: PermissionError",
+            ),
+            (
+                SecretNotFoundError.absent("team/token"),
+                "secret 'team/token' has no entry in the `pass` password store — set it with `pass insert team/token`",
+            ),
+            (
+                SecretNotFoundError.empty("team/token"),
+                "secret 'team/token' is empty in the `pass` password store — set it with `pass insert team/token`",
+            ),
+            (
+                SecretNotFoundError.tool_missing("team/token"),
+                (
+                    "cannot read secret 'team/token': the `pass` password store is not installed (install `pass`, "
+                    "then run `pass insert team/token`)"
+                ),
+            ),
+        ],
+    )
+    def test_error_text(self, message: Exception, expected: str) -> None:
+        assert str(message) == expected
+
+    def test_unreadable_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GNUPGHOME", "/gnupg-home")
+        message = SecretStoreError.unreadable("team/token", 2, "gpg: one\ngpg: decryption failed\n")
+        assert str(message) == (
+            "reading secret 'team/token' from the `pass` password store failed (rc=2): gpg: decryption failed — "
+            "the KEYRING did not answer, so whether the entry exists is unknown. GNUPGHOME=/gnupg-home; try "
+            "`gpgconf --kill all`, and note a daemon under a DIFFERENT GNUPGHOME survives that "
+            "(`pgrep -al keyboxd gpg-agent`)"
+        )
+
+    def test_backup_announcement_text(self) -> None:
+        said: list[str] = []
+        with use_store(MemoryStore()):
+            secrets.write_pass("team/token", "previous")
+            backup = secrets.write_pass_with_backup("team/token", "replacement", echo=said.append)
+        assert said == [f"OK    Backed up the previous value to `pass {backup}` before overwriting."]
+
+    def test_default_warning_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        with use_store(MemoryStore()), caplog.at_level("WARNING", logger="teatree.utils.secrets"):
+            assert secrets.read_pass_or_default("team/token", "fallback") == "fallback"
+        assert caplog.messages == [
+            "secret 'team/token' not found in the `pass` password store — using the provided default"
+        ]

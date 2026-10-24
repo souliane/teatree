@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.utils.git_sync import RemoteReadError, fetch_all_prune, fetch_branch, remote_heads
+from teatree.utils.git_sync import RemoteReadError, _run_remote, fetch_all_prune, fetch_branch, remote_heads
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -120,21 +120,24 @@ class TestStrictRemoteReads:
             remote_heads(str(self.repo), ["main"])
 
     def test_fetch_branch_retries_a_fetch_that_lost_the_ref_to_a_concurrent_one(self) -> None:
-        # Created in origin so the clone has no tracking ref; git 2.43 skips the hook for an up-to-date ref.
         _run_git("update-ref", "refs/heads/moved", "refs/heads/main", cwd=self.origin)
-        hooks = self.tmp / "hooks"
-        hooks.mkdir()
-        hook = hooks / "reference-transaction"
-        hook.write_text(
-            '#!/bin/sh\n[ "$1" = prepared ] || exit 0\n[ -e "$0.failed" ] && exit 0\ntouch "$0.failed"\nexit 1\n',
-            encoding="utf-8",
-        )
-        hook.chmod(0o755)
-        _run_git("config", "core.hooksPath", str(hooks), cwd=self.repo)
+        lock = self.repo / ".git" / "refs" / "remotes" / "origin" / "moved.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.touch()
+        returncodes: list[int] = []
+        real_run_remote = _run_remote
 
-        fetch_branch(str(self.repo), "moved")
+        def release_the_lock_after_each_attempt(repo: str, args: list[str]) -> subprocess.CompletedProcess[str]:
+            result = real_run_remote(repo, args)
+            returncodes.append(result.returncode)
+            lock.unlink(missing_ok=True)
+            return result
 
-        assert (hooks / "reference-transaction.failed").exists(), "the first fetch never failed"
+        with patch("teatree.utils.git_sync._run_remote", side_effect=release_the_lock_after_each_attempt):
+            fetch_branch(str(self.repo), "moved")
+
+        assert returncodes[0] != 0, "the first fetch never failed"
+        assert returncodes[1:] == [0]
         tracked = subprocess.run(
             [_GIT, "-C", str(self.repo), "rev-parse", "--verify", "--quiet", "refs/remotes/origin/moved"],
             check=False,

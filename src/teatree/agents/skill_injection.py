@@ -1,13 +1,11 @@
 """Render loaded skills into prompt text.
 
 A headless or sub-agent dispatch inherits none of the orchestrator's loaded
-skills, so the dispatched prompt must carry the ``SKILL.md`` bodies inline. This
-module resolves skill names to their ``SKILL.md`` files and concatenates the
-bodies — the shared building block for both the agent system context
-(``prompt.build_system_context``) and the raw Agent-tool sub-agent preamble
-(``build_subagent_skill_preamble``). It depends only on the filesystem, never
-the ORM, so a Django-free caller (the ``t3 <overlay> skill-preamble`` CLI) can
-emit a preamble without bootstrapping Django.
+skills, so the dispatched prompt must carry required skill text. This module
+resolves skill names for the agent system context (``prompt.build_system_context``)
+and the raw Agent-tool sub-agent preamble (``build_subagent_skill_preamble``).
+It depends only on the filesystem, never the ORM, so a Django-free caller (the
+``t3 <overlay> skill-preamble`` CLI) can emit a preamble without bootstrapping Django.
 """
 
 import re
@@ -204,16 +202,16 @@ def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str
 
 _SUBAGENT_PREAMBLE_HEADER = (
     "# Required skills (a dispatched sub-agent does not auto-load them)\n"
-    "Follow every rule in the skills below as if you had loaded them via the Skill tool,\n"
+    "Follow the embedded rules and load each required stack skill via the Skill tool,\n"
     "before reading files, running commands, or writing code."
 )
 
 
 @dataclass(frozen=True)
 class SkillPreamble:
-    """The inline skill bodies a raw Agent-tool sub-agent brief must carry.
+    """The skill text a raw Agent-tool sub-agent brief must carry.
 
-    ``text`` is the concatenated header + ``SKILL.md`` bodies (empty when no
+    ``text`` is the header, resolved skill bodies, and stack load directives (empty when no
     requested skill resolved). ``resolved`` and ``missing`` carry the bare skill
     names that were and were not found, so a caller can fail loud on a typo or
     an overlay skill absent for the active overlay rather than ship a brief that
@@ -226,24 +224,31 @@ class SkillPreamble:
 
 
 def build_subagent_skill_preamble(skills: list[str], *, skills_dirs: Sequence[Path]) -> SkillPreamble:
-    """Concatenate each skill's ``SKILL.md`` into a sub-agent dispatch preamble.
+    """Render requested skills once into a sub-agent dispatch preamble.
 
     A sub-agent spawned through the raw harness Agent tool inherits none of the
-    orchestrator's loaded skills, so the orchestrator must prepend the skill
-    bodies to the brief. Each name resolves against *skills_dirs* in order
-    (the framework skills dir first, then the active overlay's skills dir), so
-    an overlay skill body reaches the sub-agent exactly as a framework one does.
+    orchestrator's loaded skills, so the orchestrator must prepend this text.
+    Stack skills are required loads; other resolved skills carry their bodies.
     """
-    sections: list[str] = []
+    stack: list[str] = []
+    bodies: list[str] = []
     resolved: list[str] = []
     missing: list[str] = []
+    seen: set[str] = set()
     for name in skills:
+        bare = bare_skill_name(name)
+        if bare in seen:
+            continue
+        seen.add(bare)
         skill_md = resolve_skill_md(name, skills_dirs)
         if skill_md is None:
-            missing.append(name)
-            continue
-        bare = bare_skill_name(name)
-        sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
-        resolved.append(bare)
+            missing.append(bare)
+        elif _is_stack_skill(bare):
+            stack.append(bare)
+            resolved.append(bare)
+        else:
+            bodies.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
+            resolved.append(bare)
+    sections = [*_stack_load_block(stack, skills_dirs), *bodies]
     text = f"{_SUBAGENT_PREAMBLE_HEADER}\n\n" + _with_reach_line(sections, skills_dirs) if sections else ""
     return SkillPreamble(text=text, resolved=resolved, missing=missing)

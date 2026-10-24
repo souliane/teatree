@@ -8,6 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "$SCRIPT_DIR/git-pins.sh"
 . "$SCRIPT_DIR/generation-topology.sh"
 . "$SCRIPT_DIR/deploy-lock.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"

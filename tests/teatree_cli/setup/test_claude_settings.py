@@ -234,6 +234,22 @@ class TestManagedKeyPathsCoverTemplate:
             assert _dig(template, path) is not None, f"managed path {'.'.join(path)} missing from template"
 
 
+class TestSkillListingCap:
+    def test_committed_template_manages_name_only_skill_listing(self) -> None:
+        template = json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
+        assert template["skillListingMaxDescChars"] == 1
+        assert ("skillListingMaxDescChars",) in MANAGED_KEY_PATHS
+
+    def test_host_merge_replaces_operator_cap_and_drift_reports_old_cap(self, tmp_path: Path) -> None:
+        settings = json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
+        settings["skillListingMaxDescChars"] = 120
+        target = _write(tmp_path / "settings.json", settings)
+        assert "skillListingMaxDescChars" in managed_key_drift(_COMMITTED_TEMPLATE, target, env={})
+        merged = write_host_claude_settings(_COMMITTED_TEMPLATE, target, env={})
+        assert merged["skillListingMaxDescChars"] == 1
+        assert managed_key_drift(_COMMITTED_TEMPLATE, target, env={}) == []
+
+
 class TestTempToDiskManagedConfig:
     """The committed template routes agent/pytest temp to DISK and auto-allows temp cleanup.
 

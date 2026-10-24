@@ -32,6 +32,7 @@ from teatree.config.seed_defaults import _cache as _seed_defaults_cache
 from teatree.config.seed_defaults import reset_seed_defaults_cache
 from teatree.core.backend_factory import _code_host_cache, _messaging_cache, reset_backend_caches
 from teatree.core.gates.pr_budget_forge import _forge_cache, reset_forge_pr_budget_cache
+from teatree.core.models.sealed_secret import _VERIFIED_ROWS, reset_sealed_key_health_cache
 from teatree.hooks import _ssh_alias
 from teatree.loop.overlay_followup_jobs import _INFLIGHT_HOOKS, reset_inflight_hooks
 from teatree.utils.throttled_log import _last_warned, reset_throttle
@@ -206,6 +207,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.loops.slack_inbound:_dm_recorders": "reset_dm_recorders",
     # The GitHub receiver's per-target secrets and read outcomes; tests swap the fake store under it.
     "teatree.core.views._webhook_secrets:webhook_secrets": "reset_webhook_secrets",
+    "teatree.core.models.sealed_secret:_VERIFIED_ROWS": "reset_sealed_key_health_cache",
 }
 
 #: Caches deliberately NOT reset, each with the reason it is safe to leave alone.
@@ -403,6 +405,7 @@ class TestProcessCacheResetRoster:
             (_messaging_cache, "sentinel-overlay", reset_backend_caches),
             (_seed_defaults_cache, (Path("sentinel.toml"), 1), reset_seed_defaults_cache),
             (_ssh_alias._CACHE, ("sentinel-alias", "/sentinel-home"), _ssh_alias.reset_ssh_alias_cache),
+            (_VERIFIED_ROWS, ("sentinel", "source", "key", b"fingerprint"), reset_sealed_key_health_cache),
             (_INFLIGHT_HOOKS, "sentinel-overlay", reset_inflight_hooks),
         ]
         for container, key, reset_fn in cases:

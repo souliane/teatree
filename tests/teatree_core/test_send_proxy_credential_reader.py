@@ -26,6 +26,8 @@ outbound post — and legitimately read ``read_pass`` at their own point of use.
 import pathlib
 import re
 
+import pytest
+
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "teatree"
 PROXY = SRC / "core" / "send_proxy.py"
 
@@ -60,7 +62,7 @@ _POSTING_MARKERS = (
     "user_token",
 )
 
-_READ_PASS_CALL = re.compile(r"read_pass\s*\(([^)]*)\)")
+_READ_PASS_CALL = re.compile(r"read_pass(?:_required|_or_default)?\s*\(([^)]*)\)")
 
 
 def test_read_posting_credential_is_defined_in_the_proxy() -> None:
@@ -68,19 +70,28 @@ def test_read_posting_credential_is_defined_in_the_proxy() -> None:
     assert "def read_posting_credential(" in source
 
 
+def _posting_reads(root: pathlib.Path) -> list[str]:
+    exempt = {root / "core" / "send_proxy.py", *(root / name for name in _CREDENTIAL_MANAGEMENT_ALLOWLIST)}
+    return [
+        f"{path.relative_to(root).as_posix()}:{lineno}: {line.strip()}"
+        for path in root.rglob("*.py")
+        if path not in exempt
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1)
+        for call in _READ_PASS_CALL.finditer(line)
+        if any(marker in call.group(1).lower() for marker in _POSTING_MARKERS)
+    ]
+
+
 def test_no_posting_credential_read_pass_outside_the_proxy() -> None:
-    offenders: list[str] = []
-    for path in SRC.rglob("*.py"):
-        relative = path.relative_to(SRC).as_posix()
-        if path == PROXY or relative in _CREDENTIAL_MANAGEMENT_ALLOWLIST:
-            continue
-        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
-            for call in _READ_PASS_CALL.finditer(line):
-                arg = call.group(1).lower()
-                if any(marker in arg for marker in _POSTING_MARKERS):
-                    offenders.append(f"{path.relative_to(SRC)}:{lineno}: {line.strip()}")
-    detail = "\n".join(offenders)
-    assert not offenders, f"posting-credential read_pass reads must route through the send-proxy:\n{detail}"
+    detail = "\n".join(_posting_reads(SRC))
+    assert not detail, f"posting-credential read_pass reads must route through the send-proxy:\n{detail}"
+
+
+@pytest.mark.parametrize("reader", ["read_pass", "read_pass_required", "read_pass_or_default"])
+def test_gate_flags_a_planted_posting_read_through_every_facade_reader(reader: str, tmp_path: pathlib.Path) -> None:
+    (tmp_path / "core").mkdir()
+    (tmp_path / "core" / "planted.py").write_text(f"token = {reader}('acme/slack-bot')\n")
+    assert _posting_reads(tmp_path) == [f"core/planted.py:1: token = {reader}('acme/slack-bot')"]
 
 
 def test_backend_factory_reads_posting_tokens_only_via_the_proxy() -> None:

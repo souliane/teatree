@@ -455,6 +455,51 @@ def test_subagent_preamble_resolves_explicit_skill_md_path_form(tmp_path: Path) 
     assert preamble.resolved == ["rules"]
 
 
+def test_subagent_preamble_deduplicates_skill_aliases(tmp_path: Path) -> None:
+    framework = tmp_path / "framework"
+    _write_skill(framework, "rules", "# Rules body")
+
+    preamble = build_subagent_skill_preamble(["t3:rules", "rules", "skills/rules/SKILL.md"], skills_dirs=[framework])
+
+    assert preamble.text.count("--- SKILL: rules ---") == 1
+    assert preamble.resolved == ["rules"]
+    assert preamble.missing == []
+
+
+def test_subagent_preamble_deduplicates_missing_skill_aliases(tmp_path: Path) -> None:
+    preamble = build_subagent_skill_preamble(["t3:ghost", "ghost", "skills/ghost/SKILL.md"], skills_dirs=[tmp_path])
+
+    assert preamble.text == ""
+    assert preamble.missing == ["ghost"]
+
+
+def test_subagent_preamble_loads_stack_skills_without_embedding_bodies(installed: Path) -> None:
+    framework = installed
+    _write_skill(framework, "rules", "# Rules body")
+    _write_skill(framework, "ac-django", "Django stack body " * 2_000)
+    _write_skill(framework, "ac-python", "Python stack body " * 2_000)
+
+    preamble = build_subagent_skill_preamble(["t3:rules", "ac-django", "ac-python"], skills_dirs=[framework])
+
+    assert len(preamble.text.encode("utf-8")) <= 21_000
+    assert "REQUIRED: Load /ac-django" in preamble.text
+    assert "REQUIRED: Load /ac-python" in preamble.text
+    assert preamble.text.count("STACK SKILLS") == 1
+    assert "Django stack body" not in preamble.text
+    assert "Python stack body" not in preamble.text
+    assert preamble.resolved == ["rules", "ac-django", "ac-python"]
+
+
+def test_subagent_preamble_reports_missing_stack_skill(tmp_path: Path) -> None:
+    framework = tmp_path / "framework"
+    _write_skill(framework, "rules", "# Rules body")
+
+    preamble = build_subagent_skill_preamble(["rules", "ac-django"], skills_dirs=[framework])
+
+    assert preamble.resolved == ["rules"]
+    assert preamble.missing == ["ac-django"]
+
+
 def test_read_skill_contents_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> None:
     # With no explicit skills_dir, the reader searches the harness dirs; a skill
     # seeded only in the patched DEFAULT dir must still resolve.
