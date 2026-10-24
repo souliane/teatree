@@ -47,6 +47,7 @@ type JsonObject = dict[str, object]
 # what the doctor gate reports.
 MANAGED_KEY_PATHS: tuple[tuple[str, ...], ...] = (
     ("model",),
+    ("skillListingMaxDescChars",),
     ("permissions", "defaultMode"),
     ("permissions", "allow"),
     ("autoMode", "allow"),

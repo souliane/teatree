@@ -19,6 +19,7 @@ from hooks.scripts.foreign_branch_push_argv import PushSpec
 from hooks.scripts.foreign_branch_push_gate import _branch_refusal, _ForgeRun, _venue_fault
 from hooks.scripts.foreign_branch_push_git import GitProbe, live_remote_range, remote_branch_oid
 from hooks.scripts.foreign_branch_push_text import credential_fault_refusal
+from hooks.scripts.git_pin_args import GIT_PINS
 from teatree.forge_credentials import CODEX_ROUTER_ENV, FORGE_TOKEN_ENV_KEYS
 from teatree.hooks._repo_visibility import ForgeProbe
 from teatree.hooks.foreign_mr_cli import OpenMr
@@ -401,8 +402,9 @@ def test_probe_argv_uses_remote_url_and_neutral_directory(tmp_path: Path) -> Non
     ls_argv = run.call_args_list[1].args[0]
     assert config_argv[-4:] == ["remote", "get-url", "--push", "origin"]
     assert ls_argv[-5:] == ["ls-remote", "--heads", "--", "file:///remote.git", "refs/heads/main"]
-    assert ls_argv[2] != str(tmp_path)
-    assert "-c" not in ls_argv
+    assert Path(ls_argv[0]).is_absolute()
+    assert ls_argv[1 : 1 + len(GIT_PINS)] == list(GIT_PINS)
+    assert ls_argv[ls_argv.index("-C") + 1] != str(tmp_path)
 
 
 def test_option_shaped_remote_url_is_refused_without_running_program(

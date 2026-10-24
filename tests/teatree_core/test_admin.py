@@ -32,6 +32,8 @@ from teatree.core.models import (
     OnBehalfApproval,
     OnBehalfAudit,
     Prompt,
+    SealedSecret,
+    SecretCutover,
     SelfImproveFiring,
     SelfUpdateMarker,
     SessionTodo,
@@ -77,6 +79,41 @@ class TestConfigSettingAdmin:
         """
         model_admin = admin.site._registry[ConfigSetting]
         assert "value" not in model_admin.list_editable
+
+
+class TestSealedSecretAdmin(django.test.TestCase):
+    def setUp(self) -> None:
+        self.client.force_login(get_user_model().objects.create_superuser("sealed", "sealed@example.com", "pw"))
+        self.row = SealedSecret.objects.create(
+            name="alpha/token", key_id="0123456789abcdef", nonce=b"N0NCE-BYTES!", ciphertext=b"CIPHERTEXT-BYTES-0123"
+        )
+
+    def _assert_no_sealed_bytes(self, response: django.http.HttpResponse) -> None:
+        for hidden in (self.row.nonce, self.row.ciphertext):
+            assert hidden not in response.content
+            assert bytes(hidden).hex().encode() not in response.content
+            assert repr(bytes(hidden)).encode() not in response.content
+
+    def test_changelist_shows_only_safe_columns(self) -> None:
+        response = self.client.get(reverse("admin:core_sealedsecret_changelist"))
+        assert response.status_code == 200
+        for shown in (b"alpha/token", b"0123456789abcdef", b"encrypted"):
+            assert shown in response.content
+        self._assert_no_sealed_bytes(response)
+
+    def test_per_row_page_and_change_are_refused(self) -> None:
+        url = reverse("admin:core_sealedsecret_change", args=[self.row.pk])
+        response = self.client.get(url)
+        assert response.status_code == 403
+        self._assert_no_sealed_bytes(response)
+        assert self.client.post(url, {"name": "beta/token"}).status_code == 403
+        assert SealedSecret.objects.get(pk=self.row.pk).name == "alpha/token"
+
+    def test_add_is_refused(self) -> None:
+        assert self.client.get(reverse("admin:core_sealedsecret_add")).status_code == 403
+
+    def test_cutover_marker_has_only_the_read_only_default(self) -> None:
+        assert type(admin.site._registry[SecretCutover]) is ReadOnlyAdmin
 
 
 class TestConfigSettingAdminSecrecy(django.test.TestCase):

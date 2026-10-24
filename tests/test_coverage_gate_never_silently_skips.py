@@ -24,6 +24,7 @@ regression — the liveness corpus and ``test_block_uncovered_diff_hook.py``.
 
 import ast
 import json
+import shutil
 import subprocess
 import time
 from collections.abc import Generator
@@ -46,6 +47,16 @@ _SKIP_MARKER = "coverage gate 12 skipped"
 _SHIP_BRANCH = "feat/widget"
 _FAILING_REPORT = json.dumps({"passes": False, "uncovered": [{"path": "a.py", "lines": [1, 2]}]})
 _PASSING_REPORT = json.dumps({"passes": True, "uncovered": [], "unreferenced_symbols": []})
+_REAL_WHICH = shutil.which
+
+
+def _t3_on_path(name: str) -> str | None:
+    return "/usr/local/bin/t3" if name == "t3" else _REAL_WHICH(name)
+
+
+def _no_t3(name: str) -> str | None:
+    return None if name == "t3" else _REAL_WHICH(name)
+
 
 # The gate's COMPLETE set of decline paths, across the two functions that own them.
 # In ``coverage_finding_for_command``: an out-of-scope repo, ``t3`` off PATH, a spent
@@ -103,7 +114,7 @@ def _t3_reports(stdout: str, *, returncode: int = 0, raises: Exception | None = 
 
 @pytest.fixture
 def t3_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+    monkeypatch.setattr(router.shutil, "which", _t3_on_path)
 
 
 class TestEveryUnmeasuredDeclineAnnouncesItself:
@@ -134,7 +145,7 @@ class TestEveryUnmeasuredDeclineAnnouncesItself:
     def test_missing_t3_notes_the_skip(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr(router.shutil, "which", lambda _: None)
+        monkeypatch.setattr(router.shutil, "which", _no_t3)
         assert handle_block_uncovered_diff(_create_in(_shipping_repo(tmp_path))) is False
         err = capsys.readouterr().err
         assert _SKIP_MARKER in err

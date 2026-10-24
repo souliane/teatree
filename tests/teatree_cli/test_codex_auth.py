@@ -19,6 +19,8 @@ from teatree.cli.codex import codex_app
 from teatree.config.agent_spawn import AgentRouteCandidate
 from teatree.core.models import AgentRouteAvailability
 
+pytestmark = pytest.mark.usefixtures("pass_store")
+
 _FORGET_HOLDS = "teatree.cli.codex_auth._forget_codex_holds"
 
 

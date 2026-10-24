@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
@@ -64,6 +65,7 @@ class _Harness:
         yield FakeHarnessSession(success_stream({"summary": "claude planned instead", "plan_text": ""}))
 
 
+@pytest.mark.usefixtures("pass_store")
 class TestPlanningOnTheReadOnlyExecutor(TestCase):
     def setUp(self) -> None:
         clear_route_availability_cache()
