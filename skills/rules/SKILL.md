@@ -109,7 +109,7 @@ Anything published under the user's identity must never carry an AI signature â€
 
 ## Ask Before Posting on the User's Behalf (Non-Negotiable)
 
-The preset's egress posture (`t3 loop preset use`) gates every colleague-visible post, approval or reaction: when it blocks, get approval first. Drafts, self-DMs and replies on your own MR are exempt. The destination picks the credential, never you: `t3 <overlay> notify post --channel <channel> --text '<message>'`, `mcp__teatree__slack_react` or `t3 slack react --channel <channel> --ts <ts> --emoji <name>`, `mcp__teatree__notify_user` or `t3 <overlay> notify send '<body>' --idempotency-key <key>`, `t3 review reply-to-discussion`. Full text: `skills/rules/references/on-behalf-posting.md`.
+The preset's egress posture (`t3 loop preset use`) gates colleague-visible posts, approvals and reactions; get approval when blocked. Drafts, self-DMs and replies on your own MR are exempt. The destination selects the credential. Full text: `skills/rules/references/on-behalf-posting.md`.
 
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 

@@ -208,7 +208,14 @@ class LiveMailboxBroker:
         for message_id in message_ids:
             if (delivery := self._delivery.get(message_id)) is not None:
                 delivery.queued_in_inbox = False
-                delivery.settle(ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
+                if delivery.push is not None and not delivery.push.done():
+                    delivery.push.add_done_callback(
+                        lambda _finished, pending=delivery: pending.settle(
+                            ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED
+                        )
+                    )
+                else:
+                    delivery.settle(ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
         self._sender_left([delivery.message_id for delivery in self._relay.forget(address)])
 
     def _sender_left(self, message_ids: list[int]) -> None:
@@ -458,9 +465,7 @@ class LiveMailboxBroker:
         receipt = await self._registry().push(
             task.pk, delivery.framed, command_id=command_id, wait=wait, fence=task.fence
         )
-        delivery.push_outcome = receipt.outcome
-        if receipt.outcome is not ControlOutcome.UNKNOWN_DELIVERY:
-            delivery.settle(receipt.outcome, receipt.code)
+        delivery.record_push(receipt)
 
     def _ack(self, participant: _Participant, request: MailboxRequest) -> bool:
         ids = request.get("ids")

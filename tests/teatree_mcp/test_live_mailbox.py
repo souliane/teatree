@@ -661,6 +661,29 @@ def test_a_timed_out_send_retried_with_its_key_is_accepted_without_a_second_mess
     assert (retried["id"], retried["outcome"]) == (first["id"], "accepted_inbox_read")
 
 
+def test_a_timed_out_claude_push_can_be_accepted_by_a_later_inbox_read(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    sender = routed_broker.register(room="ticket", harness="claude_sdk", label="sender")
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="recipient", task=_TASK)
+    sender_client = MailboxClient(sender.socket_path, sender.token)
+    reader = MailboxClient(recipient.socket_path, recipient.token)
+    session = BoundarySession()
+
+    with OwnerLoop(registry, _TASK, session):
+        first = invoke(sender_client, "send", to=recipient.address, text="review", key="once", timeout_seconds=0.05)
+        page = invoke(reader, "inbox")
+        retried = invoke(sender_client, "send", to=recipient.address, text="review", key="once")
+
+    assert (first["outcome"], first["code"], first["queued_in_inbox"]) == (
+        "rejected",
+        "not_accepted_in_time",
+        True,
+    )
+    assert [row["id"] for row in page["messages"]] == [first["id"]]
+    assert (retried["id"], retried["outcome"]) == (first["id"], "accepted_inbox_read")
+
+
 def test_a_recipient_that_exits_before_reading_rejects_the_pending_send(broker: LiveMailboxBroker) -> None:
     sender = broker.register(room="ticket", harness="claude", label="sender")
     recipient = broker.register(room="ticket", harness="codex", label="recipient")
@@ -674,6 +697,41 @@ def test_a_recipient_that_exits_before_reading_rejects_the_pending_send(broker: 
 
     receipt = asyncio.run(exchange())
     assert receipt == _rejected(receipt["id"], recipient.address, "session_closed", queued=False)
+
+
+def test_a_push_accepted_as_its_recipient_leaves_keeps_the_acceptance(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    class DelayedSession:
+        def __init__(self) -> None:
+            self.entered = threading.Event()
+            self.release = asyncio.Event()
+
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            self.entered.set()
+            await self.release.wait()
+
+        async def interrupt(self) -> None:
+            return None
+
+    sender = routed_broker.register(room="ticket", harness="claude_sdk", label="sender")
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="recipient", task=_TASK)
+    client = MailboxClient(sender.socket_path, sender.token)
+    session = DelayedSession()
+
+    with OwnerLoop(registry, _TASK, session) as owner:
+        sending = _in_background(
+            lambda: invoke(client, "send", to=recipient.address, text="review", key="once", timeout_seconds=2)
+        )
+        assert session.entered.wait(timeout=5)
+        routed_broker.unregister(recipient.address)
+        broker_loop = routed_broker._loop
+        assert broker_loop is not None
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0), broker_loop).result(timeout=2)
+        owner.call_soon(session.release.set)
+        receipt = sending.result(timeout=5)
+
+    assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", False)
 
 
 def test_an_unread_message_evicted_from_a_full_inbox_is_rejected_dropped_unread(broker: LiveMailboxBroker) -> None:

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NoReturn, Protocol, TypedDict
 
-from teatree.agents.live_control import MAX_INPUT_BYTES, ControlOutcome, PeerIdentity, RejectCode
+from teatree.agents.live_control import MAX_INPUT_BYTES, ControlOutcome, ControlReceipt, PeerIdentity, RejectCode
 
 MAX_WAIT_SECONDS = 20
 MAX_KEY_BYTES = 128
@@ -140,6 +140,18 @@ class PeerDelivery:
     push_outcome: ControlOutcome | None = None
     unknown_reported: bool = False
     queued_in_inbox: bool = True
+
+    def record_push(self, receipt: ControlReceipt) -> None:
+        self.push_outcome = receipt.outcome
+        if receipt.outcome is ControlOutcome.UNKNOWN_DELIVERY:
+            return
+        if (
+            receipt.outcome is ControlOutcome.REJECTED
+            and receipt.code is RejectCode.NOT_ACCEPTED_IN_TIME
+            and self.queued_in_inbox
+        ):
+            return
+        self.settle(receipt.outcome, receipt.code)
 
     def settle(self, outcome: ControlOutcome, code: RejectCode | None = None) -> None:
         """Keep the first verdict; a push still waiting for the turn's boundary is withdrawn."""

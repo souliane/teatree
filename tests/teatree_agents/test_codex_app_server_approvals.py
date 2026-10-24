@@ -568,7 +568,7 @@ class TestMainCloneRoute(TestCase):
             )
             try:
                 with (
-                    patch("teatree.agents.codex_app_server.container_is_the_sandbox", return_value=True),
+                    patch.object(codex_app_server_options, "container_is_the_sandbox", return_value=True),
                     patch("teatree.agents.codex_app_server.shutil.which", return_value="/usr/bin/codex"),
                     patch.dict("os.environ", {"T3_REPO": str(clone)}),
                 ):
