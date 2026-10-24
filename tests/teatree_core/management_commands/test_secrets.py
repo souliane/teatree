@@ -7,6 +7,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -52,3 +53,12 @@ class TestSecretsCommandIsReadOnly(TestCase):
         assert f"key_id {key_id}: 2 rows" in status
         assert self._run("ls", "team/") == "team/token\n"
         assert "SENSITIVE_CANARY" not in status
+
+    def test_status_exits_non_zero_when_the_key_cannot_open_the_rows(self) -> None:
+        DbStore(self.source).write("team/token", "SENSITIVE_CANARY")
+        self.source.path.unlink()
+        output = io.StringIO()
+        with redirect_stdout(output), pytest.raises(SystemExit) as raised:
+            call_command("secrets", "status")
+        assert raised.value.code == 1
+        assert "health UNREADABLE" in output.getvalue()
