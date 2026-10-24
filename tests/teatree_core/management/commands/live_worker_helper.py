@@ -88,6 +88,7 @@ class _BusyStream:
     last_event_at: float | None = field(default_factory=monotonic)
     open_tool: tuple[str, float] | None = field(default_factory=lambda: ("Bash", monotonic()))
     result_message: object = None
+    compactions: int = 0
 
 
 async def _serve() -> None:

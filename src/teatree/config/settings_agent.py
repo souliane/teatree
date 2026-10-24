@@ -268,7 +268,7 @@ class _ModeHarnessSettings:
     # matching the ceilings above. Per-overlay overridable.
     envelope_stop_gate_refusals: int = setting(
         2,
-        spec=SettingSpec(help="refuse a turn that ends without the required result envelope", parse=_parse_strict_int),
+        spec=SettingSpec(help="envelope-less turn-ends one run may have refused; 0 disables", parse=_parse_strict_int),
     )
     # Per-RUN turn ceiling pinned on the headless ``claude_sdk`` spawn
     # (``ClaudeAgentOptions.max_turns`` via ``agents/_runner_options``). Cache-read

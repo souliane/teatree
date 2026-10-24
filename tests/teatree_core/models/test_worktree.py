@@ -11,6 +11,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree_occupancy import acquire
 from teatree.core.worktree.worktree_env import compose_project
+from tests.factories import WorktreeFactory
 
 
 class TestTicketDispatchWorktreePath(TestCase):
@@ -526,3 +527,16 @@ class TestAssertComposeProjectUnclaimed(TestCase):
         )
 
         wt_b.assert_compose_project_unclaimed()  # CREATED row owns no stack → no conflict
+
+
+class TestWorktreeMergeExtraPop(TestCase):
+    def test_merge_extra_pop_uses_live_row_and_preserves_other_writers(self) -> None:
+        worktree = WorktreeFactory(extra={"db_import_failures": 1})
+        stale = Worktree.objects.get(pk=worktree.pk)
+        worktree.merge_extra(set_keys={"services": {"web": "ready"}})
+
+        stale.merge_extra(pop_keys=["db_import_failures"])
+
+        stale.refresh_from_db()
+        assert "db_import_failures" not in stale.extra
+        assert stale.extra["services"] == {"web": "ready"}

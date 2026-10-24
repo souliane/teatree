@@ -85,6 +85,26 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
             extra={"worktree_path": str(self.wt_path)},
         )
 
+    def test_import_completion_preserves_extra_written_during_import(self) -> None:
+        worktree = self._make_worktree(db_name="")
+        worktree.merge_extra(set_keys={"db_import_failures": 1})
+        stale = Worktree.objects.get(pk=worktree.pk)
+        overlay = _RecordingOverlay()
+
+        def import_with_interleaved_extra(*_args: object, **_kwargs: object) -> bool:
+            Worktree.objects.get(pk=worktree.pk).merge_extra(set_keys={"services": {"web": "ready"}})
+            return True
+
+        with patch(
+            "teatree.core.runners.worktree_provision.run_timeboxed_db_import",
+            side_effect=import_with_interleaved_extra,
+        ):
+            assert WorktreeProvisionRunner(stale, overlay=overlay)._run_db_import() is True
+
+        worktree.refresh_from_db()
+        assert worktree.extra["services"] == {"web": "ready"}
+        assert "db_import_failures" not in worktree.extra
+
     def test_skips_db_import_when_db_name_empty(self) -> None:
         """Frontend-style worktree (no DB) must not trigger overlay.provisioning.db_import()."""
         worktree = self._make_worktree(db_name="")

@@ -126,7 +126,7 @@ class OperatorIngress:
             return self._registry().sessions()
         if method == "live.inspect":
             return self._inspect(_task_pk(request))
-        if method in {"live.steer", "live.follow_up"}:
+        if method in {"live.steer", "live.follow_up", "live.pause"}:
             return await self._operator_command(method, request)
         msg = "Unknown live method"
         raise ValueError(msg)
@@ -155,7 +155,7 @@ class OperatorIngress:
             msg = f"{method} wait must be within (0, {MAX_STEER_WAIT_SECONDS:.0f}] seconds"
             raise ValueError(msg)
         registry = self._registry()
-        command = registry.follow_up if method == "live.follow_up" else registry.steer
+        command = {"live.follow_up": registry.follow_up, "live.pause": registry.pause}.get(method, registry.steer)
         receipt = await command(
             task_pk, text, command_id=command_id, wait=float(wait), fence=LiveFence(attempt, generation)
         )

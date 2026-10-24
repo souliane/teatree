@@ -203,6 +203,13 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
         stored=dict[str, Any],
         category=Category.PERSONAL,
     ),
+    "agent_model_context_windows": ColdHookSetting(
+        _parse_registry_dict,
+        default={},
+        help="context window tokens by exact model id for the pydantic-ai lane",
+        stored=dict[str, Any],
+        category=Category.PERSONAL,
+    ),
     "agent_tier_effort": ColdHookSetting(
         _parse_registry_dict,
         default={"frontier": "xhigh", "balanced": "high"},
@@ -214,14 +221,6 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
         _parse_agent_phase_harness,
         default=dict.fromkeys(VERIFICATION_PHASES, AgentHarness.CLAUDE_SDK.value),
         help="per-phase harness override, for a phase that needs a different CLI",
-        stored=dict[str, Any],
-        category=Category.PERSONAL,
-    ),
-    # Per-phase history trim depth for the pydantic-ai lane (``lane_b.compaction``).
-    "agent_compaction_keep_recent": ColdHookSetting(
-        _parse_registry_dict,
-        default={},
-        help="per-phase count of recent messages a compacted history keeps",
         stored=dict[str, Any],
         category=Category.PERSONAL,
     ),

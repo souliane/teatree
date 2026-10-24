@@ -17,7 +17,8 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
-from teatree.core.models.task_repair import check_requeue_allowed, phase_attempts
+from teatree.core.models.task_repair import check_requeue_allowed
+from teatree.core.models.task_repair_queries import phase_attempts
 from teatree.core.owner_question_message import render_text
 from teatree.core.worktree.checkout_attest import CheckoutAttestation
 from teatree.core.worktree.checkout_fence import (
