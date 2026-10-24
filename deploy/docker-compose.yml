@@ -538,6 +538,10 @@ services:
         source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/git-pins.sh  # privacy-scan:allow — the box's public, documented deploy home
         target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/git-pins.sh  # privacy-scan:allow — the box's public, documented deploy home
         read_only: true
+      - type: bind
+        source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/locked-version.sh  # privacy-scan:allow — the box's public, documented deploy home
+        target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/locked-version.sh  # privacy-scan:allow — the box's public, documented deploy home
+        read_only: true
       - ${TEATREE_SOURCE_MOUNT:-teatree_src}:/home/teatree/teatree:ro  # privacy-scan:allow — the box's public, documented deploy home
       - teatree_uv:/opt/teatree/uv:ro
     tmpfs:

@@ -23,7 +23,8 @@ SOURCE_TARGET = "/home/teatree/teatree"
 UV_VOLUME_TARGET = "/opt/teatree/uv"
 BAKED_ENTRYPOINT = ["/usr/local/bin/entrypoint.sh"]
 CHECKOUT_SCRIPT_TARGETS = {
-    str(Path(SOURCE_TARGET).parent / "teatree-deploy/deploy" / name) for name in ("entrypoint.sh", "git-pins.sh")
+    str(Path(SOURCE_TARGET).parent / "teatree-deploy/deploy" / name)
+    for name in ("entrypoint.sh", "git-pins.sh", "locked-version.sh")
 }
 BASH = shutil.which("bash") or ""
 
