@@ -148,7 +148,7 @@ class FakeHarnessSession:
     last_prompt: str = ""
 
     def __init__(self, messages: list[Any], *, delay: float = 0.0) -> None:
-        self._messages = messages
+        self._messages = iter(messages)
         self._delay = delay
         self.interrupted = False
 
@@ -173,6 +173,8 @@ class FakeHarnessSession:
             if self._delay:
                 await asyncio.sleep(self._delay)
             yield message
+            if isinstance(message, ResultMessage):
+                return
 
     async def interrupt(self) -> None:
         self.interrupted = True
