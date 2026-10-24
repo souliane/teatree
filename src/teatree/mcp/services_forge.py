@@ -190,8 +190,8 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
         comes back as ``candidates`` plus the ``snapshot`` it was read at. Judge each
         one and call again with ``dedupe={"snapshot": [...], "decisions": [...]}`` —
         one ``fits`` folds the request into that ticket's description instead of
-        filing; rejected candidates stay in the internal dedupe decision. A ticket filed in between makes the
-        judgment set incomplete, so the outcome is ``stale_snapshot`` and you judge
+        filing, and every rejection's reason is kept in a private audit row. A ticket
+        filed in between makes the judgment set incomplete, so the outcome is ``stale_snapshot`` and you judge
         again. The two travel as one argument because a judgment set without the
         backlog it was made against cannot be checked for completeness. Title, body and labels are
         leak-scrubbed (a customer codename bound for a public forge is REFUSED) and #117-audited.
@@ -209,7 +209,7 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
                     "Nothing was written. Judge EVERY candidate, then call again with dedupe={'snapshot': "
                     "<this snapshot>, 'decisions': [{'url': ..., 'fits': bool, 'reason': '<why not>'}]}. "
                     "One fits -> the request is appended to that ticket's description; none fits -> a new "
-                    "ticket is filed with the supplied body."
+                    "ticket is filed with the supplied body; judgments are kept privately."
                 ),
             }
 

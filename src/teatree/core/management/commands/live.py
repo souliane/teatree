@@ -31,6 +31,7 @@ ACTIVE_LABEL = "ACTIVE — enters the agent's context"
 _EXIT_BY_OUTCOME = {
     "accepted_current_turn": 0,
     "accepted_new_turn": 0,
+    "paused": 0,
     "rejected": EXIT_REJECTED,
     "unknown_delivery": EXIT_UNKNOWN_DELIVERY,
 }
@@ -123,6 +124,7 @@ class _SendRequest:
     json_output: bool
     new_turn: bool
     fence: FenceOverride | None = None
+    pause: bool = False
 
 
 class Command(TyperCommand):
@@ -210,6 +212,24 @@ class Command(TyperCommand):
         """Start one new turn in a still-open idle session and print its receipt (active)."""
         self._send(_SendRequest(task, text, command_id, wait, json_output, new_turn=True))
 
+    @command(cls=_SteerCommand)
+    def pause(
+        self,
+        task: _TaskArgument,
+        *,
+        command_id: Annotated[
+            str, typer.Option(help="Idempotency key; the same command returns the first receipt.")
+        ] = "",
+        wait: Annotated[
+            float, typer.Option(help="Seconds to wait for the pause receipt (at most 900).")
+        ] = DEFAULT_STEER_WAIT_SECONDS,
+        json_output: _JsonOption = False,
+    ) -> None:
+        """Interrupt a running task and park it for an operator resume."""
+        meta = click.get_current_context().meta
+        fence = FenceOverride(meta.get("steer_attempt"), meta.get("steer_generation"))
+        self._send(_SendRequest(task, "pause", command_id, wait, json_output, new_turn=False, fence=fence, pause=True))
+
     def _send(self, request: _SendRequest) -> None:
         self.print_result = False
         if not request.text:
@@ -218,7 +238,7 @@ class Command(TyperCommand):
         command_id = request.command_id or uuid.uuid4().hex
         try:
             client = LiveClient()
-            command = client.follow_up if request.new_turn else client.steer
+            command = client.pause if request.pause else client.follow_up if request.new_turn else client.steer
             receipt = command(request.task, request.text, command_id=command_id, wait=request.wait, fence=request.fence)
         except LiveOfflineError as exc:
             self._exit(_offline_message(request.task, str(exc)), EXIT_OFFLINE)

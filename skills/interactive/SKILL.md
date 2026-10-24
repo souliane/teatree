@@ -262,6 +262,7 @@ When a running factory task needs something only this session has — a page or 
 2. `t3 <overlay> live inspect <task>` — PASSIVE: state, phase, open tool and progress; the agent is not contacted.
 3. `t3 <overlay> live steer <task> --text "<input>"` — ACTIVE: the text enters the agent's current turn at its next tool boundary or turn end.
 4. `t3 <overlay> live follow-up <task> --text "<input>"` — ACTIVE: an idle `claude_sdk` session takes one new turn during its 60-second window, up to four turns per session.
+5. `t3 <overlay> live pause <task>` — ACTIVE: interrupts the running turn and parks the task with its conversation; the receipt is `paused`, and a Slack `resume` in the ticket's thread releases the same task.
 
 Commands carry the selected session's attempt and worker generation. `stale_command` means that attempt or worker generation changed before delivery; inspect the current live session before sending a new command.
 

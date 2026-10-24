@@ -465,6 +465,10 @@
           "name": "steer"
         },
         {
+          "help": "Interrupt a running task and park it for an operator resume",
+          "name": "pause"
+        },
+        {
           "help": "List every live session on this host's workers (passive)",
           "name": "list"
         },
