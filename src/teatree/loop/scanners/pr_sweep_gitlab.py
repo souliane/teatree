@@ -29,6 +29,7 @@ import httpx
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.merge import MergePreconditionError, execute_bound_merge
 from teatree.core.merge.host_kind import forge_for_repo_slug
+from teatree.core.pr_next_action import APPROVED, AWAITING_APPROVAL, UNKNOWN
 from teatree.loop.scanners.base import classify_http_error
 from teatree.loop.scanners.pr_sweep_ports import PrApiClient
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult, PrSummary
@@ -47,6 +48,7 @@ _SCANNER = "pr_sweep"
 #: mirroring the GitHub arm's refusal to flag a still-computing ``UNKNOWN``.
 _UNSETTLED_MERGE_STATUSES = frozenset({"", "checking", "unchecked", "preparing"})
 _CONFLICTED_MERGE_STATUSES = frozenset({"cannot_be_merged", "broken_status", "conflict"})
+_APPROVALS_BY_MERGE_STATUS = {"mergeable": APPROVED, "not_approved": AWAITING_APPROVAL}
 
 
 def _as_str(value: object) -> str:
@@ -153,6 +155,9 @@ def _decode_mr(*, slug: str, raw: RawAPIDict) -> PrSummary:
         has_changes_requested=raw.get("blocking_discussions_resolved") is False,
         url=_as_str(raw.get("web_url")),
         title=_as_str(raw.get("title")),
+        created_at=_as_str(raw.get("created_at")),
+        updated_at=_as_str(raw.get("updated_at")),
+        approvals=_APPROVALS_BY_MERGE_STATUS.get(_as_str(raw.get("detailed_merge_status")).lower(), UNKNOWN),
         is_conflicted=_is_conflicted(raw),
         author=_author_username(raw),
         same_repo=_same_repo(raw),

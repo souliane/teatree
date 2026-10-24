@@ -16,8 +16,10 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
-from teatree.core.models.plan_decision import refuse_unplanned_mint
+from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
+from teatree.core.models.self_review import SelfReview
 from teatree.core.models.task import Task
+from teatree.core.models.task_phase_disposition import transition_source_states
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
@@ -91,3 +93,17 @@ def enqueue_phase_task_once(
             reason=reason,
             agent_id=agent_id,
         )
+
+
+def phase_eligible(ticket: Ticket, phase: str) -> bool:
+    state = str(ticket.state)
+    if ticket.role == Ticket.Role.REVIEWER:
+        return phase == "reviewing" and state in transition_source_states("mark_reviewed_externally")
+    if phase == "coding":
+        if state in transition_source_states("code"):
+            return True
+        if state in transition_source_states("code_direct"):
+            return has_plan_decision(ticket)
+        return state in transition_source_states("address_self_review") and SelfReview.open_hold_for(ticket) is not None
+    transition_name = {"scoping": "scope", "testing": "test", "reviewing": "review", "shipping": "ship"}.get(phase)
+    return transition_name is not None and state in transition_source_states(transition_name)

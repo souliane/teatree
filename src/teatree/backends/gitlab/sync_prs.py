@@ -114,6 +114,7 @@ def upsert_ticket_from_pr(
     lookup_url = extract_issue_url(ctx.raw) or web_url
     pr_entry_dict = pr_entry.to_dict()
     inferred_state = infer_state_from_prs({web_url: pr_entry_dict})
+    mr_title = pr_entry.title if lookup_url == web_url else ""
 
     tickets = list(Ticket.objects.matching_issue(lookup_url).order_by("pk"))
     if not tickets:
@@ -124,6 +125,9 @@ def upsert_ticket_from_pr(
             overlay=overlay_name,
         )
         new_ticket.state = workflow_capped_state(new_ticket, inferred_state)
+        if mr_title:
+            new_ticket.short_description = new_ticket.short_description_seed(mr_title)
+            new_ticket.extra["mr_title_generated"] = mr_title
         new_ticket.save()
         result.tickets_created += 1
     else:
@@ -218,6 +222,7 @@ def update_ticket(
     repo_short: str,
     inferred_state: str = "",
 ) -> None:
+    mr_title = str(pr_entry.get("title") or "") if ticket.issue_url == pr_url else ""
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     prs = extra.get("prs", {})
     if not isinstance(prs, dict):
@@ -250,6 +255,16 @@ def update_ticket(
         also_set["state"] = capped_state
 
     set_keys = cast("TicketExtra", {"prs": prs})
+    if mr_title and ticket.issue_url == pr_url:
+        previous_generated = extra.get("mr_title_generated")
+        if not isinstance(previous_generated, str) and isinstance(prev, dict):
+            previous_generated = prev.get("title")
+        generated_seed = (
+            previous_generated[: Ticket.SHORT_DESCRIPTION_MAX_LENGTH] if isinstance(previous_generated, str) else ""
+        )
+        if not ticket.short_description or ticket.short_description == generated_seed:
+            also_set["short_description"] = mr_title[: Ticket.SHORT_DESCRIPTION_MAX_LENGTH]
+        set_keys["mr_title_generated"] = mr_title
     ticket.merge_extra(set_keys=set_keys, also_set=also_set)
 
 

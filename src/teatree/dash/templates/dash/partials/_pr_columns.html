@@ -1,0 +1,37 @@
+{% if pr_board.inventory_warning %}<p class="band" role="status">{{ pr_board.inventory_warning }}</p>{% endif %}
+<p class="result-count">{{ pr_board.total }} open pull requests</p>
+<div class="kanban-groups pr-groups">
+  {% for group in pr_board.groups %}
+    <section class="kanban-group" data-pr-group="{{ group.name }}">
+      <h2>{{ group.name }} <span class="count">{{ group.cards|length }}</span></h2>
+      <div class="kanban-columns">
+        <div class="kanban-column">
+          {% for card in group.cards %}
+            <article id="pr-{{ card.dom_id }}" class="card pr-card" data-pr-card="{{ card.ref }}">
+              <div class="card-top">{% if card.link_url %}<a class="card-num" href="{{ card.link_url }}" target="_blank" rel="noopener noreferrer">{{ card.title }}</a>{% else %}<span class="card-num">{{ card.title }}</span>{% endif %}{% if card.draft %}<span class="chip">Draft</span>{% endif %}</div>
+              <p class="pr-card-meta">{{ card.ref }} · age {{ card.age }}</p>
+              <dl class="pr-card-facts">
+                <div><dt>CI</dt><dd>{{ card.ci }}</dd></div>
+                <div><dt>Approvals</dt><dd>{{ card.approvals }}</dd></div>
+                <div><dt>Threads</dt><dd>{{ card.threads }}</dd></div>
+                <div><dt>Last activity</dt><dd>{{ card.last_activity }}</dd></div>
+              </dl>
+              <p class="pr-card-next"><strong>Next:</strong> {{ card.next_actor }} — {{ card.next_action }}</p>
+              {% if card.review_link %}<p><a href="{{ card.review_link }}" target="_blank" rel="noopener noreferrer">Review request</a> · waiting {{ card.review_age }} · Re-asks: {{ card.review_reasks }} · Earliest re-ask {{ card.review_due }}</p>{% endif %}
+              {% if card.work_agent %}<p>Agent {{ card.work_agent }} · since {{ card.work_since }} · last result {{ card.last_result }}</p>{% endif %}
+              {% if card.ticket_id %}<button class="dash-btn" type="button" hx-get="{% url 'dash:ticket_drawer' card.ticket_id %}" hx-target="#drawer" hx-swap="innerHTML">Open task</button>{% endif %}
+              {% if card.enqueue_buttons %}<div class="card-actions">
+                {% for button in card.enqueue_buttons %}
+                  <form method="post" action="{% url 'dash:task_action' card.ticket_id %}" hx-post="{% url 'dash:task_action' card.ticket_id %}" hx-target="#drawer" hx-swap="innerHTML">
+                    {% csrf_token %}<input type="hidden" name="phase" value="{{ button.phase }}">
+                    <button class="dash-btn card-btn" type="submit" {% if not button.enabled %}disabled title="{{ button.reason }}"{% endif %}>{{ button.label }}</button>
+                  </form>
+                {% endfor %}
+              </div>{% endif %}
+            </article>
+          {% empty %}<p class="column-empty">—</p>{% endfor %}
+        </div>
+      </div>
+    </section>
+  {% endfor %}
+</div>

@@ -2,6 +2,7 @@
 
 from typing import TYPE_CHECKING
 
+from teatree.core.pr_inventory import write_inventory
 from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
@@ -33,6 +34,8 @@ def _build_jobs(
             _ScannerJob(
                 scanner=MyPrsScanner(
                     host=host,
+                    overlay_name="",
+                    inventory_writer=write_inventory,
                     verdict_reader=RecordedVerdictReader(),
                     critic_reader=RecordedCriticFindingReader(),
                 ),

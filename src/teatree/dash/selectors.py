@@ -9,11 +9,11 @@ board. The column set is a module constant a conformance test pins against the F
 enum, so a future ``Ticket.State`` value cannot silently drop off the board.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from django.db.models import Max
+from django.db.models import Count, Max, QuerySet
 from django.utils import timezone
 
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
@@ -24,7 +24,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.selectors import _humanize_duration
+from teatree.core.pr_inventory import HOURS_PER_DAY, MINUTES_PER_HOUR
 from teatree.dash.issue_link import issue_link
 from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, pending_phase_tasks_by_ticket
 from teatree.url_classify import pr_ref
@@ -50,6 +50,8 @@ HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_DELIVERED)
 # a failure from a prior deployment presented as if it were live. The attempt row
 # itself is never touched (it is audit); only the board stops showing it.
 STALE_ERROR_AFTER = timedelta(days=2)
+BOARD_PAGE_SIZE = 50
+_SECONDS_PER_MINUTE = 60
 
 # Every column the board renders, in lifecycle order (excludes HIDDEN_STATES).
 BOARD_COLUMNS: tuple[str, ...] = tuple(state for _group, states in COLUMN_GROUPS for state in states)
@@ -163,10 +165,19 @@ class KanbanColumn:
     state: str
     label: str
     cards: tuple[KanbanCard, ...]
+    total_count: int | None = None
+    page: int = 0
+    next_url: str = ""
+    prev_url: str = ""
+    collapsed: bool = False
 
     @property
     def count(self) -> int:
-        return len(self.cards)
+        return self.total_count if self.total_count is not None else len(self.cards)
+
+    @property
+    def has_next_page(self) -> bool:
+        return (self.page + 1) * BOARD_PAGE_SIZE < self.count
 
     @property
     def meaning(self) -> str:
@@ -198,6 +209,7 @@ class BoardFilters:
     kind: str = ""
     text: str = ""
     include_ignored: bool = False
+    pages: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,38 +229,53 @@ class _CardContext:
 def build_kanban_columns(filters: BoardFilters | None = None) -> KanbanBoard:
     """Group the ticket set into FSM-state columns with per-card badge signals.
 
-    Read-only: it issues ORM reads only and never touches the FSM. Every
-    per-ticket badge (active-work dot, active phase / claimed-by, last task
-    error, dwell-in-column, PR chips) is bulk-fetched once for the whole board
-    rather than per card, so the render is a small fixed number of queries.
+    Read-only: it issues ORM reads only and never touches the FSM. Each column is
+    counted in the database and only its requested page of cards is fetched, then
+    every per-ticket badge (active-work dot, active phase / claimed-by, last task
+    error, dwell-in-column, PR chips) is bulk-fetched once for those cards rather
+    than per card, so the render is a small fixed number of queries.
     """
     active = filters or BoardFilters()
     tickets = _filtered_tickets(active)
-    ticket_ids = [t.pk for t in tickets]
-    context = _card_context(ticket_ids)
+    totals = {str(state): total for state, total in tickets.order_by().values_list("state").annotate(total=Count("pk"))}
+    pages = {state: _clamped_page(active.pages.get(state, 0), total) for state, total in totals.items()}
+    page_tickets = _page_tickets(tickets, totals, pages)
+    context = _card_context([t.pk for t in page_tickets])
 
     by_state: dict[str, list[KanbanCard]] = {state: [] for state in (*BOARD_COLUMNS, *HIDDEN_STATES)}
-    for ticket in tickets:
+    for ticket in page_tickets:
         by_state.setdefault(str(ticket.state), []).append(_card(ticket, context))
 
-    groups = tuple(
-        KanbanGroup(
-            name=name,
-            columns=tuple(
-                KanbanColumn(state=state, label=_label(state), cards=tuple(by_state[state])) for state in states
-            ),
+    def column(state: str) -> KanbanColumn:
+        return KanbanColumn(
+            state=state,
+            label=_label(state),
+            cards=tuple(by_state[state]),
+            total_count=totals.get(state, 0),
+            page=pages.get(state, 0),
         )
-        for name, states in COLUMN_GROUPS
+
+    groups = tuple(
+        KanbanGroup(name=name, columns=tuple(column(state) for state in states)) for name, states in COLUMN_GROUPS
     )
-    hidden = (
-        tuple(KanbanColumn(state=state, label=_label(state), cards=tuple(by_state[state])) for state in HIDDEN_STATES)
-        if active.include_ignored
-        else ()
-    )
+    hidden = tuple(column(state) for state in HIDDEN_STATES) if active.include_ignored else ()
     return KanbanBoard(groups=groups, include_ignored=active.include_ignored, hidden=hidden)
 
 
-def _filtered_tickets(filters: BoardFilters) -> list[Ticket]:
+def _clamped_page(page: int, total: int) -> int:
+    return max(0, min(page, (total - 1) // BOARD_PAGE_SIZE)) if total else 0
+
+
+def _page_tickets(tickets: QuerySet[Ticket], totals: Mapping[str, int], pages: Mapping[str, int]) -> list[Ticket]:
+    whole = [state for state, total in totals.items() if total <= BOARD_PAGE_SIZE]
+    rows = list(tickets.filter(state__in=whole).order_by("-id"))
+    for state in totals.keys() - set(whole):
+        start = pages[state] * BOARD_PAGE_SIZE
+        rows.extend(tickets.filter(state=state).order_by("-id")[start : start + BOARD_PAGE_SIZE])
+    return rows
+
+
+def _filtered_tickets(filters: BoardFilters) -> QuerySet[Ticket]:
     columns = (*BOARD_COLUMNS, *HIDDEN_STATES) if filters.include_ignored else BOARD_COLUMNS
     qs = Ticket.objects.filter(state__in=columns)
     if filters.overlay:
@@ -259,7 +286,7 @@ def _filtered_tickets(filters: BoardFilters) -> list[Ticket]:
         qs = qs.filter(kind=filters.kind)
     if filters.text:
         qs = qs.filter(short_description__icontains=filters.text) | qs.filter(issue_url__icontains=filters.text)
-    return list(qs.order_by("-id"))
+    return qs
 
 
 def _card_context(ticket_ids: list[int]) -> _CardContext:
@@ -267,7 +294,7 @@ def _card_context(ticket_ids: list[int]) -> _CardContext:
         return _CardContext()
     # One fetch feeds both maps so the chip's TEXT and its NAMED KIND can never
     # disagree about which attempt they describe.
-    failures = _last_failure_by_ticket(ticket_ids)
+    failures = last_failure_by_ticket(ticket_ids)
     return _CardContext(
         active_ticket_ids=_active_ticket_ids(ticket_ids),
         active_phase=_active_phase(ticket_ids),
@@ -321,7 +348,7 @@ def _claimed_by(ticket_ids: list[int]) -> dict[int, str]:
     return claimed
 
 
-def _last_failure_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[str, str]]:
+def last_failure_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[str, str]]:
     """Per ticket, the latest attempt's ``(error, failure_kind)`` — empty when it did not fail.
 
     The NAMED kind travels with the error text (#3957) so the card can say what KIND of
@@ -339,11 +366,31 @@ def _last_failure_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[str, str]]
         .annotate(latest_pk=Max("pk"))
         .values_list("latest_pk", flat=True)
     )
-    attempts = TaskAttempt.objects.filter(
-        pk__in=list(latest_pks),
-        started_at__gte=timezone.now() - STALE_ERROR_AFTER,
-    ).select_related("task")
-    return {attempt.task.ticket_id: (attempt.error, attempt.failure_kind) for attempt in attempts if attempt.error}
+    attempts = list(
+        TaskAttempt.objects.filter(
+            pk__in=list(latest_pks),
+            started_at__gte=timezone.now() - STALE_ERROR_AFTER,
+        ).select_related("task")
+    )
+    cancelled = [attempt for attempt in attempts if attempt.failure_kind == FailureKind.CANCELLED]
+    latest_tasks = {
+        (row["ticket_id"], row["phase"]): row["latest_pk"]
+        for row in Task.objects.filter(
+            ticket_id__in=[attempt.task.ticket_id for attempt in cancelled],
+            phase__in=[attempt.task.phase for attempt in cancelled],
+        )
+        .values("ticket_id", "phase")
+        .annotate(latest_pk=Max("pk"))
+    }
+    return {
+        attempt.task.ticket_id: (attempt.error, attempt.failure_kind)
+        for attempt in attempts
+        if attempt.error
+        and not (
+            attempt.failure_kind == FailureKind.CANCELLED
+            and latest_tasks.get((attempt.task.ticket_id, attempt.task.phase), 0) > attempt.task_id
+        )
+    }
 
 
 def _latest_transition_at(ticket_ids: list[int]) -> dict[int, datetime]:
@@ -387,14 +434,23 @@ def _card(ticket: Ticket, context: _CardContext) -> KanbanCard:
         failure_environmental=is_environmental(kind),
         dwell=_dwell(context.latest_transition_at.get(ticket.pk)),
         pr_chips=context.pr_chips.get(ticket.pk, ()),
-        enqueue_buttons=board_enqueue_buttons(context.queued_phases.get(ticket.pk, {})),
+        enqueue_buttons=board_enqueue_buttons(context.queued_phases.get(ticket.pk, {}), ticket=ticket),
     )
 
 
 def _dwell(latest_transition_at: datetime | None) -> str:
     if latest_transition_at is None:
         return ""
-    return _humanize_duration((timezone.now() - latest_transition_at).total_seconds())
+    minutes = max(0, int((timezone.now() - latest_transition_at).total_seconds() // _SECONDS_PER_MINUTE))
+    if minutes == 0:
+        return "< 1 min"
+    if minutes < MINUTES_PER_HOUR:
+        return f"{minutes} min"
+    hours, remaining_minutes = divmod(minutes, MINUTES_PER_HOUR)
+    if hours < HOURS_PER_DAY:
+        return f"{hours} h {remaining_minutes:02d} min"
+    days, remaining_hours = divmod(hours, HOURS_PER_DAY)
+    return f"{days} d {remaining_hours} h"
 
 
 def _label(state: str) -> str:

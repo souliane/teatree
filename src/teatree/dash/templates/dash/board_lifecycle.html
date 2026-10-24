@@ -1,0 +1,47 @@
+{% extends "dash/base.html" %}
+{% block title %}Board{% endblock %}
+{% block heading %}Lifecycle board{% endblock %}
+{% block content %}
+  <nav class="board-tabs" aria-label="Board views"><a href="{% url 'dash:board' %}">Open PRs</a><strong aria-current="page">Lifecycle</strong></nav>
+  <section class="band">
+    <h2>Factory speed</h2>
+    {% if merge_summary.merged_count %}
+      <p>Last {{ merge_summary.merged_count }} merged pull requests: {{ merge_summary.working_share }} working;
+        top wait {{ merge_summary.top_wait }}; at least {{ merge_summary.interventions_per_merge }} recorded hand cancels per merge;
+        {{ merge_summary.inferred_hand_tasks_per_merge }} inferred hand tasks per merge.
+        <a href="{% url 'dash:cycle_time' %}#merge-waits">See the wait breakdown</a>.</p>
+    {% else %}
+      <p>No merged pull requests to measure yet.</p>
+    {% endif %}
+  </section>
+  <form class="dash-filters" method="get" action="{% url 'dash:board_lifecycle' %}">
+    <input type="text" name="text" value="{{ filters.text }}" placeholder="search #/description">
+    <input type="text" name="overlay" value="{{ filters.overlay }}" placeholder="overlay">
+    <select name="role">
+      <option value="">any role</option>
+      <option value="author" {% if filters.role == "author" %}selected{% endif %}>author</option>
+      <option value="reviewer" {% if filters.role == "reviewer" %}selected{% endif %}>reviewer</option>
+    </select>
+    <select name="kind">
+      <option value="">any kind</option>
+      <option value="feature" {% if filters.kind == "feature" %}selected{% endif %}>feature</option>
+      <option value="fix" {% if filters.kind == "fix" %}selected{% endif %}>fix</option>
+    </select>
+    <label><input type="checkbox" name="ignored" value="1" {% if filters.include_ignored %}checked{% endif %}> ignored</label>
+    <button class="dash-btn primary" type="submit">Filter</button>
+    <span class="result-count">{{ board.total }} shown</span>
+  </form>
+
+  <div id="board"
+    hx-get="{% url 'dash:board_columns' %}?text={{ filters.text|urlencode }}&overlay={{ filters.overlay|urlencode }}&role={{ filters.role|urlencode }}&kind={{ filters.kind|urlencode }}{% if filters.include_ignored %}&ignored=1{% endif %}{% for key, page in page_params %}&{{ key }}={{ page }}{% endfor %}"
+    hx-trigger="every 4s"
+    hx-sync="this:drop"
+    hx-swap="morph:innerHTML">
+    {% include "dash/partials/_columns.html" %}
+  </div>
+
+  <aside id="drawer" aria-label="Ticket detail"></aside>
+{% endblock %}
+{% block extra_js %}
+  {% include "dash/partials/_board_drawer_js.html" %}
+{% endblock %}

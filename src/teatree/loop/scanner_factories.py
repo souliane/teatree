@@ -23,6 +23,7 @@ from teatree.core.intake.budget import read_intake_budget, release_deadlocked_ho
 from teatree.core.intake.concurrency import resolve_intake_concurrency
 from teatree.core.models import ImplementedIssueMarker
 from teatree.core.overlay_repos import owned_repo_slugs
+from teatree.core.pr_inventory import write_inventory
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.loop.job_identity import _TUPLE_PAIR, CANONICAL_CORE_OVERLAY
@@ -156,6 +157,7 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     reconcile_settled_clears_best_effort()
     return PrSweepScanner(
         repos=repos,
+        inventory_writer=write_inventory,
         # #72: a bare slug carries no host, so routing per slug is what stops a GitLab
         # project being probed with the GitHub CLI and read as "no open MRs".
         api=ForgePrApiClient(
