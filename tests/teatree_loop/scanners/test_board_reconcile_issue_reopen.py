@@ -7,7 +7,8 @@ escalation at the cap, the fail-closed probe, and rule E's share of the per-run 
 
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.db import transaction
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from teatree.core.backend_protocols import IssueReopenState
@@ -206,6 +207,16 @@ class TestReopenedIssueRule(TestCase):
 
         assert (report.applied, report.probes) == ((), 0)
 
+    def test_each_revival_adds_one_to_the_counter(self) -> None:
+        ticket = self._delivered(extra={"reopen_revivals": 1})
+
+        issue_reopen._revive_reopened(Ticket.objects.get(pk=ticket.pk), dry_run=False)
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.DELIVERED)
+        issue_reopen._revive_reopened(Ticket.objects.get(pk=ticket.pk), dry_run=False)
+
+        ticket.refresh_from_db()
+        assert ticket.extra["reopen_revivals"] == 3
+
     def test_stale_revival_counter_cannot_bypass_live_cap(self) -> None:
         ticket = self._delivered()
         Ticket.objects.filter(pk=ticket.pk).update(extra={"reopen_revivals": issue_reopen.MAX_REOPEN_REVIVALS})
@@ -227,3 +238,23 @@ class TestReopenedIssueRule(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.WORK_STARTED
         assert ticket.extra["reopen_revivals"] == 1
+
+
+class TestRevivalWriteIsAtomic(TransactionTestCase):
+    """``TransactionTestCase``: a ``TestCase`` wraps the test in an outer atomic, which hides a missing one."""
+
+    def test_the_revival_is_written_inside_one_transaction(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree", state=Ticket.State.DELIVERED, issue_url=TestReopenedIssueRule.URL
+        )
+        in_transaction: list[bool] = []
+        real_save = Ticket.save
+
+        def save_recording_the_transaction(instance: Ticket, *args: object, **kwargs: object) -> None:
+            in_transaction.append(transaction.get_connection().in_atomic_block)
+            real_save(instance, *args, **kwargs)
+
+        with patch.object(Ticket, "save", save_recording_the_transaction):
+            assert issue_reopen._revive_reopened(Ticket.objects.get(pk=ticket.pk), dry_run=False) is not None
+
+        assert in_transaction == [True]

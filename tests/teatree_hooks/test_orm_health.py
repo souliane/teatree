@@ -1,6 +1,7 @@
 """Health records keep host and container observations separate and time bound."""
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,21 @@ def test_record_round_trip_and_venue_isolation(tmp_path: Path, monkeypatch: pyte
     records = orm_health.read_orm_health()
     assert {(r["venue"], r["status"]) for r in records} == {("host", "unreachable"), ("container", "ok")}
     assert next(r for r in records if r["venue"] == "host")["db_path"] == "/missing/db"
+
+
+def test_an_ok_record_from_another_interpreter_does_not_mask_an_unreachable_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(orm_health, "shared_hook_state_root", lambda: tmp_path)
+    monkeypatch.setattr(orm_health, "hook_venue", lambda: "host")
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+    orm_health.record_orm_health("unreachable", "/missing/db", "gone")
+    monkeypatch.setattr(sys, "executable", "/opt/venv/bin/python")
+    orm_health.record_orm_health("ok", "/working/db")
+
+    statuses = {record["interpreter"]: record["status"] for record in orm_health.read_orm_health()}
+
+    assert statuses == {"/usr/bin/python3": "unreachable", "/opt/venv/bin/python": "ok"}
 
 
 def test_expired_and_corrupt_records_are_not_healthy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

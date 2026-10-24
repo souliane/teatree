@@ -247,13 +247,15 @@ class TestSuccessIsSilent(TestCase):
         assert stderr.getvalue() == ""
 
 
-def test_unreachable_orm_db_is_reported_by_the_live_dispatch_hook(tmp_path) -> None:
+@pytest.mark.parametrize("broken_db", ["missing/db.sqlite3", "db.sqlite3"], ids=["no-parent-dir", "parent-dir-exists"])
+def test_unreachable_orm_db_is_reported_by_the_live_dispatch_hook(tmp_path: Path, broken_db: str) -> None:
     data_dir = tmp_path / "hook-data"
+    broken_db_path = tmp_path / broken_db
     env = dict(
         os.environ,
         T3_DATA_DIR=str(data_dir),
         XDG_DATA_HOME=str(tmp_path / "xdg"),
-        BROKEN_DB_PATH=str(tmp_path / "missing" / "db.sqlite3"),
+        BROKEN_DB_PATH=str(broken_db_path),
     )
     script = (
         "import json, os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'teatree.settings'); "
@@ -273,6 +275,7 @@ def test_unreachable_orm_db_is_reported_by_the_live_dispatch_hook(tmp_path) -> N
     assert json.loads(result.stdout)["denied"] is False
     assert "SKIPPED" in result.stderr
     assert env["BROKEN_DB_PATH"] in result.stderr
+    assert not broken_db_path.exists(), "the probe must not create an empty database file"
     assert sys.executable in result.stderr
     records = list(data_dir.glob("hook-orm-health-*.json"))
     assert len(records) == 1

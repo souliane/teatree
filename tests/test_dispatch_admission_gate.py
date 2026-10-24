@@ -148,9 +148,12 @@ class TestRegistration:
 class TestDeniedReasonSeam:
     """The one place the hook reaches core — the seam every other test patches out."""
 
-    def test_an_unbootstrappable_django_admits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_unbootstrappable_django_admits_and_says_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         monkeypatch.setattr(bootstrap, "bootstrap_teatree_django", lambda: False)
         assert _REAL_DENIED_REASON(apply_ceiling=True) is None
+        assert "the dispatch admission gate did NOT validate this call" in capsys.readouterr().err
 
     def test_it_forwards_the_ceiling_flag_to_core(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(bootstrap, "bootstrap_teatree_django", lambda: True)

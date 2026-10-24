@@ -51,10 +51,13 @@ class TestSeatRelease:
         release_arm.handle_subagent_stop_release({"session_id": "sess-4129"})
         release_arm.handle_subagent_stop_release({"agent_id": "a-1"})
 
-    def test_an_unbootstrappable_django_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_unbootstrappable_django_is_a_no_op_that_says_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         monkeypatch.setattr(bootstrap, "bootstrap_teatree_django", lambda: False)
         monkeypatch.setattr(core, "release_interactive_dispatch", _must_not_release)
         release_arm.handle_subagent_stop_release(_stop())
+        assert "the dispatch seat release gate did NOT validate this call" in capsys.readouterr().err
 
     def test_an_orm_failure_is_reported_and_never_propagates(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
