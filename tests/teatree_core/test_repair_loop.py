@@ -93,7 +93,7 @@ class TestIterationCounter(TestCase):
 
     def test_park_rows_are_not_stamped_and_do_not_advance_real_iteration(self) -> None:
         # #3689: a limit_parked attempt is a scheduling event, not a work iteration.
-        # The budget query (task_repair.phase_attempts) already EXCLUDES park rows, so
+        # The budget query (task_repair_queries.phase_attempts) already EXCLUDES park rows, so
         # the stamp must too — otherwise park rows carry bogus work-iteration numbers
         # (observed max 281 vs a cap of 5) that corrupt "attempt N/max" and the S5
         # signal. Real attempts count only real attempts; parks stay at the 0 sentinel.

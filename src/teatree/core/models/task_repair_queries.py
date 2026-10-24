@@ -32,20 +32,16 @@ def repair_observations(attempts: "TaskAttemptQuerySet") -> list["TaskAttempt"]:
     return [attempt for attempt in ordered if recoverable_exhaustion_cause(attempt.error) is None]
 
 
-def _is_repair_work(attempt: "TaskAttempt") -> bool:
-    return (
-        not attempt.error.startswith(PARK_ERROR_PREFIXES + _AUDIT_PREFIXES)
-        and recoverable_exhaustion_cause(attempt.error) is None
-    )
+def _is_repair_work(error: str) -> bool:
+    return not error.startswith(PARK_ERROR_PREFIXES + _AUDIT_PREFIXES) and recoverable_exhaustion_cause(error) is None
 
 
 def repair_iterations(attempts: "TaskAttemptQuerySet") -> list["TaskAttempt"]:
     """Executed work attempts in a queryset, oldest first."""
-    work = [attempt for attempt in attempts.excluding_parks().order_by("pk") if _is_repair_work(attempt)]
-    successors = _attempt_model().objects.filter(fallback_from_attempt_id__in=[attempt.pk for attempt in work])
-    superseded_ids = {
-        attempt.fallback_from_attempt_id for attempt in successors.excluding_parks() if _is_repair_work(attempt)
-    }
+    sources = attempts.excluding_parks()
+    work = [attempt for attempt in sources.order_by("pk") if _is_repair_work(attempt.error)]
+    successor_errors = sources.filter(fallback_attempts__isnull=False).values_list("pk", "fallback_attempts__error")
+    superseded_ids = {source_id for source_id, error in successor_errors if _is_repair_work(error)}
     return [attempt for attempt in work if attempt.pk not in superseded_ids]
 
 
@@ -80,7 +76,7 @@ def adjacent_work_attempts(work: list["TaskAttempt"], observations: list["TaskAt
 
 def next_repair_iteration(attempt: "TaskAttempt") -> int:
     """Stamp a pending attempt against the rows the repair budget will count."""
-    if not _is_repair_work(attempt):
+    if not _is_repair_work(attempt.error):
         return 0
     prior = phase_attempts(attempt.task)
     source_id = cast("int | None", attempt.__dict__["fallback_from_attempt_id"])

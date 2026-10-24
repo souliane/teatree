@@ -45,6 +45,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.signals import _auto_enqueue_task
+from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from teatree.quality.hand_written_loc import LocDelta
 from teatree.utils.run import CommandFailedError
 from tests.factories import (
@@ -705,6 +706,18 @@ class S5RepairBurnTests(FactorySignalsTestBase):
         assert row.evidence["attempts"] == 8
         assert row.evidence["failed_fraction"] == pytest.approx(0.25)
         assert row.evidence["success_groups"] == 6
+
+    def test_capacity_dips_are_neither_failures_nor_successes(self) -> None:
+        for _ in range(5):
+            self._attempt(days_ago=5, iteration=1)
+        dip = LimitMatch(phrase="5-hour limit", cause=LimitCause.SUBSCRIPTION_SESSION).as_reason()
+        for _ in range(6):
+            self._attempt(days_ago=5, iteration=0, exit_code=1, error=dip)
+
+        row = _row(compute_factory_signals(now=self.now), "repair_burn")
+        assert row.evidence["attempts"] == 5
+        assert row.evidence["failed_fraction"] == pytest.approx(0.0)
+        assert row.tripped is False
 
     def test_lease_reap_burst_trips_the_failure_fraction(self) -> None:
         self._attempt(days_ago=5, iteration=1)
