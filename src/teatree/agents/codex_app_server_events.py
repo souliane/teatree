@@ -75,7 +75,7 @@ async def mailbox_tool_result(
     options = options_by_thread.get(thread_id) if isinstance(thread_id, str) else None
     mailbox = options.core.mailbox if options is not None else None
     specification = _MAILBOX_TOOLS.get(tool) if isinstance(tool, str) else None
-    arguments = params.get("arguments")
+    arguments = {} if params.get("arguments") is None else params["arguments"]
     if (
         options is None
         or mailbox is None

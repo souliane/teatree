@@ -277,7 +277,7 @@ this address when the MCP child disconnects; a restarted worker has no old mailb
 When no live worker is online, the plugin keeps its other MCP tools but has no mailbox tools.
 
 Claude factory agents use the same five `agent_mailbox_*` tools in their TeaTree-managed
-MCP child. Codex factory agents get five worker-handled App Server tools, including
+MCP child. Codex factory agents get up to five dynamic mailbox tools by phase, including
 inside read-only planning and review; a `pydantic_ai` task gets four native tools
 and no `agent_mailbox_self`. They reach live peers across tickets and same-host workers.
 `self` and `peers` provide addresses and receive status; `send` returns a receipt after a

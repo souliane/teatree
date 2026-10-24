@@ -171,6 +171,17 @@ def test_a_verified_source_cannot_substitute_another_sender_address(tmp_path: Pa
         asyncio.run(verified_sender(request, own_socket=tmp_path / "w-own.sock", connected_pid=7))
 
 
+def test_a_verified_source_without_a_sender_record_is_refused(tmp_path: Path) -> None:
+    request = {"source_socket": str(tmp_path / "w-source.sock"), "source_address": "claimed"}
+    identity = {"pid": 7, "sender": "claimed"}
+
+    with (
+        patch("teatree.agents.live_federation.call", new_callable=AsyncMock, return_value=identity),
+        pytest.raises(FederationRefusedError, match="sender is not active"),
+    ):
+        asyncio.run(verified_sender(request, own_socket=tmp_path / "w-own.sock", connected_pid=7))
+
+
 @pytest.mark.parametrize(
     "ticket_claim",
     [{"harness": "claude_sdk"}, {"harness": "interactive", "ticket": "first"}],

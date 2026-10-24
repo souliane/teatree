@@ -46,7 +46,7 @@ from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_client import LiveClient
 from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
-from teatree.agents.live_ingress import PeerCredentials, PeerRole
+from teatree.agents.live_ingress import IngressRefusedError, PeerCredentials, PeerRole
 from teatree.agents.live_mailbox import (
     LiveMailboxBroker,
     MailboxIdentity,
@@ -176,6 +176,16 @@ def test_broker_shutdown_closes_an_attached_attended_lease_and_retires_its_owner
         assert time.monotonic() - started < 1
         assert not socket_path.exists()
         assert not owner_path.exists()
+
+
+def test_attended_join_is_refused_while_broker_is_stopping(tmp_path: Path) -> None:
+    broker = LiveMailboxBroker(runtime_dir=tmp_path)
+    broker._stop = asyncio.Event()
+    broker._stop.set()
+
+    with pytest.raises(IngressRefusedError, match="stopping"):
+        broker._join(None)
+    assert broker.identities() == []
 
 
 def test_worker_descendant_cannot_join_as_an_attended_peer(broker: LiveMailboxBroker, tmp_path: Path) -> None:
