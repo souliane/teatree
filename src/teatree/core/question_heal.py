@@ -12,7 +12,9 @@ from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from django.db import transaction
+from django.db.models import Q
 
+from teatree.core.modelkit.owner_decision import HARD_LIMIT_DECISIONS
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_actions import DELEGATION_SKIPPED_ACTION
 from teatree.core.models.question_withheld import WITHHELD_ACTION
@@ -47,7 +49,10 @@ def withdraw_healed(rows: Iterable[DeferredQuestion]) -> list[DeferredQuestion]:
 
 def live_owner_questions() -> list[DeferredQuestion]:
     """The pending owner-audience backlog a repeat ping may raise: healed rows withdrawn, kept cards reported once."""
-    return withdraw_healed(DeferredQuestion.owner_pending().exclude(audits__action=DELEGATION_SKIPPED_ACTION))
+    rows = DeferredQuestion.owner_pending().filter(
+        Q(evidence__decision__in=HARD_LIMIT_DECISIONS) | ~Q(audits__action=DELEGATION_SKIPPED_ACTION)
+    )
+    return withdraw_healed(rows.distinct())
 
 
 def withhold(row: DeferredQuestion, problems: Sequence[str]) -> bool:

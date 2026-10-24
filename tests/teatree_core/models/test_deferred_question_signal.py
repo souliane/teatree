@@ -12,12 +12,11 @@ from tests._owner_channel import answer_on_slack, owner_card
 
 class TestResolvedSignalIdentity(TestCase):
     def test_settled_signal_does_not_expire_after_thirty_days(self) -> None:
-        first = DeferredQuestion.objects.create(
-            question="May this checkout be reused?",
-            dedupe_marker="checkout:old-state",
-            audience=DeferredQuestion.Audience.OWNER_QUESTION,
-            answer_text="Yes",
-            answered_at=timezone.now() - timedelta(days=40),
+        first = DeferredQuestion.record(
+            "May this checkout be reused?", dedupe_marker="checkout:old-state", card=owner_card()
+        )
+        DeferredQuestion.objects.filter(pk=first.pk).update(
+            answer_text="Yes", answered_at=timezone.now() - timedelta(days=40)
         )
         DeferredQuestion.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(days=40))
 
@@ -108,3 +107,34 @@ class TestResolvedSignalIdentity(TestCase):
 
         assert changed.pk != first.pk
         assert changed.is_pending
+
+    def test_markerless_draft_reuses_a_resolved_signal_for_the_same_task(self) -> None:
+        card = owner_card().with_quote("May I post this reply for you?", "A drafted reply.")
+        first = DeferredQuestion.record("May I post this reply for you?", card=card)
+        answer_on_slack(first, "No")
+
+        repeated = DeferredQuestion.record("May I post this reply for you?", card=card)
+
+        assert repeated.pk == first.pk
+        assert DeferredQuestion.objects.count() == 1
+
+    def test_changed_blocker_why_or_quote_creates_a_new_signal(self) -> None:
+        card = owner_card()
+        for field, changed_text in (
+            ("blocker", "The approval boundary changed."),
+            ("why", "The planned execution changed."),
+            ("quoted", "Different quoted evidence."),
+        ):
+            with self.subTest(field=field):
+                marker = f"decision:{field}"
+                first = DeferredQuestion.record("Should this bounded step run?", dedupe_marker=marker, card=card)
+                answer_on_slack(first, "Yes")
+
+                changed = DeferredQuestion.record(
+                    "Should this bounded step run?",
+                    dedupe_marker=marker,
+                    card=replace(card, **{field: changed_text}),
+                )
+
+                assert changed.pk != first.pk
+                assert changed.is_pending

@@ -3,14 +3,18 @@
 
 import io
 import json
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard, plain_text, word_count
+from teatree.core.models.bot_ping import BotPing
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.question_text import options_digest
+from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
+from teatree.core.notify_types import NotifyOutcome, NotifyReason
 from tests._owner_channel import assert_a_plain_card
 
 _OPTIONS = [
@@ -74,11 +78,35 @@ class TestAJargonQuestionIsRefused(TestCase):
 
 
 class TestACompleteCardIsRecorded(TestCase):
+    def test_a_hard_limit_is_reported_and_closed_at_record_time(self) -> None:
+        code, out, _err = _record("Can I rotate the deploy token?", *_complete())
+
+        assert code == 0
+        row = DeferredQuestion.objects.get()
+        assert not row.is_pending
+        report = BotPing.objects.get(idempotency_key=f"rule1-hard-limit:{row.stable_notify_ref}")
+        assert "Rule -1 skipped" in report.text
+        assert "skipped and reported" in out
+
+    def test_a_failed_report_keeps_the_card_for_a_retry(self) -> None:
+        failed = NotifyOutcome(sent=False, reason=NotifyReason.DELIVERY_FAILED)
+        with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=failed):
+            code, out, _err = _record("Can I rotate the deploy token?", *_complete())
+
+        assert code == 0
+        row = DeferredQuestion.objects.get()
+        assert row.is_pending
+        assert "report pending retry" in out
+        assert drain_unmirrored_deferred_questions(user_id="") == (0, 0)
+        row.refresh_from_db()
+        assert not row.is_pending
+        assert BotPing.objects.filter(idempotency_key=f"rule1-hard-limit:{row.stable_notify_ref}").exists()
+
     def test_the_card_is_stored_and_reads_plainly(self) -> None:
         code, out, _err = _record("Can I rotate the deploy token?", *_complete())
 
         assert code == 0
-        [row] = list(DeferredQuestion.owner_pending())
+        [row] = list(DeferredQuestion.objects.all())
         assert f"recorded #{row.pk}." in out
         assert row.evidence["why"] == _WHY
         assert row.evidence["blocker"] == _BLOCKER
@@ -88,13 +116,13 @@ class TestACompleteCardIsRecorded(TestCase):
         text = assert_a_plain_card(row, _BLOCKER, "The runbook")
         assert text.splitlines()[0] == "Can I rotate the deploy token?"
 
-    def test_a_card_without_options_asks_for_a_reply_in_the_thread(self) -> None:
+    def test_a_card_without_options_records_empty_options(self) -> None:
         flags = tuple(flag for flag in _complete() if flag != json.dumps(_OPTIONS))[:-1]
 
         code, _out, _err = _record("Can I rotate the deploy token?", *flags)
 
         assert code == 0
-        [row] = list(DeferredQuestion.owner_pending())
+        [row] = list(DeferredQuestion.objects.all())
         assert row.options_json == ""
         assert row.options_hash == ""
 
@@ -132,7 +160,7 @@ class TestTheCardIsCappedAt120Words(TestCase):
         code, _out, err = _record(self.QUESTION, *_complete(options=_four_options_totalling(self.QUESTION, 120)))
 
         assert code == 0, err
-        assert DeferredQuestion.owner_pending().count() == 1
+        assert DeferredQuestion.objects.count() == 1
 
     def test_a_card_of_121_words_is_refused_naming_its_count_and_the_limit(self) -> None:
         code, _out, err = _record(self.QUESTION, *_complete(options=_four_options_totalling(self.QUESTION, 121)))
@@ -147,7 +175,7 @@ class TestListJsonCarriesTheCard(TestCase):
         _record("Can I rotate the deploy token?", *_complete())
         out = io.StringIO()
 
-        call_command("questions", "list", "--json", stdout=out)
+        call_command("questions", "list", "--all", "--json", stdout=out)
 
         [listed] = json.loads(out.getvalue())
         assert listed["audience"] == "owner_question"

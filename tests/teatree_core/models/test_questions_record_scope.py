@@ -17,17 +17,17 @@ from teatree.core.models.question_text import options_digest
 
 _OPTIONS = json.dumps(
     [
-        {"label": "Rotate it", "description": "I rotate the token today.", "recommended": True},
-        {"label": "Leave it", "description": "I keep the current token."},
+        {"label": "Expand it", "description": "I expand the supported workflow.", "recommended": True},
+        {"label": "Leave it", "description": "I keep the current scope."},
     ]
 )
 _CHECKED = (
     "--checked",
-    "The runbook names no rotation owner.",
+    "The roadmap does not name this workflow.",
     "--why",
-    "The token expires soon and nobody owns its rotation.",
+    "The proposed workflow expands supported scope.",
     "--blocker",
-    "Only the owner can approve a new credential.",
+    "Only the owner can change product scope.",
     "--options",
     _OPTIONS,
 )
@@ -56,7 +56,9 @@ class TestRecordDedupeMarker:
     def test_an_owner_record_under_a_scanner_marker_asks_the_owner(self) -> None:
         DeferredQuestion.record("repair halted on task 9", dedupe_marker="repair-halt:9")
 
-        out = _record("Which credential?", "--decision", "credentials", *_CHECKED, "--dedupe-marker", "repair-halt:9")
+        out = _record(
+            "Which product scope?", "--decision", "product_scope", *_CHECKED, "--dedupe-marker", "repair-halt:9"
+        )
 
         [row] = list(DeferredQuestion.owner_pending())
         assert f"recorded #{row.pk}." in out
@@ -92,7 +94,7 @@ class TestRecordDecision:
         assert OWNER_QUESTION_ROUTE in out
 
     def test_a_decision_records_an_owner_row(self) -> None:
-        call_command("questions", "record", "Rotate the deploy token?", "--decision", "credentials", *_CHECKED)
+        call_command("questions", "record", "Expand the supported workflow?", "--decision", "product_scope", *_CHECKED)
 
         [row] = list(DeferredQuestion.pending())
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
@@ -101,64 +103,66 @@ class TestRecordDecision:
         call_command(
             "questions",
             "record",
-            "Rotate the deploy token?",
+            "Expand the supported workflow?",
             "--decision",
-            "credentials",
+            "product_scope",
             "--checked",
-            "The runbook names no rotation owner.",
+            "The roadmap does not name this workflow.",
             "--checked",
-            "The token expires in three days.",
+            "The feature request adds a new workflow.",
             *_CHECKED[2:],
         )
 
         [row] = list(DeferredQuestion.pending())
         assert row.evidence == {
-            "decision": "credentials",
-            "checked": ["The runbook names no rotation owner.", "The token expires in three days."],
-            "blocker": "Only the owner can approve a new credential.",
-            "why": "The token expires soon and nobody owns its rotation.",
+            "decision": "product_scope",
+            "checked": ["The roadmap does not name this workflow.", "The feature request adds a new workflow."],
+            "blocker": "Only the owner can change product scope.",
+            "why": "The proposed workflow expands supported scope.",
         }
 
     def test_a_decision_without_checked_is_refused_naming_the_gap(self) -> None:
         err = StringIO()
         with pytest.raises(SystemExit) as exc:
-            call_command("questions", "record", "Rotate the deploy token?", "--decision", "credentials", stderr=err)
+            call_command(
+                "questions", "record", "Expand the supported workflow?", "--decision", "product_scope", stderr=err
+            )
 
         assert exc.value.code == 2
         assert "0 checked facts" in err.getvalue()
         assert not DeferredQuestion.objects.exists()
 
     def test_an_answered_owner_question_is_not_recorded_again(self) -> None:
-        call_command("questions", "record", "Rotate the deploy token?", "--decision", "credentials", *_CHECKED)
+        call_command("questions", "record", "Expand the supported workflow?", "--decision", "product_scope", *_CHECKED)
         [first] = list(DeferredQuestion.pending())
         DeferredQuestion.consume(first.pk, answer="yes")
 
-        call_command("questions", "record", "Rotate the deploy token?", "--decision", "credentials", *_CHECKED)
+        call_command("questions", "record", "Expand the supported workflow?", "--decision", "product_scope", *_CHECKED)
 
         assert DeferredQuestion.objects.count() == 1
 
     def test_a_sticky_hit_prints_the_earlier_answer(self) -> None:
-        _record("Rotate the deploy token?", "--decision", "credentials", *_CHECKED)
+        _record("Expand the supported workflow?", "--decision", "product_scope", *_CHECKED)
         [first] = list(DeferredQuestion.pending())
         DeferredQuestion.consume(first.pk, answer="rotate it on Monday")
 
-        out = _record("Rotate the deploy token?", "--decision", "credentials", *_CHECKED)
+        out = _record("Expand the supported workflow?", "--decision", "product_scope", *_CHECKED)
 
         assert f"#{first.pk}" in out
         assert "rotate it on Monday" in out
 
     def test_a_sticky_hit_prints_the_dismissal_reason(self) -> None:
-        _record("Rotate the deploy token?", "--decision", "credentials", *_CHECKED)
+        _record("Expand the supported workflow?", "--decision", "product_scope", *_CHECKED)
         [first] = list(DeferredQuestion.pending())
-        DeferredQuestion.consume(first.pk, dismissed_reason="the token was retired")
+        DeferredQuestion.consume(first.pk, dismissed_reason="the request was withdrawn")
 
-        out = _record("Rotate the deploy token?", "--decision", "credentials", *_CHECKED)
+        out = _record("Expand the supported workflow?", "--decision", "product_scope", *_CHECKED)
 
         assert f"#{first.pk}" in out
-        assert "the token was retired" in out
+        assert "the request was withdrawn" in out
 
     def test_options_carry_the_hash_a_digit_reply_is_checked_against(self) -> None:
-        call_command("questions", "record", "Which env?", "--decision", "product_scope", *_CHECKED)
+        call_command("questions", "record", "Which feature?", "--decision", "product_scope", *_CHECKED)
 
         [row] = list(DeferredQuestion.pending())
         assert row.options_hash == options_digest(json.loads(_OPTIONS))

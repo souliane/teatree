@@ -14,6 +14,11 @@ class OwnerDecision(enum.StrEnum):
     ARCHITECTURE = "architecture"
 
 
+HARD_LIMIT_DECISIONS = frozenset(
+    {OwnerDecision.MONEY_OR_PLAN, OwnerDecision.IRREVERSIBLE, OwnerDecision.CREDENTIALS, OwnerDecision.PUBLIC_POST}
+)
+
+
 OWNER_QUESTION_ROUTE = (
     "Read the decision ledger and decide in the owner's place under Rule -1; use `questions delegate` "
     "for a bounded card. Record an unresolved owner-only hard limit only via "

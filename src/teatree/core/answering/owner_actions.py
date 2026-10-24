@@ -1,6 +1,7 @@
 """Carry out an owner's Slack answer: recheck the live evidence first, then write once under the lock."""
 
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -9,12 +10,13 @@ from django.db import transaction
 from django.db.models import Max, Min
 from django.utils import timezone
 
+from teatree.core.factory.factory_recipe import load_recipe, recipe_approval_key
 from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, approve_owner_void
 from teatree.core.modelkit.escape_scope import EscapeScope
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker, read_action
 from teatree.core.modelkit.question_card import match_action_option
-from teatree.core.models import Task, Worktree
+from teatree.core.models import ConfigSetting, Task, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.gate_escape import GateEscape, GateEscapeError
 from teatree.core.models.question_actions import ACTION_OUTCOMES, owner_declined
@@ -30,7 +32,6 @@ from teatree.core.worktree.checkout_attest import (
 
 logger = logging.getLogger(__name__)
 LEDGER_APPLIED_ACTION = "applied"
-_LEDGER_RESOLVER = "owner_actions"
 _RETRY_AFTER = timedelta(minutes=5)
 _EXPIRES_AFTER = timedelta(hours=24)
 
@@ -230,25 +231,47 @@ def _tell_owner(row: DeferredQuestion, reason: str, *, event: str = "outcome") -
         logger.exception("Could not notify owner of refused action %s", row.pk)
 
 
-def _apply_to_ledger(row: DeferredQuestion) -> str | None:
+def _apply_recipe_decision(row: DeferredQuestion) -> str | None:
+    if row.question != "Can the factory use the new scoring recipe?":
+        return None
+    recipe = load_recipe()
+    key = recipe_approval_key(recipe.recipe_sha)
+    if row.options_hash != key or row.dedupe_marker not in {"", key}:
+        return None
+    option = match_action_option(row.options_json, row.answer_text)
+    if option is None or option.label not in {"Approve", "Keep the current recipe"}:
+        return None
     with transaction.atomic():
         locked = DeferredQuestion.objects.select_for_update().filter(pk=row.pk, applied_at__isnull=True).first()
         if locked is None:
             return None
         answer = DeferredQuestionAudit.objects.owner_answer(locked)
+        if answer is None or locked.resolved_via != DeferredQuestion.ResolvedVia.SLACK:
+            return None
+        if option.label == "Approve":
+            scope = os.environ.get("T3_OVERLAY_NAME", "")
+            ConfigSetting.objects.set_value(
+                "approved_recipe_sha", recipe.recipe_sha, scope=scope, authorized_by=answer.resolver_id
+            )
+            if ConfigSetting.objects.get_effective("approved_recipe_sha", scope=scope) != recipe.recipe_sha:
+                message = "The recipe approval was not stored."
+                raise OwnerActionRefusedError(message)
+        if load_recipe().recipe_sha != recipe.recipe_sha:
+            message = "The scoring recipe changed during approval."
+            raise OwnerActionRefusedError(message)
         DeferredQuestionAudit.objects.create(
             question=locked,
             action=LEDGER_APPLIED_ACTION,
             answer_text=locked.answer_text,
-            resolver_id=_resolver(answer) or _LEDGER_RESOLVER,
-            note="Recorded in the decision ledger; the code that asked reads it instead of asking again.",
+            resolver_id=answer.resolver_id,
+            note="Applied the recorded recipe decision.",
         )
         DeferredQuestion.objects.filter(pk=locked.pk).update(applied_at=timezone.now())
     return f"{LEDGER_APPLIED_ACTION} {row.pk}"
 
 
 def apply_scanner_decisions() -> list[str]:
-    applied = (_apply_to_ledger(row) for row in DeferredQuestion.objects.awaiting_ledger_application())
+    applied = (_apply_recipe_decision(row) for row in DeferredQuestion.objects.awaiting_ledger_application())
     return [outcome for outcome in applied if outcome is not None]
 
 

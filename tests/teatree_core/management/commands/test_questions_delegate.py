@@ -12,7 +12,7 @@ from django.utils import timezone
 from teatree.core import notify as notify_module
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption
-from teatree.core.models import Session, Task
+from teatree.core.models import BotPing, Session, Task
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.notify_question_drains import (
     drain_deferred_questions,
@@ -177,15 +177,20 @@ class TestKeptCardIsReportedOnce(TestCase):
         assert kept.slack_ts not in threads, "a kept card was pinged again"
         assert "spend money" not in str(digest.call_args_list)
         kept.refresh_from_db()
-        assert kept.is_pending
+        assert not kept.is_pending
+        assert kept.dismissed_reason.startswith("Rule -1 skipped")
 
-    def test_a_kept_card_that_was_never_posted_still_reaches_the_owner_once(self) -> None:
+    def test_a_hard_limit_is_reported_as_skipped_without_posting_a_question(self) -> None:
         kept = self._kept_hard_limit_card()
         backend = self._backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
-            assert drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend) == (1, 1)
+            assert drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend) == (0, 0)
 
-        assert self._posted(backend, "spend money")
+        report = BotPing.objects.get(idempotency_key=f"rule1-hard-limit:{kept.stable_notify_ref}")
+        assert "Rule -1 skipped" in report.text
+        assert not self._posted(backend, "Should this step spend money?")
         kept.refresh_from_db()
-        assert kept.slack_ts
+        assert kept.slack_ts == ""
+        assert kept.dismissed_reason.startswith("Rule -1 skipped")
+        assert not kept.is_pending

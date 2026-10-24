@@ -77,13 +77,7 @@ def _supersede(pending: "QuerySet[DeferredQuestion]") -> None:
 
 def _facts_unchanged(row: "DeferredQuestion", evidence: Mapping[str, object], options_json: str) -> bool:
     previous = row.evidence if isinstance(row.evidence, dict) else {}
-    if "decision" not in previous or "checked" not in previous:
-        return True
-    return (
-        previous["decision"] == evidence.get("decision")
-        and previous["checked"] == evidence.get("checked")
-        and row.options_json == options_json
-    )
+    return previous == dict(evidence) and row.options_json == options_json
 
 
 def mark_escalated(row: "DeferredQuestion", note: str, audit_model: type["DeferredQuestionAudit"]) -> bool:

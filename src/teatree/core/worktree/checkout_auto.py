@@ -190,6 +190,17 @@ def _verified_pr(task: Task, path: Path, branch: str, forge: _ForgeBranch) -> fo
     return pr_head
 
 
+def _cleanly_behind_forge(path: Path, state: CheckoutState, head: str, forge: _ForgeBranch) -> bool:
+    if state.uncommitted != 0 or head == forge.head:
+        return False
+    if git.check(repo=str(path), args=["merge-base", "--is-ancestor", head, forge.head]):
+        return True
+    compared = forge_pr_probe.github_ancestor_on_forge(path, forge.slug, head, forge.head, forge.host)
+    if compared is None:
+        _refuse("the forge could not verify the checkout's ancestry")
+    return compared
+
+
 def _prove_checkout(task: Task, worktree: Worktree, state: CheckoutState) -> CheckoutAutoProof:
     path = Path(worktree.worktree_path)
     if not worktree.branch or state.branch != worktree.branch or state.branch == "HEAD":
@@ -205,12 +216,7 @@ def _prove_checkout(task: Task, worktree: Worktree, state: CheckoutState) -> Che
         _refuse("the checkout has conflict markers or a merge in progress")
     forge = _verified_forge_branch(path, state.branch)
     head = git.run_strict(repo=str(path), args=["rev-parse", "--verify", "HEAD"])
-    clean_behind = (
-        state.uncommitted == 0
-        and head != forge.head
-        and git.check(repo=str(path), args=["merge-base", "--is-ancestor", head, forge.head])
-    )
-    if clean_behind:
+    if _cleanly_behind_forge(path, state, head, forge):
         if checkout_state(path, ticket=task.ticket).digest != state.digest:
             _refuse("the checkout changed while it was being checked")
         return CheckoutAutoProof(safe=True, reason="cleanly behind the forge branch", forge_head=forge.head)

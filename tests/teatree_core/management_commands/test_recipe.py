@@ -11,6 +11,7 @@ from teatree.core.factory.factory_score import FactoryScoreDict, ScoredSignalDic
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
+from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from tests._owner_channel import tap_on_slack
 
 
@@ -58,6 +59,53 @@ class TestRecipeScoreReadOnly(TestCase):
 
         row.refresh_from_db()
         assert (row.answer_text, row.resolved_via) == ("Approve", "slack")
+
+    def test_the_approve_answer_pins_the_recipe_before_application_is_stamped(self) -> None:
+        _score("--record")
+        row = DeferredQuestion.objects.get()
+        assert tap_on_slack(row, "Approve")
+
+        OwnerActionScanner().scan()
+
+        row.refresh_from_db()
+        assert ConfigSetting.objects.get_effective("approved_recipe_sha", scope="") == recipe_sha()
+        assert row.applied_at is not None
+
+    def test_the_keep_answer_is_applied_without_approving_the_recipe(self) -> None:
+        _score("--record")
+        row = DeferredQuestion.objects.get()
+        assert tap_on_slack(row, "Keep the current recipe")
+
+        OwnerActionScanner().scan()
+
+        row.refresh_from_db()
+        assert ConfigSetting.objects.get_effective("approved_recipe_sha", scope="") is None
+        assert row.applied_at is not None
+
+    def test_an_existing_markerless_recipe_answer_still_applies(self) -> None:
+        _score("--record")
+        row = DeferredQuestion.objects.get()
+        DeferredQuestion.objects.filter(pk=row.pk).update(dedupe_marker="")
+        row.refresh_from_db()
+        assert tap_on_slack(row, "Approve")
+
+        OwnerActionScanner().scan()
+
+        row.refresh_from_db()
+        assert ConfigSetting.objects.get_effective("approved_recipe_sha", scope="") == recipe_sha()
+        assert row.applied_at is not None
+
+    def test_a_changed_recipe_is_not_stamped_as_applied(self) -> None:
+        _score("--record")
+        row = DeferredQuestion.objects.get()
+        assert tap_on_slack(row, "Approve")
+        DeferredQuestion.objects.filter(pk=row.pk).update(dedupe_marker="recipe:changed")
+
+        OwnerActionScanner().scan()
+
+        row.refresh_from_db()
+        assert ConfigSetting.objects.get_effective("approved_recipe_sha", scope="") is None
+        assert row.applied_at is None
 
 
 class TestApprove(TestCase):

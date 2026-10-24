@@ -32,15 +32,29 @@ from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_decision import (
+    HARD_LIMIT_DECISIONS,
+    OWNER_ANSWER_ROUTE,
+    OWNER_QUESTION_ROUTE,
+    OwnerDecision,
+    owner_decision,
+)
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.question_actions import DELEGATION_SKIPPED_ACTION
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.task_handoff import DelegatedAnswerError, delegate_answer
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.notify_question_drains import drain_deferred_questions, owner_quiet_now
+from teatree.core.notify_question_drains import drain_deferred_questions, owner_quiet_now, skip_hard_limit_question
 from teatree.core.table_output import print_table
+
+
+def _hard_limit_record_outcome(row: DeferredQuestion) -> str:
+    skip_hard_limit_question(row)
+    row.refresh_from_db()
+    if row.is_pending:
+        return f"recorded #{row.pk}. Rule -1 skipped the owner question; report pending retry."
+    return f"recorded #{row.pk}. Rule -1 skipped and reported this owner-only action."
 
 
 class DeferredQuestionRow(TypedDict):
@@ -199,6 +213,8 @@ class Command(MachineOutputCommand):
             return f"#{row.pk} was already answered: {row.answer_text}"
         if row.dismissed_at is not None:
             return f"#{row.pk} was already dismissed: {row.dismissed_reason}"
+        if kind in HARD_LIMIT_DECISIONS:
+            return _hard_limit_record_outcome(row)
         return f"recorded #{row.pk}."
 
     @command(name="list")

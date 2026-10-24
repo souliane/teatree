@@ -766,17 +766,14 @@ class TestScannerDecisionCards(TestCase):
         row.refresh_from_db()
         return row
 
-    def test_an_answered_scanner_decision_is_applied_once_and_answers_the_next_ask(self) -> None:
+    def test_unknown_scanner_decision_is_not_stamped_applied(self) -> None:
         row = self._answered()
-        assert row.applied_at is None
 
-        assert [signal.summary for signal in OwnerActionScanner().scan()] == [f"applied {row.pk}"]
+        assert OwnerActionScanner().scan() == []
 
         row.refresh_from_db()
-        assert row.applied_at is not None
-        assert DeferredQuestionAudit.objects.get(question=row, action="applied").answer_text == "Yes"
-        assert OwnerActionScanner().scan() == []
-        assert DeferredQuestion.record(row.question, dedupe_marker=row.dedupe_marker, card=owner_card()).pk == row.pk
+        assert row.applied_at is None
+        assert not DeferredQuestionAudit.objects.filter(question=row, action="applied").exists()
 
     def test_a_pending_or_dismissed_scanner_decision_is_not_applied(self) -> None:
         pending = DeferredQuestion.record("Should the first thing run?", dedupe_marker="decision:a", card=owner_card())

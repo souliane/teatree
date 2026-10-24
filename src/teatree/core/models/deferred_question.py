@@ -43,7 +43,7 @@ from teatree.core.models.question_actions import (
     mark_escalated,
 )
 from teatree.core.models.question_subject import finished_subject_reason
-from teatree.core.models.question_text import options_digest
+from teatree.core.models.question_text import options_digest, question_fingerprint
 from teatree.core.models.question_withheld import carried_wait
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
@@ -229,6 +229,9 @@ class DeferredQuestion(models.Model):
             raise DeferredQuestionError(message)
         if card is not None and card.options:
             options_json, options_hash = card.options_json(), options_hash or options_digest(card.option_dicts())
+        if card is not None and requested_action is None and not dedupe_marker:
+            subject = parked_task.pk if parked_task is not None else 0
+            dedupe_marker = question_fingerprint(f"owner:{card.decision.value}:{subject}:{clean_question}")
 
         with transaction.atomic():
             marked = cls.objects.select_for_update().filter(dedupe_marker=dedupe_marker).order_by("-created_at", "-pk")

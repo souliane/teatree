@@ -329,7 +329,12 @@ def _maybe_record_answer_draft(
             dedupe_marker=f"answer-draft:{task.pk}",
         )
         return
-    DeferredQuestion.record(_DRAFT_QUESTION, parked_task=task, card=_DRAFT_CARD.with_quote(_DRAFT_QUESTION, text))
+    DeferredQuestion.record(
+        _DRAFT_QUESTION,
+        parked_task=task,
+        dedupe_marker=f"answer-draft:{task.pk}",
+        card=_DRAFT_CARD.with_quote(_DRAFT_QUESTION, text),
+    )
 
 
 def _post_owner_dm_reply(task: Task, text: str) -> bool:

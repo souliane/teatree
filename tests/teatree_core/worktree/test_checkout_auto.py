@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -16,7 +17,7 @@ from teatree.core.worktree.checkout_auto import (
 )
 from teatree.core.worktree.checkout_fence import park_task_checkout
 from teatree.core.worktree.checkout_state import checkout_state
-from teatree.utils.git import run_strict
+from teatree.utils.git import check, run_strict
 from tests._owner_channel import tap_on_slack
 from tests.factories import PullRequestFactory, TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
@@ -147,6 +148,86 @@ class CheckoutAutoProofTests(TestCase):
             proof = prove_checkout_for_rule1(self.task, self.worktree, state)
         assert proof.safe
         assert proof.reason == "cleanly behind the forge branch"
+
+    def test_clean_checkout_behind_forge_head_absent_from_local_objects_is_safe(self) -> None:
+        forge_head = "f" * 40
+        state = checkout_state(self.path, ticket=self.ticket)
+        assert not check(repo=str(self.path), args=["cat-file", "-e", forge_head])
+
+        def compare(args: list[str], _repo: Path) -> str | None:
+            if "compare/" not in " ".join(args):
+                return None
+            return json.dumps(
+                {
+                    "status": "ahead",
+                    "ahead_by": 1,
+                    "base_commit": {"sha": self.head},
+                    "merge_base_commit": {"sha": self.head},
+                }
+            )
+
+        with (
+            patch(
+                "teatree.core.worktree.checkout_auto.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ),
+            patch("teatree.core.worktree.checkout_auto.container_processes_clear", return_value=True),
+            patch("teatree.core.worktree.checkout_auto.forge_pr_probe.github_open_pr_head", return_value=None),
+            patch(
+                "teatree.core.worktree.checkout_auto.forge_pr_probe.github_exact_branch_head", return_value=forge_head
+            ),
+            patch("teatree.core.forge_pr_probe._github_cli_stdout", side_effect=compare) as api,
+        ):
+            proof = prove_checkout_for_rule1(self.task, self.worktree, state)
+
+        assert proof.safe
+        assert proof.reason == "cleanly behind the forge branch"
+        api.assert_called_once_with(
+            ["gh", "api", "--hostname", "github.com", f"repos/souliane/teatree/compare/{self.head}...{forge_head}"],
+            self.path,
+        )
+
+    def test_unreadable_or_mismatched_forge_comparison_does_not_attest(self) -> None:
+        forge_head = "f" * 40
+        state = checkout_state(self.path, ticket=self.ticket)
+        cases = (
+            None,
+            "not-json",
+            json.dumps({"status": "ahead"}),
+            json.dumps(
+                {
+                    "status": "ahead",
+                    "ahead_by": 1,
+                    "base_commit": {"sha": self.head},
+                    "merge_base_commit": {"sha": "e" * 40},
+                }
+            ),
+            json.dumps(
+                {
+                    "status": "ahead",
+                    "ahead_by": 1,
+                    "base_commit": {"sha": "d" * 40},
+                    "merge_base_commit": {"sha": self.head},
+                }
+            ),
+        )
+        for response in cases:
+            with (
+                self.subTest(response=response),
+                patch(
+                    "teatree.core.worktree.checkout_auto.read_process_table",
+                    return_value=ProcessTable(frozenset(), "/proc"),
+                ),
+                patch("teatree.core.worktree.checkout_auto.container_processes_clear", return_value=True),
+                patch("teatree.core.worktree.checkout_auto.forge_pr_probe.github_open_pr_head", return_value=None),
+                patch(
+                    "teatree.core.worktree.checkout_auto.forge_pr_probe.github_exact_branch_head",
+                    return_value=forge_head,
+                ),
+                patch("teatree.core.forge_pr_probe._github_cli_stdout", return_value=response),
+            ):
+                proof = prove_checkout_for_rule1(self.task, self.worktree, state)
+            assert not proof.safe
 
     def test_container_process_or_unreadable_inventory_blocks_attestation(self) -> None:
         state = checkout_state(self.path, ticket=self.ticket)

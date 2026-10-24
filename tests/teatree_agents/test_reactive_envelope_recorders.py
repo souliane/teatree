@@ -170,6 +170,18 @@ class TestAnAnswerDraftIsAskedAsACard(TestCase):
         assert DeferredQuestion.objects.count() == 1
         assert DeferredQuestionAudit.objects.filter(action="withheld").count() == 1
 
+    def test_a_resolved_draft_is_not_asked_again_for_the_same_task(self) -> None:
+        task = _task_in("answering")
+        draft = _draft("Thanks, I will follow up tomorrow.")
+        record_reactive_envelopes(task, draft, phase="answering")
+        first = DeferredQuestion.objects.get()
+        first.mark_stale("The draft was declined.", resolver_id="test")
+
+        record_reactive_envelopes(task, draft, phase="answering")
+
+        assert DeferredQuestion.objects.count() == 1
+        assert DeferredQuestion.objects.get().pk == first.pk
+
 
 class TestATriageBatchIsAskedAsACard(TestCase):
     def test_the_card_counts_the_suggestions_and_names_no_task_or_label(self) -> None:
