@@ -901,6 +901,9 @@ class TestBoundTicketThread(TestCase):
 
         with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
             first = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+            row.refresh_from_db()
+            assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+            PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))
             backend.read_after_post = True
             backend.thread_replies.clear()
             second = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
@@ -934,6 +937,9 @@ class TestBoundTicketThread(TestCase):
 
         with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
             first = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+            row.refresh_from_db()
+            assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+            PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))
             backend.post_reply_raises = False
             second = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
@@ -976,6 +982,56 @@ class TestBoundTicketThread(TestCase):
         assert "resume path requested" in backend.replies[0][2].lower()
         assert row.loop_response_confirmed_at is not None
 
+    def test_unbound_question_receipt_failure_does_not_dispatch_answer_as_work(self) -> None:
+        parked = self._bound_task()
+        ThreadBinding.objects.filter(ticket=parked.ticket).delete()
+        question = DeferredQuestion.record(
+            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=owner_card()
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend(post_reply_raises=True)
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        first = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+        backend.post_reply_raises = False
+        second = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        question.refresh_from_db()
+        row.refresh_from_db()
+        assert first.errors == 1
+        assert second.dispatched == 0
+        assert Task.objects.count() == 2
+        assert question.answer_text == "Use the new API"
+        assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+
+    def test_replayed_answered_resume_crash_keeps_question_kind(self) -> None:
+        parked = self._bound_task()
+        SessionCommand.objects.create(
+            command_id=slack_command_id("", "C1", "101.0"),
+            ticket=parked.ticket,
+            task=parked,
+            text="Use the new API",
+            outcome="answered_resume",
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        with (
+            patch("teatree.loop.slack_answer.session_routing._post_live_reply", side_effect=SystemExit),
+            pytest.raises(SystemExit),
+        ):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+        ThreadBinding.objects.filter(ticket=parked.ticket).delete()
+        PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        row.refresh_from_db()
+        assert report.dispatched == 0
+        assert Task.objects.count() == 1
+        assert "unknown_delivery" in backend.replies[0][2]
+        assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+
     def test_question_answer_crash_before_receipt_reports_uncertainty(self) -> None:
         parked = self._bound_task()
         question = DeferredQuestion.record(
@@ -1017,6 +1073,22 @@ class TestBoundTicketThread(TestCase):
         assert report.dispatched == 0
         assert "unknown_delivery" in backend.replies[0][2]
         assert row.loop_response_confirmed_at is not None
+
+    def test_failed_uncertainty_receipt_without_binding_keeps_question_kind(self) -> None:
+        row = self._message("Use the new API")
+        assert row.mark_loop_replied(PendingChatInjection.AnswerKind.QUESTION_REPLY)
+        PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))
+        backend = RecordingBackend(post_reply_raises=True)
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        first = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+        backend.post_reply_raises = False
+        second = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        row.refresh_from_db()
+        assert first.errors == 1
+        assert second.dispatched == 0
+        assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
 
     def test_finished_session_queues_followup_and_names_the_path(self) -> None:
         prior = self._bound_task()

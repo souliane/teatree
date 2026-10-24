@@ -476,13 +476,7 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
                 "outcome": "answered_resume",
             },
         )
-        try:
-            confirmed = _post_live_reply(backend, unit, _command_reply(command))
-        except Exception:
-            _unmark_unit_loop_replied(unit)
-            raise
-        if not confirmed:
-            _unmark_unit_loop_replied(unit)
+        if not _post_live_reply(backend, unit, _command_reply(command)):
             msg = "resume-path receipt was not confirmed by Slack"
             raise RuntimeError(msg)
     for row in unit.rows:

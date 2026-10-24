@@ -52,8 +52,9 @@ def _confirm_unit_loop_replied(unit: "_Unit") -> None:
             row.observe_confirmed_loop_reply()
 
 
-def _unmark_unit_loop_replied(unit: "_Unit") -> None:
-    """Release the whole unit's loop-reply claim — the rollback of :func:`_mark_unit_loop_replied`."""
+def _unmark_unit_loop_replied(unit: "_Unit", *, kind: str = "") -> None:
+    if kind == PendingChatInjection.AnswerKind.QUESTION_REPLY:
+        return
     for row in unit.rows:
         row.unmark_loop_replied()
 
@@ -208,10 +209,10 @@ def _post_bound_reply(
         return True
     try:
         if not _post_live_reply(backend, unit, reply):
-            _unmark_unit_loop_replied(unit)
+            _unmark_unit_loop_replied(unit, kind=kind)
             return True
     except Exception:
-        _unmark_unit_loop_replied(unit)
+        _unmark_unit_loop_replied(unit, kind=kind)
         raise
     _confirm_unit_loop_replied(unit)
     report.acked += 1
@@ -337,10 +338,10 @@ def _replay_bound_command(
         return True
     try:
         if not _post_live_reply(backend, unit, reply):
-            _unmark_unit_loop_replied(unit)
+            _unmark_unit_loop_replied(unit, kind=kind)
             return True
     except Exception:
-        _unmark_unit_loop_replied(unit)
+        _unmark_unit_loop_replied(unit, kind=kind)
         raise
     _confirm_unit_loop_replied(unit)
     if command.outcome == "queued_followup":
