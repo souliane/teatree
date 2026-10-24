@@ -19,7 +19,7 @@ from teatree.agents.runner_usage import DispatchProvenance, UsageObservation, _a
 from teatree.agents.usage_window import record_park
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import LIMIT_PARKED_PREFIX, Task, TaskAttempt
+from teatree.core.models import LIMIT_PARKED_PREFIX, NOOP_OVER_COMPLETED_MARKER, Task, TaskAttempt
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.task_claim import claim_generation
 
@@ -30,14 +30,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
-
-#: Stamped into a no-op recovery attempt's ``result['summary']`` (#4834 periodic review).
-#: Public so a consumer can tell "the claim CAS held — a rival's row was already done"
-#: apart from a genuine second success: :func:`_record_noop_over_completed_row` never
-#: drives new work, so counting it as a SUCCESS toward "this task ran twice" is exactly
-#: the false alarm ``teatree.cli.doctor.checks_reconciliation._check_duplicate_execution``
-#: exists to catch, not an instance of it.
-NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
 
 
 @dataclass(frozen=True, slots=True)

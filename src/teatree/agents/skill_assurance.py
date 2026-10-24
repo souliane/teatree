@@ -4,11 +4,11 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 
-_EVIDENCE = re.compile(r"^[A-Za-z0-9_./:# -]{4,160}$")
+_EVIDENCE = re.compile(r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]{4,1000}$")
 _LOAD_DIRECTIVE = re.compile(
     r"^[ \t]*(?:REQUIRED:[ \t]*)?Load[ \t]+/((?:t3:)?[A-Za-z0-9_.-]+)"
     r"[ \t]+via[ \t]+the[ \t]+Skill[ \t]+tool\b",
@@ -201,6 +201,8 @@ def assess_skill_application(
             reference = item.get("evidence")
             if not isinstance(name, str) or not isinstance(reference, str):
                 continue
+            if not _EVIDENCE.fullmatch(reference):
+                continue
             bare = bare_skill_name(name)
             reference = reference.strip()
             if bare in requested and _EVIDENCE.fullmatch(reference) and not reference.startswith("/"):
@@ -208,12 +210,24 @@ def assess_skill_application(
                 # Keep only its presence; the receipt is a declaration, not proof.
                 evidence.append({"skill": bare, "evidence": "provided"})
     evidence = list({item["skill"]: item for item in evidence}.values())
-    observed = [bare_skill_name(name) for name in observed_loads if bare_skill_name(name) in requested]
+    observed = requested_skill_loads(dispatch, observed_loads)
     explicit_observed = set(dispatch["explicit_load"]) <= set(observed)
     declared = bool(requested) and requested <= {item["skill"] for item in evidence} and explicit_observed
     return {
         **dispatch,
         "evidence": evidence,
-        "observed_loads": list(dict.fromkeys(observed)),
+        "observed_loads": observed,
         "status": "declared" if declared else "unverified",
     }
+
+
+def requested_skill_loads(dispatch: Mapping[str, object], observed_loads: Sequence[str]) -> list[str]:
+    requested = set(cast("Sequence[str]", dispatch["requested"]))
+    return list(dict.fromkeys(bare_skill_name(name) for name in observed_loads if bare_skill_name(name) in requested))
+
+
+def skill_application_line(requested: Sequence[str]) -> str:
+    return (
+        "In the final result, include one skill_application entry for each requested skill "
+        f"({', '.join(requested)}), each with one line of evidence."
+    )

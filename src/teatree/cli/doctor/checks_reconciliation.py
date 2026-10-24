@@ -360,10 +360,10 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
     """
     check_id = "duplicate_execution_count"
     try:
-        from teatree.agents.runner_interruption import (  # noqa: PLC0415 — deferred: agents import at call time
+        from teatree.core.models import (  # noqa: PLC0415 — ORM import needs the app registry
             NOOP_OVER_COMPLETED_MARKER,
+            TaskAttempt,
         )
-        from teatree.core.models import TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
 
         cutoff = _now(now) - _DAY
         successes_by_task: dict[int, int] = {}

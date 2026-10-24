@@ -696,7 +696,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
 
 class TestWorkerBriefsAreTheBaseBytes(TestCase):
-    """Captured at 0962b16fb with no skills loaded; a deliberate worker-brief change re-captures it."""
+    """Captured worker briefs; a deliberate prompt change re-captures the fixture."""
 
     def test_planning_coding_and_reviewing_worker_briefs_match_the_base_byte_for_byte(self) -> None:
         golden = json.loads(_WORKER_BRIEFS_AT_BASE.read_text(encoding="utf-8"))

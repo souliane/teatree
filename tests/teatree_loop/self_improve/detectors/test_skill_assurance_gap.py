@@ -5,7 +5,7 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import SelfImproveFiring, TaskAttempt, Ticket, TicketTransition
+from teatree.core.models import NOOP_OVER_COMPLETED_MARKER, SelfImproveFiring, TaskAttempt, Ticket, TicketTransition
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung
 from teatree.loop.self_improve.detectors.skill_assurance_gap import SkillAssuranceGapDetector
@@ -36,6 +36,62 @@ def _attempt(
 
 
 class SkillAssuranceGapTests(TestCase):
+    def _gap_attempt(
+        self, *, status: str = "unverified", num_turns: int | None = 3, error: str = "", summary: str | None = None
+    ) -> TaskAttempt:
+        task = TaskFactory(ticket=TicketFactory(overlay="t3-teatree"))
+        result = {"skill_assurance": {"requested": ["code"], "status": status, "missing": []}}
+        if summary is not None:
+            result["summary"] = summary
+        return TaskAttempt.objects.create(
+            task=task, result=result, exit_code=1 if error else 0, error=error, num_turns=num_turns
+        )
+
+    def test_attempts_without_a_skill_verdict_are_not_gaps(self) -> None:
+        for attributes in (
+            {"error": "limit_parked: x"},
+            {"summary": f"{NOOP_OVER_COMPLETED_MARKER}lease lost"},
+            {"summary": f"built the thing — {NOOP_OVER_COMPLETED_MARKER}lease lost"},
+            {"num_turns": 0},
+        ):
+            with self.subTest(attributes=attributes):
+                attempt = self._gap_attempt(**attributes)
+                assert SkillAssuranceGapDetector(overlay_name="t3-teatree").detect() == []
+                attempt.delete()
+
+    def test_all_other_gaps_still_count(self) -> None:
+        self._gap_attempt()
+        self._gap_attempt(num_turns=None)
+        self._gap_attempt(error="boom")
+        self._gap_attempt(summary=f"middle {NOOP_OVER_COMPLETED_MARKER}marker")
+        self._gap_attempt(status="missing", num_turns=0)
+        self._gap_attempt(status="injection_gap", num_turns=0)
+
+        reports = SkillAssuranceGapDetector(overlay_name="t3-teatree").detect()
+
+        assert {report.payload["cause"]: report.payload["count"] for report in reports} == {
+            "application-unverified": 4,
+            "skill-missing": 1,
+            "skill-delivery-gap": 1,
+        }
+
+    def test_non_verdict_attempts_do_not_evict_an_older_gap(self) -> None:
+        self._gap_attempt()
+        task = TaskFactory(ticket=TicketFactory(overlay="t3-teatree"))
+        TaskAttempt.objects.bulk_create(
+            TaskAttempt(
+                task=task,
+                failure_kind="usage_limit_parked",
+                result={"skill_assurance": {"requested": ["code"], "status": "unverified", "missing": []}},
+            )
+            for _ in range(201)
+        )
+
+        reports = SkillAssuranceGapDetector(overlay_name="t3-teatree").detect()
+
+        assert len(reports) == 1
+        assert reports[0].payload["count"] == 1
+
     def test_expired_attempt_tail_does_not_resolve_skill_gap(self) -> None:
         _attempt(overlay="t3-teatree", status="missing", missing=["code"])
         detector = SkillAssuranceGapDetector(overlay_name="t3-teatree")

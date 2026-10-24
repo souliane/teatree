@@ -35,12 +35,21 @@ CANDIDATE_FAULT_KINDS = frozenset(
     {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
 )
 READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
+NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
 
 
 PARK_ERROR_Q = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
 
 
 class TaskAttemptQuerySet(models.QuerySet):
+    def skill_loads_in_session(self, session_id: str) -> list[str]:
+        if not session_id:
+            return []
+        prior_loads = self.filter(agent_session_id=session_id).values_list(
+            "result__skill_assurance__observed_loads", flat=True
+        )
+        return [name for loads in prior_loads if isinstance(loads, list) for name in loads if isinstance(name, str)]
+
     def parks(self) -> "TaskAttemptQuerySet":
         return self.filter(PARK_ERROR_Q)
 

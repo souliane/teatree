@@ -175,6 +175,68 @@ def test_explicit_skill_requires_observed_load_even_when_agent_claims_use(tmp_pa
     assert observed["observed_loads"] == ["code"]
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "ran the tests (all 12 pass); fixed the parser, then re-ran",
+        "it's done",
+        "  tests passed  ",
+        "four",
+        "x" * 1000,
+    ],
+)
+def test_one_line_prose_evidence_is_declared(evidence: str) -> None:
+    dispatch = {
+        "requested": ["code"],
+        "found": ["code"],
+        "injected": ["code"],
+        "explicit_load": [],
+        "missing": [],
+        "evidence": [],
+        "observed_loads": [],
+        "status": "unverified",
+    }
+
+    receipt = assess_skill_application(dispatch, {"skill_application": [{"skill": "code", "evidence": evidence}]})
+
+    assert receipt["status"] == "declared"
+    assert receipt["evidence"] == [{"skill": "code", "evidence": "provided"}]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "/etc/passwd",
+        "ab",
+        "x" * 1001,
+        "line\nbreak",
+        "line\rbreak",
+        "line\u2028break",
+        "line\u2029break",
+        "line\x00break",
+        "line\x85break",
+        "four\n",
+        "four\x85",
+    ],
+)
+def test_non_plain_line_evidence_is_refused(evidence: str) -> None:
+    dispatch = {
+        "requested": ["code"],
+        "found": ["code"],
+        "injected": ["code"],
+        "explicit_load": [],
+        "missing": [],
+        "evidence": [],
+        "observed_loads": [],
+        "status": "unverified",
+    }
+
+    receipt = assess_skill_application(dispatch, {"skill_application": [{"skill": "code", "evidence": evidence}]})
+
+    assert receipt["status"] == "unverified"
+    assert receipt["evidence"] == []
+
+
 def test_coding_delivery_requires_scoped_skills_but_not_optional_companions() -> None:
     inline, explicit = required_skill_delivery(
         "coding",
