@@ -11,6 +11,7 @@ question.
 import logging
 from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django_fsm import can_proceed
 
 from teatree.backends.issue_reads import issue_reopen_state
@@ -100,21 +101,25 @@ def _revive_reopened(ticket: "Ticket", *, dry_run: bool) -> BoardTransition | No
     """Revive one delivered ticket to WORK_STARTED, or halt it loudly at the revival cap."""
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
-    if not can_proceed(ticket.reopen):
-        return None
-    revivals = _revival_count(ticket)
-    if revivals >= MAX_REOPEN_REVIVALS:
-        _escalate_revival_cap_once(ticket, revivals=revivals)
-        return None
     reason = "forge says the issue was reopened"
     if dry_run:
-        return planned(ticket, Ticket.State.WORK_STARTED, BoardAction.REVIVED_REOPENED, reason)
-    from_state = ticket.state
-    ticket.reopen()
-    extra = ticket.extra or {}
-    extra["reopen_revivals"] = revivals + 1
-    ticket.extra = extra
-    ticket.save()
+        live = Ticket.objects.get(pk=ticket.pk)
+        if _revivals_before_revival(live) is None:
+            return None
+        return planned(live, Ticket.State.WORK_STARTED, BoardAction.REVIVED_REOPENED, reason)
+    with transaction.atomic():
+        live = Ticket.objects.select_for_update().get(pk=ticket.pk)
+        revivals = _revivals_before_revival(live)
+        if revivals is None:
+            return None
+        from_state = live.state
+        live.reopen()
+        extra = dict(live.extra or {})
+        extra["reopen_revivals"] = revivals + 1
+        live.extra = extra
+        live.save()
+        ticket.state = live.state
+        ticket.extra = live.extra
     logger.info("Board reconcile revived ticket %s %s → started (%s)", ticket.pk, from_state, reason)
     return BoardTransition(
         ticket_id=int(ticket.pk),
@@ -125,6 +130,17 @@ def _revive_reopened(ticket: "Ticket", *, dry_run: bool) -> BoardTransition | No
         reason=reason,
         applied=True,
     )
+
+
+def _revivals_before_revival(live: "Ticket") -> int | None:
+    """The revivals so far when *live* may be revived, else ``None`` — halting loudly at the cap."""
+    if not can_proceed(live.reopen):
+        return None
+    revivals = _revival_count(live)
+    if revivals >= MAX_REOPEN_REVIVALS:
+        _escalate_revival_cap_once(live, revivals=revivals)
+        return None
+    return revivals
 
 
 def _revival_count(ticket: "Ticket") -> int:

@@ -4,12 +4,13 @@ import os
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 import teatree.utils.singleton as singleton_mod
 from teatree.core import loop_lease_liveness as liveness
 from teatree.core.claim_liveness import driving
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, PLAN_STALE_PREFIX, FailureKind
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from tests.teatree_core.test_claim_liveness import _READER_NS, pinned_reader_namespace
 
@@ -25,13 +26,14 @@ class LeaseSweepCase(TestCase):
         owner_pid: int | None = None,
         namespace: str = _READER_NS,
         driving_since: datetime | None = None,
+        phase: str = "coding",
     ) -> Task:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
         now = timezone.now()
         return Task.objects.create(
             ticket=ticket,
             session=Session.objects.create(ticket=ticket, overlay="test"),
-            phase="coding",
+            phase=phase,
             status=Task.Status.CLAIMED,
             claimed_by="headless-worker",
             claimed_at=now - _LAPSED,
@@ -47,6 +49,61 @@ class LeaseSweepCase(TestCase):
 
 
 class TestReclaimOrphanedClaims(LeaseSweepCase):
+    @override_settings(MAX_PHASE_ITERATIONS=5)
+    def test_restarted_worker_reclaims_only_phases_with_work_budget(self) -> None:
+        coding = self.lapsed_claim(owner_pid=os.getpid() + 1)
+        reviewing = self.lapsed_claim(owner_pid=os.getpid() + 1, phase="reviewing")
+        exhausted = self.lapsed_claim(owner_pid=os.getpid() + 1, phase="reviewing")
+
+        for error in (
+            f"{CANCELLED_PREFIX}operator",
+            f"{PLAN_STALE_PREFIX}base moved",
+            "result_error: first",
+            "result_error: second",
+            "resume_refused: prior session unavailable",
+        ):
+            TaskAttempt.objects.create(task=coding, ended_at=timezone.now(), exit_code=1, error=error)
+        TaskAttempt.objects.create(task=coding, ended_at=timezone.now(), exit_code=0)
+
+        previous = None
+        for index in range(5):
+            previous = TaskAttempt.objects.create(
+                task=reviewing,
+                ended_at=timezone.now(),
+                exit_code=1,
+                error=f"route refusal {index}",
+                fallback_from_attempt=previous,
+            )
+        TaskAttempt.objects.create(
+            task=reviewing,
+            ended_at=timezone.now(),
+            exit_code=0,
+            fallback_from_attempt=previous,
+        )
+        TaskAttempt.objects.create(task=reviewing, ended_at=timezone.now(), exit_code=1, error="api_credit: empty")
+
+        for _ in range(4):
+            TaskAttempt.objects.create(task=exhausted, ended_at=timezone.now(), exit_code=0)
+        TaskAttempt.objects.create(task=exhausted, ended_at=timezone.now(), exit_code=1, error="api_credit: empty")
+        TaskAttempt.objects.create(task=exhausted, ended_at=timezone.now(), exit_code=1, error="review refusal")
+
+        assert Task.objects.reclaim_orphaned_claims() == 2
+        for task in (coding, reviewing, exhausted):
+            task.refresh_from_db()
+        assert coding.status == reviewing.status == Task.Status.PENDING
+        assert coding.reclaim_count == reviewing.reclaim_count == 1
+        assert exhausted.status == Task.Status.CLAIMED
+
+        assert Task.objects.reap_stale_claims() == 1
+        exhausted.refresh_from_db()
+        assert exhausted.status == Task.Status.FAILED
+        assert (
+            TaskAttempt.objects.filter(
+                failure_kind=FailureKind.LEASE_EXPIRED, task__in=[coding, reviewing, exhausted]
+            ).count()
+            == 1
+        )
+
     def test_a_claim_this_process_is_driving_is_not_returned_to_the_queue(self) -> None:
         """The duplicate-execution amplifier: re-queuing here is what a second agent claims."""
         task = self.lapsed_claim(owner_pid=os.getpid())

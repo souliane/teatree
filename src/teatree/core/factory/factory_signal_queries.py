@@ -23,15 +23,15 @@ from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS, max_actionable
 from teatree.core.merge.clear_scope import clear_scope_predicate
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolve_pr_repo_slug
-from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, PLAN_STALE_PREFIX, SUPERSEDED_PREFIX
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.red_card_signal import RedCardSignal
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.review_verdict import ReviewVerdict, Severity
 from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.task_repair_queries import repair_iterations, repair_observations
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.utils.url_slug import pr_ref_from_url
 
 # A five-observation floor keeps the thresholds stable at solo-factory volume.
@@ -444,36 +444,27 @@ def compute_s4(window: Window, overlay: str, now: datetime) -> Computation:
 def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # noqa: ARG001 — uniform compute signature
     """S5 repair_iteration_burn: mean terminal iteration per succeeded (ticket, phase).
 
-    Scheduling-event attempts (limit-parks, recoverable-exhaustion dips) are excluded,
-    the same rows ``task_repair.phase_attempts`` drops from the budget query and by the
-    same idiom (a DB-level park exclude for the perf win over the 340k-row park backlog,
-    then a Python recoverable-exhaustion filter) — they are capacity events, not work
-    iterations, so they neither inflate the burn mean nor the failure fraction
-    (#3689/#3690). An operator cancellation or a rework supersede (``NON_REPAIR_KINDS``)
-    is excluded the same way — the repair loop never failed on its own merits there, and
-    the incident detector (``lifecycle_incident.py``) already agrees these are not real
-    failures, so counting them here would disagree with it while describing the same
-    attempt. A high failure fraction over a meaningful sample trips a companion hard-red
-    the scalar mean alone cannot see: a window where nearly every attempt fails leaves
-    too few success groups to measure, so the mean reads low (or insufficient) while the
-    loop is on fire.
+    The terminal-iteration mean uses the repair budget's work filter. The failure
+    fraction counts dispatch failures, including route hops and lease reaps.
     """
-    attempts = (
-        TaskAttempt.objects.filter(started_at__gte=window.start, started_at__lt=window.end)
-        .excluding_parks()
-        .select_related("task")
+    attempts = TaskAttempt.objects.filter(started_at__gte=window.start, started_at__lt=window.end).select_related(
+        "task"
     )
     if overlay:
         attempts = attempts.filter(task__ticket__overlay=overlay)
-    rows = [
+    rows = repair_iterations(attempts)
+    observed = [
         attempt
-        for attempt in attempts
-        if recoverable_exhaustion_cause(attempt.error) is None and attempt.failure_kind not in NON_REPAIR_KINDS
+        for attempt in repair_observations(attempts)
+        if not attempt.error.startswith((CANCELLED_PREFIX, PLAN_STALE_PREFIX, SUPERSEDED_PREFIX))
     ]
     groups: dict[tuple[int, str], list[int]] = defaultdict(list)
     succeeded = 0
     failed = 0
     for attempt in rows:
+        if attempt.outcome == TaskAttempt.Outcome.SUCCESS:
+            groups[attempt.task.ticket_id, attempt.task.phase].append(attempt.iteration)
+    for attempt in observed:
         # #16: classify on the explicit TaskAttempt.outcome discriminator, stamped
         # from exit_code + error at save time, instead of re-deriving it here. An
         # envelope refusal (exit_code=0 with a non-empty error) is a first-class
@@ -481,7 +472,6 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
         # non-zero exit; a blank outcome is an attempt still in flight — neither a
         # success nor a failure, excluded from both.
         if attempt.outcome == TaskAttempt.Outcome.SUCCESS:
-            groups[attempt.task.ticket_id, attempt.task.phase].append(attempt.iteration)
             succeeded += 1
         elif attempt.outcome in {TaskAttempt.Outcome.REFUSAL, TaskAttempt.Outcome.CRASH}:
             failed += 1
@@ -493,10 +483,10 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
     terminal = succeeded + failed
     failed_fraction = failed / terminal if terminal else 0.0
     hard_red = terminal >= MIN_SAMPLE and failed_fraction >= HIGH_FAILURE_FRACTION
-    reason = f"{round(failed_fraction, 3)} of {terminal} terminal work attempts failed" if hard_red else ""
+    reason = f"{round(failed_fraction, 3)} of {terminal} terminal attempts failed" if hard_red else ""
     evidence: S5Evidence = {
         "attempts": terminal,
-        "in_flight": len(rows) - terminal,
+        "in_flight": len(observed) - terminal,
         "success_groups": sample,
         "failed_fraction": round(failed_fraction, 3),
     }

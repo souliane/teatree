@@ -44,13 +44,12 @@ puts an agent on the box either way and the arm that DOES clamp has to see it �
 otherwise that path stays invisible to the only bounded one, and the two gaps
 compound. The brakes apply there too: box saturation is real whoever dispatched.
 
-Fail-OPEN by construction: the kill-switch, any signal-read failure, and a seat
-write that raises all return ``None`` (admit). A governor that cannot read its
-own signals — or write its own ledger — must never wedge the session. A refusal
-is never silent: the caller emits the returned reason.
+The hook adapter reports an unreadable signal or seat ledger as SKIPPED and
+allows the dispatch. This core function propagates probe failures so an unmeasured
+call cannot return the same ``None`` as a measured admission. A refusal is never
+silent: the caller emits the returned reason.
 """
 
-import logging
 from typing import TYPE_CHECKING
 
 from teatree.core.admission_governor import decide_admission, read_machine_signal, read_quota_signal
@@ -58,8 +57,6 @@ from teatree.request_cache import request_scope
 
 if TYPE_CHECKING:
     from teatree.core.models import InteractiveDispatch, InteractiveDispatchManager, Task
-
-logger = logging.getLogger(__name__)
 
 
 def _models() -> "tuple[type[Task], type[InteractiveDispatch]]":
@@ -168,8 +165,9 @@ def dispatch_admission_denied_reason(*, apply_ceiling: bool = True, session_id: 
     signals, then — when *apply_ceiling* — claims this dispatch's seat against the
     governor's ceiling. Returns the DENY ``reason`` when the governor brakes
     outright or the seat was refused; ``None`` when admission is healthy, the
-    kill-switch is off, or a probe raised (fail-open). A braked or refused
-    dispatch holds no seat, so a refusal never narrows the lane it was refused by.
+    kill-switch is off. A probe failure propagates to the hook adapter, which
+    reports SKIPPED while preserving the hook's fail-open verdict. A braked or
+    refused dispatch holds no seat.
 
     **The reported count must be the count that actually refused (#4285 review).**
     ``claim_seat`` refuses on the UN-DEDUPED ``other_agents + ahead``, which can
@@ -182,26 +180,22 @@ def dispatch_admission_denied_reason(*, apply_ceiling: bool = True, session_id: 
     ``ahead`` exactly, and their sum is guaranteed >= the ceiling by
     construction — the same number the refusal was decided on.
     """
-    try:
-        decision = decide_admission(
-            quota=read_quota_signal(),
-            machine=read_machine_signal(),
-            static_ceiling=None,
-        )
-        if not decision.admit:
-            return decision.reason
-        if not apply_ceiling:
-            _seats().record_seat(session_id=session_id)
-            return None
-        other_agents = _claimed_agent_count()
-        if _session_has_unseated_claim(session_id):
-            other_agents -= 1
-        if _seats().claim_seat(session_id=session_id, ceiling=decision.ceiling, other_agents=other_agents):
-            return None
-        occupied = other_agents + _seats().live_seats().count()
-    except Exception:
-        logger.exception("dispatch admission governor probe failed — admitting (fail-open)")
+    decision = decide_admission(
+        quota=read_quota_signal(),
+        machine=read_machine_signal(),
+        static_ceiling=None,
+    )
+    if not decision.admit:
+        return decision.reason
+    if not apply_ceiling:
+        _seats().record_seat(session_id=session_id)
         return None
+    other_agents = _claimed_agent_count()
+    if _session_has_unseated_claim(session_id):
+        other_agents -= 1
+    if _seats().claim_seat(session_id=session_id, ceiling=decision.ceiling, other_agents=other_agents):
+        return None
+    occupied = other_agents + _seats().live_seats().count()
     return f"live agents {occupied} at/over governor ceiling {decision.ceiling}"
 
 

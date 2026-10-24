@@ -8,6 +8,7 @@ from django.db.models.functions import Coalesce
 from teatree.core.modelkit.gate_registry import get
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.task import Task
+from teatree.core.models.task_repair_queries import next_repair_iteration
 from teatree.core.models.usage_window_state import (
     CHECKOUT_PARKED_PREFIX,
     LIMIT_PARKED_PREFIX,
@@ -529,19 +530,8 @@ class TaskAttempt(models.Model):
         )
 
     def _stamp_repair_loop_fields(self) -> None:
-        """Stamp the iteration counter + error fingerprint on insert (#2009).
-
-        The single chokepoint every attempt-creation site funnels through, so the
-        budget fields cannot drift between the headless recorder, the in-session
-        recorder, and the operator out-of-band paths. Each is stamped only when
-        unset, so an explicit value (a backfill or a test) is never clobbered.
-        """
+        """Stamp the iteration counter and error fingerprint on insert."""
         if not self.error_fingerprint:
             self.error_fingerprint = terminal_reason_fingerprint(self.error)
-        # A limit-park records a scheduling event, not a work iteration (#3689): the
-        # budget query (task_repair.phase_attempts) already EXCLUDES park rows, so
-        # stamping one here disagrees with that query and leaves the park row carrying a
-        # bogus work-iteration number that corrupts the "attempt N/max" display and the
-        # S5 signal. Leave it at the 0 sentinel so the stamp and the budget query agree.
-        if not self.iteration and self.task_id and not self.error.startswith(PARK_ERROR_PREFIXES):
-            self.iteration = self.task.phase_iteration_count() + 1
+        if not self.iteration and self.task_id:
+            self.iteration = next_repair_iteration(self)

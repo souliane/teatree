@@ -31,6 +31,7 @@ from teatree.core.backend_protocols import PrOpenState
 from teatree.core.mode_resolution import set_mode_override
 from teatree.core.modelkit.task_failure_taxonomy import (
     CANCELLED_PREFIX,
+    LEASE_EXPIRED_PREFIX,
     PLAN_STALE_PREFIX,
     REVIEW_UNRECORDABLE_PREFIX,
     FailureKind,
@@ -94,6 +95,13 @@ def _finished_task(
     if hours_ago:
         TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(hours=hours_ago))
     return task
+
+
+def _lease_reaps(ticket: Ticket, count: int, *, phase: str = "testing") -> None:
+    for index in range(count):
+        _finished_task(
+            ticket, phase=phase, status=Task.Status.FAILED, error=f"{LEASE_EXPIRED_PREFIX}worker {index} died"
+        )
 
 
 class TestStuckTicketRedispatch(TestCase):
@@ -225,6 +233,78 @@ class TestStuckTicketRedispatch(TestCase):
         # Idempotent: a second sweep neither schedules nor spams another escalation.
         assert redispatch_stuck_tickets() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_repeated_lease_reaps_halt_redispatch_without_spending_repair_iterations(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        for index in range(max_phase_iterations()):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"lease_expired: worker {index} died",
+            )
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{ticket.pk}").count() == 1
+
+    def test_lease_reaps_below_the_cap_remain_retryable(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        for index in range(max_phase_iterations() - 1):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"lease_expired: worker {index} died",
+            )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+        assert redispatch_stuck_tickets() == 0
+        assert not DeferredQuestion.objects.exists()
+
+    def test_lease_reaps_before_a_work_attempt_do_not_count_towards_the_halt_after_it(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        cap = max_phase_iterations()
+        _lease_reaps(ticket, cap)
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=_REAL_DEFECT)
+        _lease_reaps(ticket, cap - 1)
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+
+    def test_lease_reaps_after_a_work_attempt_count_towards_the_halt(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=_REAL_DEFECT)
+        _lease_reaps(ticket, max_phase_iterations())
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{ticket.pk}").count() == 1
+
+    def test_an_audit_row_between_two_deterministic_failures_breaks_stall_adjacency(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for error in (
+            "missing required evidence for phase 'testing': no tests_run in alpha",
+            f"{CANCELLED_PREFIX}operator paused retry",
+            "missing required evidence for phase 'testing': no tests_run in beta",
+        ):
+            _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=error)
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_capacity_dip_after_a_clean_attempt_is_not_a_failing_phase(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        _finished_task(ticket, phase="testing", status=Task.Status.COMPLETED)
+        dip = LimitMatch(phrase="5-hour limit", cause=LimitCause.SUBSCRIPTION_SESSION).as_reason()
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=dip)
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
 
     def test_repeated_exhaustion_failures_do_not_halt_redispatch(self) -> None:
         # A stuck ticket whose recent phase attempts all died on the session limit must
