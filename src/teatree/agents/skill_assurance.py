@@ -201,8 +201,6 @@ def assess_skill_application(
             reference = item.get("evidence")
             if not isinstance(name, str) or not isinstance(reference, str):
                 continue
-            if not _EVIDENCE.fullmatch(reference):
-                continue
             bare = bare_skill_name(name)
             reference = reference.strip()
             if bare in requested and _EVIDENCE.fullmatch(reference) and not reference.startswith("/"):

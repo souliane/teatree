@@ -183,6 +183,8 @@ def test_explicit_skill_requires_observed_load_even_when_agent_claims_use(tmp_pa
         "  tests passed  ",
         "four",
         "x" * 1000,
+        "four\n",
+        "four\x85",
     ],
 )
 def test_one_line_prose_evidence_is_declared(evidence: str) -> None:
@@ -215,8 +217,6 @@ def test_one_line_prose_evidence_is_declared(evidence: str) -> None:
         "line\u2029break",
         "line\x00break",
         "line\x85break",
-        "four\n",
-        "four\x85",
     ],
 )
 def test_non_plain_line_evidence_is_refused(evidence: str) -> None:
