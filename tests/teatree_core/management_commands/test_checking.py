@@ -569,6 +569,51 @@ class TestCheckingRemaining:
         assert overdue["remaining"]["eta"]["unknown"] == 1
         assert "running longer than all 5" in overdue["remaining"]["items"][2]["detail"]
 
+    def test_running_default_reselects_slowest_surviving_sources(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        ended = timezone.now() - timedelta(minutes=1)
+        histories = (
+            ("coding", (10,) * 9 + (5000,)),
+            ("reviewing", (9,) * 7 + (11, 11, 21)),
+            ("debugging", (8,) * 8 + (21, 9000)),
+        )
+        for group_index, (phase, durations) in enumerate(histories):
+            for index, duration in enumerate(durations):
+                sample_ticket = Ticket.objects.create(
+                    overlay="acme",
+                    issue_url=f"https://github.com/acme/widgets/issues/{2000 + group_index * 10 + index}",
+                )
+                sample = Task.objects.create(
+                    ticket=sample_ticket,
+                    session=Session.objects.create(ticket=sample_ticket),
+                    phase=phase,
+                    status=Task.Status.COMPLETED,
+                )
+                Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=duration))
+                TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
+        running = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="testing",
+            status=Task.Status.CLAIMED,
+            lease_expires_at=timezone.now() + timedelta(hours=1),
+        )
+        Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=20))
+
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert item["steps"] == ["testing", "factory review", "independent review", "merge", "deploy"]
+        assert item["eta"]["median_minutes"] == pytest.approx(5018, abs=0.1)
+        assert item["eta"]["p80_minutes"] == pytest.approx(7228.2, abs=0.1)
+        assert "83h38m\u2013120h28m" in item["detail"]
+        assert "testing: default: slowest surviving steps (median coding; p80 debugging)" in item["detail"]
+
+        Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=9001))
+        overdue = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        overdue_item = next(row for row in overdue["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert overdue_item["eta"]["median_minutes"] is None
+        assert overdue_item["eta"]["basis"] == "running longer than all measured fallback samples"
+
     def test_halts_blocks_and_owner_waits_are_excluded_from_eta(self, checkpoint_file: Path) -> None:
         for number, status in ((860, Task.Status.FAILED), (861, Task.Status.PENDING), (862, Task.Status.PENDING)):
             ticket = Ticket.objects.create(

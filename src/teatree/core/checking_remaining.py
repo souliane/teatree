@@ -192,8 +192,6 @@ def _eta_for_item(
                 "p80_minutes": None,
                 "basis": "no default: no completed-task history",
             }, "ETA unknown (no default: no completed-task history)"
-        if estimate.basis != "measured":
-            defaults.add(f"{phase}: {estimate.basis}")
         if (
             index == 0
             and step not in {"merge", "deploy"}
@@ -202,14 +200,24 @@ def _eta_for_item(
             and task.admitted_at
         ):
             elapsed = max(0.0, (queue.now - task.admitted_at).total_seconds() / 60)
-            remaining = remaining_given_elapsed(estimate.samples, elapsed)
-            remaining_p80 = remaining_given_elapsed(estimate.p80_samples, elapsed)
-            if remaining is None or remaining_p80 is None:
-                reason = f"running longer than all {estimate.n} {estimate.window} samples"
-                return {"median_minutes": None, "p80_minutes": None, "basis": reason}, f"ETA unknown ({reason})"
-            median += remaining[0]
-            p80 += remaining_p80[1]
+            if estimate.basis == "measured":
+                remaining = remaining_given_elapsed(estimate.samples, elapsed)
+                if remaining is None:
+                    reason = f"running longer than all {estimate.n} {estimate.window} samples"
+                    return {"median_minutes": None, "p80_minutes": None, "basis": reason}, f"ETA unknown ({reason})"
+                median += remaining[0]
+                p80 += remaining[1]
+            else:
+                remaining_default = history.remaining_default(elapsed)
+                if remaining_default is None:
+                    reason = "running longer than all measured fallback samples"
+                    return {"median_minutes": None, "p80_minutes": None, "basis": reason}, f"ETA unknown ({reason})"
+                median += remaining_default[0]
+                p80 += remaining_default[1]
+                defaults.add(f"{phase}: {remaining_default[2]}")
         else:
+            if estimate.basis != "measured":
+                defaults.add(f"{phase}: {estimate.basis}")
             if index == 0 and step not in {"merge", "deploy"}:
                 lane = _lane(phase)
                 ahead = sum(

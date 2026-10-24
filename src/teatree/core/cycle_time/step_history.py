@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from operator import itemgetter
 
 from teatree.core.cycle_time.distribution import percentile
+from teatree.core.cycle_time.eta import remaining_given_elapsed
 from teatree.core.cycle_time.timeline import last_real_attempt_ends
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.merge_clear import MergeAudit
@@ -118,15 +119,10 @@ class StepHistory:
         return self._default_estimate(step)
 
     def _default_estimate(self, step: str) -> StepEstimate | None:
-        candidates: list[tuple[float, float, str, list[float], str]] = []
-        for key, rows in self.spans.items():
-            recent = [minutes for ended, minutes in rows if ended >= self.now - timedelta(hours=24)]
-            older = [minutes for _ended, minutes in rows]
-            values = recent if len(recent) >= MIN_SAMPLES else older
-            if len(values) >= MIN_SAMPLES:
-                candidates.append(
-                    (percentile(values, 0.5), percentile(values, 0.8), key, values, "24h" if values is recent else "7d")
-                )
+        candidates = [
+            (percentile(values, 0.5), percentile(values, 0.8), key, values, window)
+            for key, values, window in self._candidate_sources()
+        ]
         if not candidates:
             return None
         median_choice = max(candidates, key=itemgetter(0, 2))
@@ -151,3 +147,31 @@ class StepHistory:
             samples=tuple(median_choice[3]),
             p80_samples=tuple(p80_choice[3]),
         )
+
+    def _candidate_sources(self) -> list[tuple[str, list[float], str]]:
+        candidates: list[tuple[str, list[float], str]] = []
+        for key, rows in self.spans.items():
+            recent = [minutes for ended, minutes in rows if ended >= self.now - timedelta(hours=24)]
+            older = [minutes for _ended, minutes in rows]
+            values = recent if len(recent) >= MIN_SAMPLES else older
+            if len(values) >= MIN_SAMPLES:
+                candidates.append((key, values, "24h" if values is recent else "7d"))
+        return candidates
+
+    def remaining_default(self, elapsed_minutes: float) -> tuple[float, float, str] | None:
+        survivors = [
+            (key, conditional)
+            for key, values, _window in self._candidate_sources()
+            if (conditional := remaining_given_elapsed(values, elapsed_minutes)) is not None
+        ]
+        if not survivors:
+            return None
+        median_choice = max(survivors, key=lambda row: (row[1][0], row[0]))
+        p80_choice = max(survivors, key=lambda row: (row[1][1], row[0]))
+        median_step, p80_step = median_choice[0], p80_choice[0]
+        basis = (
+            f"default: slowest surviving step ({median_step})"
+            if median_step == p80_step
+            else f"default: slowest surviving steps (median {median_step}; p80 {p80_step})"
+        )
+        return median_choice[1][0], p80_choice[1][1], basis

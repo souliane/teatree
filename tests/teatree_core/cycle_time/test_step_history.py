@@ -48,6 +48,8 @@ class TestStepHistory(TestCase):
         assert estimate.median_minutes == 30
         assert estimate.p80_minutes == 42
         assert estimate.window == "24h"
+        assert history.remaining_default(5) == (25, 37, "default: slowest surviving step (coding)")
+        assert history.remaining_default(50) is None
 
     def test_sparse_default_uses_slowest_median_and_p80_independently(self) -> None:
         for phase, durations in (("coding", (30, 30, 30, 30, 30)), ("reviewing", (10, 10, 10, 10, 200))):
