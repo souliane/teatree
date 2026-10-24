@@ -59,12 +59,11 @@ class ToolCallRecord:
 
     @classmethod
     def start(cls, part: ToolCallPart) -> "ToolCallRecord":
-        args_json = part.args if isinstance(part.args, str) else part.args_as_json_str()
         return cls(
             tool_call_id=part.tool_call_id,
             tool=part.tool_name,
             arg_keys=list(part.args_as_dict()),
-            args_bytes=len(args_json.encode()),
+            args_bytes=len(part.args_as_json_str().encode()),
             started_at=time.monotonic(),
         )
 
@@ -73,8 +72,7 @@ class ToolCallRecord:
         return self.output_bytes is not None
 
     def finish(self, part: ToolReturnPart) -> None:
-        output = str(part.content) if part.outcome == "retried" else part.model_response_str()
-        self.output_bytes = len(output.encode())
+        self.output_bytes = len(part.model_response_str().encode())
         self.duration_ms = int((time.monotonic() - self.started_at) * 1000)
 
     def as_record(self) -> ToolCallEntry:

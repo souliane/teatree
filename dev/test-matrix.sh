@@ -11,7 +11,11 @@ cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 IMAGE="teatree-test"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/teatree-test"
-matrix_git_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+if matrix_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    git_mount=(-v "${matrix_git_dir}:${matrix_git_dir}:ro")
+else
+    git_mount=()
+fi
 mkdir -p "${CACHE_DIR}/uv"
 failed=0
 
@@ -46,7 +50,7 @@ for py in "${versions[@]}"; do
         --user "$(id -u):$(id -g)" \
         -e HOME=/tmp \
         -v "$PWD":/app:ro \
-        -v "${matrix_git_dir}:${matrix_git_dir}:ro" \
+        "${git_mount[@]}" \
         -v "${venv_dir}":/tmp/.venv \
         -v "${CACHE_DIR}/uv":/tmp/.uv \
         -e UV_PROJECT_ENVIRONMENT=/tmp/.venv \
