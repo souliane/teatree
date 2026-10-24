@@ -209,6 +209,7 @@ class TestFileWritingHeredocs:
             "git commit -m \"$(cat <<'EOF'\n`uv run pytest`\nEOF\n)\"",
             "gh pr create --body \"$(cat <<'EOF'\n`make lint`\nEOF\n)\"",
             "gh pr create --body \"$(cat <<'EOF'\n) `uv run pytest`\nEOF\n)\"",
+            "gh pr create --body \"$(cat <<'EOF'\nEOF and rest\n`uv run pytest`\nEOF\n)\"",
         ],
     )
     def test_writing_a_file_does_not_execute_its_body(self, command: str) -> None:
