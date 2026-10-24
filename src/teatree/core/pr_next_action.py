@@ -174,6 +174,14 @@ def _awaiting_review(facts: PrActionFacts) -> PrNextAction | None:
     return None
 
 
+def _unreadable_approvals(facts: PrActionFacts) -> PrNextAction | None:
+    if facts.entry is None or facts.entry.reason or facts.ci.lower() not in _GREEN_CI:
+        return None
+    if approvals_met(facts.approvals) is not None:
+        return None
+    return PrNextAction("Blocked", "Factory", "Approvals unreadable; check the forge")
+
+
 def _observed_next_task(facts: PrActionFacts) -> PrNextAction | None:
     if facts.entry is None or not facts.entry.next_task:
         return None
@@ -181,7 +189,16 @@ def _observed_next_task(facts: PrActionFacts) -> PrNextAction | None:
     return PrNextAction(group, "Factory", facts.entry.next_task)
 
 
-_RULES = (_owner_waiting, _factory_task, _blocked, _ready, _authorization, _awaiting_review, _observed_next_task)
+_RULES = (
+    _owner_waiting,
+    _factory_task,
+    _blocked,
+    _ready,
+    _authorization,
+    _awaiting_review,
+    _unreadable_approvals,
+    _observed_next_task,
+)
 
 
 def decide(facts: PrActionFacts) -> PrNextAction:

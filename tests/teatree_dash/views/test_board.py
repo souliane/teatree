@@ -2,7 +2,10 @@
 
 import os
 import re
-from datetime import timedelta
+from collections.abc import Generator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -26,19 +29,126 @@ _NON_LOOPBACK = "203.0.113.7"
 _HX_GET_RE = re.compile(r'id="board"[^>]*\shx-get="([^"]*)"', re.DOTALL)
 
 
-class PrBoardAcceptanceTestCase(TestCase):
-    def test_default_board_shows_all_twenty_five_open_prs_with_action_groups(self) -> None:
-        for number in range(25):
-            ticket = TicketFactory(state=State.PR_OPENED, short_description=f"PR card {number}")
-            PullRequestFactory(ticket=ticket)
+_SECTION_RE = re.compile(r'<section class="kanban-group" data-pr-group="([^"]+)">(.*?)</section>', re.DOTALL)
+_CARD_RE = re.compile(
+    r'<article id="pr-[0-9a-f]{16}" class="card pr-card" data-pr-card="([^"]+)">(.*?)</article>', re.DOTALL
+)
 
-        response = self.client.get(reverse("dash:board"))
+
+@dataclass(frozen=True, slots=True)
+class _OpenPrs:
+    entries: tuple[PrInventoryEntry, ...]
+    refs_oldest_first: dict[str, list[str]]
+    by_ref: dict[str, PrInventoryEntry]
+    next_line: dict[str, str]
+
+
+@contextmanager
+def _inventory_dir() -> Generator[None]:
+    with TemporaryDirectory() as root, patch.dict(os.environ, {"T3_DATA_DIR": root}):
+        yield
+
+
+@dataclass(frozen=True, slots=True)
+class _GroupPlan:
+    reason: str
+    ci: str
+    approvals: str
+    next_task: str
+    actor: str
+    shown_action: str
+
+
+_KEYSTONE = "Merge through the ticket keystone"
+_PLAN = {
+    "Needs you": _GroupPlan("mergeable_awaiting_review", "green", "unknown", "Request independent review", "You", ""),
+    "Waiting on colleagues": _GroupPlan(
+        "", "green", "awaiting approval", "Review or merge PR", "Reviewer", "Await approvals (awaiting approval)"
+    ),
+    "Factory working": _GroupPlan("ci_pending", "pending", "unknown", "Wait for CI to finish", "Factory", ""),
+    "Ready to merge or merging": _GroupPlan("", "green", "approved", "Review or merge PR", "Factory", _KEYSTONE),
+    "Blocked": _GroupPlan("ci_red", "red", "unknown", "Fix failing CI", "Factory", ""),
+}
+
+
+def _observed_pr(group: str, number: int, *, days_old: int, now: datetime) -> PrInventoryEntry:
+    plan = _PLAN[group]
+    return PrInventoryEntry(
+        url=f"https://github.com/souliane/teatree/pull/{number}",
+        repo="souliane/teatree",
+        iid=number,
+        title=f"{group} PR {number}",
+        created_at=(now - timedelta(days=days_old)).isoformat(),
+        updated_at=(now - timedelta(hours=number)).isoformat(),
+        next_task=plan.next_task,
+        decision="skip",
+        ci=plan.ci,
+        approvals=plan.approvals,
+        threads="0 unresolved" if group == "Ready to merge or merging" else "unknown",
+        draft=False,
+        reason=plan.reason,
+    )
+
+
+def _seed_twenty_five_open_prs() -> _OpenPrs:
+    """Five observed PRs per group; within a group the oldest PR has the highest number."""
+    now = timezone.now()
+    entries = tuple(
+        _observed_pr(group, group_index * 5 + position + 1, days_old=3 + group_index * 5 + position, now=now)
+        for group_index, group in enumerate(_PLAN)
+        for position in range(5)
+    )
+    by_ref = {f"{entry.repo}!{entry.iid}": entry for entry in entries}
+    refs = {
+        group: sorted(
+            (ref for ref, entry in by_ref.items() if entry.title.startswith(group)),
+            key=lambda ref: by_ref[ref].created_at,
+        )
+        for group in _PLAN
+    }
+    next_line = {
+        ref: f"Next:</strong> {_PLAN[group].actor} \u2014 {_PLAN[group].shown_action or _PLAN[group].next_task}"
+        for group, found in refs.items()
+        for ref in found
+    }
+    return _OpenPrs(entries, refs, by_ref, next_line)
+
+
+def _cards_by_group(body: str) -> dict[str, list[tuple[str, str]]]:
+    return {name: _CARD_RE.findall(section) for name, section in _SECTION_RE.findall(body)}
+
+
+class PrBoardAcceptanceTestCase(TestCase):
+    def test_default_board_places_twenty_five_open_prs_in_their_groups_with_every_fact(self) -> None:
+        expected = _seed_twenty_five_open_prs()
+
+        with _inventory_dir():
+            for number, entry in enumerate(expected.entries, start=1):
+                if number % 2:
+                    PullRequestFactory(
+                        ticket=TicketFactory(state=State.PR_OPENED), url=entry.url, repo=entry.repo, iid=str(entry.iid)
+                    )
+            write_inventory("teatree", list(expected.entries))
+            response = self.client.get(reverse("dash:board"))
+
         body = response.content.decode()
         assert response.status_code == 200
         assert body.count("data-pr-card=") == 25
-        for label in ("Needs you", "Waiting on colleagues", "Factory working", "Ready to merge", "Blocked"):
-            assert label in body
-        assert "Lifecycle" in body
+        cards = _cards_by_group(body)
+        assert {group: [ref for ref, _ in found] for group, found in cards.items()} == expected.refs_oldest_first
+        for refs in cards.values():
+            for ref, card in refs:
+                entry = expected.by_ref[ref]
+                for fact in (
+                    entry.title,
+                    ref,
+                    f"<dd>{entry.ci}</dd>",
+                    f"<dd>{entry.approvals}</dd>",
+                    f"<dd>{entry.threads}</dd>",
+                    "<dt>Last activity</dt>",
+                    expected.next_line[ref],
+                ):
+                    assert fact in card, f"{ref} lacks {fact!r}"
 
     def test_pr_card_keeps_the_same_dom_identity_across_poll(self) -> None:
         PullRequestFactory(ticket=TicketFactory())
@@ -157,6 +267,16 @@ class PrBoardAcceptanceTestCase(TestCase):
         assert poll is not None
         assert parse_qs(urlsplit(poll.group(1)).query)["page_work_started"] == ["1"]
 
+    def test_only_backlog_and_delivered_start_collapsed_and_a_later_page_opens_them(self) -> None:
+        for _ in range(51):
+            TicketFactory(state=State.NOT_STARTED)
+        collapsed = re.compile(r'<details data-state="(\w+)" ?(open)?>')
+        first = self.client.get(reverse("dash:board_lifecycle")).content.decode()
+        paged = self.client.get(reverse("dash:board_lifecycle"), {"page_not_started": "1"}).content.decode()
+
+        assert collapsed.findall(first) == [("not_started", ""), ("delivered", "")]
+        assert collapsed.findall(paged) == [("not_started", "open"), ("delivered", "")]
+
     def test_lifecycle_is_a_separate_board_tab(self) -> None:
         ticket = TicketFactory(state=State.WORK_STARTED, short_description="lifecycle-only ticket")
         response = self.client.get(reverse("dash:board_lifecycle"))
@@ -186,6 +306,15 @@ class BoardPageTestCase(TestCase):
         assert f'data-ticket="{ignored.pk}"' not in default.content.decode()
         toggled = self.client.get(reverse("dash:board_columns"), {"ignored": "1"})
         assert f'data-ticket="{ignored.pk}"' in toggled.content.decode()
+
+    def test_ignored_toggle_keeps_every_spelling_bookmarks_already_use(self) -> None:
+        ignored = TicketFactory(state=State.IGNORED, short_description="abandoned one")
+        for spelling in ("1", "true", "on"):
+            with self.subTest(spelling=spelling):
+                body = self.client.get(reverse("dash:board_columns"), {"ignored": spelling}).content.decode()
+                assert f'data-ticket="{ignored.pk}"' in body
+        body = self.client.get(reverse("dash:board_columns"), {"ignored": "0"}).content.decode()
+        assert f'data-ticket="{ignored.pk}"' not in body
 
     def test_overlay_filter(self) -> None:
         keep = TicketFactory(state=State.WORK_STARTED, overlay="ovA", short_description="keep me")

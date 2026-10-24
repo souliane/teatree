@@ -144,6 +144,23 @@ class PrBoardTestCase(TestCase):
             board = build_pr_board()
         assert board.total == 0
 
+    def test_stale_empty_snapshot_never_hides_an_open_recorded_pr(self) -> None:
+        pr = PullRequestFactory(overlay="teatree")
+        stale = PrInventorySnapshot(overlay="teatree", observed_at=timezone.now() - timedelta(days=3), entries=())
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(stale,)):
+            board = build_pr_board()
+        assert [card.ref for group in board.groups for card in group.cards] == [f"{pr.repo}!{pr.iid}"]
+        assert "stale" in board.inventory_warning
+
+    def test_fresh_snapshot_taken_before_the_row_was_verified_does_not_hide_it(self) -> None:
+        taken = timezone.now() - timedelta(minutes=5)
+        newer = PullRequestFactory(overlay="teatree", create_verified_at=taken + timedelta(minutes=2))
+        PullRequestFactory(overlay="teatree", create_verified_at=taken - timedelta(minutes=2))
+        snapshot = PrInventorySnapshot(overlay="teatree", observed_at=taken, entries=())
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            board = build_pr_board()
+        assert [card.ref for group in board.groups for card in group.cards] == [f"{newer.repo}!{newer.iid}"]
+
     def test_owned_snapshot_adds_unwatched_pr_without_erasing_sweep_verdict(self) -> None:
         def entry(url: str, decision: str, next_task: str) -> PrInventoryEntry:
             return PrInventoryEntry(
@@ -359,6 +376,11 @@ class PrBoardFreshObservationTestCase(TestCase):
         pr = PullRequestFactory(ticket=TicketFactory())
         card = self._card(pr, _observed_entry(pr, approvals="awaiting approval"))
         assert (card.group, card.next_actor) == ("Waiting on colleagues", "Reviewer")
+
+    def test_green_own_pr_whose_approvals_are_unreadable_says_so_instead_of_naming_a_task(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        card = self._card(pr, _observed_entry(pr, approvals="unknown"))
+        assert (card.group, card.next_action) == ("Blocked", "Approvals unreadable; check the forge")
 
     def test_waiting_reviewer_thread_does_not_block_the_factory(self) -> None:
         ticket = TicketFactory()

@@ -13,10 +13,8 @@ every card so the poll costs one query rather than one per card.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from teatree.core.models.plan_decision import has_plan_decision
-from teatree.core.models.self_review import SelfReview
 from teatree.core.models.task import Task
-from teatree.core.models.task_phase_disposition import transition_source_states
+from teatree.core.models.task_enqueue import phase_eligible
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
@@ -91,20 +89,6 @@ def pending_phase_tasks_by_ticket(ticket_ids: "list[int]") -> dict[int, dict[str
             "-pk"
         )
     )
-
-
-def phase_eligible(ticket: Ticket, phase: str) -> bool:
-    state = str(ticket.state)
-    if ticket.role == Ticket.Role.REVIEWER:
-        return phase == "reviewing" and state in transition_source_states("mark_reviewed_externally")
-    if phase == "coding":
-        if state in transition_source_states("code"):
-            return True
-        if state in transition_source_states("code_direct"):
-            return has_plan_decision(ticket)
-        return state in transition_source_states("address_self_review") and SelfReview.open_hold_for(ticket) is not None
-    transition_name = {"scoping": "scope", "testing": "test", "reviewing": "review", "shipping": "ship"}.get(phase)
-    return transition_name is not None and state in transition_source_states(transition_name)
 
 
 def _buttons(queued: "Mapping[str, int]", phases: tuple[str, ...], *, ticket: Ticket) -> tuple[EnqueueButton, ...]:

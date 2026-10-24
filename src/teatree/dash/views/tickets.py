@@ -22,9 +22,10 @@ from django_fsm import TransitionNotAllowed
 from teatree.core.intake.task_enqueue import TaskEnqueueError, enqueue_phase_task_once
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import plan_missing_refusal
+from teatree.core.models.task_enqueue import phase_eligible
 from teatree.core.models.ticket import Ticket
 from teatree.dash import audit
-from teatree.dash.task_actions import ENQUEUEABLE_PHASES, phase_eligible
+from teatree.dash.task_actions import ENQUEUEABLE_PHASES
 from teatree.dash.ticket_detail import build_ticket_detail, legal_transition_names
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, error_page, is_htmx

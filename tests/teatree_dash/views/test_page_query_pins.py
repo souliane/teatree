@@ -16,7 +16,9 @@ from uuid import uuid4
 
 import pytest
 from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from teatree.core.models import Loop, Mode, Task
@@ -153,6 +155,23 @@ class DashboardPageQueryPlansTestCase(TestCase):
         for name, expected in PAGE_QUERY_PINS.items():
             with self.subTest(page=name):
                 self._assert_pinned(reverse(name), expected)
+
+    def test_pr_board_stays_flat_for_cards_owned_by_the_ticket_cache(self) -> None:
+        measured: list[tuple[int, int]] = []
+        seeded = 0
+        for scale in (2, 8):
+            for _ in range(scale):
+                seeded += 1
+                url = f"https://example.test/cache/{seeded}"
+                TicketFactory(
+                    state=State.TESTED, extra={"prs": {url: {"state": "opened", "title": f"cached {seeded}"}}}
+                )
+            cache.clear()
+            with CaptureQueriesContext(connection) as queries:
+                body = self.client.get(reverse("dash:board"), **_LOOPBACK).content.decode()
+            measured.append((body.count("data-pr-card="), len(queries)))
+        assert [cards for cards, _ in measured] == [2, 10]
+        assert measured[0][1] == measured[1][1], measured
 
     def test_merge_wait_reads_stay_flat_with_more_merged_tickets(self) -> None:
         for scale in (3, 15):

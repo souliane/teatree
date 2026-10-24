@@ -1,8 +1,11 @@
 """Board cards and the ticket drawer link to the forge (#3624)."""
 
+from pathlib import Path
+
 from django.test import TestCase
 from django.urls import reverse
 
+import teatree.dash
 from teatree.core.models import PullRequest, Ticket
 from teatree.dash.ticket_detail import build_ticket_detail
 
@@ -36,6 +39,27 @@ class TestCardForgeLinks(TestCase):
         body = self.client.get(reverse("dash:board_lifecycle"), REMOTE_ADDR="127.0.0.1").content.decode()
 
         assert 'href="https://github.com/souliane/teatree/pull/3624"' in body
+
+
+class TestCardAnchorTargets(TestCase):
+    def test_every_card_anchor_link_targets_the_lifecycle_board_that_renders_the_card(self) -> None:
+        templates = Path(teatree.dash.__file__).parent / "templates"
+        linked = {
+            path.relative_to(templates).as_posix()
+            for path in templates.rglob("*.html")
+            if "#card-" in path.read_text(encoding="utf-8")
+        }
+        offenders = {name for name in linked if "{% url 'dash:board' %}#card-" in (templates / name).read_text()}
+
+        assert linked, "no template links a card anchor any more — drop this guard"
+        assert offenders == set()
+
+    def test_the_lifecycle_board_renders_the_anchor_the_links_point_at(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=_ISSUE_URL, short_description="anchored")
+
+        body = self.client.get(reverse("dash:board_lifecycle"), REMOTE_ADDR="127.0.0.1").content.decode()
+
+        assert f'id="card-{ticket.pk}"' in body
 
 
 class TestDrawerForgeLink(TestCase):

@@ -86,8 +86,8 @@ class ForgeApprovalsTestCase(TestCase):
 
 class PrSweepInventoryTestCase(TestCase):
     def test_complete_tick_records_all_prs_and_serves_started_then_oldest(self) -> None:
-        prs = [_pr(number, created_at=f"2026-10-{number:02d}T10:00:00Z") for number in range(1, 26)]
-        PullRequestFactory(url=prs[-1].url, iid=str(prs[-1].number))
+        prs = [_pr(number, created_at=f"2026-10-{26 - number:02d}T10:00:00Z") for number in range(1, 26)]
+        PullRequestFactory(url=prs[0].url, iid=str(prs[0].number))
         api = Mock()
         api.list_open_prs.return_value = list(reversed(prs))
         writer = Mock()
@@ -108,11 +108,11 @@ class PrSweepInventoryTestCase(TestCase):
         with patch.object(PrSweepScanner, "_evaluate", autospec=True, side_effect=evaluate):
             scanner.scan()
 
-        assert evaluated == [25, *range(1, 25)]
+        assert evaluated == [1, *range(25, 1, -1)]
         overlay, entries = writer.call_args.args
         assert overlay == "teatree"
         assert len(entries) == 25
-        assert entries[0].iid == 25
+        assert entries[0].iid == 1
         assert entries[1].created_at == "2026-10-01T10:00:00Z"
         assert all(entry.next_task for entry in entries)
 

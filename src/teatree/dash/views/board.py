@@ -1,4 +1,4 @@
-"""The ticket-FSM kanban board and its htmx-poll column partial (#3162)."""
+"""The PR board, the ticket-FSM kanban board, and their htmx-poll partials (#3162, #5007)."""
 
 from dataclasses import replace
 from typing import TYPE_CHECKING, TypedDict
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 _PAGE_PREFIX = "page_"
 _COLLAPSED_STATES = (Ticket.State.NOT_STARTED, Ticket.State.DELIVERED)
+_TRUTHY = {"1", "true", "on"}
 
 
 class BoardContext(TypedDict):
@@ -46,7 +47,7 @@ def _filters(request: "HttpRequest") -> BoardFilters:
         role=request.GET.get("role", "").strip(),
         kind=request.GET.get("kind", "").strip(),
         text=request.GET.get("text", "").strip(),
-        include_ignored=request.GET.get("ignored") == "1",
+        include_ignored=request.GET.get("ignored") in _TRUTHY,
         pages=pages,
     )
 
@@ -85,6 +86,7 @@ def _board_context(request: "HttpRequest") -> BoardContext:
 @require_loopback_or_staff
 @require_GET
 def board(request: "HttpRequest") -> "HttpResponse":
+    """Full board page — the open pull requests grouped by who acts next."""
     return render(
         request,
         "dash/board.html",
@@ -95,12 +97,14 @@ def board(request: "HttpRequest") -> "HttpResponse":
 @require_loopback_or_staff
 @require_GET
 def board_prs_partial(request: "HttpRequest") -> "HttpResponse":
+    """Just the PR groups — the target of the PR board's htmx poll (no page chrome)."""
     return render(request, "dash/partials/_pr_columns.html", {"pr_board": build_pr_board()})
 
 
 @require_loopback_or_staff
 @require_GET
 def board_lifecycle(request: "HttpRequest") -> "HttpResponse":
+    """Full lifecycle page — the kanban of tickets grouped by ``Ticket.state``."""
     return render(
         request,
         "dash/board_lifecycle.html",

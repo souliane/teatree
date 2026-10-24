@@ -6,6 +6,7 @@ import os
 import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -14,12 +15,13 @@ import django.test
 from django.core.management import call_command
 from django.utils import timezone
 
-from teatree.core.models import Loop
+from teatree.core.models import Loop, PlanArtifact, Task, Ticket
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.pr_inventory import PrInventoryEntry, write_inventory
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loops.base import MiniLoop
-from tests.factories import PullRequestFactory
+from tests.factories import PullRequestFactory, TicketFactory
 
 _LOOP = "ship"
 
@@ -93,15 +95,15 @@ class TestTickReportsOpenPrs(django.test.TestCase):
         )
 
     def test_every_observed_pr_is_listed_with_age_and_next_task_started_then_oldest_first(self) -> None:
-        newest = _entry(3, age=timedelta(hours=2, minutes=5), next_task="Fix failing CI")
-        oldest = _entry(1, age=timedelta(days=3, minutes=5), next_task="Resolve merge conflict")
+        newest = _entry(1, age=timedelta(hours=2, minutes=5), next_task="Fix failing CI")
+        oldest = _entry(3, age=timedelta(days=3, minutes=5), next_task="Resolve merge conflict", repo="souliane/zeta")
         started = _entry(2, age=timedelta(days=1, minutes=5), next_task="Run independent review")
         PullRequestFactory(url=started.url, repo=started.repo, iid=started.iid)
 
         output = _run([_InventoryScanner("teatree", [newest, oldest, started])])
 
-        lines = [line for line in output.splitlines() if "souliane/teatree!" in line]
-        assert [line.split()[1] for line in lines] == ["souliane/teatree!2", "souliane/teatree!1", "souliane/teatree!3"]
+        lines = [line for line in output.splitlines() if line.startswith("OPEN")]
+        assert [line.split()[1] for line in lines] == ["souliane/teatree!2", "souliane/zeta!3", "souliane/teatree!1"]
         assert "1 d" in lines[0]
         assert "Run independent review" in lines[0]
         assert "3 d" in lines[1]
@@ -110,7 +112,10 @@ class TestTickReportsOpenPrs(django.test.TestCase):
         assert "Fix failing CI" in lines[2]
 
     def test_the_structured_report_carries_the_same_rows(self) -> None:
-        entry = _entry(7, age=timedelta(days=2, minutes=5), next_task="Address requested changes")
+        entry = replace(
+            _entry(7, age=timedelta(days=2, minutes=5), next_task="Address requested changes"),
+            reason="changes_requested",
+        )
 
         payload = json.loads(_run([_InventoryScanner("teatree", [entry])], json_output=True))
 
@@ -121,6 +126,7 @@ class TestTickReportsOpenPrs(django.test.TestCase):
                 "age": "2 d",
                 "next_task": "Address requested changes",
                 "started": False,
+                "blocker": "Address requested changes",
             }
         ]
 
@@ -151,3 +157,93 @@ class TestTickReportsOpenPrs(django.test.TestCase):
         report = out.getvalue() + err.getvalue()
         assert "ran   loop" in report, report
         assert "WARN  open_prs: open-PR inventory unreadable" in report, report
+
+
+def _next_tick(scanners: list[_InventoryScanner]) -> str:
+    Loop.objects.filter(name=_LOOP).update(last_run_at=None, last_attempt_at=None)
+    return _run(scanners)
+
+
+def _blocked_entry(number: int, *, next_task: str = "Fix failing CI") -> PrInventoryEntry:
+    return replace(_entry(number, age=timedelta(days=2), next_task=next_task), ci="red")
+
+
+class TestTickRepairsStalledPrs(django.test.TestCase):
+    def setUp(self) -> None:
+        Loop.objects.update_or_create(
+            name=_LOOP,
+            defaults={"enabled": True, "delay_seconds": 60, "script": f"src/teatree/loops/{_LOOP}/loop.py"},
+        )
+
+    def _stalled(self, *, state: str = Ticket.State.WORK_STARTED, planned: bool = True) -> PrInventoryEntry:
+        entry = _blocked_entry(11)
+        ticket = TicketFactory(state=state)
+        PullRequestFactory(ticket=ticket, url=entry.url, repo=entry.repo, iid=entry.iid)
+        if planned:
+            PlanArtifact.objects.create(ticket=ticket, plan_text="plan", recorded_by="planner", base_sha="a" * 40)
+        return entry
+
+    def test_two_ticks_on_the_same_stall_queue_one_repair_task(self) -> None:
+        entry = self._stalled()
+
+        first = _run([_InventoryScanner("teatree", [entry])])
+        second = _next_tick([_InventoryScanner("teatree", [entry])])
+
+        (task,) = Task.objects.filter(phase="coding")
+        assert f"queued TODO-{task.pk} coding" in first
+        assert f"in flight: TODO-{task.pk} coding" in second
+        assert "Fix failing CI" in task.execution_reason
+
+    def test_a_stall_with_no_safe_repair_is_recorded_once_and_listed_each_tick(self) -> None:
+        entry = self._stalled(state=Ticket.State.PR_OPENED)
+
+        first = _run([_InventoryScanner("teatree", [entry])])
+        second = _next_tick([_InventoryScanner("teatree", [entry])])
+
+        assert Task.objects.count() == 0
+        assert "unresolved: coding is not available from pr_opened" in first
+        assert "unresolved: coding is not available from pr_opened" in second
+        (question,) = DeferredQuestion.objects.filter(dedupe_marker__startswith="pr-stall:")
+        assert "souliane/teatree!11" in question.question
+        assert question.audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_a_stall_without_a_plan_decision_is_unresolved_not_queued(self) -> None:
+        entry = self._stalled(planned=False)
+
+        report = _run([_InventoryScanner("teatree", [entry])])
+
+        assert Task.objects.count() == 0
+        assert "unresolved: plan_missing" in report
+
+    def test_a_stalled_pr_no_author_ticket_owns_is_reported_but_never_acted_on(self) -> None:
+        report = _run([_InventoryScanner("teatree", [_blocked_entry(12)])])
+
+        assert "unresolved: no author ticket owns this PR" in report
+        assert (Task.objects.count(), DeferredQuestion.objects.count()) == (0, 0)
+
+    def test_a_reviewers_ticket_is_never_given_a_repair(self) -> None:
+        entry = self._stalled()
+        Ticket.objects.update(role=Ticket.Role.REVIEWER)
+
+        report = _run([_InventoryScanner("teatree", [entry])])
+
+        assert "unresolved: no author ticket owns this PR" in report
+        assert Task.objects.count() == 0
+
+    def test_a_pr_that_is_not_blocked_is_left_alone(self) -> None:
+        entry = replace(self._stalled(), ci="green", next_task="Review or merge PR")
+
+        report = _run([_InventoryScanner("teatree", [entry])])
+
+        assert "STALL" not in report
+        assert Task.objects.count() == 0
+
+    def test_the_structured_report_names_each_repair(self) -> None:
+        entry = self._stalled()
+
+        payload = json.loads(_run([_InventoryScanner("teatree", [entry])], json_output=True))
+
+        (task,) = Task.objects.all()
+        assert payload["stall_repairs"] == [
+            {"ref": "souliane/teatree!11", "cause": "Fix failing CI", "action": f"queued TODO-{task.pk} coding"}
+        ]
