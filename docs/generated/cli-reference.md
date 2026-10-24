@@ -21,6 +21,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
 │                 credit.                                                      │
+│ cost-profile    Profile real dispatches: read share, resume-context cost and │
+│                 addressable upper bounds.                                    │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
 │ speak           Refuse to speak — local audio cannot reach the user.         │
@@ -212,6 +214,22 @@ Usage: t3 cost [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the structured report as JSON.                          │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 cost-profile`
+
+```
+Usage: t3 cost-profile [OPTIONS]
+
+ Profile real dispatches: read share, resume-context cost and addressable upper
+ bounds.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json               Emit the structured report as JSON.                     │
+│ --since        TEXT  ISO-8601 lower bound on attempt start (default: every   │
+│                      attempt).                                               │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
