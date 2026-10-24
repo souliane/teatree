@@ -76,7 +76,7 @@ class _AmbiguousSessions:
 
 
 def _selected_task_id(text: str) -> int | None:
-    selected = re.match(r"^#(\d+)(?:\s|$)", text)
+    selected = re.match(r"^#(\d+)(?:\s|$)", text.lstrip())
     return int(selected.group(1)) if selected is not None else None
 
 
@@ -113,7 +113,18 @@ def _live_session(binding: ThreadBinding, text: str) -> _BoundLiveSession | _Amb
     if matching:
         selected = _selected_task_id(text)
         if selected is not None:
-            matching = [row for row in matching if row["task"] == selected]
+            selected_live = [row for row in matching if row["task"] == selected]
+            if not selected_live and client.unreachable:
+                msg = "live worker list is incomplete; ticket session ownership is unknown"
+                raise LiveOfflineError(msg)
+            if (
+                not selected_live
+                and Task.objects.filter(pk=selected, ticket_id=binding.ticket_id, status=Task.Status.PENDING).exists()
+            ):
+                return None
+            if not selected_live:
+                return _AmbiguousSessions(tuple(sorted(row["task"] for row in matching)))
+            matching = selected_live
         if len(matching) == 1:
             return _BoundLiveSession(binding, client, matching[0])
         return _AmbiguousSessions(tuple(sorted(row["task"] for row in sessions if row["ticket"] == binding.ticket_id)))
@@ -213,7 +224,7 @@ def _choice_reply(
         backend,
         unit,
         report,
-        f"Several tasks are available for this ticket. Start your reply with {choices} to choose one.",
+        f"Select a task for this ticket. Start your reply with {choices} to choose one.",
         kind=PendingChatInjection.AnswerKind.ACK,
     )
 

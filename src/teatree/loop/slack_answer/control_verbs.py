@@ -3,6 +3,8 @@
 
 def control_verb(message: str) -> str | None:
     words = message.casefold().strip().strip(".!").replace(",", " ").split()
+    if len(words) > 1 and words[0].startswith("#") and words[0][1:].isdigit():
+        words[0], words[1] = words[1], words[0]
     if not words or words[0] not in {"pause", "resume"}:
         return None
     selectors = [word for word in words[1:] if word.startswith("#")]

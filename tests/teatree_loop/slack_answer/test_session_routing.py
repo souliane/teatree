@@ -260,6 +260,55 @@ class TestBoundTicketThread(TestCase):
             wait=10.0,
         )
 
+    def test_selected_pending_task_queues_while_another_task_is_live(self) -> None:
+        live = self._bound_task()
+        pending = Task.objects.create(ticket=live.ticket, session=live.session, phase=live.phase)
+        row = self._message(f"#{pending.pk} Keep the old adapter")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [{"task": live.pk, "ticket": live.ticket_id, "state": "busy", "steerable": True}]
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        command = SessionCommand.objects.get(command_id=slack_command_id("", "C1", row.slack_ts))
+        assert command.task_id == pending.pk
+        assert command.outcome == "queued"
+        client.steer.assert_not_called()
+
+    def test_selected_pending_task_waits_for_complete_live_discovery(self) -> None:
+        live = self._bound_task()
+        pending = Task.objects.create(ticket=live.ticket, session=live.session, phase=live.phase)
+        row = self._message(f"#{pending.pk} Keep the old adapter")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={"worker-a": "timeout"})
+        client.sessions.return_value = [{"task": live.pk, "ticket": live.ticket_id, "state": "busy", "steerable": True}]
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        row.refresh_from_db()
+        assert report.errors == 1
+        assert row.loop_replied_at is None
+        assert not SessionCommand.objects.filter(command_id=slack_command_id("", "C1", row.slack_ts)).exists()
+        assert not backend.replies
+
+    def test_unknown_task_selector_names_the_available_live_task(self) -> None:
+        live = self._bound_task()
+        row = self._message("#999 Keep the old adapter")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [{"task": live.pk, "ticket": live.ticket_id, "state": "busy", "steerable": True}]
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert f"Select a task for this ticket. Start your reply with #{live.pk}" in backend.replies[0][2]
+        client.steer.assert_not_called()
+
     def test_pause_calls_live_control_and_starts_no_task(self) -> None:
         task = self._bound_task()
         row = self._message("pause")
@@ -279,6 +328,46 @@ class TestBoundTicketThread(TestCase):
         )
         client.steer.assert_not_called()
         assert "paused" in backend.replies[0][2]
+
+    def test_selected_pause_controls_only_the_named_live_task(self) -> None:
+        first = self._bound_task()
+        second = Task.objects.create(ticket=first.ticket, session=first.session, phase=first.phase)
+        row = self._message(f"  #{second.pk} pause")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": first.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+            {"task": second.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+        ]
+        client.pause.return_value = {"outcome": "paused", "code": None, "accepted_at": "now"}
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        client.pause.assert_called_once_with(
+            second.pk, f"  #{second.pk} pause", command_id=slack_command_id("", "C1", row.slack_ts), wait=10.0
+        )
+        client.steer.assert_not_called()
+
+    def test_selected_resume_releases_only_the_named_paused_task(self) -> None:
+        first = self._bound_task()
+        second = Task.objects.create(ticket=first.ticket, session=first.session, phase=first.phase)
+        for task in (first, second):
+            task.not_before = timezone.now() + timedelta(days=3650)
+            task.save(update_fields=["not_before"])
+            TaskAttempt.objects.create(task=task, error="operator_paused: paused by the operator")
+        row = self._message(f"#{second.pk} resume")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert first.not_before is not None
+        assert second.not_before is None
+        assert "same task" in backend.replies[0][2]
 
     def test_resume_releases_an_operator_pause_on_the_same_task(self) -> None:
         task = self._bound_task()

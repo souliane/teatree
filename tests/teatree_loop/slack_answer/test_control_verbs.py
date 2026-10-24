@@ -11,6 +11,8 @@ from teatree.loop.slack_answer.control_verbs import control_verb
         ("pause", "pause"),
         ("Resume it, please!", "resume"),
         ("pause task #12.", "pause"),
+        ("#12 pause", "pause"),
+        ("#12 resume", "resume"),
         ("pause the migration until I review", None),
         ("please pause", None),
         ("pause #12 #13", None),
