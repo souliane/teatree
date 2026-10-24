@@ -21,6 +21,7 @@ from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Directive, Loop, LoopLease
+from teatree.loops.tick_cost import action_found_work, record_tick_cost
 
 # The teatree.loops imports below are DEFERRED to the method body: a top-level
 # teatree.loops import from a teatree.core management command is a module-level import
@@ -97,7 +98,6 @@ class Command(TyperCommand):
         )
         from teatree.loops.directive_loop.tick import run_tick  # noqa: PLC0415 — cross-layer import cycle
         from teatree.loops.enable_verdict import loop_admits  # noqa: PLC0415 — cross-layer import cycle
-        from teatree.loops.tick_cost import record_tick_cost  # noqa: PLC0415 — deferred: command import cycle
 
         now = timezone.now()
         row = Loop.objects.filter(name=MINI_LOOP.name).first()
@@ -117,17 +117,21 @@ class Command(TyperCommand):
             self.stdout.write("SKIP  another directive_loop tick is already running — lease held.")
             record_tick_cost(MINI_LOOP.name, found_work=False)
             return
+        found_work = False
         try:
             result = run_tick(now=now)
+            found_work = action_found_work(result.action)
         finally:
-            LoopLease.objects.release(DIRECTIVE_LOOP_LEASE_NAME, owner=owner)
+            try:
+                LoopLease.objects.release(DIRECTIVE_LOOP_LEASE_NAME, owner=owner)
+            finally:
+                record_tick_cost(MINI_LOOP.name, found_work=found_work)
         Loop.objects.mark_run(MINI_LOOP.name, now)
         detail = f" ({result.reason})" if result.reason else ""
         directive = f" directive={result.directive_id}" if result.directive_id else ""
         # A guard refusal is a distinct outcome from a healthy tick, never an "OK" (#3643).
         prefix = "WARN " if result.action == "refused" else "OK   "
         self.stdout.write(f"{prefix} directive_loop tick — {result.action}{detail}{directive}.")
-        record_tick_cost(MINI_LOOP.name, found_work=result.action not in {"idle", "waiting", "refused"})
 
     @command(name="resolve-revert")
     def resolve_revert(

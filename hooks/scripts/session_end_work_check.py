@@ -52,6 +52,7 @@ sys.modules.setdefault("hooks.scripts.session_end_work_check", sys.modules[__nam
 
 PROBE_TIMEOUT_SECONDS = 4
 PREVIEW_LIMIT = 5
+DETACHED_BRANCH = "(detached)"
 
 _CLEAN_INDEX_CODES = frozenset({" ", "?"})
 _PORCELAIN_PREFIX_WIDTH = 3
@@ -146,13 +147,13 @@ def unpushed_commit_count(repo: Path) -> int:
 
 def current_branch(repo: Path) -> str:
     """The checked-out branch, even before its first commit; ``(detached)`` when HEAD names no branch."""
-    return _git(repo, "symbolic-ref", "--short", "-q", "HEAD", absent_is_empty=True).strip() or "(detached)"
+    return _git(repo, "symbolic-ref", "--short", "-q", "HEAD", absent_is_empty=True).strip() or DETACHED_BRANCH
 
 
 def fetch_orphans(branch: str | None = None) -> list[dict] | None:
     """``t3 teatree workspace list-orphans --json``, or ``None`` when it could not answer."""
-    if branch == "(detached)":
-        return []
+    if branch in {DETACHED_BRANCH, "main", "master"}:
+        branch = None
     scope = ("--branch", branch) if branch is not None else ()
     argv = t3_argv("teatree", "workspace", "list-orphans", *scope, "--json")
     if argv is None:
@@ -170,8 +171,7 @@ def fetch_orphans(branch: str | None = None) -> list[dict] | None:
     return data if isinstance(data, list) else None
 
 
-def _worktree_items(repo: Path) -> list[WorkItem]:
-    branch = current_branch(repo)
+def _worktree_items(repo: Path, branch: str) -> list[WorkItem]:
     items: list[WorkItem] = []
     staged = staged_paths(repo)
     if staged:
@@ -257,14 +257,14 @@ def scan_work(cwd: str) -> WorkScan:
             branch = current_branch(repo)
         except ProbeFailedError:
             branch = None
-    orphans = fetch_orphans(branch)
+    orphans = fetch_orphans(None if branch in {DETACHED_BRANCH, "main", "master"} else branch)
     if orphans is None:
         unanswered |= _ORPHAN_STATES
     else:
         items += _orphan_items(orphans)
     if (repo / ".git").exists():
         try:
-            items += _worktree_items(repo)
+            items += _worktree_items(repo, branch or current_branch(repo))
         except ProbeFailedError:
             unanswered |= _WORKTREE_STATES
         prs = read_open_prs(repo)

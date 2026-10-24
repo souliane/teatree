@@ -120,6 +120,16 @@ class TestDirtyWorktreeStates:
 
         fetch.assert_called_once_with("work-branch")
 
+    def test_main_and_detached_heads_probe_the_fleet(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
+        for branch in ("main", "(detached)"):
+            with (
+                patch.object(work_check, "current_branch", return_value=branch),
+                patch.object(work_check, "fetch_orphans", return_value=[]) as fetch,
+            ):
+                work_check.scan_work(str(repo))
+            fetch.assert_called_once_with(None)
+
     def test_an_unreadable_branch_falls_back_to_the_fleet_probe(self, tmp_path: Path) -> None:
         repo = _repo_with_commit(tmp_path)
 
@@ -272,8 +282,12 @@ class TestFetchOrphans:
 
         route.assert_called_once_with("teatree", "workspace", "list-orphans", "--branch", "work-branch", "--json")
 
-    def test_a_detached_head_does_not_spawn_the_probe(self) -> None:
-        with patch.object(work_check, "t3_argv") as route:
+    def test_a_detached_head_scans_the_fleet(self) -> None:
+        completed = subprocess.CompletedProcess(args=["t3"], returncode=0, stdout="[]", stderr="")
+        with (
+            patch.object(work_check, "t3_argv", side_effect=lambda *args: ["/usr/bin/t3", *args]) as route,
+            patch.object(work_check, "run_t3", return_value=completed),
+        ):
             assert _REAL_FETCH_ORPHANS("(detached)") == []
 
-        route.assert_not_called()
+        route.assert_called_once_with("teatree", "workspace", "list-orphans", "--json")

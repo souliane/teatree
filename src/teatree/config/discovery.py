@@ -5,13 +5,15 @@ manage.py resolution helpers. Split out of the package module for the
 module-health LOC cap; re-exported from ``teatree.config``.
 """
 
+import importlib.metadata
 import importlib.util
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import Context, ContextVar
 from importlib.metadata import EntryPoint
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import teatree.config as _facade
@@ -20,22 +22,29 @@ from teatree.config.settings import OverlayEntry
 from teatree.request_cache import cached_per_request
 
 _OVERLAY_ENTRY_POINT_GROUP = "teatree.overlays"
-_SCANNED_ONCE: ContextVar[list[tuple[EntryPoint, ...]] | None] = ContextVar(
+_SCANNED_ONCE: ContextVar[tuple[list[tuple[EntryPoint, ...]], Lock] | None] = ContextVar(
     "teatree_overlay_entry_points", default=None
 )
 
 
 def overlay_entry_points() -> tuple[EntryPoint, ...]:
-    """The installed ``teatree.overlays`` entry points; one scan per scoped block, on the thread that entered it."""
-    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
-
-    kept = _SCANNED_ONCE.get()
-    if kept:
+    """The installed ``teatree.overlays`` entry points; one scan per shared scope."""
+    scope = _SCANNED_ONCE.get()
+    if scope is None:
+        return tuple(importlib.metadata.entry_points(group=_OVERLAY_ENTRY_POINT_GROUP))
+    kept, lock = scope
+    with lock:
+        if not kept:
+            kept.append(tuple(importlib.metadata.entry_points(group=_OVERLAY_ENTRY_POINT_GROUP)))
         return kept[0]
-    scanned = tuple(entry_points(group=_OVERLAY_ENTRY_POINT_GROUP))
-    if kept is not None:
-        kept.append(scanned)
-    return scanned
+
+
+def overlay_entry_points_scan_context() -> Context:
+    """Pass only the entry-point scan scope to scanner workers."""
+    context = Context()
+    if scope := _SCANNED_ONCE.get():
+        context.run(_SCANNED_ONCE.set, scope)
+    return context
 
 
 @contextmanager
@@ -44,9 +53,9 @@ def overlay_entry_points_scanned_once() -> Generator[None]:
 
     For a caller whose installed distributions cannot change while it runs — the loop tick enters it after
     the self-update reinstall drain. Nothing else is memoized, so a settings or preset write stays visible.
-    The scope is a ``ContextVar``: threads started inside the block do not inherit it and scan per read.
+    Scanner pool jobs inherit this scope explicitly; unrelated threads do not.
     """
-    token = _SCANNED_ONCE.set([])
+    token = _SCANNED_ONCE.set(([], Lock()))
     try:
         yield
     finally:

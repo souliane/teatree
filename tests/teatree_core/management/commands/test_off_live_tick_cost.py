@@ -4,6 +4,7 @@ import os
 from io import StringIO
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -52,3 +53,43 @@ class TestOffLiveTickCost(TestCase):
                     loop = Loop.objects.get(name=name)
                     assert loop.busy_cpu_seconds is not None
                     assert loop.idle_cpu_seconds is None
+
+    def test_pending_and_parked_are_idle_outcomes(self) -> None:
+        seed_default_loops_and_prompts()
+        Loop.objects.filter(name__in=("outer_loop", "directive_loop")).update(enabled=True, last_run_at=None)
+        with (
+            patch.dict(os.environ, {TICK_SUBPROCESS_ENV_MARKER: "1"}),
+            patch("teatree.loops.enable_verdict.loop_admits", return_value=True),
+            patch.object(LoopLease.objects, "acquire", return_value=True),
+            patch.object(LoopLease.objects, "release"),
+            patch("teatree.loops.outer_loop.tick.run_tick", return_value=OuterLoopTickResult(action="parked")),
+            patch("teatree.loops.directive_loop.tick.run_tick", return_value=DirectiveTickResult(action="pending")),
+        ):
+            for name, command in (("outer_loop", "outer"), ("directive_loop", "directive")):
+                with self.subTest(loop=name):
+                    call_command(command, "tick", stdout=StringIO())
+                    loop = Loop.objects.get(name=name)
+                    assert loop.idle_cpu_seconds is not None
+                    assert loop.busy_cpu_seconds is None
+
+    def test_a_crashed_pass_still_records_cpu(self) -> None:
+        seed_default_loops_and_prompts()
+        names = ("dream", "outer_loop", "directive_loop")
+        Loop.objects.filter(name__in=names).update(enabled=True, last_run_at=None)
+        for name, command, target in (
+            ("dream", "dream", "teatree.core.management.commands.dream.Command._run_pass"),
+            ("outer_loop", "outer", "teatree.loops.outer_loop.tick.run_tick"),
+            ("directive_loop", "directive", "teatree.loops.directive_loop.tick.run_tick"),
+        ):
+            with (
+                self.subTest(loop=name),
+                patch.dict(os.environ, {TICK_SUBPROCESS_ENV_MARKER: "1"}),
+                patch("teatree.loops.enable_verdict.loop_admits", return_value=True),
+                patch.object(LoopLease.objects, "acquire", return_value=True),
+                patch.object(LoopLease.objects, "release"),
+                patch(target, side_effect=RuntimeError("crashed")),
+                pytest.raises(RuntimeError, match="crashed"),
+            ):
+                call_command(command, "tick", stdout=StringIO())
+            loop = Loop.objects.get(name=name)
+            assert loop.idle_cpu_seconds is not None

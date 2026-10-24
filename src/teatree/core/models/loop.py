@@ -52,6 +52,8 @@ from teatree.core.models.loop_state import LoopState
 
 _SECONDS_PER_DAY = 24 * 3600
 _TICK_COST_EWMA_ALPHA = 0.2
+OFF_LIVE_TICK_NAMES = frozenset({"dream", "outer_loop", "directive_loop"})
+OFF_LIVE_TICK_WAKE_SECONDS = 600
 
 
 class LoopManager(models.Manager["Loop"]):
@@ -245,8 +247,8 @@ class Loop(models.Model):
 
     @property
     def idle_core_share(self) -> float | None:
-        """The fraction of one core an idle tick costs at this cadence; ``None`` without a sample or a cadence."""
-        cadence = self.cadence_seconds
+        """The fraction of one core spent on idle ticks at the effective wake rate."""
+        cadence = OFF_LIVE_TICK_WAKE_SECONDS if self.name in OFF_LIVE_TICK_NAMES else self.cadence_seconds
         if self.idle_cpu_seconds is None or not cadence:
             return None
         return self.idle_cpu_seconds / cadence

@@ -40,7 +40,9 @@ from django_typer.management import TyperCommand, command
 from teatree.core.management.commands._dream_gap_commands import DreamGapCommands
 from teatree.core.management.commands._dream_report import TailTimings, _ResultFragments
 from teatree.core.models.dream_gap_ledger import dream_umbrella_url
+from teatree.loops.dream.loop import DREAM_LOOP_NAME
 from teatree.loops.dream.pass_config import PassBudget
+from teatree.loops.tick_cost import record_tick_cost
 from teatree.token_report import local_eval_reserve_decision
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
@@ -126,15 +128,17 @@ class Command(DreamGapCommands, TyperCommand):
 
         ``force_all_phases`` stays False — ``--full`` is the manual pass's alias.
         """
-        from teatree.loops.tick_cost import record_tick_cost  # noqa: PLC0415 — deferred: command import cycle
-
-        outcome = self._run_pass(
-            since=None,
-            dry_run=False,
-            enforce_cadence=True,
-            mode=PipelineMode(),
-        )
-        record_tick_cost("dream", found_work=outcome is not PassOutcome.SKIPPED)
+        found_work = False
+        try:
+            outcome = self._run_pass(
+                since=None,
+                dry_run=False,
+                enforce_cadence=True,
+                mode=PipelineMode(),
+            )
+            found_work = outcome is not PassOutcome.SKIPPED
+        finally:
+            record_tick_cost(DREAM_LOOP_NAME, found_work=found_work)
         _surface_exit_code(outcome)
 
     @command(name="compliance")

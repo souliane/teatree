@@ -11,10 +11,12 @@ import os
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import Context
 from dataclasses import dataclass, field
 from queue import Empty, SimpleQueue
 from threading import Thread
 
+from teatree.config.discovery import overlay_entry_points_scan_context
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.base import ScanSignal
@@ -31,7 +33,7 @@ class ScanOutcome:
 
 
 type _ScanResult = tuple[str, list[ScanSignal], str]
-type _ScanWork = tuple[Future[_ScanResult], Callable[[_ScannerJob], _ScanResult], _ScannerJob]
+type _ScanWork = tuple[Future[_ScanResult], Context, Callable[[_ScannerJob], _ScanResult], _ScannerJob]
 logger = logging.getLogger(__name__)
 
 
@@ -52,16 +54,16 @@ class _AbandonableScanPool:
             raise RuntimeError(msg)
         future: Future[_ScanResult] = Future()
         self._futures.append(future)
-        self._jobs.put((future, fn, job))
+        self._jobs.put((future, overlay_entry_points_scan_context(), fn, job))
         return future
 
     def _work(self) -> None:
         while (item := self._jobs.get()) is not None:
-            future, fn, job = item
+            future, context, fn, job = item
             if not future.set_running_or_notify_cancel():
                 continue
             try:
-                result = fn(job)
+                result = context.run(fn, job)
             except BaseException as exc:
                 logger.exception("Scan worker failed")
                 future.set_exception(exc)

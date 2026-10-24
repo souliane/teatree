@@ -66,6 +66,16 @@ class TestIdleCoreShare(django.test.TestCase):
 
         assert loop.idle_core_share == pytest.approx(0.1)
 
+    def test_off_live_ticks_scale_to_the_driver_wake_interval(self) -> None:
+        for name, delay, daily_at in (
+            ("dream", 86400, dt.time(8, 0)),
+            ("outer_loop", 3600, None),
+            ("directive_loop", 3600, None),
+        ):
+            with self.subTest(loop=name):
+                loop = Loop(name=name, delay_seconds=delay, daily_at=daily_at, idle_cpu_seconds=6.0)
+                assert loop.idle_core_share == pytest.approx(0.01)
+
     def test_is_none_without_a_sample(self) -> None:
         assert _loop().idle_core_share is None
 

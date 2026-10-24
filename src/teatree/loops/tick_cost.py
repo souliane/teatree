@@ -10,6 +10,11 @@ from teatree.core.models import Loop
 from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
 
 logger = logging.getLogger(__name__)
+_NO_PROGRESS_ACTIONS = frozenset({"waiting", "pending", "refused", "idle", "parked"})
+
+
+def action_found_work(action: str) -> bool:
+    return action not in _NO_PROGRESS_ACTIONS
 
 
 def process_cpu_seconds() -> float:

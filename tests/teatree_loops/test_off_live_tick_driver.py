@@ -15,6 +15,8 @@ from django.tasks import TaskResultStatus
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
+from teatree.core.models.loop import OFF_LIVE_TICK_NAMES
+from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID, RUNNER_PID_ENV, RUNNER_SESSION_ENV
 from teatree.loops import off_live_tick_driver
 from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER, TickOutcome, run_deadlined_argv
 from teatree.loops.dream.loop import DREAM_OFF_TICK_DEADLINE_SECONDS
@@ -60,11 +62,14 @@ class TestOffLiveTickDriver(django.test.TestCase):
         # Each runs as its own `python -m teatree <cmd> tick` subprocess, deadlined at
         # the loop's OWN ceiling when it declares one and the shared default otherwise.
         declared = {name: deadline for name, _argv, deadline in off_live_tick_commands()}
+        assert set(declared) == OFF_LIVE_TICK_NAMES
         by_command = {tuple(argv[-2:]): deadline for argv, deadline, _env in self._ran}
         for argv, deadline, env in self._ran:
             assert argv[1:3] == ["-m", "teatree"]
             assert deadline in set(declared.values())
             assert env[TICK_SUBPROCESS_ENV_MARKER] == "1"
+            assert env[RUNNER_SESSION_ENV] == LOOP_RUNNER_SESSION_ID
+            assert env[RUNNER_PID_ENV].isdigit()
         assert by_command["dream", "tick"] == DREAM_OFF_TICK_DEADLINE_SECONDS
         assert by_command["outer", "tick"] == off_live_tick_driver.DEADLINE_SECONDS
         assert by_command["directive", "tick"] == off_live_tick_driver.DEADLINE_SECONDS

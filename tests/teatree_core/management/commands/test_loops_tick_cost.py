@@ -2,11 +2,13 @@
 
 import datetime as dt
 import io
+import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import django.test
+import pytest
 from django.core.management import call_command
 
 from teatree.core.models import Loop, LoopLease
@@ -66,3 +68,26 @@ class TestTickCostRecording(django.test.TestCase):
 
         assert hard_exit.call_count == 1
         assert idle_when_exiting[0] is not None
+
+    def test_a_crashed_tick_still_records_its_cpu(self) -> None:
+        with (
+            _worker_tick(TickReport(started_at=dt.datetime.now(dt.UTC))),
+            patch("teatree.loop.tick.run_tick", side_effect=RuntimeError("crashed")),
+            pytest.raises(RuntimeError, match="crashed"),
+        ):
+            call_command("loops_tick", loop="probe", stdout=io.StringIO(), stderr=io.StringIO())
+
+        self.loop.refresh_from_db()
+        assert self.loop.idle_cpu_seconds is not None
+
+    def test_a_connector_preflight_exit_still_records_its_cpu(self) -> None:
+        with (
+            patch.dict(os.environ, {TICK_SUBPROCESS_ENV_MARKER: "1"}),
+            patch("teatree.loops.connector_preflight.run_loop_connector_preflight", side_effect=SystemExit(3)),
+            pytest.raises(SystemExit) as caught,
+        ):
+            call_command("loops_tick", loop="probe", stdout=io.StringIO(), stderr=io.StringIO())
+
+        assert caught.value.code == 3
+        self.loop.refresh_from_db()
+        assert self.loop.idle_cpu_seconds is not None

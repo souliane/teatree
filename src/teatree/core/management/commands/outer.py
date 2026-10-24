@@ -18,6 +18,7 @@ from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Loop, LoopLease, OuterLoopExperiment
+from teatree.loops.tick_cost import action_found_work, record_tick_cost
 
 # The teatree.loops / teatree.loop imports below are DEFERRED to the method body on
 # purpose: a top-level teatree.loops import from a teatree.core management command is a
@@ -37,7 +38,6 @@ class Command(TyperCommand):
             OUTER_LOOP_LEASE_SECONDS,
         )
         from teatree.loops.outer_loop.tick import REFUSED_ACTION, run_tick  # noqa: PLC0415 — cross-layer import cycle
-        from teatree.loops.tick_cost import record_tick_cost  # noqa: PLC0415 — deferred: command import cycle
 
         now = timezone.now()
         row = Loop.objects.filter(name=MINI_LOOP.name).first()
@@ -55,17 +55,21 @@ class Command(TyperCommand):
             self.stdout.write("SKIP  another outer_loop tick is already running — lease held.")
             record_tick_cost(MINI_LOOP.name, found_work=False)
             return
+        found_work = False
         try:
             result = run_tick(now=now)
+            found_work = action_found_work(result.action)
         finally:
-            LoopLease.objects.release(OUTER_LOOP_LEASE_NAME, owner=owner)
+            try:
+                LoopLease.objects.release(OUTER_LOOP_LEASE_NAME, owner=owner)
+            finally:
+                record_tick_cost(MINI_LOOP.name, found_work=found_work)
         Loop.objects.mark_run(MINI_LOOP.name, now)
         detail = f" ({result.reason})" if result.reason else ""
         experiment = f" experiment={result.experiment_id}" if result.experiment_id else ""
         # A guard-chain refusal mutates nothing; labelling it OK read as an advanced tick.
         label = "REFUSE" if result.action == REFUSED_ACTION else "OK    "
         self.stdout.write(f"{label} outer_loop tick — {result.action}{detail}{experiment}.")
-        record_tick_cost(MINI_LOOP.name, found_work=result.action not in {"idle", "waiting", REFUSED_ACTION})
 
     @command(name="status")
     def status(self) -> None:

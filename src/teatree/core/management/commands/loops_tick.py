@@ -354,7 +354,11 @@ class Command(TyperCommand):
             run_loop_connector_preflight,
         )
 
-        run_loop_connector_preflight(loop)
+        try:
+            run_loop_connector_preflight(loop)
+        except (Exception, SystemExit):
+            record_tick_cost(loop, found_work=False)
+            raise
 
         from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
         from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
@@ -429,18 +433,20 @@ class Command(TyperCommand):
         set_preset_line_reader(preset_line_handles)
         set_overridden_loops_reader(overridden_loop_names)
         builder = _ScopedJobsBuilder(loop=loop)
+        found_work = False
         try:
             with overlay_entry_points_scanned_once():
                 request = self._build_request(overlay)
                 report = run_tick(request, statusline_path=statusline_file, jobs_builder=builder)
+                found_work = bool(report.signal_count or report.action_count)
         finally:
             set_mini_loop_schedules_reader(None)
             set_preset_line_reader(None)
             set_overridden_loops_reader(None)
             LoopLease.objects.release(tick_mutex, owner=owner)
+            record_tick_cost(loop, found_work=found_work)
 
         self._emit_report(report, loop, blocked_reason=builder.blocked_reason, json_output=json_output)
-        record_tick_cost(loop, found_work=bool(report.signal_count or report.action_count))
         self._hard_exit_if_subprocess()
 
     @staticmethod
