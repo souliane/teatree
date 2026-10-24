@@ -11,7 +11,7 @@ from tempfile import NamedTemporaryFile
 from django.utils import timezone
 
 from teatree.core.models.pull_request import PullRequest
-from teatree.core.pr_next_action import entry_blocker
+from teatree.core.pr_next_action import stall_cause
 from teatree.paths import data_dir_root
 
 MINUTES_PER_HOUR = 60
@@ -47,7 +47,7 @@ class OpenPrRow:
     age: str
     next_task: str
     started: bool
-    blocker: str
+    stall: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +190,7 @@ def open_pr_rows(started_at: datetime, *, now: datetime | None = None) -> list[O
             age=elapsed_label(entry.created_at, moment),
             next_task=entry.next_task,
             started=entry.url in started,
-            blocker=entry_blocker(entry),
+            stall=stall_cause(entry),
         )
         for entry in ordered
     ]

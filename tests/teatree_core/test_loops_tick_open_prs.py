@@ -126,7 +126,7 @@ class TestTickReportsOpenPrs(django.test.TestCase):
                 "age": "2 d",
                 "next_task": "Address requested changes",
                 "started": False,
-                "blocker": "Address requested changes",
+                "stall": "Address requested changes",
             }
         ]
 
@@ -228,6 +228,21 @@ class TestTickRepairsStalledPrs(django.test.TestCase):
         report = _run([_InventoryScanner("teatree", [entry])])
 
         assert "unresolved: no author ticket owns this PR" in report
+        assert Task.objects.count() == 0
+
+    def test_a_draft_park_and_a_sweep_fault_are_not_stalls(self) -> None:
+        parked = replace(_entry(13, age=timedelta(days=2), next_task="Finish draft"), reason="draft", draft=True)
+        faulty = replace(
+            _entry(14, age=timedelta(days=2), next_task="Inspect sweep"), reason="evaluation_failed", ci="unknown"
+        )
+        branch = replace(_entry(15, age=timedelta(days=2), next_task="Update branch"), decision="needs_branch_update")
+        for entry in (parked, faulty, branch):
+            ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
+            PullRequestFactory(ticket=ticket, url=entry.url, repo=entry.repo, iid=entry.iid)
+
+        report = _run([_InventoryScanner("teatree", [parked, faulty, branch])])
+
+        assert "STALL" not in report
         assert Task.objects.count() == 0
 
     def test_a_pr_that_is_not_blocked_is_left_alone(self) -> None:

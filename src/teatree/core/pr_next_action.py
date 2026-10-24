@@ -20,7 +20,7 @@ _RED_CI = frozenset({"red", "failed", "failure", "error", "canceled", "cancelled
 _GREEN_CI = GREEN_STATUSES | {"green"}
 _PENDING_CI = frozenset({"pending", "running"})
 _BLOCKING_DECISIONS = frozenset({"flag_conflict", "needs_branch_update", "required_checks_indeterminate"})
-_BLOCKING_REASONS = frozenset({"draft", "changes_requested"})
+_BLOCKING_REASONS = frozenset({"draft", "changes_requested", "evaluation_failed"})
 _OWNER_REASONS = frozenset(
     {"mergeable_awaiting_review", "fork_requires_human_approval", "untrusted_author_public_repo"}
 )
@@ -116,6 +116,13 @@ def entry_blocker(entry: "PrInventoryEntry") -> str:
     if entry.decision in _BLOCKING_DECISIONS or entry.reason in _BLOCKING_REASONS:
         return entry.next_task
     return ""
+
+
+def stall_cause(entry: "PrInventoryEntry") -> str:
+    """What the factory can repair by coding; a draft park or a sweep fault is a blocker, never a stall."""
+    if entry.ci.lower() in _RED_CI:
+        return FIX_CI
+    return entry.next_task if entry.decision == "flag_conflict" or entry.reason == "changes_requested" else ""
 
 
 def _blocked_reason(facts: PrActionFacts) -> str:

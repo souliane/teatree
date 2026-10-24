@@ -26,14 +26,14 @@ class StallRepair:
 
 
 def repair_stalled_prs(rows: Sequence[OpenPrRow]) -> list[StallRepair]:
-    stalled = [row for row in rows if row.blocker]
+    stalled = [row for row in rows if row.stall]
     owners = {
         pr.url: pr.ticket
         for pr in PullRequest.objects.filter(
             url__in=[row.url for row in stalled], ticket__role=Ticket.Role.AUTHOR
         ).select_related("ticket")
     }
-    return [StallRepair(row.ref, row.blocker, _repair(row, owners.get(row.url))) for row in stalled]
+    return [StallRepair(row.ref, row.stall, _repair(row, owners.get(row.url))) for row in stalled]
 
 
 def _repair(row: OpenPrRow, ticket: Ticket | None) -> str:
@@ -44,7 +44,7 @@ def _repair(row: OpenPrRow, ticket: Ticket | None) -> str:
     if refusal := _refusal(ticket):
         _record_unresolved(row, refusal)
         return f"unresolved: {refusal}"
-    reason = f"Repair the stalled PR {row.ref}, open for {row.age}: {row.blocker}."
+    reason = f"Repair the stalled PR {row.ref}, open for {row.age}: {row.stall}."
     try:
         task = enqueue_phase_task_once(ticket=ticket, phase=_REPAIR_PHASE, reason=reason, agent_id="pr-stall")
     except (TaskEnqueueError, NoPlanArtifactError) as exc:
@@ -61,7 +61,6 @@ def _refusal(ticket: Ticket) -> str:
 
 def _record_unresolved(row: OpenPrRow, refusal: str) -> None:
     DeferredQuestion.record(
-        f"PR {row.ref} is stalled ({row.blocker}) and no safe automatic repair applies: {refusal} "
-        "How should it proceed?",
-        dedupe_marker=_MARKER.format(url=row.url, cause=row.blocker),
+        f"PR {row.ref} is stalled ({row.stall}) and no safe automatic repair applies: {refusal} How should it proceed?",
+        dedupe_marker=_MARKER.format(url=row.url, cause=row.stall),
     )

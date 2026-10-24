@@ -371,6 +371,19 @@ class PrBoardFreshObservationTestCase(TestCase):
         assert card.draft
         assert card.group != "Ready to merge or merging"
 
+    def test_a_pr_the_sweep_could_not_evaluate_is_blocked_whatever_its_review_state(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        entry = _observed_entry(
+            pr,
+            reason="evaluation_failed",
+            decision="evaluation_failed",
+            ci="unknown",
+            approvals="awaiting approval",
+            next_task="Inspect why the PR sweep could not evaluate this PR",
+        )
+        card = self._card(pr, entry)
+        assert (card.group, card.next_action) == ("Blocked", entry.next_task)
+
     def test_green_pr_awaiting_approval_waits_on_the_reviewer(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory())
         card = self._card(pr, _observed_entry(pr, approvals="awaiting approval"))
