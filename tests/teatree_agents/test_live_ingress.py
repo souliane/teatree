@@ -25,6 +25,7 @@ from teatree.agents.live_ingress import (
 )
 from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.agents.live_registry import LiveSessionRegistry
+from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from tests.teatree_agents._live_owner import OwnerLoop
 
 _AGENT_CHILD = """
@@ -238,4 +239,29 @@ def test_operator_socket_carries_the_claim_and_worker_generation_of_the_selected
         current = client.steer(task.pk, "current", command_id="current", wait=1)
 
     assert current["outcome"] == "accepted_current_turn"
+    assert len(session.delivered) == 1
+
+
+@pytest.mark.parametrize("phase", sorted(VERDICT_REVIEW_PHASES))
+def test_an_operator_steer_is_delivered_in_every_verdict_review_phase(phase: str) -> None:
+    class Session:
+        def __init__(self) -> None:
+            self.delivered: list[str] = []
+
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            self.delivered.append(text)
+
+        async def interrupt(self) -> None:
+            return None
+
+    registry = LiveSessionRegistry()
+    session = Session()
+    ingress = OperatorIngress(lambda: registry, worker_pid=os.getpid())
+    with tempfile.TemporaryDirectory(prefix="t3i-", dir="/tmp") as runtime:
+        live_dir = Path(runtime)
+        task = LiveTask(7, 3, phase, "claude_sdk", "m", LiveFence("a", "g"))
+        with LiveMailboxBroker(runtime_dir=live_dir, ingress=ingress), OwnerLoop(registry, task, session):
+            receipt = LiveClient(live_dir=live_dir).steer(7, "check the migration too", command_id="c-1", wait=1)
+
+    assert receipt["outcome"] == "accepted_current_turn"
     assert len(session.delivered) == 1

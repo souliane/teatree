@@ -43,6 +43,20 @@ class TestDrainUnmirroredDeferredQuestions(TestCase):
             ticket=ticket, channel=question.slack_channel, thread_ts=question.slack_ts
         ).exists()
 
+    def test_a_thread_already_bound_to_another_ticket_never_aborts_the_drain(self) -> None:
+        ticket = Ticket.objects.create()
+        other = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
+        ThreadBinding.bind(ticket=other, channel="D1", thread_ts="1700000000.000000")
+        question = DeferredQuestion.record("Choose one?", parked_task=task, **OWNER_DECISION)
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=_backend()):
+            drain_unmirrored_deferred_questions(user_id="U_ME")
+
+        question.refresh_from_db()
+        assert question.slack_ts == "1700000000.000000"
+        assert ThreadBinding.objects.get(channel="D1", thread_ts="1700000000.000000").ticket_id == other.pk
+
     def test_posts_unmirrored_and_stamps_mirror_coordinates(self) -> None:
         question = DeferredQuestion.record("Which DB host?", session_id="s", **OWNER_DECISION)
         assert question.slack_ts == ""

@@ -7,7 +7,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents.live_client import LiveOfflineError
+from teatree.agents.live_client import LiveOfflineError, LiveRefusedError
 from teatree.core.answering.work_item_filing import file_work_item
 from teatree.core.models import (
     DeferredQuestion,
@@ -24,6 +24,7 @@ from teatree.core.models.thread_binding import slack_command_id
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource, read_inbound
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work
+from teatree.loop.slack_answer.session_routing import SLACK_STEER_WAIT_SECONDS
 from tests.teatree_loop.slack_answer.test_cycle import _BOT_UID, _USER_UID, RecordingBackend, _resolver
 
 
@@ -471,6 +472,61 @@ class TestBoundTicketThread(TestCase):
         row.refresh_from_db()
         assert row.loop_replied_at is None
 
+    def test_a_refused_session_list_is_a_unit_error_and_starts_no_task(self) -> None:
+        self._bound_task()
+        row = self._message("Use the new API instead")
+        client = Mock(unreachable={})
+        client.sessions.side_effect = LiveRefusedError("Operator verbs are refused to agent peers", "permission_denied")
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(RecordingBackend()))
+
+        assert report.errors == 1
+        assert report.dispatched == 0
+        assert Task.objects.count() == 1
+        assert not SessionCommand.objects.exists()
+        row.refresh_from_db()
+        assert row.loop_replied_at is None
+
+    def test_a_session_that_never_accepts_holds_the_cycle_for_at_most_the_slack_wait(self) -> None:
+        stuck = self._bound_task()
+        healthy = dispatch_work(
+            reading=InboundReading(
+                intent=InboundIntent.INSTRUCTION, answerable=False, work_summary="other", source=ReadingSource.MODEL
+            ),
+            fingerprint="other-feature",
+            origin=WorkOrigin("", "C1", "200.0", ("200.0",), "other"),
+        )
+        first = self._message("Use the new API")
+        second = PendingChatInjection.record(
+            channel="C1",
+            slack_ts="201.0",
+            text="Use the old API",
+            context=DmContext(user_id=_USER_UID, thread_ts="200.0"),
+        )
+        assert second is not None
+        backend = RecordingBackend()
+        for row, root in ((first, "100.0"), (second, "200.0")):
+            backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": root}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": stuck.pk, "ticket": stuck.ticket_id, "state": "busy", "steerable": True},
+            {"task": healthy.pk, "ticket": healthy.ticket_id, "state": "busy", "steerable": True},
+        ]
+        client.steer.side_effect = [
+            {"outcome": "rejected", "code": "not_accepted_in_time", "accepted_at": None},
+            {"outcome": "accepted_current_turn", "code": None, "accepted_at": "now"},
+        ]
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert [call.kwargs["wait"] for call in client.steer.call_args_list] == [SLACK_STEER_WAIT_SECONDS] * 2
+        assert SLACK_STEER_WAIT_SECONDS <= 10.0
+        assert report.steered == 2
+        assert "not_accepted_in_time" in backend.replies[0][2]
+        assert "accepted_current_turn" in backend.replies[1][2]
+
     def test_unsent_direction_retries_after_worker_disappears(self) -> None:
         task = self._bound_task()
         row = self._message("Use the new API instead")
@@ -714,6 +770,28 @@ class TestBoundTicketThread(TestCase):
         assert len(backend.replies) == 2
         assert "queued follow-up" in backend.replies[-1][2]
         assert row.loop_response_confirmed_at is not None
+
+    def test_an_unset_operator_id_forwards_nothing(self) -> None:
+        task = self._bound_task()
+        extra_before = dict(task.ticket.extra)
+        row = self._message("Delete the branch")
+        client = Mock(unreachable={})
+        client.sessions.return_value = [{"task": task.pk, "ticket": task.ticket_id, "state": "busy", "steerable": True}]
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(
+                messaging_resolver=_resolver(RecordingBackend(user_id="")),
+                reader=Mock(side_effect=AssertionError("unset owner reached reader")),
+            )
+
+        client.steer.assert_not_called()
+        assert report.acked == 1
+        assert Task.objects.count() == 1
+        assert not SessionCommand.objects.exists()
+        task.ticket.refresh_from_db()
+        assert task.ticket.extra == extra_before
+        row.refresh_from_db()
+        assert row.answer_kind == PendingChatInjection.AnswerKind.ACK
 
     def test_other_author_cannot_steer_the_task(self) -> None:
         task = self._bound_task()
