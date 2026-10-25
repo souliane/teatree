@@ -329,7 +329,8 @@ def _may_be_user_token_thread_reply(event: dict, identity: OwnSlackIdentity | No
     user = event.get("user")
     thread_ts = event.get("thread_ts")
     return (
-        isinstance(user, str)
+        event.get("channel_type") == "im"
+        and isinstance(user, str)
         and bool(user)
         and isinstance(thread_ts, str)
         and bool(thread_ts)

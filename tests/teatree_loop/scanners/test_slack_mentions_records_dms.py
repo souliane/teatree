@@ -1,7 +1,7 @@
 """A DM drained from the Socket Mode queue is recorded even when its live record failed."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -13,6 +13,7 @@ from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
+from teatree.loops import slack_inbound
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_CARD, OWNER_SLACK_ID
 
@@ -37,6 +38,8 @@ _BOT_DM: RawAPIDict = {
 
 @dataclass
 class FakeMessaging:
+    user_id: str = OWNER_SLACK_ID
+
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
         return []
@@ -74,6 +77,56 @@ class TestDrainedDmsAreRecorded(TestCase):
         self._scan()
 
         assert PendingChatInjection.objects.count() == 1
+
+    def test_live_then_drain_logs_one_ignored_app_reply(self) -> None:
+        event = {
+            **_HUMAN_DM,
+            "ts": "101.2",
+            "thread_ts": "101.1",
+            "user": OWNER_SLACK_ID,
+            "api_app_id": "A_OWNER_SCRIPT",
+        }
+        self._enqueue(event)
+        with (
+            patch.object(slack_inbound, "messaging_from_overlay", return_value=FakeMessaging()),
+            patch.object(slack_inbound, "wake_slack_answer"),
+            self.assertLogs("teatree.loop.scanners.slack_dm_recorder", level="INFO") as logs,
+        ):
+            slack_inbound.record_and_wake_slack_answer("demo", event)
+            self._scan()
+
+        assert PendingChatInjection.objects.count() == 0
+        assert sum("101.2" in line and "posted through an app token" in line for line in logs.output) == 1
+
+    def test_live_then_drain_reads_a_pending_card_thread_once(self) -> None:
+        card = DeferredQuestion.record("Can I ship?", card=OWNER_CARD, slack_channel="D1", slack_ts="102.2")
+        event = {
+            **_HUMAN_DM,
+            "ts": "102.3",
+            "thread_ts": "102.1",
+            "user": OWNER_SLACK_ID,
+            "api_app_id": "A_OWNER_SCRIPT",
+        }
+
+        @dataclass
+        class ReadingBackend(FakeMessaging):
+            reads: list[str] = field(default_factory=list)
+
+            def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+                self.reads.append(thread_ts)
+                return [{"ts": thread_ts}, {"ts": card.slack_ts}]
+
+        backend = ReadingBackend()
+        self._enqueue(event)
+        with (
+            patch.object(slack_inbound, "messaging_from_overlay", return_value=backend),
+            patch.object(slack_inbound, "wake_slack_answer"),
+        ):
+            slack_inbound.record_and_wake_slack_answer("demo", event)
+            SlackMentionsScanner(backend=backend, overlay="demo").scan()
+
+        assert PendingChatInjection.objects.filter(slack_ts="102.3").count() == 1
+        assert backend.reads == ["102.1"]
 
     def test_the_bots_own_drained_dm_is_not_recorded(self) -> None:
         self._enqueue(_BOT_DM, _HUMAN_DM)

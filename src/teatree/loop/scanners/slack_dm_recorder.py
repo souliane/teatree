@@ -69,7 +69,7 @@ class SlackDmRecorder:
             self._cached_identity = resolve_own_identity(self.backend)
         return self._cached_identity
 
-    def record_events(self, events: list[RawAPIDict]) -> int:
+    def record_events(self, events: list[RawAPIDict], *, log_ignored: bool = True) -> int:
         """Record each DM in *events* that survives the write-side filters; return the NEW rows."""
         self.retry_events = []
         dms = filter_self_messages(events, self._identity())
@@ -77,14 +77,20 @@ class SlackDmRecorder:
             return 0
         recorded = 0
         for event in dms:
+            app_posted = is_on_behalf_posted(event)
+            if (
+                app_posted
+                and PendingChatInjection.objects.filter(overlay=self.overlay, slack_ts=_event_ts(event)).exists()
+            ):
+                continue
             try:
-                owner_card_reply = is_on_behalf_posted(event) and self._owner_card_reply(event)
+                owner_card_reply = app_posted and self._owner_card_reply(event)
             except Exception:
                 logger.exception("Slack thread read failed for DM event %s; retrying", _event_ts(event))
                 self.retry_events.append(event)
                 continue
-            if is_on_behalf_posted(event) and not owner_card_reply:
-                if _event_thread_ts(event):
+            if app_posted and not owner_card_reply:
+                if log_ignored and _event_thread_ts(event):
                     logger.info("Slack reply %s ignored: posted through an app token", _event_ts(event))
                 continue
             recorded += self._record_one(event)

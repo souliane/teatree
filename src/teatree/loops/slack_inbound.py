@@ -47,7 +47,8 @@ def record_slack_dm(overlay: str, event: dict) -> bool:
     if recorder is None:
         logger.warning("No slack backend for overlay %r — the inbox drain will record this DM", overlay)
         return False
-    return recorder.record_events([event]) > 0
+    # The durable queue drain owns ignored-event diagnostics after this live attempt.
+    return recorder.record_events([event], log_ignored=False) > 0
 
 
 def record_and_wake_slack_answer(overlay: str, event: dict) -> None:

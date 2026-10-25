@@ -153,7 +153,11 @@ def _bind_found(
         return UnmatchedCardThread(CardThreadStop.TAPS_ONLY) if reply.thread_ts else None
     answer = resolve_answer(body, question, reader=reader)
     if answer is None:
-        if question.audience == DeferredQuestion.Audience.OWNER_QUESTION and _recorded_options(question):
+        if (
+            reply.thread_ts
+            and question.audience == DeferredQuestion.Audience.OWNER_QUESTION
+            and _recorded_options(question)
+        ):
             _log_reply(reply, f"rejected: {CardThreadStop.OPTIONS_ONLY}")
             options = tuple(str(option.get("label", "")) for option in _recorded_options(question) or [])
             return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, question.pk, options)

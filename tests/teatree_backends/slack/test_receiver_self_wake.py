@@ -94,6 +94,29 @@ class TestReceiverCallbackDoesNotWakeOnItsOwnPosts:
 
         on_event.assert_called_once_with("ov", event)
 
+    def test_an_app_posted_channel_thread_reply_does_not_wake(self, tmp_path: Path) -> None:
+        event = {
+            "type": "message",
+            "channel_type": "channel",
+            "user": "U0HUMAN",
+            "ts": "1.1",
+            "thread_ts": "1.0",
+            "api_app_id": "A_OWNER_SCRIPT",
+        }
+
+        _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
+
+    def test_an_app_posted_dm_without_thread_does_not_wake(self, tmp_path: Path) -> None:
+        event = {
+            "type": "message",
+            "channel_type": "im",
+            "user": "U0HUMAN",
+            "ts": "1.1",
+            "api_app_id": "A_OWNER_SCRIPT",
+        }
+
+        _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
+
     def test_app_post_at_its_own_thread_root_does_not_wake(self, tmp_path: Path) -> None:
         event = {"type": "message", "user": "U0HUMAN", "ts": "1.0", "thread_ts": "1.0", "api_app_id": "A_SCRIPT"}
 

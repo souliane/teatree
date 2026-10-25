@@ -1,6 +1,7 @@
 """Owner card replies through the recorder and answer cycle."""
 
 from dataclasses import dataclass, field, replace
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -11,6 +12,7 @@ from teatree.core.models import DeferredQuestion, PendingChatInjection
 from teatree.core.question_heal import live_owner_questions
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.question_binding import cards_in_thread
+from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
@@ -207,19 +209,67 @@ class TestThreadCardReplies(TestCase):
         assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
         assert any("Approve" in text and "Decline" in text for _, _, text in backend.replies)
 
-    def test_top_level_option_rejection_confirms_its_own_reply_thread(self) -> None:
+    def test_top_level_instruction_with_one_option_card_reaches_answerer(self) -> None:
         card = _card("335.3")
         backend = Backend(user_id=OWNER_SLACK_ID)
         reply = _event(backend, ts="335.4", root="", text="Something else")
         assert reply is not None
 
-        _cycle(backend)
+        report = _cycle(backend)
 
         card.refresh_from_db()
         reply.refresh_from_db()
         assert card.is_pending
-        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
-        assert any(ts == "335.4" and "Approve" in text for _, ts, text in backend.replies)
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.DELEGATED
+        assert report.dispatched == 1
+        assert backend.replies == []
+
+    def test_top_level_question_with_one_option_card_reaches_answerer(self) -> None:
+        card = _card("335.5")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        reply = _event(backend, ts="335.6", root="", text="What is the status of the build?")
+        assert reply is not None
+
+        report = _cycle(backend)
+
+        card.refresh_from_db()
+        reply.refresh_from_db()
+        assert card.is_pending
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.DELEGATED
+        assert report.dispatched == 1
+        assert backend.replies == []
+
+    def test_scanner_then_cycle_log_one_thread_decision_and_read_once(self) -> None:
+        card = _card("335.8")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.thread_replies["335.7"] = [{"ts": "335.7"}, {"ts": "335.8"}]
+        reply = _event(backend, ts="335.9", root="335.7", text="Approve")
+        assert reply is not None
+
+        with self.assertLogs("teatree.loop.question_binding", level="INFO") as logs:
+            with patch.object(backend, "get_permalink", return_value=""):
+                AskUserQuestionReplyScanner(backend=backend).scan()
+            _cycle(backend)
+
+        card.refresh_from_db()
+        assert card.answer_text == "Approve"
+        assert sum("335.9" in line for line in logs.output) == 1
+        assert backend.reads == ["335.7"]
+
+    def test_tap_only_and_option_cards_in_one_thread_bind_the_option(self) -> None:
+        action = _action_card("336.12")
+        option = _card("336.13")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.thread_replies["336.11"] = [{"ts": "336.11"}, {"ts": "336.12"}, {"ts": "336.13"}]
+        reply = _event(backend, ts="336.14", root="336.11", text="Approve")
+        assert reply is not None
+
+        _cycle(backend)
+
+        action.refresh_from_db()
+        option.refresh_from_db()
+        assert action.is_pending
+        assert option.answer_text == "Approve"
 
     def test_second_coalesced_id_reply_selects_its_own_card_and_logs_both_rows(self) -> None:
         first = _card("336.2")
