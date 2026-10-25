@@ -1059,7 +1059,7 @@ class TestCaptureCoversEveryDisposition(_ReaperFixture):
 
         assert not UnshippedWorkRecord.objects.exists()
 
-    def test_sweep_reuses_answered_and_failed_remote_reads_per_clone(self) -> None:
+    def test_sweep_reads_live_remote_state_for_each_checkout(self) -> None:
         self._make_worktree(Ticket.State.WORK_STARTED)
         sibling = self.workspace / "feat-y" / "myrepo"
         _run_git("worktree", "add", "-q", "-b", "feat-y", str(sibling), cwd=self.repo_main)
@@ -1082,7 +1082,7 @@ class TestCaptureCoversEveryDisposition(_ReaperFixture):
             outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
 
         assert len(outcomes) == 2
-        assert read.call_count == 1
+        assert read.call_count == 2
 
         with (
             patch(
@@ -1095,7 +1095,7 @@ class TestCaptureCoversEveryDisposition(_ReaperFixture):
         ):
             worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
 
-        assert failed_read.call_count == 1
+        assert failed_read.call_count == 2
 
 
 def test_effective_default_target_failsafe_to_main_on_unresolvable(tmp_path: Path) -> None:
