@@ -182,6 +182,13 @@ def _tracked_patch(checkout: Path, base_ref: str) -> str:
     )
 
 
+def _ignored_paths_or_error(checkout: Path) -> tuple[list[str], str]:
+    try:
+        return ignored_unregenerable(checkout), ""
+    except OSError as exc:
+        return [], f"{checkout}: could not inspect ignored files ({exc})"
+
+
 def _live_unpushed_commits(
     checkout: Path, local: list[str], base_ref: str = _INDEX_AWARE_BASE, *, fresh_remote: bool = False
 ) -> tuple[list[str], bool, tuple[str, ...]]:
@@ -251,17 +258,16 @@ def probe_unshipped_work(
     if not git.check(repo=str(checkout), args=["rev-parse", "--verify", "--quiet", base_ref]):
         return UnshippedWork(unreadable=f"{checkout}: no resolvable HEAD to diff against", head_missing=True)
     try:
-        ignored_paths = ignored_unregenerable(checkout)
+        ignored_paths, partial_error = _ignored_paths_or_error(checkout)
         if base_ref == _INDEX_AWARE_BASE:
             dirty_paths = sorted(set(_porcelain_paths(checkout)) | set(ignored_paths))
         else:
             changed = git.run_strict(repo=str(checkout), args=["diff", "--name-only", "-z", base_ref])
             untracked = git.run_strict(repo=str(checkout), args=["ls-files", "-z", "--others", "--exclude-standard"])
             dirty_paths = sorted((set(changed.split("\0")) | set(untracked.split("\0")) | set(ignored_paths)) - {""})
-        partial_error = ""
         try:
             uncommitted_patch = _uncommitted_patch(checkout, ignored_paths, base_ref)
-        except CommandFailedError as exc:
+        except (CommandFailedError, OSError) as exc:
             if not ignored_paths:
                 raise
             partial_error = f"{checkout}: could not include ignored content ({exc})"

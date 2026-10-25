@@ -323,6 +323,22 @@ class TestCaptureWritesArtifactsAndRow(_CheckoutFixture):
         assert not bundle_path(prefix, ".partial.uncommitted.patch").exists()
         assert not bundle_path(prefix, ".partial.commits.patch").exists()
 
+    def test_ignored_scan_error_retains_independent_partial_patches(self) -> None:
+        self._commit_locally("local change")
+        self._stage_only()
+
+        with patch(
+            "teatree.core.cleanup.unshipped_work.ignored_unregenerable",
+            side_effect=PermissionError("ignored directory unreadable"),
+        ):
+            record = self._capture()
+
+        assert record is not None
+        prefix = record.artifact_prefix
+        assert bundle_path(prefix, UNREADABLE_SUFFIX).is_file()
+        assert "value = 2" in bundle_path(prefix, ".partial.uncommitted.patch").read_text(encoding="utf-8")
+        assert "local change" in bundle_path(prefix, ".partial.commits.patch").read_text(encoding="utf-8")
+
     def test_capture_records_a_durable_row(self) -> None:
         sha = self._commit_locally("later")
         self._stage_only()
