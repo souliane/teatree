@@ -42,7 +42,6 @@ from teatree.backends.errors import IssueNotFoundError
 from teatree.config import load_config
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
-from teatree.core.cleanup.working_tree_dirt import _worktree_clean
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.core.management.commands._workspace.helpers import branch_prefix
@@ -4028,12 +4027,12 @@ class TestPruneGoneRemoteWorktree(TestCase):
             _remote, work = _init_repo_with_remote(tmp)
             wt_path = tmp / "wt-clean"
             _git(work, "worktree", "add", "-q", str(wt_path), "-b", "side")
-            assert _worktree_clean(str(wt_path)) is True
+            assert ws_cleanup_mod._worktree_clean(str(wt_path)) is True
             (wt_path / ".t3-env.cache").write_text("X=1\n", encoding="utf-8")
-            assert _worktree_clean(str(wt_path)) is True
+            assert ws_cleanup_mod._worktree_clean(str(wt_path)) is True
             (wt_path / "real.py").write_text("real\n", encoding="utf-8")
-            assert _worktree_clean(str(wt_path)) is False
-            assert _worktree_clean(str(tmp / "does-not-exist")) is False
+            assert ws_cleanup_mod._worktree_clean(str(wt_path)) is False
+            assert ws_cleanup_mod._worktree_clean(str(tmp / "does-not-exist")) is False
 
     def test_prune_gone_worktree_reports_when_removal_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_s:

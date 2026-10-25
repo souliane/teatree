@@ -17,6 +17,7 @@ from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_trackin
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.cleanup.preview import preview_line
 from teatree.core.cleanup.removal_proof import removal_refusal
+from teatree.core.cleanup.working_tree_dirt import _worktree_clean as _clean_worktree
 from teatree.core.intake.resolve import match_worktree_by_path
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import (
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+_worktree_clean = _clean_worktree
 
 
 def _refuse_if_unpushed(repo: str, name: str, *, remote_ref_was_present: bool) -> str:
