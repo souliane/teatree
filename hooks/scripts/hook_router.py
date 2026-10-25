@@ -2554,10 +2554,10 @@ def handle_session_start_bootstrap(data: dict) -> None:
     The read → decide → write stays one flock-guarded transaction so two
     fresh sessions in the same window cannot both claim (TOCTOU).
 
-    Gated on :func:`_loop_auto_load_active` (#256): a session only claims the
-    tick-owner record / emits the bootstrap directive when it both opted into
-    teatree AND the operator enabled session-start auto-load. Default OFF, so a
-    colleague cloning the repo never silently becomes the loop owner.
+    Gated on :func:`_loop_auto_load_active` (#256): only an opted-in session
+    with operator autoload and a local factory target claims the tick-owner
+    record / emits the bootstrap directive. Default OFF, so a colleague
+    cloning the repo never silently becomes the loop owner.
 
     Default-off engagement (#256): when ``[teatree] autoload`` is set the owner
     default flips the session ``teatree-active`` BEFORE the loop gate, so today's

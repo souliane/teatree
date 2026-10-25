@@ -1,7 +1,7 @@
 """SessionStart resurrection of the singleton loop-timer worker (#1796).
 
-When no worker holds the ``worker`` flock, the SessionStart hook (OS-agnostic — it fires
-on every Claude session start) re-spawns a detached ``t3 worker``. This is the "at least
+For a local factory target with no holder of the ``worker`` flock, the SessionStart
+hook re-spawns a detached ``t3 worker``. This is the "at least
 one" half of supervision the at-most-one flock cannot provide: the flock gives
 at-most-one, the worker's own supervisor thread quiesces its executor pool while the
 active preset admits nothing, and this rehydrates the whole worker after a full crash /
@@ -14,7 +14,7 @@ god-module, so a new SessionStart trigger lives here instead of growing it.
 It reads no worker posture of its own: a worker whose preset admits nothing parks
 with its executors stopped and its process alive, because the schedule boundary that
 re-admits work is driven from that process — so "should anything run" is the worker's
-question, and for a local session this hook guarantees there IS a worker to ask it. Crash-proof /
+question, and for a local target this hook guarantees there IS a worker to ask it. Crash-proof /
 fail-open / silent throughout: a failure to probe the flock or spawn yields a no-op,
 never an exception into the SessionStart hook, and it boots NO Django (#2879 parity). On
 a fully-headless box with no Claude session ever opening, the operator starts

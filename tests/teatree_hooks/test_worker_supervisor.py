@@ -66,26 +66,24 @@ def test_local_environment_overrides_remote_file(tmp_path: Path, monkeypatch: py
     assert spawn.calls == 1
 
 
-def test_package_import_works_without_pytest_pythonpath() -> None:
+def test_script_import_works_without_pytest_pythonpath(tmp_path: Path) -> None:
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env["T3_FACTORY_TARGET"] = "remote.example"
+    env["PATH"] = str(tmp_path)
     repo = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from hooks.scripts.worker_supervisor import resurrect_worker; print(resurrect_worker())",
-        ],
-        cwd=repo,
+        [sys.executable, str(repo / "hooks/scripts/worker_supervisor.py")],
+        cwd=tmp_path,
         env=env,
+        input="{}",
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "remote-factory"
+    assert "ModuleNotFoundError" not in result.stderr
 
 
 def test_fails_open_when_spawn_raises() -> None:
