@@ -427,9 +427,9 @@ def _dead_checkout_outcome(
 
     The done/redundancy gates below cannot reach a dir git will not open, so this
     branch decides instead, on the proof :func:`classify_broken_checkout` gathered
-    from the source clone. ``force=True`` is warranted for the same reason it is in
-    :func:`_wipe_proven_redundant`: that proof IS the data-loss gate, and the guards
-    it bypasses are exactly the ones that can only fail closed here. The dir itself
+    from the source clone. ``force=True`` with ``discard_unshipped_work`` is warranted
+    because that proof IS the data-loss gate, and the guards and checkout proof it
+    bypasses can only fail closed on a dir git will not open. The dir itself
     SURVIVES: nothing in ``clean-all`` removes a checkout directory under a worktree
     root any more, because no evidence one execution context can gather proves a
     checkout dead everywhere (#3912). Disposing of its files is an explicit operator
@@ -443,14 +443,7 @@ def _dead_checkout_outcome(
         )
     if dry_run:
         return ReapOutcome("would-wipe", f"WOULD RELEASE '{worktree.branch}': {verdict.reason}")
-    try:
-        result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
-    except RemovalRefusedError as exc:
-        return ReapOutcome(
-            "kept",
-            f"KEPT '{worktree.branch}': {exc}",
-            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
-        )
+    result = cleanup_worktree(worktree, force=True, strict_hygiene=False, discard_unshipped_work=True)
     return ReapOutcome("wiped", f"Released dead checkout '{worktree.branch}': {result.label}", errors=result.errors)
 
 
