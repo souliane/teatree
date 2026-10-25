@@ -11,7 +11,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Rubric, RubricCriterion, RubricError, Session, Ticket
-from teatree.core.models.rubric import PHASE_CRITERIA
+from teatree.core.models.rubric import PHASE_CRITERIA, criterion_text_hash
 from teatree.quality.falsifiable_criteria import falsifiability_violation
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -27,6 +27,19 @@ def _ticket() -> Ticket:
 
 
 class TestRubricPopulation(TestCase):
+    def test_add_after_a_deleted_ordinal_uses_the_maximum(self) -> None:
+        ticket = _ticket()
+        rubric = Rubric.populate(ticket, ["AC1", "AC2", "AC3"])
+        rubric.criteria.get(ordinal=0).delete()
+        Rubric.add_criteria(ticket, ["a new positive criterion"])
+        assert rubric.criteria.get(text="a new positive criterion").ordinal == 3
+
+    def test_text_hash_uses_stripped_text(self) -> None:
+        assert criterion_text_hash(" AC1 ") == "77ad7e0416dad8c0167db82d4292995a"
+
+    def test_text_hash_tells_apart_texts_whose_twelve_digit_prefixes_collide(self) -> None:
+        assert criterion_text_hash("AC e72c4eaddc6b") != criterion_text_hash("AC e600436a6312")
+
     def test_populate_creates_pending_criteria(self) -> None:
         rubric = Rubric.populate(_ticket(), ["AC1", "AC2", "AC3"])
         criteria = list(rubric.criteria.all())
@@ -344,6 +357,34 @@ class TestApplyGrades(TestCase):
             )
 
         assert rubric.criteria.get(ordinal=0).status == RubricCriterion.Status.PENDING
+
+    def test_stale_text_hash_refuses_the_whole_batch(self) -> None:
+        rubric = Rubric.populate(_ticket(), ["AC1", "AC2"])
+        old_hash = criterion_text_hash("old AC2")
+        stored_hash = rubric.criteria.get(ordinal=1).text_hash
+        grades = Rubric.normalize_grades(
+            [
+                {"ordinal": 0, "status": "pass", "rationale": _CITATION},
+                {"ordinal": 1, "status": "pass", "rationale": _CITATION, "text_hash": old_hash},
+            ]
+        )
+        with pytest.raises(RubricError) as exc:
+            rubric.apply_grades(grades, grader_identity="cold-reviewer", reviewed_sha=_SHA)
+        assert old_hash in str(exc.value)
+        assert stored_hash in str(exc.value)
+        assert [c.status for c in rubric.criteria.all()] == ["pending", "pending"]
+
+    def test_grade_hash_normalisation_keeps_optional_nonblank_hash(self) -> None:
+        grades = Rubric.normalize_grades(
+            [
+                {"ordinal": 0, "status": "fail", "text_hash": " ABCDEF123456 "},
+                {"ordinal": 1, "status": "fail", "text_hash": " "},
+                {"ordinal": 2, "status": "fail"},
+            ]
+        )
+        assert grades[0]["text_hash"] == "abcdef123456"
+        assert "text_hash" not in grades[1]
+        assert "text_hash" not in grades[2]
 
 
 class TestUngradedOrdinals(TestCase):

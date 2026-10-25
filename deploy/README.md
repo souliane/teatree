@@ -225,10 +225,10 @@ The stack is six services from one image (`deploy/Dockerfile`), selected by
 
 | Service | Role | Restart | Notes |
 | --- | --- | --- | --- |
-| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and both portable-plugin registrations are ready |
+| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and the plugin registration of every credentialed agent tool (both when none is) are ready |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; hard-fails without the strict skill readiness marker; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
-| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus read-only code; no forge or chat token in its environment |
+| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus its read-only entrypoint, the sibling script it sources and code; no forge or chat token in its environment |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
 | `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs planning and review phases; its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
@@ -270,9 +270,13 @@ database or a deployed install. All other database paths also select TRUNCATE.
 rollback mode for the control DB;
 `wal` asserts that WAL is eligible and fails at connection setup if it is not.
 Values are case-insensitive and may have surrounding whitespace; other values
-fail at connection setup. The file's mode can change only when a connection
-opens, and a TRUNCATE opener fails with `database is locked` while another
-process holds a WAL connection open.
+fail at connection setup. A writable connection reads the SQLite file header
+and runs the journal-mode setter only for a new file or a WAL-versus-rollback
+header mismatch for WAL. TRUNCATE is selected on every writable rollback
+connection because it is not persisted in the file header. A same-family
+connection can read committed rows while another process holds a read lock or a reserved write lock on it.
+A genuine mode conversion can still fail with `database is locked` while another
+process holds the file.
 
 An unshipped checkout has a `.git` entry and a root different from
 `TEATREE_CLONE_DIR`, or no deployed clone marker. Without an override it
@@ -284,11 +288,10 @@ directory can change an existing rollback file to WAL when the storage is
 eligible. A tree without `.git`, or a tree whose root equals `TEATREE_CLONE_DIR`,
 uses normal selection.
 
-On the first deploy, drain the worker and stop every database-using service
-before the new code opens the control DB. A mode change while an old process
-holds a connection can make new connections fail with `database is locked`.
-Start the new services only after the old processes have exited, then confirm
-the journal mode with `t3 doctor`.
+For a WAL-versus-rollback conversion, drain the worker, stop every database-using
+service including the watchdog, and verify that all old processes have exited.
+Convert with one process before starting the new admin and then the remaining
+services; confirm the header and connection behaviour with `t3 doctor`.
 
 To return to TRUNCATE or roll back to an image from before this change, set
 `T3_CONTROL_DB_JOURNAL_MODE=truncate` in `deploy/teatree.env`, stop every service
@@ -346,9 +349,10 @@ hydrate/run/persist lifecycle.
 
 `t3 setup --strict-agent-skills` removes any stale readiness marker before it
 starts and writes `~/.local/share/teatree/skills/ready` with mode `0600` only
-after the declared skills, inventory, Claude plugin, and Codex plugin all
-converge. The worker verifies that marker and the enabled Claude plugin before
-admitting work. This keeps an incomplete network-dependent setup observable and
+after the declared skills, inventory, and the plugin of every credentialed agent
+tool (the Claude and Codex plugins when neither tool has credentials) converge.
+The worker verifies that marker and the enabled Claude plugin before admitting
+work. This keeps an incomplete network-dependent setup observable and
 prevents a factory task from silently inheriting a partial agent environment.
 
 The Codex plugin is registered from a slim copy of what its manifest declares

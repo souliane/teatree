@@ -227,7 +227,8 @@ def _rubric_coverage_error(rubric: "Rubric | None", grades: "list[RubricGrade]",
         f"this head's review claim while the done-gate still refuses the merge, leaving the head "
         f"unmergeable with no reviewer left to re-arm. You are the independent verifier: grade EVERY "
         f"criterion and return the verdict again, as "
-        f'"rubric_grades": [{{"ordinal": <int>, "status": "pass"|"fail", "rationale": "<what proves it>"}}] '
+        '"rubric_grades": [{"ordinal": <int>, "text_hash": "<hash from brief>", '
+        '"status": "pass"|"fail", "rationale": "<what proves it>"}] '
         f"— a PASS cites the test that proves it, a FAIL needs no citation"
     )
 
