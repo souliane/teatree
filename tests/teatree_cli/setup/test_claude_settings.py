@@ -234,6 +234,51 @@ class TestManagedKeyPathsCoverTemplate:
             assert _dig(template, path) is not None, f"managed path {'.'.join(path)} missing from template"
 
 
+class TestDynamicWorkflowSettings:
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            (("enableWorkflows",), True),
+            (("workflowSizeGuideline",), "small"),
+            (("env", "CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS"), "2"),
+        ],
+        ids=["enabled", "small", "cap-two"],
+    )
+    def test_committed_template_carries_setting(self, path: tuple[str, ...], expected: object) -> None:
+        template = json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
+        assert json.dumps(_dig(template, path)) == json.dumps(expected)
+
+    def test_merge_writes_settings_only_to_user_file(self, tmp_path: Path) -> None:
+        user_file = tmp_path / "home" / ".claude" / "settings.json"
+        user_file.parent.mkdir(parents=True)
+        _write(
+            user_file,
+            {
+                "enableWorkflows": False,
+                "workflowSizeGuideline": "large",
+                "env": {"CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS": "3"},
+                "statusLine": {"type": "command"},
+            },
+        )
+        project_dir = tmp_path / "project" / ".claude"
+        project_dir.mkdir(parents=True)
+        project_file = _write(project_dir / "settings.json", {"enableWorkflows": False})
+        local_file = _write(project_dir / "settings.local.json", {"workflowSizeGuideline": "large"})
+        original_project = project_file.read_bytes()
+        original_local = local_file.read_bytes()
+
+        write_host_claude_settings(_COMMITTED_TEMPLATE, user_file, env={})
+
+        user = json.loads(user_file.read_text(encoding="utf-8"))
+        assert user["enableWorkflows"] is True
+        assert user["workflowSizeGuideline"] == "small"
+        assert user["env"]["CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS"] == "2"
+        assert user["statusLine"] == {"type": "command"}
+        assert project_file.read_bytes() == original_project
+        assert local_file.read_bytes() == original_local
+        assert set(tmp_path.rglob("settings*.json")) == {user_file, project_file, local_file}
+
+
 class TestSkillListingCap:
     def test_committed_template_manages_name_only_skill_listing(self) -> None:
         template = json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
