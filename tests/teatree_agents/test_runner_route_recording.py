@@ -129,17 +129,19 @@ class TestRoutedMeteredCreditRefusal(TestCase):
         assert (attempt.selected_harness, attempt.route_candidate_index) == (CLAUDE_LIKE, 1)
         assert not AgentRouteAvailability.objects.exists()
 
-    def test_an_ambient_key_with_a_later_candidate_holds_the_route_so_the_next_one_runs(self) -> None:
+    def test_an_ambient_key_with_a_later_candidate_still_parks_without_a_route_hold(self) -> None:
         register_stub_harnesses(self, CLAUDE_LIKE)
         route_metered_keys(self, [])
         self.enterContext(patch.dict(os.environ, {"ANTHROPIC_API_KEY": "ambient-metered-key"}))
-        cap_the_plans()
+        reset = cap_the_plans()
 
         attempt, signed = self._run([_REFUSAL], candidates=(CLAUDE_SDK, CLAUDE_LIKE))
 
         assert signed == ["ambient-metered-key"]
-        assert (attempt.selected_harness, attempt.route_candidate_index) == (CLAUDE_LIKE, 1)
-        assert AgentRouteAvailability.objects.filter(harness=CLAUDE_SDK).exists()
+        assert (attempt.selected_harness, attempt.route_candidate_index) == (CLAUDE_SDK, 0)
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.not_before == reset
+        assert not AgentRouteAvailability.objects.exists()
 
     def test_another_provider_still_holds_the_route(self) -> None:
         route_metered_keys(self, [KEY_1], provider="api_key")

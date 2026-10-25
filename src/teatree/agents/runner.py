@@ -144,7 +144,7 @@ class _RouteRetry:
             if side_effects:
                 _park_after_route_failure(self.task, self.dispatch, record, phase=self.phase)
                 return attempt
-        elif side_effects or (retry_at > moment and not self.dispatch.has_later_candidate):
+        elif side_effects or not record.account or (retry_at > moment and not self.dispatch.has_later_candidate):
             _park_until(self.task, retry_at)
             return attempt
         if learn_failure and (retry_at is None or not record.account):
