@@ -652,6 +652,44 @@ class TestCheckingRemaining:
         assert "now: independent review; then merge, deploy" in item["detail"]
         assert "independent review (running)" not in item["detail"]
 
+    @pytest.mark.parametrize("phase", ["coding", "debugging"])
+    def test_claimed_rework_phase_runs_the_rework_step(self, checkpoint_file: Path, phase: str) -> None:
+        ticket = self._open_pr()
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase=phase,
+            status=Task.Status.CLAIMED,
+            claimed_at=timezone.now() - timedelta(minutes=5),
+        )
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert "now: rework (running)" in item["detail"]
+
+    def test_the_claimed_task_sets_the_step_even_when_an_older_one_is_pending(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        session = Session.objects.create(ticket=ticket)
+        older = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        Task.objects.filter(pk=older.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            status=Task.Status.CLAIMED,
+            claimed_at=timezone.now() - timedelta(minutes=5),
+        )
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert "now: factory review (running)" in item["detail"]
+
+    def test_other_overlay_tasks_do_not_fill_this_overlays_remaining(self, checkpoint_file: Path) -> None:
+        other = Ticket.objects.create(
+            overlay="beta", issue_url="https://github.com/beta/widgets/issues/1507", state=Ticket.State.CODED
+        )
+        Task.objects.create(ticket=other, session=Session.objects.create(ticket=other), phase="testing")
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        assert payload["remaining"]["items"] == []
+
     def test_merge_ready_pr_does_not_wait_for_headless_coding_seats(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
         ReviewVerdict.objects.create(
@@ -1051,9 +1089,28 @@ class TestCheckingRemaining:
         assert [row["label"] for row in remaining["items"][2:]] == ["#1400"]
         assert remaining["holds"] == {"halted": 1, "blocked": 0, "owner": 0, "dormant": 1}
 
+    def test_attemptless_failed_task_older_than_a_week_is_only_dormant(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1505", state=Ticket.State.CODED
+        )
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket), phase="testing", status=Task.Status.FAILED
+        )
+        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(days=9))
+        remaining = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))["remaining"]
+        assert remaining["items"] == []
+        assert remaining["holds"] == {"halted": 0, "blocked": 0, "owner": 0, "dormant": 1}
+
     def test_reviewer_only_work_fills_the_queue_but_lists_no_item(self, checkpoint_file: Path) -> None:
         reviewer = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/1500", role=Ticket.Role.REVIEWER
+        )
+        PullRequest.objects.create(
+            ticket=reviewer,
+            overlay="acme",
+            url="https://github.com/acme/widgets/pull/1501",
+            repo="acme/widgets",
+            iid="1501",
         )
         Task.objects.create(ticket=reviewer, session=Session.objects.create(ticket=reviewer), phase="reviewing")
         payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
@@ -1061,6 +1118,18 @@ class TestCheckingRemaining:
         assert [row["label"] for row in remaining["items"]] == ["Total", "Queue"]
         assert remaining["queue"]["pending"] == {"reviewing": 1}
         assert remaining["eta"]["basis"] == "no current work in scope"
+
+    def test_queue_only_remaining_is_not_reported_as_nothing_in_either_scope(self, checkpoint_file: Path) -> None:
+        reviewer = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1506", role=Ticket.Role.REVIEWER
+        )
+        Task.objects.create(ticket=reviewer, session=Session.objects.create(ticket=reviewer), phase="reviewing")
+        for flags in (("--this-overlay",), ()):
+            with _two_overlay_patch():
+                terse = json.loads(_call("checking", "show", *flags, "--no-advance", "--json"))["terse"]
+            assert not terse.startswith("Nothing since")
+            assert "Remaining" in terse
+            assert "Queue" in terse
 
     def test_failed_latest_task_halts_an_open_pr(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()

@@ -720,6 +720,23 @@ class TestAllOverlaysAggregation(CheckingTestBase):
             "acme/widgets#101",
         ]
 
+    def test_remaining_cap_limits_work_rows_across_overlays(self) -> None:
+        for ticket in (
+            self._ticket(number=1, state=Ticket.State.CODED),
+            self._ticket_b(number=2, state=Ticket.State.CODED),
+        ):
+            Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="testing")
+        overlay_windows = {self.OVERLAY: (self.since, self.now), self.OVERLAY_B: (self.since, self.now)}
+        overlay_configs = {self.OVERLAY: ("github", ["acme/widgets"]), self.OVERLAY_B: ("github", ["beta/core"])}
+
+        remaining = gather_all_overlays_report(
+            overlay_windows=overlay_windows, overlay_configs=overlay_configs, cap=1
+        ).remaining
+
+        assert remaining.total == 2
+        assert [row.label for row in remaining.items[:2]] == ["Total", "Queue"]
+        assert len(remaining.items) == 3
+
     def test_all_overlays_report_is_dataclass(self) -> None:
         overlay_windows = {self.OVERLAY: (self.since, self.now)}
         overlay_configs = {self.OVERLAY: ("github", [])}
