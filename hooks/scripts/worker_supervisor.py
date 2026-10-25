@@ -25,8 +25,12 @@ only covers the session-present case.
 import argparse
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
-from remote_factory_target import remote_factory_target_active
+if str(Path(__file__).resolve().parents[2]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from hooks.scripts.remote_factory_target import remote_factory_target_active
 
 # Alias the bare and ``hooks.scripts.`` identities so the live hook and a test
 # importing either name operate on ONE module object.

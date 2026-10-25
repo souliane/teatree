@@ -1,11 +1,7 @@
 """Cold SessionStart answer for whether this session targets a remote factory."""
 
 import os
-import sys
 from pathlib import Path
-
-sys.modules.setdefault("remote_factory_target", sys.modules[__name__])
-sys.modules.setdefault("hooks.scripts.remote_factory_target", sys.modules[__name__])
 
 
 def remote_factory_target_active() -> bool:

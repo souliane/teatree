@@ -9,6 +9,8 @@ error. ``main`` never raises into the SessionStart hook.
 # ``hooks/scripts/``, not under ``src/teatree/<pkg>``, so it mirrors no single package.
 
 import io
+import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -62,6 +64,28 @@ def test_local_environment_overrides_remote_file(tmp_path: Path, monkeypatch: py
     spawn = _Spy()
     assert supervisor.resurrect_worker(flock_free=lambda: True, spawn=spawn) == "spawned"
     assert spawn.calls == 1
+
+
+def test_package_import_works_without_pytest_pythonpath() -> None:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env["T3_FACTORY_TARGET"] = "remote.example"
+    repo = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from hooks.scripts.worker_supervisor import resurrect_worker; print(resurrect_worker())",
+        ],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "remote-factory"
 
 
 def test_fails_open_when_spawn_raises() -> None:
