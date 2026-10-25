@@ -16,7 +16,6 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -193,7 +192,7 @@ def _estimated_tokens(messages: "Sequence[ModelMessage]") -> int:
     total = 0
     for message in messages:
         for part in message.parts:
-            content = part.content if isinstance(part, UserPromptPart | ToolReturnPart | RetryPromptPart) else part
+            content = part.content if isinstance(part, UserPromptPart | ToolReturnPart) else part
             total += max(1, len(str(content)) // 4)
     return total
 
@@ -276,7 +275,7 @@ def _stubbed_part(part: ToolReturnPart) -> ToolReturnPart:
     pydantic_ai writes each processed history back into the run, so an existing stub must
     survive untouched — re-stubbing it would overwrite the original size with the stub's own.
     """
-    if isinstance(part.content, str) and part.content.startswith(_ELIDED_PREFIX):
+    if part.outcome == "retried" or (isinstance(part.content, str) and part.content.startswith(_ELIDED_PREFIX)):
         return part
     rendered = part.model_response_str()
     # A shell command may have side effects (commit, push, migrate): never invite a blind re-run.
@@ -303,15 +302,12 @@ def _tool_call_ids(window: "Sequence[ModelMessage]") -> set[str]:
 def _tool_result_ids(message: "ModelMessage") -> set[str]:
     """The ``tool_call_id``s a ``ModelRequest`` returns, else the empty set.
 
-    A ``ToolReturnPart`` and a tool-linked ``RetryPromptPart`` (``tool_name`` set —
-    a gate/validation refusal of a specific call) both serialize as a tool message
-    that needs a preceding ``tool_calls``; a plain ``RetryPromptPart`` (no
-    ``tool_name``) is an output retry, not tool-linked, so it is excluded.
+    A ``ToolReturnPart`` (including a retried call) needs a preceding tool call.
     """
     if not isinstance(message, ModelRequest):
         return set()
     ids: set[str] = set()
     for part in message.parts:
-        if isinstance(part, ToolReturnPart) or (isinstance(part, RetryPromptPart) and part.tool_name is not None):
+        if isinstance(part, ToolReturnPart):
             ids.add(part.tool_call_id)
     return ids

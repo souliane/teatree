@@ -98,10 +98,14 @@ def _run(
 
 
 class TestTheRepoHoldsNewReleases:
-    def test_the_pydantic_set_needs_no_cooldown_escape(self) -> None:
+    def test_the_pydantic_set_has_only_the_required_cooldown_escapes(self) -> None:
         uv = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["uv"]
         pydantic_packages = {"pydantic", "pydantic-core", "pydantic-settings", "pydantic-ai-slim", "pydantic-graph"}
-        assert not pydantic_packages.intersection(uv["exclude-newer-package"])
+        assert pydantic_packages.intersection(uv["exclude-newer-package"]) == {
+            "pydantic-ai-slim",
+            "pydantic-graph",
+            "pydantic-settings",
+        }
         assert uv["constraint-dependencies"] == ["pydantic-settings>=2.16.0"]
 
     def test_pyproject_waits_seven_days_before_locking_a_new_release(self) -> None:
