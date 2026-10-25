@@ -14,6 +14,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents.harness import PydanticAiHarness, resolve_effort
 from teatree.agents.harness_options import HarnessOptions, extract_system_prompt
 from teatree.agents.lane_b.config import LaneBToolConfig
+from teatree.agents.live_delivery import MAILBOX_PHASE_ENV
 from teatree.agents.pydantic_ai_config import native_anthropic_model_name, resolve_native_anthropic_model
 
 
@@ -76,7 +77,11 @@ class TestHarnessOptionsFromSdk:
 
     def test_native_mailbox_identity_comes_from_options_env_without_an_mcp_child(self) -> None:
         options = ClaudeAgentOptions(
-            env={"T3_AGENT_MAILBOX_SOCKET": "/tmp/mailbox.sock", "T3_AGENT_MAILBOX_TOKEN": "private-token"}
+            env={
+                "T3_AGENT_MAILBOX_SOCKET": "/tmp/mailbox.sock",
+                "T3_AGENT_MAILBOX_TOKEN": "private-token",
+                MAILBOX_PHASE_ENV: "reviewing",
+            }
         )
         neutral = HarnessOptions.from_sdk_options(options)
         assert neutral.mailbox is not None
@@ -84,6 +89,7 @@ class TestHarnessOptionsFromSdk:
         assert "private-token" not in repr(neutral)
         assert "T3_AGENT_MAILBOX_TOKEN" not in neutral.env
         assert "T3_AGENT_MAILBOX_SOCKET" not in neutral.env
+        assert MAILBOX_PHASE_ENV not in neutral.env
         assert "T3_AGENT_MAILBOX_TOKEN" not in LaneBToolConfig.from_options(neutral, phase="coding").shell_env
 
     def test_defaults_are_empty_and_neutral(self) -> None:

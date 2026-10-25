@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 import typer
 
+from teatree.core.mcp_registration import PLUGIN_ARGS
 from teatree.utils.uv_constraints import uv_tool_install_hint
 
 
@@ -90,14 +91,14 @@ def _check_teatree_mcp_registration() -> bool:
 def _resolve_registered_mcp_command() -> list[str] | None:
     """The argv the ``teatree`` MCP registration actually launches, or ``None``.
 
-    ``.mcp.json`` declares ``t3 mcp serve`` as a PATH lookup, so this exercises what a
+    ``.mcp.json`` declares ``t3 mcp serve --interactive`` as a PATH lookup, so this exercises what a
     client exercises — the console script on PATH, not this process's own entry point,
     which on a container-wrapped install is a different program.
     """
     t3_bin = shutil.which("t3")
     if t3_bin is None:
         return None
-    return [t3_bin, "mcp", "serve"]
+    return [t3_bin, *PLUGIN_ARGS]
 
 
 def _check_version_skew(*, repair: bool) -> bool:

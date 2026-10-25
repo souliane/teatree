@@ -307,7 +307,7 @@ def _wire_teatree_mcp_server(options: ClaudeAgentOptions, *, phase: str) -> None
     sub-agent definition — so the shipped ``.mcp.json`` alone never gives the
     dispatched coder/reviewer/shipper the ``mcp__teatree__*`` tools; they fall back
     to shelling out to the ``t3`` CLI. The headless dispatch owns its options, so it
-    wires the server explicitly here. The launch command mirrors ``.mcp.json``
+    wires the server explicitly here. The headless launch uses the same base command
     (:mod:`teatree.core.mcp_registration` is the single source of truth), plus
     the flags *phase* launches it with (``--read-only`` without ``mcp_write``).
     """
