@@ -225,10 +225,10 @@ The stack is six services from one image (`deploy/Dockerfile`), selected by
 
 | Service | Role | Restart | Notes |
 | --- | --- | --- | --- |
-| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and both portable-plugin registrations are ready |
+| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and the plugin registration of every credentialed agent tool (both when none is) are ready |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; hard-fails without the strict skill readiness marker; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
-| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus read-only code; no forge or chat token in its environment |
+| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus its read-only entrypoint, the sibling script it sources and code; no forge or chat token in its environment |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
 | `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs planning and review phases; its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
@@ -346,9 +346,10 @@ hydrate/run/persist lifecycle.
 
 `t3 setup --strict-agent-skills` removes any stale readiness marker before it
 starts and writes `~/.local/share/teatree/skills/ready` with mode `0600` only
-after the declared skills, inventory, Claude plugin, and Codex plugin all
-converge. The worker verifies that marker and the enabled Claude plugin before
-admitting work. This keeps an incomplete network-dependent setup observable and
+after the declared skills, inventory, and the plugin of every credentialed agent
+tool (the Claude and Codex plugins when neither tool has credentials) converge.
+The worker verifies that marker and the enabled Claude plugin before admitting
+work. This keeps an incomplete network-dependent setup observable and
 prevents a factory task from silently inheriting a partial agent environment.
 
 The Codex plugin is registered from a slim copy of what its manifest declares
@@ -498,8 +499,8 @@ wedged secret store each exit **69** (`EX_UNAVAILABLE`), where the CLI itself re
 for a refusal. The no-orphan pre-push hook (`scripts/hooks/ensure-pr-installed-t3.sh`)
 skips with a warning on 69, 75, 126, 127 and 137 and fails the push on anything else.
 Host hooks treat exit 69 as a launcher venue fault, not a validator verdict: the MR
-and AI-signature gates refuse with the cause, while the coverage gate allows and
-names the cause.
+gate refuses with the cause, while the coverage gate allows and names the cause.
+The AI-signature gate scans in the hook process and does not use the launcher.
 
 ### Worker sizing: derived from the host
 
