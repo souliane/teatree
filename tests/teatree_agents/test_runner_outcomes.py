@@ -193,10 +193,17 @@ class TestSkillLoadsAcrossAttempts(_Drive):
         )
 
     def test_a_parked_run_records_skill_loads(self) -> None:
+        skills = ("t3:code", "t3:code", "t3:review")
         skill_call = AssistantMessage(
-            content=[ToolUseBlock(id="skill1", name="Skill", input={"skill": "t3:code"})], model=""
+            content=[
+                ToolUseBlock(id=f"skill{i}", name="Skill", input={"skill": skill}) for i, skill in enumerate(skills)
+            ],
+            model="",
         )
-        skill_result = AssistantMessage(content=[ToolResultBlock(tool_use_id="skill1", content="loaded")], model="")
+        skill_result = AssistantMessage(
+            content=[ToolResultBlock(tool_use_id=f"skill{i}", content="loaded") for i in range(len(skills))],
+            model="",
+        )
         limit = result_message(
             subtype="error_during_execution",
             is_error=True,
