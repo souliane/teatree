@@ -501,8 +501,8 @@ wedged secret store each exit **69** (`EX_UNAVAILABLE`), where the CLI itself re
 for a refusal. The no-orphan pre-push hook (`scripts/hooks/ensure-pr-installed-t3.sh`)
 skips with a warning on 69, 75, 126, 127 and 137 and fails the push on anything else.
 Host hooks treat exit 69 as a launcher venue fault, not a validator verdict: the MR
-and AI-signature gates refuse with the cause, while the coverage gate allows and
-names the cause.
+gate refuses with the cause, while the coverage gate allows and names the cause.
+The AI-signature gate scans in the hook process and does not use the launcher.
 
 ### Worker sizing: derived from the host
 
