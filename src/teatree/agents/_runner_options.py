@@ -29,7 +29,7 @@ from teatree.agents.model_tiering import (
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.agents.session_lineage import honesty_subject, resume_session_id
 from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
-from teatree.config import AgentHarness, get_effective_settings
+from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
@@ -183,11 +183,10 @@ def _build_options(
             )
         )
     )
-    advisor_model = get_effective_settings().agent_advisor_model
+    advisor_model = get_effective_settings().agent_advisor_model.strip()
     advisor_settings = (
         json.dumps({"advisorModel": advisor_model})
-        if advisor_model
-        and resolve_harness_spec(overrides.harness_name or AgentHarness.CLAUDE_SDK).capabilities.spawns_cli_child
+        if advisor_model and resolve_harness_spec(overrides.harness_name or "claude_sdk").capabilities.spawns_cli_child
         else None
     )
     options = ClaudeAgentOptions(

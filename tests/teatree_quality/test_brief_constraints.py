@@ -39,6 +39,11 @@ def test_cli_settings_flag_is_not_a_ban_on_new_settings() -> None:
     assert {item.kind for item in extract_constraints("Do not add a setting.")} == {"no_setting"}
 
 
+def test_hyphenated_setting_names_remain_constraints() -> None:
+    for name in ("user-setting", "per-overlay-settings", "box-global-setting"):
+        assert {item.kind for item in extract_constraints(f"Do not add a {name}.")} == {"no_setting"}
+
+
 def test_an_import_is_not_a_new_public_definition() -> None:
     path = "src/teatree/core/example.py"
     changes = ChangedSet((ChangeEntry("M", path),), "origin/main")

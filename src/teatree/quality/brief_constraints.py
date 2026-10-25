@@ -40,9 +40,10 @@ def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
         scope = match.group(1).lower()
         if scope.lstrip().startswith("forget to "):
             continue
+        scope = re.sub(r"(?<![\w-])--settings(?=\s|=|$)", "", scope)
         for kind, pattern in (
             ("no_migration", r"\bmigrations?\b"),
-            ("no_setting", r"(?<!-)\bsettings?\b"),
+            ("no_setting", r"\bsettings?\b"),
             ("no_public_name", r"\bpublic\s+(?:names?|api|symbols?)\b"),
         ):
             if re.search(pattern, scope):

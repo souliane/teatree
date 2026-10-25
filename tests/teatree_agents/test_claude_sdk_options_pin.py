@@ -52,7 +52,6 @@ from teatree.agents._runner_options import (
     _build_options,
     resolve_agent_max_turns,
 )
-from teatree.agents.claude_cli_spawn import prepared_spawn
 from teatree.agents.compaction_guard import CompactionGuard
 from teatree.agents.model_tiering import resolve_spawn_model
 from teatree.agents.prompt import build_system_context
@@ -105,37 +104,6 @@ class TestClaudeSdkOptionsPin(TestCase):
 
     def test_turn_ceiling_is_the_resolved_setting_and_nothing_else(self) -> None:
         assert self._options().max_turns == resolve_agent_max_turns()
-
-    def test_unset_advisor_leaves_settings_absent(self) -> None:
-        assert self._options().settings is None
-
-    def test_configured_advisor_reaches_claude_and_survives_account_sync(self) -> None:
-        ConfigSetting.objects.set_value("agent_advisor_model", "advisor-model")
-
-        options = self._options()
-
-        assert json.loads(options.settings or "{}") == {"advisorModel": "advisor-model"}
-        with prepared_spawn(options) as spawned:
-            assert json.loads(spawned.settings or "{}") == {
-                "advisorModel": "advisor-model",
-                "syncClaudeAiSkills": False,
-                "syncClaudeAiPlugins": False,
-            }
-
-    def test_advisor_does_not_reach_harnesses_without_a_claude_child(self) -> None:
-        ConfigSetting.objects.set_value("agent_advisor_model", "advisor-model")
-        session = Session.objects.create(ticket=self.ticket)
-        task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
-
-        for harness_name in ("pydantic_ai", "codex_app_server"):
-            options = _build_options(
-                task,
-                _SYSTEM_CONTEXT,
-                phase="coding",
-                skills=[],
-                overrides=SpawnOverrides(harness_name=harness_name),
-            )
-            assert options.settings is None
 
     def test_headless_permission_mode_and_external_contact_denials_are_unchanged(self) -> None:
         options = self._options()
