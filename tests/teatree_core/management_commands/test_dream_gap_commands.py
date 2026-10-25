@@ -1,15 +1,17 @@
 """``t3 dream gap-coverage`` / ``gap-disposition`` — read-only proof and the per-gap record."""
 
 import json
+from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.config import UserSettings
-from teatree.core.models import ConsolidatedMemory, Ticket
+from teatree.core.models import ConsolidatedMemory, DeferredQuestion, Ticket
 
 UMBRELLA = "https://gitlab.com/o/factory/-/work_items/249"
 
@@ -165,3 +167,24 @@ class TestFunnel(_UmbrellaSettingCase):
             call_command("dream", "funnel", "--class", "unseen", stdout=StringIO(), stderr=StringIO())
 
         assert exc.value.code == 1
+
+    def test_open_question_class_exits_one_after_emitting_status(self) -> None:
+        Ticket.objects.create(issue_url=UMBRELLA)
+        DeferredQuestion.objects.create(question="May I continue?", dedupe_marker="repair-loop:one")
+        output = StringIO()
+
+        with pytest.raises(SystemExit) as exc:
+            call_command("dream", "funnel", "--class", "repair-loop", "--json", stdout=output)
+
+        assert exc.value.code == 1
+        assert json.loads(output.getvalue())["classes"][0]["fixed"] is False
+
+    def test_cleared_question_class_exits_zero(self) -> None:
+        Ticket.objects.create(issue_url=UMBRELLA)
+        question = DeferredQuestion.objects.create(question="May I continue?", dedupe_marker="repair-loop:one")
+        DeferredQuestion.objects.filter(pk=question.pk).update(created_at=timezone.now() - timedelta(days=8))
+        output = StringIO()
+
+        call_command("dream", "funnel", "--class", "repair-loop", "--json", stdout=output)
+
+        assert json.loads(output.getvalue())["classes"][0]["fixed"] is True

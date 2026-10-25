@@ -8,6 +8,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.config import UserSettings
 from teatree.core.models import Ticket
 from teatree.core.models.dream_gap_ledger import pending_entries
 from teatree.core.models.transition import TicketTransition
@@ -15,7 +16,7 @@ from teatree.loops.dream.gap_coverage import gap_coverage
 from teatree.loops.dream.stranded_hosts import RELEASE_HOSTS_PER_PASS, release_stranded_hosts, stranded_host_count
 from teatree.utils import git_branch
 from tests._git_repo import make_git_repo, run_git
-from tests.factories import PullRequestFactory, TaskFactory, WorktreeFactory
+from tests.factories import PullRequestFactory, SessionFactory, TaskFactory, WorktreeFactory
 
 UMBRELLA = "https://github.com/o/r/issues/249"
 REAL_ISSUE = "https://github.com/o/r/issues/56"
@@ -229,6 +230,36 @@ class TestRecordedBranch(_StrandedCase):
 
         host.refresh_from_db()
         assert (report.released_hosts, report.held_hosts) == (0, 1)
+
+    def test_two_stored_clone_paths_hold_the_host(self) -> None:
+        first = self.clone("o/r")
+        second = self.clone("o/s")
+        host = _old_host(_shell_url("old"), branch="gone")
+        for clone in (first, second):
+            WorktreeFactory(
+                ticket=host,
+                branch="gone",
+                extra={"clone_path": str(clone), "worktree_path": str(self.root / "missing")},
+            )
+
+        report = release_stranded_hosts(umbrella_url=UMBRELLA)
+
+        assert (report.released_hosts, report.held_hosts) == (0, 1)
+        assert self.pending_keys() == []
+
+    def test_two_recorded_branch_names_hold_the_host(self) -> None:
+        self.clone()
+        host = _old_host(_shell_url("old"), branch="gone")
+        WorktreeFactory(
+            ticket=host,
+            branch="different",
+            extra={"worktree_path": str(self.root / "missing")},
+        )
+
+        report = release_stranded_hosts(umbrella_url=UMBRELLA)
+
+        assert (report.released_hosts, report.held_hosts) == (0, 1)
+        assert self.pending_keys() == []
         assert host.state == Ticket.State.WORK_STARTED
 
     def test_each_clone_is_listed_once_however_many_hosts_use_it(self) -> None:
@@ -278,6 +309,7 @@ class TestHeldShells(_StrandedCase):
 
         host.refresh_from_db()
         assert (report.released_hosts, report.held_hosts) == (0, 1)
+        assert report.held_reasons == ((host.pk, "recorded dispositions"),)
         assert host.state == Ticket.State.WORK_STARTED
         assert self.pending_keys() == []
 
@@ -320,6 +352,28 @@ class TestHeldShells(_StrandedCase):
 
 
 class TestRealIssueHost(_StrandedCase):
+    def test_a_live_worktree_holds_the_real_issue(self) -> None:
+        host = _old_host(REAL_ISSUE)
+        WorktreeFactory(ticket=host, extra={"worktree_path": str(self.root)})
+
+        report = release_stranded_hosts(umbrella_url=UMBRELLA)
+
+        assert (report.released_hosts, report.held_hosts) == (0, 1)
+        assert self.pending_keys() == []
+
+    def test_a_live_session_holds_the_real_issue_when_liveness_is_unbounded(self) -> None:
+        host = _old_host(REAL_ISSUE)
+        session = SessionFactory(ticket=host)
+        type(session).objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(days=30))
+        with patch(
+            "teatree.core.managers_session.get_effective_settings",
+            return_value=UserSettings(session_stale_after_hours=0),
+        ):
+            report = release_stranded_hosts(umbrella_url=UMBRELLA)
+
+        assert (report.released_hosts, report.held_hosts) == (0, 1)
+        assert self.pending_keys() == []
+
     def test_a_pull_request_row_holds_the_real_issue(self) -> None:
         host = _old_host(REAL_ISSUE)
         PullRequestFactory(ticket=host)

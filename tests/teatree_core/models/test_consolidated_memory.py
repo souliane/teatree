@@ -333,6 +333,42 @@ class TestSupersedeCoveredBy(TestCase):
         other.refresh_from_db()
         assert other.status == ConsolidatedMemory.Status.VERIFIED
 
+    def test_partly_overlapping_new_row_is_not_absorbed_by_routed_row(self) -> None:
+        routed = self._row("routed", ["a.jsonl", "c.jsonl"])
+        routed.classify_core_gap()
+        new = self._row("new", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == []
+        new.refresh_from_db()
+        assert new.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_binding_new_row_is_not_absorbed_by_routed_row(self) -> None:
+        routed = self._row("routed", ["a.jsonl"])
+        routed.classify_core_gap()
+        binding = self._row("binding-new", ["a.jsonl", "b.jsonl"], is_binding=True)
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(binding) == []
+        binding.refresh_from_db()
+        assert binding.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_binding_routed_row_cannot_absorb_nested_new_row(self) -> None:
+        routed = self._row("binding-routed", ["a.jsonl"], is_binding=True)
+        routed.classify_core_gap()
+        new = self._row("new", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == []
+        new.refresh_from_db()
+        assert new.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_a_routed_row_created_later_cannot_absorb_older_new_row(self) -> None:
+        new = self._row("new", ["a.jsonl", "b.jsonl"])
+        routed = self._row("routed", ["a.jsonl"])
+        routed.classify_core_gap()
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == []
+        new.refresh_from_db()
+        assert new.status == ConsolidatedMemory.Status.VERIFIED
+
     def test_a_binding_row_is_never_superseded(self) -> None:
         binding = self._row("binding", ["a.jsonl"], is_binding=True)
         wide = self._row("wide", ["a.jsonl", "b.jsonl"])

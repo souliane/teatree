@@ -30,13 +30,28 @@ class TestDreamFunnel(TestCase):
             max_member_weight=90,
             disposition=ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
         )
-        self.stranded_host("56", idle_days=20)
+        rejected = self.stranded_host("56", idle_days=20)
+        rejected.merge_extra(
+            merge_into_dicts={"dream_gap_dispositions": {"56": {"disposition": "reject", "evidence": "misfit"}}}
+        )
         self.stranded_host("57", idle_days=20)
         self.stranded_host("58", idle_days=2)
+        self.umbrella.merge_extra(set_keys={"dream_gap_pending": [{"gap_key": "pending"}]})
+        Ticket.objects.create(
+            issue_url="https://github.com/o/r/issues/ignored",
+            state=Ticket.State.IGNORED,
+            extra={"dream_gap_batch": [{"gap_key": "ignored"}]},
+        )
+        Ticket.objects.create(
+            issue_url="https://github.com/o/r/issues/orphan",
+            state=Ticket.State.MERGED,
+            extra={"dream_gap_batch": [{"gap_key": "orphan"}], "dream_gap_reconciled_at": "2026-10-01"},
+        )
 
         entry = record_funnel(umbrella_url=self.umbrella.issue_url, batch=PromotionBatch(withheld=2))
 
-        assert (entry["rows"], entry["core_gaps"], entry["withheld"], entry["folded"]) == (1, 1, 2, 3)
+        assert (entry["rows"], entry["core_gaps"], entry["withheld"], entry["folded"]) == (1, 1, 2, 4)
+        assert (entry["pending"], entry["rejected"], entry["orphans"]) == (1, 1, 2)
         assert entry["stranded_hosts"] == 2
 
     def test_two_passes_in_one_day_keep_two_entries_and_the_daily_view_shows_the_last(self) -> None:

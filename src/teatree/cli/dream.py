@@ -113,6 +113,7 @@ def funnel_command(
     question_class_name: str = typer.Option("", "--class", help="Inspect one recurring question class."),
     json_output: bool = typer.Option(False, "--json", help="Emit the daily funnel as JSON."),
 ) -> None:
+    """Show the daily dream funnel and whether a recurring question class has stopped."""
     ensure_django()
     args = ["funnel"]
     if question_class_name:

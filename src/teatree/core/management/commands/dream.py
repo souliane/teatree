@@ -477,6 +477,8 @@ class Command(DreamGapCommands, TyperCommand):
             host, _repo = self._teatree_backlog_host()
             reconciled = [] if dry_run or host is None else batch_promote.reconcile_batches(host, umbrella_url=umbrella)
             released = None if dry_run else release_stranded_hosts(umbrella_url=umbrella)
+            if released is not None and released.returned_gaps:
+                nudged = nudge_for_dream_gaps() or nudged
             if released is not None:
                 record_funnel(umbrella_url=umbrella, batch=batch)
         except Exception as exc:  # noqa: BLE001 — a batch-promotion failure degrades to a WARN clause
@@ -490,8 +492,11 @@ class Command(DreamGapCommands, TyperCommand):
             summary += f"; WARN {outcome.reason}"
         if reconciled:
             summary += f", reconciled {len(reconciled)} batch ticket(s)"
-        if released is not None and released.released_hosts:
-            summary += f"; returned {released.returned_gaps} gap(s) from {released.released_hosts} stranded host(s)"
+        if released is not None:
+            summary += (
+                f"; released {released.released_hosts} stranded host(s), returned {released.returned_gaps} gap(s), "
+                f"held {released.held_hosts} host(s)"
+            )
         return summary
 
     def _gap_phases(self) -> "GapPromotionPhases":

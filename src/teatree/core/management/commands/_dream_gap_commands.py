@@ -49,6 +49,7 @@ class DreamGapCommands(TyperCommand):
         question_class_name: Annotated[str, typer.Option("--class", help="Inspect one recurring question class.")] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit the daily funnel as JSON.")] = False,
     ) -> None:
+        """Report the daily dream funnel and whether a recurring question class has stopped."""
         daily = daily_funnel(dream_umbrella_url())
         if question_class_name:
             status = question_class_status(question_class_name)
@@ -78,6 +79,8 @@ class DreamGapCommands(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human=_render_funnel(daily, classes),
         )
+        if question_class_name and not classes[0].fixed:
+            raise SystemExit(1)
 
     @command(name="gap-coverage")
     def gap_coverage_report(

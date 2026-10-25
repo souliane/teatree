@@ -25,6 +25,7 @@ from teatree.core.models.dream_gap_ledger import record_gap_disposition
 from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import batch_promote as bp_module
 from teatree.loops.dream.batch_promote import PromotionBatch
+from teatree.loops.dream.destination import DestinationVerdict
 from teatree.loops.dream.gap_attach import attach_dream_gaps
 from teatree.loops.dream.merge import BindingConflict
 from teatree.loops.dream.promote_memory import (
@@ -220,6 +221,20 @@ class FileCoreGapTicketsTestCase(TestCase):
         batch = PromotionBatch()
         outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
+
+    def test_unreadable_core_tree_does_not_demote_a_classified_gap(self) -> None:
+        row = _row(destination="unknown/path.py")
+        row.classify_core_gap()
+        verdict = DestinationVerdict(
+            rel_path="unknown/path.py", in_core_tree=False, verifiable=False, reason="core tree unavailable"
+        )
+
+        with patch("teatree.loops.dream.promote_memory.evidence_destination", return_value=verdict):
+            outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=PromotionBatch())
+
+        row.refresh_from_db()
+        assert outcomes[0].withheld is True
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
 
     def test_a_queued_gap_is_stamped_with_its_promotion_anchor_and_leaves_the_queue(self) -> None:
         row = _row()

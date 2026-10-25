@@ -52,12 +52,39 @@ from teatree.loops.dream.loop import (
 )
 from teatree.loops.dream.pass_config import PassBudget
 from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, WeightedSnippet
+from teatree.loops.dream.stranded_hosts import StrandedReleaseReport
 from teatree.token_report import EvalReserveDecision
 from tests._git_repo import make_git_repo, run_git
 from tests._send_gate import allow_forge_repos
 
 
 class TestStrandedRelease(TestCase):
+    def test_returned_gaps_nudge_the_sweep_after_release(self) -> None:
+        events: list[str] = []
+        outcome = BatchOutcome(queued=False, umbrella_url="https://github.com/o/r/issues/249", gap_count=0)
+
+        def release(*, umbrella_url: str) -> StrandedReleaseReport:
+            events.append("release")
+            return StrandedReleaseReport(released_hosts=1, returned_gaps=2)
+
+        def nudge() -> bool:
+            events.append("nudge")
+            return True
+
+        with (
+            patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=outcome.umbrella_url),
+            patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
+            patch("teatree.loops.dream.batch_promote.promote_batch", return_value=outcome),
+            patch("teatree.core.management.commands.dream.release_stranded_hosts", side_effect=release),
+            patch("teatree.loops.backlog_sweep.loop.nudge_for_dream_gaps", side_effect=nudge),
+            patch("teatree.core.management.commands.dream.record_funnel"),
+        ):
+            summary = Command()._promote_batch(batch=PromotionBatch(), dry_run=False)
+
+        assert events == ["release", "nudge"]
+        assert "released 1 stranded host(s)" in summary
+        assert "held 0 host(s)" in summary
+
     def test_daily_funnel_records_real_pass_and_skips_dry_run(self) -> None:
         batch = PromotionBatch()
         outcome = BatchOutcome(queued=False, umbrella_url="https://github.com/o/r/issues/249", gap_count=0)
@@ -104,7 +131,8 @@ class TestStrandedRelease(TestCase):
         host.refresh_from_db()
         assert host.state == Ticket.State.IGNORED
         assert "branch gone absent locally, in tracking, and on origin" in host.extra["dream_gap_released"]["reason"]
-        assert "returned 1 gap(s) from 1 stranded host(s)" in summary
+        assert "released 1 stranded host(s)" in summary
+        assert "held 0 host(s)" in summary
 
 
 _COMMAND = "teatree.core.management.commands.dream.Command"

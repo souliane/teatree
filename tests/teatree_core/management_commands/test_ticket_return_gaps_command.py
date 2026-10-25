@@ -80,6 +80,7 @@ class ReturnGapsCommandTests(TestCase):
 
     def test_release_stamp_can_restore_batch_and_claims(self) -> None:
         member = self.member("g1")
+        member.extra["dream_gap_batch"][0]["offered_at"] = "2026-10-01T00:00:00+00:00"
         member.extra["dream_gap_claimed_delivered"] = ["g1"]
         member.save(update_fields=["extra"])
         original_batch = list(member.extra["dream_gap_batch"])
@@ -92,6 +93,8 @@ class ReturnGapsCommandTests(TestCase):
         assert member.extra["dream_gap_claimed_delivered"] == []
         assert stamp["batch"] == original_batch
         assert stamp["claimed_delivered"] == ["g1"]
+        self.umbrella.refresh_from_db()
+        assert "offered_at" not in pending_entries(self.umbrella)[0]
         member.merge_extra(
             set_keys={"dream_gap_batch": stamp["batch"], "dream_gap_claimed_delivered": stamp["claimed_delivered"]}
         )
@@ -108,6 +111,19 @@ class ReturnGapsCommandTests(TestCase):
         self.umbrella.refresh_from_db()
         assert member.state == Ticket.State.PR_OPENED
         assert pending_entries(self.umbrella) == []
+
+    def test_advanced_return_holds_every_post_open_state_without_a_pr_row(self) -> None:
+        states = (
+            Ticket.State.REVIEW_REQUESTED,
+            Ticket.State.MERGED,
+            Ticket.State.RETRO_RECORDED,
+            Ticket.State.DELIVERED,
+            Ticket.State.REVIEW_DELIVERED,
+        )
+        for number, state in enumerate(states):
+            with self.subTest(state=state):
+                member = self.member(f"g{number}", state=state)
+                self.refused(member, reason="has opened a pull request", advanced=str(member.pk))
 
     def test_refuses_claim_for_a_key_outside_the_batch(self) -> None:
         member = self.member("g1")

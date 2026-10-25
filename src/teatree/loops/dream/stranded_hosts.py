@@ -28,6 +28,7 @@ class StrandedReleaseReport:
     released_hosts: int = 0
     returned_gaps: int = 0
     held_hosts: int = 0
+    held_reasons: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(slots=True)
@@ -136,24 +137,31 @@ def _return_gaps(host: Ticket, keys: list[str], reason: str, *, shell: bool) -> 
 def release_stranded_hosts(
     *, umbrella_url: str, now: datetime | None = None, dry_run: bool = False
 ) -> StrandedReleaseReport:
-    released = gaps = held = 0
+    released = gaps = 0
+    held_reasons: list[tuple[int, str]] = []
     listings = _RemoteListings()
     for host, _activity in _stranded(now):
         if released == RELEASE_HOSTS_PER_PASS:
             break
         shell = _is_legacy_shell(host, umbrella_url)
-        reason = "" if _hold_reason(host, shell=shell) else _branch_release_reason(host, listings)
+        hold = _hold_reason(host, shell=shell)
+        reason = "" if hold else _branch_release_reason(host, listings)
         if not reason:
-            held += 1
+            held_reasons.append((host.pk, hold or "branch release unproved"))
             continue
         keys = undispositioned_gap_keys(host)
         if not keys:
             continue
         try:
             returned = keys if dry_run else _return_gaps(host, keys, reason, shell=shell)
-        except DreamGapLedgerError:
-            held += 1
+        except DreamGapLedgerError as exc:
+            held_reasons.append((host.pk, str(exc)))
             continue
         released += 1
         gaps += len(returned)
-    return StrandedReleaseReport(released_hosts=released, returned_gaps=gaps, held_hosts=held)
+    return StrandedReleaseReport(
+        released_hosts=released,
+        returned_gaps=gaps,
+        held_hosts=len(held_reasons),
+        held_reasons=tuple(held_reasons),
+    )

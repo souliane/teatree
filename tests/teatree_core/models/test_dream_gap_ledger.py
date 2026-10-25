@@ -74,6 +74,68 @@ class TestGapDisposition(TestCase):
         assert host.extra.get("dream_gap_dispositions", {}) == {}
         assert pending_entries(umbrella)[0]["declined_hosts"] == [host.pk]
 
+    def test_misfit_removes_the_old_offer_stamp_and_delivered_claim(self) -> None:
+        umbrella_url = "https://github.com/o/r/issues/249"
+        umbrella = Ticket.objects.create(overlay="test", issue_url=umbrella_url)
+        host = _host("a")
+        host.merge_extra(
+            set_keys={
+                "dream_gap_batch": [{"gap_key": "a", "cluster_key": "a", "offered_at": "2026-10-01T00:00:00+00:00"}],
+                "dream_gap_claimed_delivered": ["a"],
+            }
+        )
+
+        with patch("teatree.core.models.dream_gap_ledger.dream_umbrella_url", return_value=umbrella_url):
+            record_gap_disposition(host, "a", misfit="wrong host")
+
+        umbrella.refresh_from_db()
+        host.refresh_from_db()
+        assert "offered_at" not in pending_entries(umbrella)[0]
+        assert host.extra["dream_gap_claimed_delivered"] == []
+
+    def test_second_distinct_decline_requeues_before_retaining_on_third(self) -> None:
+        umbrella_url = "https://github.com/o/r/issues/249"
+        umbrella = Ticket.objects.create(overlay="test", issue_url=umbrella_url)
+        row = _memory("a")
+        host = _host("a")
+        host.extra["dream_gap_batch"][0]["declined_hosts"] = [100]
+        host.save(update_fields=["extra"])
+
+        with patch("teatree.core.models.dream_gap_ledger.dream_umbrella_url", return_value=umbrella_url):
+            record_gap_disposition(host, "a", misfit="wrong host")
+
+        umbrella.refresh_from_db()
+        row.refresh_from_db()
+        assert pending_entries(umbrella)[0]["declined_hosts"] == [100, host.pk]
+        assert row.disposition != ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
+
+    def test_a_repeated_decline_by_one_host_counts_once(self) -> None:
+        umbrella_url = "https://github.com/o/r/issues/249"
+        umbrella = Ticket.objects.create(overlay="test", issue_url=umbrella_url)
+        host = _host("a")
+        host.extra["dream_gap_batch"][0]["declined_hosts"] = [100, host.pk]
+        host.save(update_fields=["extra"])
+
+        with patch("teatree.core.models.dream_gap_ledger.dream_umbrella_url", return_value=umbrella_url):
+            record_gap_disposition(host, "a", misfit="still wrong")
+
+        umbrella.refresh_from_db()
+        assert pending_entries(umbrella)[0]["declined_hosts"] == [100, host.pk]
+
+    def test_misfit_refuses_an_addressed_or_rejected_gap(self) -> None:
+        host = _host("a", "b")
+        host.merge_extra(
+            merge_into_dicts={
+                "dream_gap_dispositions": {
+                    "a": {"disposition": ADDRESS, "evidence": "done"},
+                    "b": {"disposition": REJECT, "evidence": "done"},
+                }
+            }
+        )
+        for key in ("a", "b"):
+            with self.subTest(key=key), pytest.raises(DreamGapLedgerError, match="already dispositioned"):
+                record_gap_disposition(host, key, misfit="wrong host")
+
     def test_third_distinct_host_decline_keeps_the_memory_without_requeueing(self) -> None:
         umbrella_url = "https://github.com/o/r/issues/249"
         umbrella = Ticket.objects.create(overlay="test", issue_url=umbrella_url)

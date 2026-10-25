@@ -135,14 +135,8 @@ def return_gap(host: Ticket, gap_key: str, reason: str) -> None:
                 raise DreamGapLedgerError(msg)
             row.classify_user_specific()
         else:
-            returned = cast(
-                "DreamGapEntry",
-                {
-                    **entry,
-                    "declined_hosts": declined,
-                    "detail": "\n".join(filter(None, [entry.get("detail"), f"Host {host.pk} declined: {reason}"])),
-                },
-            )
+            returned = _returned_entry(entry, f"Host {host.pk} declined: {reason}")
+            returned["declined_hosts"] = declined
             queue_pending(umbrella, [returned])
             umbrella.refresh_from_db(fields=["extra"])
             if gap_key not in {item.get("gap_key") for item in pending_entries(umbrella)}:
@@ -157,6 +151,12 @@ def return_gap(host: Ticket, gap_key: str, reason: str) -> None:
         )
 
 
+def _returned_entry(entry: DreamGapEntry, note: str) -> DreamGapEntry:
+    returned = cast("DreamGapEntry", {key: value for key, value in entry.items() if key != "offered_at"})
+    returned["detail"] = "\n".join(filter(None, [entry.get("detail"), note]))
+    return returned
+
+
 def _refuse_return(member: Ticket, reason: str) -> NoReturn:
     message = f"ticket {member.pk} {reason}"
     raise DreamGapLedgerError(message)
@@ -167,13 +167,7 @@ def _return_batch(member: Ticket) -> tuple[str, list[str], list[DreamGapEntry]]:
     fragment_key, equals, fragment_value = fragment.partition("=")
     entries = batch_entries(member)
     keys = [entry.get("gap_key", "") for entry in entries]
-    if (
-        base != dream_umbrella_url()
-        or not sep
-        or fragment_key not in {"dream-gap", "dream-batch"}
-        or not equals
-        or not fragment_value
-    ):
+    if base != dream_umbrella_url() or not sep or not fragment_key or not equals or not fragment_value:
         _refuse_return(member, "is not anchored on a dream-gap member")
     if not keys or any(not key for key in keys):
         _refuse_return(member, "has an incomplete gap batch")
@@ -230,16 +224,7 @@ def return_member_gaps(member: Ticket, *, advanced: bool = False, reason: str = 
                 return keys
             _refuse_return(member, "is ignored but its gaps are not pending")
         _require_returnable(member, keys, advanced=advanced)
-        returned = [
-            cast(
-                "DreamGapEntry",
-                {
-                    **entry,
-                    "detail": "\n".join(filter(None, [entry.get("detail"), f"Returned from ticket {member.pk}"])),
-                },
-            )
-            for entry in entries
-        ]
+        returned = [_returned_entry(entry, f"Returned from ticket {member.pk}") for entry in entries]
         queue_pending(umbrella, returned)
         umbrella.refresh_from_db(fields=["extra"])
         if not set(keys) <= {entry.get("gap_key") for entry in pending_entries(umbrella)}:

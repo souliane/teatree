@@ -194,7 +194,7 @@
           "name": "compliance"
         },
         {
-          "help": "",
+          "help": "Report the daily dream funnel and whether a recurring question class has stopped",
           "name": "funnel"
         },
         {

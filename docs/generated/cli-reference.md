@@ -7014,7 +7014,8 @@ Usage: t3 dream [OPTIONS] COMMAND [ARGS]...
 │                  (cron entry).                                               │
 │ gap-coverage     Prove every dream gap has exactly one owner; exit 1 on an   │
 │                  orphan, duplicate, bad link or open gap.                    │
-│ funnel                                                                       │
+│ funnel           Show the daily dream funnel and whether a recurring         │
+│                  question class has stopped.                                 │
 │ gap-disposition  Record a folded dream gap's ADDRESS (with its citation) or  │
 │                  reasoned REJECT on its host.                                │
 │ compliance       Inspect the instruction-compliance accountant (#2663) — the │
@@ -7073,6 +7074,9 @@ Usage: t3 dream gap-coverage [OPTIONS]
 
 ```
 Usage: t3 dream funnel [OPTIONS]
+
+ Show the daily dream funnel and whether a recurring question class has
+ stopped.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --class        TEXT  Inspect one recurring question class.                   │
