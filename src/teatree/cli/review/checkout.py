@@ -27,9 +27,9 @@ import typer
 
 from teatree.cli.review.service import review_app
 from teatree.config.checkout_roots import checkout_roots
-from teatree.url_classify import Forge, forge_of, repo_and_iid
 from teatree.utils.review_checkout import StaleReviewCheckoutError, add_review_worktree_at_head
 from teatree.utils.run import CommandFailedError
+from teatree.utils.url_slug import pr_ref_from_url
 
 
 def head_ref_for(url: str) -> str:
@@ -38,16 +38,8 @@ def head_ref_for(url: str) -> str:
     Both forges publish the head under a fetchable pseudo-ref, so no API call
     (and no token) is needed to name the commit under review.
     """
-    parsed = repo_and_iid(url)
-    if parsed is None:
-        return ""
-    _, number = parsed
-    forge = forge_of(url)
-    if forge is Forge.GITHUB:
-        return f"refs/pull/{number}/head"
-    if forge is Forge.GITLAB:
-        return f"refs/merge-requests/{number}/head"
-    return ""
+    ref = pr_ref_from_url(url)
+    return "" if ref is None else ref.head_ref
 
 
 @review_app.command(name="checkout")

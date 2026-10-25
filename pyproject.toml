@@ -33,7 +33,7 @@ dependencies = [
   # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
-  "claude-agent-sdk==0.2.167",
+  "claude-agent-sdk==0.2.173",
   # Imported directly (cli/command_tree.py:25 and three more) yet only ever
   # arrived transitively through typer/django-typer, so nothing pinned it.
   # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
@@ -129,12 +129,13 @@ dependencies = [
   # unavailable either way, and the probe in ``teatree.agents.lane_b.mcp`` must
   # answer that by attempting the real import rather than by module presence.
   "pydantic>=2.14.1,<3",
-  "pydantic-ai-slim[anthropic,openai]>=2.56,<3",
+  "pydantic-ai-slim[anthropic,openai]>=2.60,<3",
   # ``teatree.config.schema.TeatreeSettingsSchema`` is a ``pydantic_settings``
   # ``BaseSettings`` model whose TOML source reads the shipped ``defaults.toml`` —
   # a RUNTIME import (``shipped_defaults()``), same class as the runtime deps
   # above, so it must be in the installed tool env, not only transitively via
-  # ``mcp``. The floor in ``constraint-dependencies`` below also gates this direct dependency.
+  # ``mcp``. The ``>=2.16.0`` floor stays in ``constraint-dependencies`` below
+  # (GHSA-4xgf-cpjx-pc3j) and continues to gate this direct dependency.
   "pydantic-settings>=2.16",
   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
@@ -748,11 +749,7 @@ package = true
 # A new release is locked only once it is seven days old; dated escapes and their routine: BLUEPRINT §15.
 exclude-newer = "7 days"
 
-# Floor a transitive dependency above a published advisory without promoting it
-# to a direct dependency. `pydantic-settings` is pulled in by `mcp`; versions
-# >= 2.12.0, < 2.14.2 carry GHSA-4xgf-cpjx-pc3j (NestedSecretsSettingsSource
-# follows symlinks outside secrets_dir). Patched in 2.14.2. Drop the entry once
-# `mcp` floors it itself.
+# Keep transitive consumers above the direct dependency's runtime floor.
 constraint-dependencies = [ "pydantic-settings>=2.16.0" ]
 
 # Empty, not deleted: `uv-overrides.txt` and the `--overrides`/`UV_OVERRIDE`
@@ -774,8 +771,33 @@ constraint-dependencies = [ "pydantic-settings>=2.16.0" ]
 override-dependencies = [  ]
 
 [tool.uv.exclude-newer-package]
-certifi = "2026-10-20T02:24:17Z"
-pillow = "2026-10-16T22:18:10Z"
+anthropic = "2026-10-23T23:18:48Z"
+asgiref = "2026-10-23T08:13:15Z"
+certifi = "2026-10-23T11:36:17Z"
+claude-agent-sdk = "2026-10-22T23:14:32Z"
+coverage = "2026-10-22T16:06:51Z"
+googleapis-common-protos = "2026-10-22T23:43:37Z"
+griffelib = "2026-10-22T11:20:04Z"
+httpcore2 = "2026-10-21T07:09:46Z"
+httpx2 = "2026-10-21T07:09:47Z"
+jiter = "2026-10-23T13:51:14Z"
+jsonpointer = "2026-10-19T10:33:25Z"
+logfire-api = "2026-10-23T15:11:03Z"
+markdown = "2026-10-19T19:41:43Z"
+markitdown = "2026-10-21T19:41:20Z"
+openai = "2026-10-22T20:04:40Z"
+pandas = "2026-10-22T11:57:04Z"
+platformdirs = "2026-10-19T01:02:12Z"
+playwright = "2026-10-22T16:30:33Z"
+pycparser = "2026-10-22T13:40:04Z"
+pydantic-ai-slim = "2026-10-23T02:02:08Z"
+pydantic-graph = "2026-10-23T02:02:12Z"
+pydantic-settings = "2026-10-20T11:37:20Z"
+python-dateutil = "2026-10-21T23:41:46Z"
+soupsieve = "2026-10-22T00:45:27Z"
+starlette = "2026-10-18T15:50:34Z"
+wcwidth = "2026-10-20T16:02:44Z"
+xlsxwriter = "2026-10-22T00:26:04Z"
 
 # --- uv audit advisory lane (souliane/teatree#2292) ---
 # Allowlist for accepted advisories surfaced by the NON-BLOCKING `uv audit`
