@@ -354,6 +354,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("expedite", "Flag a ticket as an expedite/release-blocker."),
             ("attachments", "Print (and with --fetch download) a ticket's referenced attachments."),
             ("rubric-set", "Restate a ticket's rubric from explicit JSON criteria (#2241)."),
+            ("rubric-waive", "Record an owner's waiver of one rubric criterion."),
             ("rubric-grade", "Record a verifier's per-criterion PASS/FAIL on the rubric (#2241)."),
         ],
         core_dispatch=True,

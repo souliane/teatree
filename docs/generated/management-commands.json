@@ -1351,6 +1351,10 @@
           "name": "plan-reaffirm"
         },
         {
+          "help": "Waive one rubric criterion by its text hash; an owner identity and a reason are required",
+          "name": "rubric-waive"
+        },
+        {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",
           "name": "rubric-set"
         },
