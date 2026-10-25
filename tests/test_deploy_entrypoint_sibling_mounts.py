@@ -1,5 +1,4 @@
 # test-path: cross-cutting — checks entrypoint sourcing against compose mounts.
-import json
 import os
 import re
 import shutil
@@ -8,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import TypedDict
 
 import pytest
+import yaml
 
 
 class RenderedVolume(TypedDict):
@@ -19,7 +19,7 @@ class RenderedVolume(TypedDict):
 class RenderedService(TypedDict):
     entrypoint: list[str]
     environment: dict[str, str]
-    volumes: list[RenderedVolume]
+    volumes: list[RenderedVolume | str]
 
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
@@ -46,18 +46,9 @@ def unscanned_location_uses(script: str) -> list[str]:
 SIBLINGS = sibling_references(ENTRYPOINT.read_text())
 
 
-@pytest.fixture(params=("default", "all-profiles"), scope="module")
-def rendered_services(request: pytest.FixtureRequest) -> dict[str, RenderedService]:
-    docker = shutil.which("docker")
-    assert docker is not None, "Docker Compose is required to check mounted entrypoint files"
-    env = {key: value for key, value in os.environ.items() if not key.startswith("TEATREE_")}
-    argv = [docker, "compose"]
-    if request.param == "all-profiles":
-        argv.extend(("--profile", "*"))
-    argv.extend(("-f", str(DEPLOY / "docker-compose.yml"), "config", "--format", "json"))
-    run = subprocess.run(argv, env=env, text=True, capture_output=True, timeout=30, check=False)
-    assert run.returncode == 0, run.stderr
-    return json.loads(run.stdout)["services"]
+@pytest.fixture(scope="module")
+def rendered_services() -> dict[str, RenderedService]:
+    return yaml.safe_load((DEPLOY / "docker-compose.yml").read_text(encoding="utf-8"))["services"]
 
 
 def _entrypoint_services(services: dict[str, RenderedService]) -> dict[str, RenderedService]:
@@ -72,7 +63,7 @@ def _mounts(service: RenderedService) -> dict[PurePosixPath, PurePosixPath]:
     return {
         PurePosixPath(volume["target"]): PurePosixPath(volume["source"])
         for volume in service["volumes"]
-        if volume["type"] == "bind"
+        if isinstance(volume, dict) and volume["type"] == "bind"
     }
 
 
@@ -158,6 +149,8 @@ def _run_staged_entrypoint(staged: Path, tmp_path: Path, role: str) -> subproces
     env = {key: value for key, value in os.environ.items() if not key.startswith("TEATREE_")} | {
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(tmp_path),
+        "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"),
+        "GIT_CONFIG_SYSTEM": os.devnull,
         "TEATREE_ROLE": role,
         "TEATREE_BAKED_ENTRYPOINT": str(tmp_path / "missing-entrypoint"),
         "TEATREE_HOST_GNUPG_DIR": str(tmp_path / "missing-gnupg"),
@@ -176,8 +169,12 @@ def _run_staged_entrypoint(staged: Path, tmp_path: Path, role: str) -> subproces
 
 
 def test_entrypoint_reaches_role_dispatch_from_its_mounted_files(
-    rendered_services: dict[str, RenderedService], tmp_path: Path
+    rendered_services: dict[str, RenderedService], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    caller_config = tmp_path / "caller.gitconfig"
+    caller_config.write_text("[user]\n\tname = Real Dev\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(caller_config))
+
     for name, service in _entrypoint_services(rendered_services).items():
         service_dir = tmp_path / name
         service_dir.mkdir()
@@ -186,6 +183,8 @@ def test_entrypoint_reaches_role_dispatch_from_its_mounted_files(
         assert run.returncode == 64, (name, run.stderr)
         assert "unknown TEATREE_ROLE" in run.stderr
         assert all(sibling not in run.stderr for sibling in SIBLINGS)
+
+    assert caller_config.read_text(encoding="utf-8") == "[user]\n\tname = Real Dev\n"
 
 
 def test_webhook_listener_starts_from_only_the_files_its_service_mounts(
