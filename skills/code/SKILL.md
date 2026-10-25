@@ -116,7 +116,7 @@ The goal is to surface the missed step so the user can redirect early, not to ad
 
 ### 0d. Dream Gap-Batch Tickets — Claim Only What You Delivered (Non-Negotiable)
 
-A ticket carrying `extra['dream_gap_batch']` hosts dream gaps the backlog sweep folded into it ([#4776](https://github.com/souliane/teatree/issues/4776)); each gap's substance is folded into the issue body under `## Folded in: dream-gap <gap_key>`. Fix each gap independently, and record each one with `t3 dream gap-disposition <id> <gap_key> --citation "<evidence>"` (addressed) or `--reject "<why>"` — the host's rubric refuses merge until `t3 dream gap-coverage --ticket <id>` exits 0.
+A ticket carrying `extra['dream_gap_batch']` hosts dream gaps the backlog sweep folded into it ([#4776](https://github.com/souliane/teatree/issues/4776)); each gap's substance is folded into the issue body under `## Folded in: dream-gap <gap_key>`. Fix each gap independently, and record each one with `t3 dream gap-disposition <id> <gap_key> --citation "<evidence>"` (addressed), `--reject "<why>"` (rejected), or `--misfit "<why this host cannot address it>"` (returned to the umbrella) — the host's rubric refuses merge until `t3 dream gap-coverage --ticket <id>` exits 0.
 
 A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): `ticket.context` lists every gap the pass queued, each with its `gap_key` and, when its ledger row exists, its full `Rule:` / `Evidence:` / `Fix in:` lines — work from those, never the truncated title. A pass with 300 pending gaps mints ONE such ticket, not 300 — fix each gap in the manifest independently.
 
