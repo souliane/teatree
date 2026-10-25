@@ -3,14 +3,18 @@
 Covers _merge_results, dual GitHub+GitLab sync and the GitHub sync backend.
 """
 
+import shutil
+import subprocess
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.core.cache import cache
 from django.test import TestCase
 
 from teatree.backends.github import ProjectItem
 from teatree.backends.github.sync import GitHubSyncBackend
+from teatree.backends.gitlab.sync import GitLabSyncBackend
 from teatree.core.models import Ticket, Worktree
 from teatree.core.sync import _merge_results, sync_followup
 from teatree.types import SyncResult
@@ -100,6 +104,56 @@ class TestDualSync(TestCase):
 
         assert len(result.errors) == 1
         assert "No code host token" in result.errors[0]
+
+
+class TestSyncLeavesReviewRequestsToTheScanner(TestCase):
+    _RETIRED_CACHE_KEY = "teatree_pending_reviews"
+
+    def setUp(self) -> None:
+        cache.delete(self._RETIRED_CACHE_KEY)
+
+    def test_github_sync_searches_no_review_requests_and_writes_no_cache(self) -> None:
+        overlay = SyncOverlay(
+            gitlab_token="",
+            gitlab_username="",
+            github_token="gh-test-token",
+            github_owner="souliane",
+            github_project_number=1,
+        )
+        item = ProjectItem(
+            issue_number=71,
+            title="Board issue",
+            url="https://github.com/souliane/teatree/issues/71",
+            status="Todo",
+            position=0,
+            labels=[],
+            updated_at="2026-04-01T00:00:00Z",
+        )
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(shutil, "which", return_value="/usr/bin/gh"),
+            patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="[]")) as run,
+        ):
+            result = GitHubSyncBackend().sync(overlay)
+
+        assert result.tickets_created == 1
+        assert result.errors == []
+        assert all("search" not in call.args[0] for call in run.call_args_list)
+        assert cache.get(self._RETIRED_CACHE_KEY) is None
+
+    def test_gitlab_sync_lists_no_review_requests_and_writes_no_cache(self) -> None:
+        overlay = SyncOverlay()
+        client = _make_mock_client([_MR_WITH_ISSUE])
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=client),
+        ):
+            result = GitLabSyncBackend().sync(overlay)
+
+        assert result.tickets_created == 1
+        client.list_open_mrs_as_reviewer.assert_not_called()
+        assert cache.get(self._RETIRED_CACHE_KEY) is None
 
 
 # ── GitHub sync ──────────────────────────────────────────────────────
