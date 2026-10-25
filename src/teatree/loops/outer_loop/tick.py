@@ -116,7 +116,9 @@ def _advance(
         return OuterLoopTickResult(action=try_admit(experiment), experiment_id=experiment.pk)
     if experiment.state == state.ADMITTED:
         schedule_experiment_fix(experiment)
-        return OuterLoopTickResult(action="implementing", experiment_id=experiment.pk)
+        action = "implementing" if experiment.state == state.IMPLEMENTING else "waiting"
+        reason = "" if action == "implementing" else "open_pr_start_cap"
+        return OuterLoopTickResult(action=action, reason=reason, experiment_id=experiment.pk)
     if experiment.state == state.IMPLEMENTING:
         return _advance_implementing(experiment, merged_probe=merged_probe, now=now)
     if experiment.state == state.MEASURING:

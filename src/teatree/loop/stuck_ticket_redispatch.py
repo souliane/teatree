@@ -187,10 +187,8 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
     """
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
-        phase = _implied_phase(ticket)
-        if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
-            continue
-        if normalize_phase(phase) == "coding" and _merge_safe_review_after_plan(ticket):
+        phase = _recoverable_phase(ticket)
+        if phase is None:
             continue
         failing = (
             _phase_is_failing(ticket, phase=phase)
@@ -200,6 +198,15 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
         if failing or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))
     return candidates
+
+
+def _recoverable_phase(ticket: Ticket) -> str | None:
+    phase = _implied_phase(ticket)
+    if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
+        return None
+    if normalize_phase(phase) == "coding" and _merge_safe_review_after_plan(ticket):
+        return None
+    return phase
 
 
 def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
@@ -234,8 +241,8 @@ def idle_started_author_tickets(*, now: datetime, threshold_hours: int) -> list[
         ticket
         for ticket in _live_tickets_with_nothing_in_flight()
         if ticket.role == Ticket.Role.AUTHOR
-        and not ticket.newest_task_was_cancelled()
         and _is_idle(ticket, now=now, threshold_hours=threshold_hours)
+        and _recoverable_phase(ticket) is not None
     ]
 
 

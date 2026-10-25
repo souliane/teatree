@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason, started_unfinished_pull_requests
+
 if TYPE_CHECKING:
     from teatree.core.admission_pressure import MachineSignal
 
@@ -288,16 +290,18 @@ def _check_queue_stall() -> bool:
 
 
 def _check_merge_brake() -> bool:
-    """FAIL when a whole overlay's live PR board is stopping new issue intake."""
+    """Report the live PR cap and FAIL when a whole overlay's merge board is stalled."""
     from teatree.core.admission_governor import read_merge_signal  # noqa: PLC0415 — lazy CLI import
-    from teatree.core.models import PullRequest  # noqa: PLC0415 — ORM import needs app registry
 
     try:
-        overlays = set(PullRequest.objects.live().values_list("overlay", flat=True).distinct())
+        overlays = set(started_unfinished_pull_requests().values_list("overlay", flat=True).distinct())
         stalled = [(overlay, read_merge_signal(overlay=overlay)) for overlay in sorted(overlays)]
+        cap = open_pr_start_cap_hold_reason()
     except Exception as exc:  # noqa: BLE001 — an unreadable probe is not proof of a halt
         typer.echo(f"WARN  Merge-brake check crashed: {exc.__class__.__name__}: {exc}")
         return True
+    if cap:
+        typer.echo(f"WARN  Issue intake held by open PR start cap: {cap}")
     failures = [(overlay, signal) for overlay, signal in stalled if signal.stalled]
     for overlay, signal in failures:
         refs = ", ".join(signal.stuck_refs)

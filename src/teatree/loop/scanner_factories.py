@@ -19,6 +19,7 @@ from teatree.config import (
     effective_trusted_issue_authors,
     get_effective_settings,
 )
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.intake.budget import read_intake_budget, release_deadlocked_holder
@@ -385,6 +386,9 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     if can_claim and (idle := idle_hold_reason(settings.issue_intake_idle_hold_hours, now=timezone.now())):
         can_claim = False
         logger.warning("issue intake is claiming nothing new: %s", idle)
+    if can_claim and (cap := open_pr_start_cap_hold_reason()):
+        can_claim = False
+        logger.warning("issue intake is claiming nothing new: %s", cap)
     return IssueIntakeScanner(
         host=code_host,
         admit_label=settings.issue_implementer_label or factory_admission.DEFAULT_ADMIT_LABEL,
