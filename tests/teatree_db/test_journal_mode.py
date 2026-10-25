@@ -357,8 +357,14 @@ def test_child_process_fails_closed_on_unsafe_control_db(tmp_path: Path, case: s
     assert (db if db.is_absolute() else tmp_path / db).read_bytes()[18] == 1
 
 
-@pytest.mark.parametrize(("selected", "header"), [("truncate", 1), ("wal", 2)])
-def test_same_family_connection_reads_held_file_in_selected_mode(tmp_path: Path, selected: str, header: int) -> None:
+@pytest.mark.parametrize(
+    ("selected", "header", "hold"),
+    [("truncate", 1, "BEGIN"), ("truncate", 1, "BEGIN IMMEDIATE"), ("wal", 2, "BEGIN")],
+    ids=["rollback-reader", "rollback-reserved-writer", "wal-reader"],
+)
+def test_same_family_connection_reads_held_file_in_selected_mode(
+    tmp_path: Path, selected: str, header: int, hold: str
+) -> None:
     db = tmp_path / "db.sqlite3"
     with closing(sqlite3.connect(db)) as holder:
         if selected == "wal":
@@ -366,7 +372,7 @@ def test_same_family_connection_reads_held_file_in_selected_mode(tmp_path: Path,
         holder.execute("CREATE TABLE note(body TEXT)")
         holder.execute("INSERT INTO note VALUES ('committed')")
         holder.commit()
-        holder.execute("BEGIN")
+        holder.execute(hold)
         assert holder.execute("SELECT body FROM note").fetchone() == ("committed",)
         env = {**_control_child_env(db), "T3_CONTROL_DB_JOURNAL_MODE": selected}
         script = _boundary_script(
