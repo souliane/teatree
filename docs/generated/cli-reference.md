@@ -12699,6 +12699,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              referenced attachments.                         │
 │ rubric-set                   Restate a ticket's rubric from explicit JSON    │
 │                              criteria (#2241).                               │
+│ rubric-waive                 Record an owner's waiver of one rubric          │
+│                              criterion.                                      │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -13674,6 +13676,22 @@ Usage: t3 teatree ticket rubric-set [OPTIONS] TICKET_ID
 │ --criteria-json        TEXT  JSON array: '["AC1"]' or '[{"text": "AC1"}]'.   │
 │ --criteria-file        TEXT  Path to a JSON criteria-array file.             │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket rubric-waive`
+
+```
+Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --text-hash        TEXT  Hash shown beside the criterion. [required]      │
+│ *  --waived-by        TEXT  Owner identity recording the waiver. [required]  │
+│ *  --reason           TEXT  Why this criterion is waived. [required]         │
+│    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
