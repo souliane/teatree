@@ -22,6 +22,7 @@ from asgiref.sync import async_to_sync
 from django.test import TestCase
 
 from teatree.backends.types import Service
+from teatree.core.models import SendAudit
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp.server import build_server
 from tests._send_gate import TEST_TERM_REGISTRY_JSON, allow_forge_repos
@@ -40,6 +41,7 @@ class _FakeForge:
         self.description = "Original body."
         self.author = "souliane"
         self.open_issues = open_issues or []
+        self.created_issues: dict[str, str] = {}
 
     def list_repo_open_issues(self, *, repo: str) -> list[dict[str, Any]]:
         self.calls.append(("list_repo_open_issues", {"repo": repo}))
@@ -47,7 +49,9 @@ class _FakeForge:
 
     def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> dict[str, Any]:
         self.calls.append(("create_issue", {"repo": repo, "title": title, "body": body, "labels": labels}))
-        return {"number": 5, "html_url": f"https://github.com/{repo}/issues/5"}
+        url = f"https://github.com/{repo}/issues/5"
+        self.created_issues[url] = body
+        return {"number": 5, "html_url": url}
 
     def post_issue_comment(self, *, issue_url: str, body: str) -> dict[str, Any]:
         self.calls.append(("post_issue_comment", {"issue_url": issue_url, "body": body}))
@@ -69,7 +73,7 @@ class _FakeForge:
     def get_issue(self, issue_url: str) -> dict[str, Any]:
         return {
             "html_url": issue_url,
-            "body": self.description,
+            "body": self.created_issues.get(issue_url, self.description),
             "user": {"login": self.author},
             "updated_at": "2026-09-22T00:00:00Z",
         }
@@ -117,7 +121,8 @@ class TestForgeIssueWriteTools(TestCase):
         assert result["issue_url"] == "https://github.com/acme/widgets/issues/5"
         assert _writes(fake)[0][0] == "create_issue"
         assert _writes(fake)[0][1]["title"] == "bug"
-        assert _writes(fake)[0][1]["body"] == "it breaks"
+        assert fake.get_issue(result["issue_url"])["body"] == "it breaks"
+        assert "0 candidates judged" in SendAudit.objects.get(action="github_issue_create_judgment").payload_summary
 
     def test_issue_note_appends_a_requirement_to_the_description(self) -> None:
         """A requirement in a comment is invisible to a lane, so #162 routes it to the body."""
@@ -266,21 +271,33 @@ class TestIssueCreateDedupesFirst(TestCase):
         assert [name for name, _ in _writes(fake)] == ["update_issue"]
         assert "also handle the empty case" in fake.description
 
-    def test_a_rejected_candidate_does_not_add_audit_text_to_the_new_ticket_body(self) -> None:
+    def test_two_call_creation_keeps_judgments_private(self) -> None:
         fake = _FakeForge([self._candidate()])
+        body = "A plain issue body."
+        long_reason = "different subsystem " + "x" * 220
+        with _forge_env(fake):
+            prepared = _call("github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": body})
+        assert prepared["outcome"] == "judgment_required"
+        assert prepared["snapshot"] == ["https://github.com/acme/widgets/issues/3"]
         judged = {
-            "snapshot": ["https://github.com/acme/widgets/issues/3"],
-            "decisions": [
-                {"url": "https://github.com/acme/widgets/issues/3", "fits": False, "reason": "different subsystem"}
-            ],
+            "snapshot": prepared["snapshot"],
+            "decisions": [{"url": "https://github.com/acme/widgets/issues/3", "fits": False, "reason": long_reason}],
         }
         with _forge_env(fake):
             result = _call(
-                "github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": "b", "dedupe": judged}
+                "github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": body, "dedupe": judged}
             )
 
         assert result["outcome"] == "created_new"
-        assert _writes(fake)[0][1]["body"] == "b"
+        filed = fake.get_issue(result["issue_url"])["body"]
+        assert filed == body
+        assert "Rejected candidates" not in filed
+        assert "Dedupe check" not in filed
+        audit = SendAudit.objects.get(action="github_issue_create_judgment")
+        assert audit.target == result["issue_url"]
+        assert audit.destination == "private-judgment:github:acme/widgets"
+        assert "https://github.com/acme/widgets/issues/3" in audit.payload_summary
+        assert long_reason in audit.payload_summary
 
     def test_an_unjudged_open_ticket_refuses_the_file(self) -> None:
         judged = {"snapshot": ["https://github.com/acme/widgets/issues/3"], "decisions": []}

@@ -97,6 +97,7 @@ def _capture_admission(nonce: str, seen: dict[str, Any]) -> Generator[None]:
 
 @pytest.mark.integration
 @pytest.mark.timeout(300)
+@pytest.mark.usefixtures("pass_store")
 class LiveCodexNonceTests(TestCase):
     def test_claude_mailbox_message_enters_the_running_codex_turn(self) -> None:
         if os.environ.get("T3_LIVE_CODEX_NONCE") != "1":

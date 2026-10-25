@@ -4,6 +4,8 @@ Issue #1063 adds ``answered_at``; tests for the ``is_question``
 heuristic live in a separate file (``test_pending_chat_injection_is_question.py``).
 """
 
+from datetime import timedelta
+
 import pytest
 from django.utils import timezone
 
@@ -81,6 +83,15 @@ class TestLoopUnrepliedQuery:
 
         loop_unreplied = list(PendingChatInjection.loop_unreplied())
         assert [row.slack_ts for row in loop_unreplied] == ["2.0"]
+
+    def test_unconfirmed_question_reply_returns_for_recovery(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="answer")
+        assert row is not None
+        assert row.mark_loop_replied(PendingChatInjection.AnswerKind.QUESTION_REPLY)
+        PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - timedelta(minutes=2))
+
+        assert PendingChatInjection.loop_unreplied().filter(pk=row.pk).exists()
+        assert row.claim_stale_loop_reply()
 
     def test_loop_unreplied_returns_oldest_first(self) -> None:
         later = PendingChatInjection.record(channel="C", slack_ts="2.0", text="later")
