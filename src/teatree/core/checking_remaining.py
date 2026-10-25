@@ -432,14 +432,14 @@ def _summarize(snapshot: RemainingSnapshot, items: list[RemainingItem], dormant:
         for item in items
         if item.eta["median_minutes"] is None and item.eta["basis"] not in HELD_BASES
     }
-    if known:
-        basis = "maximum known item range; unknown and held items excluded"
-    elif unknown_bases:
+    if unknown_bases:
         basis = "; ".join(sorted(unknown_bases))
+    elif known:
+        basis = "maximum known item range; held items excluded"
     else:
         basis = "all current work is held" if items else NO_WORK_BASIS
-    median_total = max((float(row["median_minutes"]) for row in known), default=None)
-    p80_total = max((float(row["p80_minutes"]) for row in known), default=None)
+    median_total = max((float(row["median_minutes"]) for row in known), default=None) if not unknown_bases else None
+    p80_total = max((float(row["p80_minutes"]) for row in known), default=None) if not unknown_bases else None
     eta_total = {
         "median_minutes": median_total,
         "p80_minutes": p80_total,

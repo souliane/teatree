@@ -494,6 +494,15 @@ class TestCheckingRemaining:
         assert item["steps"] == ["merge", "deploy"]
         assert item["eta"]["median_minutes"] == 60
 
+        widths.expensive = 0
+        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
+            partial = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        assert partial["remaining"]["eta"]["known"] == 1
+        assert partial["remaining"]["eta"]["unknown"] == 5
+        assert partial["remaining"]["eta"]["median_minutes"] is None
+        assert partial["remaining"]["eta"]["p80_minutes"] is None
+        assert partial["remaining"]["items"][0]["detail"].startswith("ETA unknown")
+
     def test_latest_hold_overrides_older_merge_safe_verdict(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
         for verdict, recorded_at in (
