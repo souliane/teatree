@@ -83,7 +83,7 @@ class CodexPluginRegistrar:
             return False
         typer.echo(
             f"OK    TeaTree Codex plugin registered from {plugin_root}; "
-            f"Codex resolves its `{TEATREE_MCP_SERVER_NAME}` MCP server (t3 mcp serve)."
+            f"Codex resolves its `{TEATREE_MCP_SERVER_NAME}` MCP server (t3 mcp serve --interactive)."
         )
         return True
 
@@ -162,7 +162,10 @@ class CodexPluginRegistrar:
             or not isinstance(transport, dict)
             or not launches_teatree_server(transport)
         ):
-            msg = f"Could not {purpose}: Codex resolves {_tail(json.dumps(entry))}, not an enabled `t3 mcp serve`"
+            msg = (
+                f"Could not {purpose}: Codex resolves {_tail(json.dumps(entry))}, "
+                "not an enabled `t3 mcp serve --interactive`"
+            )
             raise CodexCliError(msg)
         if not container_is_the_sandbox():
             return
