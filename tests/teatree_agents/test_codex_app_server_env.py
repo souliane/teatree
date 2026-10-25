@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from teatree.agents.codex_app_server_env import codex_process_env, router_process_env
+from teatree.paths import ControlDb
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 
 _SECRETS = {
@@ -62,6 +63,17 @@ def test_ambient_pool_root_reaches_codex_without_loop_registry(tmp_path: Path) -
     assert "T3_LOOP_REGISTRY_DIR" not in env
 
 
+def test_codex_process_resolves_private_database_without_live_path(tmp_path: Path) -> None:
+    home = tmp_path / "codex-home"
+    live = tmp_path / "control-db" / "db.sqlite3"
+    env = codex_process_env(home, ambient={"PATH": "/usr/bin", "T3_CONFIG_DB": str(live)})
+
+    assert "T3_CONFIG_DB" not in env
+    resolved = ControlDb(env, home=home).for_repo(tmp_path).path
+    assert resolved != live
+    assert resolved.is_relative_to(home)
+
+
 def test_pool_root_does_not_expand_router_allowlist(tmp_path: Path) -> None:
     ambient = {
         "PATH": "/usr/bin",
@@ -94,10 +106,20 @@ def test_router_keeps_worker_hook_paths_without_inheriting_other_credentials() -
         "TEATREE_TERM_REGISTRY": "test-registry",
     }
 
-    env = router_process_env({}, ambient={"PATH": "/usr/bin", **hook_env, "T3_CONTROL_DB_DIR": "/control", **_SECRETS})
+    env = router_process_env(
+        {},
+        ambient={
+            "PATH": "/usr/bin",
+            **hook_env,
+            "T3_CONFIG_DB": "/control/db.sqlite3",
+            "T3_CONTROL_DB_DIR": "/control",
+            **_SECRETS,
+        },
+    )
 
     assert {key: env[key] for key in hook_env} == hook_env
     assert "T3_CONTROL_DB_DIR" not in env
+    assert "T3_CONFIG_DB" not in env
     assert not _SECRETS.keys() & env.keys()
 
 

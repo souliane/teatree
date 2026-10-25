@@ -21,7 +21,6 @@ _PROCESS_ENV_KEYS = frozenset(
         "LC_ALL",
         "LC_CTYPE",
         "PATH",
-        "T3_CONFIG_DB",
         POOL_ROOT_ENV,
         "T3_OVERLAY_NAME",
         "T3_REPO",

@@ -272,9 +272,9 @@ rollback mode for the control DB;
 Values are case-insensitive and may have surrounding whitespace; other values
 fail at connection setup. A writable connection reads the SQLite file header
 and runs the journal-mode setter only for a new file or a WAL-versus-rollback
-header mismatch. A same-family connection can read committed rows while another
-process holds the file. The rollback header cannot distinguish DELETE from
-TRUNCATE, so a later connection may report DELETE after a TRUNCATE conversion.
+header mismatch for WAL. TRUNCATE is selected on every writable rollback
+connection because it is not persisted in the file header. A same-family
+connection can read committed rows while another process holds the file.
 A genuine mode conversion can still fail with `database is locked` while another
 process holds the file.
 

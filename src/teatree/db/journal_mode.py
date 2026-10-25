@@ -111,7 +111,7 @@ class ControlDbJournal:
     def init_commands(self, existing: Sequence[str]) -> list[str]:
         mode = self.mode
         selected = f"PRAGMA journal_mode={mode.upper()}"
-        pending_setter = self._existing_file_mode() != mode
+        pending_setter = mode == "truncate" or self._existing_file_mode() != mode
         commands: list[str] = []
         for command in existing:
             if not command.strip():
