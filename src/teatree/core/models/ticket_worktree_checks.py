@@ -37,6 +37,19 @@ class WorktreeProbeUnverifiableError(RuntimeError):
     """
 
 
+def dispatch_worktree(ticket: "Ticket") -> "Worktree | None":
+    """The row of the checkout a dispatched agent runs in for *ticket*, or ``None``.
+
+    The first worktree, by pk, whose recorded path still exists on disk.
+    """
+    worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
+    for worktree in worktree_model.objects.filter(ticket=ticket).order_by("pk"):
+        path = worktree.worktree_path
+        if path and Path(path).is_dir():
+            return worktree
+    return None
+
+
 def dispatch_worktree_path(ticket: "Ticket") -> str:
     """On-disk worktree path a dispatched agent runs in for *ticket*, or ''.
 
@@ -48,12 +61,8 @@ def dispatch_worktree_path(ticket: "Ticket") -> str:
     gone, so the caller falls back to the ambient cwd. Lives here (not on
     ``Ticket``) so ``ticket.py`` stays under its module-health LOC cap.
     """
-    worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
-    for worktree in worktree_model.objects.filter(ticket=ticket).order_by("pk"):
-        path = worktree.worktree_path
-        if path and Path(path).is_dir():
-            return path
-    return ""
+    worktree = dispatch_worktree(ticket)
+    return worktree.worktree_path if worktree else ""
 
 
 def worktree_has_commits_ahead(worktree: "Worktree") -> bool:
