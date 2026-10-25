@@ -406,7 +406,6 @@ class ProvisionStep:
 # ── Sync types (shared vocabulary between core and backends) ─────────
 
 LAST_SYNC_CACHE_KEY = "teatree_followup_last_sync"
-PENDING_REVIEWS_CACHE_KEY = "teatree_pending_reviews"
 
 type RawAPIDict = dict[str, object]
 type PREntryDict = dict[str, object]

@@ -5,9 +5,8 @@
 dedup claim, the posture gate, the send-proxy, the post and the ``ReviewRequestPost`` record
 stay in that one chokepoint. What the command trusts a human to have checked is this caller's
 own: the owner's answer at the CURRENT head, no standing hold, a ``merge_safe`` cold review
-bound to that head (or the owner's "post" answer in its place), a ticket to read the
-anti-vacuity attestation from, a PR title and body the overlay accepts, and a live head that
-still matches the listing.
+bound to that head (or the owner's "post" answer in its place), the owning ticket when one
+exists, a PR title and body the overlay accepts, and a live head that still matches the listing.
 
 A refusal asks the owner once per head, and an answer at a head is final for that head. Only
 the outcomes in :data:`_RETRIED_QUIETLY` retry on their own; every other one, including a
@@ -137,14 +136,14 @@ class ReviewRequestSendScanner:
 
     def _send(self, item: TriagedMr, ref: PrRef, sha: str) -> ScanSignal:
         ticket = resolve_gated_ticket(slug=ref.slug, pr_id=ref.pr_id)
-        if ticket is None:
-            return _ask(item, sha, "no_ticket")
         title = _str_field(item.pr, "title")
         if self.metadata.validate_pr(title, _str_field(item.pr, "description", "body"), repo=ref.slug)["errors"]:
             return _ask(item, sha, "pr_metadata_invalid")
         if moved := self._live_head_mismatch(ref, sha):
             return _deferred(item, moved)
-        result = self.poster.post(mr_url=item.url, title=title, ticket_id=str(ticket.pk), head_sha=sha)
+        result = self.poster.post(
+            mr_url=item.url, title=title, ticket_id=str(ticket.pk) if ticket else "", head_sha=sha
+        )
         return _outcome(item, sha, result)
 
     def _live_head_mismatch(self, ref: PrRef, sha: str) -> str:

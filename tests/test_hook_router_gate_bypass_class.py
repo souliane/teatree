@@ -19,14 +19,13 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts.ai_signature_guard import extract_ai_sig_payload, handle_block_ai_signature
 from hooks.scripts.hook_router import (
     _ORCHESTRATOR_HEAVY_BASH_RE,
     _deny_match,
-    _extract_ai_sig_payload,
     _extract_mr_fields,
     _is_merge_class_mutation,
     _is_raw_review_write,
-    handle_block_ai_signature,
     handle_block_direct_commands,
     handle_block_raw_review_post,
     handle_enforce_orchestrator_boundary,
@@ -76,67 +75,58 @@ class TestF1DoubleSpaceBypass:
     """F1 CRITICAL: double-space variants evade plain-`in` substring checks.
 
     Evasion: `git  commit` / `glab  mr  create` with double (or any extra)
-    whitespace between tokens bypassed the `in` guard in `_extract_ai_sig_payload`
+    whitespace between tokens bypassed the `in` guard in `extract_ai_sig_payload`
     and `_extract_mr_fields`, letting a Co-Authored-By trailer and a non-compliant
     MR title reach the forge unscanned.
     """
 
     # ── AI-sig gate (F1a) ────────────────────────────────────────────────
 
-    def test_f1a_double_space_git_commit_triggers_ai_sig_scan(self, monkeypatch, capsys):
+    def test_f1a_double_space_git_commit_triggers_ai_sig_scan(self, capsys):
         """Git  commit (double space) must be treated as a git-commit for AI-sig scan."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "git  commit -m 'fix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>'"},
         }
-        with patch.object(subprocess, "run", return_value=rejected):
-            blocked = handle_block_ai_signature(data)
+        blocked = handle_block_ai_signature(data)
         assert blocked is True, "double-space git  commit must trigger AI-sig scan and be blocked"
         deny = _parse_deny(capsys)
         assert deny is not None
         assert deny["permissionDecision"] == "deny"
 
-    def test_f1a_triple_space_git_commit_triggers_ai_sig_scan(self, monkeypatch, capsys):
+    def test_f1a_triple_space_git_commit_triggers_ai_sig_scan(self, capsys):
         """Git   commit (triple space) must also be caught."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
-        data = {"tool_name": "Bash", "tool_input": {"command": "git   commit -m 'bad trailer'"}}
-        with patch.object(subprocess, "run", return_value=rejected):
-            blocked = handle_block_ai_signature(data)
+        data = {"tool_name": "Bash", "tool_input": {"command": "git   commit -m 'Generated with [Claude Code]'"}}
+        blocked = handle_block_ai_signature(data)
         assert blocked is True, "triple-space git   commit must trigger AI-sig scan"
 
-    def test_f1a_single_space_git_commit_still_blocked(self, monkeypatch, capsys):
+    def test_f1a_single_space_git_commit_still_blocked(self, capsys):
         """Existing single-space form must not regress."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         data = {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'Co-Authored-By: Claude'"}}
-        with patch.object(subprocess, "run", return_value=rejected):
-            assert handle_block_ai_signature(data) is True
+        assert handle_block_ai_signature(data) is True
 
     def test_f1a_extract_payload_double_space_git_commit(self):
-        """_extract_ai_sig_payload returns the body for double-space form."""
+        """extract_ai_sig_payload returns the body for double-space form."""
         data = {"tool_name": "Bash", "tool_input": {"command": "git  commit -m 'the body'"}}
-        payload = _extract_ai_sig_payload(data)
+        payload = extract_ai_sig_payload(data)
         assert payload == "the body", f"expected 'the body', got {payload!r}"
 
     def test_f1a_extract_payload_double_space_glab_mr_create(self):
-        """_extract_ai_sig_payload triggers on glab  mr  create (double space)."""
+        """extract_ai_sig_payload triggers on glab  mr  create (double space)."""
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "glab  mr  create --title 't' --body 'the body'"},
         }
-        payload = _extract_ai_sig_payload(data)
+        payload = extract_ai_sig_payload(data)
         assert payload is not None, "double-space glab  mr  create must be recognised"
 
     def test_f1a_extract_payload_double_space_gh_pr_create(self):
-        """_extract_ai_sig_payload triggers on gh  pr  create (double space)."""
+        """extract_ai_sig_payload triggers on gh  pr  create (double space)."""
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh  pr  create --title 't' --body 'the body'"},
         }
-        payload = _extract_ai_sig_payload(data)
+        payload = extract_ai_sig_payload(data)
         assert payload is not None, "double-space gh  pr  create must be recognised"
 
     # ── validate-MR gate (F1b) ───────────────────────────────────────────
@@ -214,31 +204,28 @@ class TestF2ApiCreateEndpointBypass:
 
     # ── AI-sig gate (F2a) ────────────────────────────────────────────────
 
-    def test_f2a_gh_api_pulls_post_triggers_ai_sig_scan(self, monkeypatch, capsys):
+    def test_f2a_gh_api_pulls_post_triggers_ai_sig_scan(self, capsys):
         """Gh api .../pulls POST must be treated as a PR create for AI-sig."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         cmd = "gh api repos/example-org/private-repo/pulls -X POST -f title='t' -f body='Generated with [Claude Code]'"
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}}
-        with patch.object(subprocess, "run", return_value=rejected):
-            blocked = handle_block_ai_signature(data)
+        blocked = handle_block_ai_signature(data)
         assert blocked is True, "gh api .../pulls POST must trigger AI-sig scan"
         deny = _parse_deny(capsys)
         assert deny is not None
         assert deny["permissionDecision"] == "deny"
 
-    def test_f2a_glab_api_merge_requests_post_triggers_ai_sig_scan(self, monkeypatch, capsys):
+    def test_f2a_glab_api_merge_requests_post_triggers_ai_sig_scan(self, capsys):
         """Glab api .../merge_requests POST must be treated as an MR create for AI-sig."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         data = {
             "tool_name": "Bash",
             "tool_input": {
-                "command": "glab api projects/42/merge_requests --method POST -f title='t' -f description='bad trailer'"
+                "command": (
+                    "glab api projects/42/merge_requests --method POST -f title='t' "
+                    "-f description='Generated with [Claude Code]'"
+                )
             },
         }
-        with patch.object(subprocess, "run", return_value=rejected):
-            blocked = handle_block_ai_signature(data)
+        blocked = handle_block_ai_signature(data)
         assert blocked is True, "glab api .../merge_requests POST must trigger AI-sig scan"
 
     def test_f2a_gh_api_pulls_get_does_not_trigger_ai_sig(self):
@@ -247,7 +234,7 @@ class TestF2ApiCreateEndpointBypass:
             "tool_name": "Bash",
             "tool_input": {"command": "gh api repos/example-org/private-repo/pulls -X GET"},
         }
-        payload = _extract_ai_sig_payload(data)
+        payload = extract_ai_sig_payload(data)
         assert payload is None, "GET to pulls endpoint must not be treated as a PR create"
 
     def test_f2a_glab_api_merge_requests_get_does_not_trigger_ai_sig(self):
@@ -256,7 +243,7 @@ class TestF2ApiCreateEndpointBypass:
             "tool_name": "Bash",
             "tool_input": {"command": "glab api projects/42/merge_requests"},
         }
-        payload = _extract_ai_sig_payload(data)
+        payload = extract_ai_sig_payload(data)
         assert payload is None, "bare GET to merge_requests must not be treated as a create"
 
     # ── diff-coverage gate / _is_merge_class_mutation (F2b) ─────────────
@@ -472,57 +459,45 @@ class TestF5MissingEditCommentInAiSig:
     parser tracks glab's real surface: `create` / `update` / `note`.)
     """
 
-    def test_f5_glab_mr_update_triggers_ai_sig_scan(self, monkeypatch, capsys):
+    def test_f5_glab_mr_update_triggers_ai_sig_scan(self, capsys):
         """Glab mr update with a banned trailer in --description must be blocked."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "glab mr update 7 --description 'fix: x\n\nGenerated with [Claude Code]'"},
         }
-        with patch.object(subprocess, "run", return_value=rejected):
-            blocked = handle_block_ai_signature(data)
+        blocked = handle_block_ai_signature(data)
         assert blocked is True, "glab mr update with banned trailer must be blocked"
 
-    def test_f5_gh_pr_comment_triggers_ai_sig_scan(self, monkeypatch, capsys):
+    def test_f5_gh_pr_comment_triggers_ai_sig_scan(self, capsys):
         """Gh pr comment with a banned trailer must be blocked."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh pr comment 12 --body 'see fix\n\nGenerated with [Claude Code]'"},
         }
-        with patch.object(subprocess, "run", return_value=rejected):
-            blocked = handle_block_ai_signature(data)
+        blocked = handle_block_ai_signature(data)
         assert blocked is True, "gh pr comment with banned trailer must be blocked"
 
     def test_f5_glab_mr_update_payload_extracted(self):
-        """_extract_ai_sig_payload returns a payload for glab mr update."""
+        """extract_ai_sig_payload returns a payload for glab mr update."""
         data = {"tool_name": "Bash", "tool_input": {"command": "glab mr update 7 --description 'the body'"}}
-        payload = _extract_ai_sig_payload(data)
-        assert payload is not None, "glab mr update must be recognised by _extract_ai_sig_payload"
+        payload = extract_ai_sig_payload(data)
+        assert payload is not None, "glab mr update must be recognised by extract_ai_sig_payload"
 
     def test_f5_gh_pr_comment_payload_extracted(self):
-        """_extract_ai_sig_payload returns a payload for gh pr comment."""
+        """extract_ai_sig_payload returns a payload for gh pr comment."""
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr comment 12 --body 'the body'"}}
-        payload = _extract_ai_sig_payload(data)
-        assert payload is not None, "gh pr comment must be recognised by _extract_ai_sig_payload"
+        payload = extract_ai_sig_payload(data)
+        assert payload is not None, "gh pr comment must be recognised by extract_ai_sig_payload"
 
-    def test_f5_clean_glab_mr_update_allowed(self, monkeypatch):
+    def test_f5_clean_glab_mr_update_allowed(self):
         """Glab mr update with a clean body must pass."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
         data = {"tool_name": "Bash", "tool_input": {"command": "glab mr update 7 --description 'clean body'"}}
-        with patch.object(subprocess, "run", return_value=ok):
-            assert handle_block_ai_signature(data) is False
+        assert handle_block_ai_signature(data) is False
 
-    def test_f5_clean_gh_pr_comment_allowed(self, monkeypatch):
+    def test_f5_clean_gh_pr_comment_allowed(self):
         """Gh pr comment with a clean body must pass."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr comment 12 --body 'clean note'"}}
-        with patch.object(subprocess, "run", return_value=ok):
-            assert handle_block_ai_signature(data) is False
+        assert handle_block_ai_signature(data) is False
 
 
 # ── F6: readonly-prefix chain bypass ────────────────────────────────────

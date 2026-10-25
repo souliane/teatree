@@ -54,21 +54,3 @@ def format_block_message(finding: str) -> str:
         "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
         f"Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n{finding}"
     )
-
-
-def format_scanner_error_message(detail: str) -> str:
-    """The gate's deny for a scanner that RAN and errored — never reported as a finding."""
-    return (
-        "BLOCKED: AI-signature scanner error — it exited nonzero without a clean result, so the "
-        "PR body / commit message could NOT be confirmed signature-free. This is a scanner error, "
-        f"not a detected trailer. Fix the scanner / environment and retry (BLUEPRINT §17.6 gate 15).\n{detail}"
-    )
-
-
-def format_venue_fault_message(fault: str) -> str:
-    """The gate's deny when the scanner never ran because ``t3`` cannot run in this venue."""
-    return (
-        "BLOCKED: the AI-signature scan could not run in this venue, so the PR body / commit message could NOT "
-        "be confirmed signature-free. This is neither a detected trailer nor a scanner error; fix the venue and "
-        f"retry (BLUEPRINT §17.6 gate 15).\n{fault}"
-    )

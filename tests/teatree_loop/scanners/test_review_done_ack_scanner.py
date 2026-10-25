@@ -27,13 +27,14 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from teatree.core.models import ReviewRequestPost, ReviewVerdict
+from teatree.core.models import ConfigSetting, ReviewRequestPost, ReviewVerdict
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.loop.review_done_reactions import _egress_react, _slack_message_for_pr, emit_review_done_reactions
 from teatree.loop.scanners.review_done_ack import ReviewDoneAckScanner
 from teatree.types import RawAPIDict
+from tests._forge_author import AuthorForge, colleague_forge, reaction_forge
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import posture_permits_cm
 
@@ -84,6 +85,9 @@ def _seed_broadcast_post(url: str = MR_URL) -> ReviewRequestPost:
 
 
 class TestReviewDoneAckScanner(TestCase):
+    def setUp(self) -> None:
+        self.enterContext(colleague_forge())
+
     def test_acks_a_completed_review_with_no_recorded_verdict(self) -> None:
         """The incident shape: findings posted on the MR, no ``ReviewVerdict`` recorded.
 
@@ -136,6 +140,18 @@ class TestReviewDoneAckScanner(TestCase):
 
         assert messaging.emojis == ["eyes"]
         assert second == []
+
+    def test_the_operators_own_merge_request_is_left_alone(self) -> None:
+        ConfigSetting.objects.set_value("user_identity_aliases", ["alice"])
+        _seed_reviewed_ticket()
+        _seed_broadcast_post()
+        messaging = FakeMessaging()
+
+        with posture_permits_cm(), reaction_forge(AuthorForge(author="alice")):
+            signals = ReviewDoneAckScanner(messaging=messaging, overlay_name="team-overlay").scan()
+
+        assert signals == []
+        assert messaging.reactions == []
 
     def test_never_broadcast_mr_posts_nothing(self) -> None:
         """No tracked Slack message means there is nothing to react on."""
