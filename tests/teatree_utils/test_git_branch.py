@@ -1,46 +1,64 @@
-from subprocess import CompletedProcess
+from pathlib import Path
+from subprocess import TimeoutExpired
 from unittest.mock import patch
 
 from teatree.utils.git_branch import RefPresence, list_remote_refs, ref_presence
+from tests._git_repo import make_git_repo, run_git
 
 
-def _probe(code: int, stdout: str = "") -> CompletedProcess[str]:
-    return CompletedProcess(args=["git"], returncode=code, stdout=stdout, stderr="")
+def _origin_and_clone(tmp_path: Path) -> Path:
+    seed = make_git_repo(tmp_path / "seed")
+    run_git(tmp_path, "clone", "-q", "--bare", str(seed), str(tmp_path / "origin.git"))
+    clone = tmp_path / "clone"
+    run_git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(clone))
+    return clone
 
 
-def test_ref_absent_in_all_three_places_is_proven_absent() -> None:
-    with patch("teatree.utils.git_branch.run_with_status", side_effect=[_probe(1), _probe(1), _probe(2)]) as run:
-        result = ref_presence("/repo", "missing")
-
-    assert result is RefPresence.ABSENT
-    assert run.call_count == 3
-    assert run.call_args.args == ()
-    assert run.call_args.kwargs["args"] == ["ls-remote", "--exit-code", "origin", "refs/heads/missing"]
-
-
-def test_failed_remote_probe_cannot_prove_absence() -> None:
-    with patch("teatree.utils.git_branch.run_with_status", side_effect=[_probe(1), _probe(1), _probe(128)]):
-        assert ref_presence("/repo", "unknown") is RefPresence.UNKNOWN
+def _push_only_to_origin(clone: Path, branch: str) -> None:
+    run_git(clone, "checkout", "-q", "-b", branch)
+    run_git(clone, "commit", "-q", "--allow-empty", "-m", "work")
+    run_git(clone, "push", "-q", "origin", branch)
+    run_git(clone, "checkout", "-q", "main")
+    run_git(clone, "branch", "-q", "-D", branch)
+    run_git(clone, "update-ref", "-d", f"refs/remotes/origin/{branch}")
 
 
-def test_one_remote_listing_serves_many_absent_branches() -> None:
-    with patch(
-        "teatree.utils.git_branch.run_with_status",
-        side_effect=[_probe(0, "abc\trefs/heads/other\n"), _probe(1), _probe(1), _probe(1), _probe(1)],
-    ) as run:
-        listing = list_remote_refs("/repo")
-        first = ref_presence("/repo", "one", listing=listing)
-        second = ref_presence("/repo", "two", listing=listing)
+def test_a_branch_in_no_ref_namespace_is_proven_absent(tmp_path: Path) -> None:
+    clone = _origin_and_clone(tmp_path)
 
-    assert (first, second) == (RefPresence.ABSENT, RefPresence.ABSENT)
-    assert sum(call.kwargs["args"][:1] == ["ls-remote"] for call in run.call_args_list) == 1
-    assert run.call_args_list[0].kwargs["timeout"] == 30
+    assert ref_presence(str(clone), "missing", list_remote_refs(str(clone))) is RefPresence.ABSENT
 
 
-def test_failed_listing_keeps_absent_local_refs_unknown() -> None:
-    with patch("teatree.utils.git_branch.run_with_status", side_effect=[_probe(128), _probe(1), _probe(1)]) as run:
-        listing = list_remote_refs("/repo")
-        result = ref_presence("/repo", "missing", listing=listing)
+def test_a_local_branch_is_present(tmp_path: Path) -> None:
+    clone = _origin_and_clone(tmp_path)
+    run_git(clone, "branch", "wip")
 
-    assert result is RefPresence.UNKNOWN
-    assert run.call_count == 3
+    assert ref_presence(str(clone), "wip", list_remote_refs(str(clone))) is RefPresence.PRESENT
+
+
+def test_a_branch_known_only_to_origin_is_present(tmp_path: Path) -> None:
+    clone = _origin_and_clone(tmp_path)
+    _push_only_to_origin(clone, "remote-only")
+
+    assert ref_presence(str(clone), "remote-only", list_remote_refs(str(clone))) is RefPresence.PRESENT
+
+
+def test_an_unreachable_origin_cannot_prove_absence(tmp_path: Path) -> None:
+    clone = _origin_and_clone(tmp_path)
+    run_git(clone, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    listing = list_remote_refs(str(clone))
+
+    assert listing.heads is None
+    assert listing.timed_out is False
+    assert ref_presence(str(clone), "missing", listing) is RefPresence.UNKNOWN
+
+
+def test_a_listing_that_times_out_says_so(tmp_path: Path) -> None:
+    clone = _origin_and_clone(tmp_path)
+
+    with patch("teatree.utils.git_branch.run_with_status", side_effect=TimeoutExpired("git", 30)):
+        listing = list_remote_refs(str(clone))
+
+    assert listing.heads is None
+    assert listing.timed_out is True
+    assert ref_presence(str(clone), "missing", listing) is RefPresence.UNKNOWN

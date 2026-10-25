@@ -11,10 +11,10 @@ from teatree.core.models import ConsolidatedMemory, DeferredQuestion, Ticket
 from teatree.core.models.dream_gap_ledger import batch_entries, pending_entries
 from teatree.core.models.dream_gap_types import DreamFunnelEntry
 from teatree.loops.dream.gap_coverage import gap_coverage
+from teatree.loops.dream.stranded_hosts import stranded_host_count
 
 if TYPE_CHECKING:
     from teatree.loops.dream.batch_promote import PromotionBatch
-    from teatree.loops.dream.stranded_hosts import StrandedReleaseReport
 
 FUNNEL_RETENTION_DAYS = 120
 FIXED_ZERO_CARD_DAYS = 7
@@ -62,9 +62,7 @@ def question_classes(*, now: datetime | None = None) -> list[QuestionClassStatus
     return [status for name in sorted(by_class) if (status := _question_status(name, by_class[name], current))]
 
 
-def _snapshot(
-    *, umbrella: Ticket, batch: "PromotionBatch", release: "StrandedReleaseReport", at: datetime
-) -> DreamFunnelEntry:
+def _snapshot(*, umbrella: Ticket, batch: "PromotionBatch", at: datetime) -> DreamFunnelEntry:
     dispositions = ConsolidatedMemory.Disposition
     hosts = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).exclude(state=Ticket.State.IGNORED)
     folded = addressed = rejected = 0
@@ -88,14 +86,12 @@ def _snapshot(
         "addressed": addressed,
         "rejected": rejected,
         "retired": ConsolidatedMemory.objects.filter(disposition=dispositions.RESOLVED_RETIRED).count(),
-        "stranded_hosts": release.released_hosts,
+        "stranded_hosts": stranded_host_count(at),
         "orphans": len(gap_coverage(umbrella_url=umbrella.issue_url).orphan),
     }
 
 
-def record_funnel(
-    *, umbrella_url: str, batch: "PromotionBatch", release: "StrandedReleaseReport", now: datetime | None = None
-) -> DreamFunnelEntry:
+def record_funnel(*, umbrella_url: str, batch: "PromotionBatch", now: datetime | None = None) -> DreamFunnelEntry:
     at = now or timezone.now()
     cutoff = at - timedelta(days=FUNNEL_RETENTION_DAYS)
     with transaction.atomic():
@@ -103,7 +99,7 @@ def record_funnel(
         if umbrella is None:
             msg = f"no dream umbrella ticket at {umbrella_url}"
             raise ValueError(msg)
-        snapshot = _snapshot(umbrella=umbrella, batch=batch, release=release, at=at)
+        snapshot = _snapshot(umbrella=umbrella, batch=batch, at=at)
         kept: list[DreamFunnelEntry] = [
             cast("DreamFunnelEntry", entry)
             for entry in (umbrella.extra or {}).get("dream_funnel") or []

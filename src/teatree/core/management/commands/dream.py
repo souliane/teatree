@@ -478,7 +478,7 @@ class Command(DreamGapCommands, TyperCommand):
             reconciled = [] if dry_run or host is None else batch_promote.reconcile_batches(host, umbrella_url=umbrella)
             released = None if dry_run else release_stranded_hosts(umbrella_url=umbrella)
             if released is not None:
-                record_funnel(umbrella_url=umbrella, batch=batch, release=released)
+                record_funnel(umbrella_url=umbrella, batch=batch)
         except Exception as exc:  # noqa: BLE001 — a batch-promotion failure degrades to a WARN clause
             return batch.summary + f"; WARN batch promotion raised: {type(exc).__name__}: {exc}"
         summary = batch.summary

@@ -1,20 +1,27 @@
 from datetime import UTC, datetime, timedelta
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import ConsolidatedMemory, DeferredQuestion, Ticket
+from teatree.core.models.transition import TicketTransition
 from teatree.loops.dream.batch_promote import PromotionBatch
-from teatree.loops.dream.funnel import question_class, question_class_status, record_funnel
-from teatree.loops.dream.stranded_hosts import StrandedReleaseReport
+from teatree.loops.dream.funnel import daily_funnel, question_class, question_class_status, record_funnel
 
 
 class TestDreamFunnel(TestCase):
-    def test_daily_snapshot_counts_the_ledger_and_trims_old_samples(self) -> None:
-        now = datetime(2026, 10, 25, 9, tzinfo=UTC)
-        umbrella = Ticket.objects.create(
-            issue_url="https://github.com/o/r/issues/249",
-            extra={"dream_funnel": [{"at": (now - timedelta(days=121)).isoformat(), "rows": 99}]},
+    def setUp(self) -> None:
+        self.umbrella = Ticket.objects.create(issue_url="https://github.com/o/r/issues/249")
+
+    def stranded_host(self, name: str, *, idle_days: int) -> Ticket:
+        host = Ticket.objects.create(
+            issue_url=f"https://github.com/o/r/issues/{name}", extra={"dream_gap_batch": [{"gap_key": name}]}
         )
+        TicketTransition.objects.create(ticket=host, from_state="not_started", to_state="work_started")
+        TicketTransition.objects.filter(ticket=host).update(created_at=timezone.now() - timedelta(days=idle_days))
+        return host
+
+    def test_snapshot_counts_the_ledger_and_the_hosts_still_stranded(self) -> None:
         ConsolidatedMemory.objects.create(
             cluster_key="g1",
             rule="Fix the path.",
@@ -23,19 +30,51 @@ class TestDreamFunnel(TestCase):
             max_member_weight=90,
             disposition=ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
         )
-        batch = PromotionBatch(withheld=2)
+        self.stranded_host("56", idle_days=20)
+        self.stranded_host("57", idle_days=20)
+        self.stranded_host("58", idle_days=2)
 
-        first = record_funnel(
-            umbrella_url=umbrella.issue_url, batch=batch, release=StrandedReleaseReport(1, 2), now=now
-        )
-        second = record_funnel(
-            umbrella_url=umbrella.issue_url, batch=batch, release=StrandedReleaseReport(1, 2), now=now
-        )
+        entry = record_funnel(umbrella_url=self.umbrella.issue_url, batch=PromotionBatch(withheld=2))
 
-        umbrella.refresh_from_db()
-        assert first == second
-        assert len(umbrella.extra["dream_funnel"]) == 1
-        assert (first["rows"], first["core_gaps"], first["withheld"], first["stranded_hosts"]) == (1, 1, 2, 1)
+        assert (entry["rows"], entry["core_gaps"], entry["withheld"], entry["folded"]) == (1, 1, 2, 3)
+        assert entry["stranded_hosts"] == 2
+
+    def test_two_passes_in_one_day_keep_two_entries_and_the_daily_view_shows_the_last(self) -> None:
+        morning = datetime(2026, 10, 25, 3, tzinfo=UTC)
+        night = datetime(2026, 10, 25, 22, tzinfo=UTC)
+        batch = PromotionBatch()
+
+        record_funnel(umbrella_url=self.umbrella.issue_url, batch=PromotionBatch(withheld=5), now=morning)
+        record_funnel(umbrella_url=self.umbrella.issue_url, batch=batch, now=night)
+
+        self.umbrella.refresh_from_db()
+        assert [entry["at"] for entry in self.umbrella.extra["dream_funnel"]] == [
+            morning.isoformat(),
+            night.isoformat(),
+        ]
+        assert [entry["withheld"] for entry in daily_funnel(self.umbrella.issue_url)] == [0]
+
+    def test_a_retried_pass_does_not_duplicate_its_entry(self) -> None:
+        now = datetime(2026, 10, 25, 9, tzinfo=UTC)
+
+        record_funnel(umbrella_url=self.umbrella.issue_url, batch=PromotionBatch(), now=now)
+        record_funnel(umbrella_url=self.umbrella.issue_url, batch=PromotionBatch(), now=now)
+
+        self.umbrella.refresh_from_db()
+        assert len(self.umbrella.extra["dream_funnel"]) == 1
+
+    def test_history_older_than_the_retention_window_is_trimmed(self) -> None:
+        now = datetime(2026, 10, 25, 9, tzinfo=UTC)
+        record_funnel(umbrella_url=self.umbrella.issue_url, batch=PromotionBatch(), now=now - timedelta(days=121))
+        record_funnel(umbrella_url=self.umbrella.issue_url, batch=PromotionBatch(), now=now - timedelta(days=119))
+
+        record_funnel(umbrella_url=self.umbrella.issue_url, batch=PromotionBatch(), now=now)
+
+        self.umbrella.refresh_from_db()
+        assert [entry["at"] for entry in self.umbrella.extra["dream_funnel"]] == [
+            (now - timedelta(days=119)).isoformat(),
+            now.isoformat(),
+        ]
 
 
 class TestQuestionClass(TestCase):

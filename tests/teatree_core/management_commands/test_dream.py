@@ -9,12 +9,12 @@ engine is a typed seam.
 
 import datetime as dt
 import json
+import os
 import tempfile
 from contextlib import redirect_stdout
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
-from subprocess import CompletedProcess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -53,6 +53,7 @@ from teatree.loops.dream.loop import (
 from teatree.loops.dream.pass_config import PassBudget
 from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, WeightedSnippet
 from teatree.token_report import EvalReserveDecision
+from tests._git_repo import make_git_repo, run_git
 from tests._send_gate import allow_forge_repos
 
 
@@ -83,26 +84,27 @@ class TestStrandedRelease(TestCase):
         )
         TicketTransition.objects.create(ticket=host, from_state="not_started", to_state="work_started")
         TicketTransition.objects.filter(ticket=host).update(created_at=timezone.now() - dt.timedelta(days=30))
-        absent = CompletedProcess(args=["git"], returncode=1, stdout="", stderr="")
-        empty_remote = CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
-
-        with (
-            patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=umbrella_url),
-            patch("teatree.core.models.dream_gap_ledger.dream_umbrella_url", return_value=umbrella_url),
-            patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
-            patch(
-                "teatree.loops.dream.batch_promote.promote_batch",
-                return_value=BatchOutcome(queued=False, umbrella_url=umbrella_url, gap_count=0),
-            ),
-            patch("teatree.loops.dream.stranded_hosts.unambiguous_clone_path", return_value=Path("/repo")),
-            patch("teatree.utils.git_branch.run_with_status", side_effect=[empty_remote, absent, absent]) as probe,
-        ):
-            Command()._promote_batch(batch=PromotionBatch(), dry_run=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = make_git_repo(root / "seed")
+            run_git(root, "clone", "-q", "--bare", str(seed), str(root / "origin.git"))
+            run_git(root, "clone", "-q", str(root / "origin.git"), str(root / "workspace" / "o" / "r"))
+            with (
+                patch.dict(os.environ, {"T3_WORKSPACE_DIR": str(root / "workspace")}),
+                patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=umbrella_url),
+                patch("teatree.core.models.dream_gap_ledger.dream_umbrella_url", return_value=umbrella_url),
+                patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
+                patch(
+                    "teatree.loops.dream.batch_promote.promote_batch",
+                    return_value=BatchOutcome(queued=False, umbrella_url=umbrella_url, gap_count=0),
+                ),
+            ):
+                summary = Command()._promote_batch(batch=PromotionBatch(), dry_run=False)
 
         host.refresh_from_db()
         assert host.state == Ticket.State.IGNORED
-        assert "absent" in host.extra["dream_gap_released"]["reason"]
-        assert probe.call_count == 3
+        assert "branch gone absent locally, in tracking, and on origin" in host.extra["dream_gap_released"]["reason"]
+        assert "returned 1 gap(s) from 1 stranded host(s)" in summary
 
 
 _COMMAND = "teatree.core.management.commands.dream.Command"

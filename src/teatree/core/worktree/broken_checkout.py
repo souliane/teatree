@@ -46,7 +46,7 @@ from teatree.core.worktree.venue_safe_registry import registrations
 from teatree.core.worktree.worktree_location import resolve_worktree_path
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
-from teatree.utils.git_run import run_with_status
+from teatree.utils.git_branch import RefPresence, show_ref
 from teatree.utils.run import CommandFailedError
 
 _PREVIEW_LIMIT = 3
@@ -219,8 +219,7 @@ def _branch_ref_exists(repo_main: Path, branch: str) -> bool:
 
 def _branch_ref_proven_absent(repo_main: Path, branch: str) -> bool:
     """``show-ref --verify`` exits 1 for a missing ref; any other failure proves nothing."""
-    probe = run_with_status(repo=str(repo_main), args=["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
-    return probe.returncode == 1
+    return show_ref(str(repo_main), f"refs/heads/{branch}") is RefPresence.ABSENT
 
 
 def _unrecoverable_work(repo_main: Path, branch: str) -> str:
