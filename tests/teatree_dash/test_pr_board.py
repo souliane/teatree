@@ -144,6 +144,25 @@ class PrBoardTestCase(TestCase):
             assert cards[pr.url].next_actor == "Factory"
             assert "not verified" in cards[pr.url].next_action
 
+    def test_owner_question_and_active_task_precede_unverified_blocker(self) -> None:
+        owner = PullRequestFactory(ticket=TicketFactory())
+        working = PullRequestFactory(ticket=TicketFactory())
+        DeferredQuestion.objects.create(question="Approve the public post?", evidence={"pr_url": owner.url})
+        TaskFactory(ticket=working.ticket, phase="coding", status=Task.Status.PENDING)
+        snapshot = PrInventorySnapshot(
+            overlay=owner.overlay,
+            observed_at=timezone.now(),
+            entries=(_observed_entry(owner), _observed_entry(working)),
+            verified=False,
+        )
+
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            board = build_pr_board()
+
+        cards = {card.url: card for group in board.groups for card in group.cards}
+        assert (cards[owner.url].group, cards[owner.url].next_action) == ("Needs you", "Approve the public post?")
+        assert (cards[working.url].group, cards[working.url].next_actor) == ("Factory working", "Factory")
+
     def test_sweep_reason_prevents_ready_even_with_green_checks_and_approvals(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory(), state=PullRequest.State.APPROVED)
         entry = _observed_entry(
