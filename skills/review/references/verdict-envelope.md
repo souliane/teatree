@@ -8,7 +8,7 @@ The rubric done-gate is unconditional, and the cold reviewer is its ONLY automat
 "rubric_grades": [{"ordinal": 0, "text_hash": "<hash from brief>", "status": "pass", "rationale": "<the test that proves it>"}]
 ```
 
-Grade **every** criterion the brief's `TICKET RUBRIC` block lists. A verdict leaving one ungraded is refused and records **nothing** — not the verdict, not the grades — because recording it would retire the head's review claim while the merge stayed refused, leaving the head unmergeable with nobody left to re-arm it. A `pass` cites the test that proves the criterion (any kind, free-form prose); a `fail` needs no citation and no bypass overrides it. No `TICKET RUBRIC` block means the reviewed PR has no rubric and no grades are owed.
+Grade **every** criterion in `TICKET RUBRIC`, using its `text_hash`. Missing one refuses the verdict and all grades, preserving the review claim for retry. A `pass` cites any test in free-form prose; a `fail` needs no citation and no bypass overrides it. No block means no grades are owed.
 
 `t3 <overlay> ticket rubric-grade` stays the **operator's** manual seam. Do not reach for it as the reviewer: a grade written there lands outside the transaction that records your verdict, so a refused grade could no longer roll the verdict back.
 
