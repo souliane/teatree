@@ -2,6 +2,8 @@
   "model": "opusplan",
   "autoCompactEnabled": true,
   "skillListingMaxDescChars": 1,
+  "enableWorkflows": true,
+  "workflowSizeGuideline": "small",
   "attribution": {
     "commit": false,
     "pr": false
@@ -100,6 +102,7 @@
   },
   "env": {
     "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY": "4",
+    "CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS": "2",
     "TMPDIR": "/var/tmp",
     "PYTEST_DEBUG_TEMPROOT": "/var/tmp"
   }
