@@ -9,6 +9,7 @@ import hashlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -253,6 +254,8 @@ class LiveSessionController:
         self._receipts: dict[str, tuple[str, asyncio.Future[ControlReceipt]]] = {}
         self._in_flight: set[asyncio.Future[ControlReceipt]] = set()
         self._pushing = 0
+        self._pushes_done = asyncio.Event()
+        self._pushes_done.set()
         self._idle: asyncio.Future[FollowUp | None] | None = None
         self._starting: FollowUp | None = None
         self._follow_up_active = False
@@ -511,6 +514,7 @@ class LiveSessionController:
         if self.idle:
             return await self._push_idle(framed, command_id, wait)
         self._pushing += 1
+        self._pushes_done.clear()
         try:
             return await self._deliver(framed, command_id, wait)
         except Exception:
@@ -518,6 +522,8 @@ class LiveSessionController:
             return ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
         finally:
             self._pushing -= 1
+            if not self._pushing:
+                self._pushes_done.set()
 
     async def _push_idle(self, framed: str, command_id: str, wait: float) -> ControlReceipt:
         if self._claim_live is not None:
@@ -570,3 +576,6 @@ class LiveSessionController:
         """Give in-flight commands a bounded moment to settle once their session has resolved them."""
         if self._in_flight:
             await asyncio.wait(set(self._in_flight), timeout=_DRAIN_SECONDS)
+        if self._pushing:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._pushes_done.wait(), timeout=_DRAIN_SECONDS)

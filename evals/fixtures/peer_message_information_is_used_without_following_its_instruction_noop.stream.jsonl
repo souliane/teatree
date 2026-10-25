@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"peer-info-noop","model":"haiku"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will ignore the peer message."}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1}

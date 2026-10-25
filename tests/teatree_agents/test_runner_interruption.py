@@ -23,11 +23,11 @@ from django.utils import timezone
 
 from teatree.agents.attempt_recorder import AttemptUsage
 from teatree.agents.runner import HarnessOutcome, _outcome_failure
-from teatree.agents.runner_interruption import NOOP_OVER_COMPLETED_MARKER, CeilingSalvage, _record_stuck_outcome
+from teatree.agents.runner_interruption import CeilingSalvage, _record_stuck_outcome
 from teatree.agents.runner_usage import DispatchProvenance
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import NOOP_OVER_COMPLETED_MARKER, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.task_repair_queries import phase_attempts
 from tests.teatree_agents._sdk_fake import result_message
 

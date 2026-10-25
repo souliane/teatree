@@ -33,6 +33,12 @@ class TestTheBoxGlobalSetIsDeclaredWithSettings:
     def test_the_machine_wide_tick_cadence_is_box_global(self) -> None:
         assert "loop_cadence_seconds" in BOX_GLOBAL_SETTINGS
 
+    def test_advisor_model_is_global_and_strictly_a_string(self) -> None:
+        assert "agent_advisor_model" in BOX_GLOBAL_SETTINGS
+        assert OVERLAY_OVERRIDABLE_SETTINGS["agent_advisor_model"]("advisor-model") == "advisor-model"
+        with pytest.raises(TypeError):
+            OVERLAY_OVERRIDABLE_SETTINGS["agent_advisor_model"](123)
+
     def test_a_per_overlay_scanner_cadence_stays_scoped(self) -> None:
         # The control: `scanner_factories` fans per overlay and resolves
         # `get_effective_settings(overlay_name)`, so its cadence IS honourable per overlay.
