@@ -79,10 +79,18 @@ def resume_on_answer(row: DeferredQuestion, task: Task | None) -> Task | None:
         return None
 
 
+def _parked_by(task: Task, prefix: str) -> bool:
+    latest_error = task.attempts.order_by("-pk").values_list("error", flat=True).first()
+    return bool(latest_error) and latest_error.startswith(prefix)
+
+
+def is_operator_paused(task: Task) -> bool:
+    return _parked_by(task, OPERATOR_PAUSED_PREFIX)
+
+
 def release_checkout_park(task: Task) -> bool:
     """Wake an unchanged pending checkout task after the owner accepts its state."""
-    latest_error = task.attempts.order_by("-pk").values_list("error", flat=True).first()
-    if not latest_error or not latest_error.startswith(CHECKOUT_PARKED_PREFIX):
+    if not _parked_by(task, CHECKOUT_PARKED_PREFIX):
         return False
     updated = Task.objects.filter(pk=task.pk, status=Task.Status.PENDING, not_before__isnull=False).update(
         not_before=None
@@ -97,10 +105,7 @@ def release_operator_pause(task: Task) -> bool:
             .filter(pk=task.pk, status=Task.Status.PENDING, not_before__isnull=False)
             .first()
         )
-        if live is None:
-            return False
-        latest_error = live.attempts.order_by("-pk").values_list("error", flat=True).first()
-        if not latest_error or not latest_error.startswith(OPERATOR_PAUSED_PREFIX):
+        if live is None or not is_operator_paused(live):
             return False
         return bool(
             Task.objects.filter(pk=task.pk, status=Task.Status.PENDING, not_before=live.not_before).update(
