@@ -232,6 +232,8 @@ class TestCodexReviewZoneRevived(TestCase):
         )
 
     def test_a_head_whose_records_followed_an_unchanged_patch_arms_no_review(self) -> None:
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=102, head_sha="a" * 40, variant="codex:review")
+        CodexReviewMarker.mark_resolved(slug="o/r", pr_id=102, head_sha="a" * 40)
         HeadCarryOver.objects.create(
             slug="o/r",
             pr_id=102,
@@ -244,7 +246,27 @@ class TestCodexReviewZoneRevived(TestCase):
         created = persist_agent_actions(_agent_actions(self._signal(pr_id=102, head_sha="b" * 40)))
 
         assert created == []
-        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=102).exists()
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=102, head_sha="b" * 40).exists()
+
+    def test_a_carried_standard_review_does_not_skip_a_due_adversarial_variant(self) -> None:
+        old, new = "a" * 40, "b" * 40
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=104, head_sha=old, variant="codex:review")
+        CodexReviewMarker.mark_resolved(slug="o/r", pr_id=104, head_sha=old)
+        HeadCarryOver.objects.create(
+            slug="o/r",
+            pr_id=104,
+            from_head=old,
+            to_head=new,
+            outcome=HeadCarryOver.Outcome.CARRIED,
+            carried={"review_verdicts": 1},
+        )
+
+        created = persist_agent_actions(
+            _agent_actions(self._signal(pr_id=104, head_sha=new, variant="codex:adversarial-review"))
+        )
+
+        assert len(created) == 1
+        assert created[0].phase == "codex_adversarial_reviewing"
 
     def test_a_head_the_patch_left_unchanged_that_no_verdict_followed_is_armed(self) -> None:
         HeadCarryOver.objects.create(

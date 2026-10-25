@@ -116,8 +116,12 @@ class _Move:
                     raced := HeadCarryOver.objects.decided(slug=self.slug, pr_id=self.pr_id, head=self.to_head)
                 ) is not None:
                     return raced
+                carried = _carry_records(self)
                 return self.record(
-                    HeadCarryOver.Outcome.CARRIED, patch_id=lineage.new_patch_id, carried=_carry_records(self)
+                    HeadCarryOver.Outcome.CARRIED if any(carried.values()) else HeadCarryOver.Outcome.REFUSED,
+                    reason="" if any(carried.values()) else "no_records",
+                    patch_id=lineage.new_patch_id,
+                    carried=carried,
                 )
         except ReviewVerdictError:
             logger.warning(
@@ -164,23 +168,26 @@ def _open_clears(slug: str, pr_id: int) -> list[MergeClear]:
 
 
 def _newest_other_head(*, slug: str, pr_id: int, head: str) -> str | None:
-    """The head, other than *head*, that a record of this PR was most recently written at.
-
-    A head holding a record outranks one only a branch update names: the update leaves nothing to carry.
-    """
+    """Newest recorded head that a carried descendant has not superseded."""
     ticket = resolve_gated_ticket(slug=slug, pr_id=pr_id)
     records: list[tuple[datetime, str]] = [
         *ReviewVerdict.objects.for_pr(slug, pr_id).values_list("recorded_at", "reviewed_sha"),
         *((clear.issued_at, clear.reviewed_sha) for clear in _open_clears(slug, pr_id)),
         *_critic_heads(ticket),
     ]
+    others = [(at, sha.lower()) for at, sha in records if sha and sha.lower() != head]
+    carried = HeadCarryOver.objects.filter(
+        slug__iexact=slug.strip(), pr_id=pr_id, outcome=HeadCarryOver.Outcome.CARRIED
+    )
+    ancestors = {row.from_head for row in carried if any(sha == row.to_head for _, sha in others)}
+    candidates = [(at, sha) for at, sha in others if sha not in ancestors]
+    if candidates:
+        return max(candidates)[1]
     updates = BranchUpdateAttempt.objects.filter(slug__iexact=slug.strip(), pr_id=pr_id).values_list(
         "attempted_at", "head_sha"
     )
-    for stamped in (records, list(updates)):
-        if others := [(at, sha.lower()) for at, sha in stamped if sha and sha.lower() != head]:
-            return max(others)[1]
-    return None
+    updated = [(at, sha.lower()) for at, sha in updates if sha and sha.lower() != head]
+    return max(updated)[1] if updated else None
 
 
 def _critic_heads(ticket: Ticket | None) -> "list[tuple[datetime, str]]":

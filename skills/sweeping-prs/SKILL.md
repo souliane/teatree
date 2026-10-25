@@ -13,9 +13,9 @@ metadata:
 
 # PR Sweep — Batch Maintenance for Open PRs
 
-Walk every open MR/PR you authored, sequentially, and bring each up to date with the default branch:
+Walk every open MR/PR you authored, sequentially, and reconcile a default-branch conflict when predicted:
 
-1. Merge `origin/<default>` into the source branch (**never rebase**).
+1. Fetch `origin/<default>` and use `git merge-tree --write-tree HEAD origin/<default>` to predict conflicts; merge it into the source branch only when the prediction conflicts (**never rebase**).
 2. If conflicts are mechanical, resolve and continue. If not, prompt the user.
 3. Push.
 4. Watch CI. On red, hand off to the existing `/t3:debug` + `/t3:ship` fix-push-monitor loop.
@@ -120,12 +120,14 @@ This guards against silent re-approval after an unrelated rebase. Canonical rule
 
 Find or create a worktree for this PR's source branch. Reuse an existing worktree only when its branch matches; otherwise create a fresh one with `t3 <overlay> workspace ticket <pr-url>`. Never edit the main clone.
 
-### Step 4 — Merge default branch
+### Step 4 — Reconcile default branch when needed
 
 ```bash
 git fetch origin <default>
-git merge origin/<default>
+git merge-tree --write-tree HEAD origin/<default>
 ```
+
+If the merge-tree prediction conflicts, run `git merge origin/<default>` and resolve it. A clean prediction needs no merge.
 
 **Never rebase.** The PR has been reviewed against shared history; rewriting it forces reviewers to re-read the whole diff.
 

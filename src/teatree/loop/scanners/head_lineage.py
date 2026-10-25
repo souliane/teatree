@@ -18,10 +18,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TypedDict, cast
 
-from teatree import forge_credentials
 from teatree.core.merge.head_carry_over import SUPPORTED_HOST, LineageReader, PatchLineage, carry_over_head
 from teatree.core.models import HeadCarryOver
-from teatree.loop.scanners.base import run_gh
+from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.loop.scanners.base import run_gh_for_slug
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
@@ -31,6 +31,7 @@ GhRunner = Callable[[list[str], str], "CompletedProcess[str]"]
 
 HISTORY_TRUNCATED = "history_truncated"
 DIFF_UNAVAILABLE = "diff_unavailable"
+HEAD_UNAVAILABLE = "head_unavailable"
 _DIFF_ACCEPT = "Accept: application/vnd.github.diff"
 _COMMITS_PER_PAGE = 250
 _MERGE_PARENT_COUNT = 2
@@ -70,16 +71,11 @@ class _RefusedError(Exception):
         self.reason = reason
 
 
-def credentialed_gh(argv: list[str], slug: str) -> "CompletedProcess[str]":
-    resolution = forge_credentials.resolve_slug_token(slug, forge="github", credential="github_token")
-    return run_gh(argv, resolution=resolution)
-
-
 @dataclass(frozen=True, slots=True)
 class GhLineageReader:
     """Reads a :class:`PatchLineage` through ``gh`` under the repo's routed token, never ambient authentication."""
 
-    gh: GhRunner = credentialed_gh
+    gh: GhRunner = run_gh_for_slug
 
     def __call__(self, *, slug: str, pr_id: int, host_kind: str, old_head: str, new_head: str) -> PatchLineage | None:
         if host_kind != SUPPORTED_HOST:
@@ -98,11 +94,15 @@ class GhLineageReader:
         old_commits = self._commits(slug, base, old_head)
         new_commits = self._commits(slug, base, new_head)
         added = new_commits.keys() - old_commits.keys()
+        descends = old_head in new_commits
+        added_all_merges = all(new_commits[sha] >= _MERGE_PARENT_COUNT for sha in added)
+        if not descends or not added_all_merges:
+            return PatchLineage("", "", descends=descends, added_all_merges=added_all_merges)
         return PatchLineage(
             old_patch_id=self._patch_id(slug, base, old_head),
             new_patch_id=self._patch_id(slug, base, new_head),
-            descends=old_head in new_commits,
-            added_all_merges=all(new_commits[sha] >= _MERGE_PARENT_COUNT for sha in added),
+            descends=descends,
+            added_all_merges=added_all_merges,
         )
 
     def _base_of(self, slug: str, pr_id: int, *, live_head: str) -> str:
@@ -150,6 +150,8 @@ class GhLineageReader:
             return result.stdout
         if diff and any(status in result.stderr for status in _UNRENDERABLE_STATUSES):
             raise _RefusedError(DIFF_UNAVAILABLE)
+        if "/compare/" in argv[-1] and "HTTP 404" in result.stderr:
+            raise _RefusedError(HEAD_UNAVAILABLE)
         msg = f"gh {argv[-1]} exited {result.returncode}: {result.stderr.strip()[:200]}"
         raise _UnreadableError(msg)
 
@@ -174,7 +176,7 @@ def head_is_carried(*, slug: str, pr_id: int, head_sha: str, host_kind: str, rea
     return row is not None and row.outcome == HeadCarryOver.Outcome.CARRIED
 
 
-def review_head_is_carried(*, slug: str, pr_id: int, head_sha: str, pr_url: str) -> bool:
+def review_head_is_carried(*, slug: str, pr_id: int, head_sha: str, pr_url: str, variant: str) -> bool:
     """Whether a review verdict followed an unchanged patch to *head_sha*: arming another round on it is churn.
 
     The review-arming handlers read the live forge under their routed token. A head the patch left unchanged
@@ -183,4 +185,20 @@ def review_head_is_carried(*, slug: str, pr_id: int, head_sha: str, pr_url: str)
     row = carried_head_row(
         slug=slug, pr_id=pr_id, head_sha=head_sha, host_kind=forge_from_remote(pr_url), reader=GhLineageReader()
     )
-    return row is not None and row.reviewed_by_carry
+    if row is None or not row.reviewed_by_carry:
+        return False
+    ancestors: set[str] = set()
+    prior = row.from_head
+    while prior not in ancestors:
+        ancestors.add(prior)
+        previous = HeadCarryOver.objects.decided(slug=slug, pr_id=pr_id, head=prior)
+        if previous is None or not previous.reviewed_by_carry:
+            break
+        prior = previous.from_head
+    return CodexReviewMarker.objects.filter(
+        slug__iexact=slug.strip(),
+        pr_id=pr_id,
+        head_sha__in=ancestors,
+        variant=variant,
+        state=CodexReviewMarker.State.RESOLVED,
+    ).exists()

@@ -8,7 +8,11 @@ from django.test import TestCase
 from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.self_review import SelfReview
-from teatree.core.models.task_phase_disposition import queue_self_review_rework
+from teatree.core.models.task_phase_disposition import (
+    advance_self_reviewed_ticket,
+    advance_shipped_ticket,
+    queue_self_review_rework,
+)
 from tests._git_repo import make_git_repo, run_git
 from tests.factories import WorktreeFactory
 from tests.teatree_core._self_review_helpers import author_ticket, completed_self_review, head
@@ -77,6 +81,40 @@ class TestHoldReworkTargetsTheLiveHead(TestCase):
         queue_self_review_rework(ticket, _hold(ticket))
 
         assert Task.objects.filter(ticket=ticket, phase="coding", status=Task.Status.PENDING).count() == 1
+
+    def test_a_nonhex_review_head_proves_no_supersession(self) -> None:
+        ticket, _live = _ticket_with_worktree_at_head(self.tmp_path)
+        completed_self_review(ticket, "hold", reviewed_sha="head")
+
+        queue_self_review_rework(ticket, _hold(ticket))
+
+        assert Task.objects.filter(ticket=ticket, phase="coding", status=Task.Status.PENDING).count() == 1
+
+    def test_a_stale_hold_at_review_completion_schedules_testing_of_the_live_head(self) -> None:
+        ticket, _live = _ticket_with_worktree_at_head(self.tmp_path)
+        task = completed_self_review(ticket, "hold", reviewed_sha=head(1))
+
+        advanced = advance_self_reviewed_ticket(task, ticket)
+
+        ticket.refresh_from_db()
+        assert advanced is False
+        assert ticket.state == Ticket.State.CODED
+        assert Task.objects.filter(ticket=ticket, phase="testing", status=Task.Status.PENDING).count() == 1
+
+    def test_a_stale_hold_at_shipping_completion_schedules_testing_of_the_live_head(self) -> None:
+        ticket, _live = _ticket_with_worktree_at_head(self.tmp_path)
+        ticket.state = Ticket.State.SELF_REVIEWED
+        ticket.save(update_fields=["state"])
+        completed_self_review(ticket, "hold", reviewed_sha=head(1))
+        session = Session.objects.create(ticket=ticket, agent_id="shipping")
+        shipping = Task.objects.create(ticket=ticket, session=session, phase="shipping", status=Task.Status.COMPLETED)
+
+        advanced = advance_shipped_ticket(shipping, ticket)
+
+        ticket.refresh_from_db()
+        assert advanced is False
+        assert ticket.state == Ticket.State.CODED
+        assert Task.objects.filter(ticket=ticket, phase="testing", status=Task.Status.PENDING).count() == 1
 
     def test_a_coding_completion_on_a_superseded_head_re_enters_testing_instead_of_stranding_the_ticket(self) -> None:
         ticket, _live = _ticket_with_worktree_at_head(self.tmp_path)

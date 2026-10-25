@@ -85,14 +85,13 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
                 else "Use `git rev-parse HEAD` in the mounted checkout as the full 40-char `reviewed_sha`."
             )
             if read_only_venue
-            else (
-                "`reviewed_sha` MUST be the full 40-char SHA of the head you were DISPATCHED for "
-                "(`git rev-parse HEAD`):"
-            )
+            else ("`reviewed_sha` MUST be the full 40-char SHA you reviewed (`git rev-parse HEAD`):")
         ),
         "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
-        "Any other head is REFUSED and records nothing — if the head moved under you, review the dispatched",
-        "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
+        "A verdict for any other head is REFUSED. If the checkout resolves to a different tree, return",
+        '  "review_head_mismatch": {"observed_sha": "<full 40-char HEAD SHA>", "reason": "<checkout failure>"}',
+        "without review_verdict or needs_user_input. The factory retries once at the live PR head,",
+        "then records a card if the mismatch persists. Review a moved live head when checkout succeeds.",
         "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
         "dispatched one, so a verdict that names no head records nothing at all.",
         "A blocking finding (blocker/major/high/critical) outside PR-changed files is REFUSED and records nothing.",

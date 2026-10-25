@@ -15,6 +15,7 @@ from teatree.core.models import (
     CriticVerdict,
     HeadCarryOver,
     MergeClear,
+    MRReviewLock,
     ReviewVerdict,
     ReviewVerdictError,
     Ticket,
@@ -169,6 +170,36 @@ class TestCarriesOnIdenticalPatch(TestCase):
         seeded.clear.refresh_from_db()
         assert seeded.clear.reviewed_sha == NEW
 
+    def test_a_late_verdict_at_an_older_head_does_not_strand_a_newer_clearance(self) -> None:
+        seeded = _seed()
+        _carry(_Reader(_lineage()), live_head=MIDDLE)
+        ReviewVerdict.record(
+            pr_id=PR_ID,
+            slug=SLUG,
+            reviewed_sha=OLD,
+            verdict="hold",
+            reviewer_identity="reviewer-b",
+            ticket=seeded.ticket,
+        )
+
+        row = _carry(_Reader(_lineage()))
+
+        assert row is not None
+        assert row.from_head == MIDDLE
+        seeded.clear.refresh_from_db()
+        assert seeded.clear.reviewed_sha == NEW
+
+    def test_carry_does_not_release_a_review_lock_held_by_another_reviewer(self) -> None:
+        _seed()
+        lock = MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="reviewer-in-flight")
+        assert lock is not None
+
+        _carry(_Reader(_lineage()))
+
+        lock.refresh_from_db()
+        assert lock.state == MRReviewLock.State.REVIEW_DISPATCHED
+        assert lock.holder == "reviewer-in-flight"
+
     def test_the_expedite_waiver_attestation_is_not_moved_with_a_clearance(self) -> None:
         seeded = _seed()
         MergeClear.objects.filter(pk=seeded.clear.pk).update(
@@ -311,6 +342,16 @@ class TestCandidateSelection(TestCase):
 
         assert _carry(reader) is None
         assert reader.calls == []
+
+    def test_a_branch_update_without_review_evidence_records_patch_only(self) -> None:
+        BranchUpdateAttempt.objects.create(slug=SLUG, pr_id=PR_ID, head_sha=OLD)
+        reader = _Reader(_lineage())
+
+        row = _carry(reader)
+        assert row is not None
+        assert (row.outcome, row.reason) == (HeadCarryOver.Outcome.REFUSED, "no_records")
+        assert reader.calls == [(OLD, NEW)]
+        assert HeadCarryOver.objects.left_patch_unchanged_by_update(slug=SLUG, pr_id=PR_ID, head=NEW)
 
     def test_a_consumed_clearance_alone_is_no_candidate(self) -> None:
         clear = _clear(_ticket(), OLD, slug=SLUG)
@@ -522,7 +563,7 @@ class TestTheCarryNeverClaimsWhatItDidNotMove(TestCase):
         row = _carry(_Reader(_lineage()))
 
         assert row is not None
-        assert row.outcome == HeadCarryOver.Outcome.CARRIED
+        assert (row.outcome, row.reason) == (HeadCarryOver.Outcome.REFUSED, "no_records")
         assert not row.reviewed_by_carry
         assert HeadCarryOver.objects.left_patch_unchanged_by_update(slug=SLUG, pr_id=PR_ID, head=NEW)
 

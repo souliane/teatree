@@ -39,9 +39,9 @@ def handle_self_pr_review(action: DispatchAction) -> Task | None:
     if not pr_url or not slug or not isinstance(pr_id, int) or not head_sha:
         logger.debug("Skipping self-PR review action with incomplete payload: %r", action.detail)
         return None
-    if review_head_is_carried(slug=slug, pr_id=pr_id, head_sha=head_sha, pr_url=pr_url):
-        return None
     variant = str(payload.get("variant") or "claude:review")
+    if review_head_is_carried(slug=slug, pr_id=pr_id, head_sha=head_sha, pr_url=pr_url, variant=variant):
+        return None
     overlay = str(payload.get("overlay") or "")
     with transaction.atomic():
         ticket, _created = _get_or_create_ticket(

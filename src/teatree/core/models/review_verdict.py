@@ -367,6 +367,7 @@ class ReviewVerdict(models.Model):
         changed_files: ChangedFileSet | None = None,
         merge_result_retake: bool = False,
         live_checks: LiveChecksProbe | None = None,
+        conclude_review: bool = True,
     ) -> "ReviewVerdict":
         """The single guarded factory for a recorded verdict.
 
@@ -460,8 +461,9 @@ class ReviewVerdict(models.Model):
             # dispatcher's identity, not a claim of holding nothing, and still
             # releases — a concluded review may never strand a lock (#3920). See
             # MRReviewLock.resolve for the full asymmetry.
-            resolve_head_claims(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
-            MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
+            if conclude_review:
+                resolve_head_claims(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
+                MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
             return recorded
 
     def carry_forward(self, *, reviewed_sha: str) -> "ReviewVerdict":
@@ -490,6 +492,7 @@ class ReviewVerdict(models.Model):
             gh_verify_result=self.gh_verify_result,
             ticket=self.ticket,
             expedited=(self.gh_verify_result == MergeClear.VerifyResult.PENDING),
+            conclude_review=False,
         )
 
     @property

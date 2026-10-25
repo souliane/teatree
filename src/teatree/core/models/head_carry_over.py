@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from typing import ClassVar
 
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.models.branch_update_attempt import BranchUpdateAttempt
@@ -23,13 +24,16 @@ class HeadCarryOverManager(models.Manager["HeadCarryOver"]):
 
     def carried_from(self, *, slug: str, pr_id: int, head: str, from_heads: Iterable[str]) -> bool:
         """Whether *head* arrived from one of *from_heads* with the patch unchanged."""
-        return self.filter(
-            slug__iexact=slug.strip(),
-            pr_id=pr_id,
-            to_head=head.strip().lower(),
-            outcome=HeadCarryOver.Outcome.CARRIED,
-            from_head__in=[sha.strip().lower() for sha in from_heads],
-        ).exists()
+        return (
+            self.filter(
+                slug__iexact=slug.strip(),
+                pr_id=pr_id,
+                to_head=head.strip().lower(),
+                from_head__in=[sha.strip().lower() for sha in from_heads],
+            )
+            .filter(Q(outcome=HeadCarryOver.Outcome.CARRIED) | Q(reason="no_records"))
+            .exists()
+        )
 
     def left_patch_unchanged_by_update(self, *, slug: str, pr_id: int, head: str) -> bool:
         """Whether the sweep's own branch update produced *head* from a head with the same patch."""

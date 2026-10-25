@@ -106,12 +106,24 @@ class TestACarriedHeadArmsNoReview(TestCase):
         )
 
     def test_a_carried_head_creates_no_marker_and_no_task(self) -> None:
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=95, head_sha=self._OLD, variant="claude:review")
+        CodexReviewMarker.mark_resolved(slug="o/r", pr_id=95, head_sha=self._OLD)
         self._carry_row(HeadCarryOver.Outcome.CARRIED)
 
         assert handle_self_pr_review(_action(pr_id=95, head_sha=self._NEW)) is None
 
-        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=95).exists()
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=95, head_sha=self._NEW).exists()
         assert not Task.objects.filter(ticket__issue_url=_PR_URL.replace("90", "95")).exists()
+
+    def test_a_carried_head_arms_a_variant_not_completed_at_the_old_head(self) -> None:
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=95, head_sha=self._OLD, variant="codex:review")
+        CodexReviewMarker.mark_resolved(slug="o/r", pr_id=95, head_sha=self._OLD)
+        self._carry_row(HeadCarryOver.Outcome.CARRIED)
+
+        task = handle_self_pr_review(_action(pr_id=95, head_sha=self._NEW))
+
+        assert task is not None
+        assert task.phase == "reviewing"
 
     def test_a_head_the_patch_left_unchanged_that_no_verdict_followed_is_armed(self) -> None:
         self._carry_row(HeadCarryOver.Outcome.CARRIED, review_verdicts=0)

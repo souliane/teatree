@@ -13,9 +13,8 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from teatree import forge_credentials
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr, run_gh
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr, run_gh_for_slug
 from teatree.loop.scanners.pr_behind_base import (
     build_compare_query,
     chunk_heads,
@@ -327,8 +326,7 @@ class GhPrApiClient:
 
     @staticmethod
     def _run_gh(argv: list[str], *, slug: str) -> tuple[int, str, str]:
-        resolution = forge_credentials.resolve_slug_token(slug, forge="github", credential="github_token")
-        result = run_gh(argv, resolution=resolution)
+        result = run_gh_for_slug(argv, slug)
         return result.returncode, result.stdout, result.stderr
 
 

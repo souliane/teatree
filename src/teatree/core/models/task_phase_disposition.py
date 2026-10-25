@@ -141,7 +141,10 @@ def advance_self_reviewed_ticket(task: "Task", ticket: Ticket) -> bool:
         return False
     if (review := SelfReview.of_task(task)) is not None and review.is_hold:
         if not task.recorded_by_hand():
-            queue_self_review_rework(ticket, review)
+            if live := _head_past(ticket, review):
+                _retest_superseded_hold(ticket, review, after=task, live=live)
+            else:
+                queue_self_review_rework(ticket, review)
         return False
     ticket.review(parent_task=task, schedule_followup=not task.recorded_by_hand())
     ticket.save()
@@ -162,7 +165,10 @@ def advance_shipped_ticket(task: "Task", ticket: Ticket) -> bool:
         escalate_unmatched_phase_transition(task, phase="shipping", ticket=ticket)
         return False
     if (held := SelfReview.open_hold_for(ticket)) is not None:
-        queue_self_review_rework(ticket, held, after=task)
+        if live := _head_past(ticket, held):
+            _retest_superseded_hold(ticket, held, after=task, live=live)
+        else:
+            queue_self_review_rework(ticket, held, after=task)
         return False
     task.session.check_gate_across_ticket("shipping")
     ticket.ship()
@@ -200,7 +206,14 @@ def _head_past(ticket: Ticket, review: SelfReview) -> str:
     recorded none, proves nothing stale, so the rework stays.
     """
     live = worktree_head_sha(ticket)
-    return live if live and review.reviewed_sha and not live.startswith(review.reviewed_sha) else ""
+    reviewed = review.reviewed_sha
+    return live if live and re.fullmatch(r"[0-9a-f]{7,40}", reviewed) and not live.startswith(reviewed) else ""
+
+
+def _retest_superseded_hold(ticket: Ticket, review: SelfReview, *, after: "Task", live: str) -> None:
+    _fail_pending_reworks(ticket, review, live=live)
+    ticket.address_self_review(parent_task=after)
+    ticket.save()
 
 
 def _fail_pending_reworks(ticket: Ticket, review: SelfReview, *, live: str) -> None:

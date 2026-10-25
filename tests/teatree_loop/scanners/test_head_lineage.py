@@ -147,6 +147,25 @@ class TestGhLineageReader:
         assert not lineage.identical
         assert lineage.refusal_reason == "added_commits_not_merges"
 
+    def test_a_fix_push_is_refused_before_downloading_diffs(self, scenario: _Scenario) -> None:
+        run_git(scenario.repo, "checkout", "-q", "pr")
+        _edit(scenario.repo, "a.txt", 12, "second pr edit")
+        new = _commit(scenario.repo, "pr fix")
+        gh = _GitBackedGh(scenario.repo, reported_head=new)
+        calls: list[list[str]] = []
+
+        def counted(argv: list[str], slug: str) -> "subprocess.CompletedProcess[str]":
+            calls.append(argv)
+            return gh(argv, slug)
+
+        lineage = GhLineageReader(gh=counted)(
+            slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=scenario.old, new_head=new
+        )
+
+        assert lineage is not None
+        assert lineage.refusal_reason == "added_commits_not_merges"
+        assert not any("application/vnd.github.diff" in " ".join(argv) for argv in calls)
+
     def test_a_non_merge_commit_that_nets_to_nothing_is_still_not_a_merge(self, scenario: _Scenario) -> None:
         run_git(scenario.repo, "checkout", "-q", "pr")
         _edit(scenario.repo, "b.txt", 4, "temporary")
@@ -157,7 +176,6 @@ class TestGhLineageReader:
         lineage = scenario.read(new)
 
         assert lineage is not None
-        assert lineage.identical
         assert lineage.refusal_reason == "added_commits_not_merges"
 
     def test_a_rewritten_history_does_not_descend(self, scenario: _Scenario) -> None:
@@ -212,6 +230,15 @@ class TestGhLineageReader:
         new = _merge_main_into_pr(scenario)
 
         assert scenario.read(new, rc=1) is None
+
+    def test_a_missing_old_head_is_a_durable_refusal(self, scenario: _Scenario) -> None:
+        _main_edits(scenario, "b.txt", 10)
+        new = _merge_main_into_pr(scenario)
+
+        lineage = scenario.read(new, diff_failure="gh: HTTP 404")
+
+        assert lineage is not None
+        assert lineage.refusal == "head_unavailable"
 
     def test_a_host_other_than_github_is_not_read(self, scenario: _Scenario) -> None:
         reader = GhLineageReader(gh=_GitBackedGh(scenario.repo, reported_head=scenario.old))

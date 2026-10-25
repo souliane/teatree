@@ -365,10 +365,12 @@ class TestEnvelopeVerdictPhasesIsExactlyWhatTheBriefTeaches(TestCase):
     #: asks for the envelope the orchestrator must record server-side.
     _RETURN_DIRECTIVE = "RECORD YOUR VERDICT BY RETURNING IT"
 
-    def test_reviewer_brief_keeps_full_dispatched_head_refusal(self) -> None:
+    def test_reviewer_brief_keeps_head_refusal_and_one_live_head_retry(self) -> None:
         brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
-        assert "Any other head is REFUSED and records nothing" in brief
-        assert "one or return needs_user_input" in brief
+        assert "A verdict for any other head is REFUSED" in brief
+        assert '"review_head_mismatch": {"observed_sha":' in brief
+        assert "without review_verdict or needs_user_input" in brief
+        assert "factory retries once at the live PR head" in brief
         assert "OMITTING `reviewed_sha` is REFUSED too" in brief
         assert "dispatched one, so a verdict that names no head records nothing at all" in brief
 
