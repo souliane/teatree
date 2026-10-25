@@ -74,6 +74,7 @@ from teatree.backends.issue_reads import issue_is_done
 from teatree.backends.loader import pr_open_state
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.health_signal import HealthSignal
+from teatree.core.models import MergeAudit
 from teatree.core.models.known_issue import KnownIssue, merge_refusal_fingerprint
 from teatree.core.models.ticket_ledger import all_merges_reopened_over
 from teatree.loop.scanners.base import ScanSignal
@@ -95,7 +96,7 @@ DEFAULT_PROBE_BUDGET = 150
 
 @dataclass(slots=True)
 class BoardReconcileScanner:
-    """Reconcile the ticket FSM against forge truth, reporting each transition."""
+    """Reconcile ticket state; leave unaudited merge notices to the owner-alert scanner."""
 
     overlay_name: str = ""
     name: str = "board_reconcile"
@@ -118,6 +119,8 @@ class BoardReconcileScanner:
                 },
             )
             for t in report.applied
+            if t.action is not BoardAction.ADVANCED_MERGED
+            or MergeAudit.objects.filter(clear__ticket_id=t.ticket_id).exists()
         ]
 
 

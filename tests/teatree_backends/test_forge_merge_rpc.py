@@ -104,6 +104,24 @@ class TestGhConflictState:
         state = GhMergeRpc(lambda _argv: (1, "", "boom")).fetch_pr_merge_state(slug="o/r", pr_id=7)
         assert state.conflict is MergeConflictState.UNKNOWN
 
+    def test_merged_pr_carries_actor_and_time(self) -> None:
+        payload = json.dumps(
+            {
+                "state": "MERGED",
+                "mergeCommit": {"oid": "a" * 40},
+                "mergedBy": {"login": "operator"},
+                "mergedAt": "2026-10-25T12:00:00Z",
+            }
+        )
+        state = GhMergeRpc(lambda _argv: (0, payload, "")).fetch_pr_merge_state(slug="o/r", pr_id=7)
+        assert (state.merged_by, state.merged_at) == ("operator", "2026-10-25T12:00:00Z")
+
+    def test_null_actor_and_time_are_empty(self) -> None:
+        state = GhMergeRpc(
+            lambda _argv: (0, '{"state":"MERGED","mergedBy":null,"mergedAt":null}', "")
+        ).fetch_pr_merge_state(slug="o/r", pr_id=7)
+        assert (state.merged_by, state.merged_at) == ("", "")
+
 
 class TestFetchLiveHeadSha:
     """A failed read and a PR with no head are DIFFERENT facts (the twin of the GitLab case).
