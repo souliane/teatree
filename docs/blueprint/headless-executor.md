@@ -2,6 +2,8 @@
 
 Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §5 ("Headless executor" and "Cached-prefix stability on the dispatch lane").
 
+The global `agent_advisor_model` setting defaults to empty. When set, `_build_options` puts its model ID in `advisorModel` within the `ClaudeAgentOptions.settings` JSON only for a registered harness with `spawns_cli_child`. Unset spawns keep `settings=None`; `pydantic_ai` and Codex carry no advisor key. `prepared_spawn` merges the advisor key with its account-sync keys for the Claude CLI child.
+
 ## The executor and its harnesses
 
 For a read-only Codex phase, the worker gathers forge and survey facts before opening the executor.
