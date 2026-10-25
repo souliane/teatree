@@ -175,7 +175,7 @@ class _InboxLoopSettings:
 
 @dataclass
 class _IssueImplementerLoopSettings:
-    """The intake scanner's own walk budget — the ceilings and labels are kill switches."""
+    """The intake scanner's walk budget and idle-hold window — the ceilings and labels are kill switches."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "issue_implementer")
 

@@ -11,9 +11,10 @@ from types import SimpleNamespace
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
 from teatree.core.factory.factory_signal_queries import SignalReading, SignalStatus
 from teatree.core.factory.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
-from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, DirectiveDispatch, Ticket
+from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, DirectiveDispatch, PullRequest, Ticket
 from teatree.core.models.directive_dispatch import MAX_INTERPRET_ATTEMPTS
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.loop.self_improve.budget import BudgetVerdict
@@ -159,6 +160,22 @@ class TestIntakeBranches(TestCase):
 class TestExecutionBranches(TestCase):
     def test_admitted_setting_policy_gate_implements(self) -> None:
         _admitted()
+        assert _tick().action == "implementing"
+
+    def test_admitted_at_the_open_pr_cap_waits_and_implements_once_one_closes(self) -> None:
+        directive = _admitted()
+        for index in range(OPEN_PR_START_CAP):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 2000}",
+            )
+        held = _tick()
+        assert (held.action, held.reason) == ("waiting", "open_pr_start_cap")
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.ADMITTED
+        pr = PullRequest.objects.earliest("pk")
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
         assert _tick().action == "implementing"
 
     def test_admitted_default_behaviour_implements(self) -> None:
