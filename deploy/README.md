@@ -274,7 +274,7 @@ fail at connection setup. A writable connection reads the SQLite file header
 and runs the journal-mode setter only for a new file or a WAL-versus-rollback
 header mismatch for WAL. TRUNCATE is selected on every writable rollback
 connection because it is not persisted in the file header. A same-family
-connection can read committed rows while another process holds the file.
+connection can read committed rows while another process holds a read lock or a reserved write lock on it.
 A genuine mode conversion can still fail with `database is locked` while another
 process holds the file.
 

@@ -34,6 +34,7 @@ from teatree.cli.verify_gates import (
     _prek_config,
     _resource_refusal,
 )
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.paths import ControlDb
 from teatree.quality.changed_set import ChangedSet, ChangeEntry
 from tests._git_repo import make_git_repo, run_git
@@ -222,6 +223,28 @@ class TestVerifyGatesRunsBothStages:
             child_registry = json.loads(env["TEATREE_TERM_REGISTRY"])
             assert {key: child_registry[key] for key in registry} == registry
             assert ControlDb(env, home=tmp_path).for_repo(worktree).path.is_relative_to(private_root)
+            assert not private_root.exists()
+
+    @pytest.mark.parametrize("registry_error", [BannedTermsUnreadableError, BannedTermsUnsetError])
+    def test_unavailable_registry_still_isolates_stage(
+        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry_error: type[Exception]
+    ) -> None:
+        live_home = tmp_path / "live"
+        monkeypatch.setenv("XDG_DATA_HOME", str(live_home))
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.cli.verify_gates.load_registry", side_effect=registry_error),
+            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 0, _text(result)
+        assert run.call_args_list
+        for call in run.call_args_list:
+            env = call.kwargs["env"]
+            assert Path(env["XDG_DATA_HOME"]) != live_home
+            assert "TEATREE_TERM_REGISTRY" not in env
 
     def test_invokes_push_stage_hooks_not_just_commit(self) -> None:
         with (
