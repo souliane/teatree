@@ -62,6 +62,13 @@ class TestRunnerAdvisorModel(TestCase):
                     }
                 )
 
+    def test_default_overrides_select_claude_child_for_advisor(self) -> None:
+        ConfigSetting.objects.set_value("agent_advisor_model", "advisor-model")
+
+        options = _build_options(self._task(), "ctx", phase="coding", skills=[])
+
+        assert json.loads(options.settings) == {"advisorModel": "advisor-model"}
+
     def test_dispatch_passes_selected_harness_to_options(self) -> None:
         ConfigSetting.objects.set_value("agent_advisor_model", "advisor-model")
         for name, harness in (("claude_sdk", ClaudeSdkHarness()), ("pydantic_ai", PydanticAiHarness())):

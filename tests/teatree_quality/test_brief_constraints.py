@@ -44,6 +44,14 @@ def test_hyphenated_setting_names_remain_constraints() -> None:
         assert {item.kind for item in extract_constraints(f"Do not add a {name}.")} == {"no_setting"}
 
 
+def test_settings_flag_prefix_keeps_a_hyphenated_name_as_a_constraint() -> None:
+    assert {item.kind for item in extract_constraints("Do not add --settings-file.")} == {"no_setting"}
+
+
+def test_settings_flag_suffix_keeps_a_prefixed_name_as_a_constraint() -> None:
+    assert {item.kind for item in extract_constraints("Do not add foo--settings.")} == {"no_setting"}
+
+
 def test_an_import_is_not_a_new_public_definition() -> None:
     path = "src/teatree/core/example.py"
     changes = ChangedSet((ChangeEntry("M", path),), "origin/main")
