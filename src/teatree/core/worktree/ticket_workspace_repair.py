@@ -207,7 +207,7 @@ def _move_one(worktree: Worktree, canonical: Path) -> str | None:
         return clone
 
     work = probe_unshipped_work(old_path)
-    refusal = work.unreadable or removal_refusal(old_path, clone=clone, row=worktree, allow_changes=True)
+    refusal = work.unreadable or removal_refusal(old_path, clone=clone, row=worktree, operation="move")
     if refusal:
         return f"{worktree.repo_path}: {old_path} is unproven ({refusal}) — refusing to touch it"
 

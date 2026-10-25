@@ -7,11 +7,12 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.cleanup.removal_proof import removal_refusal
+from teatree.core.cleanup.unshipped_work import UnshippedWork
 from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.models import Ticket, Worktree
 from teatree.utils import git
 from teatree.utils.git_sync import RemoteReadError
-from tests.teatree_core.cleanup._shared import _run_git
+from tests.teatree_core.cleanup._shared import _run_git, forge_reporting
 
 
 class TestRemovalProof(TestCase):
@@ -131,3 +132,39 @@ class TestRemovalProof(TestCase):
         _run_git("push", "-q", "origin", "main", cwd=self.clone)
 
         assert removal_refusal(self.checkout, clone=self.clone) == ""
+
+    def test_merged_tip_uses_checked_out_branch_name(self) -> None:
+        (self.checkout / "x.txt").write_text("feature\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.checkout)
+        _run_git("commit", "-q", "-m", "feature", cwd=self.checkout)
+        tip = git.run_strict(repo=str(self.checkout), args=["rev-parse", "HEAD"])
+        (self.clone / "x.txt").write_text("resolved feature\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "squash feature", cwd=self.clone)
+        (self.clone / "x.txt").write_text("rewritten later\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "rewrite", cwd=self.clone)
+        _run_git("push", "-q", "origin", "main", cwd=self.clone)
+
+        with (
+            forge_reporting(merged_head_sha=tip),
+            patch(
+                "teatree.core.worktree.branch_classification._merged_pr_head_sha",
+                side_effect=lambda repo, branch: tip if branch == "feat" else "",
+            ),
+        ):
+            assert removal_refusal(self.checkout, clone=self.clone) == ""
+
+    def test_recovery_uses_typed_missing_head_even_if_message_changes(self) -> None:
+        sha = git.run_strict(repo=str(self.checkout), args=["rev-parse", "HEAD"])
+        with (
+            patch(
+                "teatree.core.cleanup.removal_proof.probe_unshipped_work",
+                side_effect=[UnshippedWork(unreadable="message changed", head_missing=True), UnshippedWork()],
+            ) as probe,
+            patch("teatree.core.cleanup.removal_proof.git.recovered_head_sha_after_ref_gone", return_value=sha),
+            patch("teatree.core.cleanup.removal_proof.find_open_pr_for_branch", return_value=PrProbe.none()),
+        ):
+            assert removal_refusal(self.checkout, clone=self.clone) == ""
+
+        assert probe.call_args_list[1].kwargs["base_ref"] == sha

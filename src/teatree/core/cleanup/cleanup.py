@@ -26,7 +26,7 @@ from teatree.core.cleanup.cleanup_dirt_guard import guard_or_warn_dirty_worktree
 from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
 from teatree.core.cleanup.cleanup_result import CleanupResult
 from teatree.core.cleanup.removal_proof import RemovalRefusedError, removal_refusal
-from teatree.core.cleanup.unshipped_work import capture_unshipped_work
+from teatree.core.cleanup.unshipped_work import cached_remote_reads, capture_unshipped_work
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.worktree._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps, shared_resources
@@ -200,7 +200,7 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
         f"{worktree.repo_path} ({target.label}): "
         f"refused cleanup — {len(blockers)} commit(s) not provably on origin/main "
         f"(content not upstream): {listed}. "
-        "Push them to a new branch or pass force=True."
+        "Push them to a new branch or use an explicit discard action."
     )
     raise RuntimeError(msg)
 
@@ -278,8 +278,8 @@ def _ref_captured_by_merge(repo: str, ref: str, branch: str | None, *, remote_re
     clean was reaped, destroying the only checkout of it.
     :func:`branch_landed_for_teardown` ANDs them with present-tense presence, and a
     target that re-edited the branch's own region therefore reads NOT landed: the
-    worktree is KEPT — recover it with ``workspace salvage``, or pass ``force=True``
-    to discard it deliberately. The forge's record at the exact tip still stands
+    worktree is KEPT — recover it with ``workspace salvage``, or use an explicit
+    discard action. The forge's record at the exact tip still stands
     alone there, so #4423's reclaim is unaffected.
     """
     if (
@@ -518,6 +518,7 @@ def _remove_overlay_pass_entry(overlay: "OverlayBase | None", worktree: Worktree
         step_errors.append(f"pass-entry removal failed for ticket #{ticket.pk}: {exc}")
 
 
+@cached_remote_reads()
 def cleanup_worktree(
     worktree: Worktree,
     *,

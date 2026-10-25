@@ -10,6 +10,7 @@ that regressed to a bare ``git diff`` reports an empty patch and fails.
 
 import itertools
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -18,11 +19,13 @@ import pytest
 from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.core.cleanup.unshipped_restore import restore_bundle
 from teatree.core.cleanup.unshipped_work import (
     COMMITS_SUFFIX,
     UNCOMMITTED_SUFFIX,
     UNREADABLE_SUFFIX,
     UnshippedWork,
+    _commits_patch,
     _record_defaults,
     bundle_path,
     capture_unshipped_work,
@@ -30,6 +33,7 @@ from teatree.core.cleanup.unshipped_work import (
     write_salvage_bundle,
 )
 from teatree.core.models import UnshippedWorkRecord
+from teatree.utils import git
 from teatree.utils.git_sync import RemoteReadError
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
@@ -39,6 +43,24 @@ def _git_out(*args: str, cwd: Path) -> str:
     return subprocess.run(
         [_GIT, "-C", str(cwd), *args], check=True, capture_output=True, text=True, env=_clean_env()
     ).stdout
+
+
+def test_commit_patch_keeps_git_argv_bounded(tmp_path: Path) -> None:
+    commits = [f"{number:040x} subject" for number in range(300)]
+    groups: list[list[str]] = []
+
+    def bounded_git(*, repo: str, args: list[str]) -> str:
+        del repo
+        shas = [arg for arg in args if len(arg) == 40]
+        assert len(shas) <= 128
+        groups.append(shas)
+        return "".join(f"{sha}\n" for sha in shas)
+
+    with patch("teatree.core.cleanup.unshipped_work.git.run_strict_verbatim", side_effect=bounded_git):
+        patch_text = _commits_patch(tmp_path, commits)
+
+    assert len(groups) == 3
+    assert patch_text.splitlines() == [line.split()[0] for line in reversed(commits)]
 
 
 class _CheckoutFixture(TestCase):
@@ -88,6 +110,15 @@ class TestProbeSeesTheIndex(_CheckoutFixture):
         assert "notes.local" in work.dirty_paths
         assert "keep this" in work.uncommitted_patch
 
+    def test_large_ignored_file_is_named_without_copying_its_content(self) -> None:
+        (self.checkout / ".gitignore").write_text("dump.local\n", encoding="utf-8")
+        (self.checkout / "dump.local").write_bytes(b"z" * (8 * 1024 * 1024 + 1))
+
+        work = probe_unshipped_work(self.checkout)
+
+        assert "dump.local" in work.dirty_paths
+        assert "zzzzzzzz" not in work.uncommitted_patch
+
     def test_unreadable_ignored_content_never_claims_a_complete_capture(self) -> None:
         (self.checkout / ".gitignore").write_text("notes.local\n", encoding="utf-8")
         (self.checkout / "notes.local").write_text("retain\n", encoding="utf-8")
@@ -110,6 +141,22 @@ class TestProbeSeesTheIndex(_CheckoutFixture):
         work = probe_unshipped_work(self.checkout)
 
         assert any(commit.startswith(sha[:7]) for commit in work.unpushed_commits)
+
+    def test_stale_default_tracking_ref_does_not_make_inherited_history_unpushed(self) -> None:
+        other = self.checkout.parent / "other"
+        _run_git("clone", "-q", str(self.origin), str(other), cwd=self.checkout.parent)
+        _run_git("config", "user.email", "t@t", cwd=other)
+        _run_git("config", "user.name", "t", cwd=other)
+        (other / "new.txt").write_text("new\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=other)
+        _run_git("commit", "-q", "-m", "another writer", cwd=other)
+        _run_git("push", "-q", "origin", "main", cwd=other)
+
+        work = probe_unshipped_work(self.checkout)
+
+        assert work.unreadable == ""
+        assert work.unpushed_commits == []
+        assert work.commits_patch == ""
 
     def test_unreachable_remote_preserves_the_local_result_and_marks_it_unverified(self) -> None:
         with patch("teatree.core.cleanup.unshipped_work.remote_head_shas", side_effect=RemoteReadError("offline")):
@@ -238,10 +285,43 @@ class TestCaptureWritesArtifactsAndRow(_CheckoutFixture):
         assert "value = 2" in bundle_path(prefix, ".uncommitted.patch").read_text(encoding="utf-8")
         assert bundle_path(prefix, ".files").read_text(encoding="utf-8").split() == ["tracked.py"]
         assert bundle_path(prefix, ".commits.patch").read_text(encoding="utf-8") == ""
+        assert bundle_path(prefix, ".uncommitted.patch").stat().st_mode & 0o077 == 0
         meta = bundle_path(prefix, ".meta").read_text(encoding="utf-8")
         assert f"worktree={self.checkout}" in meta
         assert "branch=feat" in meta
         assert "dirty=1 ahead=0" in meta
+
+    def test_ignored_read_failure_retains_independent_partial_patches(self) -> None:
+        (self.checkout / ".gitignore").write_text("notes.local\n", encoding="utf-8")
+        _run_git("add", ".gitignore", cwd=self.checkout)
+        _run_git("commit", "-q", "-m", "ignore notes", cwd=self.checkout)
+        (self.checkout / "notes.local").write_text("unreadable content\n", encoding="utf-8")
+        self._stage_only()
+        actual_diff = git.full_worktree_diff
+
+        def refuse_ignored(repo: str, base: str = "HEAD", *, also: Sequence[str] = ()) -> str:
+            if also:
+                raise CommandFailedError(["git", "add", "-N"], 128, "", "ignored file refused")
+            return actual_diff(repo, base, also=also)
+
+        with patch("teatree.core.cleanup.unshipped_work.git.full_worktree_diff", side_effect=refuse_ignored):
+            record = self._capture()
+
+        assert record is not None
+        prefix = record.artifact_prefix
+        assert bundle_path(prefix, UNREADABLE_SUFFIX).is_file()
+        assert "value = 2" in bundle_path(prefix, ".partial.uncommitted.patch").read_text(encoding="utf-8")
+        assert "ignore notes" in bundle_path(prefix, ".partial.commits.patch").read_text(encoding="utf-8")
+        restored = restore_bundle(prefix, self.checkout, dry_run=True)
+        assert not restored.ok
+        assert ".partial.uncommitted.patch" in restored.render()
+
+        recovered = self._capture()
+        assert recovered is not None
+        assert recovered.unreadable == ""
+        assert not bundle_path(prefix, UNREADABLE_SUFFIX).exists()
+        assert not bundle_path(prefix, ".partial.uncommitted.patch").exists()
+        assert not bundle_path(prefix, ".partial.commits.patch").exists()
 
     def test_capture_records_a_durable_row(self) -> None:
         sha = self._commit_locally("later")

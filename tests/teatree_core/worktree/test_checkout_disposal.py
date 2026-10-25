@@ -14,6 +14,7 @@ writer standing in the directory.
 import shutil
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -59,6 +60,13 @@ class TestDisposalNeedsPositiveProof(_CheckoutFixture):
         (partial / "half-written.txt").write_text("x\n", encoding="utf-8")
 
         assert "half-written.txt" in disposal_refusal(partial, clone=self.clone)
+
+    def test_unlistable_directory_returns_a_refusal(self) -> None:
+        partial = self.tmp / "checkouts" / "unlistable"
+        partial.mkdir(parents=True)
+
+        with patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+            assert "could not read directory" in disposal_refusal(partial, clone=self.clone)
 
     def test_a_path_that_is_not_there_is_disposable(self) -> None:
         assert disposal_refusal(self.tmp / "nothing-here", clone=self.clone) == ""

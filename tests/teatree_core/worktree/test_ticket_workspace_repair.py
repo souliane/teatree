@@ -24,6 +24,7 @@ from teatree.core.cleanup.unshipped_work import (
     probe_unshipped_work,
     write_salvage_bundle,
 )
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.worktree.ticket_workspace import ticket_workspace_dirs
 from teatree.core.worktree.ticket_workspace_repair import repair_split_workspace
@@ -305,6 +306,17 @@ class TestRepairSplitWorkspace(TestCase):
         assert not frontend.exists()
         assert (self.workspace / _BRANCH / "frontend").is_dir()
         assert list((self.tmp / "artifacts").iterdir()) == []
+
+    def test_unanswerable_forge_does_not_block_a_clean_relocation(self) -> None:
+        ticket, _, frontend = self._split_ticket(dirty=False)
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.removal_proof.find_open_pr_for_branch", return_value=PrProbe.unknown()),
+        ):
+            outcome = repair_split_workspace(ticket)
+
+        assert outcome.ok, outcome.render()
+        assert not frontend.exists()
 
     def test_bundle_retirement_failure_is_reported_after_move(self) -> None:
         ticket, _, frontend = self._split_ticket()

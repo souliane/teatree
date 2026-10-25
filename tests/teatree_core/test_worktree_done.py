@@ -37,6 +37,7 @@ from teatree.core.worktree.worktree_done import (
     worktree_is_done,
 )
 from teatree.core.worktree.worktree_emit import _effective_default_target, _verdict_provenance
+from teatree.utils.git_sync import RemoteReadError, remote_head_shas
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git, forge_reporting, squash_then_base_evolved
 
 
@@ -1057,6 +1058,44 @@ class TestCaptureCoversEveryDisposition(_ReaperFixture):
         self._reap(worktree, dry_run=True)
 
         assert not UnshippedWorkRecord.objects.exists()
+
+    def test_sweep_reuses_answered_and_failed_remote_reads_per_clone(self) -> None:
+        self._make_worktree(Ticket.State.WORK_STARTED)
+        sibling = self.workspace / "feat-y" / "myrepo"
+        _run_git("worktree", "add", "-q", "-b", "feat-y", str(sibling), cwd=self.repo_main)
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/2762", state=Ticket.State.WORK_STARTED)
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="myrepo",
+            branch="feat-y",
+            extra={"worktree_path": str(sibling), "clone_path": str(self.repo_main)},
+        )
+
+        with (
+            patch("teatree.core.cleanup.unshipped_work.remote_head_shas", wraps=remote_head_shas) as read,
+            patch(
+                "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
+                return_value=LivenessVerdict(active=True, reason="agent holds checkout"),
+            ),
+        ):
+            outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
+
+        assert len(outcomes) == 2
+        assert read.call_count == 1
+
+        with (
+            patch(
+                "teatree.core.cleanup.unshipped_work.remote_head_shas", side_effect=RemoteReadError("offline")
+            ) as failed_read,
+            patch(
+                "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
+                return_value=LivenessVerdict(active=True, reason="agent holds checkout"),
+            ),
+        ):
+            worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
+
+        assert failed_read.call_count == 1
 
 
 def test_effective_default_target_failsafe_to_main_on_unresolvable(tmp_path: Path) -> None:

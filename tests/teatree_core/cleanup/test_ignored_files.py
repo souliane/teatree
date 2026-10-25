@@ -1,6 +1,7 @@
 """Ignored-file classification through a real git checkout."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -29,11 +30,18 @@ def test_unregenerable_ignored_file_is_named(checkout: Path) -> None:
     assert ignored_unregenerable(checkout) == ["notes.local"]
 
 
-def test_ignored_architecture_notes_are_kept_without_provenance(checkout: Path) -> None:
-    (checkout / ".git" / "info" / "exclude").write_text("ARCHITECTURE.md\n", encoding="utf-8")
-    (checkout / "ARCHITECTURE.md").write_text("design notes\n", encoding="utf-8")
+def test_regenerable_ignored_entries_are_not_work(checkout: Path) -> None:
+    (checkout / ".git" / "info" / "exclude").write_text(
+        ".local/\nplugins/\nsite/\nARCHITECTURE.md\n.pr-body.md\n", encoding="utf-8"
+    )
+    for directory in (".local", "plugins", "site"):
+        target = checkout / directory
+        target.mkdir()
+        (target / "artifact").write_text("rebuild\n", encoding="utf-8")
+    for name in ("ARCHITECTURE.md", ".pr-body.md"):
+        (checkout / name).write_text("rebuild\n", encoding="utf-8")
 
-    assert ignored_unregenerable(checkout) == ["ARCHITECTURE.md"]
+    assert ignored_unregenerable(checkout) == []
 
 
 def test_generated_artifacts_and_tagged_cache_are_ignored(checkout: Path) -> None:
@@ -46,6 +54,15 @@ def test_generated_artifacts_and_tagged_cache_are_ignored(checkout: Path) -> Non
     (pycache / "mod.pyc").write_bytes(b"compiled")
 
     assert ignored_unregenerable(checkout) == []
+
+
+def test_unreadable_ignored_subdirectory_refuses_a_complete_read(checkout: Path) -> None:
+    cache = checkout / "cache"
+    cache.mkdir()
+    (cache / "private.txt").write_text("retain", encoding="utf-8")
+
+    with patch("os.walk", side_effect=PermissionError("denied")), pytest.raises(PermissionError, match="denied"):
+        ignored_unregenerable(checkout)
 
 
 def test_envrc_is_regenerable_only_while_its_content_is_provisioned(checkout: Path) -> None:

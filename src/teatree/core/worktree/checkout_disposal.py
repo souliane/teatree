@@ -53,8 +53,13 @@ def disposal_refusal(path: Path, *, clone: Path, requesting_ticket_id: int | Non
             f"Refusing to remove or re-create a checkout with a live writer."
         )
     claims_checkout = claims_to_be_a_checkout(path)
-    if not claims_checkout and (entry := next(path.iterdir(), None)):
-        return f"{path} is nonempty without a git checkout; keeping {entry.name}"
+    if not claims_checkout:
+        try:
+            entry = next(path.iterdir(), None)
+        except OSError as exc:
+            return f"{path}: could not read directory ({exc}); refusing disposal"
+        if entry:
+            return f"{path} is nonempty without a git checkout; keeping {entry.name}"
     requesting_row = None
     if requesting_ticket_id is not None:
         requesting_row = next(

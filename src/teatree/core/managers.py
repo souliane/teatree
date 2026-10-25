@@ -186,7 +186,7 @@ class WorktreeQuerySet(models.QuerySet):
         return [row for row in rows if row.worktree_path and path_matches(row.worktree_path, path)]
 
     def runtime_peers(self, worktree: "Worktree") -> list["Worktree"]:
-        return list(self.exclude(pk=worktree.pk).exclude(state=worktree.State.CREATED).select_related("ticket"))
+        return list(self.exclude(pk=worktree.pk).select_related("ticket"))
 
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         return _for_overlay(self, overlay)

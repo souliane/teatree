@@ -35,7 +35,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
-from teatree.core.cleanup.ignored_files import ORCHESTRATION_DEBRIS_PREFIXES as _ORCHESTRATION_DEBRIS_PREFIXES
 from teatree.core.cleanup.ignored_files import ignored_unregenerable, is_orchestration_debris
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -49,7 +48,6 @@ if TYPE_CHECKING:
 # and `.claude/` itself is NEVER debris (product repos track real skills and
 # settings there); only its `worktrees/` run scratch is.
 _PREVIEW_LIMIT = 3
-ORCHESTRATION_DEBRIS_PREFIXES = _ORCHESTRATION_DEBRIS_PREFIXES
 
 
 def _porcelain_path(line: str) -> str:
@@ -76,10 +74,12 @@ def _worktree_clean(wt_path: str) -> bool:
         # ``-uall`` keeps real work distinct from debris inside an untracked dir.
         porcelain = git.run_strict(repo=wt_path, args=["status", "--porcelain", "--untracked-files=all"])
         diff_head = git.run_strict(repo=wt_path, args=["diff", "HEAD", "--name-only"])
-    except CommandFailedError:
+        ignored = ignored_unregenerable(Path(wt_path))
+    except (CommandFailedError, OSError):
         return False
     entries = [_porcelain_path(line) for line in porcelain.splitlines()]
     entries.extend(line.strip() for line in diff_head.splitlines())
+    entries.extend(ignored)
     return all(not entry or is_orchestration_debris(entry) for entry in entries)
 
 
@@ -137,7 +137,7 @@ def working_tree_dirt(wt_path: str, target: "_EffectiveTarget") -> WorkingTreeDi
         porcelain = git.run_strict(repo=wt_path, args=["status", "--porcelain", "--untracked-files=all"])
         diff_head = git.run_strict(repo=wt_path, args=["diff", "HEAD", "--name-only"])
         ignored = ignored_unregenerable(Path(wt_path))
-    except CommandFailedError as exc:
+    except (CommandFailedError, OSError) as exc:
         return WorkingTreeDirt(reasons=(f"could not read working-tree status ({exc}) — keeping",), proven=False)
     candidates = [_porcelain_path(line) for line in porcelain.splitlines()]
     candidates.extend(line.strip() for line in diff_head.splitlines())
@@ -167,7 +167,7 @@ def _dangling_head_dirt(wt_path: str, target: "_EffectiveTarget") -> WorkingTree
         changed = git.run_strict(repo=wt_path, args=["diff", "--name-only", sha])
         untracked = git.run_strict(repo=wt_path, args=["ls-files", "--others", "--exclude-standard"])
         ignored = ignored_unregenerable(Path(wt_path))
-    except CommandFailedError as exc:
+    except (CommandFailedError, OSError) as exc:
         return WorkingTreeDirt(
             reasons=(f"could not diff working tree against recovered HEAD ({exc}) — keeping",), proven=False
         )

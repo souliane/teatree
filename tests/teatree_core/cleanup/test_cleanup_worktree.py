@@ -368,6 +368,44 @@ class TestCleanupWorktree(TestCase):
             remove_pass.assert_called_once()
             reap_external.assert_called_once()
 
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_created_kept_peer_preserves_shared_resources(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        kept = self._make_worktree(db_name="shared_db")
+        kept.compose_project = "shared_stack"
+        kept.extra = {"worktree_path": "/tmp/kept-checkout"}
+        kept.save(update_fields=["compose_project", "extra"])
+        second = Worktree.objects.create(
+            ticket=kept.ticket,
+            overlay="test",
+            repo_path="other",
+            branch="other",
+            db_name="shared_db",
+            compose_project="shared_stack",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        with (
+            patch("teatree.core.cleanup.cleanup._drop_worktree_db") as drop_db,
+            patch("teatree.core.cleanup.cleanup._remove_overlay_pass_entry") as remove_pass,
+            patch("teatree.core.runners.worktree_start.docker_compose_down") as compose_down,
+        ):
+            cleanup_worktree(second)
+
+        compose_down.assert_not_called()
+        drop_db.assert_not_called()
+        remove_pass.assert_not_called()
+        assert Worktree.objects.filter(pk=kept.pk).exists()
+
     @_patch_content
     @_patch_overlay
     @_patch_git

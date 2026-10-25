@@ -41,7 +41,7 @@ from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
 from teatree.core.cleanup.removal_proof import RemovalRefusedError, removal_refusal
-from teatree.core.cleanup.unshipped_work import capture_unshipped_work
+from teatree.core.cleanup.unshipped_work import cached_remote_reads, capture_unshipped_work
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
@@ -282,10 +282,8 @@ def _unpushed_commit_reasons(
     # edited again defeats every patch-id/tree instrument, while the forge's
     # merge record at the exact tip still proves it landed. Fails CLOSED.
     #
-    # Its git-local rungs are ANDed with present-tense presence (#4719): this
-    # The caller still uses force for legacy guards; the shared proof runs afterward.
-    # These rungs read a patch's PRIOR appearance, which
-    # a later commit over the same region does not erase.
+    # Its git-local rungs are ANDed with present-tense presence (#4719):
+    # a later commit over the same region does not erase a patch's prior appearance.
     if branch is not None:
         landed = verdict if verdict is not None else branch_redundancy(content_repo, branch, default_target)
         if landed.redundant and branch_landed_for_teardown(content_repo, branch, default_target):
@@ -340,6 +338,7 @@ def _pre_gate_outcome(worktree: Worktree, *, workspace: Path, verdict: ReapPreGa
     )
 
 
+@cached_remote_reads()
 def reap_done_worktree(
     worktree: Worktree,
     *,
@@ -478,7 +477,7 @@ def _wipe_proven_redundant(
         )
     checkout = Path(resolve_worktree_path(probes.workspace, worktree))
     clone = resolve_clone_path(probes.workspace, worktree) or probes.workspace / worktree.repo_path
-    if refusal := removal_refusal(checkout, clone=Path(clone), row=worktree, sweep=True):
+    if dry_run and (refusal := removal_refusal(checkout, clone=Path(clone), row=worktree, sweep=True)):
         return ReapOutcome(
             "kept",
             f"KEPT '{worktree.branch}': done ({signal.source}) but {refusal}",
@@ -499,6 +498,7 @@ def _wipe_proven_redundant(
     return ReapOutcome("wiped", f"Wiped '{worktree.branch}' ({signal.source}): {result.label}", errors=result.errors)
 
 
+@cached_remote_reads()
 def reap_done_worktrees_detailed(workspace: Path, *, dry_run: bool) -> list[ReapOutcome]:
     """The one consolidated reaping pass — full :class:`ReapOutcome` per Worktree row.
 

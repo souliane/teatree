@@ -54,8 +54,8 @@ def full_worktree_diff(repo: str, base: str = "HEAD", *, also: Sequence[str] = (
     ``git diff HEAD`` alone omits untracked files. Marking them intent-to-add
     (``git add -N``) makes them appear in the diff as new-file hunks (without
     staging their content), so a single ``git apply`` of the returned patch
-    restores edits and brand-new files alike. ``.gitignore`` is still honoured,
-    so ignored trees stay out of the patch.
+    restores edits and brand-new files alike. Ignored paths stay out unless the
+    caller names them in ``also`` for a salvage bundle.
 
     Those marks land in a THROWAWAY index (``GIT_INDEX_FILE`` under a scratch
     dir), never ``repo``'s own: the salvage capture (#4435) runs against

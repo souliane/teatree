@@ -1,6 +1,7 @@
 """Fail-closed proof shared by checkout-removal paths."""
 
 from pathlib import Path
+from typing import Literal
 
 from teatree.core.cleanup.ignored_files import is_orchestration_debris
 from teatree.core.cleanup.unshipped_work import UnshippedWork, probe_unshipped_work
@@ -54,13 +55,20 @@ def _forge_refusal(checkout: Path, branch: str) -> str:
     return ""
 
 
+def _checked_branch(checkout: Path) -> str:
+    branch = git.current_branch(str(checkout))
+    if branch == git.DETACHED_HEAD:
+        return git.run(repo=str(checkout), args=["symbolic-ref", "--short", "HEAD"]) or branch
+    return branch
+
+
 def removal_refusal(
     checkout: Path,
     *,
     clone: Path,
     row: Worktree | None = None,
     sweep: bool = False,
-    allow_changes: bool = False,
+    operation: Literal["remove", "move"] = "remove",
 ) -> str:
     if not checkout.is_dir():
         return ""
@@ -73,16 +81,14 @@ def removal_refusal(
         if sweep and row is not None and row.ticket.state not in Ticket.marker_release_states():
             return prefix + f"in-flight ticket {row.ticket.ticket_number or row.ticket_id} owns the checkout"
         return prefix + reason if (reason := _row_refusal(checkout, row, sweep=False, target="")) else ""
-    work = probe_unshipped_work(checkout)
+    work = probe_unshipped_work(checkout, fresh_remote=True)
     ref = "HEAD"
-    if work.unreadable == f"{checkout}: no resolvable HEAD to diff against" and (
-        recovered := git.recovered_head_sha_after_ref_gone(str(checkout))
-    ):
+    if work.head_missing and (recovered := git.recovered_head_sha_after_ref_gone(str(checkout))):
         ref = recovered
-        work = probe_unshipped_work(checkout, base_ref=ref)
+        work = probe_unshipped_work(checkout, base_ref=ref, fresh_remote=True)
     unsafe_paths = (
         work.ignored_paths
-        if allow_changes
+        if operation == "move"
         else [path for path in work.dirty_paths if not is_orchestration_debris(path)]
     )
     reason = work.unreadable
@@ -91,12 +97,16 @@ def removal_refusal(
     branch = ""
     if not reason:
         try:
-            branch = git.current_branch(str(checkout))
+            branch = _checked_branch(checkout)
             target = effective_default_target(str(clone))
-            reason = _commit_refusal(checkout, clone, work, ref)
+            reason = _commit_refusal(checkout, clone, work, branch if branch != git.DETACHED_HEAD else ref)
             reason = reason or _row_refusal(checkout, row, sweep=sweep, target=target)
         except (RuntimeError, CommandFailedError) as exc:
             reason = f"could not verify commits ({exc})"
     if not reason:
-        reason = "no remote answers" if work.remote_unverified else _forge_refusal(checkout, branch)
+        reason = (
+            "no remote answers"
+            if work.remote_unverified
+            else ("" if operation == "move" else _forge_refusal(checkout, branch))
+        )
     return prefix + reason if reason else ""
