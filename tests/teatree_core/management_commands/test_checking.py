@@ -29,6 +29,7 @@ from teatree.core.models import BotPing, Session, Task, TaskAttempt, WaitingItem
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.transition import TicketTransition
 from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
 from tests._owner_channel import owner_card
 
@@ -401,6 +402,22 @@ class TestCheckingNotify:
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
 
         assert BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:").count() == 1
+
+    def test_changed_in_flight_state_reissues_recap(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/42",
+            short_description="A change in progress",
+        )
+        TicketTransition.objects.create(ticket=ticket, from_state="started", to_state="coding")
+        _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+
+        TicketTransition.objects.create(ticket=ticket, from_state="coding", to_state="testing")
+        _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+
+        rows = list(BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:"))
+        assert len(rows) == 2
+        assert all(detail in "\n".join(row.text for row in rows) for detail in ("→ coding", "→ testing"))
 
 
 class TestCheckingShowAllOverlays:

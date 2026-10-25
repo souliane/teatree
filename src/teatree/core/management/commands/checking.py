@@ -21,6 +21,7 @@ human view on stderr — and returned as the typed payload.
 import hashlib
 import io
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import IO, TYPE_CHECKING, Annotated, cast
@@ -122,7 +123,9 @@ def _recap_table_dm(
 def _recap_key(groups: list[CheckGroup], *, scope: str, internal_escalations: int = 0) -> str:
     """Content-hashed idempotency key so an unchanged recap never re-DMs."""
     payload = "\n".join(
-        f"{group.title}|{item.label}|{item.url}|{item.title}" for group in groups for item in group.items
+        f"{group.title}|{item.label}|{item.url}|{item.title}|{re.sub(r'\bwaiting \d+d\b', 'waiting', item.detail)}"
+        for group in groups
+        for item in group.items
     )
     payload += f"\ninternal_escalations:{internal_escalations}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]

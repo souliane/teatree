@@ -2217,6 +2217,9 @@ class TestSubstrateHoldPing:
         text, key = pinger.calls[0]
         assert key == f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
         assert f"{SLUG}#6230" in text
+        rows = list(DeferredQuestion.owner_pending())
+        assert len(rows) == 1
+        assert rows[0].evidence["decision"] == "architecture"
 
     def test_non_substrate_block_does_not_ping(self) -> None:
         # The anti-vacuity twin (b-adjacent): a NON-substrate keystone refusal

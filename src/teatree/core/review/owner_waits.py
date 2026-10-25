@@ -46,13 +46,18 @@ def _held_card(subject: str, title: str) -> QuestionCard:
 
 def ask_owner_to_read(pr_url: str, title: str, head_sha: str) -> DeferredQuestion | None:
     subject = canonical_wait_subject(pr_url)
-    if not subject or not head_sha.strip():
+    head = head_sha.strip()
+    if not subject or not head:
         logger.error("held PR card lacks a subject or reviewed head")
         return None
     question = "What do you want to do with this pull request after reviewing it?"
     card = _held_card(subject, title)
     prefix = f"owner-wait:held-pr:{_subject_key(subject)}:"
-    marker = f"{prefix}{head_sha.strip()[:20]}"
+    head_prefix = f"{prefix}{head[:16]}"
+    latest = DeferredQuestion.objects.filter(dedupe_marker__startswith=head_prefix).order_by("-pk").first()
+    marker = f"{prefix}{head[:20]}" if latest is None else latest.dedupe_marker
+    if latest is not None and latest.dismissed_at is not None:
+        marker = f"{head_prefix}:{latest.pk:x}"
     try:
         row = DeferredQuestion.record(question, dedupe_marker=marker, card=card)
     except DeferredQuestionError:

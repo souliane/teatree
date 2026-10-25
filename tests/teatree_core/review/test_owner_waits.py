@@ -28,6 +28,29 @@ class TestOwnerWaitCards(TestCase):
         assert second.pk != first.pk
         assert list(DeferredQuestion.owner_pending().values_list("pk", flat=True)) == [second.pk]
 
+    def test_held_pr_card_reopens_when_head_returns(self) -> None:
+        first = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
+        second = ask_owner_to_read(PR_URL, "A reviewed change", "b" * 40)
+
+        returned = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
+
+        assert first is not None
+        assert second is not None
+        assert returned is not None
+        assert returned.pk not in {first.pk, second.pk}
+        assert list(DeferredQuestion.owner_pending().values_list("pk", flat=True)) == [returned.pk]
+
+    def test_dismissed_same_head_held_pr_card_reopens(self) -> None:
+        first = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
+        assert first is not None
+        first.mark_stale("age ladder expired", resolver_id="test")
+
+        reopened = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
+
+        assert reopened is not None
+        assert reopened.pk != first.pk
+        assert list(DeferredQuestion.owner_pending().values_list("pk", flat=True)) == [reopened.pk]
+
     def test_refused_live_post_has_one_owner_card_for_the_review(self) -> None:
         first = ask_owner_to_approve_post(PR_URL)
 
