@@ -16,12 +16,12 @@ from django.test import TestCase
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
-from teatree.agents.runner_interruption import NOOP_OVER_COMPLETED_MARKER
 from teatree.cli.doctor import checks_external_outcomes as external
 from teatree.cli.doctor import checks_reconciliation as recon
 from teatree.cli.doctor.checks_reconciliation import reconcile_and_notify, run_reconciliation_checks
 from teatree.core.factory.external_outcomes import DEFAULT_EXTERNAL_WINDOW_DAYS, Forge
 from teatree.core.models import (
+    NOOP_OVER_COMPLETED_MARKER,
     AutoReviewDispatch,
     CodexReviewMarker,
     DeferredQuestion,

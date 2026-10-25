@@ -127,7 +127,7 @@ from teatree.core.models.slack_self_ack import SlackSelfAckReaction
 from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, StandingGoalManager
 from teatree.core.models.sweep_skip_streak import SkipObservation, SweepSkipStreak, SweepSkipStreakManager
 from teatree.core.models.task import Task
-from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.task_attempt import NOOP_OVER_COMPLETED_MARKER, TaskAttempt
 from teatree.core.models.thread_binding import SessionCommand, ThreadBinding
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_artifacts import (
@@ -164,6 +164,7 @@ __all__ = [
     "LIMIT_PARKED_PREFIX",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
+    "NOOP_OVER_COMPLETED_MARKER",
     "OPERATOR_PAUSED_PREFIX",
     "SEAT_WINDOW",
     "SOURCE_INTERACTIVE",
