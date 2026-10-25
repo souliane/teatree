@@ -94,9 +94,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROBE_BUDGET = 150
 
 
+def _unaudited_flag(transition: BoardTransition) -> str:
+    unaudited = (
+        transition.action is BoardAction.ADVANCED_MERGED
+        and not MergeAudit.objects.filter(clear__ticket_id=transition.ticket_id).exists()
+    )
+    return " (no merge audit)" if unaudited else ""
+
+
 @dataclass(slots=True)
 class BoardReconcileScanner:
-    """Reconcile ticket state; leave unaudited merge notices to the owner-alert scanner."""
+    """Reconcile the ticket FSM against forge truth, reporting each transition."""
 
     overlay_name: str = ""
     name: str = "board_reconcile"
@@ -108,7 +116,7 @@ class BoardReconcileScanner:
         return [
             ScanSignal(
                 kind="board.reconciled",
-                summary=f"Ticket #{t.ticket_id} {t.from_state} → {t.to_state} ({t.reason})",
+                summary=f"Ticket #{t.ticket_id} {t.from_state} → {t.to_state} ({t.reason}){_unaudited_flag(t)}",
                 payload={
                     "ticket_id": t.ticket_id,
                     "issue_url": t.issue_url,
@@ -119,8 +127,6 @@ class BoardReconcileScanner:
                 },
             )
             for t in report.applied
-            if t.action is not BoardAction.ADVANCED_MERGED
-            or MergeAudit.objects.filter(clear__ticket_id=t.ticket_id).exists()
         ]
 
 

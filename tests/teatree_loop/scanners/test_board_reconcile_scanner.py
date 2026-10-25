@@ -1,9 +1,12 @@
-"""The board-reconcile scanner reports state changes except unaudited merges.
+"""The board-reconcile scanner reports the STATE CHANGES it made, or stays silent.
 
 A janitor whose only evidence is its own success message is indistinguishable from
 one that does nothing — this box has a tick that reports ``58 signal(s), 58
-action(s)`` while nothing advances. Audited transitions carry the ticket, both
-states and the evidence; unaudited merge transitions are left to the owner alert.
+action(s)`` while nothing advances. So the scanner emits exactly one signal per
+APPLIED transition, naming the ticket, both states and the evidence, and emits
+nothing at all on a run that changed nothing. A merged transition with no
+``MergeAudit`` still reports, flagged ``(no merge audit)``, so a ticketed merge in a
+repo the owner-alert scanner does not watch is not read as routine.
 """
 
 import contextlib
@@ -41,20 +44,8 @@ def _merged_forge(url: str = _URL) -> Generator[None]:
 
 
 class TestBoardReconcileScanner(TestCase):
-    def test_unaudited_reconcile_does_not_emit_a_routine_merged_notice(self) -> None:
+    def test_emits_one_signal_per_applied_transition(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED, issue_url=_URL)
-
-        with _merged_forge():
-            signals = BoardReconcileScanner(overlay_name="t3-teatree").scan()
-
-        assert signals == []
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.MERGED
-
-    def test_audited_reconcile_emits_one_signal_per_applied_transition(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED, issue_url=_URL)
-        clear = MergeClear.objects.create(ticket=ticket, pr_id=3816, slug="souliane/teatree", reviewed_sha="a" * 40)
-        MergeAudit.objects.create(clear=clear, merged_sha="b" * 40, repo_slug="souliane/teatree")
 
         with _merged_forge():
             signals = BoardReconcileScanner(overlay_name="t3-teatree").scan()
@@ -64,6 +55,18 @@ class TestBoardReconcileScanner(TestCase):
         assert signals[0].payload["from_state"] == Ticket.State.NOT_STARTED
         assert signals[0].payload["to_state"] == Ticket.State.MERGED
         assert "forge" in signals[0].payload["reason"]
+        assert signals[0].summary.endswith(" (no merge audit)")
+
+    def test_an_audited_merged_transition_carries_no_audit_flag(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED, issue_url=_URL)
+        clear = MergeClear.objects.create(ticket=ticket, pr_id=3816, slug="souliane/teatree", reviewed_sha="a" * 40)
+        MergeAudit.objects.create(clear=clear, merged_sha="b" * 40, repo_slug="souliane/teatree")
+
+        with _merged_forge():
+            signals = BoardReconcileScanner(overlay_name="t3-teatree").scan()
+
+        assert [s.kind for s in signals] == ["board.reconciled"]
+        assert "no merge audit" not in signals[0].summary
 
     def test_a_run_that_changed_nothing_is_silent(self) -> None:
         Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED, issue_url=_URL)
@@ -76,7 +79,7 @@ class TestBoardReconcileScanner(TestCase):
 
         with _merged_forge():
             scanner = BoardReconcileScanner(overlay_name="t3-teatree")
-            assert scanner.scan() == []
+            assert len(scanner.scan()) == 1
             assert scanner.scan() == []
 
     def test_a_reopened_ticket_is_not_reverted_by_the_hourly_scan(self) -> None:

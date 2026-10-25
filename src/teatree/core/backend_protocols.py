@@ -14,7 +14,7 @@ from enum import StrEnum
 from typing import Protocol, TypedDict, runtime_checkable
 
 from teatree.core.evidence.forge_content import PrContentSnapshot
-from teatree.core.forge_merge_state import MergeConflictState, PrMergeState
+from teatree.core.modelkit.forge_merge_state import MergeConflictState, PrMergeState
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.types import RawAPIDict

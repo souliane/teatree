@@ -71,7 +71,7 @@ from teatree.loop.scanners import (
     WaitingDigestScanner,
     WorkStateScanner,
 )
-from teatree.loop.scanners.base import ScannerError
+from teatree.loop.scanners.base import PartialScanError, ScannerError
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
 from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.review_nag import default_repo_owner
@@ -398,7 +398,8 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
         # other scanners — only THIS scanner is skipped for one tick.
         logger.warning("Scanner %s recoverable error: %s", label, exc)
         notify_scanner_error(label=label, exc=exc, overlay=job.overlay)
-        return label, [], f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
+        partial = exc.signals if isinstance(exc, PartialScanError) else []
+        return label, partial, f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
     except Exception as exc:
         logger.exception("Scanner %s raised", label)
         return label, [], f"{type(exc).__name__}: {exc}"

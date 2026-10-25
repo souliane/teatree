@@ -1,32 +1,74 @@
+import logging
+
 from teatree.backends.github.client import GitHubCodeHost
 from teatree.backends.gitlab.client import GitLabCodeHost
+from teatree.config import Autonomy
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.merge.host_kind import forge_for_repo_slug
 from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.overlay_repos import owned_repo_slugs
 from teatree.loop.job_identity import Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
     _competing_url_prefixes,
+    _effective_settings_for_overlay,
     _mr_conflict_scanner_for,
     _mr_triage_scanner_for,
     _pr_sweep_scanner_for,
 )
-from teatree.loop.scanner_factory_config import _user_slack_id_for_overlay
+from teatree.loop.scanner_factory_config import _user_identity_aliases_for_overlay, _user_slack_id_for_overlay
 from teatree.loop.scanners import GitLabApprovalsScanner, MyPrsScanner
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
 from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.scanners.unaudited_merge import UnauditedMergeScanner
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host
 from teatree.loops.enable_verdict import loop_admits
-from teatree.types import ScannerError, ScannerErrorClass
+
+logger = logging.getLogger(__name__)
 
 
 def _colleague_egress_selected(backend: OverlayBackends) -> bool:
+    """Whether this tick selects the scanners that act outward under the owner's name."""
     return backend.messaging is not None and not egress_forbidden()
 
 
 def _review_request_sender_runs(backend: OverlayBackends) -> bool:
+    """Whether the followup loop will send what the triage ladder finds owed, so SHIP need not ask."""
     return _colleague_egress_selected(backend) and loop_admits(Domain.FOLLOWUP.value)
+
+
+def _host_for_repo(backend: OverlayBackends, repo: str) -> CodeHostBackend | None:
+    forge = forge_for_repo_slug(repo)
+    return next(
+        (
+            candidate
+            for candidate in backend.hosts
+            if (forge == "github" and isinstance(candidate, GitHubCodeHost))
+            or (forge == "gitlab" and isinstance(candidate, GitLabCodeHost))
+        ),
+        backend.hosts[0] if len(backend.hosts) == 1 else None,
+    )
+
+
+def _unaudited_merge_jobs(backend: OverlayBackends) -> list[_ScannerJob]:
+    tag = backend.name
+    try:
+        repos = owned_repo_slugs(backend.overlay)
+        solo_overlay = _effective_settings_for_overlay(tag).autonomy is Autonomy.FULL
+        identities = _user_identity_aliases_for_overlay(tag)
+    except Exception:
+        logger.exception("unaudited_merge: cannot resolve the watch scope for %s; no detector this tick", tag)
+        return []
+    jobs: list[_ScannerJob] = []
+    for repo in repos:
+        if (host := _host_for_repo(backend, repo)) is None:
+            logger.warning("unaudited_merge: no unambiguous code host for %s; not watched", repo)
+            continue
+        detector = UnauditedMergeScanner(
+            host=host, repos=(repo,), overlay=tag, identities=identities, solo_overlay=solo_overlay
+        )
+        jobs.append(_ScannerJob(scanner=detector, overlay=tag))
+    return jobs
 
 
 def _ship_jobs_for_overlay(
@@ -34,8 +76,11 @@ def _ship_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
+    """Own-author PR scanner + the auto-merge PR sweep + the GitLab-approvals poll, per host."""
     tag = backend.name
     jobs: list[_ScannerJob] = []
+    # One enricher for the whole overlay: its per-tick budget is shared across the
+    # hosts below rather than multiplied by them, and this builder runs once a tick.
     ci_enricher = BoundedCiEnricher()
     for code_host in backend.hosts:
         url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
@@ -44,6 +89,9 @@ def _ship_jobs_for_overlay(
             code_host=code_host,
             all_backends=all_backends,
         )
+        # Every open PR owes a resolved conflict whatever its review policy
+        # says, so the sweep rides the ship domain alongside the merge engine rather
+        # than the colleague-facing review loop the away posture skips.
         jobs.extend(
             [
                 _ScannerJob(
@@ -69,24 +117,7 @@ def _ship_jobs_for_overlay(
                 _ScannerJob(scanner=_mr_conflict_scanner_for(backend, code_host), overlay=tag),
             ]
         )
-    for repo in owned_repo_slugs(backend.overlay):
-        forge = forge_for_repo_slug(repo)
-        host = next(
-            (
-                candidate
-                for candidate in backend.hosts
-                if (forge == "github" and isinstance(candidate, GitHubCodeHost))
-                or (forge == "gitlab" and isinstance(candidate, GitLabCodeHost))
-            ),
-            backend.hosts[0] if len(backend.hosts) == 1 else None,
-        )
-        if host is None:
-            raise ScannerError(
-                scanner="unaudited_merge",
-                error_class=ScannerErrorClass.UNKNOWN,
-                detail=f"no unambiguous code host for {repo}",
-            )
-        jobs.append(_ScannerJob(scanner=UnauditedMergeScanner(host=host, repos=(repo,), overlay=tag), overlay=tag))
+    jobs.extend(_unaudited_merge_jobs(backend))
     sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
     if sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))

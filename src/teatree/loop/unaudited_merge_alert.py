@@ -21,7 +21,7 @@ def record_unaudited_merges(signals: Iterable[ScanSignal], *, notify: MergeNotif
         slug = str(payload["slug"])
         pr_id = int(payload["pr_id"])
         sha = str(payload["merged_sha"])
-        key = f"unaudited-merge:{slug}#{pr_id}:{sha}"
+        key = f"unaudited-merge:{slug}#{pr_id}:{sha[:12]}"
         try:
             if MergeAudit.objects.filter(merged_sha__iexact=sha).exists():
                 continue

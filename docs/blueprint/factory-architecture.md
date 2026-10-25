@@ -124,9 +124,9 @@ The sanctioned merge paths run one post hook that writes a `MergeAudit` row in t
 | `ticket merge` from CLI, MCP or a sweep CLEAR | `merge_ticket_pr` runs the CLEAR gates and `record_merge_and_advance` | Yes |
 | Solo-overlay sweep with no CLEAR | `merge_without_clear` runs the bound-merge gates and the shared post hook | Yes |
 | Sweep fallback after a non-substrate CLEAR refusal on `uv-audit` | `merge_without_clear` runs the bound-merge gates and the shared post hook; the standing CLEAR is superseded | Yes |
-| Forge page, direct API or another session | No Teatree merge gate; reconciliation preserves forge evidence without inventing an audit | No; the merged-PR sweep raises an owner alert |
+| Forge page, direct API or another session | No Teatree merge gate; reconciliation preserves forge evidence without inventing an audit | No; the merged-PR sweep raises an owner alert for a solo overlay or an owner-identity merger |
 
-The agent-session raw-merge hook does not govern the forge page or API. Forge-side required-check enforcement is planned separately; it is not active while the check publisher and branch rule are absent.
+The agent-session raw-merge hook does not govern the forge page or API; forge-side required-check enforcement is tracked in [#5559](https://github.com/souliane/teatree/issues/5559).
 
 ### 17.5 TODO-consolidation quick-wins triage
 

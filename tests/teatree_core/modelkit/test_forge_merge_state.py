@@ -1,4 +1,4 @@
-from teatree.core.forge_merge_state import MergeConflictState, PrMergeState
+from teatree.core.modelkit.forge_merge_state import MergeConflictState, PrMergeState
 
 
 def test_merge_state_defaults_keep_an_unreadable_state_unknown() -> None:
