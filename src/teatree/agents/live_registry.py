@@ -84,6 +84,9 @@ class LiveSessionRegistry:
     ) -> ControlReceipt:
         return await self._operator_command(task_pk, _OperatorCommand(text, command_id, wait, "follow_up", fence))
 
+    async def pause(self, task_pk: int, text: str, *, command_id: str, wait: float, fence: LiveFence) -> ControlReceipt:
+        return await self._operator_command(task_pk, _OperatorCommand(text, command_id, wait, "pause", fence))
+
     async def _operator_command(self, task_pk: int, request: _OperatorCommand) -> ControlReceipt:
         with self._lock:
             entry = self._live.get(task_pk)
@@ -96,8 +99,11 @@ class LiveSessionRegistry:
                 return ControlReceipt.rejected(request.command_id, task_pk, RejectCode.UNKNOWN_SESSION)
             known = tombstone.known_receipt(request.command_id, request.text, request.kind)
             return known or ControlReceipt.rejected(request.command_id, task_pk, RejectCode.SESSION_CLOSED)
-        method = entry.controller.follow_up if request.kind == "follow_up" else entry.controller.steer
-        command = method(request.text, command_id=request.command_id, wait=request.wait)
+        if request.kind == "pause":
+            command = entry.controller.pause(request.text, command_id=request.command_id)
+        else:
+            method = entry.controller.follow_up if request.kind == "follow_up" else entry.controller.steer
+            command = method(request.text, command_id=request.command_id, wait=request.wait)
         return await self._on_owner_loop(entry, command, command_id=request.command_id, wait=request.wait)
 
     async def push(

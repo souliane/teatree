@@ -111,6 +111,20 @@ def test_a_peer_push_to_a_task_with_no_live_session_is_unknown_session() -> None
     assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode.UNKNOWN_SESSION)
 
 
+def test_pause_runs_on_the_owner_loop_and_replays_after_detach() -> None:
+    registry = LiveSessionRegistry()
+    owner = OwnerLoop(registry, _TASK, _AcceptingSession())
+    owner.start()
+    assert owner.attached.wait(timeout=10)
+
+    first = asyncio.run(registry.pause(_TASK.pk, "pause", command_id="pause-1", wait=1, fence=_TASK.fence))
+    owner.end()
+    replay = asyncio.run(registry.pause(_TASK.pk, "pause", command_id="pause-1", wait=1, fence=_TASK.fence))
+
+    assert first == replay
+    assert first.outcome is ControlOutcome.PAUSED
+
+
 def test_old_claim_and_worker_generation_cannot_reach_a_replacement_session() -> None:
     registry = LiveSessionRegistry()
     current = replace(_TASK, fence=LiveFence("claim-b", "worker-b"))

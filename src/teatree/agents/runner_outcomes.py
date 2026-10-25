@@ -134,7 +134,10 @@ def _failure_usage(outcome: HarnessOutcome, *, lane: str, transport: Transport) 
         context_tokens=outcome.context_tokens,
         model_fell_back=outcome.model_fell_back,
     )
-    return _attempt_usage(outcome.result_message, observation)
+    usage = _attempt_usage(outcome.result_message, observation)
+    if outcome.session_id and not usage.agent_session_id:
+        return replace(usage, agent_session_id=outcome.session_id)
+    return usage
 
 
 def failure_reason(outcome: HarnessOutcome) -> str | None:

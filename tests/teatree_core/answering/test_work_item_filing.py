@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from teatree.core.answering.work_item_filing import WorkItemFilingError, file_work_item
-from teatree.core.models import Ticket
+from teatree.core.models import ThreadBinding, Ticket
 from teatree.core.send_proxy import OutboundBlockedError
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_forge_repos
@@ -135,6 +135,7 @@ class TestANewRequestBecomesAnAdmissibleIssue:
 
     def test_the_conversation_row_records_where_the_work_went(self) -> None:
         ticket = _conversation_ticket()
+        ThreadBinding.bind(ticket=ticket, channel="D-owner", thread_ts="1.0")
 
         filed = file_work_item(
             ticket,
@@ -146,6 +147,7 @@ class TestANewRequestBecomesAnAdmissibleIssue:
         assert filed is not None
         ticket.refresh_from_db()
         assert ticket.extra["slack_answer"]["work_issue_url"] == filed.url
+        assert ThreadBinding.objects.get(channel="D-owner", thread_ts="1.0").ticket.issue_url == filed.url
 
 
 class TestARetryNeverForksASecondIssue:
