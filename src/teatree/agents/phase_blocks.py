@@ -522,7 +522,7 @@ def phase_specific_lines(
 
 
 #: Phases whose agent is the one FIXING the defect, so it is the actor that can state
-#: the root cause. Mirrors ``transient_requeue._CORRECTIVE_PHASES``.
+#: the root cause. Mirrors ``transient_requeue_correction.CORRECTIVE_PHASES``.
 _FIXING_PHASES = frozenset({"coding", "debugging"})
 
 
