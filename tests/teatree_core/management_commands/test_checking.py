@@ -710,6 +710,29 @@ class TestCheckingRemaining:
         assert "now: shipping (running)" in item["detail"]
         assert any(row["step"] == "shipping" for row in payload["remaining"]["durations"])
 
+    def test_claimed_shipping_preserves_merge_safe_shortcut(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        ReviewVerdict.objects.create(
+            ticket=ticket,
+            pr_id=601,
+            slug="acme/widgets",
+            reviewed_sha=_SHA,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="reviewer",
+            blast_class=MergeClear.BlastClass.LOGIC,
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+        )
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="shipping",
+            status=Task.Status.CLAIMED,
+            lease_expires_at=timezone.now() + timedelta(hours=1),
+        )
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert item["steps"] == ["shipping", "merge", "deploy"]
+
     def test_running_default_reselects_slowest_surviving_sources(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
         ended = timezone.now() - timedelta(minutes=1)

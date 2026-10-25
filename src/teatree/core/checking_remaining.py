@@ -94,25 +94,28 @@ def empty_remaining(*, dormant: int = 0) -> RemainingGroup:
     )
 
 
+def _remaining_pr_steps(phase: str, *, merge_safe: bool) -> tuple[str, ...]:
+    if phase in {"coding", "debugging"}:
+        before = ("rework", "testing", "factory review")
+    elif phase == "testing":
+        before = ("testing", "factory review")
+    elif phase in REVIEW_PHASES:
+        before = ("factory review",)
+    elif phase == "shipping":
+        return ("shipping", "merge", "deploy") if merge_safe else ("shipping", *POST_PR)
+    elif merge_safe:
+        return ("merge", "deploy")
+    else:
+        before = ()
+    return (*before, *POST_PR)
+
+
 def remaining_steps(state: str, active_phase: str, *, has_pr: bool, merge_safe: bool) -> tuple[str, ...]:
     phase = normalize_phase(active_phase)
     if state in {Ticket.State.MERGED, Ticket.State.RETRO_RECORDED}:
         return ("deploy",)
     if has_pr:
-        if phase in {"coding", "debugging"}:
-            before = ("rework", "testing", "factory review")
-        elif phase == "testing":
-            before = ("testing", "factory review")
-        elif phase in REVIEW_PHASES:
-            before = ("factory review",)
-        elif phase == "shipping":
-            before = ("shipping",)
-        elif merge_safe:
-            before = ()
-            return ("merge", "deploy")
-        else:
-            before = ()
-        return (*before, *POST_PR)
+        return _remaining_pr_steps(phase, merge_safe=merge_safe)
     if phase in {"debugging", "coding"}:
         phase_steps = ("coding", "testing", "factory review", "shipping")
     else:
