@@ -178,12 +178,20 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
     )
     tach_active = bool(getattr(config.option, "tach", False))
+    full_selected = bool(config.getoption("teatree_selected_full"))
+    selected = config.args
+    if (
+        full_selected
+        and selected == config.getini("testpaths")
+        and not any(arg in selected for arg in config.invocation_params.args)
+    ):
+        selected = []
     refusal = whole_tree_refusal(
-        config.args,
+        selected,
         root=config.rootpath,
         sharded=sharded,
         tach_active=tach_active,
-        full_selected=bool(config.getoption("teatree_selected_full")),
+        full_selected=full_selected,
     )
     if refusal:
         raise pytest.UsageError(refusal)

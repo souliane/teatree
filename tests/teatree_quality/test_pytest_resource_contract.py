@@ -11,7 +11,6 @@ from typing import cast
 from unittest.mock import Mock
 
 import pytest
-from conftest import pytest_sessionstart
 
 from teatree.quality.pytest_resource_contract import (
     INHERITED_LEASE_ENV,
@@ -22,6 +21,7 @@ from teatree.quality.pytest_resource_contract import (
     whole_tree_refusal,
 )
 from teatree.utils.ram_probe import available_cpu_count
+from tests.conftest import pytest_sessionstart
 from tests.teatree_quality.real_pytest_pool_support import (
     REPO,
     ProbeSettings,
@@ -54,6 +54,9 @@ def test_whole_tree_guard_refuses_unsharded_local_run(tmp_path: Path) -> None:
 
 def test_explicit_affected_full_run_is_allowed(tmp_path: Path) -> None:
     assert whole_tree_refusal([], root=tmp_path, sharded=False, full_selected=True) == ""
+    assert "unsharded whole-tree pytest is refused" in whole_tree_refusal(
+        ["tests"], root=tmp_path, sharded=False, full_selected=True
+    )
     assert whole_tree_refusal([], root=tmp_path, sharded=False)
 
 
@@ -105,7 +108,7 @@ def test_affected_full_escalation_accepts_default_testpaths_but_refuses_explicit
     config.rootpath = tmp_path
     config.getini.return_value = ["tests"]
     config.getoption.return_value = True
-    config.option = SimpleNamespace(splits=0, group=0, tach=False)
+    config.option = SimpleNamespace(splits=0, group=0, tach=False, collectonly=True)
     config.invocation_params = SimpleNamespace(args=("--affected-lane", "--no-cov", "-n", "auto"))
     session = cast("pytest.Session", SimpleNamespace(config=config))
     pytest_sessionstart(session)
