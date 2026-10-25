@@ -24,6 +24,8 @@ plus a hard FAIL once a once-working pass has withheld the marker for
 (phases 1-3) and the file-side phases 4-6 live behind the ``dream`` management command.
 """
 
+from importlib import import_module
+
 import typer
 
 from teatree.utils.django_bootstrap import ensure_django
@@ -105,6 +107,21 @@ def gap_coverage_command(
     call_command("dream", *args)
 
 
+@dream_app.command("funnel")
+def funnel_command(
+    *,
+    question_class_name: str = typer.Option("", "--class", help="Inspect one recurring question class."),
+    json_output: bool = typer.Option(False, "--json", help="Emit the daily funnel as JSON."),
+) -> None:
+    ensure_django()
+    args = ["funnel"]
+    if question_class_name:
+        args.extend(["--class", question_class_name])
+    if json_output:
+        args.append("--json")
+    import_module("django.core.management").call_command("dream", *args)
+
+
 @dream_app.command("gap-disposition")
 def gap_disposition_command(
     ticket: int = typer.Argument(..., help="The host ticket the gap is folded into."),
@@ -112,6 +129,7 @@ def gap_disposition_command(
     *,
     citation: str = typer.Option("", "--citation", help="ADDRESS: the evidence that verifies the gap."),
     reject: str = typer.Option("", "--reject", help="REJECT: why the gap is not worth addressing."),
+    misfit: str = typer.Option("", "--misfit", help="RETURN: why this host cannot address the gap."),
 ) -> None:
     """Record a folded dream gap's ADDRESS (with its citation) or reasoned REJECT on its host."""
     ensure_django()
@@ -123,6 +141,8 @@ def gap_disposition_command(
         args.extend(["--citation", citation])
     if reject:
         args.extend(["--reject", reject])
+    if misfit:
+        args.extend(["--misfit", misfit])
     call_command("dream", *args)
 
 

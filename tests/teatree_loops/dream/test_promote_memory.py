@@ -115,6 +115,13 @@ class TriageDispositionTestCase(TestCase):
         row = _row(destination="memory/push-success-must-be-verified-by-ls-remote.md")
         assert triage_disposition(row) is MemoryDisposition.CORE_GAP
 
+    def test_cited_core_path_recovers_an_ungrounded_hint(self) -> None:
+        row = _row(destination="unknown location")
+        row.verified_citation = "Observed in src/teatree/loops/dream/promote_memory.py:71"
+        row.save(update_fields=["verified_citation"])
+
+        assert triage_disposition(row) is MemoryDisposition.CORE_GAP
+
 
 class FileCoreGapTicketsTestCase(TestCase):
     """Core-gap rows queue into the pass's batch — never a triage issue, never alone (#4776)."""
@@ -279,7 +286,8 @@ class FileCoreGapTicketsTestCase(TestCase):
         batch = PromotionBatch()
         file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
-        self._assert_still_queued(row)
+        row.refresh_from_db()
+        assert (row.disposition, row.ticket_url) == (ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP, "")
 
     def test_a_dry_run_gap_is_never_stamped(self) -> None:
         row = _row()
@@ -586,6 +594,30 @@ class UngroundedDestinationTestCase(TestCase):
         assert outcomes[0].withheld is True
         assert "ghost_pkg" in outcomes[0].reason
         assert batch.pending == []
+
+    def test_a_stranded_ghost_row_is_classified_as_memory_once(self) -> None:
+        row = _row(destination=self.GHOST)
+        row.classify_core_gap()
+
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=PromotionBatch())
+
+        row.refresh_from_db()
+        assert outcomes[0].withheld is True
+        assert row.disposition == ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
+        assert not ConsolidatedMemory.objects.needs_ticket().filter(pk=row.pk).exists()
+
+    def test_a_stranded_row_uses_its_cited_path_at_the_promotion_chokepoint(self) -> None:
+        row = _row(destination="unknown location")
+        row.verified_citation = "Observed in src/teatree/loops/dream/promote_memory.py:71"
+        row.save(update_fields=["verified_citation"])
+        row.classify_core_gap()
+        batch = PromotionBatch()
+
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+
+        assert outcomes[0].filed is True
+        assert outcomes[0].withheld is False
+        assert len(batch.pending) == 1
 
     def test_a_grounded_destination_outside_the_legacy_prefixes_is_still_promoted(self) -> None:
         _row(destination="evals/scenarios/rules.yaml")

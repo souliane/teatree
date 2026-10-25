@@ -14,6 +14,7 @@ from contextlib import redirect_stdout
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,6 +24,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.cli.doctor.checks_loop import _check_dream_consolidation_blocked
+from teatree.core.management.commands.dream import Command
 from teatree.core.models import (
     ConsolidatedMemory,
     DreamRunMarker,
@@ -34,7 +36,9 @@ from teatree.core.models import (
 )
 from teatree.core.models.dream_gap_ledger import pending_entries
 from teatree.core.models.dream_run_marker import OUTCOME_FAILED, OUTCOME_GATES_FAILED
+from teatree.core.models.transition import TicketTransition
 from teatree.hooks import _repo_visibility
+from teatree.loops.dream.batch_promote import BatchOutcome, PromotionBatch
 from teatree.loops.dream.engine import DistilledCluster, DreamRunResult
 from teatree.loops.dream.gates import DreamQaReport, GateResult
 from teatree.loops.dream.loop import (
@@ -50,6 +54,56 @@ from teatree.loops.dream.pass_config import PassBudget
 from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, WeightedSnippet
 from teatree.token_report import EvalReserveDecision
 from tests._send_gate import allow_forge_repos
+
+
+class TestStrandedRelease(TestCase):
+    def test_daily_funnel_records_real_pass_and_skips_dry_run(self) -> None:
+        batch = PromotionBatch()
+        outcome = BatchOutcome(queued=False, umbrella_url="https://github.com/o/r/issues/249", gap_count=0)
+        with (
+            patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=outcome.umbrella_url),
+            patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
+            patch("teatree.loops.dream.batch_promote.promote_batch", return_value=outcome),
+            patch("teatree.core.management.commands.dream.release_stranded_hosts") as release,
+            patch("teatree.core.management.commands.dream.record_funnel") as record,
+        ):
+            Command()._promote_batch(batch=batch, dry_run=False)
+            Command()._promote_batch(batch=batch, dry_run=True)
+
+        assert release.call_count == 1
+        assert record.call_count == 1
+
+    def test_branch_existing_nowhere_releases_during_promotion(self) -> None:
+        umbrella_url = "https://github.com/o/r/issues/249"
+        Ticket.objects.create(issue_url=umbrella_url)
+        host = Ticket.objects.create(
+            issue_url=f"{umbrella_url}#dream-batch=old",
+            state=Ticket.State.WORK_STARTED,
+            extra={"branch": "gone", "dream_gap_batch": [{"gap_key": "g1", "cluster_key": "g1"}]},
+        )
+        TicketTransition.objects.create(ticket=host, from_state="not_started", to_state="work_started")
+        TicketTransition.objects.filter(ticket=host).update(created_at=timezone.now() - dt.timedelta(days=30))
+        absent = CompletedProcess(args=["git"], returncode=1, stdout="", stderr="")
+        empty_remote = CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
+
+        with (
+            patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=umbrella_url),
+            patch("teatree.core.models.dream_gap_ledger.dream_umbrella_url", return_value=umbrella_url),
+            patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
+            patch(
+                "teatree.loops.dream.batch_promote.promote_batch",
+                return_value=BatchOutcome(queued=False, umbrella_url=umbrella_url, gap_count=0),
+            ),
+            patch("teatree.loops.dream.stranded_hosts.unambiguous_clone_path", return_value=Path("/repo")),
+            patch("teatree.utils.git_branch.run_with_status", side_effect=[empty_remote, absent, absent]) as probe,
+        ):
+            Command()._promote_batch(batch=PromotionBatch(), dry_run=False)
+
+        host.refresh_from_db()
+        assert host.state == Ticket.State.IGNORED
+        assert "absent" in host.extra["dream_gap_released"]["reason"]
+        assert probe.call_count == 3
+
 
 _COMMAND = "teatree.core.management.commands.dream.Command"
 

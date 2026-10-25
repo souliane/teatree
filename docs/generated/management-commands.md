@@ -97,6 +97,7 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | `run` | Run one consolidation pass NOW (manual escape hatch; ignores cadence) |
 | `tick` | Run one consolidation pass IF the dream cadence has elapsed (cron entry) |
 | `compliance` | Print the latest instruction-compliance snapshot — read-only (#2663) |
+| `funnel` |  |
 | `gap-coverage` | Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap |
 | `gap-disposition` | Record a folded dream gap's ADDRESS (with its citation) or reasoned REJECT on its host |
 

@@ -7,9 +7,12 @@ here resolves or mutates a branch/ref by shelling out through the
 
 import os
 import re
+from dataclasses import dataclass
+from enum import Enum
+from subprocess import TimeoutExpired
 
 from teatree.utils.git_remote_ops import config_value
-from teatree.utils.git_run import check, run, run_strict
+from teatree.utils.git_run import check, git_env_non_interactive, run, run_strict, run_with_status
 
 DETACHED_HEAD = "HEAD"
 
@@ -17,6 +20,77 @@ DIFF_BASE_ENV = "T3_DIFF_COVERAGE_BASE"
 DIFF_BASE_CONFIG_KEY = "teatree.targetBranch"
 
 _RAW_SHA = re.compile(r"\A[0-9a-f]{7,40}\Z")
+REMOTE_REF_TIMEOUT_SECONDS = 30
+GIT_REF_NOT_FOUND = 2
+
+
+class RefPresence(Enum):
+    PRESENT = "present"
+    ABSENT = "absent"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteRefListing:
+    repo: str
+    heads: frozenset[str] | None
+
+
+def list_remote_refs(repo: str) -> RemoteRefListing:
+    try:
+        result = run_with_status(
+            repo=repo,
+            args=["ls-remote", "--heads", "origin"],
+            env=git_env_non_interactive(),
+            timeout=REMOTE_REF_TIMEOUT_SECONDS,
+        )
+    except (OSError, TimeoutExpired):
+        return RemoteRefListing(repo, None)
+    if result.returncode != 0:
+        return RemoteRefListing(repo, None)
+    names = frozenset(
+        line.partition("refs/heads/")[2] for line in result.stdout.splitlines() if "\trefs/heads/" in line
+    )
+    return RemoteRefListing(repo, names)
+
+
+def _local_ref_presence(repo: str, branch: str) -> RefPresence:
+    for ref in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
+        try:
+            result = run_with_status(repo=repo, args=["show-ref", "--verify", "--quiet", ref])
+        except OSError:
+            return RefPresence.UNKNOWN
+        if result.returncode == 0:
+            return RefPresence.PRESENT
+        if result.returncode != 1:
+            return RefPresence.UNKNOWN
+    return RefPresence.ABSENT
+
+
+def _remote_ref_presence(repo: str, branch: str) -> RefPresence:
+    try:
+        result = run_with_status(
+            repo=repo,
+            args=["ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
+            env=git_env_non_interactive(),
+            timeout=REMOTE_REF_TIMEOUT_SECONDS,
+        )
+    except (OSError, TimeoutExpired):
+        return RefPresence.UNKNOWN
+    if result.returncode == 0:
+        return RefPresence.PRESENT
+    return RefPresence.ABSENT if result.returncode == GIT_REF_NOT_FOUND else RefPresence.UNKNOWN
+
+
+def ref_presence(repo: str, branch: str, *, listing: RemoteRefListing | None = None) -> RefPresence:
+    local = _local_ref_presence(repo, branch)
+    if local is not RefPresence.ABSENT:
+        return local
+    if listing is not None:
+        if listing.repo != repo or listing.heads is None:
+            return RefPresence.UNKNOWN
+        return RefPresence.PRESENT if branch in listing.heads else RefPresence.ABSENT
+    return _remote_ref_presence(repo, branch)
 
 
 def resolve_diff_base(repo: str = ".") -> str:

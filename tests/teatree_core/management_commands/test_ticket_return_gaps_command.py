@@ -78,6 +78,37 @@ class ReturnGapsCommandTests(TestCase):
         self.umbrella.refresh_from_db()
         assert [entry["gap_key"] for entry in pending_entries(self.umbrella)] == ["g1", "g2"]
 
+    def test_release_stamp_can_restore_batch_and_claims(self) -> None:
+        member = self.member("g1")
+        member.extra["dream_gap_claimed_delivered"] = ["g1"]
+        member.save(update_fields=["extra"])
+        original_batch = list(member.extra["dream_gap_batch"])
+
+        self.returned(member)
+
+        member.refresh_from_db()
+        stamp = member.extra["dream_gap_released"]
+        assert member.extra["dream_gap_batch"] == []
+        assert member.extra["dream_gap_claimed_delivered"] == []
+        assert stamp["batch"] == original_batch
+        assert stamp["claimed_delivered"] == ["g1"]
+        member.merge_extra(
+            set_keys={"dream_gap_batch": stamp["batch"], "dream_gap_claimed_delivered": stamp["claimed_delivered"]}
+        )
+        member.refresh_from_db()
+        assert member.extra["dream_gap_batch"] == original_batch
+        assert member.extra["dream_gap_claimed_delivered"] == ["g1"]
+
+    def test_pr_opened_state_without_a_pr_row_is_held(self) -> None:
+        member = self.member("g1", state=Ticket.State.PR_OPENED)
+
+        self.refused(member, reason="has opened a pull request", advanced=str(member.pk))
+
+        member.refresh_from_db()
+        self.umbrella.refresh_from_db()
+        assert member.state == Ticket.State.PR_OPENED
+        assert pending_entries(self.umbrella) == []
+
     def test_refuses_claim_for_a_key_outside_the_batch(self) -> None:
         member = self.member("g1")
         member.extra["dream_gap_claimed_delivered"] = ["g1", "foreign"]

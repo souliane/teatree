@@ -120,6 +120,18 @@ class TestGapCoverage(_UmbrellaSettingCase):
 
 
 class TestGapDisposition(_UmbrellaSettingCase):
+    def test_misfit_returns_the_gap_and_keeps_coverage_flat(self) -> None:
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
+        host = _host(56, "a")
+
+        call_command("dream", "gap-disposition", str(host.pk), "a", "--misfit", "wrong host", stdout=StringIO())
+
+        umbrella.refresh_from_db()
+        host.refresh_from_db()
+        assert [entry["gap_key"] for entry in umbrella.extra["dream_gap_pending"]] == ["a"]
+        assert host.extra["dream_gap_batch"] == []
+        assert _coverage()[0] == 0
+
     def test_a_disposition_without_exactly_one_of_citation_or_reject_exits_one(self) -> None:
         host = _host(56, "a")
         with pytest.raises(SystemExit) as exc:
@@ -129,4 +141,27 @@ class TestGapDisposition(_UmbrellaSettingCase):
     def test_an_unknown_ticket_exits_one(self) -> None:
         with pytest.raises(SystemExit) as exc:
             call_command("dream", "gap-disposition", "9999", "a", "--reject", "x", stdout=StringIO(), stderr=StringIO())
+        assert exc.value.code == 1
+
+
+class TestFunnel(_UmbrellaSettingCase):
+    def test_json_reports_the_latest_daily_snapshot(self) -> None:
+        Ticket.objects.create(
+            issue_url=UMBRELLA,
+            extra={"dream_funnel": [{"at": "2026-10-25T09:00:00+00:00", "rows": 4, "core_gaps": 2}]},
+        )
+        output = StringIO()
+
+        call_command("dream", "funnel", "--json", stdout=output)
+
+        payload = json.loads(output.getvalue())
+        assert payload["daily"][-1]["rows"] == 4
+        assert payload["daily"][-1]["core_gaps"] == 2
+
+    def test_unknown_question_class_exits_one(self) -> None:
+        Ticket.objects.create(issue_url=UMBRELLA)
+
+        with pytest.raises(SystemExit) as exc:
+            call_command("dream", "funnel", "--class", "unseen", stdout=StringIO(), stderr=StringIO())
+
         assert exc.value.code == 1

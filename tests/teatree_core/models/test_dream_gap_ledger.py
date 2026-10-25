@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 from django.test import TestCase
 
@@ -57,6 +59,40 @@ class TestPendingLedger(TestCase):
 
 
 class TestGapDisposition(TestCase):
+    def test_misfit_returns_gap_to_pending_without_recording_a_rejection(self) -> None:
+        umbrella_url = "https://github.com/o/r/issues/249"
+        umbrella = Ticket.objects.create(overlay="test", issue_url=umbrella_url)
+        host = _host("a")
+
+        with patch("teatree.core.models.dream_gap_ledger.dream_umbrella_url", return_value=umbrella_url):
+            result = record_gap_disposition(host, "a", misfit="wrong host")
+
+        host.refresh_from_db()
+        umbrella.refresh_from_db()
+        assert result == "misfit"
+        assert host.extra["dream_gap_batch"] == []
+        assert host.extra.get("dream_gap_dispositions", {}) == {}
+        assert pending_entries(umbrella)[0]["declined_hosts"] == [host.pk]
+
+    def test_third_distinct_host_decline_keeps_the_memory_without_requeueing(self) -> None:
+        umbrella_url = "https://github.com/o/r/issues/249"
+        umbrella = Ticket.objects.create(overlay="test", issue_url=umbrella_url)
+        row = _memory("a")
+        host = _host("a")
+        host.extra["dream_gap_batch"][0]["declined_hosts"] = [100, 101]
+        host.save(update_fields=["extra"])
+
+        with patch("teatree.core.models.dream_gap_ledger.dream_umbrella_url", return_value=umbrella_url):
+            result = record_gap_disposition(host, "a", misfit="no matching host")
+
+        host.refresh_from_db()
+        row.refresh_from_db()
+        umbrella.refresh_from_db()
+        assert result == "misfit"
+        assert host.extra["dream_gap_batch"] == []
+        assert pending_entries(umbrella) == []
+        assert row.disposition == ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
+
     def test_an_address_verifies_the_candidate_row_and_joins_the_delivered_subset(self) -> None:
         host = _host("a", "b")
         _memory("a")

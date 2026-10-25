@@ -9,6 +9,7 @@ from teatree.core.models.checkout_proof import (
     DeferredExitAttestation,
     ReleasedPrHeadAttestation,
 )
+from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -116,20 +117,6 @@ class PREntrySerialized(TypedDict, total=False):
     discussions: list[PRDiscussionSerialized]
     draft_comments_pending: bool
     draft_comments_count: int
-
-
-class DreamGapEntry(TypedDict, total=False):
-    gap_key: str
-    cluster_key: str
-    title: str
-    citation: str
-    theme: str
-    detail: str
-
-
-class DreamGapDisposition(TypedDict):
-    disposition: str
-    evidence: str
 
 
 class PlanningHandoff(TypedDict, total=False):
@@ -287,7 +274,7 @@ class TicketExtra(TypedDict, total=False):
     # ``dream_gap_claimed_delivered`` is the coder/reviewer-recorded subset of gap
     # keys actually delivered, verified independently at review before the
     # reconcile checks a box or retires a memory. See ``teatree.loops.dream.batch_promote``.
-    dream_gap_batch: "list[dict[str, str]]"
+    dream_gap_batch: "list[DreamGapEntry]"
     dream_gap_claimed_delivered: list[str]
     # The umbrella host's queue of a pass's collected gaps awaiting the backlog sweep's
     # fold into an existing host, and a host's per-gap address/reject record.
@@ -297,6 +284,8 @@ class TicketExtra(TypedDict, total=False):
     # ``schedule_planned_work`` mints it when ``plan()`` fires.
     planning_handoff: "PlanningHandoff"
     dream_gap_dispositions: "dict[str, DreamGapDisposition]"
+    dream_gap_released: DreamGapRelease
+    dream_funnel: list[DreamFunnelEntry]
     # #2886: durable pydantic_ai conversation store, keyed by the ``Task.pk`` whose run produced
     # it and selected through ``Task.session_continuation``; see ``teatree.agents.pydantic_ai_resume``.
     pydantic_ai_threads: dict[str, list[object]]
