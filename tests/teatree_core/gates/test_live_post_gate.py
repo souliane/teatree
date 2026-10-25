@@ -164,7 +164,7 @@ class TestGateBehaviourNotJustWording(TestCase):
             patch(
                 "teatree.cli.review.forge_target.resolve_base_url", side_effect=RuntimeError("forge URL unavailable")
             ),
-            self.assertLogs("teatree.core.gates.live_post_gate", level="ERROR") as logs,
+            self.assertLogs("teatree.core.review.owner_waits", level="ERROR") as logs,
         ):
             _message, code = publish_live_post(repo="acme-internal/widget", mr=42, publish=lambda: ("OK", 0))
 

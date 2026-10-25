@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+from collections.abc import Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
@@ -107,6 +108,19 @@ def ask_owner_to_approve_post(mr_url: str, *, review_url: str = "") -> DeferredQ
     except DeferredQuestionError:
         logger.exception("live post card refused for %s", subject)
         return None
+
+
+def record_live_post_wait(*, mr_url: str, review_url_supplier: Callable[[], str] | None = None) -> None:
+    review_url = ""
+    if review_url_supplier is not None:
+        try:
+            review_url = review_url_supplier()
+        except Exception:
+            logger.exception("live post could not read the review URL for %s", mr_url)
+    try:
+        ask_owner_to_approve_post(mr_url, review_url=review_url)
+    except Exception:
+        logger.exception("live post failed to record an owner card for %s", mr_url)
 
 
 def settle_live_post_wait(mr_url: str) -> None:

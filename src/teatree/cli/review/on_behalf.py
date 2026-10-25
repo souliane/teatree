@@ -28,7 +28,7 @@ import typer
 
 from teatree.cli.review.audit import gitlab_mr_url
 from teatree.cli.review.forge_target import owning_overlay_name, resolve_base_url
-from teatree.core.gates.live_post_gate import LivePostBlockedError, record_live_post_wait
+from teatree.core.gates.live_post_gate import LivePostBlockedError
 from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:
@@ -244,6 +244,10 @@ def publish_or_blocked(
     if action == "post_comment" and result[1]:
         mr_ref = f"{repo}!{mr}"
         if result[0] == str(LivePostBlockedError(mr_ref)):
+            from teatree.core.review.owner_waits import (  # noqa: PLC0415 — deferred: needs the ORM app registry
+                record_live_post_wait,
+            )
+
             record_live_post_wait(
                 mr_url=mr_ref,
                 review_url_supplier=lambda: gitlab_mr_url(resolve_base_url(repo), repo, mr),
