@@ -52,6 +52,7 @@ def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
         scope = scope.lower()
         if scope.lstrip().startswith("forget to "):
             continue
+        scope = re.sub(r"(?<![\w-])--settings(?=\s|=|$)", "", scope)
         for kind, pattern in (
             ("no_migration", r"\bmigrations?\b"),
             ("no_setting", r"\bsettings?\b"),

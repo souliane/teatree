@@ -2,6 +2,7 @@ active_loop_schedule
 admission_pressure_shed_at
 admission_write_concurrency_per_core
 admit_colleague_prs_to_board
+agent_advisor_model
 agent_compaction_keep_tool_results
 agent_harness
 agent_harness_provider
