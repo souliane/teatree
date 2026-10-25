@@ -61,6 +61,7 @@ def _domains_requested_by_every_miniloop() -> set[Domain]:
         for name in factory_names:
             stack.enter_context(patch.object(gsf, name, _returns_none))
         stack.enter_context(patch("teatree.loop.domain_jobs.jobs_for_domain", side_effect=_record))
+        stack.enter_context(patch("teatree.loops.ship.loop.jobs_for_domain", side_effect=_record))
         for loop in iter_loops():
             loop.build_jobs(
                 backends=[OverlayBackends(name="stub")],

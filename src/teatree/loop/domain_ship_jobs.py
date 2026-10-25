@@ -8,6 +8,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.merge.host_kind import forge_for_repo_slug
 from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.overlay_repos import owned_repo_slugs
+from teatree.core.review.pr_inventory import mark_inventory_unknown, write_inventory
 from teatree.loop.job_identity import Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
     _competing_url_prefixes,
@@ -21,7 +22,7 @@ from teatree.loop.scanners import GitLabApprovalsScanner, MyPrsScanner
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
 from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.scanners.unaudited_merge import UnauditedMergeScanner
-from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host
+from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _web_origin_for_host
 from teatree.loops.enable_verdict import loop_admits
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,10 @@ def _ship_jobs_for_overlay(
                 _ScannerJob(
                     scanner=MyPrsScanner(
                         host=code_host,
+                        overlay_name=tag,
+                        host_origin=_web_origin_for_host(code_host),
+                        inventory_writer=write_inventory,
+                        inventory_invalidator=mark_inventory_unknown,
                         identities=backend.identities,
                         allowed_url_prefixes=url_prefixes,
                         competing_url_prefixes=competing_prefixes,
