@@ -7,7 +7,7 @@ from django.test import TestCase
 from teatree.agents._runner_env import DispatchCredential
 from teatree.agents._runner_options import SpawnOverrides, _build_options
 from teatree.agents.claude_cli_spawn import prepared_spawn
-from teatree.agents.harness import ClaudeSdkHarness
+from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.runner_preparation import Preflight, prepare_run
 from teatree.config import UserSettings, get_effective_settings
@@ -62,25 +62,28 @@ class TestRunnerAdvisorModel(TestCase):
                     }
                 )
 
-    def test_dispatch_passes_selected_claude_harness_to_options(self) -> None:
+    def test_dispatch_passes_selected_harness_to_options(self) -> None:
         ConfigSetting.objects.set_value("agent_advisor_model", "advisor-model")
-        dispatch = DispatchHarness(
-            harness=ClaudeSdkHarness(),
-            name="claude_sdk",
-            provider=None,
-            model="claude-sonnet-4-6",
-            route_candidate_index=None,
-        )
-
-        prepared = prepare_run(
-            self._task(),
-            Preflight(stage_skills=[], dispatch=dispatch, skills=[]),
-            phase="coding",
-            handoff=None,
-            credential=DispatchCredential(env={"ANTHROPIC_API_KEY": "key-x"}),
-        )
-
-        assert json.loads(prepared.options.settings) == {"advisorModel": "advisor-model"}
+        for name, harness in (("claude_sdk", ClaudeSdkHarness()), ("pydantic_ai", PydanticAiHarness())):
+            with self.subTest(harness_name=name):
+                dispatch = DispatchHarness(
+                    harness=harness,
+                    name=name,
+                    provider=None,
+                    model="claude-sonnet-4-6",
+                    route_candidate_index=None,
+                )
+                prepared = prepare_run(
+                    self._task(),
+                    Preflight(stage_skills=[], dispatch=dispatch, skills=[]),
+                    phase="coding",
+                    handoff=None,
+                    credential=DispatchCredential(env={"ANTHROPIC_API_KEY": "key-x"}),
+                )
+                if name == "claude_sdk":
+                    assert json.loads(prepared.options.settings) == {"advisorModel": "advisor-model"}
+                else:
+                    assert prepared.options.settings is None
 
     def test_other_harnesses_do_not_receive_advisor(self) -> None:
         ConfigSetting.objects.set_value("agent_advisor_model", "advisor-model")
