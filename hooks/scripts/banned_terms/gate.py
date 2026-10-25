@@ -39,14 +39,13 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from hooks.scripts import t3_invocation
 from hooks.scripts.banned_terms.deny import emit_banned_term_deny
 from hooks.scripts.banned_terms.marker import resolve_marker as _resolve_banned_terms_marker
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 
 # What a command that publishes looks like by its text alone, for the moment ``teatree`` cannot be imported.
-_LOOKS_LIKE_A_PUBLISH_RE = re.compile(r"\b(?:gh|glab|curl)\b|\bgit\b[^|;&\n]*\bpush\b")
+LOOKS_LIKE_A_PUBLISH_RE = re.compile(r"\b(?:gh|glab|curl)\b|\bgit\b[^|;&\n]*\bpush\b")
 
 
 def _banned_terms_gate_enabled() -> bool:
@@ -116,7 +115,7 @@ def _publishes_to_a_non_private_destination(data: dict) -> bool:
     command = (data.get("tool_input") or {}).get("command", "") if data.get("tool_name") == "Bash" else ""
     return _guarded(
         lambda: _destination_is_not_provably_private(data, command),
-        lambda _exc: _LOOKS_LIKE_A_PUBLISH_RE.search(command) is not None,
+        lambda _exc: LOOKS_LIKE_A_PUBLISH_RE.search(command) is not None,
     )
 
 
@@ -229,7 +228,6 @@ def _generic_payload_blocks(payload: str, command: str, cwd_repo: Path | None, *
         command,
         cwd_repo,
         nonpublic=nonpublic,
-        ai_signature_scanner_available=t3_invocation.t3_argv("tool", "ai-sig-scan", "-") is not None,
     )
     if finding is None:
         return False
