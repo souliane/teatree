@@ -68,6 +68,7 @@ class HoldCause(StrEnum):
     BUSY = "a live process is working in the checkout"
     CHANGED = "the ticket's checkout changed while the head was fetched"
     NOT_LANDED = "the ticket's checkout did not land on the forge head"
+    NOT_STAMPED = "the ticket did not record the forge head"
     UNREADABLE_CHECKOUT = "the checkout could not be read:"
 
 
@@ -124,7 +125,15 @@ class _OwnPrHead:
             self._require_checks(forge)
         if self._forge_head() != head:
             raise _ReviewHeldError(HoldCause.HEAD_MOVED)
-        self.task.ticket.rearm_review_at(head)
+        self._stamp(head)
+
+    def _stamp(self, head: str) -> None:
+        ticket = self.task.ticket
+        ticket.refresh_from_db(fields=["extra"])
+        ticket.rearm_review_at(head)
+        ticket.refresh_from_db(fields=["extra"])
+        if (ticket.extra or {}).get("reviewed_sha") != head:
+            raise _ReviewHeldError(HoldCause.NOT_STAMPED)
 
     def _settled(self, forge: CodeHostQuery) -> bool:
         state = self._read("the pull request state", forge.pr_merge_state).state.upper()

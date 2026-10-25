@@ -202,6 +202,15 @@ class TestAnEqualHeadDispatchesAtOnce(_OwnPrReviewCase):
         assert self.reviewed_sha(ticket) == self.repo.base
         assert not task.attempts.filter(error__startswith=REVIEW_HELD_PREFIX).exists()
 
+    def test_a_stale_ticket_object_restamps_the_database_head(self) -> None:
+        ticket = self.own_ticket(extra={"reviewed_sha": self.repo.base})
+        Ticket.objects.filter(pk=ticket.pk).update(extra={})
+
+        self.review(_Forge(self.repo.base), ticket)
+
+        assert self.spawned
+        assert self.reviewed_sha(ticket) == self.repo.base
+
 
 class TestAnUnsafeCheckoutIsHeldNotMoved(_OwnPrReviewCase):
     harness_must_not_open = True
@@ -262,6 +271,16 @@ class TestAnUnsafeCheckoutIsHeldNotMoved(_OwnPrReviewCase):
         task = self.review(_Forge(self.repo.base, checks="unreadable"), ticket)
 
         self.assert_held(task, ticket, head=self.repo.base, cause=HoldCause.CHECKS, questions=0)
+
+    def test_a_ticket_stamp_that_does_not_persist_is_held(self) -> None:
+        ticket = self.own_ticket()
+
+        with patch.object(Ticket, "rearm_review_at", return_value=None):
+            task = self.review(_Forge(self.repo.base), ticket)
+
+        self.assert_held(
+            task, ticket, head=self.repo.base, cause="the ticket did not record the forge head", questions=0
+        )
 
     def test_a_reported_merge_success_without_a_head_move_is_held(self) -> None:
         head = self.repo.publish("b.txt")
