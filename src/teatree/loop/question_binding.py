@@ -117,7 +117,12 @@ def bind_reply(
         question_id, body = addressed
         question = _pending_by_id(question_id, channel=reply.channel)
         key = "id"
-        if question is None and _cards_in_thread(reply, backend=backend)[0]:
+        if (
+            question is None
+            and cards_in_thread(
+                channel=reply.channel, thread_ts=reply.thread_ts, before_ts=reply.slack_ts, backend=backend
+            )[0]
+        ):
             stop = UnmatchedCardThread(CardThreadStop.NOT_WAITING, question_id)
             _log_reply(reply, f"ignored: {stop.reason}")
             return stop
@@ -343,24 +348,26 @@ def _inferred_cards(
     return _thread_cards(reply, backend=backend, body=body, reader=reader)
 
 
-def _cards_in_thread(reply: PendingChatInjection, *, backend: "MessagingBackend") -> tuple[list[DeferredQuestion], str]:
+def cards_in_thread(
+    *, channel: str, thread_ts: str, before_ts: str, backend: "MessagingBackend"
+) -> tuple[list[DeferredQuestion], str]:
     """Every card, pending or closed, whose own ts belongs to the reply's thread, and the key that matched."""
-    posted = list(
-        DeferredQuestion.posted_since(channel=reply.channel, root_ts=reply.thread_ts, before_ts=reply.slack_ts)
-    )
-    if len(posted) == 1 and posted[0].slack_ts == reply.thread_ts:
+    posted = list(DeferredQuestion.posted_since(channel=channel, root_ts=thread_ts, before_ts=before_ts))
+    if len(posted) == 1 and posted[0].slack_ts == thread_ts:
         return posted, "root"
     if not posted:
         return [], ""
-    messages = backend.fetch_thread_replies(channel=reply.channel, thread_ts=reply.thread_ts)
-    members = {reply.thread_ts, *(str(message.get("ts", "")) for message in messages)}
+    messages = backend.fetch_thread_replies(channel=channel, thread_ts=thread_ts)
+    members = {thread_ts, *(str(message.get("ts", "")) for message in messages)}
     return [card for card in posted if card.slack_ts in members], "thread-member"
 
 
 def _thread_cards(
     reply: PendingChatInjection, *, backend: "MessagingBackend", body: str, reader: InboundReader
 ) -> tuple[DeferredQuestion | None, str] | AmbiguousCards | UnmatchedCardThread:
-    matched, key = _cards_in_thread(reply, backend=backend)
+    matched, key = cards_in_thread(
+        channel=reply.channel, thread_ts=reply.thread_ts, before_ts=reply.slack_ts, backend=backend
+    )
     pending = [card for card in matched if card.is_pending and not is_action_question(card)]
     if len(pending) > 1:
         if resolve_answer(body, pending[0], reader=reader) is None:
@@ -403,6 +410,7 @@ __all__ = [
     "answer_from_click",
     "apply_bound_answer",
     "bind_reply",
+    "cards_in_thread",
     "configured_owner_id",
     "resolve_answer",
 ]

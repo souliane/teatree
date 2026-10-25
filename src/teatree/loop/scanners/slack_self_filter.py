@@ -7,12 +7,10 @@ self-message transforms live in the backend layer
 read chokepoint without a backwards import to this orchestration layer. This
 module re-exports them so the loop scanners keep one stable import path.
 
-:func:`filter_self_messages` and :func:`drop_on_behalf_messages` are the
-lowest common helpers the downstream consumer of
-:class:`PendingChatInjection` inherits:
-
-* The reactive Slack-answer cycle (``run_slack_answer_cycle``) — which
-    spawns ``t3:answerer`` sub-agents against unanswered rows.
+:func:`filter_self_messages` is the shared recorder guard. The recorder admits
+an app-posted owner reply only when it belongs to a recorded card thread;
+other app posts still fail :func:`is_on_behalf_posted`'s check.
+The reactive Slack-answer cycle consumes only the rows the recorder admits.
 
 The Slack Socket Mode receiver only drops ``subtype=bot_message`` events;
 the bot's own outbound posts from ``chat.postMessage`` arrive as plain

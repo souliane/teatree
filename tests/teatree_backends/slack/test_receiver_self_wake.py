@@ -80,6 +80,20 @@ class TestReceiverCallbackDoesNotWakeOnItsOwnPosts:
 
         on_event.assert_called_once_with("ov", {"type": "message", "user": "U0HUMAN", "ts": "1.0"})
 
+    def test_an_app_posted_user_thread_reply_reaches_the_recorder(self, tmp_path: Path) -> None:
+        event = {
+            "type": "message",
+            "channel_type": "im",
+            "user": "U0HUMAN",
+            "ts": "1.1",
+            "thread_ts": "1.0",
+            "api_app_id": "A_OWNER_SCRIPT",
+        }
+
+        on_event = _drive(tmp_path, event, auth_body=_AUTH_OK)
+
+        on_event.assert_called_once_with("ov", event)
+
 
 class TestAnUnresolvedIdentityStillBreaksTheLoop:
     """The probe can fail; the guard may not go with it.

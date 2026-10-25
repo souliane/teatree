@@ -10,9 +10,8 @@ Two write-side filters apply, so the consumer inherits them without re-implement
 
 * :func:`teatree.loop.scanners.slack_self_filter.filter_self_messages` drops the bot's
     OWN outbound DMs, keyed on the bot's resolved identity (#1346).
-* :func:`teatree.loop.scanners.slack_self_filter.drop_on_behalf_messages` drops rows
-    posted via an app/bot token even when they display under the human's own identity
-    — an on-behalf post carries the human's own ``user`` id (#1941).
+* An app-posted owner reply survives only when its Slack thread holds a recorded
+    owner card. Other app posts still cannot enter the reactive work queue (#1941).
 
 Fail-closed (the identity filter only): when the bot's own identity cannot be resolved,
 :func:`filter_self_messages` returns ``None`` and nothing is recorded — better silent
@@ -23,10 +22,11 @@ import logging
 from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pending_chat_injection import DmContext, PendingChatInjection
+from teatree.loop.question_binding import cards_in_thread, configured_owner_id
 from teatree.loop.scanners.slack_self_filter import (
     OwnSlackIdentity,
-    drop_on_behalf_messages,
     filter_self_messages,
     is_on_behalf_posted,
     resolve_own_identity,
@@ -73,10 +73,27 @@ class SlackDmRecorder:
         dms = filter_self_messages(events, self._identity())
         if dms is None:
             return 0
+        recorded = 0
         for event in dms:
-            if _event_thread_ts(event) and is_on_behalf_posted(event):
-                logger.info("Slack reply %s ignored: posted through an app token", _event_ts(event))
-        return sum(1 for event in drop_on_behalf_messages(dms) if self._record_one(event))
+            if is_on_behalf_posted(event) and not self._owner_card_reply(event):
+                if _event_thread_ts(event):
+                    logger.info("Slack reply %s ignored: posted through an app token", _event_ts(event))
+                continue
+            recorded += self._record_one(event)
+        return recorded
+
+    def _owner_card_reply(self, event: RawAPIDict) -> bool:
+        thread_ts = _event_thread_ts(event)
+        owner_id = configured_owner_id(self.backend)
+        if not thread_ts or not owner_id or _str_field(event, "user") != owner_id or event.get("bot_id"):
+            return False
+        cards, _ = cards_in_thread(
+            channel=_str_field(event, "channel"),
+            thread_ts=thread_ts,
+            before_ts=_event_ts(event),
+            backend=self.backend,
+        )
+        return any(card.audience == DeferredQuestion.Audience.OWNER_QUESTION for card in cards)
 
     def _record_one(self, event: RawAPIDict) -> bool:
         ts = _event_ts(event)

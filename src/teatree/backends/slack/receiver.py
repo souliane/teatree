@@ -38,7 +38,13 @@ from teatree.backends.slack.listener_heartbeat import (
     read_heartbeat,
     write_heartbeat,
 )
-from teatree.backends.slack.self_identity import OwnSlackIdentity, identity_from_auth_test, is_self_originated
+from teatree.backends.slack.self_identity import (
+    OwnSlackIdentity,
+    identity_from_auth_test,
+    is_on_behalf_posted,
+    is_self_authored,
+    is_self_originated,
+)
 
 if TYPE_CHECKING:
     from teatree.types import RawAPIDict
@@ -306,7 +312,7 @@ def deliver_event(
     logger.info("[%s] Queued %s event (ts=%s)", overlay, event_type, event.get("ts", "?"))
     if context.on_event is None:
         return True
-    if is_self_originated(event, context.identity):
+    if is_self_originated(event, context.identity) and not _may_be_user_token_thread_reply(event, context.identity):
         logger.debug("[%s] no wake: self-originated event (ts=%s)", overlay, event.get("ts", "?"))
         return True
     # Best-effort event-driven record-then-wake so the answer cycle finds the
@@ -318,6 +324,21 @@ def deliver_event(
     except Exception:
         logger.warning("[%s] slack-answer wake signal failed", overlay, exc_info=True)
     return True
+
+
+def _may_be_user_token_thread_reply(event: dict, identity: OwnSlackIdentity | None) -> bool:
+    user = event.get("user")
+    thread_ts = event.get("thread_ts")
+    return (
+        is_on_behalf_posted(event)
+        and isinstance(user, str)
+        and bool(user)
+        and isinstance(thread_ts, str)
+        and bool(thread_ts)
+        and thread_ts != event.get("ts")
+        and not event.get("bot_id")
+        and (identity is None or not is_self_authored(event, identity))
+    )
 
 
 class _LiveSocket(Protocol):

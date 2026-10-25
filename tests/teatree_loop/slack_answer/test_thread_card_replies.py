@@ -86,6 +86,7 @@ def _api_owner_reply(ts: str, root: str, text: str = "approve") -> RawAPIDict:
         "text": text,
         "team": "T1",
         "app_id": "A_OWNER_SCRIPT",
+        "api_app_id": "A_OWNER_SCRIPT",
         "parent_user_id": "UBOT",
         "blocks": [{"type": "rich_text", "elements": []}],
     }
@@ -150,6 +151,40 @@ class TestThreadCardReplies(TestCase):
         assert live_owner_questions() == [decoy], "the answered card still holds a reminder slot"
         assert backend.reads == []
         assert any("bound question" in line and "key=root" in line for line in logs.output)
+
+    def test_api_user_token_reply_with_api_app_id_binds_nested_card(self) -> None:
+        card = _card("330.2")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.thread_replies["330.1"] = [{"ts": "330.1"}, {"ts": "330.2", "thread_ts": "330.1"}]
+        event = {**_api_owner_reply("330.3", "330.1"), "api_app_id": "A_OWNER_SCRIPT"}
+
+        recorded = SlackDmRecorder(backend=backend).record_events([event])
+        report = _cycle(backend)
+
+        card.refresh_from_db()
+        assert recorded == 1
+        assert card.answer_text == "Approve"
+        assert report.answered_question == 1
+
+    def test_api_app_post_without_configured_owner_is_not_recorded(self) -> None:
+        card = _card("340.1")
+        backend = Backend(user_id="")
+        event = {**_api_owner_reply("340.2", "340.1"), "user": "", "api_app_id": "A_OWNER_SCRIPT"}
+
+        recorded = SlackDmRecorder(backend=backend).record_events([event])
+
+        card.refresh_from_db()
+        assert recorded == 0
+        assert card.is_pending
+
+    def test_api_app_post_in_internal_question_thread_is_not_recorded(self) -> None:
+        DeferredQuestion.record("Internal state?", slack_channel=CHANNEL, slack_ts="350.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        event = {**_api_owner_reply("350.2", "350.1"), "api_app_id": "A_OWNER_SCRIPT"}
+
+        recorded = SlackDmRecorder(backend=backend).record_events([event])
+
+        assert recorded == 0
 
     def test_two_cards_in_one_thread_get_visible_choice_then_id_answer(self) -> None:
         first = _card("400.2")
@@ -282,10 +317,10 @@ class TestThreadCardReplies(TestCase):
         assert card.is_pending
         assert "author is not the owner" in " ".join(logs.output)
 
-    def test_api_app_post_stays_filtered_and_leaves_the_card_pending(self) -> None:
+    def test_api_app_post_in_unrelated_thread_stays_filtered_and_leaves_card_pending(self) -> None:
         card = _card("800.1")
         backend = Backend(user_id=OWNER_SLACK_ID)
-        raw = {**_api_owner_reply("800.2", "800.1"), "api_app_id": "A_APP"}
+        raw = {**_api_owner_reply("800.2", "799.1"), "api_app_id": "A_APP"}
         with self.assertLogs("teatree.loop.scanners.slack_dm_recorder", level="INFO") as logs:
             recorded = SlackDmRecorder(backend=backend).record_events([raw])
 

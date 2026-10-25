@@ -120,6 +120,14 @@ class TestRecordThenWake(django.test.TestCase):
 
         assert PendingChatInjection.objects.count() == 0
 
+    def test_an_unrelated_app_posted_reply_does_not_wake_the_answer_cycle(self) -> None:
+        event = {**_DM, "ts": "2.0", "thread_ts": "1.0", "api_app_id": "A_OTHER"}
+        with patch.object(slack_inbound, "messaging_from_overlay", return_value=self.backend):
+            slack_inbound.record_and_wake_slack_answer("demo", event)
+
+        assert PendingChatInjection.objects.count() == 0
+        assert self._queued_wakes() == 0
+
     def test_an_unresolvable_backend_still_wakes(self) -> None:
         # The sweep is the recovery net: the JSONL write already happened, so the
         # callback degrades to a wake rather than raising into the receiver.
