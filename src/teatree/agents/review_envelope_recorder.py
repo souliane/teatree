@@ -39,6 +39,7 @@ from teatree.core.models import (
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
 from teatree.core.models.review_evidence import ReviewEvidenceError
 from teatree.core.models.review_target import (
+    MOVED_REVIEW_RETRY_HEADS_KEY,
     ReviewTarget,
     review_target_for_task,
     unattachable_verdict_refusal,
@@ -200,7 +201,12 @@ def _bound_review_target(task: Task, envelope: ReviewVerdictEnvelope) -> tuple[R
     )
     if binding.error:
         if binding.superseded:
-            _supersede_moved_head(target)
+            with transaction.atomic():
+                _supersede_moved_head(target)
+                if binding.retry_head and target.armed_by is AutoReviewDispatch:
+                    task.ticket.merge_extra(
+                        merge_into_dicts={MOVED_REVIEW_RETRY_HEADS_KEY: {binding.retry_head: str(task.pk)}}
+                    )
         elif binding.retry_head:
             return None, f"{WRONG_HEAD_RETRY_PREFIX}{binding.retry_head}; {binding.error}"
         return None, binding.error

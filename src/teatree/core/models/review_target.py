@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 REVIEW_RETRY_HEAD_KEY = "review_retry_head_by_task"
+MOVED_REVIEW_RETRY_HEADS_KEY = "review_retry_after_move"
 
 
 @dataclass(frozen=True, slots=True)

@@ -1197,6 +1197,32 @@ class TestAHeadThatMovedPastBothTreesReArmsInsteadOfParking(TestCase):
         assert rearmed is not None
         assert rearmed.head_sha == _MOVED_HEAD
 
+    def test_the_fresh_review_is_the_only_retry_after_a_moved_head(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+        with _live_head(_MOVED_HEAD):
+            first = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+        assert first.error.startswith(HEAD_SUPERSEDED_PREFIX)
+
+        dispatch = AutoReviewDispatch.enqueue(
+            slug=_SLUG,
+            pr_id=_PR_ID,
+            head_sha=_MOVED_HEAD,
+            pr_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}",
+            overlay="teatree",
+        )
+        assert dispatch is not None
+        retried = dispatch.task
+        assert retried is not None
+        retried.claim(claimed_by="headless-reviewer")
+        with _live_head(_MOVED_HEAD):
+            second = record_result_envelope(retried, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+        assert second.error.startswith(WRONG_HEAD_RETRY_PREFIX)
+        with patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False):
+            assert requeue_transient_failed() == 0
+        retried.refresh_from_db()
+        assert retried.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
     def test_a_superseded_head_is_never_re_armed_even_once_its_deadline_lapses(self) -> None:
         # A DISPATCHED claim refuses re-arming too, but only until its deadline passes —
         # so the expiry is what separates "spent for good" from "merely in flight".

@@ -125,7 +125,11 @@ from teatree.core.modelkit.task_failure_taxonomy import (
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.models.review_target import REVIEW_RETRY_HEAD_KEY, review_target_for_task
+from teatree.core.models.review_target import (
+    MOVED_REVIEW_RETRY_HEADS_KEY,
+    REVIEW_RETRY_HEAD_KEY,
+    review_target_for_task,
+)
 from teatree.core.models.task_repair_queries import adjacent_work_attempts, phase_attempts, ticket_phase_observations
 from teatree.core.repair_loop import (
     IterationStalled,
@@ -353,7 +357,18 @@ def _self_repair_reopen(task: Task) -> int | None:
 
 
 def _corrective_note(task: Task) -> str | None:
-    return corrective_note(task, _latest_error(task))
+    error = _latest_error(task)
+    if head := wrong_head_retry_head(error):
+        dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+        retried_heads = task.ticket.extra.get(MOVED_REVIEW_RETRY_HEADS_KEY, {})
+        if (
+            dispatch is not None
+            and dispatch.head_sha == head
+            and isinstance(retried_heads, dict)
+            and head in retried_heads
+        ):
+            return None
+    return corrective_note(task, error)
 
 
 def _corrective_reopen(task: Task, note: str) -> int:
