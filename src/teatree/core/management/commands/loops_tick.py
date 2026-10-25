@@ -31,11 +31,13 @@ its own dedicated ``LoopLease``.
 import datetime as dt
 import os
 import uuid
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 
 import typer
+from django.db import DatabaseError
 from django_typer.management import TyperCommand
 
 from teatree.config.resolution import get_effective_settings
@@ -43,7 +45,10 @@ from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.machine_output import emit
 from teatree.core.models import LoopLease
+from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.review.pr_inventory import OpenPrRow, open_pr_rows
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
+from teatree.loop.pr_stall import StallRepair, repair_stalled_prs
 from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line_reader
 from teatree.loops.preset_status import overridden_loop_names, preset_line_handles
 
@@ -54,6 +59,14 @@ if TYPE_CHECKING:
     from teatree.loops.base import BuildJobsContext
 
 type ReportDict = dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _PrReport:
+    blocked_reason: str
+    open_prs: Sequence[OpenPrRow]
+    repairs: Sequence[StallRepair]
+
 
 #: The dedicated lease slot the reinstall drain acquires so parallel per-loop
 #: ticks never both re-anchor the same pending reinstall; its short TTL doubles as
@@ -127,7 +140,33 @@ class _ScopedJobsBuilder:
         return list(outcome.jobs)
 
 
-def _report_to_dict(report: "TickReport", *, blocked_reason: str = "") -> ReportDict:
+def _open_pr_rows(report: "TickReport") -> list[OpenPrRow]:
+    read_errors: list[str] = []
+    try:
+        rows = open_pr_rows(report.started_at, errors=read_errors)
+    except (OSError, ValueError, DatabaseError) as exc:
+        report.errors["open_prs"] = f"open-PR inventory unreadable: {exc}"
+        return []
+    if read_errors:
+        report.errors["open_prs"] = f"{len(read_errors)} PR inventory source(s) unreadable: {'; '.join(read_errors)}"
+    return rows
+
+
+def _stall_repairs(report: "TickReport", rows: Sequence[OpenPrRow]) -> list[StallRepair]:
+    try:
+        return repair_stalled_prs(rows)
+    except (DatabaseError, OSError, ValueError, NoPlanArtifactError) as exc:
+        report.errors["pr_stall"] = f"stall repair failed ({type(exc).__name__}): {exc}"
+        return []
+
+
+def _report_to_dict(
+    report: "TickReport",
+    *,
+    blocked_reason: str = "",
+    open_prs: Sequence[OpenPrRow] = (),
+    stall_repairs: Sequence[StallRepair] = (),
+) -> ReportDict:
     """The structured tick report, carrying any loop-table refusal as a real skip.
 
     A loop the loop-table declined to dispatch is ``skipped`` — NOT a zero-signal
@@ -142,6 +181,11 @@ def _report_to_dict(report: "TickReport", *, blocked_reason: str = "") -> Report
         "actions": [asdict(action) for action in report.actions],
         "skipped": bool(blocked_reason),
         "skipped_reason": blocked_reason,
+        "open_prs": [
+            {key: getattr(row, key) for key in ("ref", "url", "age", "next_task", "started", "stall")}
+            for row in open_prs
+        ],
+        "stall_repairs": [asdict(repair) for repair in stall_repairs],
     }
 
 
@@ -162,6 +206,8 @@ def _skipped_report_dict(started_at: dt.datetime, reason: str) -> ReportDict:
         "actions": [],
         "skipped": True,
         "skipped_reason": reason,
+        "open_prs": [],
+        "stall_repairs": [],
     }
 
 
@@ -230,7 +276,14 @@ class Command(TyperCommand):
             raise SystemExit(2)
         return TickRequest(backends=named)
 
-    def _emit_report(self, report: "TickReport", loop: str, *, blocked_reason: str, json_output: bool) -> None:
+    def _emit_report(
+        self,
+        report: "TickReport",
+        loop: str,
+        *,
+        json_output: bool,
+        pr_report: _PrReport,
+    ) -> None:
         """Emit the tick report, leading with a ``ran`` OR a reasoned ``SKIP`` verdict.
 
         A tick used to print NOTHING on the success path (``human`` was ``None``
@@ -246,18 +299,21 @@ class Command(TyperCommand):
         *blocked_reason* is set the verdict is a SKIP naming what refused the
         loop and how to lift it.
         """
+        blocked_reason, open_prs, repairs = pr_report.blocked_reason, pr_report.open_prs, pr_report.repairs
         verdict = (
             f"SKIP  loop {loop!r} did not run — {blocked_reason}"
             if blocked_reason
             else f"ran   loop {loop!r} — {report.signal_count} signal(s), {report.action_count} action(s)"
         )
         warnings = [f"WARN  {name}: {message}" for name, message in report.errors.items()]
+        listing = [f"OPEN  {row.ref}  {row.age}  {row.next_task}" for row in open_prs]
+        stalls = [f"STALL {repair.ref}  {repair.cause}  {repair.action}" for repair in repairs]
         emit(
-            _report_to_dict(report, blocked_reason=blocked_reason),
+            _report_to_dict(report, blocked_reason=blocked_reason, open_prs=open_prs, stall_repairs=repairs),
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human="\n".join([verdict, *warnings]),
+            human="\n".join([verdict, *warnings, *listing, *stalls]),
         )
 
     def _run_followup_dry_run(self, *, overlay: str, json_output: bool) -> None:
@@ -433,7 +489,14 @@ class Command(TyperCommand):
             set_overridden_loops_reader(None)
             LoopLease.objects.release(tick_mutex, owner=owner)
 
-        self._emit_report(report, loop, blocked_reason=builder.blocked_reason, json_output=json_output)
+        open_prs = [] if builder.blocked_reason else _open_pr_rows(report)
+        repairs = _stall_repairs(report, open_prs)
+        self._emit_report(
+            report,
+            loop,
+            json_output=json_output,
+            pr_report=_PrReport(builder.blocked_reason, open_prs, repairs),
+        )
         self._hard_exit_if_subprocess()
 
     @staticmethod

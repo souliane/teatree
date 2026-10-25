@@ -4,11 +4,13 @@ Card-click opens it, only legal FSM transitions render, executing one moves the
 card, history rows show, and Esc / the close button dismiss it (#3162).
 """
 
+import pytest
 from playwright.sync_api import Dialog, Page, expect
 from pytest_django.live_server_helper import LiveServer
 
 from e2e.dash.pom import BoardPage, SeededBoard
 from teatree.core.models.ticket import Ticket
+from tests.factories import TicketFactory
 
 State = Ticket.State
 
@@ -24,6 +26,7 @@ def test_card_click_opens_the_side_panel(live_server: LiveServer, page: Page, se
 def test_only_legal_transitions_render(live_server: LiveServer, page: Page, seeded_board: SeededBoard) -> None:
     board = BoardPage(page, live_server.url)
     board.open()
+    board.expand_column(State.NOT_STARTED)
     drawer = board.open_drawer_for(seeded_board.backlog.pk)
     # `scope` is a legal move from NOT_STARTED; `deliver`/`ship` belong to far later
     # states and must never be offered here (exact-name match — `merge` would collide
@@ -38,6 +41,7 @@ def test_confirming_the_transition_moves_the_card(
 ) -> None:
     board = BoardPage(page, live_server.url)
     board.open()
+    board.expand_column(State.NOT_STARTED)
     drawer = board.open_drawer_for(seeded_board.backlog.pk)
     # The transition button is guarded by a native confirm() (#3264/#3265). Record
     # + accept the prompt explicitly (Playwright dismisses dialogs by default) to
@@ -64,6 +68,7 @@ def test_dismissing_the_transition_confirm_keeps_the_card(
 ) -> None:
     board = BoardPage(page, live_server.url)
     board.open()
+    board.expand_column(State.NOT_STARTED)
     drawer = board.open_drawer_for(seeded_board.backlog.pk)
     # Dismissing the confirm() must cancel the transition — the guard's whole point.
     prompts: list[str] = []
@@ -109,13 +114,13 @@ def test_close_button_closes_the_panel(live_server: LiveServer, page: Page, seed
     expect(drawer.root).to_be_empty()
 
 
-def test_review_now_enqueues_a_task_and_disables_its_own_button(
-    live_server: LiveServer, page: Page, seeded_board: SeededBoard
-) -> None:
+@pytest.mark.usefixtures("seeded_board")
+def test_review_now_enqueues_a_task_and_disables_its_own_button(live_server: LiveServer, page: Page) -> None:
     """#4085: prioritising a PR is a click — and a second click cannot duplicate it."""
+    testable = TicketFactory(state=Ticket.State.TESTED, short_description="ready for review")
     board = BoardPage(page, live_server.url)
     board.open()
-    drawer = board.open_drawer_for(seeded_board.reviewing.pk)
+    drawer = board.open_drawer_for(testable.pk)
     review_now = drawer.enqueue_buttons.filter(has_text="Review now")
     expect(review_now).to_be_enabled()
 
@@ -126,4 +131,4 @@ def test_review_now_enqueues_a_task_and_disables_its_own_button(
     # it is now disabled — the refusal is shown rather than left to be discovered.
     expect(drawer.root.locator(".task-block")).to_contain_text("reviewing")
     expect(drawer.enqueue_buttons.filter(has_text="Review now")).to_be_disabled()
-    expect(drawer.enqueue_buttons.filter(has_text="Ship now")).to_be_enabled()
+    expect(drawer.enqueue_buttons.filter(has_text="Ship now")).to_have_count(0)

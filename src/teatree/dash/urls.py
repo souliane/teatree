@@ -12,6 +12,8 @@ from django.views.generic.base import RedirectView
 from teatree.dash.views import (
     board,
     board_columns_partial,
+    board_lifecycle,
+    board_prs_partial,
     command_run,
     cycle_time,
     debug_session,
@@ -61,6 +63,8 @@ app_name = "dash"
 urlpatterns = [
     path("", RedirectView.as_view(pattern_name="dash:board", permanent=False), name="index"),
     path("board/", board, name="board"),
+    path("board/prs/", board_prs_partial, name="board_prs"),
+    path("board/lifecycle/", board_lifecycle, name="board_lifecycle"),
     path("board/columns/", board_columns_partial, name="board_columns"),
     path("cycle-time/", cycle_time, name="cycle_time"),
     path("health/", health, name="health"),
