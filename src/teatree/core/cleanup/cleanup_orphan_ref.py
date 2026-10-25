@@ -96,12 +96,12 @@ def raise_or_reap_orphan_ref(worktree: Worktree, target: "_EffectiveTarget", exc
         msg = (
             f"{worktree.repo_path} ({target.label}): "
             f"refused teardown — {len(decision.unsynced)} commit(s) on NO remote (data loss): "
-            f"{shas}. Push the branch or pass force=True to discard."
+            f"{shas}. Push the branch before retrying."
         )
         raise RuntimeError(msg) from exc
     msg = (
         f"{worktree.repo_path} ({target.label}): "
         f"refused teardown — could not verify the branch is pushed "
-        f"(git probe failed: {exc}). Push the branch or pass force=True to discard."
+        f"(git probe failed: {exc}). Verify the branch before retrying."
     )
     raise RuntimeError(msg) from exc

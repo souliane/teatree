@@ -99,7 +99,9 @@ class _ReEditedRegionFixture(TestCase):
         )
         return out.stdout.strip()
 
-    def _cleanup(self, worktree: Worktree, *, force: bool = False, stub_forge: bool = True) -> CleanupResult:
+    def _cleanup(
+        self, worktree: Worktree, *, force: bool = False, stub_forge: bool = True, discard: bool = False
+    ) -> CleanupResult:
         overlay = MagicMock()
         overlay.provisioning.cleanup_steps.return_value = []
         with ExitStack() as stack:
@@ -111,7 +113,7 @@ class _ReEditedRegionFixture(TestCase):
             stack.enter_context(patch("teatree.core.runners.worktree_start.docker_compose_down"))
             if stub_forge:
                 stack.enter_context(forge_reporting())
-            return cleanup_worktree(worktree, strict_hygiene=False, force=force)
+            return cleanup_worktree(worktree, strict_hygiene=False, force=force, discard_unshipped_work=discard)
 
 
 class TestTheTargetReEditedTheSameRegion(_ReEditedRegionFixture):
@@ -161,13 +163,13 @@ class TestLandedWorkIsStillReclaimed(_ReEditedRegionFixture):
 
         assert analysis.proven_redundant is True, f"kept for: {analysis.kept_reasons}"
 
-    def test_force_remains_the_escape_for_the_refused_case(self) -> None:
+    def test_discard_remains_the_escape_for_the_refused_case(self) -> None:
         worktree, wt_path = self._pushed_feature("4719-forced")
         self._squash_then_drift("4719-forced", drift=(_FEATURE, "rewritten on the target\n"))
 
-        result = self._cleanup(worktree, force=True)
+        result = self._cleanup(worktree, force=True, discard=True)
 
-        assert result.errors == [], f"force teardown reported errors: {result.errors}"
+        assert result.errors == [], f"discard teardown reported errors: {result.errors}"
         assert not wt_path.exists()
 
 

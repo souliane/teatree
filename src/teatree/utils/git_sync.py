@@ -45,10 +45,19 @@ def remote_heads(repo: str, branches: Iterable[str], remote: str = "origin") -> 
     ``ls-remote`` matches a pattern against any trailing path, so only an exact
     ``refs/heads/<name>`` counts — ``nest/refs/heads/feat`` is not ``feat``.
     """
+    return set(remote_head_shas(repo, branches, remote=remote))
+
+
+def remote_head_shas(repo: str, branches: Iterable[str], remote: str = "origin") -> dict[str, str]:
     wanted = set(branches)
     output = _read_remote(repo, ["ls-remote", remote, *(f"refs/heads/{name}" for name in sorted(wanted))])
-    listed = {line.split("\t", 1)[1] for line in output.splitlines() if "\t" in line}
-    return {name for name in wanted if f"refs/heads/{name}" in listed}
+    return {
+        ref.removeprefix("refs/heads/"): sha
+        for line in output.splitlines()
+        if "\t" in line
+        for sha, ref in [line.split("\t", 1)]
+        if ref.startswith("refs/heads/") and ref.removeprefix("refs/heads/") in wanted
+    }
 
 
 def fetch_branch(repo: str, branch: str, remote: str = "origin") -> None:
