@@ -19,10 +19,10 @@ UPDATE_BRANCH = "Update PR branch against main"
 _RED_CI = frozenset({"red", "failed", "failure", "error", "canceled", "cancelled"})
 _GREEN_CI = GREEN_STATUSES | {"green"}
 _PENDING_CI = frozenset({"pending", "running"})
-_BLOCKING_DECISIONS = frozenset({"flag_conflict", "needs_branch_update", "required_checks_indeterminate"})
-_BLOCKING_REASONS = frozenset({"draft", "changes_requested", "evaluation_failed"})
+_BLOCKING_DECISIONS = frozenset({"flag_conflict", "needs_branch_update", "my_pr.findings_to_fix"})
+_BLOCKING_REASONS = frozenset({"draft", "changes_requested", "evaluation_failed", "required_checks_indeterminate"})
 _OWNER_REASONS = frozenset(
-    {"mergeable_awaiting_review", "fork_requires_human_approval", "untrusted_author_public_repo"}
+    {"mergeable_awaiting_review", "no_clear_for_head", "fork_requires_human_approval", "untrusted_author_public_repo"}
 )
 _AUTHORIZATION_REASONS = frozenset({"no_clear_for_head", "mergeable_awaiting_review"})
 _PAST_CI_GATE_REASONS = _AUTHORIZATION_REASONS | {
@@ -127,6 +127,8 @@ def entry_blocker(entry: "PrInventoryEntry") -> str:
 
 def stall_cause(entry: "PrInventoryEntry") -> str:
     """What the factory can repair by coding; a draft park or a sweep fault is a blocker, never a stall."""
+    if entry.owned is False:
+        return ""
     if entry.ci.lower() in _RED_CI:
         return FIX_CI
     return entry.next_task if entry.decision == "flag_conflict" or entry.reason == "changes_requested" else ""
@@ -135,6 +137,8 @@ def stall_cause(entry: "PrInventoryEntry") -> str:
 def _blocked_reason(facts: PrActionFacts) -> str:
     if facts.failure:
         return f"Fix failed task: {facts.failure[:160]}"
+    if facts.draft:
+        return "Finish draft and request review"
     if facts.entry is not None:
         if blocker := entry_blocker(facts.entry):
             return blocker
@@ -179,7 +183,7 @@ def _blocked(facts: PrActionFacts) -> PrNextAction | None:
 
 
 def _ready(facts: PrActionFacts) -> PrNextAction | None:
-    if facts.entry is not None and facts.entry.reason:
+    if facts.entry is None or facts.entry.reason:
         return None
     if (
         approvals_met(facts.approvals) is not True
@@ -188,6 +192,8 @@ def _ready(facts: PrActionFacts) -> PrNextAction | None:
         or facts.threads != "0 unresolved"
     ):
         return None
+    if facts.entry.decision.startswith("my_pr."):
+        return PrNextAction("Blocked", "Factory", "Merge state not verified by a fresh sweep")
     if facts.verified:
         return PrNextAction("Ready to merge or merging", "Factory", "Merge through the ticket keystone")
     return PrNextAction("Blocked", "Factory", "Forge facts not verified by a recent tick; waiting for the next read")

@@ -25,7 +25,7 @@
         <tr id="running-{{ row.attempt_id }}">
           <td>
             {% if row.ticket_id %}
-              <a href="{% url 'dash:board_lifecycle' %}#card-{{ row.ticket_id }}">#{{ row.ticket_number }}</a>
+              <a href="{% url 'dash:board_lifecycle' %}?focus={{ row.ticket_id }}#card-{{ row.ticket_id }}">#{{ row.ticket_number }}</a>
               <span class="muted small">{{ row.short_description }}</span>
             {% else %}<span class="muted small">—</span>{% endif %}
           </td>
@@ -61,7 +61,7 @@
         <tr id="queued-{{ row.task_id }}">
           <td>
             {% if row.ticket_id %}
-              <a href="{% url 'dash:board_lifecycle' %}#card-{{ row.ticket_id }}">#{{ row.ticket_number }}</a>
+              <a href="{% url 'dash:board_lifecycle' %}?focus={{ row.ticket_id }}#card-{{ row.ticket_id }}">#{{ row.ticket_number }}</a>
               <span class="muted small">{{ row.short_description }}</span>
             {% else %}<span class="muted small">—</span>{% endif %}
           </td>

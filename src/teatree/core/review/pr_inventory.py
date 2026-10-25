@@ -1,6 +1,7 @@
 """Durable open-PR observations shared by the tick and dashboard."""
 
 import json
+import logging
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -11,12 +12,14 @@ from tempfile import NamedTemporaryFile
 from django.utils import timezone
 
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.overlay_loader import OverlayConfigResolver
 from teatree.core.review.pr_next_action import stall_cause
 from teatree.paths import data_dir_root
 
 MINUTES_PER_HOUR = 60
 HOURS_PER_DAY = 24
 _UNKNOWN_TIME = datetime.max.replace(tzinfo=UTC)
+logger = logging.getLogger(__name__)
 
 
 class PrInventoryError(ValueError):
@@ -111,6 +114,17 @@ def _write_snapshot(snapshot: PrInventorySnapshot, directory: Path | None) -> Pa
             message = f"PR inventory write did not verify: {temporary}"
             raise PrInventoryError(message)
         temporary.replace(target)
+        if snapshot.overlay.startswith("own:"):
+            prefix = snapshot.overlay.rsplit(":", 1)[0] + ":"
+            for old_path in root.glob("*.json"):
+                if old_path == target:
+                    continue
+                try:
+                    old = _read_snapshot(old_path)
+                except PrInventoryError:
+                    continue
+                if old.overlay.startswith(prefix):
+                    old_path.unlink(missing_ok=True)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -119,7 +133,11 @@ def _write_snapshot(snapshot: PrInventorySnapshot, directory: Path | None) -> Pa
 
 def mark_inventory_unknown(overlay: str, *, directory: Path | None = None) -> Path:
     path = _path(overlay, _directory(directory))
-    prior = _read_snapshot(path) if path.exists() else None
+    try:
+        prior = _read_snapshot(path) if path.exists() else None
+    except PrInventoryError:
+        logger.warning("Replacing unreadable PR inventory before invalidation: %s", path)
+        prior = None
     return _write_snapshot(
         PrInventorySnapshot(
             overlay=overlay,
@@ -174,11 +192,35 @@ def _read_snapshot(path: Path) -> PrInventorySnapshot:
     )
 
 
-def read_inventory(*, directory: Path | None = None) -> tuple[PrInventorySnapshot, ...]:
+def read_inventory(
+    *, directory: Path | None = None, errors: list[str] | None = None, active_overlays: Iterable[str] | None = None
+) -> tuple[PrInventorySnapshot, ...]:
     root = _directory(directory)
     if not root.exists():
         return ()
-    return tuple(sorted((_read_snapshot(path) for path in root.glob("*.json")), key=lambda row: row.overlay))
+    snapshots = []
+    failures = []
+    active = set(active_overlays) if active_overlays is not None else None
+    for path in root.glob("*.json"):
+        try:
+            snapshot = _read_snapshot(path)
+        except PrInventoryError as exc:
+            failures.append(str(exc))
+            logger.warning("%s", exc)
+            continue
+        overlay = snapshot.overlay
+        if overlay.startswith("own:"):
+            overlay = overlay.rsplit(":", 1)[0].removeprefix("own:")
+        if active is not None and overlay and overlay not in active:
+            path.unlink(missing_ok=True)
+            logger.info("Pruned PR inventory for removed overlay %s", overlay)
+            continue
+        snapshots.append(snapshot)
+    if errors is not None:
+        errors.extend(failures)
+    if failures and not snapshots:
+        raise PrInventoryError("; ".join(failures))
+    return tuple(sorted(snapshots, key=lambda row: row.overlay))
 
 
 def merged_entries(snapshots: Iterable[PrInventorySnapshot]) -> dict[str, PrInventoryEntry]:
@@ -237,9 +279,15 @@ def elapsed_label(value: str | datetime | None, now: datetime) -> str:
     return f"{hours // HOURS_PER_DAY} d"
 
 
-def open_pr_rows(started_at: datetime, *, now: datetime | None = None) -> list[OpenPrRow]:
+def open_pr_rows(
+    started_at: datetime, *, now: datetime | None = None, errors: list[str] | None = None
+) -> list[OpenPrRow]:
     """Every open PR observed since *started_at*: PRs with lifecycle rows first, then oldest first."""
-    entries = merged_entries(snapshot for snapshot in read_inventory() if snapshot.observed_at >= started_at)
+    entries = merged_entries(
+        snapshot
+        for snapshot in read_inventory(errors=errors, active_overlays=OverlayConfigResolver.all_names())
+        if snapshot.observed_at >= started_at
+    )
     started = set(PullRequest.objects.filter(url__in=list(entries)).values_list("url", flat=True))
     ordered = sorted(
         entries.values(),

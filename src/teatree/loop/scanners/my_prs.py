@@ -84,7 +84,7 @@ def _needs_attention(status: str) -> bool:
 
 
 def _ci_label(kind: str, status: str) -> str:
-    if status in GREEN_STATUSES:
+    if status in _SETTLED_STATUSES:
         return "green"
     if kind == FAILED_KIND:
         return "red"

@@ -37,6 +37,7 @@ def _page_number(raw: str) -> int:
 
 
 def _filters(request: "HttpRequest") -> BoardFilters:
+    focus_id = _page_number(request.GET.get("focus", ""))
     pages = {
         key.removeprefix(_PAGE_PREFIX): _page_number(value)
         for key, value in request.GET.items()
@@ -47,7 +48,8 @@ def _filters(request: "HttpRequest") -> BoardFilters:
         role=request.GET.get("role", "").strip(),
         kind=request.GET.get("kind", "").strip(),
         text=request.GET.get("text", "").strip(),
-        include_ignored=request.GET.get("ignored") in _TRUTHY,
+        include_ignored=request.GET.get("ignored") in _TRUTHY or bool(focus_id),
+        focus_id=focus_id,
         pages=pages,
     )
 
@@ -58,12 +60,12 @@ def _page_url(request: "HttpRequest", state: str, page: int) -> str:
     return f"{reverse('dash:board_lifecycle')}?{params.urlencode()}"
 
 
-def _with_pager(request: "HttpRequest", column: KanbanColumn) -> KanbanColumn:
+def _with_pager(request: "HttpRequest", column: KanbanColumn, *, focused: bool) -> KanbanColumn:
     return replace(
         column,
         next_url=_page_url(request, column.state, column.page + 1) if column.has_next_page else "",
         prev_url=_page_url(request, column.state, column.page - 1) if column.page else "",
-        collapsed=column.state in _COLLAPSED_STATES,
+        collapsed=column.state in _COLLAPSED_STATES and not focused,
     )
 
 
@@ -71,10 +73,13 @@ def _board_context(request: "HttpRequest") -> BoardContext:
     filters = _filters(request)
     board = build_kanban_columns(filters)
     groups = tuple(
-        replace(group, columns=tuple(_with_pager(request, column) for column in group.columns))
+        replace(
+            group,
+            columns=tuple(_with_pager(request, column, focused=bool(filters.focus_id)) for column in group.columns),
+        )
         for group in board.groups
     )
-    hidden = tuple(_with_pager(request, column) for column in board.hidden)
+    hidden = tuple(_with_pager(request, column, focused=bool(filters.focus_id)) for column in board.hidden)
     paged = tuple(
         (f"{_PAGE_PREFIX}{column.state}", column.page)
         for column in (*(column for group in groups for column in group.columns), *hidden)

@@ -93,13 +93,13 @@ class PrBoardTestCase(TestCase):
         )
         return (PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now() - age, entries=(entry,)),)
 
-    def test_approved_green_pr_observed_by_the_last_tick_is_ready_to_merge(self) -> None:
+    def test_own_scan_alone_cannot_verify_merge_readiness(self) -> None:
         pr = self._approved_green_pr()
 
         with patch("teatree.dash.pr_board.read_inventory", return_value=self._observed(pr, age=timedelta(minutes=2))):
             card = next(card for group in build_pr_board().groups for card in group.cards)
 
-        assert card.group == "Ready to merge or merging"
+        assert card.group == "Blocked"
         assert (card.ci, card.approvals, card.threads) == ("success", "approved", "0 unresolved")
         assert card.title == "Ready PR"
 
@@ -162,6 +162,18 @@ class PrBoardTestCase(TestCase):
         with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
             board = build_pr_board()
         assert {card.url for group in board.groups for card in group.cards} == {pr.url, watched_pr.url}
+
+    def test_fresh_sweep_matches_watched_repo_without_case_sensitivity(self) -> None:
+        pr = PullRequestFactory(repo="souliane/teatree")
+        snapshot = PrInventorySnapshot(
+            overlay=pr.overlay,
+            observed_at=timezone.now(),
+            entries=(),
+            watched_repos=("Souliane/TeaTree",),
+        )
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            board = build_pr_board()
+        assert board.total == 0
 
     def test_stale_empty_snapshot_never_hides_an_open_recorded_pr(self) -> None:
         pr = PullRequestFactory(overlay="teatree")
@@ -253,6 +265,43 @@ class PrBoardTestCase(TestCase):
         assert card.group == "Blocked"
         assert "CI" in card.next_action
 
+    def test_unknown_required_checks_block_even_when_approvals_are_pending(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        entry = _observed_entry(
+            pr,
+            decision="skip",
+            reason="required_checks_indeterminate",
+            next_task="Inspect required checks",
+            ci="unknown",
+            approvals="awaiting approval",
+        )
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
+        assert (card.group, card.next_action) == ("Blocked", "Inspect required checks")
+
+    def test_recorded_findings_block_with_zero_forge_threads(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        entry = _observed_entry(
+            pr,
+            decision="my_pr.findings_to_fix",
+            next_task="Fix review findings",
+            threads="0 unresolved",
+            approvals="awaiting approval",
+        )
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
+        assert (card.group, card.next_action) == ("Blocked", "Fix review findings")
+
+    def test_own_draft_is_blocked_before_waiting_for_approvals(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        entry = _observed_entry(pr, draft=True, approvals="awaiting approval")
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
+        assert (card.group, card.next_action) == ("Blocked", "Finish draft and request review")
+
     def test_uncleared_pr_waits_for_review_instead_of_claiming_factory_work(self) -> None:
         url = "https://github.com/souliane/teatree/pull/98"
         entry = PrInventoryEntry(
@@ -273,8 +322,8 @@ class PrBoardTestCase(TestCase):
         snapshot = PrInventorySnapshot(overlay="teatree", observed_at=timezone.now(), entries=(entry,))
         with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
             card = next(card for group in build_pr_board().groups for card in group.cards)
-        assert card.group == "Waiting on colleagues"
-        assert card.next_actor == "Reviewer"
+        assert card.group == "Needs you"
+        assert card.next_actor == "You"
         assert card.next_action == entry.next_task
 
     def test_reviewer_ticket_with_empty_cache_is_linked_by_pr_url(self) -> None:
@@ -376,7 +425,7 @@ class PrBoardFreshObservationTestCase(TestCase):
 
     def test_fresh_approved_green_observation_is_ready(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory())
-        card = self._card(pr, _observed_entry(pr, threads="0 unresolved"))
+        card = self._card(pr, _observed_entry(pr, decision="skip", threads="0 unresolved"))
         assert card.group == "Ready to merge or merging"
         assert (card.ci, card.approvals) == ("green", "approved")
 
@@ -420,7 +469,7 @@ class PrBoardFreshObservationTestCase(TestCase):
             ),
         )
         assert (card.group, card.next_action) == (
-            "Waiting on colleagues",
+            "Needs you",
             "Obtain independent review and merge authorization",
         )
 
@@ -487,7 +536,12 @@ class PrBoardActionDetailsTestCase(TestCase):
         entries = (
             _observed_entry(red, ci="red", next_task="Fix failing CI"),
             _observed_entry(
-                threaded, ci="green", approvals="approved", threads="1 unresolved", decision="my_pr.findings_to_fix"
+                threaded,
+                ci="green",
+                approvals="approved",
+                threads="1 unresolved",
+                decision="my_pr.findings_to_fix",
+                next_task="Fix review findings",
             ),
         )
         snapshot = PrInventorySnapshot(overlay=red.overlay, observed_at=timezone.now(), entries=entries)
@@ -497,7 +551,7 @@ class PrBoardActionDetailsTestCase(TestCase):
         assert cards[red.url].group == "Blocked"
         assert "CI" in cards[red.url].next_action
         assert cards[threaded.url].group == "Blocked"
-        assert "thread" in cards[threaded.url].next_action
+        assert cards[threaded.url].next_action == "Fix review findings"
 
     def test_ready_requires_all_approvals_as_well_as_green_ci(self) -> None:
         ticket = TicketFactory()

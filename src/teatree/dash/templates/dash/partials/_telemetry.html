@@ -27,7 +27,7 @@
             <td>{{ incident.last_seen }}</td>
             <td>
               {{ incident.last_action }}{% if incident.action_at %} at {{ incident.action_at }}{% endif %}
-              {% if incident.action_ticket_id %}<a href="{% url 'dash:board_lifecycle' %}#card-{{ incident.action_ticket_id }}">open repair ticket</a>{% endif %}
+              {% if incident.action_ticket_id %}<a href="{% url 'dash:board_lifecycle' %}?focus={{ incident.action_ticket_id }}#card-{{ incident.action_ticket_id }}">open repair ticket</a>{% endif %}
             </td>
           </tr>
         {% endfor %}

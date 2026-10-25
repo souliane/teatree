@@ -15,7 +15,7 @@ from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import OverlayConfigResolver, get_overlay
 from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS
 from teatree.core.review.pr_inventory import PrInventoryEntry, elapsed_label, merged_entries, parse_time, read_inventory
 from teatree.core.review.pr_next_action import GROUPS, UNKNOWN, PrActionFacts, decide
@@ -87,8 +87,9 @@ class PrObservation:
 
 
 def _inventory(now: datetime) -> PrObservation:
+    read_errors: list[str] = []
     try:
-        snapshots = read_inventory()
+        snapshots = read_inventory(errors=read_errors, active_overlays=OverlayConfigResolver.all_names())
     except (OSError, ValueError) as exc:
         return PrObservation({}, {}, set(), f"PR inventory unavailable: {exc}")
     if not snapshots:
@@ -102,12 +103,16 @@ def _inventory(now: datetime) -> PrObservation:
     watched = {
         snapshot.overlay: (
             snapshot.observed_at,
-            frozenset(snapshot.watched_repos or (entry.repo for entry in snapshot.entries)),
+            frozenset(
+                repo.casefold() for repo in (snapshot.watched_repos or (entry.repo for entry in snapshot.entries))
+            ),
         )
         for snapshot in fresh
         if not snapshot.overlay.startswith("own:")
     }
     warnings = []
+    if read_errors:
+        warnings.append(f"PR inventory has {len(read_errors)} unreadable source(s); showing the readable observations.")
     if stale:
         warnings.append(f"PR inventory is stale for {', '.join(sorted(item.overlay for item in stale))}.")
     if unknown:
@@ -195,7 +200,7 @@ def _visible_pr_urls(
     urls = set(observed)
     for row in rows_by_url.values():
         observation = watched.get(row.overlay)
-        seen_at = observation[0] if observation and row.repo in observation[1] else None
+        seen_at = observation[0] if observation and row.repo.casefold() in observation[1] else None
         newer_than_snapshot = (
             seen_at is not None and row.create_verified_at is not None and row.create_verified_at > seen_at
         )

@@ -33,7 +33,7 @@
   </form>
 
   <div id="board"
-    hx-get="{% url 'dash:board_columns' %}?text={{ filters.text|urlencode }}&overlay={{ filters.overlay|urlencode }}&role={{ filters.role|urlencode }}&kind={{ filters.kind|urlencode }}{% if filters.include_ignored %}&ignored=1{% endif %}{% for key, page in page_params %}&{{ key }}={{ page }}{% endfor %}"
+    hx-get="{% url 'dash:board_columns' %}?text={{ filters.text|urlencode }}&overlay={{ filters.overlay|urlencode }}&role={{ filters.role|urlencode }}&kind={{ filters.kind|urlencode }}{% if filters.include_ignored %}&ignored=1{% endif %}{% if filters.focus_id %}&focus={{ filters.focus_id }}{% endif %}{% for key, page in page_params %}&{{ key }}={{ page }}{% endfor %}"
     hx-trigger="every 4s"
     hx-sync="this:drop"
     hx-swap="morph:innerHTML">

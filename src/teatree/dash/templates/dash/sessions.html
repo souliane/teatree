@@ -16,7 +16,7 @@
             <td><a class="chip mono" href="{% url 'dash:transcript' s.agent_session_id %}">{{ s.agent_session_id }}</a></td>
             <td>
               {% if s.ticket_id %}
-                <a href="{% url 'dash:board_lifecycle' %}#card-{{ s.ticket_id }}">#{{ s.ticket_number }}</a>
+                <a href="{% url 'dash:board_lifecycle' %}?focus={{ s.ticket_id }}#card-{{ s.ticket_id }}">#{{ s.ticket_number }}</a>
                 <span class="muted small">{{ s.short_description }}</span>
               {% endif %}
             </td>

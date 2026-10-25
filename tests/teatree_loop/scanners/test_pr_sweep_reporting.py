@@ -211,7 +211,7 @@ class PrSweepInventoryTestCase(TestCase):
             created_at="2026-10-01T10:00:00Z",
             updated_at="2026-10-02T10:00:00Z",
             next_task="Review or merge PR",
-            decision="my_pr.open",
+            decision="skip",
             ci="green",
             approvals="approved",
             threads="0 unresolved",
@@ -422,6 +422,21 @@ class MyPrsInventoryTestCase(TestCase):
         assert (entry.ci, entry.approvals, entry.threads) == ("green", "approved", "2 unresolved")
         assert entry.approvals_display == "1/1 (approved)"
 
+    def test_skipped_pipeline_is_settled_and_reads_approvals(self) -> None:
+        host = self._host(status="skipped")
+        host.get_mr_approvals.return_value = {
+            "approvals_left": 0,
+            "approved_by": [],
+            "unresolved_resolvable": 0,
+        }
+        writer = Mock()
+
+        MyPrsScanner(host=host, overlay_name="teatree", inventory_writer=writer).scan()
+
+        (entry,) = writer.call_args.args[1]
+        assert (entry.ci, entry.approvals, entry.threads) == ("green", "approved", "0 unresolved")
+        host.get_mr_approvals.assert_called_once()
+
     def test_approvals_without_a_count_show_the_label_alone(self) -> None:
         host = self._host()
         host.get_mr_approvals.return_value = {"approvals_left": 1, "approved_by": [], "unresolved_resolvable": 0}
@@ -510,7 +525,7 @@ class MyPrsInventoryTestCase(TestCase):
         assert len(signals) == 1
         writer.assert_not_called()
 
-    def test_failed_next_list_read_revokes_ready_freshness(self) -> None:
+    def test_failed_next_list_read_revokes_verified_own_inventory(self) -> None:
         host = self._host()
         host.get_mr_approvals.return_value = {"approvals_left": 0, "unresolved_resolvable": 0}
         host.list_my_prs.side_effect = [host.list_my_prs.return_value, RuntimeError("forge unavailable")]
@@ -526,10 +541,7 @@ class MyPrsInventoryTestCase(TestCase):
 
         with TemporaryDirectory() as temporary, patch.dict(os.environ, {"T3_DATA_DIR": str(Path(temporary))}):
             scanner.scan()
-            assert (
-                next(card for group in build_pr_board().groups for card in group.cards).group
-                == "Ready to merge or merging"
-            )
+            assert next(card for group in build_pr_board().groups for card in group.cards).group == "Blocked"
             scanner.scan()
             board = build_pr_board()
 

@@ -209,6 +209,7 @@ class BoardFilters:
     kind: str = ""
     text: str = ""
     include_ignored: bool = False
+    focus_id: int = 0
     pages: Mapping[str, int] = field(default_factory=dict)
 
 
@@ -278,6 +279,8 @@ def _page_tickets(tickets: QuerySet[Ticket], totals: Mapping[str, int], pages: M
 def _filtered_tickets(filters: BoardFilters) -> QuerySet[Ticket]:
     columns = (*BOARD_COLUMNS, *HIDDEN_STATES) if filters.include_ignored else BOARD_COLUMNS
     qs = Ticket.objects.filter(state__in=columns)
+    if filters.focus_id:
+        qs = qs.filter(pk=filters.focus_id)
     if filters.overlay:
         qs = qs.filter(overlay=filters.overlay)
     if filters.role:

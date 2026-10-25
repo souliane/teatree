@@ -6,6 +6,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -166,7 +167,7 @@ class PrBoardAcceptanceTestCase(TestCase):
                     PullRequestFactory(
                         ticket=TicketFactory(state=State.PR_OPENED), url=entry.url, repo=entry.repo, iid=str(entry.iid)
                     )
-            write_inventory("teatree", list(expected.entries))
+            write_inventory("t3-teatree", list(expected.entries))
             response = self.client.get(reverse("dash:board"))
 
         body = response.content.decode()
@@ -183,6 +184,7 @@ class PrBoardAcceptanceTestCase(TestCase):
                     f"<dd>{entry.ci}</dd>",
                     f"<dd>{entry.approvals}</dd>",
                     f"<dd>{entry.threads}</dd>",
+                    f" · age {(timezone.now() - datetime.fromisoformat(entry.created_at)).days} d",
                     "<dt>Last activity</dt>",
                     expected.next_line[ref],
                 ):
@@ -257,12 +259,36 @@ class PrBoardAcceptanceTestCase(TestCase):
             draft=False,
         )
         with TemporaryDirectory() as root, patch.dict(os.environ, {"T3_DATA_DIR": root}):
-            write_inventory("teatree", [entry])
+            write_inventory("t3-teatree", [entry])
             body = self.client.get(reverse("dash:board")).content.decode()
         assert "Unlinked pull request" in body
         assert "Run independent review" in body
         assert "unknown" in body
-        assert "age" in body.lower()
+        assert " · age " in body
+
+    def test_a_bad_snapshot_does_not_hide_good_pr_cards(self) -> None:
+        entry = PrInventoryEntry(
+            url="https://github.com/souliane/teatree/pull/5008",
+            repo="souliane/teatree",
+            iid=5008,
+            title="Readable pull request",
+            created_at="2026-10-01T10:00:00Z",
+            updated_at="2026-10-22T10:00:00Z",
+            next_task="Run independent review",
+            decision="flag_no_review",
+            ci="unknown",
+            approvals="unknown",
+            threads="unknown",
+            draft=False,
+        )
+        with _inventory_dir():
+            write_inventory("t3-teatree", [entry])
+            bad = Path(os.environ["T3_DATA_DIR"]) / "pr-inventory" / "bad.json"
+            bad.write_text("bad JSON", encoding="utf-8")
+            body = self.client.get(reverse("dash:board")).content.decode()
+
+        assert "Readable pull request" in body
+        assert "1 unreadable source(s)" in body
 
     def test_pr_card_refuses_unsafe_external_links(self) -> None:
         url = "javascript:alert(1)"
@@ -290,6 +316,19 @@ class PrBoardAcceptanceTestCase(TestCase):
         assert f'data-ticket="{backlog[0].pk}"' in second
         assert f'data-ticket="{delivered[-1].pk}"' in second
         assert f'data-ticket="{delivered[0].pk}"' not in second
+
+    def test_focus_link_renders_a_card_beyond_the_first_page_and_keeps_it_on_poll(self) -> None:
+        oldest = TicketFactory(state=State.NOT_STARTED)
+        for _ in range(55):
+            TicketFactory(state=State.NOT_STARTED)
+
+        page = self.client.get(reverse("dash:board_lifecycle"), {"focus": oldest.pk}).content.decode()
+        poll = self.client.get(reverse("dash:board_columns"), {"focus": oldest.pk}).content.decode()
+
+        assert f'id="card-{oldest.pk}"' in page
+        assert f'id="card-{oldest.pk}"' in poll
+        assert '<details data-state="not_started"' not in page
+        assert f"focus={oldest.pk}" in page
 
     def test_a_visible_column_over_fifty_pages_on_its_own_state_parameter(self) -> None:
         for _ in range(55):

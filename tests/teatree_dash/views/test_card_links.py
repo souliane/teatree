@@ -1,5 +1,6 @@
 """Board cards and the ticket drawer link to the forge (#3624)."""
 
+import re
 from pathlib import Path
 
 from django.test import TestCase
@@ -53,6 +54,12 @@ class TestCardAnchorTargets(TestCase):
 
         assert linked, "no template links a card anchor any more — drop this guard"
         assert offenders == set()
+        for name in linked:
+            source = (templates / name).read_text()
+            references = re.findall(r"\{% url 'dash:board_lifecycle' %\}[^\"]*#card-\{\{ ([\w.]+) \}\}", source)
+            assert references
+            for reference in references:
+                assert f"?focus={{{{ {reference} }}}}#card-{{{{ {reference} }}}}" in source
 
     def test_the_lifecycle_board_renders_the_anchor_the_links_point_at(self) -> None:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=_ISSUE_URL, short_description="anchored")

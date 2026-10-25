@@ -17,6 +17,7 @@ from teatree.core.review.pr_inventory import (
     read_inventory,
     write_inventory,
 )
+from teatree.core.review.pr_next_action import stall_cause
 
 
 def _entry(number: int) -> PrInventoryEntry:
@@ -37,6 +38,9 @@ def _entry(number: int) -> PrInventoryEntry:
 
 
 class PrInventoryTestCase(TestCase):
+    def test_colleague_pr_is_not_reported_as_a_factory_stall(self) -> None:
+        assert stall_cause(replace(_entry(1), owned=False, ci="red", next_task="Fix failing CI")) == ""
+
     def test_sweep_keeps_a_more_precise_approval_count_than_the_own_scan(self) -> None:
         at = datetime(2026, 10, 23, 12, tzinfo=UTC)
         own = replace(_entry(1), head_sha="a" * 40, approvals="approved", approvals_display="approved")
@@ -184,6 +188,55 @@ class PrInventoryTestCase(TestCase):
 
             with pytest.raises(ValueError, match="inventory"):
                 read_inventory(directory=directory)
+
+    def test_unreadable_source_does_not_hide_a_readable_source(self) -> None:
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            write_inventory("teatree", [_entry(1)], directory=directory)
+            (directory / "bad.json").write_text("bad JSON", encoding="utf-8")
+            errors: list[str] = []
+
+            snapshots = read_inventory(directory=directory, errors=errors)
+
+        assert [entry.iid for snapshot in snapshots for entry in snapshot.entries] == [1]
+        assert len(errors) == 1
+        assert "Unreadable PR inventory" in errors[0]
+
+    def test_removed_overlay_sources_are_pruned_without_hiding_registered_sources(self) -> None:
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            write_inventory("registered", [_entry(1)], directory=directory)
+            write_inventory("removed", [_entry(2)], directory=directory)
+            write_inventory("own:removed:old-key", [_entry(3)], directory=directory)
+
+            snapshots = read_inventory(directory=directory, active_overlays=("registered",))
+
+            assert [snapshot.overlay for snapshot in snapshots] == ["registered"]
+            assert len(list(directory.glob("*.json"))) == 1
+
+    def test_corrupt_prior_source_can_be_invalidated_and_recovered(self) -> None:
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            path = write_inventory("teatree", [_entry(1)], directory=directory)
+            path.write_text("bad JSON", encoding="utf-8")
+
+            mark_inventory_unknown("teatree", directory=directory)
+            (unknown,) = read_inventory(directory=directory)
+            write_inventory("teatree", [_entry(2)], directory=directory)
+            (recovered,) = read_inventory(directory=directory)
+
+        assert not unknown.verified
+        assert recovered.verified
+        assert [entry.iid for entry in recovered.entries] == [2]
+
+    def test_new_own_source_replaces_the_old_key_for_the_same_overlay(self) -> None:
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            write_inventory("own:teatree:old", [_entry(1)], directory=directory)
+            write_inventory("own:teatree:new", [_entry(2)], directory=directory)
+            snapshots = read_inventory(directory=directory)
+
+        assert [(snapshot.overlay, snapshot.entries[0].iid) for snapshot in snapshots] == [("own:teatree:new", 2)]
 
     def test_invalid_write_is_refused_and_leaves_the_prior_snapshots_readable(self) -> None:
         with TemporaryDirectory() as root:

@@ -12,13 +12,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 import django.test
+import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
 from teatree.core.models import Loop, PlanArtifact, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.review.pr_inventory import PrInventoryEntry, write_inventory
+from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
+from teatree.core.review.pr_inventory import OpenPrRow, PrInventoryEntry, write_inventory
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.pr_stall import repair_stalled_prs
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loops.base import MiniLoop
 from tests.factories import PullRequestFactory, TicketFactory
@@ -69,6 +72,7 @@ def _tick(scanners: list[_InventoryScanner]) -> Generator[Path]:
         patch("teatree.loops.loop_table.iter_loops", return_value=(stub,)),
         patch("teatree.core.management.commands.loops_tick.iter_overlay_backends", return_value=[]),
         patch("teatree.loops.connector_preflight.run_loop_connector_preflight"),
+        patch("teatree.core.review.pr_inventory.OverlayConfigResolver.all_names", return_value=["teatree"]),
         patch.dict(os.environ, {"T3_LOOP_SESSION_ID": "the-only-session", "T3_DATA_DIR": str(Path(tmp) / "data")}),
     ):
         yield Path(tmp) / "statusline.txt"
@@ -111,6 +115,17 @@ class TestTickReportsOpenPrs(django.test.TestCase):
         assert "Resolve merge conflict" in lines[1]
         assert "2 h" in lines[2]
         assert "Fix failing CI" in lines[2]
+
+    def test_tick_lists_twenty_five_open_prs_with_a_next_task(self) -> None:
+        entries = [
+            _entry(number, age=timedelta(days=number), next_task="Run independent review") for number in range(1, 26)
+        ]
+
+        output = _run([_InventoryScanner("teatree", entries)])
+
+        lines = [line for line in output.splitlines() if line.startswith("OPEN")]
+        assert len(lines) == 25
+        assert all("Run independent review" in line for line in lines)
 
     def test_the_structured_report_carries_the_same_rows(self) -> None:
         entry = replace(
@@ -190,9 +205,9 @@ class TestTickRepairsStalledPrs(django.test.TestCase):
         first = _run([_InventoryScanner("teatree", [entry])])
         second = _next_tick([_InventoryScanner("teatree", [entry])])
 
-        (task,) = Task.objects.filter(phase="coding")
-        assert f"queued TODO-{task.pk} coding" in first
-        assert f"in flight: TODO-{task.pk} coding" in second
+        (task,) = Task.objects.filter(phase="debugging")
+        assert f"queued TODO-{task.pk} debugging" in first
+        assert f"in flight: TODO-{task.pk} debugging" in second
         assert "Fix failing CI" in task.execution_reason
 
     def test_failed_repair_on_the_same_head_is_not_queued_again(self) -> None:
@@ -205,32 +220,51 @@ class TestTickRepairsStalledPrs(django.test.TestCase):
                 if tick == 0
                 else _next_tick([_InventoryScanner("teatree", [entry])])
             )
-            Task.objects.filter(phase="coding").update(status=Task.Status.FAILED)
+            Task.objects.filter(phase="debugging").update(status=Task.Status.FAILED)
 
-        assert Task.objects.filter(phase="coding").count() == 1
+        assert Task.objects.filter(phase="debugging").count() == 1
         assert "queued TODO-" in reports[0]
         assert all("already attempted" in report for report in reports[1:])
 
-    def test_a_stall_with_no_safe_repair_is_recorded_once_and_listed_each_tick(self) -> None:
+    def test_task_failure_after_claim_rolls_back_the_head_ledger(self) -> None:
+        entry = self._stalled(state=Ticket.State.PR_OPENED)
+        row = OpenPrRow(
+            ref=f"{entry.repo}!{entry.iid}",
+            url=entry.url,
+            age="2 d",
+            next_task=entry.next_task,
+            started=True,
+            stall="Fix failing CI",
+            head_sha=entry.head_sha,
+        )
+
+        with (
+            patch.object(Ticket, "schedule_implementing", side_effect=RuntimeError("task write failed")),
+            pytest.raises(RuntimeError, match="task write failed"),
+        ):
+            repair_stalled_prs([row])
+
+        assert not RedMrFixAttempt.objects.filter(pr_url=entry.url).exists()
+
+    def test_a_stall_at_pr_opened_queues_debugging_once(self) -> None:
         entry = self._stalled(state=Ticket.State.PR_OPENED)
 
         first = _run([_InventoryScanner("teatree", [entry])])
         second = _next_tick([_InventoryScanner("teatree", [entry])])
 
-        assert Task.objects.count() == 0
-        assert "unresolved: coding is not available from pr_opened" in first
-        assert "unresolved: coding is not available from pr_opened" in second
-        (question,) = DeferredQuestion.objects.filter(dedupe_marker__startswith="pr-stall:")
-        assert "souliane/teatree!11" in question.question
-        assert question.audience == DeferredQuestion.Audience.INTERNAL
+        (task,) = Task.objects.filter(phase="debugging")
+        assert f"queued TODO-{task.pk} debugging" in first
+        assert f"in flight: TODO-{task.pk} debugging" in second
+        assert not DeferredQuestion.objects.filter(dedupe_marker__startswith="pr-stall:").exists()
 
-    def test_a_stall_without_a_plan_decision_is_unresolved_not_queued(self) -> None:
+    def test_a_stall_without_a_plan_decision_routes_through_planning(self) -> None:
         entry = self._stalled(planned=False)
 
         report = _run([_InventoryScanner("teatree", [entry])])
 
-        assert Task.objects.count() == 0
-        assert "unresolved: plan_missing" in report
+        (task,) = Task.objects.all()
+        assert task.phase == "planning"
+        assert f"queued TODO-{task.pk} planning" in report
 
     def test_a_stalled_pr_no_author_ticket_owns_is_reported_but_never_acted_on(self) -> None:
         report = _run([_InventoryScanner("teatree", [_blocked_entry(12)])])
@@ -277,5 +311,5 @@ class TestTickRepairsStalledPrs(django.test.TestCase):
 
         (task,) = Task.objects.all()
         assert payload["stall_repairs"] == [
-            {"ref": "souliane/teatree!11", "cause": "Fix failing CI", "action": f"queued TODO-{task.pk} coding"}
+            {"ref": "souliane/teatree!11", "cause": "Fix failing CI", "action": f"queued TODO-{task.pk} debugging"}
         ]
