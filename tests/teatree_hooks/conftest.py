@@ -2,14 +2,15 @@
 
 import io
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
 
-from teatree.hooks import banned_terms_cli, banned_terms_scanner
+from teatree.hooks import _ssh_alias, banned_terms_cli, banned_terms_scanner
 from teatree.utils.run import CommandFailedError
 
 
@@ -56,3 +57,28 @@ def in_process_banned_terms_scanner(request: pytest.FixtureRequest, monkeypatch:
     if request.node.get_closest_marker("real_banned_terms_scanner"):
         return
     monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _scan_in_process)
+
+
+@pytest.fixture
+def ssh_alias_resolver(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[str, str], None]]:
+    calls: list[str] = []
+    configured_alias: str | None = None
+
+    def configure(alias: str, hostname: str) -> None:
+        nonlocal configured_alias
+        configured_alias = alias
+
+        def resolve(argv: Sequence[str], *, timeout: float, expected_codes: object) -> CompletedProcess[str]:
+            calls.append(argv[-1])
+            assert argv[-3:] == ["-G", "--", alias]
+            assert timeout == 2
+            assert expected_codes is None
+            config = Path.home() / ".ssh" / "config"
+            assert f'Include "{config}"' in Path(argv[2]).read_text(encoding="utf-8")
+            assert f"Host {alias}\n  HostName {hostname}" in config.read_text(encoding="utf-8")
+            return CompletedProcess(argv, 0, f"hostname {hostname}\n", "")
+
+        monkeypatch.setattr(_ssh_alias, "run_bounded_group", resolve)
+
+    yield configure
+    assert configured_alias in calls

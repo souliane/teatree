@@ -17,6 +17,7 @@ from teatree.agents import harness as harness_mod
 from teatree.agents import runner as runner_mod
 from teatree.agents import skill_assurance as skill_assurance_mod
 from teatree.agents import skill_injection as skill_injection_mod
+from teatree.agents.claude_cli_spawn import APPEND_PROMPT_FILE_FLAG
 from teatree.agents.runner import run_agent
 from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX, FailureKind
 from teatree.core.models import Session, Task, Ticket
@@ -42,16 +43,19 @@ class _ReviewDispatchProbe(TestCase):
 
     def setUp(self) -> None:
         self.spawned: list[object] = []
+        self.briefs: list[str] = []
 
-    def _dispatch(self, ticket: Ticket, *, phase: str = "reviewing") -> Task:
+    def _dispatch(self, ticket: Ticket, *, phase: str = "reviewing", task: Task | None = None) -> Task:
         def _make_client(*, options: object = None, **_: object) -> FakeHarnessSession:
             self.spawned.append(options)
             if self.harness_must_not_open:
                 raise _HarnessMustNotOpenError(phase)
+            self.briefs.append(Path(options.extra_args[APPEND_PROMPT_FILE_FLAG]).read_text(encoding="utf-8"))
             return FakeHarnessSession(success_stream({"summary": "ok"}))
 
-        session = Session.objects.create(ticket=ticket, agent_id=phase)
-        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+        if task is None:
+            session = Session.objects.create(ticket=ticket, agent_id=phase)
+            task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         snapshot = runner_mod.TaskUsage(turns=0, cost_usd=0.0)
         with TemporaryDirectory() as directory:
             # Keep this gate test independent of the host's installed skills.

@@ -14,7 +14,6 @@ Every message here is the output of the real formatter or the real constant, and
 in a leak module without being classified.
 """
 
-import subprocess
 import types
 from types import ModuleType
 
@@ -23,8 +22,7 @@ import pytest
 import hooks.scripts.banned_terms.gate as banned_terms_gate
 import hooks.scripts.deny_circuit_breaker as dcb
 import hooks.scripts.hook_router as router
-from hooks.scripts import gate_result
-from teatree.hooks import ai_signature_gate, banned_terms_scanner, quote_gate_messages, quote_scanner
+from teatree.hooks import ai_signature_gate, ai_signature_scan, banned_terms_scanner, quote_gate_messages, quote_scanner
 
 # An AWS-key-shaped literal that matches ``publish_surface._SECRET_PATTERNS`` while
 # spelling out that it is a fixture. The detector keys on shape, so no real
@@ -34,12 +32,15 @@ _SYNTHETIC_SECRET = "AKIAEXAMPLEEXAMPLE00"
 _SECRET_ESCAPE = "[gate-escape:banned_terms: this is a fake token]"
 _AI_SIG_ESCAPE = "[gate-escape:ai_signature: this is a fake trailer]"
 
-_AI_SIG_COMMIT = 'git commit -m "feat: x\n\nCo-Authored-By: a <b@c>"'
+_AI_SIG_COMMIT = 'git commit -m "feat: x\n\nCo-Authored-By: Claude <noreply@example.invalid>"'
 
 
-def _stub_ai_sig_scanner(monkeypatch: pytest.MonkeyPatch, stdout: str, stderr: str = "") -> None:
-    completed = subprocess.CompletedProcess([], 1, stdout, stderr)
-    monkeypatch.setattr(gate_result, "run_t3", lambda *_a, **_k: completed)
+def _break_ai_sig_scanner(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(_body: str) -> list[tuple[int, str, str]]:
+        message = "matcher unavailable"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(ai_signature_scan, "scan_text", broken)
 
 
 def _high_quote_result() -> quote_scanner.ScanResult:
@@ -93,14 +94,6 @@ _LEAK_DENY_MESSAGES: dict[str, tuple[str, str]] = {
     ),
     "ai_signature_gate.format_block_message": (
         ai_signature_gate.format_block_message("AI-signature scan: 1 banned trailer(s)"),
-        "ai_signature",
-    ),
-    "ai_signature_gate.format_scanner_error_message": (
-        ai_signature_gate.format_scanner_error_message("Traceback"),
-        "ai_signature",
-    ),
-    "ai_signature_gate.format_venue_fault_message": (
-        ai_signature_gate.format_venue_fault_message("launcher exit 69"),
         "ai_signature",
     ),
     "gate._BANNED_TERMS_CREDENTIAL_DENY": (banned_terms_gate._BANNED_TERMS_CREDENTIAL_DENY, "banned_terms"),
@@ -268,14 +261,15 @@ class TestEveryLeakHandlerStampsALeakGateId:
         assert self._deny_gate_id(monkeypatch, banned_terms_gate._run_banned_terms_pretool, data) in dcb.LEAK_GATE_IDS
 
     @pytest.mark.parametrize(
-        ("stdout", "stderr"),
-        [("AI-signature scan: 1 banned trailer(s)\n", ""), ("", "Traceback (most recent call last)")],
+        "case",
+        ["finding", "scanner_error"],
         ids=["finding", "scanner_error"],
     )
-    def test_ai_signature(self, stdout: str, stderr: str, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    def test_ai_signature(self, case: str, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         data = _pretooluse_context(monkeypatch, tmp_path, _AI_SIG_COMMIT)
-        _stub_ai_sig_scanner(monkeypatch, stdout, stderr)
-        assert self._deny_gate_id(monkeypatch, router._run_block_ai_signature, data) in dcb.LEAK_GATE_IDS
+        if case == "scanner_error":
+            _break_ai_sig_scanner(monkeypatch)
+        assert self._deny_gate_id(monkeypatch, router.handle_block_ai_signature, data) in dcb.LEAK_GATE_IDS
 
 
 class TestAiSignatureDenyIsNeverGranted:
@@ -283,13 +277,11 @@ class TestAiSignatureDenyIsNeverGranted:
 
     def test_a_publish_carrying_its_own_escape_still_denies(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         data = _pretooluse_context(monkeypatch, tmp_path, f"{_AI_SIG_COMMIT} {_AI_SIG_ESCAPE}", session="aisig")
-        _stub_ai_sig_scanner(monkeypatch, "AI-signature scan: 1 banned trailer(s)\n")
-        assert router._run_block_ai_signature(data) is True
+        assert router.handle_block_ai_signature(data) is True
 
     def test_no_session_grant_is_recorded(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         """A recorded grant would silently suppress every later identical publish."""
         data = _pretooluse_context(monkeypatch, tmp_path, f"{_AI_SIG_COMMIT} {_AI_SIG_ESCAPE}", session="aisig")
-        _stub_ai_sig_scanner(monkeypatch, "AI-signature scan: 1 banned trailer(s)\n")
-        router._run_block_ai_signature(data)
+        router.handle_block_ai_signature(data)
         assert not (tmp_path / "aisig.fp-grants").exists()
-        assert router._run_block_ai_signature(data) is True
+        assert router.handle_block_ai_signature(data) is True
