@@ -39,6 +39,11 @@ class _CheckoutFixture(TestCase):
         git.run(repo=str(clone), args=["config", "user.email", "test@example.com"])
         git.run(repo=str(clone), args=["config", "user.name", "Test"])
         git.run(repo=str(clone), args=["commit", "--quiet", "--allow-empty", "-m", "base"])
+        origin = self.tmp / name / "origin.git"
+        origin.mkdir()
+        git.run(repo=str(origin), args=["init", "--quiet", "--bare", "--initial-branch=main"])
+        git.run(repo=str(clone), args=["remote", "add", "origin", str(origin)])
+        git.run(repo=str(clone), args=["push", "--quiet", "-u", "origin", "main"])
         return clone
 
     def _checkout(self, clone: Path, name: str, branch: str) -> Path:
@@ -114,9 +119,20 @@ class TestDisposalRefusesALiveWriter(_CheckoutFixture):
 
         assert disposal_refusal(checkout, clone=self.clone, requesting_ticket_id=occupant.pk) == ""
 
-    def test_an_idle_tickets_row_does_not_block_disposal(self) -> None:
+    def test_an_idle_in_flight_tickets_row_blocks_disposal(self) -> None:
         checkout = self._checkout(self.clone, "ours", "feature")
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1", repos=["repo"])
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="repo", branch="feature", extra={"worktree_path": str(checkout)}
+        )
+
+        assert "in-flight ticket" in disposal_refusal(checkout, clone=self.clone)
+
+    def test_a_released_tickets_row_does_not_block_disposal(self) -> None:
+        checkout = self._checkout(self.clone, "ours", "feature")
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/2", repos=["repo"], state=Ticket.State.MERGED
+        )
         Worktree.objects.create(
             ticket=ticket, overlay="test", repo_path="repo", branch="feature", extra={"worktree_path": str(checkout)}
         )

@@ -21,6 +21,13 @@ from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _RM, _clean_env, _run_git
 
 
+def _publish_base(repo_main: Path, origin: Path) -> None:
+    origin.mkdir()
+    _run_git("init", "-q", "--bare", "-b", "main", cwd=origin)
+    _run_git("remote", "add", "origin", str(origin), cwd=repo_main)
+    _run_git("push", "-q", "-u", "origin", "main", cwd=repo_main)
+
+
 class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
     """Real-git integration: cleanup must remove the on-disk worktree even when extras lack ``worktree_path``.
 
@@ -40,6 +47,7 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
         _run_git("config", "user.email", "t@t", cwd=self.repo_main)
         _run_git("config", "user.name", "t", cwd=self.repo_main)
         _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo_main)
+        _publish_base(self.repo_main, tmp_path / "origin.git")
         self.branch = "ac-myrepo-99-x"
         self.wt_path = self.workspace / self.branch / "myrepo"
         _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)
@@ -115,18 +123,25 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
         assert str(self.wt_path) not in self._registered_worktrees(), "git worktree registry entry survived"
 
     def test_surfaces_failure_in_errors_when_git_remove_fails(self) -> None:
-        """When the git ops can't complete (source repo missing), the failure surfaces in ``errors`` (#877)."""
+        """A failed git removal is collected in ``errors`` (#877)."""
         wt = self._make_worktree(with_extras=True)
-        # Wipe the source repo so git operations fail
-        subprocess.run([_RM, "-rf", str(self.repo_main)], check=True, env=_clean_env())
-        result = self._cleanup(wt)
-        # The missing-source-repo failure is surfaced, not swallowed
+        with patch("teatree.core.cleanup.cleanup.git.worktree_remove", return_value=False):
+            result = self._cleanup(wt)
         assert result.clean is False
         assert result.errors
-        assert any("source repo missing" in e for e in result.errors)
+        assert any("git worktree remove failed" in e for e in result.errors)
         assert "with errors" in str(result)
-        # Worktree row deleted regardless so the operator can retry without DB cruft
         assert not Worktree.objects.filter(pk=wt.pk).exists()
+
+    def test_missing_source_repo_keeps_checkout(self) -> None:
+        wt = self._make_worktree(with_extras=True)
+        subprocess.run([_RM, "-rf", str(self.repo_main)], check=True, env=_clean_env())
+
+        with pytest.raises(RuntimeError):
+            self._cleanup(wt)
+
+        assert self.wt_path.exists()
+        assert Worktree.objects.filter(pk=wt.pk).exists()
 
 
 class TestCleanupWorktreeNamespacedClone(TestCase):
@@ -140,6 +155,7 @@ class TestCleanupWorktreeNamespacedClone(TestCase):
         _run_git("config", "user.email", "t@t", cwd=self.repo_main)
         _run_git("config", "user.name", "t", cwd=self.repo_main)
         _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo_main)
+        _publish_base(self.repo_main, tmp_path / "origin.git")
         self.branch = "ac-teatree-491-x"
         self.wt_path = self.workspace / self.branch / "teatree"
         _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)
@@ -284,6 +300,7 @@ class TestCleanupReapsStalePrekHook(TestCase):
         _run_git("config", "user.email", "t@t", cwd=self.repo_main)
         _run_git("config", "user.name", "t", cwd=self.repo_main)
         _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo_main)
+        _publish_base(self.repo_main, tmp_path / "origin.git")
         self.branch = "ac-myrepo-1462-x"
         self.wt_path = self.workspace / self.branch / "myrepo"
         _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)

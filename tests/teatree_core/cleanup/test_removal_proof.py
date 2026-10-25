@@ -70,6 +70,20 @@ class TestRemovalProof(TestCase):
 
         assert "in-flight ticket" in removal_refusal(self.checkout, clone=self.clone)
 
+    def test_empty_directory_is_releasable_only_without_an_in_flight_row(self) -> None:
+        empty = self.checkout.parent / "empty"
+        empty.mkdir()
+        assert removal_refusal(empty, clone=self.clone) == ""
+
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/5", state=Ticket.State.REVIEW_REQUESTED)
+        row = Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="clone", branch="empty", extra={"worktree_path": str(empty)}
+        )
+        assert "in-flight ticket" in removal_refusal(empty, clone=self.clone)
+        row.delete()
+        (empty / "notes.txt").write_text("keep\n", encoding="utf-8")
+        assert "no resolvable HEAD" in removal_refusal(empty, clone=self.clone)
+
     def test_sweep_keeps_fresh_in_flight_checkout_and_explicit_teardown_clears(self) -> None:
         row = self._row(3, Ticket.State.REVIEW_REQUESTED)
 

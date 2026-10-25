@@ -57,7 +57,17 @@ def disposal_refusal(path: Path, *, clone: Path, requesting_ticket_id: int | Non
             return f"{path} is nonempty without a git checkout; keeping {entry.name}"
         return ""
     if admin_entry_for(path, clone) is not None:
-        return removal_refusal(path, clone=clone)
+        requesting_row = None
+        if requesting_ticket_id is not None:
+            requesting_row = next(
+                (
+                    row
+                    for row in Worktree.objects.filter(ticket_id=requesting_ticket_id)
+                    if row.worktree_path and paths_match(row.worktree_path, path)
+                ),
+                None,
+            )
+        return removal_refusal(path, clone=clone, row=requesting_row)
     return _unproven_refusal(path, clone)
 
 

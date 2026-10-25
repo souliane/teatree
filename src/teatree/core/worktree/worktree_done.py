@@ -411,13 +411,6 @@ def reap_done_worktree(
             emit=_build_emit_record(worktree, workspace=workspace, liveness="", probes=probes),
         )
 
-    if refusal := removal_refusal(Path(wt_path), clone=Path(repo_main), row=worktree, sweep=True):
-        return ReapOutcome(
-            "kept",
-            f"KEPT '{worktree.branch}': done ({signal.source}) but {refusal}",
-            emit=_build_emit_record(worktree, workspace=workspace, liveness="", probes=probes),
-        )
-
     return _wipe_proven_redundant(
         worktree, signal=signal, fingerprint_at_analysis=fingerprint_at_analysis, dry_run=dry_run, probes=probes
     )
@@ -481,10 +474,6 @@ def _wipe_proven_redundant(
     change that verdict, so the fingerprint is re-read before cleanup. The shared
     removal proof then checks the checkout again inside cleanup.
     """
-    if dry_run:
-        return ReapOutcome(
-            "would-wipe", f"WOULD WIPE '{worktree.branch}': done ({signal.source}), all changes proven redundant"
-        )
     fingerprint_before_wipe = _wipe_fingerprint(worktree, workspace=probes.workspace, probes=probes)
     if fingerprint_before_wipe != fingerprint_at_analysis:
         return ReapOutcome(
@@ -493,6 +482,18 @@ def _wipe_proven_redundant(
             f"({_fingerprint_label(fingerprint_at_analysis)} → {_fingerprint_label(fingerprint_before_wipe)}) "
             "— re-run cleanup to re-analyse",
             emit=_build_emit_record(worktree, workspace=probes.workspace, liveness="", probes=probes),
+        )
+    checkout = Path(resolve_worktree_path(probes.workspace, worktree))
+    clone = resolve_clone_path(probes.workspace, worktree) or probes.workspace / worktree.repo_path
+    if refusal := removal_refusal(checkout, clone=Path(clone), row=worktree, sweep=True):
+        return ReapOutcome(
+            "kept",
+            f"KEPT '{worktree.branch}': done ({signal.source}) but {refusal}",
+            emit=_build_emit_record(worktree, workspace=probes.workspace, liveness="", probes=probes),
+        )
+    if dry_run:
+        return ReapOutcome(
+            "would-wipe", f"WOULD WIPE '{worktree.branch}': done ({signal.source}), all changes proven redundant"
         )
     try:
         result = cleanup_worktree(worktree, force=True, strict_hygiene=False)

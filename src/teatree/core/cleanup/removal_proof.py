@@ -17,15 +17,15 @@ class RemovalRefusedError(RuntimeError):
     pass
 
 
-def _tip_landed(checkout: Path, target: str) -> bool:
-    return branch_landed_for_teardown(str(checkout), "HEAD", target)
+def _tip_landed(checkout: Path, ref: str, target: str) -> bool:
+    return branch_landed_for_teardown(str(checkout), ref, target)
 
 
-def _commit_refusal(checkout: Path, clone: Path, work: UnshippedWork) -> str:
+def _commit_refusal(checkout: Path, clone: Path, work: UnshippedWork, ref: str) -> str:
     if not work.unpushed_commits:
         return ""
     target = effective_default_target(str(clone))
-    if f"refs/remotes/{target}" in work.live_refs and _tip_landed(checkout, target):
+    if f"refs/remotes/{target}" in work.live_refs and _tip_landed(checkout, ref, target):
         return ""
     return f"{len(work.unpushed_commits)} commit(s) on no live remote ref"
 
@@ -64,8 +64,22 @@ def removal_refusal(
 ) -> str:
     if not checkout.is_dir():
         return ""
-    work = probe_unshipped_work(checkout)
     prefix = f"{checkout}: not proven shipped — "
+    try:
+        empty = next(checkout.iterdir(), None) is None
+    except OSError as exc:
+        return prefix + f"could not read directory ({exc})"
+    if empty:
+        if row is not None and row.ticket.state not in Ticket.marker_release_states():
+            return prefix + f"in-flight ticket {row.ticket.ticket_number or row.ticket_id} owns the checkout"
+        return prefix + reason if (reason := _row_refusal(checkout, row, sweep=False, target="")) else ""
+    work = probe_unshipped_work(checkout)
+    ref = "HEAD"
+    if work.unreadable == f"{checkout}: no resolvable HEAD to diff against" and (
+        recovered := git.recovered_head_sha_after_ref_gone(str(checkout))
+    ):
+        ref = recovered
+        work = probe_unshipped_work(checkout, base_ref=ref)
     unsafe_paths = (
         work.ignored_paths
         if allow_changes
@@ -79,7 +93,7 @@ def removal_refusal(
         try:
             branch = git.current_branch(str(checkout))
             target = effective_default_target(str(clone))
-            reason = _commit_refusal(checkout, clone, work)
+            reason = _commit_refusal(checkout, clone, work, ref)
             reason = reason or _row_refusal(checkout, row, sweep=sweep, target=target)
         except (RuntimeError, CommandFailedError) as exc:
             reason = f"could not verify commits ({exc})"

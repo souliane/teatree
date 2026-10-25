@@ -89,7 +89,7 @@ class TestProbeSeesTheIndex(_CheckoutFixture):
         assert "keep this" in work.uncommitted_patch
 
     def test_unreadable_ignored_content_never_claims_a_complete_capture(self) -> None:
-        (self.checkout / ".git" / "info" / "exclude").write_text("notes.local\n", encoding="utf-8")
+        (self.checkout / ".gitignore").write_text("notes.local\n", encoding="utf-8")
         (self.checkout / "notes.local").write_text("retain\n", encoding="utf-8")
 
         with patch(

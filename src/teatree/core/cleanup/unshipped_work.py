@@ -99,7 +99,7 @@ def _commits_patch(checkout: Path, commits: list[str]) -> str:
     )
 
 
-def _uncommitted_patch(checkout: Path, ignored_paths: list[str]) -> str:
+def _uncommitted_patch(checkout: Path, ignored_paths: list[str], base_ref: str = _INDEX_AWARE_BASE) -> str:
     """The staged + unstaged + untracked delta, as a patch ``git apply`` restores.
 
     Untracked content is IN scope: the bundle is the last copy of the work, and a
@@ -109,17 +109,19 @@ def _uncommitted_patch(checkout: Path, ignored_paths: list[str]) -> str:
     rather than report the whole checkout unreadable.
     """
     try:
-        return git.full_worktree_diff(str(checkout), _INDEX_AWARE_BASE, also=ignored_paths)
+        return git.full_worktree_diff(str(checkout), base_ref, also=ignored_paths)
     except CommandFailedError:
         if ignored_paths:
             raise
         return git.run_strict_verbatim(
             repo=str(checkout),
-            args=["diff", _INDEX_AWARE_BASE, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
+            args=["diff", base_ref, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
         )
 
 
-def _live_unpushed_commits(checkout: Path, local: list[str]) -> tuple[list[str], bool, tuple[str, ...]]:
+def _live_unpushed_commits(
+    checkout: Path, local: list[str], base_ref: str = _INDEX_AWARE_BASE
+) -> tuple[list[str], bool, tuple[str, ...]]:
     output = git.run_strict(
         repo=str(checkout), args=["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]
     )
@@ -141,11 +143,11 @@ def _live_unpushed_commits(checkout: Path, local: list[str]) -> tuple[list[str],
         live.extend(ref for branch, ref, sha in entries if present.get(branch) == sha)
     if not answered:
         return local, True, ()
-    output = git.run_strict(repo=str(checkout), args=["log", "HEAD", "--not", *live, "--oneline"])
+    output = git.run_strict(repo=str(checkout), args=["log", base_ref, "--not", *live, "--oneline"])
     return [line for line in output.splitlines() if line.strip()], False, tuple(live)
 
 
-def probe_unshipped_work(checkout: Path) -> UnshippedWork:
+def probe_unshipped_work(checkout: Path, *, base_ref: str = _INDEX_AWARE_BASE) -> UnshippedWork:
     """Read ``checkout``'s unshipped delta without mutating it.
 
     Read-only on purpose: the checkout may be KEPT and may hold a live agent, so
@@ -166,14 +168,19 @@ def probe_unshipped_work(checkout: Path) -> UnshippedWork:
     venue = wrong_venue_reason(checkout)
     if venue:
         return UnshippedWork(unreadable=venue)
-    if not git.check(repo=str(checkout), args=["rev-parse", "--verify", "--quiet", _INDEX_AWARE_BASE]):
+    if not git.check(repo=str(checkout), args=["rev-parse", "--verify", "--quiet", base_ref]):
         return UnshippedWork(unreadable=f"{checkout}: no resolvable HEAD to diff against")
     try:
         ignored_paths = ignored_unregenerable(checkout)
-        dirty_paths = sorted(set(_porcelain_paths(checkout)) | set(ignored_paths))
-        uncommitted_patch = _uncommitted_patch(checkout, ignored_paths)
-        local_unpushed = git.commits_absent_from_all_remotes(str(checkout), _INDEX_AWARE_BASE)
-        unpushed_commits, remote_unverified, live_refs = _live_unpushed_commits(checkout, local_unpushed)
+        if base_ref == _INDEX_AWARE_BASE:
+            dirty_paths = sorted(set(_porcelain_paths(checkout)) | set(ignored_paths))
+        else:
+            changed = git.run_strict(repo=str(checkout), args=["diff", "--name-only", "-z", base_ref])
+            untracked = git.run_strict(repo=str(checkout), args=["ls-files", "-z", "--others", "--exclude-standard"])
+            dirty_paths = sorted((set(changed.split("\0")) | set(untracked.split("\0")) | set(ignored_paths)) - {""})
+        uncommitted_patch = _uncommitted_patch(checkout, ignored_paths, base_ref)
+        local_unpushed = git.commits_absent_from_all_remotes(str(checkout), base_ref)
+        unpushed_commits, remote_unverified, live_refs = _live_unpushed_commits(checkout, local_unpushed, base_ref)
         commits_patch = _commits_patch(checkout, unpushed_commits)
     except (CommandFailedError, OSError) as exc:
         return UnshippedWork(unreadable=f"{checkout}: could not read unshipped work ({exc})")

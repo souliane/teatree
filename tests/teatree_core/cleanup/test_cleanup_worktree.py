@@ -1478,18 +1478,19 @@ class TestCleanupWorktreeRefuseBeforeDestroy(TestCase):
         assert Worktree.objects.filter(pk=wt.pk).exists()
 
     @_patch_overlay
-    def test_force_overrides_dirty_guard(self, mock_overlay: MagicMock) -> None:
+    def test_force_still_refuses_dirty_checkout(self, mock_overlay: MagicMock) -> None:
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         workspace, wt_dir, wt = self._dirty_worktree()
         wt_id = wt.pk
         with (
             patch("teatree.core.cleanup.cleanup.clone_root", return_value=workspace),
             patch("teatree.core.runners.worktree_start.docker_compose_down"),
+            pytest.raises(RuntimeError, match="not proven shipped"),
         ):
             cleanup_worktree(wt, force=True)
 
-        assert not wt_dir.exists(), "force must reap the dirty worktree from disk"
-        assert not Worktree.objects.filter(pk=wt_id).exists()
+        assert wt_dir.exists()
+        assert Worktree.objects.filter(pk=wt_id).exists()
 
     @_patch_ref_tree
     @_patch_overlay

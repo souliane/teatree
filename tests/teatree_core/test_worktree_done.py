@@ -161,6 +161,19 @@ class TestMergedDeletedRefWiped(_ReaperFixture):
         assert signal.done is True
         assert signal.source == "ticket-state:merged"
 
+    def test_deleted_remote_and_local_branch_refs_keep_the_recovered_tip(self) -> None:
+        self._push_branch()
+        self._drop_local_branch_ref()
+        _run_git("update-ref", "-d", f"refs/heads/{self.slug}", cwd=self.remote)
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "kept"
+        assert "no live remote ref" in outcome.label
+        assert self.wt_path.is_dir()
+        assert Worktree.objects.filter(pk=worktree.pk).exists()
+
 
 class TestNotDoneUnpushedKeptNoSnapshot(_ReaperFixture):
     """A WORK_STARTED ticket with unique unpushed work is NOT done — KEPT, no snapshot."""
@@ -579,7 +592,7 @@ class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
 
         wiped = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
         assert len(wiped) == 1
-        assert wiped[0].action == "wiped"
+        assert wiped[0].action == "wiped", wiped[0].label
         with self.subTest(outcome="wiped"):
             assert wiped[0].label.endswith(suffix)
 
