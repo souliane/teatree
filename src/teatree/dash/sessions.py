@@ -60,6 +60,7 @@ def build_session_index() -> tuple[SessionRow, ...]:
         TaskAttempt.objects.exclude(agent_session_id="")
         .alias(rank=Window(RowNumber(), partition_by="agent_session_id", order_by=F("pk").desc()))
         .filter(rank=1)
+        .with_previous_end()
         .select_related("task", "task__ticket")
         .order_by("-pk")[:SESSION_ROWS]
     )
@@ -89,4 +90,4 @@ def _row(attempt: TaskAttempt) -> SessionRow:
 def _duration(attempt: TaskAttempt) -> str:
     if attempt.ended_at is None:
         return ""
-    return _humanize_duration((attempt.ended_at - attempt.started_at).total_seconds())
+    return _humanize_duration((attempt.ended_at - attempt.display_started_at).total_seconds())
