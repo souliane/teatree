@@ -408,6 +408,15 @@ class TestPluginRegistrationGatesStrictReadiness(HermeticHostCase):
 
         assert installed == ["claude", "codex"]
 
+    def test_unready_skills_still_report_a_failed_credentialed_plugin(self) -> None:
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        (self.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+
+        ready, stderr, _installed = self.provision(claude_registers=True, codex_registers=False, skills_ready=False)
+
+        assert not ready
+        assert "codex" in stderr
+
     def test_unready_skills_still_block_when_both_plugins_register(self) -> None:
         os.environ["ANTHROPIC_API_KEY"] = "sk-test"
 

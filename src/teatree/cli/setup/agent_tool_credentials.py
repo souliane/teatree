@@ -46,7 +46,8 @@ class StrictPluginGate:
                 )
         if blocking:
             typer.echo(
-                f"ERROR Strict setup is not ready: plugin registration failed for {', '.join(blocking)}.", err=True
+                f"ERROR plugin registration failed for {', '.join(blocking)}; strict setup would not be ready.",
+                err=True,
             )
         return not blocking
 

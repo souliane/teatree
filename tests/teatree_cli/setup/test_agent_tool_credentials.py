@@ -148,6 +148,16 @@ class TestSourcesThatDoNotCount(GateCase):
         (pass_directory / "unrelated.gpg").write_bytes(b"x")
         self._assert_nothing_credentialed()
 
+    def test_a_claude_home_entry_that_is_a_regular_file_is_not_a_credential(self) -> None:
+        (self.home / ".claude").write_text("a file, not a directory", encoding="utf-8")
+        self._assert_nothing_credentialed()
+
+    def test_a_codex_home_that_is_a_regular_file_is_not_a_credential(self) -> None:
+        codex_file = self.codex_home / "not-a-home"
+        codex_file.write_text("a file, not a directory", encoding="utf-8")
+        os.environ["CODEX_HOME"] = str(codex_file)
+        self._assert_nothing_credentialed()
+
 
 class TestAnUnreadableSourceCountsAsHeld(GateCase):
     def test_a_credentials_path_that_cannot_be_statted(self) -> None:
