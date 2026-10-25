@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from teatree.core.merge.uncleared_merge import merge_without_clear
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr, run_gh_for_slug
 from teatree.loop.scanners.pr_behind_base import (
@@ -293,10 +294,10 @@ class GhPrApiClient:
         carries ``str(exc)`` in the returned :class:`BoundMergeResult.refusal`
         (#4856) instead of discarding it.
         """
-        from teatree.core.merge import MergePreconditionError, execute_bound_merge  # noqa: PLC0415 — tick-time import
+        from teatree.core.merge import MergePreconditionError  # noqa: PLC0415 — tick-time import
 
         try:
-            merged_sha = execute_bound_merge(ref=PrRef(slug=slug, pr_id=pr_id), expected_head_oid=expected_head_oid)
+            merged_sha = merge_without_clear(ref=PrRef(slug=slug, pr_id=pr_id), expected_head_oid=expected_head_oid)
         except MergePreconditionError as exc:
             return BoundMergeResult(merged=False, refusal=str(exc))
         return BoundMergeResult(merged=True, merged_sha=merged_sha)

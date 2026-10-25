@@ -1538,9 +1538,10 @@ Usage: t3 review-request post [OPTIONS]
 │ *  --mr-url           TEXT  Canonical MR/PR URL to post. [required]          │
 │ *  --approver         TEXT  User id that recorded the #960 approval.         │
 │                             [required]                                       │
-│ *  --ticket-id        TEXT  Ticket whose review evidence is checked.         │
-│                             [required]                                       │
-│ *  --head-sha         TEXT  Full reviewed head SHA. [required]               │
+│    --ticket-id        TEXT  Ticket whose review evidence is checked          │
+│                             (default: owner).                                │
+│    --head-sha         TEXT  Full reviewed head SHA (needed when a ticket     │
+│                             owns it).                                        │
 │    --title            TEXT  Review-request subject (recommended).            │
 │    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -12700,6 +12701,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              referenced attachments.                         │
 │ rubric-set                   Restate a ticket's rubric from explicit JSON    │
 │                              criteria (#2241).                               │
+│ rubric-waive                 Record an owner's waiver of one rubric          │
+│                              criterion.                                      │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -13675,6 +13678,25 @@ Usage: t3 teatree ticket rubric-set [OPTIONS] TICKET_ID
 │ --criteria-json        TEXT  JSON array: '["AC1"]' or '[{"text": "AC1"}]'.   │
 │ --criteria-file        TEXT  Path to a JSON criteria-array file.             │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket rubric-waive`
+
+```
+Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
+
+ Waive one rubric criterion by its text hash; an owner identity and a reason
+ are required.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --text-hash        TEXT  Hash shown beside the criterion.                    │
+│ --waived-by        TEXT  Owner identity recording the waiver.                │
+│ --reason           TEXT  Why this criterion is waived.                       │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

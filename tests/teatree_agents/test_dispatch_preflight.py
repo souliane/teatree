@@ -218,6 +218,10 @@ class TestRubricBriefLines(TestCase):
         assert f"TICKET RUBRIC (ticket {ticket.pk})" in block
         for ordinal, text in enumerate(_RUBRIC_AC):
             assert f"#{ordinal} {text}" in block
+        header = next(line for line in block.splitlines() if line.startswith("TICKET RUBRIC"))
+        assert '"text_hash": "<hash>"' in header
+        for criterion in ticket.rubrics.get().criteria.all():
+            assert f"[text_hash {criterion.text_hash}]" in block
 
     def test_a_pr_no_ticket_owns_carries_no_block(self) -> None:
         assert rubric_brief_lines(_reviewing_task_for_pr()) == ()

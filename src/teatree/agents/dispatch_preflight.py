@@ -183,8 +183,11 @@ def rubric_brief_lines(task: "Task") -> tuple[str, ...]:
     criteria = list(rubric.criteria.all())
     if not criteria:
         return ()
-    header = f"TICKET RUBRIC (ticket {ticket.pk}) — grade EVERY one of these in `rubric_grades`:"
-    return ("", header, *(f"  #{c.ordinal} {c.text}" for c in criteria))
+    header = (
+        f"TICKET RUBRIC (ticket {ticket.pk}) — grade EVERY one in `rubric_grades` "
+        'as {"ordinal": <int>, "text_hash": "<hash>", "status": "pass"|"fail", "rationale": "<proof>"}:'
+    )
+    return ("", header, *(f"  #{c.ordinal} {c.text} [text_hash {c.text_hash}]" for c in criteria))
 
 
 _MAX_REVIEW_DIFF_CHARS = 24000
