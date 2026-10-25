@@ -584,7 +584,7 @@ class MyPrsInventoryTestCase(TestCase):
         scanner = MyPrsScanner(
             host=host,
             identities=("owner",),
-            overlay_name="teatree",
+            overlay_name="",
             inventory_writer=write_inventory,
             inventory_invalidator=mark_inventory_unknown,
         )
