@@ -66,6 +66,7 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
         brief = self._reviewing_brief()
         assert "rubric_grades" in brief
         assert "ordinal" in brief
+        assert "text_hash" in brief
         assert "rationale" in brief
 
     def test_the_reviewing_brief_requires_every_criterion_graded(self) -> None:

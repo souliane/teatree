@@ -341,6 +341,10 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                         "type": "object",
                         "properties": {
                             "ordinal": {"type": "integer"},
+                            "text_hash": {
+                                "type": "string",
+                                "description": "Hash shown beside the criterion being graded.",
+                            },
                             "status": {"type": "string", "enum": ["pass", "fail"]},
                             "rationale": {
                                 "type": "string",
