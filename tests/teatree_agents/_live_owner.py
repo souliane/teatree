@@ -12,6 +12,7 @@ from teatree.agents.live_registry import LiveSessionRegistry
 class _Capture:
     tool_calls = 0
     context_tokens = None
+    compactions = 0
     last_event_at = None
     open_tool = None
     result_message = None

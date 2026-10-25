@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.doctor.checks_mcp import _check_teatree_mcp_liveness
+from teatree.cli.doctor.checks_mcp import _check_teatree_mcp_liveness, _resolve_registered_mcp_command
 from teatree.cli.doctor.run_checks import _run_mcp_checks
 from teatree.mcp.liveness import McpExerciseOutcome, McpFailureCause
 from teatree.utils.dep_skew import VersionSkew
@@ -21,6 +21,11 @@ from teatree.utils.dep_skew import VersionSkew
 _LIVENESS = "teatree.cli.doctor.checks_mcp"
 _SKEW_REPAIR = "teatree.cli.doctor.skew_repair"
 _SKEW = [VersionSkew(name="mcp", declared=">=2,<3", installed="1.28.1")]
+
+
+def test_doctor_exercises_the_registered_attended_join_path() -> None:
+    with patch(f"{_LIVENESS}.shutil.which", return_value="/usr/bin/t3"):
+        assert _resolve_registered_mcp_command() == ["/usr/bin/t3", "mcp", "serve", "--interactive"]
 
 
 @pytest.fixture

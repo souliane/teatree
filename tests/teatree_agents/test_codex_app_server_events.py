@@ -3,14 +3,118 @@
 import asyncio
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents import codex_app_server_events, codex_app_server_options
-from teatree.agents.codex_app_server_events import CodexToolEvents
+from teatree.agents.codex_app_server_events import CodexToolEvents, dynamic_mailbox_tools, mailbox_tool_result
 from teatree.agents.codex_app_server_options import CodexAppServerOptions
+from teatree.agents.live_mailbox import LiveMailboxBroker
+from teatree.agents.live_mailbox_client import MailboxClient
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [
+        (None, {"agent_mailbox_self", "agent_mailbox_peers"}),
+        (
+            "planning",
+            {
+                "agent_mailbox_self",
+                "agent_mailbox_peers",
+                "agent_mailbox_send",
+                "agent_mailbox_inbox",
+                "agent_mailbox_wait",
+            },
+        ),
+        (
+            "coding",
+            {
+                "agent_mailbox_self",
+                "agent_mailbox_peers",
+                "agent_mailbox_send",
+                "agent_mailbox_inbox",
+                "agent_mailbox_wait",
+            },
+        ),
+        (
+            "shipping",
+            {
+                "agent_mailbox_self",
+                "agent_mailbox_peers",
+                "agent_mailbox_send",
+                "agent_mailbox_inbox",
+                "agent_mailbox_wait",
+            },
+        ),
+    ],
+)
+def test_dynamic_mailbox_tool_grants_cover_read_only_and_mcp_write_phases(
+    phase: str | None, expected: set[str]
+) -> None:
+    assert {tool["name"] for tool in dynamic_mailbox_tools(phase)} == expected
+
+
+def test_namespaced_codex_tool_call_cannot_reach_the_mailbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+    options = CodexAppServerOptions.from_sdk_options(
+        ClaudeAgentOptions(cwd="/work", permission_mode="bypassPermissions")
+    )
+    mailbox = MailboxClient(Path("/tmp/no-such-mailbox.sock"), "private-token")
+    options = replace(options, core=replace(options.core, mailbox=mailbox), mailbox_phase="coding")
+    request = {"namespace": "other", "threadId": "thread-1", "tool": "agent_mailbox_self", "arguments": {}}
+
+    assert asyncio.run(mailbox_tool_result(request, {"thread-1": options})) is None
+
+
+def test_codex_mailbox_self_accepts_null_arguments(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
+        identity = broker.register(room="ticket", harness="codex_app_server", label="coder")
+        options = CodexAppServerOptions.from_sdk_options(
+            ClaudeAgentOptions(cwd="/work", permission_mode="bypassPermissions")
+        )
+        mailbox = MailboxClient(identity.socket_path, identity.token)
+        options = replace(options, core=replace(options.core, mailbox=mailbox), mailbox_phase="coding")
+        request = {"threadId": "thread-1", "tool": "agent_mailbox_self", "arguments": None}
+
+        result = asyncio.run(mailbox_tool_result(request, {"thread-1": options}))
+
+    assert result is not None
+    assert result["success"] is True
+    assert identity.address in result["contentItems"][0]["text"]
+
+
+@pytest.mark.parametrize("error_kind", ["known", "unexpected"])
+def test_codex_mailbox_tool_returns_a_failed_result_on_transport_error(
+    monkeypatch: pytest.MonkeyPatch, error_kind: str
+) -> None:
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+    options = CodexAppServerOptions.from_sdk_options(
+        ClaudeAgentOptions(cwd="/work", permission_mode="bypassPermissions")
+    )
+    mailbox = MailboxClient(Path("/tmp/no-such-mailbox.sock"), "private-token")
+    options = replace(options, core=replace(options.core, mailbox=mailbox), mailbox_phase="coding")
+    request = {"threadId": "thread-1", "tool": "agent_mailbox_self", "arguments": {}}
+
+    if error_kind == "unexpected":
+        with patch("asyncio.open_unix_connection", side_effect=RuntimeError("unexpected transport failure")):
+            result = asyncio.run(mailbox_tool_result(request, {"thread-1": options}))
+    else:
+        result = asyncio.run(mailbox_tool_result(request, {"thread-1": options}))
+
+    assert result is not None
+    assert result["success"] is False
+    assert result["contentItems"][0]["text"] == (
+        "Mailbox tool failed"
+        if error_kind == "unexpected"
+        else "Live mailbox is unavailable; this TeaTree session may have ended"
+    )
 
 
 @pytest.fixture(autouse=True)

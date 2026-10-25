@@ -13,6 +13,13 @@ def test_empty_tool_call_argument_bytes_match_provider_json(args: dict[str, str]
     assert record.args_bytes == len(part.args_as_json_str().encode())
 
 
+def test_streamed_tool_call_preserves_raw_argument_bytes() -> None:
+    raw_args = '{ "path": "a.py" }'
+    part = ToolCallPart(tool_name="Read", args=raw_args, tool_call_id="call-1")
+
+    assert ToolCallRecord.start(part).args_bytes == len(raw_args.encode())
+
+
 @pytest.mark.parametrize("outcome", ["success", "failed", "retried", "denied", "interrupted"])
 def test_tool_return_bytes_match_provider_response(outcome: str) -> None:
     call = ToolCallPart(tool_name="Read", args={}, tool_call_id="call-1")
