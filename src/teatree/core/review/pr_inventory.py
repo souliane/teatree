@@ -280,19 +280,28 @@ def parse_time(value: str | datetime | None) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def elapsed_label(value: str | datetime | None, now: datetime) -> str:
+def duration_parts(value: str | datetime | None, now: datetime) -> tuple[int, int, int] | None:
     at = parse_time(value)
     if at is None:
-        return "unknown"
+        return None
     minutes = max(0, int((now - at).total_seconds() // 60))
-    if minutes < 1:
-        return "< 1 min"
-    if minutes < MINUTES_PER_HOUR:
-        return f"{minutes} min"
-    hours = minutes // MINUTES_PER_HOUR
-    if hours < HOURS_PER_DAY:
+    hours, minutes = divmod(minutes, MINUTES_PER_HOUR)
+    days, hours = divmod(hours, HOURS_PER_DAY)
+    return days, hours, minutes
+
+
+def elapsed_label(value: str | datetime | None, now: datetime) -> str:
+    parts = duration_parts(value, now)
+    if parts is None:
+        return "unknown"
+    days, hours, minutes = parts
+    if days:
+        return f"{days} d"
+    if hours:
         return f"{hours} h"
-    return f"{hours // HOURS_PER_DAY} d"
+    if minutes == 0:
+        return "< 1 min"
+    return f"{minutes} min"
 
 
 def open_pr_rows(

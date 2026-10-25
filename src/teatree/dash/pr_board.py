@@ -204,7 +204,7 @@ def _visible_pr_urls(
         newer_than_snapshot = (
             seen_at is not None and row.create_verified_at is not None and row.create_verified_at > seen_at
         )
-        if seen_at is None or newer_than_snapshot or row.url in observed:
+        if seen_at is None or newer_than_snapshot:
             urls.add(row.url)
     return urls
 

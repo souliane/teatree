@@ -123,6 +123,43 @@ class PrBoardTestCase(TestCase):
         assert "not verified" in card.next_action
         assert "stale" in board.inventory_warning
 
+    def test_unverified_snapshot_names_the_blocker_on_every_card(self) -> None:
+        ready, waiting, pending = (PullRequestFactory(ticket=TicketFactory()) for _ in range(3))
+        entries = (
+            _observed_entry(ready, decision="merge", threads="0 unresolved"),
+            _observed_entry(waiting, decision="skip", approvals="awaiting approval"),
+            _observed_entry(pending, decision="skip", reason="ci_pending", ci="pending"),
+        )
+        snapshot = PrInventorySnapshot(
+            overlay=ready.overlay, observed_at=timezone.now(), entries=entries, verified=False
+        )
+
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            board = build_pr_board()
+
+        cards = {card.url: card for group in board.groups for card in group.cards}
+        assert "unknown" in board.inventory_warning
+        for pr in (ready, waiting, pending):
+            assert cards[pr.url].group == "Blocked"
+            assert cards[pr.url].next_actor == "Factory"
+            assert "not verified" in cards[pr.url].next_action
+
+    def test_sweep_reason_prevents_ready_even_with_green_checks_and_approvals(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory(), state=PullRequest.State.APPROVED)
+        entry = _observed_entry(
+            pr,
+            decision="skip",
+            reason="solo_overlay_no_review",
+            next_task="Run independent review",
+            threads="0 unresolved",
+        )
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
+
+        assert (card.group, card.next_action) == ("Blocked", "Run independent review")
+
     def test_approved_green_pr_without_any_tick_observation_is_blocked_not_ready(self) -> None:
         self._approved_green_pr()
 
@@ -190,6 +227,16 @@ class PrBoardTestCase(TestCase):
             board = build_pr_board()
         assert [card.ref for group in board.groups for card in group.cards] == [f"{pr.repo}!{pr.iid}"]
         assert "stale" in board.inventory_warning
+
+    def test_unverified_empty_snapshot_never_hides_an_open_recorded_pr(self) -> None:
+        pr = PullRequestFactory(overlay="teatree")
+        unread = PrInventorySnapshot(
+            overlay="teatree", observed_at=timezone.now(), entries=(), watched_repos=(pr.repo,), verified=False
+        )
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(unread,)):
+            board = build_pr_board()
+        assert [card.url for group in board.groups for card in group.cards] == [pr.url]
+        assert "unknown" in board.inventory_warning
 
     def test_fresh_snapshot_taken_before_the_row_was_verified_does_not_hide_it(self) -> None:
         taken = timezone.now() - timedelta(minutes=5)
@@ -572,15 +619,14 @@ class PrBoardActionDetailsTestCase(TestCase):
         assert cards[threaded.url].group == "Blocked"
         assert cards[threaded.url].next_action == "Fix review findings"
 
-    def test_ready_requires_all_approvals_as_well_as_green_ci(self) -> None:
+    def test_unwritten_approval_ratio_is_unreadable_not_merge_ready(self) -> None:
         ticket = TicketFactory()
         pr = PullRequestFactory(ticket=ticket, state=PullRequest.State.APPROVED)
         entry = _observed_entry(pr, approvals="1/2")
         snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
         with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
             card = next(card for group in build_pr_board().groups for card in group.cards)
-        assert card.group == "Waiting on colleagues"
-        assert "approval" in card.next_action.lower()
+        assert (card.group, card.next_action) == ("Blocked", "Approvals unreadable; check the forge")
 
     def test_review_request_shows_link_age_reasks_and_due(self) -> None:
         ticket = TicketFactory(overlay="t3-teatree")

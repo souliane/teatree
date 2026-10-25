@@ -176,6 +176,21 @@ class TestApprovalState:
         assert (state["count"], state["required"], state["approvals_left"]) == (1, 2, 1)
         rules.assert_called_once_with("repos/o/r/rules/branches/main", token="t")
 
+    def test_dismissed_review_revokes_the_same_reviewers_prior_approval(self) -> None:
+        threads = json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}})
+        detail = json.dumps(
+            {
+                "reviewDecision": "REVIEW_REQUIRED",
+                "reviews": [
+                    {"state": "APPROVED", "author": {"login": "reviewer"}},
+                    {"state": "DISMISSED", "author": {"login": "reviewer"}},
+                ],
+            }
+        )
+        with self._route(decision=detail, threads=threads):
+            state = pr_reads.approval_state(repo="o/r", pr_iid=9, token="t")
+        assert (state["count"], state["approvals_left"]) == (0, 1)
+
     def test_strictest_matching_branch_rule_sets_the_approval_requirement(self) -> None:
         with patch.object(
             pr_reads,

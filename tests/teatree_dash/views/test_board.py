@@ -317,6 +317,18 @@ class PrBoardAcceptanceTestCase(TestCase):
         assert f'data-ticket="{delivered[-1].pk}"' in second
         assert f'data-ticket="{delivered[0].pk}"' not in second
 
+    def test_column_headings_and_collapsed_summary_count_all_rows(self) -> None:
+        for _ in range(120):
+            TicketFactory(state=State.NOT_STARTED)
+        for _ in range(57):
+            TicketFactory(state=State.IGNORED)
+
+        body = self.client.get(reverse("dash:board_lifecycle"), {"ignored": "1"}).content.decode()
+
+        assert "Show Not started (120)" in body
+        assert re.search(r'data-state="not_started">\s*<h3[^>]*>.*?<span class="count">120</span>', body)
+        assert re.search(r'data-state="ignored">\s*<h3[^>]*>.*?<span class="count">57</span>', body)
+
     def test_focus_link_renders_a_card_beyond_the_first_page_and_keeps_it_on_poll(self) -> None:
         oldest = TicketFactory(state=State.NOT_STARTED)
         for _ in range(55):

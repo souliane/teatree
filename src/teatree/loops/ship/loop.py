@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 from teatree.core.review.pr_inventory import mark_inventory_unknown, write_inventory
+from teatree.loop.scanners import MyPrsScanner
 from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.tick_resolvers import _web_origin_for_host
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
@@ -22,7 +23,6 @@ def _build_jobs(
     """Build the unconditional per-host ship scanners."""
     from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415 — deferred: loaded at tick time, not import
     from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time
-    from teatree.loop.scanners import MyPrsScanner  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     if backends:
         all_backends = tuple(backends)

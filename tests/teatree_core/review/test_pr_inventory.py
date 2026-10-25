@@ -12,6 +12,7 @@ from teatree.core.review.pr_inventory import (
     PrInventoryEntry,
     PrInventoryError,
     PrInventorySnapshot,
+    duration_parts,
     elapsed_label,
     mark_inventory_unknown,
     merged_entries,
@@ -39,6 +40,12 @@ def _entry(number: int) -> PrInventoryEntry:
 
 
 class PrInventoryTestCase(TestCase):
+    def test_duration_parts_preserve_day_hour_and_minute_precision(self) -> None:
+        now = datetime(2026, 10, 23, 12, tzinfo=UTC)
+        assert duration_parts(now - timedelta(days=2, hours=3, minutes=5), now) == (2, 3, 5)
+        assert duration_parts(now + timedelta(minutes=1), now) == (0, 0, 0)
+        assert duration_parts(None, now) is None
+
     def test_colleague_pr_is_not_reported_as_a_factory_stall(self) -> None:
         assert stall_cause(replace(_entry(1), owned=False, ci="red", next_task="Fix failing CI")) == ""
 

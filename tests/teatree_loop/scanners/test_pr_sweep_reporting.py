@@ -89,6 +89,10 @@ class ForgeApprovalsTestCase(TestCase):
         pr = self._listed_github_pr([{"state": "APPROVED", "author": {"login": "reviewer"}}])
         assert inventory_entry(pr, None).approvals_display == "1/unknown (approved)"
 
+    def test_missing_approval_counts_are_named_on_the_sweep_card(self) -> None:
+        pr = replace(_pr(7, created_at="2026-10-01T10:00:00Z"), approvals="awaiting approval", approval_count=None)
+        assert inventory_entry(pr, None).approvals_display == "unknown/unknown (awaiting approval)"
+
     def test_github_listing_carries_unresolved_threads_from_a_complete_forge_read(self) -> None:
         raw = {"number": 7, "headRefOid": "a" * 40, "url": "https://github.com/souliane/teatree/pull/7"}
         threads = {
@@ -192,7 +196,7 @@ class ForgeApprovalsTestCase(TestCase):
         raw = {"number": 7, "headRefOid": "a" * 40, "url": "u", "reviewDecision": "REVIEW_REQUIRED"}
         with patch.object(GhPrApiClient, "_run_gh", return_value=(0, json.dumps([raw]), "")):
             pr = GhPrApiClient().list_open_prs(slug="souliane/teatree")[0]
-        assert inventory_entry(pr, None).approvals_display == "awaiting approval"
+        assert inventory_entry(pr, None).approvals_display == "unknown/unknown (awaiting approval)"
 
     def test_github_listing_with_no_reviews_counts_zero_approvals(self) -> None:
         assert self._listed_github_pr([]).approval_count == 0
@@ -492,7 +496,7 @@ class MyPrsInventoryTestCase(TestCase):
         MyPrsScanner(host=host, overlay_name="teatree", inventory_writer=writer).scan()
 
         (entry,) = writer.call_args.args[1]
-        assert entry.approvals_display == "awaiting approval"
+        assert entry.approvals_display == "unknown/unknown (awaiting approval)"
 
     def test_signal_without_url_revokes_the_verified_inventory(self) -> None:
         host = self._host(status="failed")
@@ -526,7 +530,7 @@ class MyPrsInventoryTestCase(TestCase):
         assert (entry.ci, entry.approvals, entry.threads) == ("green", "approved", "0 unresolved")
         host.get_mr_approvals.assert_called_once()
 
-    def test_approvals_without_a_count_show_the_label_alone(self) -> None:
+    def test_approvals_without_a_count_name_both_unknown_counts(self) -> None:
         host = self._host()
         host.get_mr_approvals.return_value = {"approvals_left": 1, "approved_by": [], "unresolved_resolvable": 0}
         writer = Mock()
@@ -534,7 +538,7 @@ class MyPrsInventoryTestCase(TestCase):
         MyPrsScanner(host=host, overlay_name="teatree", inventory_writer=writer).scan()
 
         (entry,) = writer.call_args.args[1]
-        assert entry.approvals_display == "awaiting approval"
+        assert entry.approvals_display == "unknown/unknown (awaiting approval)"
 
     def test_unreadable_approvals_are_recorded_as_unknown(self) -> None:
         host = self._host()

@@ -31,7 +31,6 @@ _PAST_CI_GATE_REASONS = _AUTHORIZATION_REASONS | {
     "hold_at_head",
     "contested_hold_at_head",
 }
-_APPROVAL_RATIO = re.compile(r"(\d+)/(\d+)")
 _UNRESOLVED_THREADS = re.compile(r"([1-9]\d*) unresolved")
 
 
@@ -67,8 +66,6 @@ def threads_label(unresolved: int) -> str:
 
 
 def approvals_text(label: str, count: int | None, required: int | None) -> str:
-    if count is None and required is None:
-        return label
     return f"{UNKNOWN if count is None else count}/{UNKNOWN if required is None else required} ({label})"
 
 
@@ -77,8 +74,6 @@ def approvals_met(approvals: str) -> bool | None:
         return True
     if approvals == AWAITING_APPROVAL:
         return False
-    if ratio := _APPROVAL_RATIO.fullmatch(approvals):
-        return int(ratio[1]) >= int(ratio[2])
     return None
 
 
@@ -159,6 +154,14 @@ def _factory_task(facts: PrActionFacts) -> PrNextAction | None:
     return PrNextAction("Factory working", "Factory", facts.working) if facts.working else None
 
 
+def _unverified(facts: PrActionFacts) -> PrNextAction | None:
+    if facts.entry is not None and not facts.verified:
+        return PrNextAction(
+            "Blocked", "Factory", "Forge facts not verified by a recent tick; waiting for the next read"
+        )
+    return None
+
+
 def _foreign_pr(facts: PrActionFacts) -> PrNextAction | None:
     if facts.owned is not False or facts.entry is None or facts.failure:
         return None
@@ -186,9 +189,7 @@ def _ready(facts: PrActionFacts) -> PrNextAction | None:
         return None
     if facts.entry.decision.startswith("my_pr."):
         return PrNextAction("Blocked", "Factory", "Merge state not verified by a fresh sweep")
-    if facts.verified:
-        return PrNextAction("Ready to merge or merging", "Factory", "Merge through the ticket keystone")
-    return PrNextAction("Blocked", "Factory", "Forge facts not verified by a recent tick; waiting for the next read")
+    return PrNextAction("Ready to merge or merging", "Factory", "Merge through the ticket keystone")
 
 
 def _authorization(facts: PrActionFacts) -> PrNextAction | None:
@@ -237,6 +238,7 @@ def _observed_next_task(facts: PrActionFacts) -> PrNextAction | None:
 _RULES = (
     _owner_waiting,
     _factory_task,
+    _unverified,
     _foreign_pr,
     _blocked,
     _ready,

@@ -24,7 +24,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.review.pr_inventory import HOURS_PER_DAY, MINUTES_PER_HOUR
+from teatree.core.review.pr_inventory import duration_parts
 from teatree.dash.issue_link import issue_link
 from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, pending_phase_tasks_by_ticket
 from teatree.url_classify import pr_ref
@@ -51,7 +51,6 @@ HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_DELIVERED)
 # itself is never touched (it is audit); only the board stops showing it.
 STALE_ERROR_AFTER = timedelta(days=2)
 BOARD_PAGE_SIZE = 50
-_SECONDS_PER_MINUTE = 60
 
 # Every column the board renders, in lifecycle order (excludes HIDDEN_STATES).
 BOARD_COLUMNS: tuple[str, ...] = tuple(state for _group, states in COLUMN_GROUPS for state in states)
@@ -442,18 +441,17 @@ def _card(ticket: Ticket, context: _CardContext) -> KanbanCard:
 
 
 def _dwell(latest_transition_at: datetime | None) -> str:
-    if latest_transition_at is None:
+    parts = duration_parts(latest_transition_at, timezone.now())
+    if parts is None:
         return ""
-    minutes = max(0, int((timezone.now() - latest_transition_at).total_seconds() // _SECONDS_PER_MINUTE))
+    days, hours, minutes = parts
+    if days:
+        return f"{days} d {hours} h"
+    if hours:
+        return f"{hours} h {minutes:02d} min"
     if minutes == 0:
         return "< 1 min"
-    if minutes < MINUTES_PER_HOUR:
-        return f"{minutes} min"
-    hours, remaining_minutes = divmod(minutes, MINUTES_PER_HOUR)
-    if hours < HOURS_PER_DAY:
-        return f"{hours} h {remaining_minutes:02d} min"
-    days, remaining_hours = divmod(hours, HOURS_PER_DAY)
-    return f"{days} d {remaining_hours} h"
+    return f"{minutes} min"
 
 
 def _label(state: str) -> str:
