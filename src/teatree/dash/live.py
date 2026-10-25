@@ -244,6 +244,7 @@ def _loops(now: dt.datetime) -> tuple[LoopRow, ...]:
 def _outcomes() -> tuple[OutcomeRow, ...]:
     attempts = (
         TaskAttempt.objects.filter(ended_at__isnull=False)
+        .with_previous_end()
         .select_related("task", "task__ticket")
         .order_by("-ended_at", "-pk")[:LIVE_OUTCOME_ROWS]
     )
@@ -269,4 +270,4 @@ def _outcome_row(attempt: TaskAttempt) -> OutcomeRow:
 def _duration(attempt: TaskAttempt) -> str:
     if attempt.ended_at is None:
         return ""
-    return _humanize_duration((attempt.ended_at - attempt.started_at).total_seconds())
+    return _humanize_duration((attempt.ended_at - attempt.display_started_at).total_seconds())
