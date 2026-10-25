@@ -2,7 +2,7 @@
 
 Delegates PR sync to ``gitlab_sync_prs`` and issue sync to
 ``gitlab_sync_issues``. Keeps only the ``GitLabSyncBackend`` class
-with ``is_configured()``, ``sync()``, and ``_sync_reviewer_prs()``.
+with ``is_configured()`` and ``sync()``.
 
 GitLab API URLs and method names that hit ``/merge_requests/...``
 endpoints keep their GitLab-native naming because they describe the
@@ -24,7 +24,7 @@ from teatree.backends.gitlab.sync_terminal import detect_closed_prs, detect_merg
 from teatree.backends.slack.review_sync import fetch_review_permalinks
 from teatree.core.intake.label_admission import LabelPolicy
 from teatree.core.sync import _overlay_name
-from teatree.types import LAST_SYNC_CACHE_KEY, PENDING_REVIEWS_CACHE_KEY, SyncBackend, SyncResult
+from teatree.types import LAST_SYNC_CACHE_KEY, SyncBackend, SyncResult
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -93,7 +93,6 @@ class GitLabSyncBackend(SyncBackend):
         fetch_issue_labels(client, result)
         self._sync_terminal_prs(client, username, result, last_sync=last_sync, sync_started_at=sync_started_at)
         fetch_review_permalinks(result)
-        self._sync_reviewer_prs(host, username, result)
         self._detect_conflicted_prs(host, username, result)
 
         return result
@@ -140,34 +139,3 @@ class GitLabSyncBackend(SyncBackend):
             result.errors.append(f"Conflict-check PR fetch failed: {exc}")
             return
         collect_conflicted_mrs(open_prs, result)
-
-    @classmethod
-    def _sync_reviewer_prs(cls, host: GitLabCodeHost, username: str, result: SyncResult) -> None:
-        try:
-            reviewer_prs = host.list_review_requested_prs(reviewer=username)
-        except Exception as exc:  # noqa: BLE001 — a reviewer-PR fetch failure is recorded, never crashes the sync
-            result.errors.append(f"Reviewer PR fetch failed: {exc}")
-            return
-
-        reviews: list[dict[str, str]] = []
-        for raw in reviewer_prs:
-            web_url = str(raw.get("web_url", ""))
-            author_info = raw.get("author", {})
-            author_name = str(author_info.get("username", "")) if isinstance(author_info, dict) else ""
-            repo_path = extract_repo_path(raw)
-            repo_short = repo_path.rsplit("/", maxsplit=1)[-1]
-            iid = str(raw.get("iid", ""))
-            reviews.append(
-                {
-                    "url": web_url,
-                    "title": str(raw.get("title", "")),
-                    "repo": repo_short,
-                    "iid": iid,
-                    "author": author_name,
-                    "draft": str(raw.get("draft", False)),
-                    "updated_at": str(raw.get("updated_at", "")),
-                },
-            )
-
-        cache.set(PENDING_REVIEWS_CACHE_KEY, reviews, timeout=None)
-        result.reviews_synced += len(reviews)
