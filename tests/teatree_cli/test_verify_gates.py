@@ -15,7 +15,9 @@ local hook covers.
 
 import json
 import re
+import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -188,10 +190,20 @@ class TestVerifyGatesRunsBothStages:
         self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         live = tmp_path / "live-control"
+        live.mkdir()
+        registry = {"leak": ["private-marker"], "prose_collider": ["private-marker"]}
+        with closing(sqlite3.connect(live / "db.sqlite3")) as db:
+            db.execute("CREATE TABLE teatree_config_setting (scope TEXT, key TEXT, value TEXT)")
+            db.execute(
+                "INSERT INTO teatree_config_setting VALUES ('', 'banned_term_registry', ?)",
+                (json.dumps(registry),),
+            )
+            db.commit()
         monkeypatch.setenv("T3_CONTROL_DB_DIR", str(live))
         monkeypatch.setenv("T3_CONFIG_DB", str(live / "db.sqlite3"))
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{live / 'db.sqlite3'}")
         monkeypatch.setenv("XDG_DATA_HOME", str(live))
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
@@ -207,6 +219,8 @@ class TestVerifyGatesRunsBothStages:
             assert Path(env["T3_CONTROL_DB_DIR"]).is_relative_to(private_root)
             assert "T3_CONFIG_DB" not in env
             assert "DATABASE_URL" not in env
+            child_registry = json.loads(env["TEATREE_TERM_REGISTRY"])
+            assert {key: child_registry[key] for key in registry} == registry
             assert ControlDb(env, home=tmp_path).for_repo(worktree).path.is_relative_to(private_root)
 
     def test_invokes_push_stage_hooks_not_just_commit(self) -> None:
