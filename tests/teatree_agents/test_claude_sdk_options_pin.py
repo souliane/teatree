@@ -435,6 +435,7 @@ class TestInteractiveSessionsArePinned(TestCase):
 
     def test_factory_only_settings_reach_no_attended_session(self) -> None:
         factory_only = {
+            "agent_advisor_model": "advisor-model",
             "agent_phase_models": {"coding": "cheap", "reviewing": "balanced"},
             "agent_skill_models": {"t3:code": [{"floor": "frontier"}]},
             "agent_honesty_model": "balanced",
