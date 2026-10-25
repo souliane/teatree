@@ -27,8 +27,9 @@ from typing import TYPE_CHECKING, cast
 import httpx
 
 from teatree.core.backend_registry import get_backend_provider
-from teatree.core.merge import MergePreconditionError, execute_bound_merge
+from teatree.core.merge import MergePreconditionError
 from teatree.core.merge.host_kind import forge_for_repo_slug
+from teatree.core.merge.uncleared_merge import merge_without_clear
 from teatree.core.review.pr_next_action import APPROVED, AWAITING_APPROVAL, UNKNOWN
 from teatree.loop.scanners.base import classify_http_error
 from teatree.loop.scanners.pr_sweep_ports import PrApiClient
@@ -107,7 +108,7 @@ class GlabPrApiClient:
         (#4856) rather than discarding it.
         """
         try:
-            merged_sha = execute_bound_merge(
+            merged_sha = merge_without_clear(
                 ref=PrRef(slug=slug, pr_id=pr_id, host_kind="gitlab"),
                 expected_head_oid=expected_head_oid,
             )
