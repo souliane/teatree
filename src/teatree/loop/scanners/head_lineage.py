@@ -165,8 +165,6 @@ class GhLineageReader:
                 if fetched.returncode != 0:
                     return "merge_tree_unavailable"
             for sha, pair in added.items():
-                if len(pair) != _MERGE_PARENT_COUNT or not all(pair):
-                    return "merge_tree_unavailable"
                 merged = run_allowed_to_fail(
                     ["git", "-C", str(repo), "merge-tree", "--write-tree", *pair], expected_codes=None, timeout=20
                 )

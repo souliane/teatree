@@ -199,6 +199,21 @@ class TestGhLineageReader:
         assert lineage is not None
         assert lineage.refusal_reason == ""
 
+    def test_a_clone_that_lacks_the_new_head_fetches_it_to_prove_the_merge(
+        self, scenario: _Scenario, tmp_path: Path
+    ) -> None:
+        _main_edits(scenario, "b.txt", 10)
+        clone = tmp_path / "clone"
+        run_git(tmp_path, "clone", "-q", str(scenario.repo), str(clone))
+        new = _merge_main_into_pr(scenario)
+
+        lineage = GhLineageReader(gh=_GitBackedGh(scenario.repo, reported_head=new), repo=clone)(
+            slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=scenario.old, new_head=new
+        )
+
+        assert lineage is not None
+        assert lineage.refusal_reason == ""
+
     def test_an_unavailable_local_clone_cannot_prove_the_merge(self, scenario: _Scenario, tmp_path: Path) -> None:
         _main_edits(scenario, "b.txt", 10)
         new = _merge_main_into_pr(scenario)
@@ -207,6 +222,22 @@ class TestGhLineageReader:
         lineage = GhLineageReader(gh=gh, repo=tmp_path / "missing")(
             slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=scenario.old, new_head=new
         )
+
+        assert lineage is not None
+        assert lineage.identical
+        assert lineage.refusal_reason == "merge_tree_unavailable"
+
+    def test_a_repository_with_no_local_clone_cannot_prove_the_merge(self, scenario: _Scenario) -> None:
+        _main_edits(scenario, "b.txt", 10)
+        new = _merge_main_into_pr(scenario)
+
+        with (
+            patch("teatree.loop.scanners.head_lineage.find_project_root", return_value=None),
+            patch("teatree.loop.scanners.head_lineage.unambiguous_clone_path", return_value=None),
+        ):
+            lineage = GhLineageReader(gh=_GitBackedGh(scenario.repo, reported_head=new))(
+                slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=scenario.old, new_head=new
+            )
 
         assert lineage is not None
         assert lineage.identical
