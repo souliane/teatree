@@ -40,6 +40,7 @@ def test_teatree_visual_qa_targets_dashboard_and_admin_pages() -> None:
 
     assert len(targets) == MAX_PAGES
     assert "/dash/board/" in targets
+    assert "/dash/board/lifecycle/" in targets
     assert "/admin/" in targets
     assert "/admin/login/" in targets
     assert "/" not in targets

@@ -128,9 +128,6 @@ class _FollowupLoopSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "followup")
 
-    review_nag_max_interval_days: int = setting(
-        30, spec=SettingSpec(help="ceiling on the review nag's widening re-ask interval", parse=_parse_strict_int)
-    )
     review_nag_reask_mention: str = setting(
         "",
         spec=SettingSpec(

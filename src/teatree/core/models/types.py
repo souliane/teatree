@@ -187,6 +187,7 @@ class TicketExtra(TypedDict, total=False):
     notion_url: str
     notion_status: str
     issue_title: str
+    mr_title_generated: str
     labels: list[str]
     reviewed_sha: str
     # What the FORGE last reported. Overwritten with the live value on every scan, so a

@@ -510,6 +510,8 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             approvals_left=approvals_left,
             approved_by=approved_by,
             unresolved_resolvable=unresolved_resolvable,
+            count=_read_int(raw, "count"),
+            required=_read_int(raw, "required"),
         )
 
     def _resolve_project(self, repo: str) -> ProjectInfo | None:
