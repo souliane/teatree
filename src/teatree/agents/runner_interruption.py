@@ -9,6 +9,7 @@ judgements can fall through to; the runner imports it back for its own pre-turn 
 
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -22,6 +23,7 @@ from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import LIMIT_PARKED_PREFIX, NOOP_OVER_COMPLETED_MARKER, Task, TaskAttempt
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.task_claim import claim_generation
+from teatree.core.models.usage_window_state import OPERATOR_PAUSED_PREFIX
 
 if TYPE_CHECKING:
     from teatree.agents.attempt_recorder import AttemptUsage
@@ -50,7 +52,8 @@ class CeilingSalvage:
         """Record the envelope a cut-short run finished; ``None`` leaves the outcome to the ordinary recording."""
         produced = _produced_result(outcome)
         if (
-            not outcome.cut_short
+            outcome.paused
+            or not outcome.cut_short
             or not produced
             or check_evidence(produced, self.phase)
             or Task.objects.filter(pk=task.pk, status=Task.Status.COMPLETED).exists()
@@ -98,6 +101,8 @@ def _record_stuck_outcome(
     cancelled = Task.objects.filter(pk=task.pk, status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED).first()
     if cancelled is not None:
         return _record_noop_over_cancelled_row(cancelled, interruption=stuck_reason, usage=usage)
+    if outcome.paused:
+        return _record_operator_pause(task, usage=usage)
     if outcome.checkpointed:
         return _record_checkpoint(task, checkpoint=stuck_reason, usage=usage)
     evidence = phase_landing_evidence(task, trust_phase_artifact=True) if outcome.lease_lost else ""
@@ -106,6 +111,20 @@ def _record_stuck_outcome(
     return _record_failure(
         task, error=f"{_STUCK_LOOP_PREFIX}{stuck_reason}", result=outcome.unfinished_result, usage=usage
     )
+
+
+def _record_operator_pause(task: Task, *, usage: "AttemptUsage | None") -> TaskAttempt:
+    with transaction.atomic():
+        live = Task.objects.filter(pk=task.pk, status=Task.Status.CLAIMED).first()
+        if live is not None and claim_generation(live) == claim_generation(task):
+            return record_park(
+                task,
+                reason=f"{OPERATOR_PAUSED_PREFIX}paused by the operator",
+                not_before=timezone.now() + timedelta(days=3650),
+                usage=usage,
+            )
+    logger.warning("Task %s was paused after its claim moved on; leaving the row alone", task.pk)
+    return _record_interrupted_attempt(task, summary="operator pause — the claim had moved on", usage=usage)
 
 
 def _record_checkpoint(task: Task, *, checkpoint: str, usage: "AttemptUsage | None") -> TaskAttempt:

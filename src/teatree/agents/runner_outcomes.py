@@ -135,6 +135,8 @@ def _failure_usage(outcome: HarnessOutcome, *, lane: str, transport: Transport) 
         model_fell_back=outcome.model_fell_back,
     )
     usage = _attempt_usage(outcome.result_message, observation)
+    if outcome.session_id and not usage.agent_session_id:
+        usage = replace(usage, agent_session_id=outcome.session_id)
     receipt = usage.skill_assurance
     if receipt is None:
         return usage

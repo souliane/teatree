@@ -3,15 +3,19 @@
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.test import TestCase
 
 from teatree.agents._runner_env import DispatchCredential
+from teatree.agents.harness import ClaudeSdkHarness
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.prompt import build_system_context
 from teatree.agents.runner_preparation import Preflight, PreparedRun, prepare_run
 from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.config import cold_reader
+from teatree.config.cold_reader import SettingRead
 from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
 from teatree.core.models import Session, Task
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -78,3 +82,81 @@ class TestT3TeatreeSkillDispatch(TestCase):
         prompt = self._prepare("coding", _TEATREE_CHECKOUT).prompt
 
         assert prompt.splitlines().count("  - /internals") == 1
+
+    def test_claude_child_keeps_native_compaction_available(self) -> None:
+        dispatch = DispatchHarness(
+            harness=ClaudeSdkHarness(),
+            name="claude_sdk",
+            provider=None,
+            model="claude-opus-5-5",
+            route_candidate_index=None,
+        )
+        prepared = prepare_run(
+            self._task("coding"),
+            Preflight(stage_skills=[], dispatch=dispatch, skills=[]),
+            phase="coding",
+            handoff=None,
+            credential=DispatchCredential(env={"ANTHROPIC_API_KEY": "key-x"}),
+        )
+
+        assert prepared.options.env["DISABLE_COMPACT"] == "0"
+        assert prepared.options.env["DISABLE_AUTO_COMPACT"] == "0"
+        assert "PreCompact" not in (prepared.options.hooks or {})
+        assert prepared.options.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "1000000"
+
+    def test_claude_child_with_an_explicit_window_gets_the_reserve_percentage(self) -> None:
+        dispatch = DispatchHarness(
+            harness=ClaudeSdkHarness(),
+            name="claude_sdk",
+            provider=None,
+            model="claude-sonnet-4-6",
+            route_candidate_index=None,
+        )
+        original_read = cold_reader.read_setting_confirmed
+
+        def read_window(key: str, **kwargs: object) -> SettingRead:
+            if key == "agent_model_context_windows":
+                return SettingRead(value={"claude-sonnet-4-6": 200_000}, readable=True)
+            return original_read(key, **kwargs)
+
+        with patch("teatree.agents.runner_preparation.cold_reader.read_setting_confirmed", side_effect=read_window):
+            prepared = prepare_run(
+                self._task("coding"),
+                Preflight(stage_skills=[], dispatch=dispatch, skills=[]),
+                phase="coding",
+                handoff=None,
+                credential=DispatchCredential(
+                    env={
+                        "ANTHROPIC_API_KEY": "key-x",
+                        "DISABLE_COMPACT": "1",
+                        "DISABLE_AUTO_COMPACT": "true",
+                        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+                        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "25",
+                    }
+                ),
+            )
+
+        assert prepared.options.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "200000"
+        assert prepared.options.env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "92.0"
+        assert prepared.options.env["DISABLE_COMPACT"] == "0"
+        assert prepared.options.env["DISABLE_AUTO_COMPACT"] == "0"
+
+    def test_claude_child_overrides_ambient_compaction_disable_switches(self) -> None:
+        dispatch = DispatchHarness(
+            harness=ClaudeSdkHarness(),
+            name="claude_sdk",
+            provider=None,
+            model="claude-opus-5-5",
+            route_candidate_index=None,
+        )
+        with patch.dict("os.environ", {"DISABLE_COMPACT": "1", "DISABLE_AUTO_COMPACT": "true"}):
+            prepared = prepare_run(
+                self._task("coding"),
+                Preflight(stage_skills=[], dispatch=dispatch, skills=[]),
+                phase="coding",
+                handoff=None,
+                credential=DispatchCredential(env={"ANTHROPIC_API_KEY": "key-x"}),
+            )
+
+        assert prepared.options.env["DISABLE_COMPACT"] == "0"
+        assert prepared.options.env["DISABLE_AUTO_COMPACT"] == "0"

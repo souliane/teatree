@@ -46,6 +46,15 @@ from tests.teatree_agents._read_only_review_world import (
 
 _ISSUE_URL = "https://github.com/example-org/example-repo/issues/5"
 _BODY = "## Problem\nThe planner needs the body.\n"
+
+
+def test_read_only_directive_advertises_only_worker_handled_mailbox_tools() -> None:
+    directive = " ".join(READ_ONLY_DIRECTIVE)
+    assert "If agent_mailbox tools are available" in directive
+    assert "worker" in directive
+    assert "no teatree MCP server" in directive
+
+
 _SURVEY = {"open_prs": [{"url": "https://forge.example/pr/7"}], "worktrees": [], "recommendations": [], "warnings": []}
 _T3_INVOCATION = re.compile(r"(?<![\w/:.-])t3 ")
 _WORKER_BRIEFS_AT_BASE = (

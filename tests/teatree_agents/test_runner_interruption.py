@@ -15,6 +15,7 @@ The no-op-over-a-completed-row decision itself (#4100) is unchanged and pinned n
 """
 
 import json
+from datetime import timedelta
 
 from django.core.management import call_command
 from django.test import TestCase
@@ -156,6 +157,34 @@ class TestALeaseLossAfterAnOperatorCancel(TestCase):
 
 
 _CHECKPOINTED_SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+class TestOperatorPause(TestCase):
+    def test_operator_pause_parks_the_task_with_its_conversation_gated_until_resume(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task.claim(claimed_by="worker-A", lease_seconds=900)
+        outcome = HarnessOutcome(
+            agent_text="completed the first tool",
+            result_message=None,
+            stuck_reason="operator pause",
+            paused=True,
+            session_id=_CHECKPOINTED_SESSION,
+        )
+
+        attempt = _outcome_failure(task, outcome, phase="coding")
+
+        task.refresh_from_db()
+        assert attempt is not None
+        assert attempt.error.startswith("operator_paused:")
+        assert attempt in TaskAttempt.objects.parks()
+        assert attempt not in phase_attempts(task)
+        assert task.status == Task.Status.PENDING
+        assert task.not_before is not None
+        assert task.not_before > timezone.now() + timedelta(days=3649)
+        assert task.session_continuation == Task.SessionContinuation.SELF
+        assert resume_session_id(task) == _CHECKPOINTED_SESSION
 
 
 def _checkpointed() -> HarnessOutcome:

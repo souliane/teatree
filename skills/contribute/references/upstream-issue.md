@@ -147,7 +147,7 @@ github_issue_create(repo="<T3_UPSTREAM>", title=..., body=...,
                             "decisions": [{"url": ..., "fits": false, "reason": "<why not>"}]})
 ```
 
-- `created_new` → print the issue URL. Every rejection and its reason is now in the body.
+- `created_new` → print the issue URL. The supplied body is filed; each rejection and reason stays in the private audit.
 - `extended_existing` → the request was appended to that ticket's description instead.
   Print that URL and tell the user no new issue was needed.
 - `external_conflict` → a fitting ticket someone else filed. Neither edited nor

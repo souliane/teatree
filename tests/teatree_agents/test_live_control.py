@@ -33,6 +33,7 @@ class _Capture:
     last_event_at: float | None = None
     open_tool: tuple[str, float] | None = None
     result_message: object = None
+    compactions: int = 0
 
 
 class _AcceptingSession:
@@ -83,6 +84,100 @@ def test_the_input_reaches_the_agent_named_as_operator_input_that_keeps_its_enve
     assert first.startswith("[TeaTree operator input id=c-1]")
     assert body == ["use docs/x.md"]
     assert "result envelope" in last
+
+
+def test_pause_interrupts_the_running_turn_and_settles_a_paused_receipt() -> None:
+    class InterruptCount(_AcceptingSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.interruptions = 0
+
+        async def interrupt(self) -> None:
+            self.interruptions += 1
+
+    session = InterruptCount()
+    controller = _controller(session)
+
+    async def run() -> tuple[ControlReceipt, ControlReceipt, ControlReceipt]:
+        first = await controller.pause("pause", command_id="pause-1")
+        duplicate = await controller.pause("pause", command_id="pause-1")
+        later = await controller.pause("pause", command_id="pause-2")
+        return first, duplicate, later
+
+    first, duplicate, later = asyncio.run(run())
+
+    assert first == duplicate
+    assert first.outcome is ControlOutcome.PAUSED
+    assert controller.paused
+    assert session.interruptions == 1
+    assert later.code is RejectCode.TURN_ENDED
+
+
+def test_a_compaction_restates_only_the_accepted_operator_directions_once() -> None:
+    class RefusingAfterOne(_AcceptingSession):
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            if input_id == "c-refused":
+                raise live_control.SteerRejectedError(RejectCode.NOT_ACCEPTED_IN_TIME)
+            await super().steer(text, input_id=input_id, wait=wait)
+
+    session = RefusingAfterOne()
+    capture = _Capture()
+    controller = _controller(session, capture)
+
+    async def run() -> None:
+        await controller.steer("use docs/x.md", command_id="c-1", wait=1)
+        await controller.steer("never touch the schema", command_id="c-refused", wait=1)
+        await controller.steer("skip the migration", command_id="c-2", wait=1)
+        session.delivered.clear()
+        await controller.restate_after_compaction()
+        capture.compactions = 1
+        await controller.restate_after_compaction()
+        await controller.restate_after_compaction()
+
+    asyncio.run(run())
+
+    [restated] = session.delivered
+    assert "use docs/x.md" in restated
+    assert "skip the migration" in restated
+    assert "never touch the schema" not in restated
+    assert "still in force" in restated
+
+
+def test_a_direction_given_after_a_compaction_is_restated_only_by_the_next_one() -> None:
+    session = _AcceptingSession()
+    capture = _Capture(compactions=1)
+    controller = _controller(session, capture)
+
+    async def run() -> None:
+        await controller.restate_after_compaction()
+        await controller.steer("use docs/x.md", command_id="c-1", wait=1)
+        session.delivered.clear()
+        await controller.restate_after_compaction()
+        assert session.delivered == []
+        capture.compactions = 2
+        await controller.restate_after_compaction()
+
+    asyncio.run(run())
+
+    [restated] = session.delivered
+    assert "use docs/x.md" in restated
+
+
+def test_an_idle_session_keeps_its_restatement_for_the_next_turn() -> None:
+    session = _FollowUpSession()
+    capture = _Capture()
+    controller = _controller(session, capture)
+
+    async def run() -> None:
+        await controller.steer("use docs/x.md", command_id="c-1", wait=1)
+        session.delivered.clear()
+        controller.begin_idle()
+        capture.compactions = 1
+        await controller.restate_after_compaction()
+
+    asyncio.run(run())
+
+    assert session.delivered == []
 
 
 def test_an_idle_follow_up_claims_one_turn_and_a_duplicate_returns_its_receipt() -> None:
@@ -369,6 +464,25 @@ def test_peer_pushes_never_spend_the_operator_receipt_budget() -> None:
 
     assert steered.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
     assert controller.known_receipt("peer-0", "peer 0") is None
+
+
+def test_drain_waits_for_a_peer_push_still_inside_the_session() -> None:
+    session = _HoldingSession()
+    controller = _controller(session)
+
+    async def drain_while_a_push_is_held() -> tuple[bool, ControlReceipt]:
+        pushing = asyncio.create_task(controller.push("peer", command_id="peer-1", wait=1))
+        await asyncio.sleep(0)
+        draining = asyncio.create_task(controller.drain())
+        await asyncio.sleep(0)
+        session.release.set()
+        await draining
+        return pushing.done(), await pushing
+
+    push_finished_before_drain_returned, receipt = asyncio.run(drain_while_a_push_is_held())
+
+    assert push_finished_before_drain_returned
+    assert receipt.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
 
 
 def test_peers_fill_only_their_own_pending_slots_and_never_starve_an_operator_steer() -> None:

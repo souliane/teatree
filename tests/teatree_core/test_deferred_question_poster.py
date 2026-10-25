@@ -14,7 +14,7 @@ from django.test import TestCase
 
 from teatree.core import notify as notify_module
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.models import BotPing, DeferredQuestion, IncomingEvent
+from teatree.core.models import BotPing, DeferredQuestion, IncomingEvent, Session, Task, ThreadBinding, Ticket
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from tests._owner_channel import OWNER_DECISION, owner_card
 
@@ -28,6 +28,35 @@ def _backend(*, ts: str = "1700000000.000000") -> MagicMock:
 
 
 class TestDrainUnmirroredDeferredQuestions(TestCase):
+    def test_mirrored_parked_question_binds_its_thread_to_the_ticket(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+        question = DeferredQuestion.record("Choose one?", parked_task=task, **OWNER_DECISION)
+        backend = _backend()
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            drain_unmirrored_deferred_questions(user_id="U_ME")
+
+        question.refresh_from_db()
+        assert ThreadBinding.objects.filter(
+            ticket=ticket, channel=question.slack_channel, thread_ts=question.slack_ts
+        ).exists()
+
+    def test_a_thread_already_bound_to_another_ticket_never_aborts_the_drain(self) -> None:
+        ticket = Ticket.objects.create()
+        other = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
+        ThreadBinding.bind(ticket=other, channel="D1", thread_ts="1700000000.000000")
+        question = DeferredQuestion.record("Choose one?", parked_task=task, **OWNER_DECISION)
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=_backend()):
+            drain_unmirrored_deferred_questions(user_id="U_ME")
+
+        question.refresh_from_db()
+        assert question.slack_ts == "1700000000.000000"
+        assert ThreadBinding.objects.get(channel="D1", thread_ts="1700000000.000000").ticket_id == other.pk
+
     def test_posts_unmirrored_and_stamps_mirror_coordinates(self) -> None:
         question = DeferredQuestion.record("Which DB host?", session_id="s", **OWNER_DECISION)
         assert question.slack_ts == ""

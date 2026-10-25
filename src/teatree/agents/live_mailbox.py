@@ -11,13 +11,13 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
 from typing import NoReturn, Self
 
 from teatree.agents.live_control import ControlOutcome, LiveTask, PeerIdentity, RejectCode, frame_peer_message
 from teatree.agents.live_delivery import (
+    _MAX_INBOX_MESSAGES,
     MAX_WAIT_SECONDS,
     InboxMessage,
     InboxPage,
@@ -25,8 +25,10 @@ from teatree.agents.live_delivery import (
     MailboxRequest,
     MailboxTextTooLargeError,
     PeerDelivery,
-    RemoteReceipts,
+    PushOnlyTask,
     SendReceipt,
+    _Participant,
+    peer_identity,
     refused_receipt,
     send_fields,
 )
@@ -40,12 +42,18 @@ from teatree.agents.live_federation import (
     remote_peers,
     send_remote,
 )
-from teatree.agents.live_ingress import IngressRefusedError, OperatorIngress
+from teatree.agents.live_ingress import (
+    IngressRefusedError,
+    OperatorIngress,
+    PeerRole,
+    PeerSocket,
+    classify_peer,
+    peer_credentials,
+)
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
 
 logger = logging.getLogger(__name__)
 
-_MAX_INBOX_MESSAGES = 1_000
 _MAX_REQUEST_BYTES = 128_000  # JSON escaping can expand a valid 16-KiB body sixfold
 _MAX_PAGE_SIZE = 100
 _MAX_PAGE_BYTES = 1_800_000
@@ -54,29 +62,6 @@ MAX_WAITING_SENDS = 4
 
 def _reject(message: str) -> NoReturn:
     raise ValueError(message)
-
-
-@dataclass(slots=True)
-class _Participant:
-    address: str
-    token: str = field(repr=False)
-    room: str
-    harness: str
-    label: str
-    phase: str = ""
-    can_receive: bool = True
-    task: LiveTask | None = None
-    reads_inbox: bool = True
-    inbox: deque[InboxMessage] = field(default_factory=lambda: deque(maxlen=_MAX_INBOX_MESSAGES))
-    sent: dict[str, PeerDelivery] = field(default_factory=dict)
-    remote_sent: RemoteReceipts = field(default_factory=RemoteReceipts)
-    dropped_before: int = 0
-    waiting: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class PushOnlyTask:
-    task: LiveTask
 
 
 class LiveMailboxBroker:
@@ -103,6 +88,7 @@ class LiveMailboxBroker:
         self._by_address: dict[str, _Participant] = {}
         self._next_message_id = 0
         self._delivery: dict[int, PeerDelivery] = {}
+        self._joined_writers: set[asyncio.StreamWriter] = set()
         self._relay = PeerRelay(self)
 
     @property
@@ -160,7 +146,7 @@ class LiveMailboxBroker:
         task: LiveTask | PushOnlyTask | None = None,
         can_receive: bool = True,
     ) -> MailboxIdentity:
-        if not room or not harness or not label:
+        if (not room and harness != "interactive") or not harness or not label:
             msg = "Mailbox room, harness, and label are required"
             raise ValueError(msg)
         self.start()
@@ -176,6 +162,7 @@ class LiveMailboxBroker:
             can_receive=can_receive,
             task=bound_task,
             reads_inbox=not push_only,
+            inbox=deque(maxlen=_MAX_INBOX_MESSAGES),
         )
         with self._lock:
             self._by_token[participant.token] = participant
@@ -200,7 +187,14 @@ class LiveMailboxBroker:
         for message_id in message_ids:
             if (delivery := self._delivery.get(message_id)) is not None:
                 delivery.queued_in_inbox = False
-                delivery.settle(ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
+                if delivery.push is not None and not delivery.push.done():
+                    delivery.push.add_done_callback(
+                        lambda _finished, pending=delivery: pending.settle(
+                            ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED
+                        )
+                    )
+                else:
+                    delivery.settle(ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
         self._sender_left([delivery.message_id for delivery in self._relay.forget(address)])
 
     def _sender_left(self, message_ids: list[int]) -> None:
@@ -227,6 +221,12 @@ class LiveMailboxBroker:
         self._ready.set()
         async with server:
             await self._stop.wait()
+            server.close()
+            writers = tuple(self._joined_writers)
+            for writer in writers:
+                writer.close()
+            await asyncio.gather(*(writer.wait_closed() for writer in writers))
+            await server.wait_closed()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -246,12 +246,10 @@ class LiveMailboxBroker:
             if not isinstance(request, dict):
                 _reject("Invalid mailbox request")
             method = request.get("method")
-            if isinstance(method, str) and method.startswith("live."):
-                result = await self._ingress.serve(method, request, writer.get_extra_info("socket"))
-            elif isinstance(method, str) and method.startswith("relay."):
-                result = await self._relay.serve(method, request, writer.get_extra_info("socket"))
-            else:
-                result = await self._dispatch(request)
+            if method == "peer.join":
+                await self._handle_join(reader, writer)
+                return
+            result = await self._route_request(request, writer)
             response = {"result": result}
         except IngressRefusedError as exc:
             response = {"error": str(exc), "code": exc.code.value}
@@ -271,6 +269,36 @@ class LiveMailboxBroker:
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def _handle_join(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        identity = self._join(writer.get_extra_info("socket"))
+        self._joined_writers.add(writer)
+        try:
+            payload = {"result": {"address": identity.address, "token": identity.token}}
+            writer.write(json.dumps(payload).encode() + b"\n")
+            await writer.drain()
+            await reader.read()
+        finally:
+            self._joined_writers.discard(writer)
+            self.unregister(identity.address)
+            writer.close()
+            await writer.wait_closed()
+
+    async def _route_request(self, request: MailboxRequest, writer: asyncio.StreamWriter) -> object:
+        method = request.get("method")
+        if isinstance(method, str) and method.startswith("live."):
+            return await self._ingress.serve(method, request, writer.get_extra_info("socket"))
+        if isinstance(method, str) and method.startswith("relay."):
+            return await self._relay.serve(method, request, writer.get_extra_info("socket"))
+        return await self._dispatch(request)
+
+    def _join(self, sock: PeerSocket | None) -> MailboxIdentity:
+        if self._stop is not None and self._stop.is_set():
+            raise IngressRefusedError(RejectCode.SESSION_CLOSED, "Live mailbox broker is stopping")
+        role = classify_peer(peer_credentials(sock), worker_pid=os.getpid(), own_uid=os.getuid())
+        if role is not PeerRole.OPERATOR:
+            raise IngressRefusedError(RejectCode.PERMISSION_DENIED, "Interactive mailbox join requires an operator")
+        return self.register(room="", harness="interactive", label="attended")
 
     async def _dispatch(self, request: MailboxRequest) -> object:
         token = request.get("token")
@@ -297,14 +325,7 @@ class LiveMailboxBroker:
 
     @staticmethod
     def _identity(participant: _Participant) -> PeerIdentity:
-        return {
-            "address": participant.address,
-            "harness": participant.harness,
-            "label": participant.label,
-            "ticket": participant.room,
-            "phase": participant.phase,
-            "can_receive": participant.can_receive,
-        }
+        return peer_identity(participant)
 
     def identity_of(self, address: str) -> PeerIdentity | None:
         with self._lock:
@@ -433,9 +454,7 @@ class LiveMailboxBroker:
         receipt = await self._registry().push(
             task.pk, delivery.framed, command_id=command_id, wait=wait, fence=task.fence
         )
-        delivery.push_outcome = receipt.outcome
-        if receipt.outcome is not ControlOutcome.UNKNOWN_DELIVERY:
-            delivery.settle(receipt.outcome, receipt.code)
+        delivery.record_push(receipt)
 
     def _ack(self, participant: _Participant, request: MailboxRequest) -> bool:
         ids = request.get("ids")
