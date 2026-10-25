@@ -226,6 +226,21 @@ class TestSkillLoadsAcrossAttempts(_Drive):
 
         assert attempt.result["skill_assurance"]["observed_loads"] == ["code"]
 
+    def test_a_resumed_run_skips_missing_and_non_text_prior_loads(self) -> None:
+        TaskAttempt.objects.create(task=self.task, agent_session_id=_PARKED_SESSION, result={})
+        self._previous(loads=["code"])
+        TaskAttempt.objects.create(
+            task=self.task,
+            agent_session_id=_PARKED_SESSION,
+            result={"skill_assurance": {"observed_loads": [42]}},
+        )
+        Task.objects.filter(pk=self.task.pk).update(session_continuation=Task.SessionContinuation.SELF)
+        self.task.refresh_from_db()
+
+        attempt = self._completed(_PARKED_SESSION)
+
+        assert attempt.result["skill_assurance"]["observed_loads"] == ["code"]
+
     def test_a_different_session_does_not_inherit_loads(self) -> None:
         self._previous()
         Task.objects.filter(pk=self.task.pk).update(session_continuation=Task.SessionContinuation.SELF)

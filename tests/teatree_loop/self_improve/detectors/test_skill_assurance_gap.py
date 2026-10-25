@@ -56,6 +56,7 @@ class SkillAssuranceGapTests(TestCase):
         ):
             with self.subTest(attributes=attributes):
                 attempt = self._gap_attempt(**attributes)
+                self.addCleanup(TaskAttempt.objects.filter(pk=attempt.pk).delete)
                 assert SkillAssuranceGapDetector(overlay_name="t3-teatree").detect() == []
                 attempt.delete()
 
@@ -82,6 +83,7 @@ class SkillAssuranceGapTests(TestCase):
         ):
             with self.subTest(summary=summary):
                 attempt = self._gap_attempt(summary=summary)
+                self.addCleanup(TaskAttempt.objects.filter(pk=attempt.pk).delete)
                 reports = SkillAssuranceGapDetector(overlay_name="t3-teatree").detect()
                 assert len(reports) == 1
                 assert reports[0].payload["count"] == 1
