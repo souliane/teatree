@@ -115,7 +115,7 @@ def record_gap_disposition(
     return ADDRESS
 
 
-def return_gap(host: Ticket, gap_key: str, reason: str) -> None:
+def return_gap(host: Ticket, gap_key: str, reason: str, *, dry_run: bool = False) -> None:
     with transaction.atomic():
         host = Ticket.objects.select_for_update().get(pk=host.pk)
         batch = batch_entries(host)
@@ -133,15 +133,19 @@ def return_gap(host: Ticket, gap_key: str, reason: str) -> None:
             if row is None:
                 msg = f"gap {gap_key!r} has no memory row to retain"
                 raise DreamGapLedgerError(msg)
-            row.classify_user_specific()
+            if not dry_run:
+                row.classify_user_specific()
         else:
             returned = _returned_entry(entry, f"Host {host.pk} declined: {reason}")
             returned["declined_hosts"] = declined
-            queue_pending(umbrella, [returned])
-            umbrella.refresh_from_db(fields=["extra"])
-            if gap_key not in {item.get("gap_key") for item in pending_entries(umbrella)}:
-                msg = f"gap {gap_key!r} did not return to the umbrella"
-                raise DreamGapLedgerError(msg)
+            if not dry_run:
+                queue_pending(umbrella, [returned])
+                umbrella.refresh_from_db(fields=["extra"])
+                if gap_key not in {item.get("gap_key") for item in pending_entries(umbrella)}:
+                    msg = f"gap {gap_key!r} did not return to the umbrella"
+                    raise DreamGapLedgerError(msg)
+        if dry_run:
+            return
         claimed = (host.extra or {}).get(CLAIMED_DELIVERED_KEY) or []
         host.merge_extra(
             set_keys={
@@ -167,7 +171,13 @@ def _return_batch(member: Ticket) -> tuple[str, list[str], list[DreamGapEntry]]:
     fragment_key, equals, fragment_value = fragment.partition("=")
     entries = batch_entries(member)
     keys = [entry.get("gap_key", "") for entry in entries]
-    if base != dream_umbrella_url() or not sep or not fragment_key or not equals or not fragment_value:
+    if (
+        base != dream_umbrella_url()
+        or not sep
+        or fragment_key not in {"dream-gap", "dream-batch"}
+        or not equals
+        or not fragment_value
+    ):
         _refuse_return(member, "is not anchored on a dream-gap member")
     if not keys or any(not key for key in keys):
         _refuse_return(member, "has an incomplete gap batch")
@@ -201,7 +211,9 @@ def _require_returnable(member: Ticket, keys: list[str], *, advanced: bool) -> N
         _refuse_return(member, "claims keys outside its gap batch")
 
 
-def return_member_gaps(member: Ticket, *, advanced: bool = False, reason: str = "manual return") -> list[str]:
+def return_member_gaps(
+    member: Ticket, *, advanced: bool = False, reason: str = "manual return", dry_run: bool = False
+) -> list[str]:
     with transaction.atomic():
         member = Ticket.objects.select_for_update().get(pk=member.pk)
         released = (member.extra or {}).get(RELEASED_KEY)
@@ -224,6 +236,8 @@ def return_member_gaps(member: Ticket, *, advanced: bool = False, reason: str = 
                 return keys
             _refuse_return(member, "is ignored but its gaps are not pending")
         _require_returnable(member, keys, advanced=advanced)
+        if dry_run:
+            return keys
         returned = [_returned_entry(entry, f"Returned from ticket {member.pk}") for entry in entries]
         queue_pending(umbrella, returned)
         umbrella.refresh_from_db(fields=["extra"])

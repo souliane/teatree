@@ -125,12 +125,12 @@ def stranded_host_count(now: datetime | None = None) -> int:
     return len(_stranded(now))
 
 
-def _return_gaps(host: Ticket, keys: list[str], reason: str, *, shell: bool) -> list[str]:
+def _return_gaps(host: Ticket, keys: list[str], reason: str, *, shell: bool, dry_run: bool) -> list[str]:
     with transaction.atomic():
         if shell:
-            return return_member_gaps(host, advanced=True, reason=reason)
+            return return_member_gaps(host, advanced=True, reason=reason, dry_run=dry_run)
         for key in keys:
-            return_gap(host, key, reason)
+            return_gap(host, key, reason, dry_run=dry_run)
         return keys
 
 
@@ -153,7 +153,7 @@ def release_stranded_hosts(
         if not keys:
             continue
         try:
-            returned = keys if dry_run else _return_gaps(host, keys, reason, shell=shell)
+            returned = _return_gaps(host, keys, reason, shell=shell, dry_run=dry_run)
         except DreamGapLedgerError as exc:
             held_reasons.append((host.pk, str(exc)))
             continue

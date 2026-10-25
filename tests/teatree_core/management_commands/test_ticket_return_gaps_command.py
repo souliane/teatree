@@ -112,6 +112,17 @@ class ReturnGapsCommandTests(TestCase):
         assert member.state == Ticket.State.PR_OPENED
         assert pending_entries(self.umbrella) == []
 
+    def test_an_unrelated_umbrella_fragment_cannot_return_a_gap_batch(self) -> None:
+        member = self.member("g1")
+        member.issue_url = f"{UMBRELLA}#other=g1"
+        member.save(update_fields=["issue_url"])
+
+        self.refused(member, reason="is not anchored on a dream-gap member")
+
+        member.refresh_from_db()
+        assert member.extra["dream_gap_batch"]
+        assert pending_entries(self.umbrella) == []
+
     def test_advanced_return_holds_every_post_open_state_without_a_pr_row(self) -> None:
         states = (
             Ticket.State.REVIEW_REQUESTED,

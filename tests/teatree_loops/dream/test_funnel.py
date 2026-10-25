@@ -34,7 +34,10 @@ class TestDreamFunnel(TestCase):
         rejected.merge_extra(
             merge_into_dicts={"dream_gap_dispositions": {"56": {"disposition": "reject", "evidence": "misfit"}}}
         )
-        self.stranded_host("57", idle_days=20)
+        addressed = self.stranded_host("57", idle_days=20)
+        addressed.merge_extra(
+            merge_into_dicts={"dream_gap_dispositions": {"57": {"disposition": "address", "evidence": "fixed"}}}
+        )
         self.stranded_host("58", idle_days=2)
         self.umbrella.merge_extra(set_keys={"dream_gap_pending": [{"gap_key": "pending"}]})
         Ticket.objects.create(
@@ -51,7 +54,7 @@ class TestDreamFunnel(TestCase):
         entry = record_funnel(umbrella_url=self.umbrella.issue_url, batch=PromotionBatch(withheld=2))
 
         assert (entry["rows"], entry["core_gaps"], entry["withheld"], entry["folded"]) == (1, 1, 2, 4)
-        assert (entry["pending"], entry["rejected"], entry["orphans"]) == (1, 1, 2)
+        assert (entry["pending"], entry["addressed"], entry["rejected"], entry["orphans"]) == (1, 1, 1, 2)
         assert entry["stranded_hosts"] == 2
 
     def test_two_passes_in_one_day_keep_two_entries_and_the_daily_view_shows_the_last(self) -> None:

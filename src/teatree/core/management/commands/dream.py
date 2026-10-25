@@ -497,6 +497,8 @@ class Command(DreamGapCommands, TyperCommand):
                 f"; released {released.released_hosts} stranded host(s), returned {released.returned_gaps} gap(s), "
                 f"held {released.held_hosts} host(s)"
             )
+            if released.held_reasons:
+                summary += ": " + ", ".join(f"{pk} {reason}" for pk, reason in released.held_reasons)
         return summary
 
     def _gap_phases(self) -> "GapPromotionPhases":

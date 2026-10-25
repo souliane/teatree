@@ -189,7 +189,13 @@ def _branch_verdict(
             f"the source clone for {wt_path} is unresolvable, so the branch's push state is unknown — keeping",
         )
     branch = worktree.branch
-    if not branch or not _branch_ref_exists(repo_main, branch):
+    presence = show_ref(str(repo_main), f"refs/heads/{branch}") if branch else RefPresence.ABSENT
+    if presence is RefPresence.UNKNOWN:
+        return BrokenCheckoutVerdict(
+            BrokenCheckout.UNVERIFIABLE,
+            f"could not verify branch ref {branch!r} in {repo_main} — keeping",
+        )
+    if presence is RefPresence.ABSENT:
         return BrokenCheckoutVerdict(BrokenCheckout.RELEASABLE, _releasable_reason(wt_path, "its branch ref is gone"))
     if not refresh.succeeded(repo_main):
         return BrokenCheckoutVerdict(
@@ -211,10 +217,6 @@ def _branch_verdict(
 
 def _releasable_reason(wt_path: Path, branch_clause: str) -> str:
     return f"the checkout at {wt_path} is provably not a git repo and {branch_clause}"
-
-
-def _branch_ref_exists(repo_main: Path, branch: str) -> bool:
-    return git.check(repo=str(repo_main), args=["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
 
 
 def _branch_ref_proven_absent(repo_main: Path, branch: str) -> bool:

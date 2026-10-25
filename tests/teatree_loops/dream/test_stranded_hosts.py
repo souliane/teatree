@@ -145,6 +145,18 @@ class TestSelection(_StrandedCase):
         assert [entry["gap_key"] for entry in host.extra["dream_gap_batch"]] == ["g1", "g2"]
         assert self.pending_keys() == []
 
+    def test_a_dry_run_holds_a_host_the_ledger_would_refuse(self) -> None:
+        host = _old_host(_shell_url("invalid-claim"))
+        host.merge_extra(set_keys={"dream_gap_claimed_delivered": ["not-in-batch"]})
+
+        report = release_stranded_hosts(umbrella_url=UMBRELLA, dry_run=True)
+
+        host.refresh_from_db()
+        assert (report.released_hosts, report.held_hosts) == (0, 1)
+        assert report.held_reasons == ((host.pk, f"ticket {host.pk} claims keys outside its gap batch"),)
+        assert host.state == Ticket.State.WORK_STARTED
+        assert self.pending_keys() == []
+
     def test_the_stranded_count_follows_the_release(self) -> None:
         _old_host(_shell_url("a"))
         _old_host(_shell_url("b"), keys=("g2",))
@@ -352,9 +364,22 @@ class TestHeldShells(_StrandedCase):
 
 
 class TestRealIssueHost(_StrandedCase):
+    def test_a_dry_run_holds_a_third_decline_without_a_memory_row(self) -> None:
+        host = _old_host(REAL_ISSUE)
+        host.extra["dream_gap_batch"][0]["declined_hosts"] = [100, 101]
+        host.save(update_fields=["extra"])
+
+        report = release_stranded_hosts(umbrella_url=UMBRELLA, dry_run=True)
+
+        host.refresh_from_db()
+        assert (report.released_hosts, report.held_hosts) == (0, 1)
+        assert "has no memory row to retain" in report.held_reasons[0][1]
+        assert host.extra["dream_gap_batch"] == [{"gap_key": "g1", "cluster_key": "g1", "declined_hosts": [100, 101]}]
+        assert self.pending_keys() == []
+
     def test_a_live_worktree_holds_the_real_issue(self) -> None:
         host = _old_host(REAL_ISSUE)
-        WorktreeFactory(ticket=host, extra={"worktree_path": str(self.root)})
+        WorktreeFactory(ticket=host, branch="", extra={"worktree_path": str(self.root)})
 
         report = release_stranded_hosts(umbrella_url=UMBRELLA)
 
