@@ -222,7 +222,7 @@ def update_ticket(
     repo_short: str,
     inferred_state: str = "",
 ) -> None:
-    mr_title = str(pr_entry.get("title") or "") if ticket.issue_url == pr_url else ""
+    mr_title = str(pr_entry.get("title") or "")
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     prs = extra.get("prs", {})
     if not isinstance(prs, dict):

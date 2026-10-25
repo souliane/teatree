@@ -59,16 +59,18 @@ class PrInventoryTestCase(TestCase):
         )
         assert merged_entries(snapshots)[own.url].approvals_display == "1/unknown (approved)"
 
-    def test_review_facts_from_a_prior_head_do_not_cross_to_a_new_head(self) -> None:
+    def test_review_facts_do_not_cross_heads_that_are_different_or_unknown(self) -> None:
         at = datetime(2026, 10, 23, 12, tzinfo=UTC)
-        own = replace(_entry(1), head_sha="a" * 40, approvals="approved", threads="0 unresolved")
-        sweep = replace(_entry(1), head_sha="b" * 40, approvals="unknown", threads="unknown")
-        snapshots = (
-            PrInventorySnapshot("own:teatree:github", at, (own,)),
-            PrInventorySnapshot("teatree", at, (sweep,)),
-        )
-        entry = merged_entries(snapshots)[own.url]
-        assert (entry.approvals, entry.threads) == ("unknown", "unknown")
+        for own_head, sweep_head in (("a" * 40, "b" * 40), ("", "")):
+            own = replace(_entry(1), head_sha=own_head, approvals="approved", threads="0 unresolved")
+            sweep = replace(_entry(1), head_sha=sweep_head, approvals="unknown", threads="unknown")
+            snapshots = (
+                PrInventorySnapshot("own:teatree:github", at + timedelta(minutes=1), (own,)),
+                PrInventorySnapshot("teatree", at, (sweep,)),
+            )
+            with self.subTest(own_head=own_head, sweep_head=sweep_head):
+                entry = merged_entries(snapshots)[own.url]
+                assert (entry.approvals, entry.threads) == ("unknown", "unknown")
 
     def test_newer_sweep_review_verdict_wins_over_owned_snapshot_on_the_same_head(self) -> None:
         at = datetime(2026, 10, 23, 12, tzinfo=UTC)

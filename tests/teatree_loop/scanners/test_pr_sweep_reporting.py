@@ -192,6 +192,21 @@ class ForgeApprovalsTestCase(TestCase):
         )
         assert pr.approval_count == 2
 
+    def test_github_review_decision_maps_to_the_approval_label(self) -> None:
+        for decision, label in (
+            ("APPROVED", "approved"),
+            ("REVIEW_REQUIRED", "awaiting approval"),
+            ("CHANGES_REQUESTED", "awaiting approval"),
+            ("", "unknown"),
+        ):
+            raw = {"number": 7, "headRefOid": "a" * 40, "url": "u", "reviewDecision": decision}
+            with (
+                self.subTest(decision=decision),
+                patch.object(GhPrApiClient, "_run_gh", return_value=(0, json.dumps([raw]), "")),
+            ):
+                (pr,) = GhPrApiClient().list_open_prs(slug="souliane/teatree")
+                assert pr.approvals == label
+
     def test_github_listing_without_a_review_list_leaves_the_approval_count_unknown(self) -> None:
         raw = {"number": 7, "headRefOid": "a" * 40, "url": "u", "reviewDecision": "REVIEW_REQUIRED"}
         with patch.object(GhPrApiClient, "_run_gh", return_value=(0, json.dumps([raw]), "")):

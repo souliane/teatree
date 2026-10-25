@@ -61,6 +61,7 @@ class MrTitleCardTestCase(TestCase):
         upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")
         ticket = Ticket.objects.get(issue_url=raw["web_url"])
         assert ticket.short_description == "First MR title"
+        assert ticket.extra["mr_title_generated"] == "First MR title"
 
         raw["title"] = "Better MR title"
         upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")

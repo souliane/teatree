@@ -108,7 +108,6 @@ def _inventory(now: datetime) -> PrObservation:
             ),
         )
         for snapshot in fresh
-        if not snapshot.overlay.startswith("own:")
     }
     warnings = []
     if read_errors:
