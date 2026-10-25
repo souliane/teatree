@@ -1,10 +1,9 @@
 """GitHub's answer to "did this PR's patch change between two of its heads?" (#5450, §17.4).
 
-Feeds :func:`teatree.core.merge.head_carry_over.carry_over_head` the facts it decides on, read from the forge
-alone: the commits each head adds to the PR beyond its base, with their parent counts, and the patch id of the
-PR's diff against its base at each head (``git patch-id --verbatim``: nothing stripped, because indentation is
-code). The patch id covers the diff's context lines too, so main editing text next to a PR hunk changes it and
-the carry is refused — only the delta is then graded by the normal review round.
+Feeds :func:`teatree.core.merge.head_carry_over.carry_over_head` the PR history and patch ids from GitHub.
+Each added merge is replayed in a matching local clone: its tree must equal Git's automatic merge of its
+parents. ``git patch-id --verbatim`` keeps indentation and trailing spaces in the identity. The patch id
+covers context lines too, so main editing text next to a PR hunk refuses the carry.
 
 Every uncertainty is explicit. A read that failed or a head that moved again returns ``None`` (retried, never
 read as a verdict); a binary diff, a diff the forge will not render and a history it truncates return a refusal
@@ -16,14 +15,19 @@ import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypedDict, cast
 
+from teatree.config import clone_root
 from teatree.core.merge.head_carry_over import SUPPORTED_HOST, LineageReader, PatchLineage, carry_over_head
 from teatree.core.models import HeadCarryOver
 from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.core.worktree.clone_paths import unambiguous_clone_path
 from teatree.loop.scanners.base import run_gh_for_slug
+from teatree.project import find_project_root
+from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
-from teatree.utils.run import CompletedProcess, run_allowed_to_fail
+from teatree.utils.run import SUBPROCESS_UNREACHABLE, CommandFailedError, CompletedProcess, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +80,7 @@ class GhLineageReader:
     """Reads a :class:`PatchLineage` through ``gh`` under the repo's routed token, never ambient authentication."""
 
     gh: GhRunner = run_gh_for_slug
+    repo: Path | None = None
 
     def __call__(self, *, slug: str, pr_id: int, host_kind: str, old_head: str, new_head: str) -> PatchLineage | None:
         if host_kind != SUPPORTED_HOST:
@@ -95,14 +100,17 @@ class GhLineageReader:
         new_commits = self._commits(slug, base, new_head)
         added = new_commits.keys() - old_commits.keys()
         descends = old_head in new_commits
-        added_all_merges = all(new_commits[sha] >= _MERGE_PARENT_COUNT for sha in added)
+        added_all_merges = all(len(new_commits[sha]) == _MERGE_PARENT_COUNT for sha in added)
         if not descends or not added_all_merges:
             return PatchLineage("", "", descends=descends, added_all_merges=added_all_merges)
+        old_patch_id = self._patch_id(slug, base, old_head)
+        new_patch_id = self._patch_id(slug, base, new_head)
         return PatchLineage(
-            old_patch_id=self._patch_id(slug, base, old_head),
-            new_patch_id=self._patch_id(slug, base, new_head),
+            old_patch_id=old_patch_id,
+            new_patch_id=new_patch_id,
             descends=descends,
             added_all_merges=added_all_merges,
+            refusal=self._auto_merge_refusal(slug, new_head, {sha: new_commits[sha] for sha in added}),
         )
 
     def _base_of(self, slug: str, pr_id: int, *, live_head: str) -> str:
@@ -113,15 +121,67 @@ class GhLineageReader:
             raise _UnreadableError(msg)
         return base
 
-    def _commits(self, slug: str, base: str, head: str) -> dict[str, int]:
-        """The PR-only commits *head* adds beyond *base*, mapped to their parent counts."""
+    def _commits(self, slug: str, base: str, head: str) -> dict[str, tuple[str, ...]]:
         compare = cast(
             "_Compare", self._object(slug, f"repos/{slug}/compare/{base}...{head}?per_page={_COMMITS_PER_PAGE}")
         )
         commits = compare.get("commits", [])
         if compare.get("total_commits", 0) > len(commits):
             raise _RefusedError(HISTORY_TRUNCATED)
-        return {commit["sha"]: len(commit.get("parents", [])) for commit in commits}
+        return {
+            commit["sha"]: tuple(
+                str(parent.get("sha", "")) for parent in commit.get("parents", []) if isinstance(parent, dict)
+            )
+            for commit in commits
+        }
+
+    def _repo_for(self, slug: str) -> Path | None:
+        if self.repo is not None:
+            return self.repo
+        candidates = (find_project_root(), unambiguous_clone_path(clone_root(), slug))
+        for repo in candidates:
+            if repo is not None:
+                try:
+                    if git.remote_slug(repo=str(repo)).casefold() == slug.casefold():
+                        return repo
+                except (CommandFailedError, *SUBPROCESS_UNREACHABLE):
+                    continue
+        return None
+
+    def _auto_merge_refusal(self, slug: str, new_head: str, added: dict[str, tuple[str, ...]]) -> str:
+        repo = self._repo_for(slug)
+        if repo is None:
+            return "merge_tree_unavailable"
+        try:
+            present = run_allowed_to_fail(
+                ["git", "-C", str(repo), "cat-file", "-e", f"{new_head}^{{commit}}"], expected_codes=None, timeout=5
+            )
+            if present.returncode != 0:
+                fetched = run_allowed_to_fail(
+                    ["git", "-C", str(repo), "fetch", "--no-tags", "origin", new_head],
+                    expected_codes=None,
+                    timeout=30,
+                )
+                if fetched.returncode != 0:
+                    return "merge_tree_unavailable"
+            for sha, pair in added.items():
+                if len(pair) != _MERGE_PARENT_COUNT or not all(pair):
+                    return "merge_tree_unavailable"
+                merged = run_allowed_to_fail(
+                    ["git", "-C", str(repo), "merge-tree", "--write-tree", *pair], expected_codes=None, timeout=20
+                )
+                actual = run_allowed_to_fail(
+                    ["git", "-C", str(repo), "show", "-s", "--format=%T", sha], expected_codes=None, timeout=5
+                )
+                if (
+                    merged.returncode != 0
+                    or actual.returncode != 0
+                    or merged.stdout.partition("\n")[0] != actual.stdout.strip()
+                ):
+                    return "merge_tree_differs"
+        except SUBPROCESS_UNREACHABLE:
+            return "merge_tree_unavailable"
+        return ""
 
     def _patch_id(self, slug: str, base: str, head: str) -> str:
         diff = self._stdout(slug, ["api", "-H", _DIFF_ACCEPT, f"repos/{slug}/compare/{base}...{head}"], diff=True)

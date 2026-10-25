@@ -4,11 +4,12 @@ import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from teatree.core.merge.head_carry_over import PatchLineage
-from teatree.loop.scanners.head_lineage import GhLineageReader
+from teatree.loop.scanners.head_lineage import GhLineageReader, head_is_carried
 from tests._git_repo import make_git_repo, run_git
 
 SLUG = "souliane/teatree"
@@ -81,7 +82,9 @@ class _Scenario:
         stub = _GitBackedGh(
             self.repo, reported_head=reported_head or new, history_cap=history_cap, diff_failure=diff_failure, rc=rc
         )
-        return GhLineageReader(gh=stub)(slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=self.old, new_head=new)
+        return GhLineageReader(gh=stub, repo=self.repo)(
+            slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=self.old, new_head=new
+        )
 
 
 @pytest.fixture
@@ -110,6 +113,63 @@ def _merge_main_into_pr(scenario: _Scenario) -> str:
 
 
 class TestGhLineageReader:
+    def test_a_manual_merge_cannot_relocate_a_reviewed_hunk_between_identical_blocks(self, tmp_path: Path) -> None:
+        repo = make_git_repo(tmp_path / "repo")
+        block = ["same"] * 7
+        _write(repo, "a.txt", block + ["separator"] * 10 + block)
+        _commit(repo, "base")
+        run_git(repo, "checkout", "-q", "-b", "pr")
+        _edit(repo, "a.txt", 4, "danger()")
+        old = _commit(repo, "reviewed patch")
+        run_git(repo, "checkout", "-q", "main")
+        _write(repo, "b.txt", ["new main"])
+        _commit(repo, "main update")
+        run_git(repo, "checkout", "-q", "pr")
+        run_git(repo, "merge", "--no-commit", "--no-ff", "main")
+        _edit(repo, "a.txt", 4, "same")
+        _edit(repo, "a.txt", 21, "danger()")
+        new = _commit(repo, "manual merge")
+
+        lineage = _Scenario(repo, old).read(new)
+
+        assert lineage is not None
+        assert lineage.identical
+        assert lineage.refusal_reason == "merge_tree_differs"
+
+    @pytest.mark.parametrize("edit", ["    pr edit", "pr edit  "])
+    def test_whitespace_in_a_reviewed_hunk_changes_its_patch_id(self, scenario: _Scenario, edit: str) -> None:
+        _main_edits(scenario, "b.txt", 10)
+        run_git(scenario.repo, "checkout", "-q", "pr")
+        run_git(scenario.repo, "merge", "--no-commit", "--no-ff", "main")
+        _edit(scenario.repo, "a.txt", 2, edit)
+        new = _commit(scenario.repo, "manual whitespace change")
+
+        lineage = scenario.read(new)
+
+        assert lineage is not None
+        assert lineage.old_patch_id != lineage.new_patch_id
+        assert lineage.refusal_reason
+
+    @pytest.mark.parametrize("change", ["mode", "rename", "symlink"])
+    def test_a_manual_merge_that_changes_file_identity_is_refused(self, scenario: _Scenario, change: str) -> None:
+        _main_edits(scenario, "b.txt", 10)
+        run_git(scenario.repo, "checkout", "-q", "pr")
+        run_git(scenario.repo, "merge", "--no-commit", "--no-ff", "main")
+        source = scenario.repo / "a.txt"
+        if change == "mode":
+            source.chmod(0o755)
+        elif change == "rename":
+            source.rename(scenario.repo / "renamed.txt")
+        else:
+            source.unlink()
+            source.symlink_to("b.txt")
+        new = _commit(scenario.repo, f"manual {change} change")
+
+        lineage = scenario.read(new)
+
+        assert lineage is not None
+        assert lineage.refusal_reason
+
     def test_a_pure_merge_of_main_carries_an_identical_patch(self, scenario: _Scenario) -> None:
         _main_edits(scenario, "b.txt", 10)
         new = _merge_main_into_pr(scenario)
@@ -121,6 +181,36 @@ class TestGhLineageReader:
         assert lineage.old_patch_id
         assert lineage.identical
         assert lineage.refusal_reason == ""
+
+    def test_the_matching_local_clone_proves_the_automatic_merge(self, scenario: _Scenario) -> None:
+        _main_edits(scenario, "b.txt", 10)
+        new = _merge_main_into_pr(scenario)
+        gh = _GitBackedGh(scenario.repo, reported_head=new)
+
+        with (
+            patch("teatree.loop.scanners.head_lineage.find_project_root", return_value=scenario.repo),
+            patch("teatree.loop.scanners.head_lineage.unambiguous_clone_path", return_value=None),
+            patch("teatree.loop.scanners.head_lineage.git.remote_slug", return_value=SLUG),
+        ):
+            lineage = GhLineageReader(gh=gh)(
+                slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=scenario.old, new_head=new
+            )
+
+        assert lineage is not None
+        assert lineage.refusal_reason == ""
+
+    def test_an_unavailable_local_clone_cannot_prove_the_merge(self, scenario: _Scenario, tmp_path: Path) -> None:
+        _main_edits(scenario, "b.txt", 10)
+        new = _merge_main_into_pr(scenario)
+        gh = _GitBackedGh(scenario.repo, reported_head=new)
+
+        lineage = GhLineageReader(gh=gh, repo=tmp_path / "missing")(
+            slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=scenario.old, new_head=new
+        )
+
+        assert lineage is not None
+        assert lineage.identical
+        assert lineage.refusal_reason == "merge_tree_unavailable"
 
     def test_main_editing_text_next_to_a_hunk_of_a_file_the_pr_changes_differs(self, scenario: _Scenario) -> None:
         _main_edits(scenario, "a.txt", 5)
@@ -245,3 +335,14 @@ class TestGhLineageReader:
 
         with pytest.raises(ValueError, match="github"):
             reader(slug=SLUG, pr_id=PR_ID, host_kind="gitlab", old_head=scenario.old, new_head=scenario.old)
+
+
+def test_a_carry_exception_leaves_the_head_unreviewed() -> None:
+    with patch("teatree.loop.scanners.head_lineage.carry_over_head", side_effect=RuntimeError("probe failed")):
+        assert not head_is_carried(
+            slug=SLUG,
+            pr_id=PR_ID,
+            head_sha="a" * 40,
+            host_kind="github",
+            reader=GhLineageReader(),
+        )

@@ -1,7 +1,7 @@
 """Verdicts, critic rows, attestations and clearances follow the PR patch to a new head (#5450, §17.4).
 
 A merge of ``main`` into a PR branch moves the head, and every record bound to the old head is then
-stranded although the PR's patch is the same. :func:`carry_over_head` decides from forge git facts alone —
+stranded although the PR's patch is the same. :func:`carry_over_head` decides from GitHub and local Git facts —
 the old head is an ancestor, every PR-only commit added since is a merge, and the patch id of the PR against
 its base is identical at both heads — and either re-records the records at the new head or records WHY not.
 Anything it cannot prove refuses: the normal review round then grades the delta. Required CI is untouched; the

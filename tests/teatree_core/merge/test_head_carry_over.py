@@ -557,6 +557,55 @@ class TestACarriedClearanceStillMerges(TestCase):
 
 
 class TestTheCarryNeverClaimsWhatItDidNotMove(TestCase):
+    def test_a_late_hold_follows_a_carried_head_once(self) -> None:
+        seeded = _seed()
+        _carry(_Reader(_lineage()))
+
+        for _ in range(2):
+            ReviewVerdict.record(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=OLD,
+                verdict="hold",
+                reviewer_identity="reviewer-b",
+                ticket=seeded.ticket,
+            )
+
+        assert ReviewVerdict.objects.filter(reviewed_sha=NEW, verdict="hold").count() == 1
+        assert ReviewVerdict.objects.effective_state_at(slug=SLUG, pr_id=PR_ID, head_sha=NEW) is HeadVerdictState.HOLD
+
+    def test_a_late_hold_follows_a_chain_of_carried_heads(self) -> None:
+        _seed()
+        _carry(_Reader(_lineage()), live_head=MIDDLE)
+        _carry(_Reader(_lineage()))
+
+        ReviewVerdict.record(pr_id=PR_ID, slug=SLUG, reviewed_sha=OLD, verdict="hold", reviewer_identity="reviewer-b")
+
+        assert ReviewVerdict.objects.filter(reviewed_sha=MIDDLE, verdict="hold").count() == 1
+        assert ReviewVerdict.objects.filter(reviewed_sha=NEW, verdict="hold").count() == 1
+
+    def test_a_late_hold_follows_an_identical_patch_that_had_no_prior_record(self) -> None:
+        BranchUpdateAttempt.objects.create(slug=SLUG, pr_id=PR_ID, head_sha=OLD)
+        row = _carry(_Reader(_lineage()))
+
+        ReviewVerdict.record(pr_id=PR_ID, slug=SLUG, reviewed_sha=OLD, verdict="hold", reviewer_identity="reviewer-b")
+
+        assert row is not None
+        assert row.reason == "no_records"
+        assert ReviewVerdict.objects.filter(reviewed_sha=NEW, verdict="hold").count() == 1
+
+    def test_a_late_old_head_verdict_does_not_release_the_new_heads_review_lock(self) -> None:
+        _seed()
+        _carry(_Reader(_lineage()))
+        lock = MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="reviewer-in-flight")
+        assert lock is not None
+
+        ReviewVerdict.record(pr_id=PR_ID, slug=SLUG, reviewed_sha=OLD, verdict="hold", reviewer_identity="reviewer-b")
+
+        lock.refresh_from_db()
+        assert lock.state == MRReviewLock.State.REVIEW_DISPATCHED
+        assert lock.holder == "reviewer-in-flight"
+
     def test_a_head_known_only_from_a_branch_update_carries_no_review_verdict(self) -> None:
         BranchUpdateAttempt.objects.create(slug=SLUG, pr_id=PR_ID, head_sha=OLD)
 

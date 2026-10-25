@@ -131,10 +131,14 @@ class FrozenFleetPostureWiringTest(django.test.TestCase):
         # detector exists to catch, so the wiring itself needs a control.
         healthy_services = "\n".join(f"{service}\trunning\tUp" for service in self_heal._LONG_RUNNING_SERVICES)
         handoff = base64.b64encode(healthy_services.encode()).decode()
-        with mock.patch.dict("os.environ", {self_heal._COMPOSE_STATES_ENV: handoff}):
+        with (
+            mock.patch.dict("os.environ", {self_heal._COMPOSE_STATES_ENV: handoff}),
+            mock.patch.object(self_heal, "_check_runtime_clone_on_default_branch", return_value=True),
+        ):
             assert self_heal.run_self_heal_checks() is True
         with (
             mock.patch.object(self_heal, "check_frozen_fleet_under_kill_switch", return_value=False),
+            mock.patch.object(self_heal, "_check_runtime_clone_on_default_branch", return_value=True),
             redirect_stdout(io.StringIO()),
         ):
             assert self_heal.run_self_heal_checks() is False
