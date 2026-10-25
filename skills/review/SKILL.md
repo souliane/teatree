@@ -324,18 +324,15 @@ Pinned by `review_reaction_dedups_existing_reactor` (`evals/scenarios/review.yam
 
 #### The review-DONE Slack signal is `mcp__teatree__slack_react`, or `t3 slack react` with three positional arguments
 
-A finished review emits its verdict on the MR's review-broadcast message as a Slack reaction. Prefer the
-`mcp__teatree__slack_react` MCP tool — same seam, structured result; when the MCP server isn't connected there is
-exactly one CLI command for it and it takes **positional** `channel`, `ts`, and `emoji` — no `--emoji` flag,
-and no reaction subcommand under `t3 review` (there is none; do not invent one), and the emoji name
-carries **no colons**:
+React on the MR's review-broadcast message with `mcp__teatree__slack_react`, or use the CLI below when
+MCP is unavailable. Its arguments are positional; there is no `--emoji` flag or `t3 review` reaction
+subcommand. Use the emoji name without colons:
 
 ```bash
 t3 slack react <channel> <ts> <emoji>          # e.g. t3 slack react C_REVIEW 171.5 white_check_mark
 ```
 
-The verdict → emoji mapping is the one `teatree.loop.review_done_reactions.emit_review_done_reactions`
-posts, so a hand-issued reaction matches what the loop would have emitted:
+`emit_review_done_reactions` uses this mapping only on colleagues' MRs; the operator's own gets none:
 
 | verdict | emoji argument |
 | --- | --- |

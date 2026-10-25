@@ -473,6 +473,10 @@ class TestMergeStallGatesNewIntake(TestCase):
     call, and it releases itself the moment one PR starts moving again.
     """
 
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(patch("teatree.core.admission.pr_start_cap.OPEN_PR_START_CAP", 4))
+
     def _pile_up(self, *, count: int, stuck: int) -> None:
         for i in range(count):
             ticket = TicketFactory(overlay="acme", issue_url=f"https://github.com/o/r/issues/{800 + i}")
@@ -572,6 +576,10 @@ class TestMergeSignalCountsOnlyLivePrs(TestCase):
     behind forever. Counting rows independently of the live set lets those fossils brake a
     pipeline whose every open PR is healthy.
     """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(patch("teatree.core.admission.pr_start_cap.OPEN_PR_START_CAP", 4))
 
     def _live_pr(self, *, overlay: str, repo: str, iid: int) -> None:
         ticket = TicketFactory(overlay=overlay, issue_url=f"https://github.com/{repo}/issues/{iid}")

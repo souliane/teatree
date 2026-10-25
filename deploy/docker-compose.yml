@@ -504,7 +504,7 @@ services:
     mem_limit: 2g
     cpus: "0.5"
 
-  # The forge receiver mounts its ledger, its signing-secret store and, read-only, its entrypoint
+  # The forge receiver mounts its ledger, its signing-secret store and, read-only, its scripts
   # and the code and tool venv the other roles run. The 1g cap accommodates the
   # measured ~226 MiB RSS growth of one 20 MiB many-object delivery above the
   # receiver baseline while bounding the service's share of host RAM.
@@ -533,6 +533,10 @@ services:
       - type: bind
         source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh  # privacy-scan:allow — the box's public, documented deploy home
         target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh  # privacy-scan:allow — the box's public, documented deploy home
+        read_only: true
+      - type: bind
+        source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/git-pins.sh  # privacy-scan:allow — the box's public, documented deploy home
+        target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/git-pins.sh  # privacy-scan:allow — the box's public, documented deploy home
         read_only: true
       - ${TEATREE_SOURCE_MOUNT:-teatree_src}:/home/teatree/teatree:ro  # privacy-scan:allow — the box's public, documented deploy home
       - teatree_uv:/opt/teatree/uv:ro
