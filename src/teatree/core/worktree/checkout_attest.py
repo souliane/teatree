@@ -9,7 +9,6 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from django.db import DatabaseError, transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.cleanup.process_table import read_process_table
@@ -79,11 +78,6 @@ class CheckoutAttestation:
             binding=self.state.digest,
             host_evidence=self.host_evidence,
         )
-
-    def action_for(self, task: Task) -> ActionRequest:
-        action = self.action
-        action["task_id"] = task.pk
-        return action
 
     def record(self) -> None:
         self.worktree.merge_extra(set_keys={"attested_state": self.recorded})
@@ -155,6 +149,18 @@ def declined_attest_tasks(worktree: Worktree, digest: str, *, task_id: int | Non
         evidence__action__target=str(worktree.pk),
         evidence__action__binding=digest,
     )
+    shared = answered.exclude(evidence__action__has_key="task_id").order_by("-answered_at", "-pk").first()
+    shared_declined = (
+        shared is not None
+        and shared.answered_at is not None
+        and owner_declined(shared)
+        and (direct_at is None or shared.answered_at > direct_at)
+    )
+    shared_tasks = (
+        set(Task.objects.filter(ticket=worktree.ticket).values_list("pk", flat=True))
+        if shared_declined and task_id is None
+        else ({task_id} if shared_declined and task_id is not None else set())
+    )
     answered = (
         answered.filter(parked_task__ticket=worktree.ticket)
         if task_id is None
@@ -162,7 +168,7 @@ def declined_attest_tasks(worktree: Worktree, digest: str, *, task_id: int | Non
     )
     answered = answered.order_by("answered_at", "pk")
     latest = {card.parked_task_id: card for card in answered}
-    return {
+    return shared_tasks | {
         task_id
         for task_id, card in latest.items()
         if task_id is not None
@@ -302,7 +308,7 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
         blocker="Only the owner may accept a checkout state the factory did not record.",
         why=f"It will {step.work}; {waits}; {doubt}.",
         options=_options(attestation, decline),
-        action=attestation.action_for(task),
+        action=attestation.action,
     )
     question = _question(step, ticket, safe_ticket_card_title(ticket.short_description, ticket.extra, _FALLBACK_TITLE))
     return (_question(step, ticket, _FALLBACK_TITLE) if card.problems(question) else question), card
@@ -310,14 +316,18 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
 
 def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> DeferredQuestion | None:
     try:
-        marker = action_marker(attestation.action_for(task))
+        marker = action_marker(attestation.action)
         latest = (
             DeferredQuestion.objects.filter(dedupe_marker=marker, answered_at__isnull=False)
             .order_by("-answered_at", "-pk")
             .first()
         )
-        if latest is not None and owner_declined(latest):
-            return None
+        if (
+            latest is not None
+            and owner_declined(latest)
+            and task.pk in declined_attest_tasks(attestation.worktree, attestation.state.digest, task_id=task.pk)
+        ):
+            return latest
         unresolved = (
             DeferredQuestion.objects.awaiting_action_outcome()
             .filter(
@@ -333,21 +343,24 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
         question, card = attest_card(task, attestation)
         with transaction.atomic():
             held = DeferredQuestion.owner_pending().select_for_update().filter(dedupe_marker=marker).first()
-            if held is not None and (
-                held.question != question
-                or held.evidence != card.to_evidence()
-                or held.options_json != card.options_json()
-            ):
-                retire_card(
-                    held, "The checkout card changed since this question was asked", resolver_id="checkout_attest"
+            if held is not None:
+                changed = (
+                    held.evidence.get("checked") != list(card.checked)
+                    or held.options_json != card.options_json()
+                    or (held.question == question and held.evidence != card.to_evidence())
                 )
+                if changed:
+                    retire_card(
+                        held, "The checkout card changed since this question was asked", resolver_id="checkout_attest"
+                    )
+                else:
+                    return held
             obsolete = (
                 DeferredQuestion.owner_pending()
                 .filter(
                     evidence__action__kind=OwnerActionKind.ATTEST,
                     evidence__action__target=str(attestation.worktree.pk),
                 )
-                .filter(Q(parked_task=task) | ~Q(evidence__action__binding=attestation.state.digest))
                 .exclude(dedupe_marker=marker)
             )
             for row in obsolete.select_for_update():

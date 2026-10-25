@@ -1105,7 +1105,8 @@ depends_on = [
   "teatree.loop.statusline_render",
   "teatree.core.telemetry",
   "teatree.core.modelkit",
-  "teatree.loop.persistence_phase_task"
+  "teatree.loop.persistence_phase_task",
+  "teatree.loop.preset_resolution"
 ]
 
 [[modules]]

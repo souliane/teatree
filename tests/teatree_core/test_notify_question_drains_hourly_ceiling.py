@@ -19,11 +19,14 @@ from teatree.core import notify as notify_module
 from teatree.core import notify_question_drains as drains_module
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease
 from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
+from teatree.core.worktree.checkout_state import CheckoutState
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
 from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
 from teatree.utils.thread_db import close_thread_db_connections
 from tests._owner_channel import OWNER_DECISION
 from tests.db_alias import register_control_db_alias, run_racing_threads, teardown_sqlite_alias, wal_control_db
+from tests.factories import TaskFactory, WorktreeFactory
 from tests.teatree_core.conftest import SchemaGuardAlias
 from tests.teatree_core.test_claim_liveness import _OTHER_NS, _READER_NS, pinned_reader_namespace
 
@@ -123,6 +126,30 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         self._poster()
         self._nag()
         _age_the_ledger(minutes=5)
+
+    def test_attest_card_waits_eight_minutes_before_poster_sends_it(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        card = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert card is not None
+
+        self._poster()
+        assert not card.slack_ts
+        self.backend.post_message.assert_not_called()
+
+        DeferredQuestion.objects.filter(pk=card.pk).update(
+            created_at=timezone.now() - dt.timedelta(minutes=7, seconds=59)
+        )
+        self._poster()
+        self.backend.post_message.assert_not_called()
+
+        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=timezone.now() - dt.timedelta(minutes=8))
+        self._poster()
+        card.refresh_from_db()
+        assert card.slack_ts
+        assert self.backend.post_message.call_count == 1
 
     def test_an_hour_of_ticks_over_a_resumed_41_question_backlog_sends_six_pings(self) -> None:
         for index in range(20):

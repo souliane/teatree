@@ -26,15 +26,16 @@ question) as the same primitive.
 """
 
 import logging
+from datetime import timedelta
 from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import DatabaseError, models, transaction
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone
 
 from teatree import answer_handback
-from teatree.core.modelkit.owner_action import action_marker, is_owner_action_marker
+from teatree.core.modelkit.owner_action import OwnerActionKind, action_marker, is_owner_action_marker
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.question_actions import DeferredQuestionAuditQuerySet, DeferredQuestionQuerySet, held_question
 from teatree.core.models.question_subject import finished_subject_reason
@@ -269,7 +270,15 @@ class DeferredQuestion(models.Model):
         so a reply can later bind. A row already mirrored (``slack_ts != ""``)
         or resolved is excluded.
         """
-        return cls.owner_pending().filter(slack_ts="")
+        return (
+            cls.owner_pending()
+            .filter(slack_ts="")
+            .filter(
+                Q(evidence__action__kind__isnull=True)
+                | ~Q(evidence__action__kind=OwnerActionKind.ATTEST)
+                | Q(created_at__lte=timezone.now() - timedelta(minutes=8))
+            )
+        )
 
     @classmethod
     def supersedable(

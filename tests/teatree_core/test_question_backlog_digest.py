@@ -23,7 +23,10 @@ from django.utils import timezone
 from teatree.core.models import DeferredQuestion
 from teatree.core.notify_question_drains import RESURFACE_INTERVAL_HOURS, resurface_question_backlog
 from teatree.core.owner_question_message import digest_text
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
+from teatree.core.worktree.checkout_state import CheckoutState
 from tests._owner_channel import OWNER_DECISION
+from tests.factories import TaskFactory, WorktreeFactory
 
 
 class TestBacklogDigestText(TestCase):
@@ -90,6 +93,30 @@ class TestResurfaceQuestionBacklog(TestCase):
 
         assert notify.call_count == 1
         assert (posted, pending) == (True, 3)
+
+    def test_fresh_posted_cards_do_not_trigger_a_digest(self) -> None:
+        now = timezone.now()
+        DeferredQuestion.record("Merge it?", slack_ts=str(now.timestamp()), slack_channel="D1", **OWNER_DECISION)
+
+        with patch("teatree.core.notify_question_drains.notify_user") as notify:
+            result = resurface_question_backlog(now=now)
+
+        assert result == (False, 1)
+        notify.assert_not_called()
+
+    def test_unposted_attest_card_under_hold_does_not_trigger_a_digest(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        card = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert card is not None
+
+        with patch("teatree.core.notify_question_drains.notify_user") as notify:
+            result = resurface_question_backlog()
+
+        assert result == (False, 1)
+        notify.assert_not_called()
 
     def test_the_interval_bucket_is_the_idempotency_key(self) -> None:
         DeferredQuestion.record("Merge it?", **OWNER_DECISION)

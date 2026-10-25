@@ -4,6 +4,7 @@ import json
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db import connection
@@ -14,6 +15,7 @@ from django.utils import timezone
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
+from teatree.loop.preset_resolution import owner_zone
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
@@ -24,6 +26,11 @@ from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
 
 
 class LifecycleIncidentTests(TestCase):
+    def setUp(self) -> None:
+        quiet = patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", return_value=False)
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
     def _reports(self) -> list:
         detector = next(
             detector for detector in detectors_for_tier(Tier.CHEAP) if detector.name == "lifecycle_incident"
@@ -173,6 +180,35 @@ class LifecycleIncidentTests(TestCase):
         kinds_after = {report.payload["kind"] for report in self._reports()}
         assert "outbound_unposted" not in kinds_after
         assert "outbound_unanswered" in kinds_after
+
+    def test_quiet_hours_hold_is_not_a_delivery_failure(self) -> None:
+        question = DeferredQuestion.record("Which option?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=question.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        check_at = timezone.now() - timedelta(hours=3)
+        detector = LifecycleIncidentDetector(now=lambda: check_at)
+
+        with patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", return_value=True) as quiet:
+            kinds = {report.payload["kind"] for report in detector.detect()}
+
+        assert "outbound_unposted" not in kinds
+        assert quiet.call_args.args[0] == check_at.astimezone(owner_zone()).time()
+
+    def test_growing_unposted_count_does_not_send_another_alert(self) -> None:
+        first = DeferredQuestion.record("First?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        alerts: list[str] = []
+        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        delivery = DeliveryRoutes(
+            overlay_name="t3-teatree", owner_alert=lambda report, _existing: alerts.append(report.summary) or True
+        )
+
+        run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+        second = DeferredQuestion.record("Second?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=second.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        result = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+
+        assert result.reports[0].payload["count"] == 2
+        assert len(alerts) == 1
 
     def test_stale_claim_with_no_heartbeat_is_an_incident(self) -> None:
         task = TaskFactory(status=Task.Status.CLAIMED)
