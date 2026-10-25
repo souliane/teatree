@@ -116,7 +116,7 @@ class CheckoutFenceTests(TestCase):
         assert "nothing is running in its folder" in render_text(row)
         assert row.evidence["action"]["kind"] == "attest"
 
-    def test_an_answered_card_falls_back_to_the_notice_for_the_same_state(self) -> None:
+    def test_an_answered_card_does_not_send_another_notice_for_the_same_state(self) -> None:
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
             self._park_on_a_foreign_edit()
             row = self.task.deferred_questions.get()
@@ -133,8 +133,10 @@ class CheckoutFenceTests(TestCase):
             with patch("teatree.core.worktree.checkout_fence.notify_user") as notice:
                 assert claim_task_checkout_or_park(self.task) is not None
 
-        notice.assert_called_once()
+        notice.assert_not_called()
         assert self.task.deferred_questions.count() == 1
+        self.task.refresh_from_db()
+        assert self.task.not_before is not None
 
     def test_next_writer_reattests_after_an_interrupted_holder(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
