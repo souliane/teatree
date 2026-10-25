@@ -1,7 +1,6 @@
 """The single answer to "which forge repos does this overlay work in?" (#4506).
 
-Shared by issue intake (which issues to claim) and the external-outcome measure
-(whose merges count as output), so the two can never disagree about scope.
+The intake scanner uses this scope by default; external outcomes always use it.
 """
 
 from unittest.mock import MagicMock

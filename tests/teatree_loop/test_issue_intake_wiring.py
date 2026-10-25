@@ -22,13 +22,25 @@ from teatree.core.admission_governor import read_merge_signal
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
 from teatree.core.intake.concurrency import ADAPTIVE_FRESHNESS
-from teatree.core.models import ImplementedIssueMarker, PullRequest, SkipObservation, SweepSkipStreak, Task, Ticket
+from teatree.core.models import (
+    ConfigSetting,
+    ImplementedIssueMarker,
+    PullRequest,
+    SkipObservation,
+    SweepSkipStreak,
+    Task,
+    Ticket,
+)
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
 from teatree.loop.persistence import persist_agent_actions
-from teatree.loop.scanner_factories import _issue_intake_scanner_for
+from teatree.loop.scanner_factories import (
+    _issue_disposition_scanner_for,
+    _issue_intake_scanner_for,
+    _triage_assessor_scanner_for,
+)
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loops.issue_implementer.loop import MINI_LOOP
 from tests.factories import ImplementedIssueMarkerFactory, TaskFactory, TicketFactory
@@ -114,10 +126,64 @@ class IssueIntakeGateTests(TestCase):
     def test_owned_repo_slugs_are_resolved_from_the_overlay(self) -> None:
         """The builder scopes intake to the overlay's own repos — the cross-repo firehose fix."""
         overlay = _overlay_with_repos(followup=["souliane/teatree"], merge_candidates=["souliane/teatree-e2e"])
-        with patch(_PATCH_TARGET, return_value=_enabled(issue_intake_repos=[])):
+        with patch(_PATCH_TARGET, return_value=_enabled()):
             scanner = _issue_intake_scanner_for(_backend(overlay=overlay))
         assert isinstance(scanner, IssueIntakeScanner)
         assert set(scanner.repo_slugs) == {"souliane/teatree", "souliane/teatree-e2e"}
+
+    def test_configured_slugs_are_normalized_and_deduplicated(self) -> None:
+        overlay = _overlay_with_repos(followup=["o/app"], merge_candidates=["o/app-e2e"])
+        settings = _enabled(issue_intake_repos=["https://github.com/o/app.git", "o/app"])
+        with patch(_PATCH_TARGET, return_value=settings):
+            scanner = _issue_intake_scanner_for(_backend(overlay=overlay))
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.repo_slugs == ("o/app",)
+
+    def test_malformed_configured_slugs_warn_and_use_owned_scope(self) -> None:
+        overlay = _overlay_with_repos(followup=["o/app"], merge_candidates=["o/app-e2e"])
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled(issue_intake_repos=["", "not-a-slug"])),
+            self.assertLogs("teatree.core.overlay_repos", level="WARNING") as logs,
+        ):
+            scanner = _issue_intake_scanner_for(_backend(overlay=overlay))
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.repo_slugs == ("o/app-e2e", "o/app")
+        assert "issue_intake_repos" in "\n".join(logs.output)
+
+    def test_one_malformed_entry_falls_back_instead_of_partially_narrowing(self) -> None:
+        overlay = _overlay_with_repos(followup=["o/app"], merge_candidates=["o/app-e2e"])
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled(issue_intake_repos=["o/app", "repo:app"])),
+            self.assertLogs("teatree.core.overlay_repos", level="WARNING"),
+        ):
+            scanner = _issue_intake_scanner_for(_backend(overlay=overlay))
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.repo_slugs == ("o/app-e2e", "o/app")
+
+    def test_only_the_configured_overlay_narrows_its_intake_scope(self) -> None:
+        ConfigSetting.objects.set_value("issue_intake_repos", ["o/app"], scope="acme")
+        acme = _backend(name="acme", overlay=_overlay_with_repos(followup=["o/app"], merge_candidates=["o/app-e2e"]))
+        other = _backend(name="other", overlay=_overlay_with_repos(followup=["p/api"], merge_candidates=["p/api-e2e"]))
+        acme_scanner = _issue_intake_scanner_for(acme)
+        other_scanner = _issue_intake_scanner_for(other)
+        assert isinstance(acme_scanner, IssueIntakeScanner)
+        assert isinstance(other_scanner, IssueIntakeScanner)
+        assert acme_scanner.repo_slugs == ("o/app",)
+        assert other_scanner.repo_slugs == ("p/api-e2e", "p/api")
+
+    def test_triage_assessor_keeps_owned_scope_when_intake_is_narrowed(self) -> None:
+        overlay = _overlay_with_repos(followup=["o/app"], merge_candidates=["o/app-e2e"])
+        ConfigSetting.objects.set_value("issue_intake_repos", ["o/app"], scope="t3-teatree")
+        backend = _backend(name="t3-teatree", overlay=overlay)
+        intake = _issue_intake_scanner_for(backend)
+        triage = _triage_assessor_scanner_for(backend)
+        disposition = _issue_disposition_scanner_for(backend)
+        assert isinstance(intake, IssueIntakeScanner)
+        assert intake.repo_slugs == ("o/app",)
+        assert triage is not None
+        assert triage.repo_slugs == ("o/app-e2e", "o/app")
+        assert disposition is not None
+        assert disposition.repo_slugs == ("o/app-e2e", "o/app")
 
     def test_overlay_exclude_labels_reach_the_scanner(self) -> None:
         """#4134: the field was plumbed onto the backend and read by nobody on this path."""
@@ -364,6 +430,36 @@ class IssueIntakeMiniLoopTests(TestCase):
         assert scanner.repo_slugs == ("o/app",)
         assert host.list_authored_issues.call_args.kwargs["repo_slugs"] == ("o/app",)
         assert host.list_labeled_issues.call_args.kwargs["repo_slugs"] == ("o/app",)
+
+    def test_without_intake_repo_row_claims_both_owned_repos(self) -> None:
+        overlay = _overlay_with_repos(followup=["o/app"], merge_candidates=["o/app-e2e"])
+        backend = _backend(overlay=overlay)
+        host = backend.host
+        host.current_user.return_value = "alice"
+        host.list_authored_issues.return_value = []
+        host.list_my_prs.return_value = []
+        host.list_my_merged_prs.return_value = []
+        host.list_labeled_issues.return_value = [
+            {
+                "web_url": f"https://github.com/o/{repo}/issues/{number}",
+                "title": "do it",
+                "labels": ["t3-auto"],
+                "state": "open",
+                "user": {"login": "stranger"},
+            }
+            for repo, number in (("app", 10), ("app-e2e", 11))
+        ]
+        scanner = _issue_intake_scanner_for(backend)
+        assert isinstance(scanner, IssueIntakeScanner)
+        with patch.object(IssueIntakeScanner, "_governor_denied", return_value=False):
+            signals = scanner.scan()
+
+        assert scanner.repo_slugs == ("o/app-e2e", "o/app")
+        assert {signal.payload["url"] for signal in signals} == {
+            "https://github.com/o/app/issues/10",
+            "https://github.com/o/app-e2e/issues/11",
+        }
+        assert host.list_labeled_issues.call_args.kwargs["repo_slugs"] == scanner.repo_slugs
 
     def test_enabled_loop_claims_unlabelled_trusted_issue_and_dispatches_to_orchestrator(self) -> None:
         url = "https://github.com/souliane/teatree/issues/100"

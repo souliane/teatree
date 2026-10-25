@@ -41,6 +41,13 @@ def test_search_result_absence_is_not_a_plan_constraint() -> None:
     }
 
 
+def test_observed_absence_keeps_a_directive_in_the_same_clause() -> None:
+    brief = "git grep finds no intake-repo setting anywhere in src/, so do not add a migration."
+    assert {item.kind for item in extract_constraints(brief)} == {"no_migration"}
+    assert extract_constraints("git grep finds no intake-repo setting anywhere in src/.") == ()
+    assert extract_constraints("git grep finds no setting, so do not forget to add a migration.") == ()
+
+
 def test_an_import_is_not_a_new_public_definition() -> None:
     path = "src/teatree/core/example.py"
     changes = ChangedSet((ChangeEntry("M", path),), "origin/main")

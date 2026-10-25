@@ -9,7 +9,7 @@ author-/label-scoped forge queries; the verdict is
 Discovery is scoped so the factory never even fetches work it may not do:
 
 * one author-scoped query per handle in the trusted union, bound to the
-    overlay's own repo slugs — a stranger's issue is never fetched;
+    selected repo slugs — a stranger's issue is never fetched;
 * one label-scoped query for the owner-applied admit label, same repo scope —
     this is the ONLY route by which an untrusted author's issue enters, and it
     requires the owner's explicit label (the admit-label rule).

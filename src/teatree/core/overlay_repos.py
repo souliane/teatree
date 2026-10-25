@@ -4,12 +4,16 @@ Issue intake uses this set when its configured repo list is empty; external
 outcomes and other overlay-wide consumers always use the full set.
 """
 
+import logging
+import re
 from typing import TYPE_CHECKING
 
 from teatree.core.merge import normalize_repo_slug
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
+
+logger = logging.getLogger(__name__)
 
 
 def owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
@@ -29,3 +33,13 @@ def owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
         if slug and slug not in slugs:
             slugs.append(slug)
     return tuple(slugs)
+
+
+def intake_repo_slugs(overlay: "OverlayBase | None", configured: list[str]) -> tuple[str, ...]:
+    if not configured:
+        return owned_repo_slugs(overlay)
+    slugs = [normalize_repo_slug(value) for value in configured]
+    if any(not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", slug) for slug in slugs):
+        logger.warning("issue_intake_repos contains an invalid repo slug; using overlay-owned repos")
+        return owned_repo_slugs(overlay)
+    return tuple(dict.fromkeys(slugs))

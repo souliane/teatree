@@ -22,7 +22,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.intake.budget import read_intake_budget, release_deadlocked_holder
 from teatree.core.intake.concurrency import resolve_intake_concurrency
 from teatree.core.models import ImplementedIssueMarker
-from teatree.core.overlay_repos import owned_repo_slugs
+from teatree.core.overlay_repos import intake_repo_slugs, owned_repo_slugs
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.loop.job_identity import _TUPLE_PAIR, CANONICAL_CORE_OVERLAY
@@ -387,7 +387,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
         identities=backend.identities,
         exclude_labels=backend.exclude_labels,
-        repo_slugs=tuple(settings.issue_intake_repos) or owned_repo_slugs(backend.overlay),
+        repo_slugs=intake_repo_slugs(backend.overlay, settings.issue_intake_repos),
         can_claim=can_claim,
         max_concurrent=limit,
         pass_budget_seconds=settings.issue_intake_pass_budget_seconds,
