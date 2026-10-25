@@ -18,6 +18,7 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, PlanArtifact, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.review.pr_inventory import OpenPrRow, PrInventoryEntry, write_inventory
 from teatree.loop.job_identity import _ScannerJob
@@ -246,6 +247,21 @@ class TestTickRepairsStalledPrs(django.test.TestCase):
 
         assert not RedMrFixAttempt.objects.filter(pr_url=entry.url).exists()
 
+    def test_a_failing_repair_is_reported_and_leaves_no_claim_instead_of_crashing_the_tick(self) -> None:
+        entry = self._stalled(state=Ticket.State.PR_OPENED)
+
+        for index, failure in enumerate((OSError("disk"), ValueError("bad"), NoPlanArtifactError("no plan"))):
+            with (
+                self.subTest(failure=type(failure).__name__),
+                patch.object(Ticket, "schedule_implementing", side_effect=failure),
+            ):
+                run = _run if index == 0 else _next_tick
+                report = run([_InventoryScanner("teatree", [entry])])
+
+                assert f"WARN  pr_stall: stall repair failed ({type(failure).__name__})" in report
+                assert "OPEN  souliane/teatree!11" in report
+                assert not RedMrFixAttempt.objects.filter(pr_url=entry.url).exists()
+
     def test_a_stall_at_pr_opened_queues_debugging_once(self) -> None:
         entry = self._stalled(state=Ticket.State.PR_OPENED)
 
@@ -295,6 +311,15 @@ class TestTickRepairsStalledPrs(django.test.TestCase):
 
         assert "STALL" not in report
         assert Task.objects.count() == 0
+
+    def test_a_colleagues_red_pr_is_listed_but_never_a_stall(self) -> None:
+        colleague = replace(_blocked_entry(16), owned=False)
+
+        report = _run([_InventoryScanner("teatree", [colleague])])
+
+        assert "OPEN  souliane/teatree!16" in report
+        assert "STALL" not in report
+        assert (Task.objects.count(), DeferredQuestion.objects.count()) == (0, 0)
 
     def test_a_pr_that_is_not_blocked_is_left_alone(self) -> None:
         entry = replace(self._stalled(), ci="green", next_task="Review or merge PR")

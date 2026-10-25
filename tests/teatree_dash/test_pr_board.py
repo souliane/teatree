@@ -164,16 +164,16 @@ class PrBoardTestCase(TestCase):
         assert {card.url for group in board.groups for card in group.cards} == {pr.url, watched_pr.url}
 
     def test_fresh_sweep_matches_watched_repo_without_case_sensitivity(self) -> None:
-        pr = PullRequestFactory(repo="souliane/teatree")
-        snapshot = PrInventorySnapshot(
-            overlay=pr.overlay,
-            observed_at=timezone.now(),
-            entries=(),
-            watched_repos=("Souliane/TeaTree",),
-        )
-        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
-            board = build_pr_board()
-        assert board.total == 0
+        for recorded, watched in (("souliane/teatree", "Souliane/TeaTree"), ("Souliane/TeaTree", "souliane/teatree")):
+            with self.subTest(recorded=recorded, watched=watched):
+                pr = PullRequestFactory(repo=recorded)
+                snapshot = PrInventorySnapshot(
+                    overlay=pr.overlay, observed_at=timezone.now(), entries=(), watched_repos=(watched,)
+                )
+                with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+                    board = build_pr_board()
+                assert board.total == 0
+                pr.delete()
 
     def test_stale_empty_snapshot_never_hides_an_open_recorded_pr(self) -> None:
         pr = PullRequestFactory(overlay="teatree")
