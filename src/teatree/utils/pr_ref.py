@@ -16,6 +16,8 @@ transport switch the merge-execution backend resolution dispatches on.
 
 from dataclasses import dataclass
 
+_HEAD_REF_BY_HOST = {"github": "refs/pull/{}/head", "gitlab": "refs/merge-requests/{}/head"}
+
 
 @dataclass(frozen=True, slots=True)
 class PrRef:
@@ -24,6 +26,11 @@ class PrRef:
     slug: str
     pr_id: int
     host_kind: str = "github"
+
+    @property
+    def head_ref(self) -> str:
+        """The read-only ref its forge publishes the head under, or ``""`` for an unknown forge."""
+        return _HEAD_REF_BY_HOST.get(self.host_kind, "").format(self.pr_id)
 
     def same_pr(self, other: "PrRef") -> bool:
         """A blank host on either side cannot prove the two are different PRs."""

@@ -36,7 +36,6 @@ def generic_payload_finding(
     cwd_repo: Path | None,
     *,
     nonpublic: bool,
-    ai_signature_scanner_available: bool,
 ) -> GenericGateFinding | None:
     local_commit = publish_surface.command_targets_local_commit(command, cwd_repo)
     verdict = decide(
@@ -55,7 +54,6 @@ def generic_payload_finding(
     if not findings or not (local_commit or forge_write_scope.is_forge_write(command, cwd_repo)):
         return None
 
-    if ai_signature_scanner_available:
-        trailer_spans = _trailer_line_spans(payload)
-        findings = [finding for finding in findings if _outside_trailer(finding, trailer_spans)]
+    trailer_spans = _trailer_line_spans(payload)
+    findings = [finding for finding in findings if _outside_trailer(finding, trailer_spans)]
     return GenericGateFinding(findings[0].category, verdict is Verdict.WARN) if findings else None

@@ -11,6 +11,7 @@ refused a summary-only run, so each channel field is present and non-empty here.
 
 import logging
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
@@ -234,7 +235,7 @@ def _maybe_file_work_item(task: Task, result: AgentResultBlob, *, phase: str) ->
     overlay = task.ticket.overlay
     try:
         host = _resolved_code_host(overlay)
-        filed = file_work_item(task.ticket, dict(envelope), host=host, repo=filing_repo(overlay))
+        filed = file_work_item(task.ticket, dict(envelope), host=host, repo_for=partial(filing_repo, overlay))
     except WorkItemFilingError as exc:
         logger.warning("Work-item filing failed for task %s: %s", task.pk, exc)
         return WorkItemOutcome(url="", failure=str(exc))
