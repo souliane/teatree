@@ -123,7 +123,7 @@ class PrBoardTestCase(TestCase):
         assert "not verified" in card.next_action
         assert "stale" in board.inventory_warning
 
-    def test_unverified_snapshot_names_the_blocker_on_every_card(self) -> None:
+    def test_unverified_or_stale_snapshot_names_the_blocker_on_every_card(self) -> None:
         ready, waiting, pending = (PullRequestFactory(ticket=TicketFactory()) for _ in range(3))
         entries = (
             _observed_entry(ready, decision="merge", threads="0 unresolved"),
@@ -134,15 +134,21 @@ class PrBoardTestCase(TestCase):
             overlay=ready.overlay, observed_at=timezone.now(), entries=entries, verified=False
         )
 
-        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
-            board = build_pr_board()
-
-        cards = {card.url: card for group in board.groups for card in group.cards}
-        assert "unknown" in board.inventory_warning
-        for pr in (ready, waiting, pending):
-            assert cards[pr.url].group == "Blocked"
-            assert cards[pr.url].next_actor == "Factory"
-            assert "not verified" in cards[pr.url].next_action
+        for observation, warning in (
+            (snapshot, "unknown"),
+            (replace(snapshot, verified=True, observed_at=timezone.now() - timedelta(hours=2)), "stale"),
+        ):
+            with (
+                self.subTest(warning=warning),
+                patch("teatree.dash.pr_board.read_inventory", return_value=(observation,)),
+            ):
+                board = build_pr_board()
+                cards = {card.url: card for group in board.groups for card in group.cards}
+                assert warning in board.inventory_warning
+                for pr in (ready, waiting, pending):
+                    assert cards[pr.url].group == "Blocked"
+                    assert cards[pr.url].next_actor == "Factory"
+                    assert "not verified" in cards[pr.url].next_action
 
     def test_owner_question_and_active_task_precede_unverified_blocker(self) -> None:
         owner = PullRequestFactory(ticket=TicketFactory())

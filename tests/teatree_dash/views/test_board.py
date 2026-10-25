@@ -180,6 +180,10 @@ class PrBoardAcceptanceTestCase(TestCase):
                 entry = expected.by_ref[ref]
                 for fact in (
                     entry.title,
+                    (
+                        f'<a class="card-num" href="{entry.url}" target="_blank" rel="noopener noreferrer">'
+                        f"{entry.title}</a>"
+                    ),
                     ref,
                     f"<dd>{entry.ci}</dd>",
                     f"<dd>{entry.approvals}</dd>",
