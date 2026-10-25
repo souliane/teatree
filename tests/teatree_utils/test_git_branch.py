@@ -2,7 +2,7 @@ from pathlib import Path
 from subprocess import TimeoutExpired
 from unittest.mock import patch
 
-from teatree.utils.git_branch import RefPresence, list_remote_refs, ref_presence
+from teatree.utils.git_branch import RefPresence, list_remote_refs, ref_presence, show_ref
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -62,3 +62,7 @@ def test_a_listing_that_times_out_says_so(tmp_path: Path) -> None:
     assert listing.heads is None
     assert listing.timed_out is True
     assert ref_presence(str(clone), "missing", listing) is RefPresence.UNKNOWN
+
+
+def test_a_path_git_cannot_read_proves_nothing(tmp_path: Path) -> None:
+    assert show_ref(str(tmp_path), "refs/heads/x") is RefPresence.UNKNOWN

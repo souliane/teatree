@@ -98,6 +98,18 @@ class TestQuestionClass(TestCase):
         assert status.fixed is False
         assert sum(status.daily_counts) == 1
 
+    def test_a_card_seven_days_ago_keeps_the_class_open(self) -> None:
+        now = datetime(2026, 10, 25, 9, tzinfo=UTC)
+        DeferredQuestion.objects.create(
+            question="May I continue?", dedupe_marker="repair-loop:one", created_at=now - timedelta(days=7)
+        )
+
+        status = question_class_status("repair-loop", now=now)
+
+        assert status is not None
+        assert status.fixed is False
+        assert status.daily_counts == (1, 0, 0, 0, 0, 0, 0)
+
     def test_seven_complete_zero_card_days_mark_a_known_class_fixed(self) -> None:
         now = datetime(2026, 10, 25, 9, tzinfo=UTC)
         DeferredQuestion.objects.create(
