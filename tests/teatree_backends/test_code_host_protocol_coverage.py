@@ -17,6 +17,12 @@ from teatree.core.backend_protocols import CodeHostBackend
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+
+def test_each_code_host_names_its_forge() -> None:
+    assert GitHubCodeHost().forge == "github"
+    assert GitLabCodeHost(token="x", base_url="https://gitlab.com/api/v4").forge == "gitlab"
+
+
 _MERGE_RPC_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
     "fetch_live_head_sha": [
         ("slug", inspect.Parameter.KEYWORD_ONLY),

@@ -334,6 +334,9 @@ class IssueResolutionSpec:
 class CodeHostBackend(Protocol):
     """Canonical code-host interface for pull requests and issues."""
 
+    @property
+    def forge(self) -> str: ...  # pragma: no branch
+
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict: ...  # pragma: no branch
 
     def current_user(self) -> str: ...  # pragma: no branch

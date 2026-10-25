@@ -49,6 +49,8 @@ class _FakeCIService:
 
 
 class _FakeCodeHost:
+    forge = "github"
+
     def create_pr(self, spec: PullRequestSpec) -> dict[str, object]:
         _ = spec
         return {}

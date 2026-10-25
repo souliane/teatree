@@ -72,6 +72,7 @@ class FakeForge:
     """Code host that files the owner's request and remembers the labels it carried."""
 
     created: list[dict] = field(default_factory=list)
+    forge: str = "github"
 
     def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> RawAPIDict:
         self.created.append({"repo": repo, "title": title, "body": body, "labels": list(labels or [])})

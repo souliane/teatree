@@ -17,7 +17,7 @@ from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.core.answering.work_item_filing import WorkItemFilingError
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.send_proxy import route_forge_write
 from teatree.types import RawAPIDict
@@ -51,6 +51,7 @@ class RecordingHost:
     created: list[dict] = field(default_factory=list)
     searched: list[str] = field(default_factory=list)
     refusal: Exception | None = None
+    forge: str = "github"
 
     def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> RawAPIDict:
         if self.refusal is not None:
@@ -108,6 +109,36 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         task = _answering_task()
         record_reactive_envelopes(task, result, phase="answering")
         return task
+
+    def test_the_request_uses_the_hosts_forge_when_the_overlay_names_none(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", [f"github:{_REPO_A}"])
+        with mock.patch(
+            "teatree.core.answering.work_item_filing.get_overlay",
+            return_value=SimpleNamespace(config=SimpleNamespace(code_host="")),
+        ):
+            self._record(
+                {
+                    "answer": {"text": "On it."},
+                    "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."},
+                }
+            )
+
+        assert len(self.host.created) == 1
+        assert self.host.created[0]["repo"] == _REPO_A
+        reply = self.backend.replies[0][2]
+        assert f"<https://github.com/{_REPO_A}/issues/7100|#7100>" in reply
+        assert "Could not file" not in reply
+
+    def test_an_unknown_host_forge_files_nothing_and_names_the_cause(self) -> None:
+        self.host.forge = ""
+        self._record(
+            {"answer": {"text": "On it."}, "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."}}
+        )
+
+        assert self.host.created == []
+        reply = self.backend.replies[0][2]
+        assert f"forge for {_REPO_A} could not be determined" in reply
+        assert "Tracking as" not in reply
 
     def test_the_request_is_filed_as_a_real_issue(self) -> None:
         self._record(
