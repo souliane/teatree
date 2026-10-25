@@ -2,15 +2,16 @@
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,7 +27,10 @@ from teatree.agents.codex_post_tool import report_completed_item
 from teatree.agents.codex_shared_app_server import SharedCodexAppServer, SharedCodexSession
 from teatree.agents.harness import AgentHarness
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessSpec, register_harness, select_harness
+from teatree.agents.live_mailbox import LiveMailboxBroker
+from teatree.agents.live_mailbox_client import MailboxClient
 from teatree.core.models import Session, Task
+from teatree.forge_credentials import FORGE_TOKEN_ENV_KEYS, ROUTED_GH_KEY_ENV
 from tests.factories import planned_ticket
 from tests.teatree_agents._codex_command_shape import codex_wrapped
 from tests.teatree_agents._codex_plugin import CODEX_PLUGIN_ID
@@ -78,6 +82,14 @@ for line in sys.stdin:
         result = {}
     send({"id": request_id, "result": result})
     if method != "turn/start":
+        continue
+    if scenario == "mailbox":
+        thread_id = request["params"]["threadId"]
+        send({"id": 600 + int(thread_id.rsplit("-", 1)[1]), "method": "item/tool/call", "params": {
+            "threadId": thread_id, "tool": "agent_mailbox_self", "arguments": {}}})
+        read_decision()
+        send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {
+            "id": "turn-1", "status": "completed", "items": []}}})
         continue
     if scenario == "inflight":
         send({"id": 500, "method": "item/commandExecution/requestApproval", "params": {
@@ -243,6 +255,68 @@ def test_only_a_file_change_that_ran_reaches_post_tool_use(
     assert sent == reported
 
 
+def test_post_tool_router_forwards_task_token_without_debug_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    worker_options: CodexAppServerOptions,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    sentinel = "sentinel-task-token"
+    for key in FORGE_TOKEN_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    observed = tmp_path / "post-env"
+    script = tmp_path / "post-router.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$GH_TOKEN" = "{sentinel}" ] && '
+        "[ \"$T3_ROUTED_GH_TOKEN_KEY\" = 'github/example/pat' ]; then echo yes > "
+        f"'{observed}'; else echo no > '{observed}'; fi\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr("teatree.agents.codex_router._RUN_HOOK", script)
+    options = replace(
+        worker_options,
+        core=replace(worker_options.core, env={"GH_TOKEN": sentinel, ROUTED_GH_KEY_ENV: "github/example/pat"}),
+    )
+
+    asyncio.run(
+        report_completed_item(
+            {"type": "commandExecution", "status": "completed", "command": "pwd", "exitCode": 0},
+            "thread-1",
+            options,
+        )
+    )
+
+    assert observed.read_text().strip() == "yes"
+    assert all(sentinel not in record.getMessage() for record in caplog.records)
+
+
+def test_file_change_approval_forwards_the_task_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, worker_options: CodexAppServerOptions
+) -> None:
+    observed = tmp_path / "file-change-env"
+    script = tmp_path / "file-change-router.sh"
+    script.write_text(
+        f'#!/bin/sh\n[ "$GH_TOKEN" = "sentinel-task-token" ] && echo yes > "{observed}" || echo no > "{observed}"\n'
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr("teatree.agents.codex_router._RUN_HOOK", script)
+    options = replace(worker_options, core=replace(worker_options.core, env={"GH_TOKEN": "sentinel-task-token"}))
+
+    decision, reason = asyncio.run(
+        approval_decision(
+            "item/fileChange/requestApproval",
+            {"cwd": str(tmp_path), "threadId": "thread-1"},
+            options,
+            [{"path": "example.txt", "kind": {"type": "add"}}],
+        )
+    )
+
+    assert (decision, reason) == ("accept", None)
+    assert observed.read_text().strip() == "yes"
+
+
 def test_failed_post_tool_report_warns_and_turn_completes(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -294,9 +368,57 @@ def test_child_and_unknown_approvals_preserve_other_shared_session(
     )
 
 
+def test_shared_codex_threads_answer_mailbox_calls_with_their_own_identity(
+    tmp_path: Path, worker_options: CodexAppServerOptions
+) -> None:
+    command, log = _server_command(tmp_path, "mailbox")
+    manager = SharedCodexAppServer(code_home=tmp_path / "home", cache=_FakeCache(), command=command, process_env={})
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker:
+        first_identity = broker.register(room="one", harness="codex_app_server", label="first")
+        second_identity = broker.register(room="two", harness="codex_app_server", label="second")
+        first_options = replace(
+            worker_options,
+            core=replace(worker_options.core, mailbox=MailboxClient(first_identity.socket_path, first_identity.token)),
+            mailbox_phase="coding",
+        )
+        second_options = replace(
+            worker_options,
+            core=replace(
+                worker_options.core, mailbox=MailboxClient(second_identity.socket_path, second_identity.token)
+            ),
+            mailbox_phase="coding",
+        )
+        first = SharedCodexSession(first_options, manager=manager, resume=None)
+        second = SharedCodexSession(second_options, manager=manager, resume=None)
+
+        async def run() -> None:
+            await first.start()
+            await second.start()
+            try:
+                await first.query("identify")
+                _ = [message async for message in first.receive_response()]
+                await second.query("identify")
+                _ = [message async for message in second.receive_response()]
+            finally:
+                await first.close()
+                await second.close()
+
+        try:
+            asyncio.run(run())
+        finally:
+            manager.close()
+    messages = [json.loads(line) for line in log.read_text().splitlines()]
+    addresses = {
+        message["id"]: json.loads(message["result"]["contentItems"][0]["text"])["address"]
+        for message in messages
+        if message.get("id") in {601, 602} and "result" in message
+    }
+    assert addresses == {601: first_identity.address, 602: second_identity.address}
+
+
 class _FakeCache:
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[Path]:
+    async def session(self) -> AsyncGenerator[Path]:
         yield Path("/unused/auth.json")
 
     def persist(self) -> None:
@@ -504,7 +626,7 @@ class TestMainCloneRoute(TestCase):
             )
             try:
                 with (
-                    patch("teatree.agents.codex_app_server.container_is_the_sandbox", return_value=True),
+                    patch.object(codex_app_server_options, "container_is_the_sandbox", return_value=True),
                     patch("teatree.agents.codex_app_server.shutil.which", return_value="/usr/bin/codex"),
                     patch.dict("os.environ", {"T3_REPO": str(clone)}),
                 ):

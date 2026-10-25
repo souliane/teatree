@@ -15,7 +15,7 @@ fallback unchanged — pinned by ``test_headless``'s untouched scoping test.
 """
 
 import contextlib
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator
 from typing import Any, Self
 from unittest.mock import patch
 
@@ -66,7 +66,7 @@ class _FakeSdkClient:
 
 
 @contextlib.contextmanager
-def _fake_sdk(agent_text: str) -> Iterator[None]:
+def _fake_sdk(agent_text: str) -> Generator[None]:
     def _make_client(**_: object) -> _FakeSdkClient:
         return _FakeSdkClient(agent_text)
 

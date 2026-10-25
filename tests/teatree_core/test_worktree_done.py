@@ -23,8 +23,9 @@ from django.utils import timezone
 
 from teatree.core.cleanup.cleanup import _EffectiveTarget
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict, worktree_liveness
+from teatree.core.cleanup.cleanup_result import CleanupResult
 from teatree.core.forge_pr_probe import PrProbe
-from teatree.core.models import Session, Ticket, UnshippedWorkRecord, Worktree
+from teatree.core.models import ConfigSetting, Session, Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.runners import worktree_start
 from teatree.core.worktree import worktree_done
 from teatree.core.worktree.branch_classification import RedundancyVerdict
@@ -36,6 +37,7 @@ from teatree.core.worktree.worktree_done import (
     worktree_is_done,
 )
 from teatree.core.worktree.worktree_emit import _effective_default_target, _verdict_provenance
+from teatree.utils.git_sync import RemoteReadError, remote_head_shas
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git, forge_reporting, squash_then_base_evolved
 
 
@@ -160,6 +162,19 @@ class TestMergedDeletedRefWiped(_ReaperFixture):
         assert signal.done is True
         assert signal.source == "ticket-state:merged"
 
+    def test_deleted_remote_and_local_branch_refs_keep_the_recovered_tip(self) -> None:
+        self._push_branch()
+        self._drop_local_branch_ref()
+        _run_git("update-ref", "-d", f"refs/heads/{self.slug}", cwd=self.remote)
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "kept"
+        assert "no live remote ref" in outcome.label
+        assert self.wt_path.is_dir()
+        assert Worktree.objects.filter(pk=worktree.pk).exists()
+
 
 class TestNotDoneUnpushedKeptNoSnapshot(_ReaperFixture):
     """A WORK_STARTED ticket with unique unpushed work is NOT done — KEPT, no snapshot."""
@@ -193,6 +208,39 @@ class TestDoneButUncommittedKept(_ReaperFixture):
         assert "uncommitted change" in outcome.label
         assert self.wt_path.exists()
 
+    def test_ignored_file_keeps_done_checkout(self) -> None:
+        self._push_branch()
+        (self.repo_main / ".git" / "info" / "exclude").write_text("notes.local\n", encoding="utf-8")
+        (self.wt_path / "notes.local").write_text("retain\n", encoding="utf-8")
+        row = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(row)
+
+        assert outcome.action == "kept", outcome.label
+        assert "notes.local" in outcome.label
+        assert (self.wt_path / "notes.local").read_text(encoding="utf-8") == "retain\n"
+
+    def test_unanswerable_forge_keeps_done_checkout_in_dry_run(self) -> None:
+        self._push_branch()
+        row = self._make_worktree(Ticket.State.MERGED)
+
+        with patch("teatree.core.cleanup.removal_proof.find_open_pr_for_branch", return_value=PrProbe.unknown()):
+            outcome = self._reap(row, dry_run=True)
+
+        assert outcome.action == "kept", outcome.label
+        assert "forge cannot say" in outcome.label
+        assert self.wt_path.is_dir()
+
+    def test_deleted_remote_branch_without_fetch_keeps_live_checkout(self) -> None:
+        self._push_branch()
+        _run_git("update-ref", "-d", f"refs/heads/{self.slug}", cwd=self.remote)
+        row = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(row)
+
+        assert outcome.action == "kept", outcome.label
+        assert self.wt_path.is_dir()
+
 
 class TestDanglingHeadUncommittedKept(_ReaperFixture):
     """A dangling-HEAD worktree (branch ref deleted post-merge) with real uncommitted edits is KEPT.
@@ -221,9 +269,8 @@ class TestDanglingHeadUncommittedKept(_ReaperFixture):
 class TestReapTocTouGuard(_ReaperFixture):
     """A commit landing between the redundancy analysis and the force-wipe is not destroyed.
 
-    ``reap_done_worktree`` proves redundancy, then ``cleanup_worktree(force=True)``
-    bypasses every data-loss guard. HEAD is re-read just before the wipe and the
-    wipe refused if it moved, so a commit that lands in the TOCTOU window survives.
+    ``reap_done_worktree`` proves redundancy, then the fingerprint and shared
+    removal proof both recheck before the wipe.
     """
 
     def test_commit_landing_in_the_window_keeps_worktree(self) -> None:
@@ -247,6 +294,22 @@ class TestReapTocTouGuard(_ReaperFixture):
         assert "changed during analysis" in outcome.label
         assert self._tip() in outcome.label, "the refusal names the tip the late commit moved HEAD to"
         assert self.wt_path.exists(), "a commit landing during analysis must not be force-wiped"
+
+    def test_remote_ref_disappearing_after_analysis_stays_kept(self) -> None:
+        self._push_branch()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        real_cleanup = worktree_done.cleanup_worktree
+
+        def remote_deleted_before_cleanup(row: Worktree, *, force: bool, strict_hygiene: bool) -> CleanupResult:
+            _run_git("update-ref", "-d", f"refs/heads/{self.slug}", cwd=self.remote)
+            return real_cleanup(row, force=force, strict_hygiene=strict_hygiene)
+
+        with patch.object(worktree_done, "cleanup_worktree", side_effect=remote_deleted_before_cleanup):
+            outcome = self._reap(worktree)
+
+        assert outcome.action == "kept", outcome.label
+        assert "no live remote ref" in outcome.label
+        assert self.wt_path.exists()
 
 
 class TestShippedIsNotDone(_ReaperFixture):
@@ -361,8 +424,7 @@ class TestMergedPrDoesNotWipePostMergeWork(_ReaperFixture):
 class TestWipeRechecksTheWholeWorktreeNotJustHead(_ReaperFixture):
     """The pre-wipe TOCTOU re-check covers uncommitted work, not only the tip.
 
-    ``cleanup_worktree(force=True)`` bypasses every data-loss guard, so anything
-    written between the analysis and the wipe is destroyed unexamined. An agent
+    ``cleanup_worktree(force=True)`` bypasses legacy guards. An agent
     saving a file mid-sweep moves no commit, so a tip-only bracket waved it through.
     The real analysis still decides redundancy here — only the timing of the
     concurrent write is injected.
@@ -512,6 +574,165 @@ class TestDryRunAndCleanIgnore(_ReaperFixture):
 
         assert len(lines) == 1
         assert lines[0].startswith("WOULD WIPE")
+
+
+class TestEverySweepLineNamesItsCheckout(_ReaperFixture):
+    def test_a_wipe_and_its_preview_name_the_checkout(self) -> None:
+        """Django TestCase: real git wipe, dead release, and both previews."""
+        self._push_branch()
+        self._drop_local_branch_ref()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        suffix = f"[checkout: {self.wt_path}]"
+
+        preview = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+        assert len(preview) == 1
+        assert preview[0].action == "would-wipe"
+        assert preview[0].label.startswith("WOULD WIPE")
+        with self.subTest(outcome="would-wipe"):
+            assert preview[0].label.endswith(suffix)
+
+        wiped = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
+        assert len(wiped) == 1
+        assert wiped[0].action == "wiped", wiped[0].label
+        with self.subTest(outcome="wiped"):
+            assert wiped[0].label.endswith(suffix)
+
+        self.wt_path.mkdir(parents=True)
+        Worktree.objects.create(
+            overlay="test",
+            ticket=worktree.ticket,
+            repo_path="myrepo",
+            branch=self.slug,
+            extra={"worktree_path": str(self.wt_path), "clone_path": str(self.repo_main)},
+        )
+        dead_preview = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+        assert len(dead_preview) == 1
+        assert dead_preview[0].action == "would-wipe"
+        assert dead_preview[0].label.startswith("WOULD RELEASE")
+        with self.subTest(outcome="would-release"):
+            assert dead_preview[0].label.endswith(suffix)
+
+        released = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
+        assert len(released) == 1
+        assert released[0].action == "wiped"
+        assert released[0].label.startswith("Released dead checkout")
+        assert released[0].label.endswith(suffix)
+
+    def test_a_kept_line_names_the_checkout(self) -> None:
+        """Django TestCase: real unpushed branch through the detailed sweep."""
+        self._make_worktree(Ticket.State.WORK_STARTED)
+
+        outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert [outcome.action for outcome in outcomes] == ["kept"]
+        assert outcomes[0].emit is not None
+        assert outcomes[0].emit.unique_commit_shas
+        assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+    def test_stored_checkout_path_wins_over_the_canonical_layout(self) -> None:
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
+        stored_path = self.workspace / "renamed" / "myrepo"
+        stored_path.parent.mkdir()
+        _run_git("worktree", "move", str(self.wt_path), str(stored_path), cwd=self.repo_main)
+        worktree.extra["worktree_path"] = str(stored_path)
+        worktree.save(update_fields=["extra"])
+
+        outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert [outcome.action for outcome in outcomes] == ["kept"]
+        assert outcomes[0].label.endswith(f"[checkout: {stored_path}]")
+
+    def test_sweep_preserves_errors_while_naming_checkout(self) -> None:
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
+        self._push_branch()
+        self._drop_local_branch_ref()
+        Ticket.objects.filter(pk=worktree.ticket_id).update(state=Ticket.State.MERGED)
+        with patch(
+            "teatree.core.worktree.worktree_done.cleanup_worktree",
+            return_value=CleanupResult(label="cleanup finished", errors=["volume removal failed"]),
+        ):
+            wiped = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
+
+        assert [outcome.action for outcome in wiped] == ["wiped"]
+        assert wiped[0].errors == ["volume removal failed"]
+        assert wiped[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+    def test_each_pre_gate_line_names_the_checkout(self) -> None:
+        """Django TestCase: real settings and git, with fixture liveness injected."""
+        self._make_worktree(Ticket.State.MERGED)
+        ConfigSetting.objects.set_value("clean_ignore", [self.slug])
+
+        with self.subTest(action="skipped"):
+            outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+            assert [outcome.action for outcome in outcomes] == ["skipped"]
+            assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+        ConfigSetting.objects.set_value("clean_ignore", [])
+        _run_git("commit", "-q", "--amend", "--no-edit", "--author", "Colleague <>", cwd=self.wt_path)
+        ConfigSetting.objects.set_value("colleague_repo_url_pattern", r"remote\.git$")
+
+        with self.subTest(action="excluded"):
+            outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+            assert [outcome.action for outcome in outcomes] == ["excluded"]
+            assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+        ConfigSetting.objects.set_value("colleague_repo_url_pattern", "")
+        with patch(
+            "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
+            return_value=LivenessVerdict(active=True, reason="live session"),
+        ):
+            outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        with self.subTest(action="active"):
+            assert [outcome.action for outcome in outcomes] == ["active"]
+            assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+    def test_an_error_line_names_the_checkout(self) -> None:
+        """Django TestCase: malformed clone metadata fails through the real sweep."""
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
+        Worktree.objects.filter(pk=worktree.pk).update(
+            extra={"worktree_path": str(self.wt_path), "clone_path": ["not-a-path"]}
+        )
+
+        outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert [outcome.action for outcome in outcomes] == ["error"]
+        assert "row skipped, nothing wiped" in outcomes[0].label
+        assert outcomes[0].label.endswith(f"[checkout: {self.wt_path}]")
+
+    def test_an_unresolvable_checkout_still_reports_and_the_sweep_continues(self) -> None:
+        """Django TestCase: malformed row followed by a real git checkout."""
+        bad_ticket = Ticket.objects.create(issue_url="https://example.com/issues/bad", state=Ticket.State.MERGED)
+        bad = Worktree.objects.create(
+            overlay="test",
+            ticket=bad_ticket,
+            repo_path="myrepo",
+            branch="bad",
+            extra={"worktree_path": str(self.wt_path)},
+        )
+        Worktree.objects.filter(pk=bad.pk).update(extra=["not-a-dict"])
+        self._make_worktree(Ticket.State.WORK_STARTED)
+
+        outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert len(outcomes) == 2
+        by_action = {outcome.action: outcome.label for outcome in outcomes}
+        assert set(by_action) == {"error", "kept"}
+        assert by_action["error"].endswith("[checkout: unresolvable]")
+        assert by_action["kept"].endswith(f"[checkout: {self.wt_path}]")
+
+    def test_clean_ignored_row_with_unresolvable_path_keeps_its_preview_verdict(self) -> None:
+        """Django TestCase: real clean_ignore setting through reap_done_worktrees_detailed."""
+        bad = self._make_worktree(Ticket.State.MERGED)
+        Worktree.objects.filter(pk=bad.pk).update(extra=["not-a-dict"])
+        ConfigSetting.objects.set_value("clean_ignore", [self.slug])
+
+        outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=True)
+
+        assert len(outcomes) == 1
+        assert outcomes[0].action == "skipped"
+        assert outcomes[0].label.endswith("[checkout: unresolvable]")
+        assert self.wt_path.exists()
 
 
 class TestReaperGatesAndEmit(_ReaperFixture):
@@ -837,6 +1058,44 @@ class TestCaptureCoversEveryDisposition(_ReaperFixture):
         self._reap(worktree, dry_run=True)
 
         assert not UnshippedWorkRecord.objects.exists()
+
+    def test_sweep_reads_live_remote_state_for_each_checkout(self) -> None:
+        self._make_worktree(Ticket.State.WORK_STARTED)
+        sibling = self.workspace / "feat-y" / "myrepo"
+        _run_git("worktree", "add", "-q", "-b", "feat-y", str(sibling), cwd=self.repo_main)
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/2762", state=Ticket.State.WORK_STARTED)
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="myrepo",
+            branch="feat-y",
+            extra={"worktree_path": str(sibling), "clone_path": str(self.repo_main)},
+        )
+
+        with (
+            patch("teatree.core.cleanup.unshipped_work.remote_head_shas", wraps=remote_head_shas) as read,
+            patch(
+                "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
+                return_value=LivenessVerdict(active=True, reason="agent holds checkout"),
+            ),
+        ):
+            outcomes = worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
+
+        assert len(outcomes) == 2
+        assert read.call_count == 2
+
+        with (
+            patch(
+                "teatree.core.cleanup.unshipped_work.remote_head_shas", side_effect=RemoteReadError("offline")
+            ) as failed_read,
+            patch(
+                "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
+                return_value=LivenessVerdict(active=True, reason="agent holds checkout"),
+            ),
+        ):
+            worktree_done.reap_done_worktrees_detailed(self.workspace, dry_run=False)
+
+        assert failed_read.call_count == 2
 
 
 def test_effective_default_target_failsafe_to_main_on_unresolvable(tmp_path: Path) -> None:

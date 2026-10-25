@@ -43,14 +43,23 @@ def _gate_run_body(path: Path) -> str:
     raise AssertionError(msg)
 
 
-def _run_gate(path: Path, *, detect: str, eval_result: str, changed: str) -> subprocess.CompletedProcess[str]:
+def _run_gate(
+    path: Path, *, detect: str, eval_result: str, changed: str, **needs_outputs: str
+) -> subprocess.CompletedProcess[str]:
     # Execute the gate's real shell body under GitHub's default `run:` shell
     # semantics (bash -eo pipefail), so the test exercises the shipped logic, not
     # a copy of it. `needs.*.result` and the detect output are supplied as env.
     script = "set -eo pipefail\n" + _gate_run_body(path)
     return subprocess.run(
         [_BASH, "-c", script],
-        env={"DETECT_RESULT": detect, "EVAL_RESULT": eval_result, "CHANGED": changed, "PATH": "/usr/bin:/bin"},
+        env={
+            "DETECT_RESULT": detect,
+            "EVAL_RESULT": eval_result,
+            "CHANGED": changed,
+            "PARKED": needs_outputs.get("parked", "false"),
+            "OWED": needs_outputs.get("owed", ""),
+            "PATH": "/usr/bin:/bin",
+        },
         capture_output=True,
         text=True,
         check=False,
@@ -97,6 +106,17 @@ class TestGateTruthTable:
         assert result.returncode == 0, result.stderr
         assert "PASS — the PR's changed scenarios ran and passed" in result.stdout
 
+    def test_reusable_bounded_pass_names_deferred_work(self) -> None:
+        result = _run_gate(
+            _REUSABLE,
+            detect="success",
+            eval_result="success",
+            changed="true",
+            owed="later",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "deferred to the owed ledger: later" in result.stdout
+
     @pytest.mark.parametrize("path", _GATE_WORKFLOWS, ids=lambda p: p.name)
     def test_changed_and_failing_is_red(self, path: Path) -> None:
         # detect succeeds, eval fails (a changed scenario failed) → FAIL.
@@ -126,3 +146,18 @@ class TestGateTruthTable:
         # A cancelled eval (timeout / superseded) is not a pass — fail conservatively.
         result = _run_gate(path, detect="success", eval_result="cancelled", changed="true")
         assert result.returncode == 1
+
+
+@pytest.mark.parametrize("path", _GATE_WORKFLOWS, ids=lambda p: p.name)
+def test_parked_eval_is_green_and_names_owed(path: Path) -> None:
+    result = _run_gate(path, detect="success", eval_result="success", changed="true", parked="true", owed="one,two")
+    assert result.returncode == 0, result.stderr
+    assert "PARKED" in result.stdout
+    assert "one,two" in result.stdout
+
+
+@pytest.mark.parametrize("path", _GATE_WORKFLOWS, ids=lambda p: p.name)
+def test_confirmed_red_beats_parked(path: Path) -> None:
+    result = _run_gate(path, detect="success", eval_result="failure", changed="true", parked="true", owed="one")
+    assert result.returncode == 1
+    assert "FAIL" in result.stdout

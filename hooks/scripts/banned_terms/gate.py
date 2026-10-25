@@ -45,7 +45,7 @@ from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_pa
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 
 # What a command that publishes looks like by its text alone, for the moment ``teatree`` cannot be imported.
-_LOOKS_LIKE_A_PUBLISH_RE = re.compile(r"\b(?:gh|glab|curl)\b|\bgit\b[^|;&\n]*\bpush\b")
+LOOKS_LIKE_A_PUBLISH_RE = re.compile(r"\b(?:gh|glab|curl)\b|\bgit\b[^|;&\n]*\bpush\b")
 
 
 def _banned_terms_gate_enabled() -> bool:
@@ -60,7 +60,7 @@ def _banned_terms_gate_enabled() -> bool:
     would be a privacy regression, not a rescue (hooks/CLAUDE.md). See
     :func:`_teatree_bool_setting` for the shared semantics.
     """
-    return _teatree_bool_setting("banned_terms_gate_enabled", default=True)
+    return _teatree_bool_setting("banned_terms_gate_enabled")
 
 
 def handle_banned_terms_pretool(data: dict) -> bool:
@@ -115,7 +115,7 @@ def _publishes_to_a_non_private_destination(data: dict) -> bool:
     command = (data.get("tool_input") or {}).get("command", "") if data.get("tool_name") == "Bash" else ""
     return _guarded(
         lambda: _destination_is_not_provably_private(data, command),
-        lambda _exc: _LOOKS_LIKE_A_PUBLISH_RE.search(command) is not None,
+        lambda _exc: LOOKS_LIKE_A_PUBLISH_RE.search(command) is not None,
     )
 
 
@@ -209,11 +209,35 @@ def _run_banned_terms_pretool(data: dict, *, gate_off: bool = False) -> bool:
         return False
 
     nonpublic = tool_name == "Bash" and public_visibility.gate_skips_for_visibility(command, cwd_repo)
-    skipped = nonpublic
-    term = None if skipped else banned_terms_scanner.scan_text(payload)
-    if term is None:
+    term = None if nonpublic else banned_terms_scanner.scan_text(payload)
+    if term is not None:
+        marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
+        if marker_decision is True:
+            return True
+        if marker_decision is None and emit_banned_term_deny(tool_name, command, payload, term, cwd_repo):
+            return True
+    return _generic_payload_blocks(payload, command, cwd_repo, nonpublic=nonpublic)
+
+
+def _generic_payload_blocks(payload: str, command: str, cwd_repo: Path | None, *, nonpublic: bool) -> bool:
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
+    from teatree.hooks.generic_forge_gate import generic_payload_finding  # noqa: PLC0415 — cold-hook read
+
+    finding = generic_payload_finding(
+        payload,
+        command,
+        cwd_repo,
+        nonpublic=nonpublic,
+    )
+    if finding is None:
         return False
-    marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
-    if marker_decision is not None:
-        return marker_decision
-    return emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
+    if finding.warn:
+        sys.stderr.write(
+            f"[teatree] NOTE: generic {finding.category} in a local commit; the push gate will rescan it.\n"
+        )
+        return False
+    return emit_pretooluse_deny(
+        f"BLOCKED: generic {finding.category} in a forge publish payload. Redact it before posting. "
+        "If the repo is private, add its host-qualified name to private_repos or verify forge visibility.",
+        gate_id="banned_terms",
+    )

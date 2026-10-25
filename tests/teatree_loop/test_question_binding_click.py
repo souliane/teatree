@@ -13,6 +13,7 @@ from django.test import TestCase
 
 from teatree.core import notify as notify_module
 from teatree.core.models import DeferredQuestion, Session, Task
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions, reask_escalated_questions
 from teatree.loop.question_binding import answer_from_click
 from tests._owner_channel import OWNER_CARD, OWNER_DECISION
@@ -65,11 +66,15 @@ def _posted_card(**record_kwargs: Any) -> tuple[DeferredQuestion, MagicMock]:
 class TestTheTapRoundTrip(TestCase):
     def test_a_tap_records_the_recommended_label_and_closes_the_root_card(self) -> None:
         row, backend = _posted_card()
+        answered: list[DeferredQuestion] = []
 
-        assert answer_from_click(_tap(row), backend=backend)
+        assert answer_from_click(_tap(row), backend=backend, on_answer=answered.append)
 
         row.refresh_from_db()
+        assert [question.pk for question in answered] == [row.pk]
         assert (row.answer_text, row.resolved_via) == ("Yes", "slack")
+        audit = DeferredQuestionAudit.objects.get(question=row, action="answered")
+        assert audit.resolver_id == f"slack:{_OWNER}"
         backend.update_message.assert_called_once()
         update = backend.update_message.call_args.kwargs
         assert (update["channel"], update["ts"]) == (_CHANNEL, _ROOT_TS)
@@ -100,10 +105,12 @@ class TestTheTapRoundTrip(TestCase):
     def test_a_tap_by_another_user_writes_nothing_and_updates_nothing(self) -> None:
         row, backend = _posted_card()
 
-        assert not answer_from_click(_tap(row, user="U0DEMOBOB"), backend=backend)
+        with self.assertLogs("teatree.loop.question_binding", level="WARNING") as logs:
+            assert not answer_from_click(_tap(row, user="U0DEMOBOB"), backend=backend)
 
         row.refresh_from_db()
         assert row.is_pending
+        assert "not the owner" in logs.output[0]
         backend.update_message.assert_not_called()
 
     def test_a_tap_naming_no_user_binds_nothing_while_the_owner_id_is_unknown(self) -> None:
@@ -159,6 +166,39 @@ class TestTheTapRoundTrip(TestCase):
         assert answer_from_click(_tap(row, in_thread=True), backend=backend)
 
         assert backend.update_message.call_args.kwargs["ts"] == _ROOT_TS
+
+    def test_a_tap_on_a_nested_card_updates_the_card_itself(self) -> None:
+        row, backend = _posted_card()
+        nested_ts = "1800000000.000500"
+        DeferredQuestion.objects.filter(pk=row.pk).update(slack_ts=nested_ts)
+        row.refresh_from_db()
+        payload = _tap(row)
+        payload["message"]["thread_ts"] = _ROOT_TS
+
+        assert answer_from_click(payload, backend=backend)
+
+        row.refresh_from_db()
+        assert row.answer_text == "Yes"
+        assert backend.update_message.call_args.kwargs["ts"] == nested_ts
+
+    def test_a_nested_card_tap_selects_its_own_timestamp_before_the_root(self) -> None:
+        root, backend = _posted_card()
+        nested = DeferredQuestion.record(
+            "Can I ship the other widgets?",
+            card=OWNER_CARD,
+            slack_channel=_CHANNEL,
+            slack_ts="1800000000.000500",
+        )
+        payload = _tap(nested)
+        payload["message"]["thread_ts"] = root.slack_ts
+
+        assert answer_from_click(payload, backend=backend)
+
+        root.refresh_from_db()
+        nested.refresh_from_db()
+        assert root.is_pending
+        assert nested.answer_text == "Yes"
+        assert backend.update_message.call_args.kwargs["ts"] == nested.slack_ts
 
     def test_a_tap_on_a_dismissed_question_says_it_no_longer_needs_an_answer(self) -> None:
         row, backend = _posted_card()

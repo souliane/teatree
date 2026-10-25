@@ -35,7 +35,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -67,8 +67,8 @@ from tests._git_repo import make_git_repo, run_git
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
 # Every headless spawn loads only the injected teatree MCP server (strict_mcp_config).
-_OPTIONS_SHA256 = "61194b7eea24c9a9a35d985cefb60bb4119b80e29742edd02136da509381e65f"
-_SYSTEM_CONTEXT_SHA256 = "eb41b61bee76f2f1905057e85f8f50c74b0256292b6993172114125824cf1baa"
+_OPTIONS_SHA256 = "333e6ec439c62195a10e383edaf2e274a761a03e8f7212e1abef98f5349979fa"
+_SYSTEM_CONTEXT_SHA256 = "2a1eba3c50281ba59ac1f7dc6abe047702e24771f169cef99af0cf91033ca04c"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]
 
@@ -186,8 +186,8 @@ def _carries_a_compaction_switch(launch: _Launch) -> bool:
     return any(switch in env or any(switch in arg for arg in argv) for switch in _COMPACTION_SWITCHES)
 
 
-class TestOnlyTheFactoryRunsUncompacted(TestCase):
-    """The compaction switch reaches the factory's ``claude`` child and never an attended session."""
+class TestOnlyABoundedFactoryChildRunsUncompacted(TestCase):
+    """The compaction switch reaches only a bounded factory child that asks for it, never an attended session."""
 
     def setUp(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -373,7 +373,7 @@ class TestInteractiveSessionsArePinned(TestCase):
         return value
 
     @contextlib.contextmanager
-    def _world(self, extra_env: Mapping[str, str] | None = None) -> Iterator[None]:
+    def _world(self, extra_env: Mapping[str, str] | None = None) -> Generator[None]:
         installed = [OverlayEntry(name=_PIN_OVERLAY, overlay_class=f"{__name__}:_PinOverlay")]
         with (
             patch.dict(os.environ, {**self._env, **(extra_env or {})}, clear=True),
@@ -435,6 +435,7 @@ class TestInteractiveSessionsArePinned(TestCase):
 
     def test_factory_only_settings_reach_no_attended_session(self) -> None:
         factory_only = {
+            "agent_advisor_model": "advisor-model",
             "agent_phase_models": {"coding": "cheap", "reviewing": "balanced"},
             "agent_skill_models": {"t3:code": [{"floor": "frontier"}]},
             "agent_honesty_model": "balanced",

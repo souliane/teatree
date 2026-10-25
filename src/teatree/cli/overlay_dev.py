@@ -32,6 +32,7 @@ from pathlib import Path
 import typer
 
 from teatree.config import discover_overlays
+from teatree.config.checkout_roots import checkout_roots
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.utils.run import run_allowed_to_fail, run_checked
 
@@ -221,6 +222,8 @@ def _ensure_sibling_worktree(workspace: TeatreeWorkspace, main_clone: Path, *, b
     sibling = workspace.root.parent / main_clone.name
     if sibling.exists():
         return sibling
+    if reason := checkout_roots().refusal(sibling, durable=True):
+        raise OverlayDevError(reason)
     target_branch = branch if _branch_exists(main_clone, branch) else _default_branch(main_clone)
     run_checked(["git", "-C", str(main_clone), "worktree", "add", str(sibling), target_branch])
     return sibling

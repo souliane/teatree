@@ -25,6 +25,8 @@ from teatree.utils.git_run import run_with_status
 from teatree.utils.secrets import read_pass
 from tests._git_repo import make_git_repo, run_git
 
+pytestmark = pytest.mark.usefixtures("pass_store")
+
 _TOKEN = "gh" + "p_" + "r" * 36
 _STORE_TOKEN = "gh" + "p_" + "s" * 36
 #: Resolves the store the way ``pass`` does: ``PASSWORD_STORE_DIR``, else ``$HOME/.password-store``.

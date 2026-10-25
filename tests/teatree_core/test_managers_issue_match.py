@@ -2,7 +2,7 @@
 
 from django.test import TestCase
 
-from teatree.core.managers_issue_match import matching_issue_q
+from teatree.core.managers_issue_match import matching_issue_q, reference_issue_q
 from teatree.core.models import Ticket
 
 
@@ -26,3 +26,17 @@ class MatchingIssueQTests(TestCase):
         found = Ticket.objects.filter(matching_issue_q("auto:1701-some-branch")).get()
         assert found.pk == ticket.pk
         assert not Ticket.objects.filter(matching_issue_q("auto:other-branch")).exists()
+
+
+class ReferenceIssueQTests(TestCase):
+    def test_member_fragment_never_matches_umbrella(self) -> None:
+        base = "https://github.com/o/r/issues/56"
+        umbrella = Ticket.objects.create(overlay="test", issue_url=base)
+        member = Ticket.objects.create(overlay="test", issue_url=f"{base}#dream-gap=abc")
+        assert list(Ticket.objects.filter(reference_issue_q(member.issue_url))) == [member]
+        assert umbrella not in Ticket.objects.filter(reference_issue_q(member.issue_url))
+
+    def test_comment_anchor_resolves_to_parent(self) -> None:
+        base = "https://github.com/o/r/issues/56"
+        umbrella = Ticket.objects.create(overlay="test", issue_url=base)
+        assert list(Ticket.objects.filter(reference_issue_q(f"{base}#issuecomment-1"))) == [umbrella]

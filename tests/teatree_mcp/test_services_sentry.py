@@ -9,7 +9,7 @@ import in ``teatree.mcp``); the HTTP transport is the only mock.
 import asyncio
 import contextlib
 import dataclasses
-from collections.abc import Iterator
+from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -27,7 +27,7 @@ from tests.teatree_mcp._call_tool_result import structured
 
 
 @contextlib.contextmanager
-def _builder(**mock_kwargs: object) -> Iterator[MagicMock]:
+def _builder(**mock_kwargs: object) -> Generator[MagicMock]:
     build = MagicMock(**mock_kwargs)
     with patch.object(services_sentry, "SENTRY", dataclasses.replace(services_sentry.SENTRY, build=build)):
         yield build

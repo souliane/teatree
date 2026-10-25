@@ -179,12 +179,10 @@ def _opened_from_a_fork(row: dict) -> bool:
 def declared_self_identities_raw(host: str) -> tuple[str, ...]:
     """The logins the operator declared as its own on *host*, AS WRITTEN.
 
-    The one read of ``self_forge_identities``, so the three consumers of that
-    setting — this push gate, the review-candidate self-author skip, and the #162
-    issue-hygiene authority guard — cannot drift on what it means. Case is
-    preserved because they do not agree on folding: this gate lowercases, the
-    review-candidate comparison is case-sensitive, and folding here would silently
-    narrow it. Each caller folds (or does not) as its own comparison requires.
+    The one read of ``self_forge_identities`` shared by this push gate, the
+    review-candidate self-author skip, issue hygiene, and review own-MR proof.
+    Case is preserved: this gate lowercases, review-candidate casefolds, and
+    review own-MR proof compares exactly. Each caller applies its own comparison.
 
     Lives in the hooks layer because the cold PreToolUse subprocess reads it too,
     and that subprocess may import only stdlib plus :mod:`teatree.config`.

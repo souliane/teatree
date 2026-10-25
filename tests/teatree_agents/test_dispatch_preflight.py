@@ -12,6 +12,7 @@ from teatree.agents.dispatch_preflight import (
     head_state_brief_lines,
     resolve_head_state,
     review_diff_brief_lines,
+    round_brief_lines,
     rubric_brief_lines,
 )
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
@@ -61,6 +62,18 @@ class TestResolveHeadState(TestCase):
 
 
 class TestHeadStateBriefLines(TestCase):
+    def test_coding_round_names_standard_and_missing_measured_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _worktree_with_commit(Path(tmp), subject="fix: prior round")
+            ticket = Ticket.objects.create(issue_url="https://example.com/issues/5330")
+            Worktree.objects.create(ticket=ticket, repo_path=path, branch="feat-x", extra={"worktree_path": path})
+            session = Session.objects.create(ticket=ticket)
+            task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+            block = "\n".join(round_brief_lines(task))
+            assert "Finding standard:" in block
+            assert "review-evidence --expect-sha" in block
+            assert "matrix result for each new or changed test" in block
+
     def test_empty_when_no_head_state(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/4")
         session = Session.objects.create(ticket=ticket)
@@ -205,6 +218,10 @@ class TestRubricBriefLines(TestCase):
         assert f"TICKET RUBRIC (ticket {ticket.pk})" in block
         for ordinal, text in enumerate(_RUBRIC_AC):
             assert f"#{ordinal} {text}" in block
+        header = next(line for line in block.splitlines() if line.startswith("TICKET RUBRIC"))
+        assert '"text_hash": "<hash>"' in header
+        for criterion in ticket.rubrics.get().criteria.all():
+            assert f"[text_hash {criterion.text_hash}]" in block
 
     def test_a_pr_no_ticket_owns_carries_no_block(self) -> None:
         assert rubric_brief_lines(_reviewing_task_for_pr()) == ()

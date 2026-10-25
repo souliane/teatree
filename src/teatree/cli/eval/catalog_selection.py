@@ -7,13 +7,37 @@ surface rather than selection logic, and gives the ``--docker`` passthrough and 
 workflows one function to agree with.
 """
 
-import typer
+from collections.abc import Callable
 
+import typer
+from rich.console import Console
+
+from teatree.cli.eval.all import build_scenarios_table
 from teatree.cli.eval.app_helpers import require_spec
 from teatree.cli.eval.lane_filter import filter_specs_by_lane
 from teatree.cli.eval.surface_filter import filter_specs_by_surface
 from teatree.eval.lane_shard import ShardSpecError, filter_specs_by_shard, resolve_rotating_shard
 from teatree.eval.models import EvalSpec
+
+
+def print_selected_catalog(
+    discover: Callable[[], list[EvalSpec]],
+    bootstrap: Callable[[], None],
+    *,
+    lane: str | None,
+    shard: str | None,
+    names_only: bool,
+) -> None:
+    bootstrap()
+    specs = select_specs(discover(), None, lane=lane, surface=None, shard=shard)
+    if names_only:
+        for spec in specs:
+            typer.echo(spec.name)
+        return
+    if not specs:
+        typer.echo("(no scenarios discovered)")
+        return
+    Console().print(build_scenarios_table(specs))
 
 
 def select_specs(

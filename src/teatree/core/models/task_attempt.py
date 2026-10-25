@@ -1,5 +1,6 @@
 from datetime import datetime
-from functools import partial
+from functools import partial, reduce
+from operator import or_
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from django.db import models, transaction
@@ -8,7 +9,8 @@ from django.db.models.functions import Coalesce
 from teatree.core.modelkit.gate_registry import get
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.task import Task
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.core.models.task_repair_queries import next_repair_iteration
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, PARK_ERROR_PREFIXES
 from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.core.telemetry.admission import LifecycleEvent, record_lifecycle_event
 from teatree.utils.session_ref import session_ref
@@ -21,29 +23,92 @@ if TYPE_CHECKING:
 #: Room a resume needs beyond the conversation: teatree's dispatch prompts measure 39k-78k tokens (#4817).
 RESUME_HEADROOM_TOKENS = 80_000
 
+#: A conversation past this size is neither resumed nor held open for follow-ups: each turn re-reads it.
+RESUME_CONTEXT_CAP_TOKENS = 200_000
+
 #: The columns an attempt's billed spend lives in — the cost ledger no park bookkeeping may fold or prune away.
-_BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
+BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
 
 #: Kinds where a route candidate ran and did not deliver. Outage and provisioning failures are deliberately
 #: absent (no other candidate fixes them), as are the evidence and recording kinds, which earn their one
 #: corrective retry on the same candidate.
-CANDIDATE_FAULT_KINDS = frozenset({FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR})
+CANDIDATE_FAULT_KINDS = frozenset(
+    {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
+)
+READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
+# Stamped in no-op recovery summaries; read by doctor duplicate-execution and skill-gap checks.
+NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
+
+
+PARK_ERROR_Q = reduce(or_, (models.Q(error__startswith=prefix) for prefix in PARK_ERROR_PREFIXES))
 
 
 class TaskAttemptQuerySet(models.QuerySet):
-    def failed_route_candidates(self, source_skill: str) -> dict[int, int]:
-        """Route candidate index -> its latest failed attempt's id, since the task's last usage-window park."""
+    def with_previous_end(self) -> "TaskAttemptQuerySet":
+        """Annotate ``previous_end``, when the task's previous finished attempt ended."""
+        previous = (
+            self.model.objects.filter(
+                task=models.OuterRef("task"), pk__lt=models.OuterRef("pk"), ended_at__isnull=False
+            )
+            .order_by("-pk")
+            .values("ended_at")[:1]
+        )
+        return self.annotate(previous_end=models.Subquery(previous))
+
+    def skill_loads_in_session(self, session_id: str) -> list[str]:
+        if not session_id:
+            return []
+        prior_loads = self.filter(agent_session_id=session_id).values_list(
+            "result__skill_assurance__observed_loads", flat=True
+        )
+        return [name for loads in prior_loads if isinstance(loads, list) for name in loads if isinstance(name, str)]
+
+    def parks(self) -> "TaskAttemptQuerySet":
+        return self.filter(PARK_ERROR_Q)
+
+    def excluding_parks(self) -> "TaskAttemptQuerySet":
+        return self.exclude(PARK_ERROR_Q)
+
+    def real_dispatches(self) -> "TaskAttemptQuerySet":
+        return (
+            self.excluding_parks()
+            .filter(output_tokens__isnull=False, usage_unknown=False)
+            .select_related("task", "task__parent_task")
+        )
+
+    def context_trail(self) -> dict[int, list[tuple[int, int | None]]]:
+        """Each task's non-park attempts as ``(attempt id, context_tokens)``, oldest first."""
+        trail: dict[int, list[tuple[int, int | None]]] = {}
+        for task_id, attempt_id, context in (
+            self.excluding_parks().order_by("task_id", "pk").values_list("task_id", "pk", "context_tokens")
+        ):
+            trail.setdefault(task_id, []).append((attempt_id, context))
+        return trail
+
+    def _since_last_park(self) -> "TaskAttemptQuerySet":
         last_park = (
             self.filter(error__startswith=LIMIT_PARKED_PREFIX).order_by("-pk").values_list("pk", flat=True).first()
         )
-        failed = self.filter(
+        return self.filter(pk__gt=last_park or 0)
+
+    def failed_route_candidates(self, source_skill: str) -> dict[int, int]:
+        """Route candidate index -> its latest failed attempt's id, since the task's last usage-window park."""
+        failed = self._since_last_park().filter(
             route_source_skill=source_skill,
             route_candidate_index__isnull=False,
             outcome__in=TaskAttempt.FAILED_OUTCOMES,
             failure_kind__in=CANDIDATE_FAULT_KINDS,
-            pk__gt=last_park or 0,
         )
         return dict(failed.order_by("pk").values_list("route_candidate_index", "pk"))
+
+    def refused_brief_candidates(self, source_skill: str) -> dict[int, str]:
+        """Route candidate index -> the reason its read-only brief was last refused, since the task's last park."""
+        refused = self._since_last_park().filter(
+            route_source_skill=source_skill,
+            route_candidate_index__isnull=False,
+            error__startswith=READ_ONLY_BRIEF_REFUSED_PREFIX,
+        )
+        return dict(refused.order_by("pk").values_list("route_candidate_index", "error"))
 
     def create(self, **kwargs: object) -> "TaskAttempt":
         """Record an attempt — folding a REPEATED, unchanged usage-window park into one row.
@@ -58,10 +123,10 @@ class TaskAttemptQuerySet(models.QuerySet):
 
         A changed reason, an intervening real attempt, and any non-park attempt all insert
         normally, so the audit trail still shows every genuine transition. So does a park that
-        BILLED spend: it is a run that ended in a park (a deploy checkpoint, a reactive limit),
+        BILLED spend: it is a run that ended in a park (a checkpoint, a reactive limit),
         and folding it would drop its tokens and its session id from the ledger.
         """
-        if any(kwargs.get(column) is not None for column in _BILLED_COLUMNS):
+        if any(kwargs.get(column) is not None for column in BILLED_COLUMNS):
             return super().create(**kwargs)
         coalesced = self._coalesce_repeated_park(
             task=kwargs.get("task"),
@@ -72,7 +137,7 @@ class TaskAttemptQuerySet(models.QuerySet):
 
     def _coalesce_repeated_park(self, *, task: object, error: object, ended_at: object) -> "TaskAttempt | None":
         """The preceding park row this insert repeats verbatim, bumped — or ``None`` to insert."""
-        if task is None or not isinstance(error, str) or not error.startswith(LIMIT_PARKED_PREFIX):
+        if task is None or not isinstance(error, str) or not error.startswith(PARK_ERROR_PREFIXES):
             return None
         latest = self.model.objects.filter(task=task).order_by("-started_at", "-pk").first()
         if latest is None or latest.error != error:
@@ -94,10 +159,10 @@ class TaskAttemptQuerySet(models.QuerySet):
 
         This lane asks the park's own three questions instead.
 
-        **Is it a park?** ``error`` carries :data:`LIMIT_PARKED_PREFIX` — the ONE
-        canonical marker, written by the single ``record_park`` chokepoint and
-        already the definition the coalescer, the iteration stamp and the park-spin
-        detector share. An exact prefix, not a shape heuristic: a ``stuck_loop:``
+        **Is it a park?** ``error`` carries a :data:`PARK_ERROR_PREFIXES` marker —
+        written by ``record_park`` or the checkout fence's park, and already the
+        definition the coalescer, the iteration stamp and the park-spin detector
+        share. An exact prefix, not a shape heuristic: a ``stuck_loop:``
         lease-loss breach is a genuine watchdog failure record, and is deliberately
         NOT swept in with it.
 
@@ -112,11 +177,14 @@ class TaskAttemptQuerySet(models.QuerySet):
         ``started_at`` window would delete exactly the live "still parked, N polls
         later" row. ``started_at`` is the fallback when ``ended_at`` was never set.
         """
-        return self.filter(
-            error__startswith=LIMIT_PARKED_PREFIX,
-            **{f"{column}__isnull": True for column in _BILLED_COLUMNS},
-        ).filter(
-            models.Q(ended_at__lt=cutoff) | models.Q(ended_at__isnull=True, started_at__lt=cutoff),
+        return (
+            self.parks()
+            .filter(
+                **{f"{column}__isnull": True for column in BILLED_COLUMNS},
+            )
+            .filter(
+                models.Q(ended_at__lt=cutoff) | models.Q(ended_at__isnull=True, started_at__lt=cutoff),
+            )
         )
 
     def usages(self) -> "list[AttemptUsage]":
@@ -237,6 +305,10 @@ class TaskAttempt(models.Model):
     FAILED_OUTCOMES: ClassVar[tuple[str, ...]] = (Outcome.REFUSAL, Outcome.CRASH)
 
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attempts")
+    if TYPE_CHECKING:
+        # Django synthesises this at class-prep time, so a static checker cannot see it.
+        task_id: int
+
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     error = models.TextField(blank=True)
@@ -321,6 +393,8 @@ class TaskAttempt(models.Model):
 
     objects = TaskAttemptQuerySet.as_manager()
 
+    previous_end: datetime | None  # annotation only: a page that forgets ``with_previous_end()`` raises
+
     class Meta:
         db_table = "teatree_taskattempt"
         indexes = (
@@ -387,7 +461,7 @@ class TaskAttempt(models.Model):
         if (
             self.outcome
             and self.outcome != previous_outcome
-            and not self.error.startswith(LIMIT_PARKED_PREFIX)
+            and not self.error.startswith(PARK_ERROR_PREFIXES)
             and (update_fields is None or "outcome" in update_fields)
         ):
             transaction.on_commit(
@@ -407,6 +481,18 @@ class TaskAttempt(models.Model):
                 ),
                 using=using,
             )
+
+    @property
+    def display_started_at(self) -> datetime:
+        """When a finished attempt started working: its task's admission, never before the previous attempt ended.
+
+        ``started_at`` is the insert stamp, written when the run ends, so it stays the figure wherever no admission
+        can be measured (no stamp, or one overwritten by a later admission).
+        """
+        admitted = self.task.admitted_at
+        if admitted is None or self.ended_at is None or admitted > self.ended_at:
+            return self.started_at
+        return max(admitted, self.previous_end or admitted)
 
     def _classify_failure_kind(self) -> str:
         """Name this attempt's failure cause from ``error`` (#3957), blank when it did not fail.
@@ -461,24 +547,18 @@ class TaskAttempt(models.Model):
         """Whether resuming this attempt's conversation hits a wall a fresh one avoids (#4874)."""
         if self.model_fell_back:
             return True
-        if self.context_tokens is None or self.context_window_tokens is None:
+        if self.context_tokens is None:
             return False
-        return self.context_tokens + RESUME_HEADROOM_TOKENS > self.context_window_tokens
+        if self.context_tokens > RESUME_CONTEXT_CAP_TOKENS:
+            return True
+        return (
+            self.context_window_tokens is not None
+            and self.context_tokens + RESUME_HEADROOM_TOKENS > self.context_window_tokens
+        )
 
     def _stamp_repair_loop_fields(self) -> None:
-        """Stamp the iteration counter + error fingerprint on insert (#2009).
-
-        The single chokepoint every attempt-creation site funnels through, so the
-        budget fields cannot drift between the headless recorder, the in-session
-        recorder, and the operator out-of-band paths. Each is stamped only when
-        unset, so an explicit value (a backfill or a test) is never clobbered.
-        """
+        """Stamp the iteration counter and error fingerprint on insert."""
         if not self.error_fingerprint:
             self.error_fingerprint = terminal_reason_fingerprint(self.error)
-        # A limit-park records a scheduling event, not a work iteration (#3689): the
-        # budget query (task_repair.phase_attempts) already EXCLUDES park rows, so
-        # stamping one here disagrees with that query and leaves the park row carrying a
-        # bogus work-iteration number that corrupts the "attempt N/max" display and the
-        # S5 signal. Leave it at the 0 sentinel so the stamp and the budget query agree.
-        if not self.iteration and self.task_id and not self.error.startswith(LIMIT_PARKED_PREFIX):  # ty: ignore[unresolved-attribute]
-            self.iteration = self.task.phase_iteration_count() + 1
+        if not self.iteration and self.task_id:
+            self.iteration = next_repair_iteration(self)

@@ -10,7 +10,7 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -116,13 +116,13 @@ class TestSessionStartInjectsHandover(_RegistryIsolation):
 
 
 @contextlib.contextmanager
-def _tmp_dir() -> Iterator[str]:
+def _tmp_dir() -> Generator[str]:
     with tempfile.TemporaryDirectory() as directory:
         yield directory
 
 
 @contextlib.contextmanager
-def _env(var: str, value: str) -> Iterator[None]:
+def _env(var: str, value: str) -> Generator[None]:
     prior = os.environ.get(var)
     os.environ[var] = value
     try:

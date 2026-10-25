@@ -3,13 +3,12 @@
 import asyncio
 from unittest.mock import patch
 
-import pytest
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.core.mcp_tool_group import ApprovalTier, McpTool, McpToolGroup
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
-from teatree.mcp.server import ToolContractError, build_server
+from teatree.mcp.server import build_server
 
 
 def _write(subject: str) -> str:
@@ -73,5 +72,4 @@ def test_destructive_posture_write_is_refused() -> None:
         tier=ApprovalTier.POSTURE,
     )
 
-    with pytest.raises(ToolContractError, match="demo_write"):
-        _tools(tool)
+    assert "demo_write" not in _tools(tool)

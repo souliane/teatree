@@ -39,7 +39,9 @@ on a directory the entry point then refuses, and the gate fails closed anyway.
 ``TEATREE_INVOCATION_CWD``, the escape the refusal itself documents, for a
 directory :mod:`hooks.scripts.container_visibility` can PROVE the container reaches.
 A directory it cannot vouch for is declared to nothing and stays refused, which is
-the leak guard doing its job rather than a gap in it.
+the leak guard doing its job rather than a gap in it. That refusal (exit 69) is a
+venue fault, and :func:`venue_fault` names its cause so no gate reads it as a
+verdict on what it was asked to judge.
 
 Cold-import safe: the live hook is a bare ``python3`` subprocess with no guarantee
 ``teatree`` is importable, so the module top imports only stdlib plus the
@@ -53,7 +55,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from hooks.scripts.container_visibility import container_path
+from hooks.scripts.container_visibility import container_path, unreachable_reason
 
 CompletedProcess = subprocess.CompletedProcess
 TimeoutExpired = subprocess.TimeoutExpired
@@ -180,43 +182,30 @@ def run_t3(
     )
 
 
-#: The shell's own codes for "the command could not be executed AT ALL" — 126 found but
-#: not executable, 127 not found. A structural fact with a POSIX contract behind it, not
-#: a substring of somebody's error text, which is what makes it safe for a security gate
-#: to fail OPEN on: widening a content matcher narrows what the gate still covers, while
-#: this names a process that never started and therefore never scanned anything.
-_COULD_NOT_EXEC_CODES = frozenset({126, 127})
+#: ``deploy/t3``'s EX_UNAVAILABLE: THIS venue cannot run the CLI, so no command ran and nothing was judged.
+VENUE_UNAVAILABLE_EXIT = 69
 
 
-#: Tracebacks a ``t3`` whose CLI import chain loads Django models before setup emits
-#: BEFORE the requested command runs — the hook env carries no ``DJANGO_SETTINGS_MODULE``.
-#: A traceback has no exit code of its own, so this half is unavoidably textual; it is
-#: deliberately NOT widened, because a gate treating more error TEXT as "never ran" is a
-#: gate covering less.
-_BOOTSTRAP_CRASH_MARKERS = (
-    "AppRegistryNotReady",
-    "ImproperlyConfigured",
-    "ModuleNotFoundError",
-    "Apps aren't loaded yet",
-)
+def venue_fault(returncode: int, stderr: str | None, *, cwd: str | Path | None = None) -> str | None:
+    """Why the launcher could not run here, or ``None`` when *returncode* is not its venue fault.
 
-
-def t3_never_started(result: subprocess.CompletedProcess[str]) -> bool:
-    """Whether the ``t3`` invocation never STARTED, so it produced no verdict at all.
-
-    The case this exists for is a broken ``t3`` on ``PATH``: the managed launcher is a
-    bash script that ``exec``s a checkout's ``deploy/t3``, so a launcher naming a path
-    this venue cannot reach runs, fails to exec, and exits 126 — with no output from the
-    command anyone asked for. A gate reading only "nonzero" calls that a scanner error
-    and refuses every commit on the box.
-
-    ``FileNotFoundError`` covers the argv-not-found case before a process exists at all;
-    this covers the shell layer between that and the real command, plus the bootstrap
-    crash that reaches the interpreter and dies before the command.
+    The cause is the launcher's refusal line, plus the prover's reason when the hook
+    could not declare the directory it ran from — a refusal names a fact someone can fix.
     """
-    if result.returncode in _COULD_NOT_EXEC_CODES:
-        return True
-    return any(marker in (result.stderr or "") for marker in _BOOTSTRAP_CRASH_MARKERS)
+    if returncode != VENUE_UNAVAILABLE_EXIT:
+        return None
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    cause = next(
+        (line for line in lines if line.startswith("deploy/t3:")),
+        lines[0] if lines else "the launcher printed no reason",
+    )
+    directory = Path(cwd) if cwd is not None else hook_checkout_root()
+    if directory is not None and (undeclared := unreachable_reason(directory)):
+        cause = f"{cause} The hook could not declare {directory} to the container: {undeclared}."
+    return (
+        f"the containerized `t3` cannot run in this venue (exit {VENUE_UNAVAILABLE_EXIT}) — a venue fault, "
+        f"not a verdict on the content: {cause}"
+    )
 
 
 def spawn_t3_detached(argv: list[str]) -> None:

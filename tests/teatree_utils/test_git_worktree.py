@@ -12,7 +12,13 @@ import pytest
 
 from teatree.utils.git_sync import RemoteReadError
 from teatree.utils.git_upstream import branch_upstream
-from teatree.utils.git_worktree import NoStartPointError, cut_start_point, locked_worktree_paths, worktree_add
+from teatree.utils.git_worktree import (
+    NoStartPointError,
+    cut_start_point,
+    locked_worktree_paths,
+    worktree_add,
+    worktree_destination,
+)
 from teatree.utils.git_worktree_query import (
     WorktreeRecord,
     canonical_repo_root,
@@ -22,6 +28,22 @@ from teatree.utils.git_worktree_query import (
     worktree_for_branch,
 )
 from teatree.utils.run import run_allowed_to_fail, run_checked
+
+
+@pytest.mark.parametrize(
+    ("args", "add", "destination"),
+    [
+        (["-b", "branch", "target", "origin/main"], True, "target"),
+        (["-qfb", "branch", "target"], True, "target"),
+        (["--orphan", "target"], True, "target"),
+        (["--", "-literal-target"], True, "-literal-target"),
+        (["old", "new"], False, "new"),
+        (["old"], False, None),
+        ([], True, None),
+    ],
+)
+def test_worktree_destination_tracks_git_option_arity(args: list[str], destination: str | None, *, add: bool) -> None:
+    assert worktree_destination(args, add=add) == destination
 
 
 def _git(cwd: Path, *args: str) -> None:

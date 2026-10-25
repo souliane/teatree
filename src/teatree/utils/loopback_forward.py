@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import IO
 
 from teatree.paths import data_dir_root
+from teatree.utils.compose_project import production_compose_project
 from teatree.utils.ports import running_in_container
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail, spawn_byte_pipe
 
@@ -51,6 +52,7 @@ _ADMIN_CONTAINER_PORT = 8000
 _RELAY_CHUNK = 65536
 _DOCKER_PROBE_TIMEOUT_SECONDS = 10.0
 _FORWARDER_NAME = "teatree-admin-forward"
+_FORWARDER_ADMIN_LABEL = "teatree.admin-container"
 _FORWARDER_MEMORY = "64m"
 _DOCKER_SOCKET = "/var/run/docker.sock"
 
@@ -137,8 +139,8 @@ def _pump_pipe_to_socket(source: IO[bytes], sink: socket.socket) -> None:
             sink.sendall(chunk)
 
 
-def _running_admin_container() -> str:
-    """The id of the running admin container, or ``""`` when the stack is not up.
+def _running_admin_containers() -> list[str]:
+    """The ids of the running admin containers, none when the stack is not up.
 
     Bounded and non-raising: an absent docker binary, an unresponsive daemon and a stopped
     stack must all degrade to an actionable message rather than stall the command.
@@ -148,6 +150,8 @@ def _running_admin_container() -> str:
             [
                 "docker",
                 "ps",
+                "--filter",
+                f"label=com.docker.compose.project={production_compose_project()}",
                 "--filter",
                 f"label=com.docker.compose.service={_ADMIN_SERVICE}",
                 "--filter",
@@ -159,9 +163,8 @@ def _running_admin_container() -> str:
             timeout=_DOCKER_PROBE_TIMEOUT_SECONDS,
         )
     except (OSError, TimeoutExpired):
-        return ""
-    first, _, _ = result.stdout.strip().partition("\n")
-    return first
+        return []
+    return result.stdout.split()
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,7 +327,19 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
     """
     name = _forwarder_name(port)
     url = f"http://{_LOOPBACK}:{port}"
-    if _docker("ps", "--filter", f"name=^{name}$", "--filter", "status=running", "--format", "{{.ID}}"):
+    # The bridge targets this admin id, which changes when the admin is recreated.
+    label = f"{_FORWARDER_ADMIN_LABEL}={container}"
+    if _docker(
+        "ps",
+        "--filter",
+        f"name=^{name}$",
+        "--filter",
+        f"label={label}",
+        "--filter",
+        "status=running",
+        "--format",
+        "{{.ID}}",
+    ):
         return ForwardResult(url=url)
     image = _container_image(container)
     if not image:
@@ -335,6 +350,8 @@ def _ensure_published_forwarder(container: str, *, port: int) -> ForwardResult:
         "run",
         "--detach",
         "--rm",
+        "--label",
+        label,
         "--name",
         name,
         "--publish",
@@ -368,11 +385,17 @@ def ensure_admin_forward(*, port: int = FORWARD_PORT) -> ForwardResult:
     A containerized caller cannot bind a host port at all, so it publishes one instead —
     the only venue difference; both end at the same ``docker exec`` bridge.
     """
-    container = _running_admin_container()
-    if not container:
+    containers = _running_admin_containers()
+    if not containers:
         return ForwardResult(
             error=f"no running {_ADMIN_SERVICE} container — start the stack (deploy/deploy.sh) to reach it from here"
         )
+    if len(containers) > 1:
+        return ForwardResult(
+            error=f"{len(containers)} running {_ADMIN_SERVICE} containers in compose project "
+            f"{production_compose_project()!r} ({', '.join(containers)}); the deploy runs one, so none is forwarded"
+        )
+    [container] = containers
     if running_in_container():
         return _ensure_published_forwarder(container, port=port)
     forward = LoopbackForward(container, _ADMIN_CONTAINER_PORT, port=port)

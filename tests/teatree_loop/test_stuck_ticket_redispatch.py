@@ -10,13 +10,20 @@ through the SAME #2009 repair budget, escalating LOUDLY via a ``DeferredQuestion
 when the budget is exhausted — so a stuck ticket is drained or surfaced, never silent.
 """
 
+import json
+from contextlib import ExitStack
 from datetime import timedelta
+from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import mock
 from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from teatree.agents import runner
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.runner import HarnessOutcome
 from teatree.agents.runner_interruption import _record_stuck_outcome
@@ -24,26 +31,33 @@ from teatree.core.backend_protocols import PrOpenState
 from teatree.core.mode_resolution import set_mode_override
 from teatree.core.modelkit.task_failure_taxonomy import (
     CANCELLED_PREFIX,
+    LEASE_EXPIRED_PREFIX,
     PLAN_STALE_PREFIX,
     REVIEW_UNRECORDABLE_PREFIX,
     FailureKind,
 )
-from teatree.core.models import Mode, PlanArtifact, PullRequest, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import Mode, PlanArtifact, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.task_claim import claim_generation
 from teatree.core.models.transition import TicketTransition
 from teatree.core.repair_loop import max_phase_iterations
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
+from teatree.loop import stuck_ticket_redispatch
 from teatree.loop.stuck_ticket_redispatch import (
     DEFAULT_STUCK_IDLE_HOURS,
     _idle_threshold_hours,
     redispatch_stuck_tickets,
 )
 from teatree.loop.tick_recovery import _reap_stale_task_claims
+from teatree.utils.git_run import run_strict
 from tests._pr_open_state_stub import pr_open_state
 from tests.factories import record_test_plan
+from tests.teatree_core._self_review_helpers import self_review_result
+from tests.teatree_core.conftest import record_maker_review_for_test, record_review_context_for_test
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 _REVIEWED_HEAD = "a1b2c3d4" * 5
 _REAL_DEFECT = "the review found a real defect in the diff"
@@ -81,6 +95,13 @@ def _finished_task(
     if hours_ago:
         TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(hours=hours_ago))
     return task
+
+
+def _lease_reaps(ticket: Ticket, count: int, *, phase: str = "testing") -> None:
+    for index in range(count):
+        _finished_task(
+            ticket, phase=phase, status=Task.Status.FAILED, error=f"{LEASE_EXPIRED_PREFIX}worker {index} died"
+        )
 
 
 class TestStuckTicketRedispatch(TestCase):
@@ -212,6 +233,78 @@ class TestStuckTicketRedispatch(TestCase):
         # Idempotent: a second sweep neither schedules nor spams another escalation.
         assert redispatch_stuck_tickets() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_repeated_lease_reaps_halt_redispatch_without_spending_repair_iterations(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        for index in range(max_phase_iterations()):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"lease_expired: worker {index} died",
+            )
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{ticket.pk}").count() == 1
+
+    def test_lease_reaps_below_the_cap_remain_retryable(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        for index in range(max_phase_iterations() - 1):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"lease_expired: worker {index} died",
+            )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+        assert redispatch_stuck_tickets() == 0
+        assert not DeferredQuestion.objects.exists()
+
+    def test_lease_reaps_before_a_work_attempt_do_not_count_towards_the_halt_after_it(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        cap = max_phase_iterations()
+        _lease_reaps(ticket, cap)
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=_REAL_DEFECT)
+        _lease_reaps(ticket, cap - 1)
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+
+    def test_lease_reaps_after_a_work_attempt_count_towards_the_halt(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=_REAL_DEFECT)
+        _lease_reaps(ticket, max_phase_iterations())
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{ticket.pk}").count() == 1
+
+    def test_an_audit_row_between_two_deterministic_failures_breaks_stall_adjacency(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for error in (
+            "missing required evidence for phase 'testing': no tests_run in alpha",
+            f"{CANCELLED_PREFIX}operator paused retry",
+            "missing required evidence for phase 'testing': no tests_run in beta",
+        ):
+            _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=error)
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_capacity_dip_after_a_clean_attempt_is_not_a_failing_phase(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        _finished_task(ticket, phase="testing", status=Task.Status.COMPLETED)
+        dip = LimitMatch(phrase="5-hour limit", cause=LimitCause.SUBSCRIPTION_SESSION).as_reason()
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=dip)
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
 
     def test_repeated_exhaustion_failures_do_not_halt_redispatch(self) -> None:
         # A stuck ticket whose recent phase attempts all died on the session limit must
@@ -1013,6 +1106,148 @@ class TestOperatorCancelledTickets(TestCase):
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_newer_other_phase_record_does_not_undo_coding_cancel(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+        coding = _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}stop")
+        coding.fail(reason=f"{CANCELLED_PREFIX}stop", by_holder=False)
+        _finished_task(ticket, phase="reviewing", status=Task.Status.COMPLETED, hours_ago=48)
+
+        assert redispatch_stuck_tickets() == 0
+        assert not ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+
+
+class TestCompletedReviewNoCoding(TestCase):
+    def test_incident_replay_guards_the_mint_then_parks_a_forced_dispatch(self) -> None:
+        with TemporaryDirectory() as temp:
+            checkout = Path(temp) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=3)
+            head = run_strict(repo=str(checkout), args=["rev-parse", "HEAD"])
+            ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay=ticket.overlay,
+                repo_path="test/repo",
+                branch="feature",
+                extra={"worktree_path": str(checkout)},
+            )
+            coding = _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}stop")
+            coding.fail(reason=f"{CANCELLED_PREFIX}stop", by_holder=False)
+            record_review_context_for_test(ticket)
+            record_maker_review_for_test(ticket, head)
+            review = Task.objects.create(
+                ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing"
+            )
+            review.claim(claimed_by="operator")
+            call_command(
+                "tasks",
+                "record-attempt",
+                str(review.pk),
+                json.dumps(self_review_result("merge_safe", reviewed_sha=head)),
+                claim_token=claim_generation(review),
+                stdout=StringIO(),
+            )
+            assert review.attempts.latest("pk").result["recording_source"] == "hand"
+            guards = (
+                (Ticket, "newest_phase_task_was_cancelled"),
+                (stuck_ticket_redispatch, "_merge_safe_review_after_plan"),
+                (Ticket, "newest_task_recorded_by_hand"),
+            )
+
+            assert redispatch_stuck_tickets() == 0
+            for kept in guards:
+                with ExitStack() as patched:
+                    for owner, guard in guards:
+                        if (owner, guard) != kept:
+                            patched.enter_context(patch.object(owner, guard, return_value=False))
+                    assert redispatch_stuck_tickets() == 0, f"{kept[1]} alone did not hold"
+            with ExitStack() as patched:
+                for owner, guard in guards:
+                    patched.enter_context(patch.object(owner, guard, return_value=False))
+                assert redispatch_stuck_tickets() == 1
+
+            task = ticket.tasks.get(phase="coding", status=Task.Status.PENDING)
+            task.claim(claimed_by="factory")
+            driver = mock.Mock()
+            with mock.patch.object(runner, "_run_agent", driver):
+                attempt = runner.run_agent(task, phase="coding", overlay_skill_metadata=mock.Mock())
+            driver.assert_not_called()
+            task.refresh_from_db()
+            assert task.status == Task.Status.PENDING
+            assert attempt.exit_code == 0
+
+    def test_a_newer_hand_record_keeps_an_older_failed_coding_attempt_from_reminting(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+        _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error="outage_death: old run")
+        plan = _finished_task(ticket, phase="planning", status=Task.Status.COMPLETED)
+        plan.attempts.update(result={"recording_source": "hand"})
+
+        assert redispatch_stuck_tickets() == 0
+        assert not ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+
+    def test_a_newer_worker_record_still_lets_a_failed_coding_attempt_remint(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+        _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error="outage_death: old run")
+        _finished_task(ticket, phase="planning", status=Task.Status.COMPLETED)
+
+        assert redispatch_stuck_tickets() == 1
+
+    def test_an_unreadable_checkout_head_does_not_abort_the_sweep_for_other_tickets(self) -> None:
+        with TemporaryDirectory() as not_a_repo:
+            reviewed = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+            Worktree.objects.create(
+                ticket=reviewed,
+                overlay=reviewed.overlay,
+                repo_path="test/repo",
+                branch="feature",
+                extra={"worktree_path": not_a_repo},
+            )
+            review = _finished_task(reviewed, phase="reviewing", status=Task.Status.COMPLETED)
+            review.attempts.update(result={"review_verdict": {"verdict": "merge_safe", "reviewed_sha": "a" * 40}})
+            frozen = _stuck_ticket(state=Ticket.State.WORK_STARTED)
+
+            assert redispatch_stuck_tickets() == 1
+            assert frozen.tasks.filter(phase="planning", status=Task.Status.PENDING).exists()
+
+    def test_merge_safe_at_head_after_plan_blocks_generic_coding(self) -> None:
+        with TemporaryDirectory() as checkout:
+            repo = Path(checkout)
+
+            def git(*args: str) -> str:
+                return run_strict(repo=str(repo), args=list(args))
+
+            git("init", "-b", "main")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "Test")
+            (repo / "work.txt").write_text("base\n")
+            git("add", "work.txt")
+            git("commit", "-m", "base")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED, idle_hours=0)
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay=ticket.overlay,
+                repo_path="test/repo",
+                branch="main",
+                extra={"worktree_path": str(repo)},
+            )
+            _finished_task(ticket, phase="coding", status=Task.Status.FAILED, error="outage_death: old run")
+            for index in range(3):
+                (repo / "work.txt").write_text(f"change {index}\n")
+                git("add", "work.txt")
+                git("commit", "-m", f"change {index}")
+            assert git("rev-list", "--count", "origin/main..HEAD") == "3"
+            review = _finished_task(ticket, phase="reviewing", status=Task.Status.COMPLETED)
+            review.attempts.update(
+                result={"review_verdict": {"verdict": "merge_safe", "reviewed_sha": git("rev-parse", "HEAD")}}
+            )
+
+            assert redispatch_stuck_tickets() == 0
+            assert not ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+            (repo / "work.txt").write_text("change after review\n")
+            git("add", "work.txt")
+            git("commit", "-m", "change after review")
+            assert redispatch_stuck_tickets() == 1
 
 
 class TestAHaltEscalationIsAboutTheBoxNotTheOwner(TestCase):

@@ -38,12 +38,11 @@ this route is neither an Anthropic provider nor a metered API-key provider.
 With this direct harness setting, Teatree omits `model` and lets Codex select its
 own default. An ordered per-skill route can instead pin an explicit Codex model.
 
-A verification phase never routes to Codex unless an explicit `agent_phase_harness` unpin lets it
-through. Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` to `claude_sdk`,
-and a route candidate naming another harness for a pinned phase is rejected with a reason that names the pin. A Codex candidate is also rejected on every phase that bars
-write tools (`critic_reviewing`, `bughunt`, and the rest of the read-only set), because Codex enforces
-those by sandbox only, with one exception: `planning` is admitted when the read-only executor passes a
-live probe on that very selection (see [Read-only executor](#read-only-executor)). `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
+A verification phase uses Codex only when its read-only executor serves that phase and passes a live probe.
+Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` to `claude_sdk` for other
+harnesses. A Codex candidate is rejected on every unserved phase that bars write tools.
+`planning`, `reviewing`, and `critic_reviewing` pass only after the live probe on that selection
+(see [Read-only executor](#read-only-executor)). `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
 name Codex, and `config_setting set` refuses a value outside them. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
 read-only phase; a route keyed by the phase's own skill still does. A ticket whose `extra` carries
 `"claude_only": true` is never dispatched to a harness other than `claude_sdk`, on a skill route and on an
@@ -75,6 +74,13 @@ and releases the file lease. An unchanged cache causes no pass write. A new task
 starts a new process and revalidates/hydrates the pass entry; a task arriving
 during the idle grace reuses the existing process.
 
+The spawned process carries `T3_DISPATCHED_AGENT=1`, the same marker as the
+Claude child, so a cancelled run can identify its marked checkout processes.
+The shared App Server is never a cancellation stop target: a direct owner
+cancel may signal only runner descendants with a writable checkout file
+descriptor after a pidfd re-check. Marked orphans can keep a checkout held but
+cannot be stopped by that rule.
+
 This process-start lease is the boot preflight too: Teatree validates and
 hydrates before each new Codex process, including the first run after a worker
 recreation. It does not copy the credential during container entrypoint startup,
@@ -89,6 +95,19 @@ Lease/shared lock before enabling concurrent Codex runs against the same pass
 entry. A hard kill cannot run graceful persistence; the next worker hydrates the
 last verified cache from pass.
 
+### Live steering
+
+A running Codex turn accepts operator input or a peer message through the App Server's
+`turn/steer` with its open `expectedTurnId`. TeaTree reports `accepted_current_turn`
+only when the answer names that turn. A timeout, lost answer or turn-end race is
+`unknown_delivery` and is never replayed; an idle or ended turn rejects the input.
+In the worker's Codex sandbox, MCP is unavailable. New threads receive mailbox
+dynamic tools, and the worker retains their inbox until the task exits. Resumed
+threads keep their creation-time tool catalog; their peer messages use the push
+path without claiming an inbox copy.
+For `not_accepted_in_time` with `queued_in_inbox` true, the message remains queued and a same key retry keeps waiting.
+With `queued_in_inbox` false, it is a settled rejection and a same key retry returns it immediately.
+
 ## Forge credential parity
 
 A Codex dispatch gets the same GitHub credential a Claude dispatch gets: the overlay's `github_token`
@@ -101,6 +120,18 @@ commands that resolve a GitHub token through the forge seam take `GH_TOKEN` only
 `T3_ROUTED_GH_TOKEN_KEY` names the pass key the repository's own `github_token` route resolves to.
 A `GH_TOKEN` with no marker, a marker naming another key, and any `gitlab_token` route are refused
 as before, and a marker in the worker's own environment never crosses into the child.
+
+The approval and post-tool router subprocesses run with an explicit environment allowlist: runtime paths
+and home from the worker, plus `GH_TOKEN` and `T3_ROUTED_GH_TOKEN_KEY` from the task's dispatch environment.
+The launcher adds `T3_DISPATCHED_CODEX_ROUTER`, a fixed non-secret marker it never copies from the worker
+or the task. The push ownership gate reads the remote's first configured URL, refuses one that is empty or
+starts with a dash, and passes `--` before it. Its `ls-remote` and `fetch` probes run from a neutral
+temporary directory (the fetch into a throwaway repository that borrows the checkout's objects), so
+checkout-local program settings do not run during those probes. Under the marker, a GitHub credential
+refusal from the `ls-remote` probe or the `gh` ownership probe is a venue fault: the refusal tells the task
+to keep its commit local and set the boolean `push_ownership_venue_fault` to `true` in its result. Only
+coding and debugging attempts act on that field: the attempt fails as a venue fault without an owner
+question, and the next route candidate can retry. Landing is verified from the local commit.
 
 The shared App Server stays keyed by process and Codex home, because two servers cannot share one home
 (one credential writer). When the routed token changes, an idle server is retired and one new server
@@ -241,9 +272,18 @@ into the error text.
 
 ## Read-only executor
 
-`teatree-ro-executor` is a separate container where Codex runs `planning`, the one phase that bars write
-tools and can still run on Codex. Codex's own read-only sandbox cannot start inside a container, so the
+`teatree-ro-executor` is a separate container where Codex runs `planning`, `reviewing`, and `critic_reviewing`.
+Codex's own read-only sandbox cannot start inside a container, so the
 read-only boundary is the executor's mounts, and the worker checks them live instead of trusting a flag.
+Codex cannot enforce Claude's shell-tool deny list. The worker accepts that mismatch only for a live-attested
+executor turn; the executor's mounts and missing forge credentials remain the enforced write boundary.
+
+The worker reads a pull request ticket through the PR body and conversation APIs, and reads an issue ticket
+through the issue APIs. Manual planning enqueue records a missing landscape survey with the ticket's overlay
+credential before minting the task; an unreadable configured forge refuses the enqueue. Required skill bodies
+stay inline across the system context and task message: whole skill blocks move to the task message when the
+system context would exceed 96 KiB. The worker keeps the review diff, comments and other facts under their
+separate caps.
 
 - **Image and mounts.** Its `ro-executor` stage starts from the pinned Ubuntu base with git, python3, tini,
   node and the pinned Codex package, and no `t3`, `gh`, `docker` or `pass`. Compose mounts only the deploy
@@ -254,7 +294,7 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   system git config trusts every repository owner. It drops every capability, sets `no-new-privileges`
   and sits on its own bridge network. It holds no forge or store credential, control DB, data dir or
   docker socket.
-- **The live probe.** On every selection of `planning`, and again when the session opens, the worker
+- **The live probe.** On every selection of a served phase, and again when the session opens, the worker
   (`codex_read_only_executor.attest`) resolves exactly one running executor in its own compose project,
   runs a stdlib probe program in it through `docker exec`, and judges the answer with `docker inspect` of
   both containers (`codex_read_only_verdict.evaluate`). A write is attempted on every mount except the
@@ -269,8 +309,8 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   source that embeds the marker is no key. The run is refused, named and with nothing started, on a mount that
   accepts a write or is not declared, a declared mount that is missing or that the write probe or the
   secret scan skipped, any readable secret file, running as root or as the owner of a mounted tree, a
-  checkout whose git files (`HEAD`, `index`, `config`, `commondir`, `packed-refs`, `refs/`, `objects/`)
-  it cannot read, a tmpfs whose control write fails, capabilities or a missing `no_new_privs`, any
+  checkout whose Git metadata it cannot read, a tmpfs whose control write fails, capabilities or a missing
+  `no_new_privs`, any
   environment key outside the allowlist in the probe's own environment or in `/proc/1/environ`, `t3`,
   `gh`, `docker` or `pass` on `PATH`, an inspect mount whose source differs from the worker's mount at the
   same place (for `.git`, the worker's checkout source plus `/.git`), a writable root, privilege, added
@@ -280,18 +320,17 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   environment flag can skip it. The walk covers every entry under the mounts (about 2.6 million on a box
   with many worktrees: measured 6.6 s with a warm page cache and 54 s cold), so the worker gives each
   docker call 180 s.
-- **Git permissions.** The executor reads git data as `nobody`, so a clone whose git files were written
-  owner-only (under umask 077: `packed-refs` 0600, packs 0400) refuses the run and names the first such
-  file. Making them readable is an owner decision about the box: `chmod -R a+rX <clone>/.git` for the
-  deploy checkout and each clone in the clone volume, and `git config core.sharedRepository 0644` there so
-  new files stay readable.
+- **Git permissions.** Before each attestation, the writable worker makes Git metadata under the
+  executor's matched checkout mounts readable by `nobody`, including files recreated by maintenance.
+  The read-only probe reports every remaining unreadable file and directory, including missing directory
+  read or traverse bits, in one refusal with a repair command. It never follows metadata symlinks.
 - **Attestation.** Only an `ExecutorAttestation`, which only a passing probe can construct, turns a
   write-barring phase into the unsandboxed translation. The worker's own session and shared server refuse
   attested options before anything starts, and an executor server refuses another container's.
 - **Transport and login.** The executor app server runs as `docker exec -i ... setsid -w sh -c 'exec codex
   app-server'` (plain `setsid` would return at once and end the exec's stdio) with a `PATH`-only docker CLI
   environment. It uses its own login, the pass entry `teatree/codex/ro-executor-auth-json-b64`, under its
-  own lease in `<data dir>/codex-ro-executor`, so a planning run never waits on the worker's lease. Under
+  own lease in `<data dir>/codex-ro-executor`, so a read-only run never waits on the worker's lease. Under
   the lease no other server runs, so a stdlib sweep program (`codex_read_only_sweep_program`) first ends
   every process outside PID 1's session except the worker's own `docker exec` programs that run no Codex
   home, the sweep among them; only `docker exec` gives a process a parent outside the container.
@@ -315,15 +354,30 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   fresh server.
 - **Brief.** The executor has no `t3`, forge or data dir, so the worker reads the issue body, its
   comments (system notes left out, oldest first, each with its author and time), the ticket context, the
-  predecessor handoff and the intake survey and puts them in the task message under fixed caps (64 KiB for
+  predecessor handoff and the planning intake survey and puts them in the task message under fixed caps (64 KiB for
   the body and for the comments, 32 KiB for each of the others), never truncated. It also fetches the
-  target ref in the ticket checkout first. An unreadable body or comment list, a missing survey, a failed
-  fetch or a part over its cap refuses the run before it opens, so the next route candidate plans instead.
-  The executor has no Skill tool and mounts no skill folder, so its system context embeds in full every
-  skill the phase requires, stack skills included, names the others as not available, and points at no
-  skill path. Each code span naming a `t3` command or a teatree MCP tool reads
-  `<teatree tool, absent here>`; a system context that still names a `t3` command, or that is over the
-  context budget, refuses the run rather than being cut.
+  target ref in the ticket checkout first. An unreadable body or comment list, a missing planning survey, a failed
+  fetch or a part over its cap refuses the run before it opens. The task then parks for two minutes (twice) and
+  fails with the refusal's reason on the third if no later candidate exists. A later free route can run;
+  a later metered route parks unless `agent_route_paid_fallback` is on.
+  A remote reviewing task also gets the full PR file diff, its dispatched head, and the worker's live
+  workflow-run status at that head. An author-role self-review gets the branch diff in the task message.
+  The worker reads the
+  live head before and after the diff; an unreadable file, changed head, empty diff or diff over 128 KiB refuses
+  the run before Codex can return a verdict.
+  The executor has no Skill tool and mounts no skill folder, so its system context embeds every
+  required skill with CLI and posting-only sections omitted, names the others as not available, and points at no
+  skill path. `reviewing` and `critic_reviewing` embed `rules`, their lifecycle skill, `code-review`,
+  and loaded overlay review companions (no stack style guides). The lifecycle skill leaves out the sections that only
+  drive the `t3` CLI (`skill_injection._READ_ONLY_SKILL_SECTIONS`). The diff, the rubric and the declared
+  plan seams stay out of the system context: the diff enters the reviewing task message as evidence, and the
+  rubric and seams enter it with their commands rewritten as below. It embeds `RULES.md` before the rules skill
+  body, resolving the document beside the selected
+  `rules/SKILL.md`; a missing document refuses the run before the harness opens. Inline code spans naming
+  a `t3` command or a teatree MCP tool, and fenced `t3` command lines, read
+  `<teatree tool, absent here>`, and so does every bare `t3` command in the task message's rubric and plan seams.
+  Quoted issue text, comments, handoffs, and diffs remain byte-for-byte intact as evidence; a system context that
+  still names a `t3` command, or that is over the context budget, refuses the run rather than being cut.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
   `t3 codex auth check --executor` runs one OK-turn through it. Both run only in `teatree-worker`, the one
   service granted the docker socket; anywhere else they refuse and name that route. The import needs an
@@ -335,11 +389,11 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   checks the live verdict, the sweep against a detached env-cleared process, the tmpfs reset and the home
   mode, and removes everything it created. `live` repeats those checks on the deployed executor from inside
   `teatree-worker` while holding the executor lease; its docstring has the exact invocation.
-- **Routing planning to Codex.** Once the executor login checks green, add an `architecture-design` row to
-  `agent_skill_models` that mirrors the `code` row (Codex first, Claude second). An owner another owner
-  requires yields to it, so reviews keep their `code` route and only `planning` and
-  `directive_interpreting` move; `directive_interpreting` is not an executor phase, so its Codex candidate
-  is rejected and Claude runs it.
+- **Routing served phases to Codex.** Once the executor login checks green, a Codex candidate
+  may run `planning`, `reviewing`, or `critic_reviewing` after the live probe. Other write-barring
+  phases still reject that candidate. The configured skill route and its fallback order remain in force, except
+  that a candidate after the first whose resolved lane is metered is rejected unless `agent_route_paid_fallback`
+  is on (see [`docs/blueprint/configuration.md`](blueprint/configuration.md)).
 
 ## Rotation, recovery, and revocation
 

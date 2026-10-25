@@ -16,7 +16,8 @@ pass over the exact files it publishes, run with every credential the job holds,
 ships only when that pass succeeded (it deletes any file it cannot prove clean); every
 artifact printed into the job log or the step summary goes through the filter; no
 checkout in a job that runs the agent under test leaves its token on disk; and every
-``--docker`` run hands the agent a fresh, empty staging directory as its writable
+``--docker`` run hands the agent a fresh staging directory, with at most a
+requested verdict-ledger copy, as its writable
 mount, never the reports' own directory (``$RUNNER_TEMP`` also holds the run log).
 """
 
@@ -201,7 +202,11 @@ def test_an_upload_ships_only_when_its_redaction_pass_succeeded(upload: _Upload)
     step_id = upload.redaction_pass.get("id")
 
     assert step_id, f"{upload.label}: the redaction pass has no `id`, so the upload cannot be gated on it"
-    assert upload.step.get("if") == f"always() && steps.{step_id}.outcome == 'success'", (
+    condition = str(upload.step.get("if", ""))
+    clauses = condition.split(" && ")
+    assert "||" not in condition, f"{upload.label}: an OR could bypass the redaction gate"
+    assert clauses[0] == "always()", f"{upload.label}: the upload must run on a red job"
+    assert f"steps.{step_id}.outcome == 'success'" in clauses, (
         f"{upload.label}: the upload must run on a red job, but only once its redaction pass succeeded"
     )
 

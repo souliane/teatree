@@ -420,6 +420,7 @@ t3 teatree pr create            # create a pull request with metadata validation
 t3 teatree followup sync        # sync tickets and PRs from code host
 t3 goal set/list/clear          # register / list / clear a standing verified-green goal (a Stop-gate blocks a loop turn ending "as done" while the goal's check command is red)
 t3 cost                         # cycle-to-date SDK-equivalent spend + effective-token (ET) totals, split by subscription/metered lane
+t3 cost-profile [--since ISO-8601] [--json]  # profile real dispatches: cache read share, context size, and addressable spend bounds
 t3 capabilities --json          # machine-readable registry of which t3 commands emit JSON and their exit-code contract (a front-end drives teatree from this)
 t3 speak                        # read text aloud on local speakers per [teatree.speak] (no-op unless local = all)
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
@@ -452,17 +453,42 @@ t3 directive tick               # cadence-gated step the worker's off-live-tick 
 t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)
 ```
 
+### Slack ticket thread control
+
+An answering task started from Slack binds its thread root to the ticket. A direction from the configured operator reaches the ticket's live task, including as a new turn while its session is idle; a progress question inspects the session without changing its context. The thread gets a typed receipt. `pause` parks the running task with its conversation; messages sent while parked queue into its next prompt, and `resume` releases that same task. A leading `#task-id` selects among several tasks on the ticket. Once no task remains, an answering follow-up stays on the same ticket and the receipt names that path. Messages from other authors in a bound thread are not forwarded. An incomplete worker list leaves a message pending for retry.
+
 ### Live agent mailbox
 
-Simultaneously running Claude and Codex tasks on the same TeaTree worker and ticket
-can exchange targeted messages through the `agent_mailbox_*` tools. TeaTree assigns
-each task its address and private Unix-socket identity; agents cannot join rooms or
-declare their own harness. `agent_mailbox_self` shows the task's address,
-`agent_mailbox_peers` discovers live peers, and `agent_mailbox_send` sends to one
-peer with an idempotency key. `agent_mailbox_inbox` and `agent_mailbox_wait` read
-messages in order. Delivery is live-only: there is no database queue, parked-task
-delivery, cross-worker delivery, or automatic idle-session wake-up. The MCP tools
-are absent outside TeaTree-managed tasks.
+Live provider pairing proof remains owed; the coordinator will run it in a credentialed venue and attach results to the umbrella issue.
+
+Simultaneously running Claude, Codex and pydantic_ai tasks on any ticket on the same host can exchange targeted messages. Claude sends through its TeaTree MCP child; pydantic_ai mounts peers, send, inbox and wait as native tools. New Codex threads use App Server `dynamicTools` handled by their worker, including the isolated read-only phases; older Codex threads retain their creation-time tool catalog when resumed. Workers
+
+find one another through the shared control-DB live directory. TeaTree assigns
+each task its address and private Unix-socket identity; headless agents cannot register
+themselves or declare their own harness. The plugin's `t3 mcp serve --interactive` child joins as an attended peer only when the worker authenticates its operator process. With no live worker, the plugin still serves its other MCP tools and omits the five mailbox tools. Its identity has no ticket; disconnect revokes the address. Claude Code and Codex attended sessions use the same five MCP tools. `agent_mailbox_self` shows the session's address,
+`agent_mailbox_peers` discovers live peers with ticket, phase, harness and
+receive status, and `agent_mailbox_send` sends to one
+peer and waits up to 20 seconds for its session to accept the message. A busy steerable peer (`claude_sdk`, `pydantic_ai` or `codex_app_server`) takes it into its running turn, framed as a peer's information rather than an operator instruction. The pydantic_ai session admits waiting text before its next model request; an expired wait is withdrawn and remains in the inbox. A peer with an inbox tool may also accept by reading it. The send returns a receipt:
+
+`accepted_current_turn`, `accepted_new_turn`, `accepted_inbox_read`, or `rejected` with
+`not_accepted_in_time`, `turn_ended`, `not_steerable`, `backpressure`,
+`too_large`, `session_closed`, `stale_command`, `dropped_unread` or `recipient_cannot_receive`.
+A mid-push failure returns `unknown_delivery`. The receipt says whether the text
+remains in the recipient's inbox, including after a current-turn push. With
+`queued_in_inbox` true, `not_accepted_in_time` remains queued and a same key retry keeps waiting.
+With `queued_in_inbox` false, it is a settled rejection and a same key retry returns it immediately.
+A new key sends a second copy; at most four sends per peer wait at once. `agent_mailbox_inbox` and `agent_mailbox_wait` read messages in order
+and acknowledge them. Acceptance is not obedience: the model decides what to do
+with the message. An idle `claude_sdk` peer can take one new turn during its
+60-second idle window; a parked task cannot be woken. Delivery is live-only:
+there is no database queue or parked-task delivery across hosts. A socket left by a worker that
+exited is removed before the 32-worker limit is applied. Peer listing skips an
+unresponsive socket and logs a warning; a send whose destination cannot be found
+fails if discovery was incomplete. Discovery verifies the socket's owner, private
+mode and live worker process before trusting its peer list. Peer messaging is not a repository write: planning,
+reviewing and critic_reviewing on the Claude SDK read-only server can send, read and
+wait through the three named non-read-only mailbox tools. Other read-only phases
+receive only `agent_mailbox_self` and `agent_mailbox_peers`.
 
 #### Live control
 
@@ -474,16 +500,29 @@ cannot use these verbs.
 t3 teatree live list                          # every live session on this host's workers (passive)
 t3 teatree live inspect 1234                  # state, phase, open tool, progress; the agent is not contacted
 t3 teatree live steer 1234 --text "Use the spec in docs/x.md"   # enters the running turn (active)
+t3 teatree live pause 1234                    # interrupts and parks this task for resume
+t3 teatree live follow-up 1234 --text "Continue with the new findings"  # starts an idle Claude turn (active)
+t3 teatree live steer 1234 --text "Use the spec" --attempt <attempt> --generation <generation>
 ```
 
 `steer` prints a receipt and exits 0 when the session accepted the input into its
 current turn, 3 when it refused it (`turn_ended`, `not_accepted_in_time`,
-`backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`), 4 when the
+`backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`, `stale_command`), 4 when the
 answer was lost (`unknown_delivery`), and 5 when no worker on this host runs the
 task. Acceptance is not obedience: the model decides what to do with the input.
 Resending the same `--command-id` with the same text returns the first receipt
-instead of delivering twice. Sessions run by `claude_sdk` are steerable; other
-harnesses list as `steerable: false`. Nothing survives a worker restart.
+instead of delivering twice. The command pins the located session's attempt and generation; `--attempt` and `--generation` can name an earlier expected session, which the worker rejects as `stale_command`. Sessions run by `claude_sdk`, `pydantic_ai` and `codex_app_server` are steerable. A pydantic_ai receipt confirms admission into its next request, even if the provider later fails that request. Codex admits input only on a matching App Server `turn/steer` answer; a timeout or turn-end race is `unknown_delivery`. Nothing survives a worker restart.
+
+After a clean result, a `claude_sdk` session remains idle for up to 60 seconds
+while the worker renews its task and checkout leases. `follow-up` starts one new
+turn and returns `accepted_new_turn` (exit 0) once the SDK accepts its prompt;
+`not_idle` exits 3. A repeated command id and text returns its first receipt.
+Each request carries the selected session's attempt and worker generation; a stale
+request is rejected before delivery. New-turn admission renews the task claim and checkout.
+After expiry or restart, the command exits 5 with the task-list status and the
+durable route; a lost answer exits 4 and is never replayed automatically. A
+parked task resumes only through the task list. At most four follow-up turns can
+start in one session. A follow-up turn that exceeds the run's runtime ceiling is cancelled and recorded as stuck.
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
 > another overlay.

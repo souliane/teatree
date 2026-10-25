@@ -44,6 +44,11 @@ def _call(tool: str, args: dict[str, Any]) -> Any:
     return _payloads(async_to_sync(build_server().call_tool)(tool, args))[0]
 
 
+def _review_post_descriptions() -> dict[str, str]:
+    tools = asyncio.run(build_server().list_tools())
+    return {tool.name: tool.description or "" for tool in tools if tool.name.startswith("review_post_")}
+
+
 class TestConfigSettingSetGateRefusal(TestCase):
     def test_plain_setting_is_written_with_registry_validation(self) -> None:
         result = _call("config_setting_set", {"key": "loop_cadence_seconds", "value": "120"})
@@ -66,6 +71,14 @@ class TestConfigSettingSetGateRefusal(TestCase):
     def test_refuse_reason_empty_for_plain_keys(self) -> None:
         assert write_tools.refuse_reason("loop_cadence_seconds") == ""
         assert write_tools.refuse_reason("clean_ignore") == ""
+
+    def test_declared_forge_bots_cannot_be_widened_by_an_unattended_writer(self) -> None:
+        with pytest.raises(Exception, match="refused"):
+            _call(
+                "config_setting_set",
+                {"key": "self_forge_identities", "value": '{"gitlab.example": ["factory-bot"]}'},
+            )
+        assert not ConfigSetting.objects.filter(key="self_forge_identities").exists()
 
 
 class TestCliErrorPrimitiveSurfacesStructured(TestCase):
@@ -389,18 +402,16 @@ class TestReviewToolsCarryInlineAnchors(TestCase):
 
         assert recorder.calls == []
 
-    def test_the_instructions_advertise_the_inline_anchor(self) -> None:
-        review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
+    def test_the_descriptions_advertise_the_inline_anchor(self) -> None:
+        descriptions = _review_post_descriptions()
 
-        assert len(review_lines) == 2
-        assert all("anchor" in line for line in review_lines)
+        assert len(descriptions) == 2
+        assert all("anchor" in description for description in descriptions.values())
 
-    def test_the_instructions_advertise_the_evidence_record(self) -> None:
+    def test_the_descriptions_advertise_the_evidence_record(self) -> None:
         # A tool whose schema takes evidence but whose blurb never says so leaves the
         # agent posting "X is broken" bodies the gate refuses, back on the CLI.
-        review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
-
-        assert all("evidence" in line for line in review_lines)
+        assert all("evidence" in description for description in _review_post_descriptions().values())
 
 
 class TestReviewToolsCarryTheEvidenceRecord(TestCase):
@@ -533,10 +544,8 @@ class TestReviewCommentsPostAsOneBatch(TestCase):
         assert "no 'note'" in result["message"]
         assert recorder.calls == []
 
-    def test_the_instructions_advertise_the_batch(self) -> None:
-        review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
-
-        assert any(line.startswith("- review_post_comments(") for line in review_lines)
+    def test_the_descriptions_advertise_the_batch(self) -> None:
+        assert "Prefer this over" in _review_post_descriptions()["review_post_comments"]
 
 
 class TestEvidenceMayBeTheMappingAModelNaturallyPasses(TestCase):
@@ -631,7 +640,7 @@ class TestEvidenceMayBeTheMappingAModelNaturallyPasses(TestCase):
             FindingEvidence.from_json(built.evidence_json)
 
     def test_the_tool_descriptions_name_both_accepted_evidence_shapes(self) -> None:
-        review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
+        descriptions = _review_post_descriptions()
 
-        assert len(review_lines) == 2
-        assert all("JSON object or its JSON string" in line for line in review_lines)
+        assert len(descriptions) == 2
+        assert all("JSON object or its JSON string" in description for description in descriptions.values())

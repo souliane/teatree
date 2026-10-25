@@ -8,7 +8,7 @@ import json
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NotRequired, TypedDict, cast
+from typing import NamedTuple, NotRequired, TypedDict, cast
 
 from teatree.agents import live_mailbox
 from teatree.agents.live_control import DEFAULT_STEER_WAIT_SECONDS, ReceiptPayload, SessionFacts
@@ -29,6 +29,23 @@ class LiveRequest(TypedDict):
     text: NotRequired[str]
     command_id: NotRequired[str]
     wait_seconds: NotRequired[float]
+    attempt: NotRequired[str]
+    generation: NotRequired[str]
+
+
+class FenceOverride(NamedTuple):
+    attempt: str | None = None
+    generation: str | None = None
+
+
+@dataclass(frozen=True)
+class _OperatorInput:
+    method: str
+    task: int
+    text: str
+    command_id: str
+    wait: float
+    fence: FenceOverride | None
 
 
 class LiveOfflineError(Exception):
@@ -73,9 +90,7 @@ class LiveClient:
                 self.unreachable[worker.stem] = str(exc)
                 continue
             answered += 1
-            rows.extend(
-                cast("WorkerSessionFacts", {**row, "worker": worker.stem}) for row in cast("list[SessionFacts]", listed)
-            )
+            rows.extend({**row, "worker": worker.stem} for row in cast("list[SessionFacts]", listed))
         if not answered:
             reasons = ", ".join(f"{name} ({why})" for name, why in self.unreachable.items()) or "no worker socket"
             msg = f"no live worker answered on this host: {reasons}"
@@ -89,7 +104,7 @@ class LiveClient:
         except (_UnreachableError, _AnswerLostError) as exc:
             msg = f"worker {worker.stem} stopped answering: {exc}"
             raise LiveOfflineError(msg) from exc
-        return cast("WorkerSessionFacts", {**cast("SessionFacts", facts), "worker": worker.stem})
+        return {**cast("SessionFacts", facts), "worker": worker.stem}
 
     def steer(
         self,
@@ -98,27 +113,64 @@ class LiveClient:
         *,
         command_id: str,
         wait: float = DEFAULT_STEER_WAIT_SECONDS,
+        fence: FenceOverride | None = None,
     ) -> ReceiptPayload:
-        worker = self._owner(task)
+        return self._operator_command(_OperatorInput("live.steer", task, text, command_id, wait, fence))
+
+    def follow_up(
+        self,
+        task: int,
+        text: str,
+        *,
+        command_id: str,
+        wait: float = DEFAULT_STEER_WAIT_SECONDS,
+        fence: FenceOverride | None = None,
+    ) -> ReceiptPayload:
+        return self._operator_command(_OperatorInput("live.follow_up", task, text, command_id, wait, fence))
+
+    def pause(
+        self,
+        task: int,
+        text: str,
+        *,
+        command_id: str,
+        wait: float = DEFAULT_STEER_WAIT_SECONDS,
+        fence: FenceOverride | None = None,
+    ) -> ReceiptPayload:
+        return self._operator_command(_OperatorInput("live.pause", task, text, command_id, wait, fence))
+
+    def _operator_command(self, command: _OperatorInput) -> ReceiptPayload:
+        row = self._owner_row(command.task)
+        if not isinstance(row.get("attempt"), str) or not row["attempt"] or not isinstance(row.get("generation"), str):
+            msg = f"worker {row['worker']} is too old for fenced live commands; retry after it restarts"
+            raise LiveOfflineError(msg)
+        worker = (self.live_dir or live_mailbox.live_dir()) / f"{row['worker']}.sock"
+        fence = command.fence or FenceOverride()
         request: LiveRequest = {
-            "method": "live.steer",
-            "task": task,
-            "text": text,
-            "command_id": command_id,
-            "wait_seconds": wait,
+            "method": command.method,
+            "task": command.task,
+            "text": command.text,
+            "command_id": command.command_id,
+            "wait_seconds": command.wait,
+            "attempt": row["attempt"] if fence.attempt is None else fence.attempt,
+            "generation": row["generation"] if fence.generation is None else fence.generation,
         }
         try:
-            return cast("ReceiptPayload", self._call(worker, request, timeout=wait + _STEER_GRACE_SECONDS))
+            return cast("ReceiptPayload", self._call(worker, request, timeout=command.wait + _STEER_GRACE_SECONDS))
         except _UnreachableError as exc:
-            msg = f"worker {worker.stem} stopped answering before the steer was sent: {exc}"
+            msg = f"worker {worker.stem} stopped answering before the command was sent: {exc}"
             raise LiveOfflineError(msg) from exc
         except _AnswerLostError as exc:
             raise LiveDeliveryUnknownError(str(exc)) from exc
 
     def _owner(self, task: int) -> Path:
+        row = self._owner_row(task)
+        return (self.live_dir or live_mailbox.live_dir()) / f"{row['worker']}.sock"
+
+    def _owner_row(self, task: int) -> WorkerSessionFacts:
         for row in self.sessions():
             if row["task"] == task:
-                return (self.live_dir or live_mailbox.live_dir()) / f"{row['worker']}.sock"
+                return row
         msg = f"task {task} is not running on any live worker on this host"
         raise LiveOfflineError(msg)
 

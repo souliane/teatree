@@ -63,9 +63,8 @@ REVIEWER_IDENTITY_INSTRUCTION = (
 def assigned_reviewer_identity(pr_id: int) -> str:
     """The identity the DISPATCH gives a headless review of ``pr_id`` (#2663).
 
-    Per PULL REQUEST, never per task: ``ReviewVerdict.record`` upserts on the normalized
-    identity and a hold is lifted only by that same identity, so a per-task spelling would
-    key every re-review to a fresh row and leave its own hold standing forever.
+    Per PULL REQUEST, never per task: same-verdict re-records under the normalized
+    identity stay idempotent, while a pass cannot overwrite a hold at that head.
     """
     return f"cold-reviewer-{pr_id}"
 

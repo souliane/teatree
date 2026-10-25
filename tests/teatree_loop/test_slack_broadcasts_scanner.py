@@ -13,10 +13,13 @@ from each message, classifies the set via an injected classifier, and:
     bot-restricted channels until the dual-token write path (#1209) lands.
 """
 
+import shutil
 import subprocess
 from dataclasses import dataclass, field
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import httpx
 import pytest
 from django.db import OperationalError
 from django.test import TestCase
@@ -24,7 +27,7 @@ from django.test import TestCase
 from teatree.core.models import ScannedBroadcast, Session, Task, Ticket
 from teatree.core.review.review_taken import ReviewTaken
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
-from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
+from teatree.loop.scanners.slack_broadcast_mr_classifier import ForgeMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_slack_channels
@@ -87,10 +90,6 @@ class FakeMessaging:
         _ = since
         return []
 
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
         return []
@@ -148,6 +147,33 @@ def _message_with_reactions(text: str, ts: str, reactions: list[RawAPIDict]) -> 
 
 USER_SLACK_ID = "U0DEMOUSER1"
 COLLEAGUE_SLACK_ID = "UC0LLEAGUE"
+
+
+class TestHeadlessGitLabBroadcast(TestCase):
+    def test_merged_broadcast_with_no_glab(self) -> None:
+        allow_slack_channels(CHANNEL)
+        with TemporaryDirectory() as empty_path, patch.dict("os.environ", {"PATH": empty_path}):
+            assert shutil.which("glab") is None
+            backend = FakeMessaging()
+            scanner = SlackBroadcastsScanner(
+                backend=backend,
+                channels=[CHANNEL],
+                fetch_channel_history=_fetcher({CHANNEL: [_message(f"please review {MR_MERGED}", TS_A)]}),
+                classify_mrs=ForgeMrStateClassifier(),
+            )
+            with patch("httpx.get") as get:
+                request = httpx.Request(
+                    "GET", "https://gitlab.example.com/api/v4/projects/team%2Fproject/merge_requests/6044"
+                )
+                get.return_value = httpx.Response(200, json={"state": "merged", "upvotes": 1}, request=request)
+                signals = scanner.scan()
+
+        assert signals == []
+        assert ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A).classification == (
+            ScannedBroadcast.Classification.ALL_MERGED
+        )
+        assert get.call_args.args[0].endswith("/projects/team%2Fproject/merge_requests/6044")
+        assert get.call_args.kwargs["headers"]["PRIVATE-TOKEN"] == "routed-gitlab_token"
 
 
 class TestClassificationBehaviour(TestCase):
@@ -570,105 +596,54 @@ class TestNoiseHandling(TestCase):
         assert ScannedBroadcast.objects.count() == 1
 
 
-class TestGlabGhMrStateClassifierUsesRepoFlag:
-    """``GlabGhMrStateClassifier`` calls ``glab mr view -R <project> <iid>``.
-
-    Outside a repo cwd ``glab mr view <full-url>`` silently early-exits
-    because glab refuses to resolve the host from a URL alone — the
-    scanner process has no git remote to anchor against. With
-    ``-R <project>`` plus the numeric IID glab routes the API call
-    directly. This pin makes a bare-URL invocation a hard test failure.
-    """
-
-    def test_gitlab_classifier_invokes_repo_flagged_form(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+class TestForgeMrStateClassifierUsesProjectEndpoint:
+    def test_gitlab_classifier_uses_explicit_project_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         url = "https://gitlab.example.com/team/project/-/merge_requests/7446"
-        captured: list[list[str]] = []
+        seen: list[tuple[str, dict[str, str]]] = []
 
-        def fake_run(cmd, *, expected_codes=None, env=None):
-            captured.append(list(cmd))
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout='{"state": "merged", "upvotes": 2}',
-                stderr="",
+        def get(endpoint: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+            seen.append((endpoint, headers))
+            return httpx.Response(200, json={"state": "merged", "upvotes": 2}, request=httpx.Request("GET", endpoint))
+
+        monkeypatch.setattr("httpx.get", get)
+        monkeypatch.setattr(
+            "teatree.loop.scanners.gitlab_http.overlay_gitlab_base_url",
+            lambda _name: "https://gitlab.example.com/api/v4",
+        )
+        [state] = ForgeMrStateClassifier()([url])
+        assert (state.merged, state.approved) == (True, True)
+        assert seen == [
+            (
+                "https://gitlab.example.com/api/v4/projects/team%2Fproject/merge_requests/7446",
+                {"PRIVATE-TOKEN": "routed-gitlab_token"},
             )
-
-        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
-        monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/glab")
-
-        classifier = GlabGhMrStateClassifier()
-        states = classifier([url])
-
-        assert len(states) == 1
-        assert states[0].merged is True
-        assert states[0].approved is True
-        assert len(captured) == 1
-        cmd = captured[0]
-        # The repo-flagged form: ``glab mr view -R <project> <iid> -F json``.
-        # ``-R`` is what tells glab the project to query against; passing
-        # the full URL as the positional arg is the buggy form being pinned out.
-        assert "-R" in cmd
-        r_idx = cmd.index("-R")
-        assert cmd[r_idx + 1] == "team/project"
-        assert "7446" in cmd
-        assert url not in cmd  # the full URL must NOT be passed as a positional
+        ]
 
 
 class TestClassifierReadsAuthorUsername:
-    """``GlabGhMrStateClassifier`` surfaces the MR author username (#1384).
-
-    The own-MR ``:eyes:`` skip needs the author identity. GitLab JSON
-    carries it under ``author.username``; GitHub under ``author.login``.
-    A missing/malformed author block degrades to an empty username, which
-    the scanner treats as "not mine".
-    """
-
-    def test_gitlab_reads_author_username(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ({"state": "opened", "upvotes": 0, "author": {"username": "me"}}, "me"),
+            ({"state": "opened", "upvotes": 0}, ""),
+        ],
+    )
+    def test_gitlab_author(self, monkeypatch: pytest.MonkeyPatch, payload: dict[str, object], expected: str) -> None:
         url = "https://gitlab.example.com/team/project/-/merge_requests/7446"
-
-        def fake_run(cmd, *, expected_codes=None, env=None):
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout='{"state": "opened", "upvotes": 0, "author": {"username": "me"}}',
-                stderr="",
-            )
-
-        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
-        monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/glab")
-
-        states = GlabGhMrStateClassifier()([url])
-
-        assert states[0].author_username == "me"
-        assert states[0].merged is False
-
-    def test_gitlab_missing_author_block_yields_empty_username(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        url = "https://gitlab.example.com/team/project/-/merge_requests/7446"
-
-        def fake_run(cmd, *, expected_codes=None, env=None):
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout='{"state": "opened", "upvotes": 0}',
-                stderr="",
-            )
-
-        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
-        monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/glab")
-
-        states = GlabGhMrStateClassifier()([url])
-
-        assert states[0].author_username == ""
+        monkeypatch.setattr(
+            "httpx.get",
+            lambda endpoint, **_kw: httpx.Response(200, json=payload, request=httpx.Request("GET", endpoint)),
+        )
+        [state] = ForgeMrStateClassifier()([url])
+        assert state.author_username == expected
+        assert state.merged is False
 
     def test_github_reads_author_login(self, monkeypatch: pytest.MonkeyPatch) -> None:
         url = "https://github.com/owner/repo/pull/42"
         captured: list[list[str]] = []
 
-        def fake_run(cmd, *, expected_codes=None, env=None):
-            captured.append(list(cmd))
+        def fake_run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+            captured.append(cmd)
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=0,
@@ -676,13 +651,9 @@ class TestClassifierReadsAuthorUsername:
                 stderr="",
             )
 
-        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
-        monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/gh")
-
-        states = GlabGhMrStateClassifier()([url])
-
-        assert states[0].author_username == "me"
-        # The author field must be in the requested json columns.
+        monkeypatch.setattr("teatree.backends.github.api.run_allowed_to_fail", fake_run)
+        [state] = ForgeMrStateClassifier()([url])
+        assert state.author_username == "me"
         assert "author" in captured[0][captured[0].index("--json") + 1].split(",")
 
 

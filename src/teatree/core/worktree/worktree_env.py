@@ -14,6 +14,7 @@ truth.
 import os
 import stat
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -89,6 +90,39 @@ def _cache_path_for(wt_path: Path) -> Path:
     return wt_path.parent / CACHE_DIRNAME / wt_path.name / CACHE_FILENAME
 
 
+class EnvrcProvenance:
+    @staticmethod
+    def _record_path(wt_path: Path) -> Path:
+        return _cache_path_for(wt_path).with_name(".envrc.sha256")
+
+    @staticmethod
+    def record(wt_path: Path, lines: list[str]) -> None:
+        envrc = wt_path / ".envrc"
+        record = EnvrcProvenance._record_path(wt_path)
+        content = envrc.read_bytes()
+        try:
+            existing = content.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            record.unlink(missing_ok=True)
+            return
+        allowed = {line for line in lines if line}
+        if all(line in allowed for line in existing if line):
+            record.parent.mkdir(parents=True, exist_ok=True)
+            record.write_text(sha256(content).hexdigest(), encoding="ascii")
+        else:
+            record.unlink(missing_ok=True)
+
+    @staticmethod
+    def is_generated(wt_path: Path) -> bool:
+        record = EnvrcProvenance._record_path(wt_path)
+        envrc = wt_path / ".envrc"
+        return (
+            record.is_file()
+            and envrc.is_file()
+            and record.read_text(encoding="ascii") == sha256(envrc.read_bytes()).hexdigest()
+        )
+
+
 def env_cache_path(worktree: "Worktree") -> Path | None:
     """Return the canonical env-cache path ``<ticket_dir>/.t3-cache/<repo>/.t3-env.cache``.
 
@@ -157,7 +191,7 @@ def store_postgres_secret(worktree: "Worktree", overlay: "OverlayBase") -> str:
     password = overlay.provisioning.env_extra(worktree).get(POSTGRES_PASSWORD_ENV, "")
     if not password:
         return ""
-    return ensure_postgres_pass_entry(worktree.ticket_id, password)  # ty: ignore[unresolved-attribute]  # Django FK
+    return ensure_postgres_pass_entry(worktree.ticket_id, password)
 
 
 def _declared_core_keys() -> set[str]:

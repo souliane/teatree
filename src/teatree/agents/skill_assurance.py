@@ -1,14 +1,14 @@
 """Bounded, truthful receipts for skills requested by a headless dispatch."""
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
-from teatree.agents.skill_injection import required_load_line
 from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 
-_EVIDENCE = re.compile(r"^[A-Za-z0-9_./:# -]{4,160}$")
+_EVIDENCE = re.compile(r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]{4,1000}$")
 _LOAD_DIRECTIVE = re.compile(
     r"^[ \t]*(?:REQUIRED:[ \t]*)?Load[ \t]+/((?:t3:)?[A-Za-z0-9_.-]+)"
     r"[ \t]+via[ \t]+the[ \t]+Skill[ \t]+tool\b",
@@ -38,10 +38,41 @@ class SkillAssurance(TypedDict):
 class SkillDispatchError(ValueError):
     """A mandatory skill was absent or not delivered before a billable turn."""
 
-    def __init__(self, assurance: SkillAssurance) -> None:
+    def __init__(self, assurance: SkillAssurance, *, detail: str | None = None) -> None:
         self.assurance = assurance
-        detail = ", ".join(assurance["missing"] or sorted(set(assurance["requested"]) - set(assurance["injected"])))
+        detail = detail or ", ".join(
+            assurance["missing"] or sorted(set(assurance["requested"]) - set(assurance["injected"]))
+        )
         super().__init__(f"skill {assurance['status']}: {detail}")
+
+    @classmethod
+    def missing_document(cls, skill: str, path: str) -> "SkillDispatchError":
+        return cls(
+            {
+                "requested": [skill],
+                "found": [skill],
+                "injected": [],
+                "explicit_load": [],
+                "missing": [],
+                "evidence": [],
+                "observed_loads": [],
+                "status": "injection_gap",
+            },
+            detail=path,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillDelivery:
+    text: str
+    skill_text: Callable[[str, str], str]
+
+
+def required_load_line(name: str, skill_md: Path | None) -> str:
+    load = f"REQUIRED: Load /{name} via the Skill tool before you start"
+    if skill_md is None:
+        return f"{load}; no SKILL.md resolves for it on this host."
+    return f"{load}; if this lane has no Skill tool, Read `{skill_md}` in full."
 
 
 def _required_names(skills: Sequence[str], required: set[str]) -> list[str]:
@@ -74,6 +105,11 @@ def _explicit_directive_names(rendered_context: str) -> set[str]:
     return names
 
 
+def _expected_section(name: str, path: Path, skill_text: Callable[[str, str], str] | None) -> str:
+    body = path.read_text(encoding="utf-8")
+    return f"--- SKILL: {name} ---\n{skill_text(name, body) if skill_text else body}"
+
+
 def recover_truncated_inline_skills(
     *,
     required_inline: set[str],
@@ -96,7 +132,7 @@ def recover_truncated_inline_skills(
         path = resolve_skill_md(bare, directories)
         if path is None:
             continue  # The ordinary dispatch assessment names the missing body.
-        section = f"--- SKILL: {bare} ---\n{path.read_text(encoding='utf-8')}"
+        section = _expected_section(bare, path, None)
         if section in rendered_context:
             continue
         inline.discard(name)
@@ -110,12 +146,14 @@ def assess_skill_dispatch(
     skills: Sequence[str],
     required_inline: set[str],
     required_explicit: set[str],
-    rendered_context: str,
+    rendered_context: str | SkillDelivery,
     skills_dirs: Sequence[Path] | None = None,
 ) -> SkillAssurance:
     """Refuse missing bodies/directives without treating optional companions as mandatory."""
     inline = _required_names(skills, required_inline)
     explicit = _required_names(skills, required_explicit)
+    context = rendered_context.text if isinstance(rendered_context, SkillDelivery) else rendered_context
+    skill_text = rendered_context.skill_text if isinstance(rendered_context, SkillDelivery) else None
     requested = list(dict.fromkeys([*inline, *explicit]))
     directories = list(skills_dirs) if skills_dirs is not None else harness_skills_dirs()
     found = [name for name in requested if resolve_skill_md(name, directories) is not None]
@@ -124,9 +162,9 @@ def assess_skill_dispatch(
         name
         for name in inline
         if (path := resolve_skill_md(name, directories)) is not None
-        and f"--- SKILL: {name} ---\n{path.read_text(encoding='utf-8')}" in rendered_context
+        and _expected_section(name, path, skill_text) in context
     ]
-    directives = _explicit_directive_names(rendered_context)
+    directives = _explicit_directive_names(context)
     explicit_load = [name for name in explicit if name in directives]
     delivery_gap = len(injected) != len(inline) or len(explicit_load) != len(explicit)
     status = "missing" if missing else "injection_gap" if delivery_gap else "unverified"
@@ -170,12 +208,24 @@ def assess_skill_application(
                 # Keep only its presence; the receipt is a declaration, not proof.
                 evidence.append({"skill": bare, "evidence": "provided"})
     evidence = list({item["skill"]: item for item in evidence}.values())
-    observed = [bare_skill_name(name) for name in observed_loads if bare_skill_name(name) in requested]
+    observed = requested_skill_loads(dispatch, observed_loads)
     explicit_observed = set(dispatch["explicit_load"]) <= set(observed)
     declared = bool(requested) and requested <= {item["skill"] for item in evidence} and explicit_observed
     return {
         **dispatch,
         "evidence": evidence,
-        "observed_loads": list(dict.fromkeys(observed)),
+        "observed_loads": observed,
         "status": "declared" if declared else "unverified",
     }
+
+
+def requested_skill_loads(dispatch: Mapping[str, object], observed_loads: Sequence[str]) -> list[str]:
+    requested = set(cast("Sequence[str]", dispatch["requested"]))
+    return list(dict.fromkeys(bare_skill_name(name) for name in observed_loads if bare_skill_name(name) in requested))
+
+
+def skill_application_line(requested: Sequence[str]) -> str:
+    return (
+        "In the final result, include one skill_application entry for each requested skill "
+        f"({', '.join(requested)}), each with one line of evidence."
+    )

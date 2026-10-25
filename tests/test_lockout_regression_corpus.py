@@ -7,7 +7,7 @@ a regression here is a bypass.
 
 Each corpus entry calls the same real gate function the PreToolUse hook uses:
 ``_deny_match`` (F3/F6/F8/--no-verify/blocked-tools),
-``_extract_bash_ai_sig_payload`` (F1 double-space, F2 REST-API write routing),
+``extract_bash_ai_sig_payload`` (F1 double-space, F2 REST-API write routing),
 ``handle_block_out_of_band_merge`` (raw merge on managed repos),
 ``handle_enforce_skill_loading`` (skill-loading lockout vs bypass dimension),
 and ``_apply_deny_circuit_breaker`` (the UX-gate auto-relax that breaks a
@@ -29,10 +29,10 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts import deny_circuit_breaker
+from hooks.scripts.ai_signature_guard import extract_bash_ai_sig_payload
 from hooks.scripts.hook_router import (
     _apply_deny_circuit_breaker,
     _deny_match,
-    _extract_bash_ai_sig_payload,
     handle_block_out_of_band_merge,
     handle_dispatch_prompt_quote_scanner_on_task_create,
     handle_enforce_orchestrator_boundary,
@@ -40,6 +40,7 @@ from hooks.scripts.hook_router import (
     handle_quote_scanner_pretool,
     handle_validate_mr_metadata,
 )
+from tests._gate_escape_audit import audited_escape
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -171,14 +172,14 @@ _MUST_ALLOW_AI_SIG_ROUTING: list[tuple[str, str]] = [
 def test_must_allow_ai_sig_routing_passes(command: str, label: str) -> None:
     """Clean ``-m`` commits return their message text (a non-None string).
 
-    For a ``git commit -m <msg>`` command, ``_extract_bash_ai_sig_payload``
+    For a ``git commit -m <msg>`` command, ``extract_bash_ai_sig_payload``
     must return the message text so the AI-signature scanner can inspect it.
     Returning ``None`` would mean the scanner never sees the payload — a bypass
     for a ``-m`` commit carrying a banned trailer.  These entries have no banned
     trailer, so the scanner passes them; what this test guards is that the
     function returns a scannable string rather than ``None``.
     """
-    payload = _extract_bash_ai_sig_payload(command)
+    payload = extract_bash_ai_sig_payload(command)
     assert payload is not None, (
         f"Clean commit should produce a scannable payload (message text), got None.\n"
         f"  command : {command!r}\n"
@@ -296,7 +297,7 @@ def test_must_deny_ai_sig_routes_to_scanner(command: str, label: str) -> None:
     trailer; this test guards only that the routing step doesn't exempt the
     command before it reaches the scanner (which would be a bypass).
     """
-    payload = _extract_bash_ai_sig_payload(command)
+    payload = extract_bash_ai_sig_payload(command)
     assert payload is not None, (
         f"BYPASS regression — F1/F2 command was exempted from AI-sig scanner (got None payload).\n"
         f"  command : {command!r}\n"
@@ -561,7 +562,8 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
     (#1442) is now default-ON (#1733: matcher wired #1646, fail-open-routed
     #1692). Every off-ramp keeps an unattended run from being locked out of its
     own dispatches: the explicit kill-switch, ``run_in_background``, a sub-agent
-    context, and the ``[fg-ok: <reason>]`` token. These rows guard the four safe
+    context, and the audited ``[gate-escape:orchestrator_foreground_dispatch: <reason>]`` token.
+    These rows guard the four safe
     paths and the one genuine deny (flag ON + bare foreground main-agent
     dispatch with no escape).
     """
@@ -605,13 +607,26 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
         assert verdict is not True, "LOCKOUT regression — background Agent dispatch denied even with the flag ON."
         assert capsys.readouterr().out.strip() == ""
 
-    def test_foreground_agent_passes_with_fg_ok_token(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_foreground_agent_passes_with_audited_escape(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._enable()
-        verdict = handle_enforce_orchestrator_boundary(
-            self._agent(run_in_background=False, prompt="[fg-ok: attended-debug] implement")
+        data = self._agent(
+            run_in_background=False,
+            prompt="[gate-escape:orchestrator_foreground_dispatch: attended-debug] implement",
         )
-        assert verdict is not True, "LOCKOUT regression — foreground Agent dispatch with a valid [fg-ok:] token denied."
+        with audited_escape(data) as requests:
+            verdict = handle_enforce_orchestrator_boundary(data)
+        assert verdict is not True
+        assert requests[0]["gate"] == "orchestrator_foreground_dispatch"
         assert capsys.readouterr().out.strip() == ""
+
+    def test_legacy_foreground_agent_marker_is_denied(self) -> None:
+        self._enable()
+        assert (
+            handle_enforce_orchestrator_boundary(
+                self._agent(run_in_background=False, prompt="[fg-ok: attended-debug] implement")
+            )
+            is True
+        )
 
     def test_subagent_context_dispatch_is_exempt(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._enable()
@@ -627,7 +642,7 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
             "BYPASS regression — bare foreground main-agent Agent dispatch was allowed with the gate ON."
         )
         assert out, "an enabled deny must emit a hookSpecificOutput payload"
-        assert "[fg-ok:" in out
+        assert "[gate-escape:orchestrator_foreground_dispatch:" in out
         assert "run_in_background" in out
 
 

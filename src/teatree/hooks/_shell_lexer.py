@@ -21,7 +21,7 @@ approach:
     ``\\``, ``\'``, ``\"``, control letters, ``\xHH``, ``\uHHHH``,
     ``\UHHHHHHHH``, ``\nnn`` octal, ``\cX`` control) — no round-trip
     through ``unicode_escape`` and no shell-requoting that an escaped
-    single quote could truncate.
+    single quote could truncate. A NUL escape ends the string, as in bash.
 
 The returned :class:`Token` carries the decoded VALUE plus the SHAPE
 (``WORD`` vs ``OP``) so callers can route operator boundaries and
@@ -226,7 +226,7 @@ def _decode_ansi_c(literal: str) -> str:
             continue
         decoded, i = _decode_ansi_c_escape(literal, i)
         out.append(decoded)
-    return "".join(out)
+    return "".join(out).partition("\x00")[0]
 
 
 def _heredoc_delimiter_from_glued_token(value: str) -> tuple[str, bool] | None:

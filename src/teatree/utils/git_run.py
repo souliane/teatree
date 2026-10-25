@@ -5,12 +5,14 @@ This is the primitive partition of :mod:`teatree.utils.git`: the three thin
 env-stripping helper. Every sibling git module (``git_branch``, ``git_commit``,
 ``git_status``, ``git_sync``, ``git_worktree``, ``git_remote_ops``) imports its
 runners from here, so the runners live in exactly one place and a test that
-patches the subprocess boundary (``teatree.utils.run``) intercepts all of them.
+patches the subprocess boundary (``teatree.utils.run``) intercepts all of them. That boundary also pins
+``core.fsmonitor`` off and resolves a trusted hooks path for hook-bearing verbs (``teatree.utils.git_pins``),
+so no runner here repeats it.
 """
 
 import contextlib
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_bounded_group, run_checked
 
@@ -107,7 +109,7 @@ def git_env_non_interactive() -> dict[str, str]:
 
 
 @contextlib.contextmanager
-def git_env_hermetic() -> Iterator[None]:
+def git_env_hermetic() -> Generator[None]:
     """Strip every ``GIT_*`` override from ``os.environ`` for the duration, restoring after.
 
     The mutating sibling of :func:`git_env_without_overrides`, for a caller that

@@ -17,8 +17,9 @@ Both rows are written through the same ``transaction.atomic()`` path that gets
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
+from django.apps import apps
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -35,6 +36,8 @@ from teatree.utils.forge import FORGES, normalize_forge
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from teatree.core.models.review_verdict import ReviewVerdict
 
 _SHA_ALPHABET = frozenset("0123456789abcdef")
 # A CLEAR binds to the exact reviewed tree (§17.4.2). An abbreviated SHA is
@@ -74,6 +77,7 @@ SHA_FULL_LEN = 40
 # relative to the working-tree root, which in a fork that vendors core is the
 # fork root — so :func:`_substrate_candidates` tests the de-vendored form too,
 # without which every prefix here is dead code in such a fork.
+# ``skills/rules/RULES.md`` is an exact path because it governs every dispatch.
 _SUBSTRATE_PATH_PREFIXES = (
     "src/teatree/core/merge/",
     "src/teatree/core/models/merge_clear.py",
@@ -92,6 +96,7 @@ _SUBSTRATE_PATH_PREFIXES = (
     "docs/blueprint/",
 )
 _SUBSTRATE_FILE_NAMES = frozenset({"BLUEPRINT.md", "CLAUDE.md", "AGENTS.md"})
+_SUBSTRATE_EXACT_PATHS = frozenset({"skills/rules/RULES.md"})
 
 
 def _substrate_candidates(normalized: str) -> tuple[str, ...]:
@@ -119,7 +124,8 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
     classifier (``author_trust.py``), the intake/admission trust boundary
     (``factory_admission.py`` / ``issue_intake.py`` / ``stranger_pr.py`` /
     ``scanner_factories.py``), the autonomy/trust config (``config/``), the
-    on-behalf gate (``on_behalf_gate.py``) and the safety hooks (``hooks/``) — and
+    on-behalf gate (``on_behalf_gate.py``), the safety hooks (``hooks/``), and
+    ``skills/rules/RULES.md`` by exact path — and
     schema migrations (``core/migrations/``, incl. destructive DROP / data
     rewrites, which mutate the durable governance store). Directory/file prefixes
     match after stripping a leading ``./`` or ``/``; the bare governance file
@@ -135,7 +141,9 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
         if not normalized:
             continue
         for candidate in _substrate_candidates(normalized):
-            if any(candidate.startswith(prefix) for prefix in _SUBSTRATE_PATH_PREFIXES):
+            if candidate in _SUBSTRATE_EXACT_PATHS or any(
+                candidate.startswith(prefix) for prefix in _SUBSTRATE_PATH_PREFIXES
+            ):
                 return True
         if normalized.rsplit("/", 1)[-1] in _SUBSTRATE_FILE_NAMES:
             return True
@@ -192,6 +200,11 @@ class ClearRequest:
     # ``failed`` snapshot is refused unconditionally — expedite can never waive it.
     expedite_authorizer: str = ""
     local_ci_green_sha: str = ""
+
+
+def _assert_no_standing_hold_for_clear(*, slug: str, pr_id: int, head_sha: str) -> None:
+    verdict_model = cast("type[ReviewVerdict]", apps.get_model("core", "ReviewVerdict"))
+    verdict_model.objects.assert_no_standing_hold_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
 
 
 class MergeClear(models.Model):
@@ -379,6 +392,7 @@ class MergeClear(models.Model):
         # cannot silently fail on a mixed-case input (#1162).
         def _create() -> "MergeClear":
             with transaction.atomic():
+                _assert_no_standing_hold_for_clear(slug=request.slug, pr_id=request.pr_id, head_sha=normalized_sha)
                 return cls.objects.create(
                     ticket=request.ticket,
                     pr_id=request.pr_id,

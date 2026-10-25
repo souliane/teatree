@@ -60,6 +60,7 @@ def test_each_resolver_answers_a_path_only_overlay_from_its_toml_table() -> None
         "frontend_repos": ["acme-web", "acme-admin"],
         "owned_repos": {"github.com": ["acme-eng"]},
         "factory_phase_harness_candidates": {"coding": ["acme_exec", "claude_sdk"]},
+        "dogfood_smoke_fixture_url": "https://example.test/issues/fixture",
     }
     for field, resolver in OverlayConfigResolver.RESOLVABLE_FIELDS.items():
         value = declared[field]
@@ -70,7 +71,12 @@ def test_each_resolver_answers_a_path_only_overlay_from_its_toml_table() -> None
 
 def test_each_resolver_defaults_empty_for_a_path_only_overlay_without_the_field() -> None:
     """A path-only overlay that omits the field resolves to the field's empty default, not a raise."""
-    empties = {"frontend_repos": [], "owned_repos": {}, "factory_phase_harness_candidates": {}}
+    empties = {
+        "frontend_repos": [],
+        "owned_repos": {},
+        "factory_phase_harness_candidates": {},
+        "dogfood_smoke_fixture_url": "",
+    }
     for field, resolver in OverlayConfigResolver.RESOLVABLE_FIELDS.items():
         overlays = {"t3-path": {"path": "~/x/t3-path", "protected_branches": ["development"]}}
         with _patch_landscape(overlays, discovered={}):

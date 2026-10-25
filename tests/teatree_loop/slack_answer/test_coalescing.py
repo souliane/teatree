@@ -14,7 +14,8 @@ import pytest
 from django.utils import timezone
 
 from teatree.core.models import DmContext, PendingChatInjection
-from teatree.loop.slack_answer.cycle import _COALESCE_WINDOW_SECONDS, _coalesce, run_slack_answer_cycle
+from teatree.loop.slack_answer.coalescing import _COALESCE_WINDOW_SECONDS, _coalesce
+from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -27,10 +28,6 @@ class RecordingBackend:
     replies: list[tuple[str, str, str]] = field(default_factory=list)
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
         return []
 

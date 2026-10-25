@@ -1,9 +1,22 @@
-"""Branch coverage for the web_reads free functions: the paged user lookup (#3507) and the user-group lookup."""
+"""Branch coverage for Slack web reads and shared retry decisions."""
+
+from collections.abc import Callable
 
 import pytest
 
-from teatree.backends.slack.web_reads import _MAX_USER_PAGES, read_conversations, resolve_user_id, resolve_usergroup_id
-from teatree.types import RawAPIDict
+from teatree.backends.slack.bot_errors import SlackReadRefusedError
+from teatree.backends.slack.dm_history import read_thread_replies
+from teatree.backends.slack.web_reads import (
+    _MAX_USER_PAGES,
+    Getter,
+    read_channel_history_or_refuse,
+    read_conversations,
+    resolve_unique_active_user_id,
+    resolve_user_id,
+    resolve_usergroup_id,
+)
+from teatree.types import ChannelReadRefusedError, RawAPIDict
+from tests._review_nag_members import active_member as _active_user
 
 
 def _members_page(members: list[RawAPIDict], next_cursor: str = "") -> RawAPIDict:
@@ -13,34 +26,104 @@ def _members_page(members: list[RawAPIDict], next_cursor: str = "") -> RawAPIDic
     return data
 
 
-class TestReadConversations:
-    def test_returns_channels_and_next_page_with_selected_token(self) -> None:
-        calls: list[tuple[str, dict[str, str | int], str]] = []
+class TestResolveUniqueActiveUserId:
+    def test_empty_handle_never_reads_directory(self) -> None:
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            raise AssertionError(method)
+
+        assert resolve_unique_active_user_id(get=get, handle=" @ ") == ""
+
+    def test_page_cap_fails_closed_for_a_partial_unique_match(self) -> None:
+        calls = 0
 
         def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
-            calls.append((method, params, token))
-            return {"ok": True, "channels": [{"id": "C1"}], "response_metadata": {"next_cursor": "p2"}}
+            nonlocal calls
+            calls += 1
+            members = [_active_user("UPEER001", "peer")] if calls == 1 else []
+            return _members_page(members, next_cursor="more")
 
-        result = read_conversations(get=get, token="user-token", cursor="p1", limit=25)
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+        assert calls == _MAX_USER_PAGES
 
-        assert result == {"channels": [{"id": "C1"}], "next_cursor": "p2"}
-        assert calls == [
-            (
-                "conversations.list",
-                {"types": "public_channel,private_channel,mpim,im", "limit": 25, "cursor": "p1"},
-                "user-token",
-            )
+    def test_user_id_resolves_only_for_active_non_guest_member(self) -> None:
+        members = [_active_user("UACTIVE", "peer"), {**_active_user("UGUEST", "guest"), "is_restricted": True}]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page(members)
+
+        assert resolve_unique_active_user_id(get=get, handle="UACTIVE") == "UACTIVE"
+        assert resolve_unique_active_user_id(get=get, handle="UGUEST") == ""
+
+    def test_display_name_matches_casefolded_handle(self) -> None:
+        member = {**_active_user("UPEER00", "other"), "profile": {"display_name": "Review Peer"}}
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page([member])
+
+        assert resolve_unique_active_user_id(get=get, handle="@review PEER") == "UPEER00"
+
+    def test_app_user_is_not_an_active_reviewer(self) -> None:
+        member = {**_active_user("UAPP", "peer"), "is_app_user": True}
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page([member])
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_single_channel_guest_is_not_mentioned(self) -> None:
+        member = {**_active_user("UGUEST01", "peer"), "is_ultra_restricted": True}
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page([member])
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_unknown_deleted_status_is_not_active(self) -> None:
+        member = _active_user("UPEER001", "peer")
+        del member["deleted"]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page([member])
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_unique_active_match_ignores_deactivated_duplicate(self) -> None:
+        members = [_active_user("UPEER00", "peer"), {**_active_user("UDEAD00", "peer"), "deleted": True}]
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page(members)
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == "UPEER00"
+
+    def test_two_active_matches_are_ambiguous_across_pages(self) -> None:
+        pages = {
+            "": _members_page([_active_user("UONE", "peer")], next_cursor="next"),
+            "next": _members_page([_active_user("UTWO", "peer")]),
+        }
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return pages[str(params.get("cursor", ""))]
+
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_bot_guest_and_unknown_status_are_never_a_match(self) -> None:
+        members = [
+            {**_active_user("UBOT", "peer"), "is_bot": True},
+            {**_active_user("UGUEST", "peer"), "is_restricted": True},
+            {"id": "UUNKNOWN", "name": "peer", "deleted": False},
         ]
 
-    def test_unreadable_page_raises_instead_of_looking_empty(self) -> None:
-        with pytest.raises(ValueError, match="missing_scope"):
-            read_conversations(
-                get=lambda method, params, *, token="": {"ok": False, "error": "missing_scope"}, token=""
-            )
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return _members_page(members)
 
-    def test_bad_page_size_is_refused_before_the_api(self) -> None:
-        with pytest.raises(ValueError, match="between 1 and 200"):
-            read_conversations(get=lambda method, params, *, token="": {}, token="", limit=201)
+        assert resolve_unique_active_user_id(get=get, handle="peer") == ""
+
+    def test_unreadable_directory_raises_instead_of_looking_empty(self) -> None:
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            return {"ok": False, "error": "missing_scope"}
+
+        with pytest.raises(RuntimeError, match="could not be read"):
+            resolve_unique_active_user_id(get=get, handle="peer")
 
 
 class TestResolveUserId:
@@ -130,3 +213,104 @@ class TestResolveUsergroupId:
             return _usergroups(["nope", {"handle": "reviewers", "id": 7}])
 
         assert resolve_usergroup_id(get=get, handle="reviewers") == ""
+
+
+def _read_history(get: Getter) -> list[RawAPIDict]:
+    return read_channel_history_or_refuse(get=get, channel="D1", token="xoxb-bot", user_token="xoxp-user")
+
+
+def _read_thread(get: Getter) -> list[RawAPIDict]:
+    return read_thread_replies(get=get, channel="D1", thread_ts="1.0", user_token="xoxp-user")
+
+
+_READERS = [
+    pytest.param(
+        _read_history,
+        "conversations.history",
+        "xoxb-bot",
+        ChannelReadRefusedError,
+        id="history",
+    ),
+    pytest.param(
+        _read_thread,
+        "conversations.replies",
+        "",
+        SlackReadRefusedError,
+        id="thread",
+    ),
+]
+
+
+@pytest.mark.parametrize(("read", "method", "first_token", "refusal_type"), _READERS)
+@pytest.mark.parametrize("error_code", ["not_in_channel", "channel_not_found"])
+def test_history_and_thread_retry_membership_refusals(
+    read: Callable[[Getter], list[RawAPIDict]],
+    method: str,
+    first_token: str,
+    refusal_type: type[Exception],
+    error_code: str,
+) -> None:
+    tokens: list[str] = []
+
+    def get(request_method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+        assert request_method == method
+        assert params["channel"] == "D1"
+        tokens.append(token)
+        if token == first_token:
+            return {"ok": False, "error": error_code}
+        return {"ok": True, "messages": [{"ts": "1.0"}]}
+
+    assert read(get) == [{"ts": "1.0", "channel": "D1"}]
+    assert tokens == [first_token, "xoxp-user"]
+
+
+@pytest.mark.parametrize(("read", "method", "first_token", "refusal_type"), _READERS)
+def test_history_and_thread_preserve_refusal_type(
+    read: Callable[[Getter], list[RawAPIDict]],
+    method: str,
+    first_token: str,
+    refusal_type: type[Exception],
+) -> None:
+    tokens: list[str] = []
+
+    def get(request_method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+        assert request_method == method
+        assert params["channel"] == "D1"
+        tokens.append(token)
+        return {"ok": False, "error": "is_archived"}
+
+    with pytest.raises(refusal_type) as refused:
+        read(get)
+
+    assert type(refused.value) is refusal_type
+    assert tokens == [first_token]
+
+
+class TestReadConversations:
+    def test_returns_channels_and_next_page_with_selected_token(self) -> None:
+        calls: list[tuple[str, dict[str, str | int], str]] = []
+
+        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+            calls.append((method, params, token))
+            return {"ok": True, "channels": [{"id": "C1"}], "response_metadata": {"next_cursor": "p2"}}
+
+        result = read_conversations(get=get, token="user-token", cursor="p1", limit=25)
+
+        assert result == {"channels": [{"id": "C1"}], "next_cursor": "p2"}
+        assert calls == [
+            (
+                "conversations.list",
+                {"types": "public_channel,private_channel,mpim,im", "limit": 25, "cursor": "p1"},
+                "user-token",
+            )
+        ]
+
+    def test_unreadable_page_raises_instead_of_looking_empty(self) -> None:
+        with pytest.raises(ValueError, match="missing_scope"):
+            read_conversations(
+                get=lambda method, params, *, token="": {"ok": False, "error": "missing_scope"}, token=""
+            )
+
+    def test_bad_page_size_is_refused_before_the_api(self) -> None:
+        with pytest.raises(ValueError, match="between 1 and 200"):
+            read_conversations(get=lambda method, params, *, token="": {}, token="", limit=201)

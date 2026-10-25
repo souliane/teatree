@@ -78,6 +78,12 @@ def conditional_dispatch_kinds() -> frozenset[str]:
     return frozenset(_CONDITIONAL_HANDLERS)
 
 
+def agent_dispatching_kinds() -> frozenset[str]:
+    """Every ``ScanSignal.kind`` whose dispatch can put an agent on the other end."""
+    mechanical = frozenset(kind for kind, (action, _zone) in MECHANICAL_BY_KIND.items() if action == "agent")
+    return frozenset(AGENT_BY_KIND) | mechanical | conditional_dispatch_kinds()
+
+
 def _conditional_dispatch(signal: ScanSignal) -> list[DispatchAction] | None:
     """Payload-conditional special cases that precede the generic lookups.
 

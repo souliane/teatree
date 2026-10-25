@@ -36,6 +36,9 @@ updates:
         versions: [">=0.26"]
       - dependency-name: "ruff"
         versions: [">0.15.1"]
+      # Held until ty accepts nested Meta overrides (astral-sh/ty#4711).
+      - dependency-name: "ty"
+        versions: [">=0.0.86"]
     # `claude-agent-sdk` is watched here like any other dependency. It used to carry an
     # `ignore` entry because a bundled claude CLI at/after 2.1.204 renders an
     # `AskUserQuestion` call as a markdown chip rather than a `tool_use` block, which
@@ -55,7 +58,7 @@ updates:
     # `claude` CLI generation from it, and reds on a bump until the bundled version is
     # re-derived from the new wheel.
     #
-    # An SDK bump PR must keep resolving against the project's own `mcp>=2,<3`. 0.2.163
+    # An SDK bump PR must keep resolving against the project's own `mcp>=2,<3`. The pinned release
     # declares `mcp>=1.23.0,<3.0.0`, which admits it, so no `[tool.uv]
     # override-dependencies` entry is needed today — but the cap is broader than the SDK's
     # usage, which reaches only the low-level `mcp.server.Server` / `mcp.types` surface.

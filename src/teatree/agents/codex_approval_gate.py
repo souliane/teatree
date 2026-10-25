@@ -33,13 +33,17 @@ async def approval_decision(
         command = params.get("command")
         if not isinstance(command, str) or not command.strip():
             return "decline", "Approval request has no command."
-        return await _run_router("Bash", {"command": unwrap_lone_shell(command), "cwd": cwd}, cwd, params)
+        return await _run_router(
+            "Bash", {"command": unwrap_lone_shell(command), "cwd": cwd}, cwd, params, options.core.env
+        )
     if method == _FILE_CHANGE_APPROVAL:
-        return await _approve_file_changes(file_changes, cwd, params)
+        return await _approve_file_changes(file_changes, cwd, params, options.core.env)
     return "decline", "Unsupported approval request."
 
 
-async def _approve_file_changes(changes: object, cwd: str, params: Mapping[str, Any]) -> tuple[str, str | None]:
+async def _approve_file_changes(
+    changes: object, cwd: str, params: Mapping[str, Any], dispatch_env: Mapping[str, str]
+) -> tuple[str, str | None]:
     if not isinstance(changes, list) or not changes:
         return "decline", "Approval request has no file changes."
     for change in changes:
@@ -58,17 +62,17 @@ async def _approve_file_changes(changes: object, cwd: str, params: Mapping[str, 
             tool_input = {"file_path": str((Path(cwd) / path).resolve())}
             if isinstance(change.get("diff"), str):
                 tool_input["content" if tool == "Write" else "new_string"] = change["diff"]
-            decision, reason = await _run_router(tool, tool_input, cwd, params)
+            decision, reason = await _run_router(tool, tool_input, cwd, params, dispatch_env)
             if decision != "accept":
                 return decision, reason
     return "accept", None
 
 
 async def _run_router(
-    tool_name: str, tool_input: dict[str, str], cwd: str, params: Mapping[str, Any]
+    tool_name: str, tool_input: dict[str, str], cwd: str, params: Mapping[str, Any], dispatch_env: Mapping[str, str]
 ) -> tuple[str, str | None]:
     payload = {"session_id": params.get("threadId", ""), "tool_name": tool_name, "tool_input": tool_input}
-    run = await run_router("PreToolUse", payload, cwd)
+    run = await run_router("PreToolUse", payload, cwd, dispatch_env=dispatch_env)
     if run is None or run.crashed or run.returncode not in {0, _DENY_EXIT}:
         return "decline", _ROUTER_FAILURE
     try:

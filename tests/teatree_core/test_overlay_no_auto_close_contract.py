@@ -31,7 +31,7 @@ TEETH: a populated pattern strips (GREEN); the EMPTY default does NOT strip
 (RED) — this is the documented unsafe default for this mechanism.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -44,7 +44,13 @@ from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.models import ConfigSetting, Session, Ticket, Worktree
 from teatree.core.overlay import OverlayConfig
-from teatree.core.runners.ship import CLOSE_KEYWORD_RE, ShipExecutor, sanitize_close_keywords, should_close_ticket
+from teatree.core.runners.ship import (
+    CLOSE_KEYWORD_RE,
+    PrSpecContext,
+    ShipExecutor,
+    sanitize_close_keywords,
+    should_close_ticket,
+)
 from tests.teatree_core.management_commands._overlays import FullOverlay
 
 TEST_REPO = "test-org/test-repo"
@@ -72,7 +78,7 @@ class _HumanClosedOverlay(FullOverlay):
 
 
 @contextmanager
-def _overlay(*, mr_close_ticket: bool = False, forbid_close_keywords: bool = False) -> Iterator[None]:
+def _overlay(*, mr_close_ticket: bool = False, forbid_close_keywords: bool = False) -> Generator[None]:
     overlay = _HumanClosedOverlay(
         mr_close_ticket=mr_close_ticket,
         forbid_close_keywords=forbid_close_keywords,
@@ -129,7 +135,7 @@ class TestMrCloseTicketSanitize(TestCase):
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestShipPathSanitize:
-    """``ShipExecutor._build_pr_spec`` sanitizes per ``mr_close_ticket``."""
+    """``ShipExecutor.build_pr_spec`` sanitizes per ``mr_close_ticket``."""
 
     def _ship_spec(self, *, mr_close_ticket: bool) -> PullRequestSpec:
         ticket = Ticket.objects.create(
@@ -154,7 +160,7 @@ class TestShipPathSanitize:
             patch("teatree.core.runners.ship.get_overlay_for_ticket", return_value=overlay),
             patch("teatree.core.runners.ship.get_overlay_publish_gates", return_value=[]),
         ):
-            return ShipExecutor._build_pr_spec(ticket, _FakeHost(), TEST_REPO, "feat-x", {})
+            return ShipExecutor.build_pr_spec(ticket, _FakeHost(), PrSpecContext(TEST_REPO, "feat-x", {}))
 
     def test_green_human_closed_rewrites_pr_description(self) -> None:
         spec = self._ship_spec(mr_close_ticket=False)
@@ -193,7 +199,7 @@ class TestForbidCloseKeywordsGate(TestCase):
         return ticket, worktree
 
     @contextmanager
-    def _git_sources(self, *, subject: str) -> Iterator[None]:
+    def _git_sources(self, *, subject: str) -> Generator[None]:
         with (
             patch(
                 "teatree.core.management.commands._close_keyword_gate.git.last_commit_message",

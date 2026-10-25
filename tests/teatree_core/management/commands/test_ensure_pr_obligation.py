@@ -12,7 +12,7 @@ not because a classifier was patched to say so.
 
 import shlex
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -149,7 +149,7 @@ _SSH_TRANSPORTS = {
 
 
 @contextmanager
-def _unreadable_remote(repo: Path, transport: str) -> Iterator[None]:
+def _unreadable_remote(repo: Path, transport: str) -> Generator[None]:
     if transport in _SSH_TRANSPORTS:
         ssh = repo.parent / f"ssh-{transport}"
         ssh.write_text(f"#!/bin/sh\n{_SSH_TRANSPORTS[transport]}\n")

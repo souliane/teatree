@@ -86,6 +86,35 @@ def _run_seed(tmp_path: Path, existing: str | None) -> tuple[Path, subprocess.Co
 
 
 class TestSeedClaudeSettings:
+    def test_workflow_settings_override_user_values_without_writing_project_files(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "project" / ".claude"
+        project_dir.mkdir(parents=True)
+        project_file = project_dir / "settings.json"
+        local_file = project_dir / "settings.local.json"
+        project_file.write_text('{"enableWorkflows":false}', encoding="utf-8")
+        local_file.write_text('{"workflowSizeGuideline":"large"}', encoding="utf-8")
+        original_project = project_file.read_bytes()
+        original_local = local_file.read_bytes()
+        existing = json.dumps(
+            {
+                "enableWorkflows": False,
+                "workflowSizeGuideline": "large",
+                "env": {"CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS": "3"},
+                "statusLine": {"type": "command"},
+            }
+        )
+
+        target, proc = _run_seed(tmp_path, existing=existing)
+
+        assert proc.returncode == 0, proc.stderr
+        user = json.loads(target.read_text(encoding="utf-8"))
+        assert user["enableWorkflows"] is True
+        assert user["workflowSizeGuideline"] == "small"
+        assert user["env"]["CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS"] == "2"
+        assert user["statusLine"] == {"type": "command"}
+        assert project_file.read_bytes() == original_project
+        assert local_file.read_bytes() == original_local
+
     def test_corrupt_existing_settings_is_replaced_not_bricked(self, tmp_path: Path) -> None:
         # RED before the guard: an invalid pre-existing settings.json made the merge
         # jq fail, leaving the corrupt file in place (managed keys silently dropped,
@@ -111,3 +140,8 @@ class TestSeedClaudeSettings:
         parsed = json.loads(target.read_text(encoding="utf-8"))
         assert parsed["model"] == "opusplan"  # managed key wins
         assert parsed["statusLine"] == {"type": "command", "command": "mine"}  # unmanaged survives
+
+    def test_existing_skill_listing_cap_is_replaced_by_managed_cap(self, tmp_path: Path) -> None:
+        target, proc = _run_seed(tmp_path, existing=json.dumps({"skillListingMaxDescChars": 120}))
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(target.read_text(encoding="utf-8"))["skillListingMaxDescChars"] == 1

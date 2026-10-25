@@ -20,8 +20,8 @@ The windows are the DB-home ``task_attempt_retention_days`` (default 30, never b
 with ``t3 <overlay> config_setting set``; this command and the hourly pass both resolve
 them for the active overlay, so an overlay-scoped row beats the global one. The park,
 ping-payload and ``IncomingEvent``
-lanes carry no window setting: they are ``PARK_ATTEMPT_RETENTION_DAYS`` and
-``POST_MORTEM_RETENTION_DAYS``.
+lanes carry no window setting: they are ``PARK_ATTEMPT_RETENTION_DAYS``,
+``POST_MORTEM_RETENTION_DAYS`` and, for settled forge events, ``FORGE_EVENT_RETENTION_DAYS``.
 
 ``--apply`` finishes with a ``VACUUM`` (:mod:`teatree.utils.django_db.vacuum`). Deleting
 rows on SQLite reclaims no disk on its own — the pages move to the free list and

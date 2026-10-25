@@ -23,7 +23,7 @@ from django.utils import timezone
 from teatree.config import TeaTreeConfig, UserSettings, cold_reader
 from teatree.core.backend_protocols import DraftState, PrOpenState
 from teatree.core.gates.review_request_guard import GuardTarget, ReconcileResult, ReconcileStatus
-from teatree.core.models import ReviewRequestPost
+from teatree.core.models import ConfigSetting, ReviewRequestPost
 from teatree.core.review.review_candidate import is_self_authored
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.loop.scanners.review_nag import ReviewNagScanner
@@ -71,10 +71,6 @@ class FakeSlack:
         _ = since
         return []
 
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
         return []
@@ -113,8 +109,7 @@ class FakeSlack:
         return {"ok": True}
 
     def resolve_usergroup_id(self, handle: str) -> str:
-        _ = handle
-        return ""
+        return handle if handle == "S0REVIEWERS" else ""
 
     def resolve_user_id(self, handle: str) -> str:
         _ = handle
@@ -177,6 +172,7 @@ class TestReviewNagCoversBothPaths(TestCase):
     def setUp(self) -> None:
         super().setUp()
         allow_slack_channels(CHANNEL)
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
         enabled = TeaTreeConfig(user=UserSettings())
         patcher = patch("teatree.config.load_config", return_value=enabled)
         patcher.start()
@@ -240,7 +236,7 @@ class TestReviewNagCoversBothPaths(TestCase):
         pinged_threads = {p["thread_ts"] for p in nag_slack.posts}
         assert BOT_THREAD_TS in pinged_threads, "ReviewNagScanner did not nag the bot-tracked MR thread"
         assert MANUAL_TS in pinged_threads, "ReviewNagScanner did not nag the owner's manually-broadcast MR thread"
-        assert all(p["text"].endswith(":pray:") for p in nag_slack.posts)
+        assert all(p["text"].endswith("could you please have another look?") for p in nag_slack.posts)
         kinds = [s.kind for s in signals]
         assert kinds.count("review_nag.ping") == 2, f"expected two pings, got {kinds}"
 

@@ -20,6 +20,16 @@ class _ScannerJob:
 
     scanner: Scanner
     overlay: str
+    overlay_hook: bool = False
+
+    @property
+    def label(self) -> str:
+        if self.overlay_hook:
+            return f"{self.scanner.name}[{self.overlay}][hook]"
+        return f"{self.scanner.name}[{self.overlay}]" if self.overlay else self.scanner.name
+
+
+SWEEP_SCANNER_NAMES: frozenset[str] = frozenset({"pr_sweep", "self_update", "pull_main_clone"})
 
 
 class Domain(StrEnum):

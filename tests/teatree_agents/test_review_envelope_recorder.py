@@ -39,8 +39,12 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.review_target import ReviewTarget, verdict_at
+from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 from teatree.core.review.live_head import LiveHeadRead
+from teatree.core.review.nit_lane import NitLaneError, NitPoint, NitReceipt
+from teatree.core.review.nit_publish import has_nit_receipts
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -158,6 +162,96 @@ def _criteria(ticket: Ticket) -> list[RubricCriterion]:
 
 
 class TestTheReviewerGradesTheRubricItVerifies(TestCase):
+    def test_a_nit_only_hold_records_merge_safe(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
+        ]
+
+        with (
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch(
+                "teatree.core.review.nit_publish.track_nits",
+                return_value=NitReceipt("https://github.com/souliane/teatree/issues/10", ("thread-1",), _HEAD),
+            ) as track,
+        ):
+            provider.return_value.get_code_host_for_url.return_value = object()
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.MERGE_SAFE
+        assert recorded.structured_findings[0].kind == "nit"
+        track.assert_called_once()
+        ticket.refresh_from_db()
+        assert has_nit_receipts(ticket, _PR_URL, _HEAD, (NitPoint("a.py", 2, "rename helper"),))
+
+    def test_review_nit_publish_failure_keeps_a_recovery_marker(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
+        ]
+        with patch(
+            "teatree.agents.review_envelope_recorder.publish_nits", side_effect=NitLaneError("forge unavailable")
+        ):
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+        assert "forge unavailable" in attempt.error
+        assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+        ticket.refresh_from_db()
+        assert ticket.extra["nit_publication"][_HEAD]["status"] == "failed"
+
+    def test_nit_only_hold_without_merge_safe_evidence_records_nothing(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        result.pop("anti_vacuity")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [{"severity": "nit", "kind": "nit", "summary": "rename helper"}]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "anti-vacuity recording refused" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_unpostable_nit_refuses_before_verdict_recording(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {"severity": "nit", "kind": "nit", "summary": "this is missing a blank line", "file": "a.py", "line": 2}
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "comment check" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_a_nit_ticket_treats_a_nit_finding_as_blocking(self) -> None:
+        ticket = _author_ticket()
+        ticket.extra = {"nit_follow_up": True}
+        ticket.save(update_fields=["extra"])
+        result = _envelope(grades=_full_pass(), verdict="merge_safe")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.HOLD
+        assert recorded.structured_findings[0].kind == "blocking"
+
     def test_multi_repo_review_envelope_records_combined_integration_review(self) -> None:
         ticket = _author_ticket()
         ticket.repos = ["souliane/teatree", "example-org/adapter"]
@@ -233,6 +327,18 @@ class TestAnUngradedCriterionRecordsNothing(TestCase):
     forever, with no reviewer left to fix it. The refusal has to come BEFORE the
     write, which is why coverage is a DB question only this actor can answer.
     """
+
+    def test_stale_text_hash_records_neither_verdict_nor_grades(self) -> None:
+        ticket = _author_ticket()
+        task = _reviewing_task_via_dispatch()
+        grades = _full_pass()
+        grades[1]["text_hash"] = "0" * 12
+
+        attempt = record_result_envelope(task, _envelope(grades=grades), phase="reviewing")
+
+        assert attempt.error.startswith("malformed rubric_grades:")
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert [c.status for c in _criteria(ticket)] == ["pending", "pending"]
 
     def test_a_verdict_that_grades_no_criterion_records_nothing(self) -> None:
         ticket = _author_ticket()
@@ -407,6 +513,32 @@ class TestARefusedGradeRollsTheVerdictBack(TestCase):
         ]
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+
+
+class TestDuplicateReviewTasksPreserveHolds(TestCase):
+    def test_two_tasks_without_returned_identity_leave_first_hold_standing(self) -> None:
+        _author_ticket(criteria=None)
+        first_task = _reviewing_task_via_dispatch()
+        first_result = _envelope(verdict="hold", reviewer="")
+        first_verdict = first_result["review_verdict"]
+        assert isinstance(first_verdict, dict)
+        first_verdict["findings"] = [{"severity": "major", "summary": "fix the branch", "file": "a.py", "line": 1}]
+        assert record_result_envelope(first_task, first_result, phase="reviewing").error == ""
+
+        first_task.ticket.extra = {**first_task.ticket.extra, "reviewed_sha": _HEAD}
+        first_task.ticket.save(update_fields=["extra"])
+        second_task = Task.objects.create(ticket=first_task.ticket, session=first_task.session, phase="reviewing")
+        second_task.claim(claimed_by="headless-reviewer")
+        assert record_result_envelope(second_task, _envelope(reviewer=""), phase="reviewing").error == ""
+
+        rows = list(ReviewVerdict.objects.for_pr(_SLUG, _PR_ID))
+        assert len(rows) == 2
+        assert {row.reviewer_identity for row in rows} == {assigned_reviewer_identity(_PR_ID)}
+        held = ReviewVerdict.objects.latest_for_pr(_SLUG, _PR_ID)
+        assert held is not None
+        assert held.stands_as_hold()
+        assert held.structured_findings[0].summary == "fix the branch"
+        assert verdict_at(ReviewTarget(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD, claim_head_sha=_HEAD)) is not None
 
 
 class TestAFailGradeIsRecordedAndNoBypassOverridesIt(TestCase):

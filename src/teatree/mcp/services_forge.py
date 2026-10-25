@@ -106,15 +106,18 @@ def _pr_snapshot(service: Service, *, repo: str, pr_iid: int, pr_url: str) -> di
 
 def _register(server: MCPServer, service: Service, prefix: str) -> None:
     async def current_user() -> str:
+        """The authenticated handle on this forge."""
         return await sync_to_async(lambda: _forge_client(service).current_user(), thread_sensitive=True)()
 
     async def my_prs(author: str, *, updated_after: str = "") -> list[dict[str, Any]]:
+        """Open PRs/MRs authored by *author*; *updated_after* keeps only those updated since."""
         return await sync_to_async(
             lambda: _forge_client(service).list_my_prs(author=author, updated_after=updated_after or None),
             thread_sensitive=True,
         )()
 
     async def review_requested(reviewer: str, *, updated_after: str = "") -> list[dict[str, Any]]:
+        """PRs/MRs awaiting *reviewer*."""
         return await sync_to_async(
             lambda: _forge_client(service).list_review_requested_prs(
                 reviewer=reviewer, updated_after=updated_after or None
@@ -123,17 +126,21 @@ def _register(server: MCPServer, service: Service, prefix: str) -> None:
         )()
 
     async def pr_author(pr_url: str) -> str:
+        """One PR's author."""
         return await sync_to_async(lambda: _forge_client(service).get_pr_author(pr_url=pr_url), thread_sensitive=True)()
 
     async def pr_comments(repo: str, pr_iid: int) -> list[dict[str, Any]]:
+        """One PR's comments."""
         return await sync_to_async(
             lambda: _forge_client(service).list_pr_comments(repo=repo, pr_iid=pr_iid), thread_sensitive=True
         )()
 
     async def issue(issue_url: str) -> dict[str, Any]:
+        """One issue."""
         return await sync_to_async(lambda: _forge_client(service).get_issue(issue_url), thread_sensitive=True)()
 
     async def issue_comments(issue_url: str) -> list[dict[str, Any]]:
+        """One issue's comments."""
         return await sync_to_async(
             lambda: _forge_client(service).list_issue_comments(issue_url=issue_url), thread_sensitive=True
         )()
@@ -250,35 +257,42 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
 
         Two phases, because a dedupe an agent can skip is a dedupe that does not
         happen. Call it WITHOUT *dedupe* and nothing is written: the open backlog
-        comes back as ``candidates`` plus the ``snapshot`` it was read at. Judge each
-        one and call again with ``dedupe={"snapshot": [...], "decisions": [...]}`` —
+        comes back as ``candidates`` plus a compact ``snapshot_token``. Judge each
+        one and call again with ``dedupe={"snapshot_token": token, "decisions": [...]}`` —
         one ``fits`` folds the request into that ticket's description instead of
-        filing, and every rejection's reason is written into the new ticket so the
-        search is auditable rather than asserted. A ticket filed in between makes the
-        judgment set incomplete, so the outcome is ``stale_snapshot`` and you judge
+        filing, and every rejection's reason is kept in a private audit row. A ticket
+        filed in between makes the judgment set incomplete, so the outcome is ``stale_snapshot`` and you judge
         again. The two travel as one argument because a judgment set without the
-        backlog it was made against cannot be checked for completeness.
+        backlog it was made against cannot be checked for completeness. Title, body and labels are
+        leak-scrubbed (a customer codename bound for a public forge is REFUSED) and #117-audited.
         """
 
         def _prepare() -> dict[str, Any]:
-            from teatree.core.issue_hygiene import open_candidates  # noqa: PLC0415 — deferred: ORM-adjacent import
+            from teatree.core.issue_hygiene import (  # noqa: PLC0415 — deferred: ORM-adjacent import
+                open_candidates,
+                snapshot_token_for_urls,
+            )
 
             live = open_candidates(host=_forge_client(service), repo=repo)
             return {
                 "outcome": "judgment_required",
                 "candidates": list(starmap(_candidate_summary, sorted(live.items()))),
-                "snapshot": sorted(live),
+                "snapshot_token": snapshot_token_for_urls(live),
                 "instructions": (
-                    "Nothing was written. Judge EVERY candidate, then call again with dedupe={'snapshot': "
-                    "<this snapshot>, 'decisions': [{'url': ..., 'fits': bool, 'reason': '<why not>'}]}. "
+                    "Nothing was written. Judge EVERY candidate, then call again with dedupe={'snapshot_token': "
+                    "<this token>, 'decisions': [{'url': ..., 'fits': bool, 'reason': '<why not>'}]}. "
                     "One fits -> the request is appended to that ticket's description; none fits -> a new "
-                    "ticket is filed recording every rejection."
+                    "ticket is filed with the supplied body; judgments are kept privately."
                 ),
             }
 
         def _commit() -> dict[str, Any]:
             from teatree.core.issue_hygiene import IssueDraft, create_or_extend  # noqa: PLC0415 — deferred import
 
+            token = dedupe.get("snapshot_token") if dedupe else None
+            if not isinstance(token, str) or not token:
+                msg = "snapshot_token from the first call is required before filing"
+                raise ValueError(msg)
             draft = IssueDraft(
                 repo=repo,
                 title=title,
@@ -291,7 +305,7 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
                 host=_forge_client(service),
                 draft=draft,
                 decisions=_create_decisions(dedupe.get("decisions") or [] if dedupe else []),
-                snapshot_urls=dedupe.get("snapshot") if dedupe else None,
+                snapshot_token=token,
             )
             return {"outcome": outcome.kind, "issue_url": outcome.issue_url, "unjudged": list(outcome.unjudged)}
 
@@ -299,7 +313,12 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
         return await _run_hygiene_write(work)
 
     async def issue_note(issue_url: str, purpose: str, body: str, *, sweep_run_id: str = "") -> dict[str, Any]:
-        """Record a note where its *purpose* belongs — description for a requirement, comment for status."""
+        """Record a note where its *purpose* belongs — description for a requirement, comment for status.
+
+        requirement / change_request / scope_change / decision append a dated description section (a lane
+        reads the description, never the comments); status / evidence post a comment. A *sweep_run_id*
+        refuses every comment. Only the owner's / factory bot's own issues may be changed.
+        """
 
         def _note() -> dict[str, Any]:
             from teatree.core.issue_hygiene import record_issue_note  # noqa: PLC0415 — deferred: ORM-adjacent import
@@ -321,7 +340,8 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
         Routes through :func:`teatree.core.issue_hygiene.close_with_rationale` —
         the same self-author guard, leak scrub and #117 audit every other write
         in this module gets, so this can no longer be the raw untyped-comment
-        seam ``close_issue(comment=...)`` was.
+        seam ``close_issue(comment=...)`` was. There is no untyped body-replace tool; use the
+        sibling ``*_issue_note`` instead.
         """
 
         def _close() -> dict[str, Any]:
@@ -344,17 +364,20 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
 
 def _register_pr_reads(server: MCPServer, service: Service, prefix: str) -> None:
     async def pr_list(repo: str, *, state: str = "", author: str = "") -> list[dict[str, Any]]:
+        """PRs/MRs on *repo*, filtered by state (open/closed/merged) and author."""
         return await sync_to_async(
             lambda: _forge_client(service).list_prs(repo=repo, state=state, author=author),
             thread_sensitive=True,
         )()
 
     async def pr_diff(repo: str, pr_iid: int) -> list[dict[str, Any]]:
+        """The PR's changed files with per-file diffs."""
         return await sync_to_async(
             lambda: _forge_client(service).get_pr_diff(repo=repo, pr_iid=pr_iid), thread_sensitive=True
         )()
 
     async def pr_commits(repo: str, pr_iid: int) -> list[dict[str, Any]]:
+        """The commits on the PR."""
         return await sync_to_async(
             lambda: _forge_client(service).list_pr_commits(repo=repo, pr_iid=pr_iid), thread_sensitive=True
         )()
@@ -370,6 +393,7 @@ def _register_pr_reads(server: MCPServer, service: Service, prefix: str) -> None
         return rollup
 
     async def repo_get(repo: str) -> dict[str, Any]:
+        """*repo* metadata (default branch, path, id)."""
         return await sync_to_async(lambda: _forge_client(service).get_repo(repo=repo), thread_sensitive=True)()
 
     server.add_tool(pr_list, name=f"{prefix}_pr_list", annotations=_READ_ONLY)
@@ -381,22 +405,26 @@ def _register_pr_reads(server: MCPServer, service: Service, prefix: str) -> None
 
 def _register_search_reads(server: MCPServer, service: Service, prefix: str) -> None:
     async def issue_search(repo: str, query: str) -> list[dict[str, Any]]:
+        """Open issues in *repo* matching *query* (dup-check)."""
         return await sync_to_async(
             lambda: _forge_client(service).search_open_issues(repo=repo, query=query), thread_sensitive=True
         )()
 
     async def issue_list_assigned(assignee: str) -> list[dict[str, Any]]:
+        """Open issues assigned to *assignee*."""
         return await sync_to_async(
             lambda: _forge_client(service).list_assigned_issues(assignee=assignee), thread_sensitive=True
         )()
 
     async def my_merged_prs(author: str, *, updated_after: str = "") -> list[dict[str, Any]]:
+        """Merged PRs/MRs authored by *author* (sweeps)."""
         return await sync_to_async(
             lambda: _forge_client(service).list_my_merged_prs(author=author, updated_after=updated_after or None),
             thread_sensitive=True,
         )()
 
     async def pr_get(repo: str, pr_iid: int, pr_url: str) -> dict[str, Any]:
+        """One PR's open/merge/draft state, author, and approval snapshot in a single read."""
         return await sync_to_async(
             lambda: _pr_snapshot(service, repo=repo, pr_iid=pr_iid, pr_url=pr_url), thread_sensitive=True
         )()
@@ -407,45 +435,6 @@ def _register_search_reads(server: MCPServer, service: Service, prefix: str) -> 
     server.add_tool(pr_get, name=f"{prefix}_pr_get", annotations=_READ_ONLY)
 
 
-def _instructions(prefix: str) -> str:
-    return (
-        f"- {prefix}_current_user(): the authenticated handle on this forge.\n"
-        f"- {prefix}_my_prs(author, updated_after): open PRs/MRs authored by *author*.\n"
-        f"- {prefix}_review_requested(reviewer, updated_after): PRs/MRs awaiting *reviewer*.\n"
-        f"- {prefix}_pr_author(pr_url) / {prefix}_pr_comments(repo, pr_iid): one PR's author / comments.\n"
-        f"- {prefix}_pr_get(repo, pr_iid, pr_url): one PR's open/merge/draft state, author, and "
-        f"approval snapshot in a single read.\n"
-        f"- {prefix}_my_merged_prs(author, updated_after): merged PRs/MRs authored by *author* (sweeps).\n"
-        f"- {prefix}_pr_list(repo, state, author): PRs/MRs on *repo*, filtered by state "
-        f"(open/closed/merged) and author.\n"
-        f"- {prefix}_pr_diff(repo, pr_iid): the PR's changed files with per-file diffs.\n"
-        f"- {prefix}_pr_commits(repo, pr_iid): the commits on the PR.\n"
-        f"- {prefix}_pr_checks(repo, pr_iid): live required-check or pipeline rollup for the PR; "
-        "an unreadable rollup is an error.\n"
-        f"- {prefix}_pr_update(repo, pr_iid, expected, message): "
-        "update your own open PR after matching its current title and body; the write is leak-, "
-        "AI-signature- and validator-screened and verified.\n"
-        f"- {prefix}_repo_get(repo): *repo* metadata (default branch, path, id).\n"
-        f"- {prefix}_issue(issue_url) / {prefix}_issue_comments(issue_url): one issue and its comments.\n"
-        f"- {prefix}_issue_search(repo, query): open issues in *repo* matching *query* (dup-check).\n"
-        f"- {prefix}_issue_list_assigned(assignee): open issues assigned to *assignee*.\n"
-        f"- {prefix}_issue_create(repo, title, body, labels, dedupe): file an issue, dedupe FIRST (#162). "
-        f"Called WITHOUT dedupe it writes nothing and returns the open backlog as `candidates` + the "
-        f"`snapshot` it was read at; judge each one and call again with dedupe={{'snapshot': ..., "
-        f"'decisions': [{{'url','fits','reason'}}]}}. One `fits` APPENDS the request to that ticket's "
-        f"description instead of filing; none fits files once, recording every rejection in the new body. "
-        f"Body, title + labels are leak-scrubbed (a customer codename bound for a public forge is REFUSED) "
-        f"and #117-audited.\n"
-        f"- {prefix}_issue_note(issue_url, purpose, body, sweep_run_id): record a note where its PURPOSE "
-        f"belongs (#162). requirement/change_request/scope_change/decision append a dated description section "
-        f"(a lane reads the description, never the comments); status/evidence post a comment. A sweep_run_id "
-        f"refuses every comment. Only the owner's / factory bot's own issues may be changed.\n"
-        f"- {prefix}_issue_close(issue_url, rationale): close an issue via the hygiene facade (#162) — "
-        f"the rationale lands in a dated description section (self-authored issues only), then the issue "
-        f"closes with no comment. There is no untyped body-replace tool; use {prefix}_issue_note instead."
-    )
-
-
 def register_github(server: MCPServer) -> None:
     _register(server, Service.GITHUB, "github")
 
@@ -453,7 +442,3 @@ def register_github(server: MCPServer) -> None:
 def register_gitlab(server: MCPServer) -> None:
     _register(server, Service.GITLAB, "gitlab")
     services_gitlab_ci.register(server)
-
-
-INSTRUCTIONS_GITHUB = _instructions("github")
-INSTRUCTIONS_GITLAB = _instructions("gitlab") + "\n" + services_gitlab_ci.INSTRUCTIONS

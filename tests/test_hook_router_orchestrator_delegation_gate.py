@@ -298,7 +298,13 @@ class TestScopeIsTheOrchestrator:
 
 class TestNeverLockout:
     def test_the_per_call_token_allows(self) -> None:
-        assert _verdict(_event("rg pattern src/  # [delegate-ok: sizing the blast radius]"))[0] is False
+        with patch.object(router._gate_escape, "escape_allows", return_value=True):
+            assert (
+                _verdict(
+                    _event("rg pattern src/  # [gate-escape:orchestrator_delegation_gate: sizing the blast radius]")
+                )[0]
+                is False
+            )
 
     @pytest.mark.parametrize(
         "command",

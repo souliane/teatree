@@ -38,7 +38,7 @@ from django.utils import timezone
 from teatree.core.models.loop import Loop
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.core.models.usage_window_state import PARK_ERROR_PREFIXES
 from teatree.core.selectors._helpers import _humanize_duration
 from teatree.dash.skills import skill_bundle
 from teatree.loops.loop_table import loop_block_reasons
@@ -244,6 +244,7 @@ def _loops(now: dt.datetime) -> tuple[LoopRow, ...]:
 def _outcomes() -> tuple[OutcomeRow, ...]:
     attempts = (
         TaskAttempt.objects.filter(ended_at__isnull=False)
+        .with_previous_end()
         .select_related("task", "task__ticket")
         .order_by("-ended_at", "-pk")[:LIVE_OUTCOME_ROWS]
     )
@@ -252,7 +253,7 @@ def _outcomes() -> tuple[OutcomeRow, ...]:
 
 def _outcome_row(attempt: TaskAttempt) -> OutcomeRow:
     ticket = attempt.task.ticket
-    parked = attempt.error.startswith(LIMIT_PARKED_PREFIX)
+    parked = attempt.error.startswith(PARK_ERROR_PREFIXES)
     return OutcomeRow(
         attempt_id=attempt.pk,
         ticket_number=ticket.ticket_number if ticket else "",
@@ -269,4 +270,4 @@ def _outcome_row(attempt: TaskAttempt) -> OutcomeRow:
 def _duration(attempt: TaskAttempt) -> str:
     if attempt.ended_at is None:
         return ""
-    return _humanize_duration((attempt.ended_at - attempt.started_at).total_seconds())
+    return _humanize_duration((attempt.ended_at - attempt.display_started_at).total_seconds())

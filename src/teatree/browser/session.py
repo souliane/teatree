@@ -18,7 +18,7 @@ import shutil
 import signal
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -30,7 +30,7 @@ from teatree.browser.evidence import BrowserEvent, EventLog
 from teatree.browser.state import KEEPER_LOCK, SessionFiles
 from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.paths import PathHelpers
-from teatree.utils.run import spawn_session_leader
+from teatree.utils.run import DEVNULL, spawn_session_leader
 from teatree.utils.singleton import flock_is_held, pid_alive, read_holder
 from teatree.utils.work_tree import WorkTreeError, resolve
 
@@ -185,7 +185,7 @@ class BrowserSession:
             raise StepFailedError(str(exc), log.read(after=before)) from exc
 
     @contextlib.contextmanager
-    def _attach(self, cdp_url: str) -> Iterator["Page"]:
+    def _attach(self, cdp_url: str) -> Generator["Page"]:
         from playwright.sync_api import (  # noqa: PLC0415 — deferred: keeps Playwright off `t3` startup
             Error,
             sync_playwright,
@@ -223,7 +223,7 @@ class BrowserSession:
         shutil.rmtree(self.files.profile, ignore_errors=True)
         with self.files.log.open("ab") as log:
             launcher = [sys.executable, "-m", "teatree.browser.keeper", str(self.files.root)]
-            exit_code = spawn_session_leader(launcher, stdout=log, stderr=log).wait()
+            exit_code = spawn_session_leader(launcher, stdio=(DEVNULL, log, log)).wait()
         if exit_code != 0:
             msg = f"the browser keeper could not start (exit {exit_code}); see {self.files.log}"
             raise BrowserUnavailableError(msg)
@@ -290,7 +290,7 @@ def _wait_exited(pid: int, timeout_s: float) -> None:
 
 
 @contextlib.contextmanager
-def _owner_only() -> Iterator[None]:
+def _owner_only() -> Generator[None]:
     """Create every file and directory inside the block readable by its owner alone."""
     previous = os.umask(0o077)
     try:

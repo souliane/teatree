@@ -27,6 +27,7 @@ _MODE = re.compile(r"[rwxabt+]{1,3}")
 _ALLOWED = {
     # The seam itself: the one writer that redacts before it opens the file.
     "src/teatree/eval/artifact_redaction.py::Redactor.write",
+    "src/teatree/eval/artifact_redaction.py::write_artifact",
     # Fixtures: the throwaway repos, stub CLIs, media and recorded runs a scenario starts from.
     "src/teatree/eval/git_fixture.py::_write",
     "src/teatree/eval/git_fixture.py::_write_recording",

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, ClassVar
 from unittest import mock
 
 import pytest
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.agents.attempt_recorder import record_result_envelope
@@ -173,6 +173,19 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
+    def test_an_audit_row_between_identical_failures_breaks_stall_adjacency(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
+        _add_failed_attempt(task, error=f"{CANCELLED_PREFIX}operator paused retry")
+        _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+        assert not DeferredQuestion.objects.filter(answered_at__isnull=True).exists()
+
     def test_verbatim_identical_landing_unverified_is_escalated_not_reopened(self) -> None:
         # This caller passes no ``last_two_deterministic_kinds``, so the fingerprint check
         # is its ONLY stall check. Withholding every operator-ENVIRONMENTAL kind from it
@@ -202,6 +215,20 @@ class TestTransientRequeue(TestCase):
         assert reopened == 1
         assert task.status == Task.Status.PENDING
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_refused_resume_after_park_requeues_without_a_stall_question(self) -> None:
+        task = _failed_task()
+        reason = (
+            "result_error: context_exhausted — subtype=success — the resumed conversation ended without taking a turn"
+        )
+        _add_failed_attempt(task, error=reason)
+        _add_failed_attempt(task, error="limit_parked: checkpoint: worker exiting")
+        _add_failed_attempt(task, error=reason)
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert not DeferredQuestion.objects.filter(answered_at__isnull=True).exists()
 
     def test_budget_exhausted_is_escalated_not_reopened(self) -> None:
         cap = max_phase_iterations()
@@ -1372,9 +1399,15 @@ class TestTheTicketPathParksAMovedHeadToo(TestCase):
 class TestAStalePlanGetsItsPlanningPassWhereItIsParked(TestCase):
     _ERROR = f"{PLAN_STALE_PREFIX}Refusing to advance ticket 1 to CODED — its plan is stale on a declared seam."
 
-    def _stale_coding_failure(self, *, state: str = Ticket.State.PLAN_RECORDED) -> Task:
-        task = _failed_task(state=state)
+    def _stale_coding_failure(self, *, state: str = Ticket.State.PLAN_RECORDED, issue_url: str = "") -> Task:
+        task = _failed_task(state=state, issue_url=issue_url)
         _add_failed_attempt(task, error=self._ERROR)
+        return task
+
+    def _stale_coding_failures(self, count: int, *, issue_url: str = "") -> Task:
+        task = self._stale_coding_failure(issue_url=issue_url)
+        for _ in range(count - 1):
+            _add_failed_attempt(task, error=self._ERROR)
         return task
 
     def test_the_row_is_parked_and_one_planning_pass_is_queued_even_with_an_open_pr(self) -> None:
@@ -1401,12 +1434,44 @@ class TestAStalePlanGetsItsPlanningPassWhereItIsParked(TestCase):
     def test_a_spent_coding_budget_halts_internally_instead_of_queueing_another_pass(self) -> None:
         task = self._stale_coding_failure()
         for index in range(max_phase_iterations()):
+            _add_failed_attempt(task, error=f"result_error: work failure run {'x' * (index + 1)}")
+        _add_failed_attempt(task, error=self._ERROR)
+
+        requeue_transient_failed()
+
+        assert not task.ticket.tasks.filter(phase="planning").exists()
+        assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_repeated_plan_stale_cycles_halt_the_planning_pass(self) -> None:
+        task = self._stale_coding_failure()
+        for index in range(max_phase_iterations()):
             _add_failed_attempt(task, error=f"{self._ERROR} run {'x' * (index + 1)}")
 
         requeue_transient_failed()
 
         assert not task.ticket.tasks.filter(phase="planning").exists()
         assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
+
+    @override_settings(MAX_PHASE_ITERATIONS=5)
+    def test_the_stale_plan_halt_trips_at_the_cap_and_not_below_it(self) -> None:
+        for stale_failures, halted in ((4, False), (5, True), (6, True)):
+            with self.subTest(stale_failures=stale_failures):
+                task = self._stale_coding_failures(stale_failures)
+
+                requeue_transient_failed()
+
+                task.refresh_from_db()
+                assert task.ticket.tasks.filter(phase="planning").exists() is not halted
+                assert (HALT_STAMP in task.execution_reason) is halted
+
+    @override_settings(MAX_PHASE_ITERATIONS=5)
+    def test_a_synthetic_cadence_ticket_is_never_halted_for_stale_plans(self) -> None:
+        task = self._stale_coding_failures(6, issue_url="architectural-review://t3-teatree")
+
+        requeue_transient_failed()
+
+        assert task.ticket.tasks.filter(phase="planning").exists()
+        assert not DeferredQuestion.objects.exists()
 
     def test_a_ticket_that_already_reached_coded_gets_no_planning_pass(self) -> None:
         task = self._stale_coding_failure(state=Ticket.State.CODED)

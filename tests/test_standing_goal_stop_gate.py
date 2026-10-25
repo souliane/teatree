@@ -5,9 +5,9 @@
 
 While an active :class:`~teatree.core.models.standing_goal.StandingGoal` is unmet,
 the Stop gate DENIES a stop-as-if-done (``{"decision": "block", ...}``), leading
-with the blunt binary and minting a single-use escape token. A passing check
+with the blunt binary and naming an audited per-action escape. A passing check
 auto-retires the goal. Never-lockout: attended turns are skipped, the kill-switch
-and the single-use token both allow, and any crash fails open.
+and the audited token both allow, and any crash fails open.
 
 Integration-style: the real gate, real StandingGoal rows, real ``true``/``false``
 check commands; only stdout and the loop-driver verdict cross the boundary.
@@ -20,11 +20,13 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from django.db import OperationalError
 from django.test import TestCase
 
 import hooks.scripts.hook_router as router
 import hooks.scripts.standing_goal_stop_gate as gate
 from teatree.core.models import StandingGoal
+from tests._gate_escape_audit import audited_escape
 
 
 def _assistant(text: str) -> dict:
@@ -74,16 +76,7 @@ class TestDeniesUnmetGoal(_GateTest):
         assert decision.get("decision") == "block"
         reason = decision.get("reason", "")
         assert "`evals-green` green? NO." in reason
-        assert "[standing-goal-hold:" in reason
-
-    def test_deny_mints_a_token_recoverable_from_the_reason(self) -> None:
-        StandingGoal.objects.set_goal("evals-green", "false")
-
-        _result, decision = self._run()
-
-        token = gate._hold_token(decision["reason"])
-        assert token is not None
-        assert gate._valid_hold("s-goal", token)
+        assert "[gate-escape:standing_goal_stop:" in reason
 
 
 class TestAllowsWhenMetOrOutOfScope(_GateTest):
@@ -130,49 +123,44 @@ class TestAllowsWhenMetOrOutOfScope(_GateTest):
         assert decision == {}
 
 
-class TestSingleUseHoldToken(_GateTest):
-    def test_valid_token_allows_then_dies_after_one_use(self) -> None:
-        StandingGoal.objects.set_goal("evals-green", "false")
-
-        # 1) First stop denies and mints a token.
-        _result, decision = self._run()
-        token = gate._hold_token(decision["reason"])
-        assert token is not None
-
-        # 2) Ending the turn with the minted token holds this ONE stop.
-        held, held_decision = self._run(text=f"blocked on infra [standing-goal-hold: {token} infra]")
-        assert held is None
-        assert held_decision == {}
-
-        # 3) Reusing the SAME token no longer holds — it died after one use, so
-        #    the deny re-fires (minting a fresh token).
-        again, again_decision = self._run(text=f"still blocked [standing-goal-hold: {token} infra]")
-        assert again is True
-        assert again_decision.get("decision") == "block"
-
-    def test_hold_token_needs_a_nonempty_reason(self) -> None:
-        assert gate._hold_token("[standing-goal-hold: abcd1234 because X]") == "abcd1234"
-        assert gate._hold_token("[standing-goal-hold: abcd1234]") is None
+_GATE_FAILURE = "gate failure"
 
 
 class TestCrashProof(_GateTest):
-    def test_internal_error_fails_open(self) -> None:
+    def test_orm_failure_fails_open_and_is_reported(self) -> None:
         def _boom(_data: dict) -> bool | None:
-            raise RuntimeError
+            raise OperationalError(_GATE_FAILURE)
 
-        with patch.object(gate, "_run", _boom):
+        stderr = StringIO()
+        with patch.object(gate, "_run", _boom), patch("sys.stderr", stderr):
             result, decision = self._run()
         assert result is None
         assert decision == {}
+        assert "SKIPPED" in stderr.getvalue()
+        assert f"OperationalError: {_GATE_FAILURE}" in stderr.getvalue()
+
+    def test_error_outside_the_orm_failures_is_not_swallowed_and_restores_sys_path(self) -> None:
+        def _boom(_data: dict) -> bool | None:
+            raise RuntimeError(_GATE_FAILURE)
+
+        path_before = list(sys.path)
+        with patch.object(gate, "_run", _boom), self.assertRaisesMessage(RuntimeError, _GATE_FAILURE):
+            self._run()
+        assert sys.path == path_before
 
     def test_unbootstrappable_django_allows(self) -> None:
         # ``_run`` lazily does ``from hooks.scripts.django_bootstrap import
         # bootstrap_teatree_django`` (the canonical package module) — patch it there.
         StandingGoal.objects.set_goal("evals-green", "false")
-        with patch.object(sys.modules["hooks.scripts.django_bootstrap"], "bootstrap_teatree_django", lambda: False):
+        stderr = StringIO()
+        with (
+            patch.object(sys.modules["hooks.scripts.django_bootstrap"], "bootstrap_teatree_django", lambda: False),
+            patch("sys.stderr", stderr),
+        ):
             result, decision = self._run()
         assert result is None
         assert decision == {}
+        assert "SKIPPED" in stderr.getvalue()
 
 
 class TestDefensiveHelpers(_GateTest):
@@ -196,25 +184,6 @@ class TestDefensiveHelpers(_GateTest):
         with patch.object(StandingGoal.objects, "retire", _raise):
             gate._retire_goal("evals-green")  # must not raise
 
-    def test_hold_state_none_on_corrupt_json_and_fail_open(self) -> None:
-        (self.tmp_path / "s.standing-goal-hold").write_text("}{not json", encoding="utf-8")
-        assert gate._hold_state("s") is None
-        # An unreadable state fail-opens the escape so a broken dir never wedges a hold.
-        assert gate._valid_hold("s", "anytoken") is True
-
-    def test_hold_state_non_dict_payload_is_empty(self) -> None:
-        (self.tmp_path / "s.standing-goal-hold").write_text("[1,2,3]", encoding="utf-8")
-        assert gate._hold_state("s") == {}
-
-    def test_mint_and_consume_survive_write_errors(self) -> None:
-        def _raise(*_a: object, **_k: object) -> None:
-            raise OSError
-
-        with patch.object(gate.Path, "write_text", _raise):
-            token = gate._mint_hold("s")  # a write failure still yields a usable token
-            assert token
-            gate._consume_hold("s", token)  # must not raise
-
     def test_check_cache_corrupt_is_empty_and_save_survives_errors(self) -> None:
         (self.tmp_path / "global.standing-goal-check-cache").write_text("not json", encoding="utf-8")
         assert gate._load_check_cache() == {}
@@ -228,3 +197,19 @@ class TestDefensiveHelpers(_GateTest):
     def test_check_cache_non_dict_is_empty(self) -> None:
         (self.tmp_path / "global.standing-goal-check-cache").write_text("[1]", encoding="utf-8")
         assert gate._load_check_cache() == {}
+
+
+class TestAuditedStandingGoalEscape(_GateTest):
+    def test_legacy_hold_token_no_longer_allows(self) -> None:
+        StandingGoal.objects.set_goal("evals-green", "false")
+        result, blocked = self._run(text="blocked [standing-goal-hold: old-token infra]")
+        assert result is True
+        assert blocked["decision"] == "block"
+
+    def test_audited_escape_is_recorded_for_this_session_then_allows_the_stop(self) -> None:
+        StandingGoal.objects.set_goal("evals-green", "false")
+        with audited_escape({}, event="Stop") as requests:
+            result, decision = self._run(text="blocked [gate-escape:standing_goal_stop: infra]", extra={"cwd": "/work"})
+        assert result is None
+        assert decision == {}
+        assert [(request["gate"], request["session_id"]) for request in requests] == [("standing_goal_stop", "s-goal")]

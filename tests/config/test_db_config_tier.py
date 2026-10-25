@@ -23,8 +23,9 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.config.override_reader import load_global_rows, load_overlay_rows
-from teatree.config.resolution import env_setting_overrides, read_setting_layers
+from teatree.config.override_reader import OverlayRows, load_global_rows, load_overlay_rows
+from teatree.config.provenance import resolve_settings
+from teatree.config.resolution import env_setting_overrides, read_setting_layers, resolved_overlay_name
 from teatree.core.models import ConfigSetting
 
 
@@ -64,6 +65,11 @@ class TestDbConfigTier(TestCase):
     def test_db_row_value_is_coerced_via_registry_parser(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", "5")
         assert get_effective_settings().issue_implementer_max_concurrent == 5
+
+    def test_intake_idle_hold_window_is_unset_until_configured(self) -> None:
+        assert get_effective_settings().issue_intake_idle_hold_hours == 0
+        ConfigSetting.objects.set_value("issue_intake_idle_hold_hours", 6)
+        assert get_effective_settings().issue_intake_idle_hold_hours == 6
 
     def test_clear_restores_dataclass_default(self) -> None:
         ConfigSetting.objects.set_value("autoload", value=True)
@@ -154,6 +160,13 @@ class TestPerOverlayDbScope(TestCase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         assert get_effective_settings().autoload is True
 
+    def test_exact_overlay_row_beats_alias_and_owns_the_scope(self) -> None:
+        ConfigSetting.objects.set_value("autoload", value=True, scope="t3-my-overlay")
+        ConfigSetting.objects.set_value("autoload", value=False, scope="my-overlay")
+        resolved = resolve_settings(["autoload"], scope=resolved_overlay_name("my-overlay"))["autoload"]
+        assert (resolved.value, resolved.scope) == (False, "my-overlay")
+        assert get_effective_settings("my-overlay").autoload is False
+
     def test_empty_overlay_scope_is_still_a_no_op(self) -> None:
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         assert ConfigSetting.objects.count() == 0
@@ -239,7 +252,7 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
             mock.patch.object(ConfigSetting.objects, "exclude", side_effect=OperationalError("database is locked")),
             self.assertLogs("teatree.config", level="ERROR") as captured,
         ):
-            assert load_overlay_rows("my-overlay") == ({}, True)
+            assert load_overlay_rows("my-overlay") == (OverlayRows({}, {}), True)
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
     def test_real_read_error_is_logged_loud_not_silent(self) -> None:
@@ -271,7 +284,7 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
             mock.patch.object(ConfigSetting.objects, "exclude", side_effect=RuntimeError("corrupt read")),
             self.assertLogs("teatree.config", level="ERROR") as captured,
         ):
-            assert load_overlay_rows("my-overlay") == ({}, True)
+            assert load_overlay_rows("my-overlay") == (OverlayRows({}, {}), True)
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
 

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
@@ -5,7 +6,7 @@ from django.db.models import Max
 from django_fsm import can_proceed
 
 from teatree.core.forge_url import is_forge_url
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
@@ -16,8 +17,10 @@ from teatree.utils.url_slug import is_synthetic_loop_umbrella_url, pr_ref_from_u
 if TYPE_CHECKING:
     from teatree.core.managers import SessionQuerySet, TaskQuerySet
     from teatree.core.models.task import Task
+    from teatree.core.models.task_attempt import TaskAttempt
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.ticket_artifacts import PortResolver, TicketArtifacts
+    from teatree.core.models.transition import TicketTransition
     from teatree.core.models.worktree import Worktree
 
 
@@ -54,6 +57,14 @@ class TicketIntrospectionModel(TicketFacet):
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
         return self.tasks.filter(status__in=task_model.Status.active()).exists()  # Django reverse FK
 
+    def last_activity_at(self) -> datetime | None:
+        attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
+        transition_model = cast("type[TicketTransition]", apps.get_model("core", "TicketTransition"))
+        attempt = attempt_model.objects.filter(task__ticket_id=self.pk).aggregate(latest=Max("started_at"))["latest"]
+        transition = transition_model.objects.filter(ticket_id=self.pk).aggregate(latest=Max("created_at"))["latest"]
+        observed = [stamp for stamp in (attempt, transition) if stamp is not None]
+        return max(observed) if observed else None
+
     def newest_task_was_cancelled(self) -> bool:
         """True when a human cancelled this ticket's NEWEST task (#4105).
 
@@ -75,6 +86,14 @@ class TicketIntrospectionModel(TicketFacet):
         if newest is None:
             return False
         return self.tasks.filter(created_at=newest, failure_kind=FailureKind.CANCELLED).exists()  # Django reverse FK
+
+    def newest_phase_task_was_cancelled(self, phase: str) -> bool:
+        latest = self.tasks.filter(phase__in=phase_spellings(normalize_phase(phase))).order_by("-pk").first()
+        return latest is not None and latest.failure_kind == FailureKind.CANCELLED
+
+    def newest_task_recorded_by_hand(self) -> bool:
+        latest = self.tasks.order_by("-pk").first()
+        return latest is not None and latest.recorded_by_hand()
 
     @property
     def has_checkout_source(self: "Ticket") -> bool:

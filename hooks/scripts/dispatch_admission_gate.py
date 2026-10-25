@@ -26,34 +26,26 @@ The seat's ordinary end is the ``dispatch_seat_release`` sibling, on ``SubagentS
 NEVER-LOCKOUT: the deny routes through the router's shared
 ``_fail_open_or_deny`` chokepoint (back-imported lazily), so the always-allowed
 self-rescue commands and the master ``danger_gate_fail_open`` switch relax it;
-a per-call ``[admission-ok: <reason>]`` token in the dispatch prompt allows one
-call (an empty reason does not); and ANY internal error, an unbootstrappable
-Django and an unimportable ``teatree`` all fail OPEN.
+a per-call ``[gate-escape:dispatch_admission: <reason>]`` token in the dispatch prompt allows one
+call (an empty reason does not); and an unbootstrappable Django, an unimportable
+``teatree`` and an ORM failure all fail OPEN, the last reported as SKIPPED. Any other error
+reaches the router's crash boundary, which allows.
 
 Cold-import safe: the module top imports only stdlib plus the already-extracted
-``orchestration_boundary_signals`` sibling — never Django / ``teatree.core``.
+``django_bootstrap``, ``gate_result`` and ``orchestration_boundary_signals`` siblings
+— never Django / ``teatree.core``.
 """
 
-import re
 import sys
 
-from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent
+from hooks.scripts.django_bootstrap import orm_failures
+from hooks.scripts.gate_result import warn_gate_skipped
+from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS, call_is_from_subagent
 
 # Alias the bare and ``hooks.scripts.`` identities so the handlers the router
 # re-exports and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("dispatch_admission_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.dispatch_admission_gate", sys.modules[__name__])
-
-#: The two harness tool names that spawn a sub-agent.
-DISPATCH_TOOLS = frozenset({"Agent", "Task"})
-
-# Per-call opt-out, mirroring ``[fg-ok: <reason>]`` / ``[quote-ok: <reason>]``.
-# An empty reason does not unblock.
-_ADMISSION_OK_RE = re.compile(r"\[admission-ok:\s*\S[^\]]*?\s*\]")
-
-#: Scanned prefix of the dispatch payload — a token buried deep in a long brief
-#: must not silently authorise the whole prompt (the ``[quote-ok:]`` precedent).
-_TOKEN_SCAN_CHARS = 512
 
 
 def _block_message(reason: str) -> str:
@@ -63,7 +55,7 @@ def _block_message(reason: str) -> str:
         "An interactive dispatch adds to the SAME box the factory lanes run on, so it is "
         "governed by the same governor. Wait for the brake to release "
         "(the load watermark has hysteresis, so it re-admits under the lower one), or add an "
-        "explicit `[admission-ok: <reason>]` marker to the dispatch for a genuine "
+        "explicit `[gate-escape:dispatch_admission: <reason>]` marker to the dispatch for a genuine "
         "must-run-now dispatch."
     )
 
@@ -77,6 +69,7 @@ def _denied_reason(*, apply_ceiling: bool, session_id: str = "") -> str | None:
     from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 — deferred: cold-hook import
 
     if not bootstrap_teatree_django():
+        warn_gate_skipped("dispatch admission", "the hook interpreter cannot read the ORM control DB")
         return None
     from teatree.core.dispatch_admission import dispatch_admission_denied_reason  # noqa: PLC0415 — deferred: post-setup
 
@@ -102,12 +95,9 @@ def handle_dispatch_admission(data: dict) -> bool:
     try:
         if data.get("tool_name") not in DISPATCH_TOOLS:
             return False
-        tool_input = data.get("tool_input") or {}
-        prompt = tool_input.get("prompt", "") if isinstance(tool_input, dict) else ""
-        if isinstance(prompt, str) and _ADMISSION_OK_RE.search(prompt[:_TOKEN_SCAN_CHARS]):
-            return False
         reason = _denied_reason(apply_ceiling=not call_is_from_subagent(data), session_id=_session_of(data))
-    except Exception:  # noqa: BLE001 — crash-proof hook: a gate bug must never wedge the dispatch
+    except orm_failures() as exc:
+        warn_gate_skipped("dispatch admission", f"the ORM probe failed ({type(exc).__name__}: {exc})")
         return False
     if reason is None:
         return False

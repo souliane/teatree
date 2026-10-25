@@ -11,11 +11,11 @@ from collections.abc import Callable
 
 from teatree.core.backend_factory import OverlayBackends, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, resolve_user_id
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.review.mr_triage import RepoOwner
+from teatree.loop.dispatch import agent_dispatching_kinds
 from teatree.loop.domain_optional_scanner_jobs import (
     _arch_review_jobs_for_overlay,
     _audit_jobs_for_overlay,
@@ -24,16 +24,16 @@ from teatree.loop.domain_optional_scanner_jobs import (
     _issue_implementer_jobs_for_overlay,
     _triage_assessor_jobs_for_overlay,
 )
+from teatree.loop.domain_ship_jobs import _colleague_egress_selected, _ship_jobs_for_overlay
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
+from teatree.loop.overlay_followup_jobs import OverlayHookRefusalError, overlay_followup_jobs
 from teatree.loop.question_drain import sweep_owner_questions
 from teatree.loop.scanner_error_notice import notify_scanner_error
 from teatree.loop.scanner_factories import (
     _admit_colleague_prs_to_board,
     _competing_url_prefixes,
     _effective_settings_for_overlay,
-    _mr_conflict_scanner_for,
     _mr_triage_scanner_for,
-    _pr_sweep_scanner_for,
     _self_pr_review_scanner_for,
     _slack_broadcasts_scanner_for,
     _task_sweep_scanner_for,
@@ -47,9 +47,7 @@ from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AskUserQuestionReplyScanner,
     DeferredQuestionPosterScanner,
-    GitLabApprovalsScanner,
     IncomingEventsScanner,
-    MyPrsScanner,
     OutboundAuditScanner,
     PendingPrDrainScanner,
     PendingTasksScanner,
@@ -64,7 +62,6 @@ from teatree.loop.scanners import (
     ReviewRequestResumeScanner,
     ReviewRequestSendScanner,
     ScanSignal,
-    SlackDmInboundScanner,
     SlackMentionsScanner,
     SlackReviewIntentScanner,
     StaleTicketsScanner,
@@ -74,12 +71,12 @@ from teatree.loop.scanners import (
     WaitingDigestScanner,
     WorkStateScanner,
 )
-from teatree.loop.scanners.base import ScannerError
+from teatree.loop.scanners.base import PartialScanError, ScannerError
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
-from teatree.loop.scanners.pr_findings import RecordedVerdictReader
+from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.review_nag import default_repo_owner
+from teatree.loop.scanners.review_nag_mention import IDENTITY_LOOKUP_ERRORS
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
-from teatree.loops.enable_verdict import loop_admits
 from teatree.messaging import notify_with_fallback
 
 logger = logging.getLogger(__name__)
@@ -100,6 +97,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
+        _ScannerJob(scanner=OwnerActionScanner(), overlay=""),
         _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(
@@ -178,64 +176,6 @@ def _tickets_per_host_jobs(backend: OverlayBackends, tag: str) -> list[_ScannerJ
     return jobs
 
 
-def _ship_jobs_for_overlay(
-    backend: OverlayBackends,
-    *,
-    all_backends: tuple[OverlayBackends, ...],
-) -> list[_ScannerJob]:
-    """Own-author PR scanner + the auto-merge PR sweep + the GitLab-approvals poll, per host."""
-    tag = backend.name
-    jobs: list[_ScannerJob] = []
-    # One enricher for the whole overlay: its per-tick budget is shared across the
-    # hosts below rather than multiplied by them, and this builder runs once a tick.
-    ci_enricher = BoundedCiEnricher()
-    for code_host in backend.hosts:
-        url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
-        competing_prefixes = _competing_url_prefixes(
-            this_backend=backend,
-            code_host=code_host,
-            all_backends=all_backends,
-        )
-        # Every open merge request owes a resolved conflict whatever its review policy
-        # says, so the sweep rides the ship domain alongside the merge engine rather
-        # than the colleague-facing review loop the away posture skips.
-        jobs.extend(
-            [
-                _ScannerJob(
-                    scanner=MyPrsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        allowed_url_prefixes=url_prefixes,
-                        competing_url_prefixes=competing_prefixes,
-                        ci_enricher=ci_enricher,
-                        verdict_reader=RecordedVerdictReader(),
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=GitLabApprovalsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        allowed_url_prefixes=url_prefixes,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(scanner=_mr_conflict_scanner_for(backend, code_host), overlay=tag),
-            ]
-        )
-    sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
-    if sweep_scanner is not None:
-        jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
-    triage_scanner = _mr_triage_scanner_for(
-        backend,
-        ci_enricher=ci_enricher,
-        ask_owner_on_missing_review=not _review_request_sender_runs(backend),
-    )
-    if triage_scanner is not None:
-        jobs.append(_ScannerJob(scanner=triage_scanner, overlay=tag))
-    return jobs
-
-
 def _review_jobs_for_overlay(
     backend: OverlayBackends,
     *,
@@ -311,16 +251,6 @@ def _repo_owner_resolver(backend: OverlayBackends) -> Callable[[str], RepoOwner]
     return overlay.review.repo_owner_for_slug
 
 
-def _colleague_egress_selected(backend: OverlayBackends) -> bool:
-    """Whether this tick selects the scanners that act outward under the owner's name."""
-    return backend.messaging is not None and not egress_forbidden()
-
-
-def _review_request_sender_runs(backend: OverlayBackends) -> bool:
-    """Whether the followup loop will send what the triage ladder finds owed, so SHIP need not ask."""
-    return _colleague_egress_selected(backend) and loop_admits(Domain.FOLLOWUP.value)
-
-
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """The colleague-facing review posts (overlay-scoped). Intake is the unified ``issue_intake`` job.
 
@@ -334,6 +264,11 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     owner_identities = _user_identity_aliases_for_overlay(tag)
     jobs: list[_ScannerJob] = []
     if _colleague_egress_selected(backend):
+        try:
+            requester_slack_id = _user_slack_id_for_overlay(tag)
+        except (*IDENTITY_LOOKUP_ERRORS, TypeError) as exc:
+            logger.warning("Review nag requester id unreadable for %r: %s", tag, exc)
+            requester_slack_id = ""
         jobs.extend(
             (
                 _ScannerJob(
@@ -341,6 +276,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                         messaging=backend.messaging,
                         host=backend.host,
                         identities=owner_identities,
+                        requester_slack_id=requester_slack_id,
                         repo_owner=_repo_owner_resolver(backend),
                         overlay_name=tag,
                     ),
@@ -360,6 +296,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                         messaging=backend.messaging,
                         host=backend.host,
                         identities=owner_identities,
+                        requester_slack_id=requester_slack_id,
                         overlay=tag,
                     ),
                     overlay=tag,
@@ -370,14 +307,16 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
         if triage is not None:
             metadata = backend.overlay.metadata if backend.overlay is not None else OverlayMetadata()
             jobs.append(_ScannerJob(scanner=ReviewRequestSendScanner(triage=triage, metadata=metadata), overlay=tag))
+        jobs.extend(overlay_followup_jobs(backend, (job.scanner.name for job in jobs)))
     return jobs
 
 
 def _inbox_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Inbound Slack scanners (mentions/DM/review-intent/red-card), sans review-nag."""
-    if backend.messaging is None:
+    """Inbound Slack scanners (mentions/review-intent/red-card), sans review-nag."""
+    messaging = backend.messaging
+    if messaging is None:
         return []
-    return _messaging_jobs_for_backend(backend, backend.name, include_review_nag=False)
+    return _inbound_messaging_jobs(messaging, backend.name)
 
 
 type _OverlayDomainBuilder = Callable[[OverlayBackends], list[_ScannerJob]]
@@ -435,9 +374,11 @@ def _jobs_for_overlay_backend(
 
 
 def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
-    label = f"{job.scanner.name}[{job.overlay}]" if job.overlay else job.scanner.name
+    label = job.label
     try:
-        signals = job.scanner.scan()
+        signals = list(job.scanner.scan())
+        if job.overlay_hook and (forbidden := {signal.kind for signal in signals} & agent_dispatching_kinds()):
+            return label, [], f"agent-routed signal kind refused: {', '.join(sorted(forbidden))}"
         if job.overlay:
             signals = [
                 ScanSignal(
@@ -447,6 +388,8 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
                 )
                 for s in signals
             ]
+    except OverlayHookRefusalError as exc:
+        return label, [], str(exc)
     except ScannerError as exc:
         # Auth / rate-limit / missing-scope / network: surface as a
         # structured error and DM the user once per day per
@@ -455,7 +398,8 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
         # other scanners — only THIS scanner is skipped for one tick.
         logger.warning("Scanner %s recoverable error: %s", label, exc)
         notify_scanner_error(label=label, exc=exc, overlay=job.overlay)
-        return label, [], f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
+        partial = exc.signals if isinstance(exc, PartialScanError) else []
+        return label, partial, f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
     except Exception as exc:
         logger.exception("Scanner %s raised", label)
         return label, [], f"{type(exc).__name__}: {exc}"
@@ -463,10 +407,9 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
 
 
 def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_ScannerJob]:
-    """The inbound-messaging scanner jobs (mentions / DM / ask-reply / review-intent / red-card), sans nag."""
+    """The inbound-messaging scanner jobs (mentions / ask-reply / review-intent / red-card), sans nag."""
     return [
         _ScannerJob(scanner=SlackMentionsScanner(backend=messaging, overlay=tag), overlay=tag),
-        _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
         # #1174 applies each Slack reply to its live DeferredQuestion — the
         # scanner the two single-overlay builders had silently dropped (#23).
         _ScannerJob(scanner=AskUserQuestionReplyScanner(backend=messaging, overlay=tag), overlay=tag),
@@ -488,27 +431,3 @@ def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_Scan
 def single_overlay_messaging_jobs(messaging: MessagingBackend) -> list[_ScannerJob]:
     """Single-overlay (``overlay=""``) inbound-messaging scanner jobs — the #23 SSOT."""
     return _inbound_messaging_jobs(messaging, "")
-
-
-def _messaging_jobs_for_backend(
-    backend: OverlayBackends,
-    tag: str,
-    *,
-    include_review_nag: bool = True,
-) -> list[_ScannerJob]:
-    """Per-overlay Slack scanners that need a resolved messaging backend."""
-    messaging = backend.messaging
-    if messaging is None:
-        return []
-    jobs = _inbound_messaging_jobs(messaging, tag)
-    if include_review_nag:
-        owner_identities = _user_identity_aliases_for_overlay(tag)
-        nag = ReviewNagScanner(
-            messaging=messaging,
-            host=backend.host,
-            identities=owner_identities,
-            repo_owner=_repo_owner_resolver(backend),
-            overlay_name=tag,
-        )
-        jobs.append(_ScannerJob(scanner=nag, overlay=tag))
-    return jobs

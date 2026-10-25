@@ -37,14 +37,34 @@ class TestSettingsCompareCliDelegation:
 
         assert result.exit_code == 0
         ensure_django.assert_called_once_with()
+        management_command.assert_called_once_with("settings_compare")
+
+    def test_filter_flags_reach_the_management_command(self) -> None:
+        with (
+            patch.object(settings_cli, "ensure_django"),
+            patch.object(django.core.management, "call_command") as management_command,
+        ):
+            result = runner.invoke(app, ["settings", "compare", "--family", "table", "--text", "tier", "--all-rows"])
+
+        assert result.exit_code == 0
         management_command.assert_called_once_with(
-            "settings_compare",
-            snapshots=[],
-            kinds=[],
-            timeout=None,
-            full=False,
-            json_output=False,
+            "settings_compare", "--family", "table", "--text", "tier", "--all-rows"
         )
+
+    def test_help_lists_the_filter_flags(self) -> None:
+        result = runner.invoke(app, ["settings", "compare", "--help"], prog_name="t3")
+        assert result.exit_code == 0
+        assert "t3 settings compare" in result.output
+        assert "--family" in result.output
+        assert "--all-rows" in result.output
+
+    def test_unknown_option_reports_usage_without_a_traceback(self) -> None:
+        result = runner.invoke(app, ["settings", "compare", "--bogus"], prog_name="t3")
+
+        assert result.exit_code == 2
+        assert "No such option" in result.output
+        assert "Usage: t3 settings compare" in result.output
+        assert "Traceback" not in result.output
 
 
 def _payload(stored: dict[str, dict[str, Any]], declares: tuple[str, ...], **fingerprint: Any) -> dict[str, Any]:

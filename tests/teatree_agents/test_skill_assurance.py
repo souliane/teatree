@@ -9,6 +9,7 @@ from teatree.agents.coding_prompt import _coding_phase_directive
 from teatree.agents.prompt import required_skill_delivery
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_assurance import (
+    SkillDelivery,
     SkillDispatchError,
     assess_skill_application,
     assess_skill_dispatch,
@@ -54,6 +55,34 @@ def test_a_found_skill_with_missing_injected_body_is_a_pre_run_refusal(tmp_path:
     assert caught.value.assurance["status"] == "injection_gap"
     assert caught.value.assurance["found"] == ["code"]
     assert caught.value.assurance["injected"] == []
+
+
+def test_read_only_assurance_checks_the_delivered_skill_body(tmp_path: Path) -> None:
+    _skill(tmp_path, "review")
+
+    def transform(name: str, body: str) -> str:
+        return body.removeprefix(f"# {name}\n")
+
+    complete = SkillDelivery("--- SKILL: review ---\nApply this skill.\n", transform)
+    incomplete = SkillDelivery("--- SKILL: review ---\nApply this", transform)
+
+    assurance = assess_skill_dispatch(
+        skills=["review"],
+        required_inline={"review"},
+        required_explicit=set(),
+        rendered_context=complete,
+        skills_dirs=[tmp_path],
+    )
+    assert assurance["injected"] == ["review"]
+
+    with pytest.raises(SkillDispatchError, match="injection_gap"):
+        assess_skill_dispatch(
+            skills=["review"],
+            required_inline={"review"},
+            required_explicit=set(),
+            rendered_context=incomplete,
+            skills_dirs=[tmp_path],
+        )
 
 
 def test_explicit_load_is_valid_without_inlining_and_optional_companion_is_not_mandatory(tmp_path: Path) -> None:
@@ -144,6 +173,68 @@ def test_explicit_skill_requires_observed_load_even_when_agent_claims_use(tmp_pa
     observed = assess_skill_application(dispatch, claimed, observed_loads=["t3:code"])
     assert observed["status"] == "declared"
     assert observed["observed_loads"] == ["code"]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "ran the tests (all 12 pass); fixed the parser, then re-ran",
+        "it's done",
+        "  tests passed  ",
+        "four",
+        "x" * 1000,
+        "four\n",
+        "four\x85",
+    ],
+)
+def test_one_line_prose_evidence_is_declared(evidence: str) -> None:
+    dispatch = {
+        "requested": ["code"],
+        "found": ["code"],
+        "injected": ["code"],
+        "explicit_load": [],
+        "missing": [],
+        "evidence": [],
+        "observed_loads": [],
+        "status": "unverified",
+    }
+
+    receipt = assess_skill_application(dispatch, {"skill_application": [{"skill": "code", "evidence": evidence}]})
+
+    assert receipt["status"] == "declared"
+    assert receipt["evidence"] == [{"skill": "code", "evidence": "provided"}]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "/etc/passwd",
+        "ab",
+        "x" * 1001,
+        "line\nbreak",
+        "line\rbreak",
+        "line\u2028break",
+        "line\u2029break",
+        "line\x00break",
+        "line\x85break",
+    ],
+)
+def test_non_plain_line_evidence_is_refused(evidence: str) -> None:
+    dispatch = {
+        "requested": ["code"],
+        "found": ["code"],
+        "injected": ["code"],
+        "explicit_load": [],
+        "missing": [],
+        "evidence": [],
+        "observed_loads": [],
+        "status": "unverified",
+    }
+
+    receipt = assess_skill_application(dispatch, {"skill_application": [{"skill": "code", "evidence": evidence}]})
+
+    assert receipt["status"] == "unverified"
+    assert receipt["evidence"] == []
 
 
 def test_coding_delivery_requires_scoped_skills_but_not_optional_companions() -> None:

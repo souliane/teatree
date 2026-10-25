@@ -83,7 +83,7 @@ docker run --rm --pull never --network none \
   --mount "type=volume,src=${project}_teatree_control_db,dst=/db" \
   --mount "type=bind,src=$snapshot,dst=/snapshot,readonly" \
   --entrypoint sh "${TEATREE_IMAGE_REPOSITORY:-teatree-factory}:$previous_sha" \
-  -c 'cp /snapshot /db/db.sqlite3 && rm -f /db/db.sqlite3-wal /db/db.sqlite3-shm'
+  -c 'cp /snapshot /db/db.sqlite3 && rm -f /db/db.sqlite3-wal /db/db.sqlite3-shm /db/db.sqlite3-journal'
 deploy/roll.sh "$previous_sha"
 )
 ```
@@ -97,7 +97,7 @@ carries — its revision label — not what the registry last recorded: a `deplo
 run replaces the containers without touching the registry, so every other active
 registry row is failed as displaced. It drains N (its own claims only; the global
 drain when N is the legacy source-mounted stack or a generation the registry does
-not list as serving), stops N's worker and listener, runs N+1's init (migrate,
+not list as serving), stops N's worker and both listeners, runs N+1's init (migrate,
 setup, seed — no fetch, no installs), brings N+1 up, verifies every runtime
 container's label, the worker's activation and the admin answering inside its
 container, then promotes N+1 (retags `teatree-headless:latest`) and retires N.
@@ -112,7 +112,7 @@ and the admin can never be optional.
 
 A failure, a SIGTERM or a SIGHUP once N's drain has started rolls back: N+1 is
 marked failed, N is reinstated (a draining row resumes, a failed or retired one starts
-again), comes back up from its own image and must verify exactly as N+1 had to — a
+again), comes back up from its own image and must verify the services in N's own topology — a
 restore that does not verify exits 1 rather than claiming N serves. A failure before
 N started draining leaves N — legacy or generation — serving untouched, marks N+1
 failed and reports the original error. Promotion comes after verification and never undoes it: if the tag
@@ -193,9 +193,10 @@ A second stack can be rolled on the same daemon without touching the live one:
 
 | Variable | Default (the live stack) | What it scopes |
 |---|---|---|
-| `TEATREE_COMPOSE_PROJECT` | `teatree` | containers, named volumes (so the control DB), watchdog, and host `t3` routing |
+| `TEATREE_COMPOSE_PROJECT` | `teatree` | containers, named volumes (so the control DB), watchdog, host `t3` routing, and the container the host hooks probe |
 | `TEATREE_PROMOTED_TAG` | `teatree-headless:latest` | the tag a verified generation is promoted to |
 | `TEATREE_ADMIN_PORT` | `8000` | the admin's loopback bind and the roller's probe |
+| `TEATREE_WEBHOOK_PORT` | `8001` | the forge webhook listener's loopback bind |
 | `TEATREE_DEPLOY_LOCK` | `/tmp/teatree-deploy.lock` | the deploy lock; must sit under `TEATREE_HOST_TMP` |
 
 ## How the one-click deploy works
@@ -219,22 +220,23 @@ manual run skips the wait.
    converges the stack one service at a time — see
    [Staged convergence](#staged-convergence-the-control-plane-never-goes-fully-down-4214).
 
-The stack is five services from one image (`deploy/Dockerfile`), selected by
+The stack is six services from one image (`deploy/Dockerfile`), selected by
 `TEATREE_ROLE`, plus the read-only executor, which runs its own minimal image:
 
 | Service | Role | Restart | Notes |
 | --- | --- | --- | --- |
-| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and both portable-plugin registrations are ready |
+| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and the plugin registration of every credentialed agent tool (both when none is) are ready |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; hard-fails without the strict skill readiness marker; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
+| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus its read-only entrypoint, the sibling script it sources and code; no forge or chat token in its environment |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
-| `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs a phase that bars write tools (planning); its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
+| `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs planning and review phases; its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three mount the same state, so the admin and
-the worker read the **same** `db.sqlite3` (rollback journal, `BEGIN IMMEDIATE` —
-writers serialize and readers wait behind them; see `SQLITE_WRITE_SERIALIZATION_OPTIONS`):
+the worker read the **same** `db.sqlite3` (WAL on the control-DB volume,
+`BEGIN IMMEDIATE` for serialized writers; see `ControlDbJournal`):
 
 Every **container target** below is fixed — it is what `teatree.paths` resolves
 inside the container (`HOME=/home/teatree`, no `XDG_DATA_HOME`). Each **host
@@ -259,6 +261,48 @@ source == target (path identity).
 | interpreter plane | `$TEATREE_HOST_HOME/.local/share/uv/python` | `$TEATREE_HOST_HOME/.local/share/uv/python` | **host bind mount** (identity) | the uv-managed CPython interpreters every worktree venv is built against — the ONE row whose container path is the host's, see below |
 | `teatree_uv` | `/opt/teatree/uv` | — | named volume | the TOOL plane: the runtime teatree venv, the `t3`/`prek` tool shims, and the interpreter those tool venvs record |
 
+`ControlDbJournal` selects WAL with `synchronous=NORMAL` and a 64 MiB journal
+size limit only when the container sees the control DB in its named directory
+on a proven local filesystem. An unreadable mount table, a host process, a
+symlinked path, or a shared or network filesystem selects TRUNCATE for a new
+database or a deployed install. All other database paths also select TRUNCATE.
+`T3_CONTROL_DB_JOURNAL_MODE=truncate` in the box's `deploy/teatree.env` forces
+rollback mode for the control DB;
+`wal` asserts that WAL is eligible and fails at connection setup if it is not.
+Values are case-insensitive and may have surrounding whitespace; other values
+fail at connection setup. A writable connection reads the SQLite file header
+and runs the journal-mode setter only for a new file or a WAL-versus-rollback
+header mismatch for WAL. TRUNCATE is selected on every writable rollback
+connection because it is not persisted in the file header. A same-family
+connection can read committed rows while another process holds a read lock or a reserved write lock on it.
+A genuine mode conversion can still fail with `database is locked` while another
+process holds the file.
+
+An unshipped checkout has a `.git` entry and a root different from
+`TEATREE_CLONE_DIR`, or no deployed clone marker. Without an override it
+preserves an existing rollback or WAL header; if storage eligibility cannot be
+established for an existing WAL file, opening it fails instead of selecting
+TRUNCATE. At the literal default control-DB directory, an override cannot
+change an existing header. An explicit `wal` override in another control-DB
+directory can change an existing rollback file to WAL when the storage is
+eligible. A tree without `.git`, or a tree whose root equals `TEATREE_CLONE_DIR`,
+uses normal selection.
+
+For a WAL-versus-rollback conversion, drain the worker, stop every database-using
+service including the watchdog, and verify that all old processes have exited.
+Convert with one process before starting the new admin and then the remaining
+services; confirm the header and connection behaviour with `t3 doctor`.
+
+To return to TRUNCATE or roll back to an image from before this change, set
+`T3_CONTROL_DB_JOURNAL_MODE=truncate` in `deploy/teatree.env`, stop every service
+in the Compose project including the watchdog, and confirm `docker ps` lists
+none before starting any service. Stopping only the worker or recreating the
+services together leaves an old WAL connection open and can make the staged
+init fail. Keep the `-wal` beside `db.sqlite3`: the first process to open it
+alone replays its committed rows while converting the file to TRUNCATE. Delete
+old sidecars only when replacing `db.sqlite3` with a verified snapshot, as in
+the database restore procedure above.
+
 `deploy.sh` exports `TEATREE_HOST_HOME="$HOME"` and `deploy/t3` defaults it to
 `$HOME`, so the dirs those scripts pre-create and the dirs compose mounts are the
 same dirs by construction. Both also **create** every host source first: dockerd
@@ -275,6 +319,13 @@ rewrite the operator's Claude memories. Create that directory on the host before
 starting Compose; `deploy.sh` creates it when `teatree.env` provides the value.
 For direct `docker compose` or `deploy/t3` calls, export the value or put it in
 `deploy/.env` as well; Compose does not read `teatree.env` for interpolation.
+
+The staged sealed store keeps its master key in the `teatree_control_db`
+named volume alongside `db.sqlite3` (mode 0600); that volume must be backed up
+and restored as one unit. `T3_MASTER_KEY_SOURCE=file:<absolute-path>` selects
+a different key file during bootstrap. The current deployment still reads
+`pass` through the default store slot; `t3 teatree secrets import-pass` only
+inventories candidate entries and does not migrate or delete credentials.
 
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
 bind mounts, deliberately decoupled from the data dir: the container's
@@ -298,9 +349,10 @@ hydrate/run/persist lifecycle.
 
 `t3 setup --strict-agent-skills` removes any stale readiness marker before it
 starts and writes `~/.local/share/teatree/skills/ready` with mode `0600` only
-after the declared skills, inventory, Claude plugin, and Codex plugin all
-converge. The worker verifies that marker and the enabled Claude plugin before
-admitting work. This keeps an incomplete network-dependent setup observable and
+after the declared skills, inventory, and the plugin of every credentialed agent
+tool (the Claude and Codex plugins when neither tool has credentials) converge.
+The worker verifies that marker and the enabled Claude plugin before admitting
+work. This keeps an incomplete network-dependent setup observable and
 prevents a factory task from silently inheriting a partial agent environment.
 
 The Codex plugin is registered from a slim copy of what its manifest declares
@@ -375,9 +427,9 @@ logs which branch it took. Notes:
 ### Staged convergence: the control plane never goes fully down (#4214)
 
 A single `up -d --build` recreates every service at once. `teatree-admin`,
-`teatree-worker` and `teatree-slack-listener` each `depends_on` init with
-`service_completed_successfully`, so compose creates all five container objects
-and holds three of them in `Created` until init exits — **67 seconds measured on
+`teatree-worker`, `teatree-slack-listener` and `teatree-webhooks` each `depends_on`
+init with `service_completed_successfully`, so compose creates every container
+object and holds those four in `Created` until init exits — **67 seconds measured on
 the box**, once per deploy. In that window the dashboard is gone, the only
 control-DB CLI route is gone, and the container logs a live diagnosis was reading
 have been destroyed with the container objects.
@@ -449,6 +501,9 @@ every translatable root, an unreachable Docker daemon, a stack never built here 
 wedged secret store each exit **69** (`EX_UNAVAILABLE`), where the CLI itself returns 1
 for a refusal. The no-orphan pre-push hook (`scripts/hooks/ensure-pr-installed-t3.sh`)
 skips with a warning on 69, 75, 126, 127 and 137 and fails the push on anything else.
+Host hooks treat exit 69 as a launcher venue fault, not a validator verdict: the MR
+gate refuses with the cause, while the coverage gate allows and names the cause.
+The AI-signature gate scans in the hook process and does not use the launcher.
 
 ### Worker sizing: derived from the host
 
@@ -624,11 +679,11 @@ cannot read INTO refuses the sweep, because `0.00 GB of 0.00 GB` from a
 directory nothing looked into is the line an already-clean box prints. A root
 that is merely ABSENT does not refuse — that report is true.
 
-`--cap-add SYS_PTRACE` leaves 31 pids blind and `--pid host` leaves 31 blind;
-`kernel.yama.ptrace_scope = 1` alone bounds them, and no compose knob lifts it.
-The PID namespace is not required: `ptrace_scope = 1` denies `readlink` on a
-same-uid non-dumpable process's `fd`, which is the ordinary state of an Ubuntu
-host running `systemd --user` — so this is not a container property.
+`--cap-add SYS_PTRACE` and `--pid host` did not make the worker's unreadable
+same-user host processes readable. In the measured worker, those processes were
+unconfined and had one `NSpid` entry; readable worker peers had two.
+INFERRED (profile not read on this host): this split is consistent with the
+worker's confinement profile denying inspection of unconfined host peers.
 
 Nor is the guard uniformly blind in either venue. Three measurements: 35 of 325
 sources blind in the deployed worker, 4 of 4 blind on the CI runner, 0 of 35
@@ -1159,6 +1214,9 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   t3 dashboard --port 9111  # the published mapping follows the flag
   ```
 
+  A running forwarder is reused only while its `teatree.admin-container` label names
+  the current admin container; one left by a recreated admin is removed and restarted.
+
   Only the HOST side of the mapping is pinned to `127.0.0.1`, which is what keeps the
   dashboard local; the forwarder's own listener binds every interface because a
   published mapping delivers to a container's interface and never to its loopback.
@@ -1273,6 +1331,12 @@ re-run `t3 setup` — when a piece is missing. The launcher check runs inside
 the container through the host bin mount. Override the preferred service with
 `TEATREE_DOCKER_CLI_SERVICE`, and the ordered fallbacks with
 `TEATREE_DOCKER_CLI_FALLBACK_SERVICES`.
+Both knobs also order the host hooks' CLI-container probe, which reads the compose
+project as `deploy/t3` does: `TEATREE_COMPOSE_PROJECT`, then `COMPOSE_PROJECT_NAME`,
+then `teatree`, an empty value falling through. Set `TEATREE_COMPOSE_PROJECT` when a
+shell inherits a worktree's `COMPOSE_PROJECT_NAME`. Neither variable reaches the
+container, so in-container callers (`t3 admin` forwarding, the doctor restart-loop
+check) always mean the default project.
 
 **The host hook tool env follows the checkout (#4988).** The plugin hooks run on the host under
 `${UV_TOOL_DIR:-~/.local/share/uv/tools}/teatree/bin/python`, which the container cannot reach, so once
@@ -1332,8 +1396,10 @@ Tools, `/usr/bin/python3` is only an installer stub, so install them (or another
 The containerized agent's `~/.claude/settings.json` is **generated by the `init`
 role** from the image-baked, committed template `deploy/claude-settings.template.json`
 (plus env overrides) *before* `t3 setup` runs — so the loop's agent has a
-deliberate model, permission mode, `autoMode` grants, `autoCompactEnabled`, and a
+deliberate model, permission mode, `autoMode` grants, `autoCompactEnabled`, a
+one-character skill description listing cap (`skillListingMaxDescChars: 1`), and a
 box-sized `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` instead of stock CLI defaults.
+Dynamic workflows are enabled with an advisory `small` size and a hard cap of two concurrent agents per workflow run; these template settings reach new sessions after an image rebuild and init re-run.
 The complete `~/.claude` tree is a factory-owned named volume. Host settings,
 credentials, plugins, skills, sessions, and memories are never mounted into the
 factory; only the generated settings and state created by factory runs live there.
@@ -1510,11 +1576,10 @@ mount instead, and the worker never takes the executor's word for it:
   `docker inspect` against its own mounts; any writable mount, unexpected mount, readable
   secret file, owned tree, environment key, tool, capability or malformed answer refuses
   the phase, which then runs on Claude.
-- **Git data must be readable by others.** It reads git as `nobody`, so a clone whose git
-  files were written owner-only (`packed-refs` 0600, packs 0400, as a umask of 077 leaves
-  them) refuses the phase and names the file. Opening them up is the owner's call:
-  `chmod -R a+rX <clone>/.git` on the deploy checkout and each clone in the clone volume,
-  then `git config core.sharedRepository 0644` there so later writes stay readable.
+- **Git data remains readable after maintenance.** Before each attestation, the writable
+  worker repairs Git files and directories under the matched read-only executor mounts for
+  `nobody`, including `packed-refs`, packs, commit graphs, refs and logs. The probe then
+  reports all remaining unreadable paths together with the `chmod -R a+rX <gitdir>` repair.
 
 It sits behind its own compose profile, `ro-executor`, so no whole-project `compose build`
 or `up` reaches it: neither the watchdog's `up -d` nor a generation stack's ever builds or
@@ -1523,7 +1588,7 @@ recreates it inside the drained window, when no executor run is in flight and no
 waiting in its tmpfs, and after init, whose read-write clone mount creates the
 `t3-workspaces` mountpoint a fresh clone volume lacks. Either step failing does not stop
 the deploy: the worker and every other service still converge, and the deploy then fails
-with a message naming the executor. Until the executor deploys, planning on Codex is refused and runs on Claude.
+with a message naming the executor. Until the executor deploys, served read-only phases on Codex are refused and try another route.
 A worker that had to be contained instead of drained leaves the running executor in
 place, because its tmpfs may still hold a rotated login that the next server start
 recovers. The next deploy replaces it.
@@ -1626,7 +1691,7 @@ applies when a container is next recreated; a log that grew before then stays un
 | `TEATREE_WATCHDOG_EXEC_SERVICES` | `teatree-worker teatree-admin` | services (first reachable wins) to run the doctor/DM commands in — the worker leads because the health probe is heavy (#3651) |
 | `TEATREE_WATCHDOG_DOCTOR_RETRIES` | `3` | attempts when the probe cannot run because its target is restarting / not running |
 | `TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY` | `15` | seconds between those retries |
-| `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-watchdog` | services restarted when init has already completed (init excluded) |
+| `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-webhooks teatree-watchdog` | services restarted when init has already completed (init excluded) |
 | `TEATREE_WATCHDOG_INIT_SERVICE` | `teatree-init` | the one-shot init service the pass gates on |
 | `TEATREE_WATCHDOG_DEPLOY_LOCK` | `/host-tmp/teatree-deploy.lock` (compose) | deploy.sh's convergence flock, as seen from this container — the deploy-in-flight probe |
 | `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |
@@ -1646,7 +1711,7 @@ Docker Desktop settings matter:
   socket to be used"* so `/var/run/docker.sock` is present for the socket mount.
 - **File sharing:** the read-only checkout bind mount resolves to
   `$TEATREE_DEPLOY_CHECKOUT` — the checkout `deploy.sh` / `deploy/t3` was invoked
-  out of — so it follows the Mac checkout automatically and needs no edit. It
+  out of — so it follows the host checkout automatically and needs no edit. It
   must still be under a path Docker Desktop is allowed to share (*Settings →
   Resources → File sharing*); a path outside that set leaves the container
   `Created` with `mounts denied`.

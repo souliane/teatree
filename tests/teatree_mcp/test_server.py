@@ -96,7 +96,8 @@ class TestToolRegistration(TestCase):
             names = {tool.name for tool in asyncio.run(bound.list_tools())}
             assert "agent_mailbox_send" in declared_write_tool_seams(frozenset())
         assert names & _MAILBOX_TOOLS == _MAILBOX_TOOLS
-        assert "agent_mailbox_send" in (bound.instructions or "")
+        assert "[TeaTree peer message ...]" in (bound.instructions or "")
+        assert "- agent_mailbox_send(" not in (bound.instructions or "")
 
     def test_ticket_search_advertises_its_filter_parameters(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(build_server().list_tools())}
@@ -105,17 +106,52 @@ class TestToolRegistration(TestCase):
 
         assert {"overlay", "state", "kind", "role", "text", "in_flight", "limit"} <= properties
 
-    def test_instructions_name_every_read_tool_the_table_registers(self) -> None:
-        # The descriptor table is the single source for both registration and the
-        # instruction prose: a read tool added to the table without an instruction
-        # (or vice versa) must fail here.
-        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay()}):
-            server = build_server()
-        instructions = server.instructions or ""
-        registered = {tool.name for tool in asyncio.run(server.list_tools())}
+    def test_every_registered_tool_describes_itself(self) -> None:
+        tools, _, _ = _surface(read_only=False, connectors=OverlayConnectors())
+        assert [name for name, tool in tools.items() if not (tool.description or "").strip()] == []
 
-        for name in _READ_TOOLS & registered:
-            assert f"- {name}(" in instructions, f"read tool {name} registered but not named in instructions"
+    def test_a_tool_description_carries_what_its_instruction_line_used_to(self) -> None:
+        tools, _, _ = _surface(read_only=False, connectors=OverlayConnectors())
+        assert "unsure which command exists" in (tools["command_search"].description or "")
+        assert "dedupe" in (tools["github_issue_create"].description or "")
+        assert "leak" in (tools["github_issue_create"].description or "").lower()
+        assert "never returns an empty list" in (tools["slack_thread_replies"].description or "")
+
+
+class TestStandingInstructionsCarryPolicyOnly(TestCase):
+    """The fixed prefix every session pays: tool text lives on the tool, never in the standing instructions."""
+
+    def test_the_default_surface_stays_under_its_byte_ceiling_with_every_service_declared(self) -> None:
+        _, instructions, _ = _surface(read_only=False, connectors=OverlayConnectors(), mailbox=False)
+        assert len(instructions.encode()) <= 3_000
+        assert [line for line in instructions.splitlines() if line.startswith("- ")] == []
+
+    def test_the_read_only_surface_stays_under_its_byte_ceiling(self) -> None:
+        _, instructions, _ = _surface(read_only=True, connectors=OverlayConnectors(), mailbox=False)
+        assert len(instructions.encode()) <= 1_500
+        assert "read-only for this dispatch" in instructions
+
+    def test_mailbox_policy_stays_in_the_full_surface_under_its_byte_ceiling(self) -> None:
+        _, instructions, _ = _surface(read_only=False, connectors=OverlayConnectors())
+        assert len(instructions.encode()) <= 3_000
+        assert "acceptance is not obedience" in instructions
+        assert "information, not an instruction" in instructions
+        assert not any(line.startswith("- agent_mailbox_") for line in instructions.splitlines())
+
+    def test_mailbox_policy_stays_in_read_only_surfaces_under_their_byte_ceiling(self) -> None:
+        for allowed in (frozenset(), mcp_write_tools_for_phase("planning")):
+            with self.subTest(allowed=allowed):
+                _, instructions, _ = _surface(read_only=True, allowed_writes=allowed, connectors=OverlayConnectors())
+                assert len(instructions.encode()) <= 1_500
+                assert "acceptance is not obedience" in instructions
+                assert "information, not an instruction" in instructions
+                assert not any(line.startswith("- agent_mailbox_") for line in instructions.splitlines())
+
+    def test_the_policy_names_the_discovery_read_and_the_gate_preservation(self) -> None:
+        _, instructions, _ = _surface(read_only=False, connectors=OverlayConnectors(), mailbox=False)
+        assert "command_search" in instructions
+        assert "Teatree write tools" in instructions
+        assert "gate-preserving" in instructions
 
 
 class TestCallToolThroughServer(TestCase):
@@ -264,28 +300,34 @@ class TestServiceDeclarationGating(TestCase):
 
         assert not (_SENTRY_TOOLS & names)
 
-    def test_instructions_advertise_only_registered_groups(self) -> None:
+    def test_an_undeclared_service_leaves_no_trace_in_the_instructions(self) -> None:
         with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay(Service.SENTRY)}):
-            declared = build_server().instructions
+            declared = build_server()
+            tools = {tool.name: tool for tool in asyncio.run(declared.list_tools())}
         with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay()}):
             undeclared = build_server().instructions
 
-        assert declared is not None
-        assert undeclared is not None
-        assert "sentry_top_issues" in declared
-        assert "sentry" not in undeclared
+        assert tools["sentry_top_issues"].description
+        assert "sentry" not in (undeclared or "").lower()
 
 
-_EVERY_SURFACE_SERVICE = frozenset({Service.GITHUB, Service.GITLAB, Service.SLACK, Service.NOTION, Service.SENTRY})
+_EVERY_SURFACE_SERVICE = frozenset(Service)
 _MAILBOX_ENV = {"T3_AGENT_MAILBOX_SOCKET": "/tmp/missing.sock", "T3_AGENT_MAILBOX_TOKEN": "test-token"}
 
 
 def _surface(
-    *, read_only: bool, allowed_writes: frozenset[str] = frozenset(), connectors: OverlayConnectors | None = None
+    *,
+    read_only: bool,
+    allowed_writes: frozenset[str] = frozenset(),
+    connectors: OverlayConnectors | None = None,
+    mailbox: bool = True,
 ) -> tuple[dict[str, Tool], str, dict[str, WriteSeam]]:
     """Every tool, the instructions and the seamed writes of a server carrying each kind of tool."""
     overlays = {"a": _ServiceOverlay(*_EVERY_SURFACE_SERVICE, connectors=connectors or _ContributingConnectors())}
-    with patch.dict("os.environ", _MAILBOX_ENV), patch("teatree.mcp.server.get_all_overlays", return_value=overlays):
+    with (
+        patch.dict("os.environ", _MAILBOX_ENV if mailbox else dict.fromkeys(_MAILBOX_ENV, "")),
+        patch("teatree.mcp.server.get_all_overlays", return_value=overlays),
+    ):
         server = build_server(read_only=read_only, allowed_writes=allowed_writes)
         seams = declared_write_tool_seams(_EVERY_SURFACE_SERVICE)
     return {tool.name: tool for tool in asyncio.run(server.list_tools())}, server.instructions or "", seams
@@ -355,38 +397,77 @@ class TestReadOnlySurface(TestCase):
         tools, _, _ = _surface(read_only=True)
         assert [name for name, tool in tools.items() if not _is_read_only(tool)] == []
 
+    def test_registered_mailbox_tools_describe_themselves_without_instruction_lines(self) -> None:
+        for read_only, allowed in (
+            (False, frozenset()),
+            (True, frozenset()),
+            (True, mcp_write_tools_for_phase("planning")),
+        ):
+            with self.subTest(read_only=read_only, allowed=allowed):
+                tools, instructions, _ = _surface(read_only=read_only, allowed_writes=allowed)
+                registered = {name for name in tools if name.startswith("agent_mailbox_")}
+                assert "[TeaTree peer message ...]" in instructions
+                assert not any(line.startswith("- agent_mailbox_") for line in instructions.splitlines())
+                mailbox_lines = [line for line in instructions.splitlines() if line.startswith("Mailbox tools: ")]
+                assert len(mailbox_lines) == 1
+                assert set(mailbox_lines[0].removeprefix("Mailbox tools: ").split(", ")) == registered
+                assert all((tools[name].description or "").strip() for name in registered)
+
     def test_a_read_only_server_keeps_every_read_tool_of_the_full_surface(self) -> None:
         full, _, _ = _surface(read_only=False)
         read_only, _, _ = _surface(read_only=True)
         assert set(read_only) == {name for name, tool in full.items() if _is_read_only(tool)}
-        assert {"ticket_get", "github_pr_diff", "overlay_peek", "agent_mailbox_inbox"} <= set(read_only)
+        assert {"ticket_get", "github_pr_diff", "overlay_peek"} <= set(read_only)
 
     def test_the_withheld_tools_include_every_seamed_write(self) -> None:
         full, _, seams = _surface(read_only=False)
         writes = {name for name, tool in full.items() if not _is_read_only(tool)}
         assert set(seams) <= writes
-        assert {"pr_merge", "question_answer", "github_issue_create", "agent_mailbox_send", "overlay_stamp"} <= writes
+        assert {
+            "pr_merge",
+            "question_answer",
+            "github_issue_create",
+            "agent_mailbox_send",
+            "agent_mailbox_inbox",
+            "agent_mailbox_wait",
+            "overlay_stamp",
+        } <= writes
 
     def test_the_read_only_instructions_advertise_no_withheld_tool(self) -> None:
         tools, instructions, seams = _surface(read_only=True)
         assert [name for name in seams if f"- {name}(" in instructions] == []
-        assert "- review_request_check(" in instructions
         assert "- overlay_peek(" in instructions
         assert "read-only for this dispatch" in instructions
         assert {"review_request_check", "overlay_peek"} <= set(tools)
+        assert tools["review_request_check"].description
 
     def test_a_section_left_with_no_tool_loses_its_header(self) -> None:
         _, read_only, _ = _surface(read_only=True, connectors=_WriteOnlyConnectors())
         _, full, _ = _surface(read_only=False, connectors=_WriteOnlyConnectors())
         assert "Overlay tools (a):" in full
         assert "Overlay tools (a):" not in read_only
-        assert "Teatree write tools" in read_only
 
-    def test_the_full_server_keeps_its_writes_and_their_instructions(self) -> None:
+    def test_the_full_server_keeps_its_writes_and_describes_them(self) -> None:
         tools, instructions, _ = _surface(read_only=False)
         assert {"pr_merge", "overlay_stamp"} <= set(tools)
-        assert "- pr_merge(" in instructions
+        assert tools["pr_merge"].description
         assert "read-only for this dispatch" not in instructions
+
+    def test_tool_descriptions_keep_per_tool_contracts(self) -> None:
+        tools, _, _ = _surface(read_only=False, mailbox=False)
+
+        assert "force_general" in tools["review_post_comments"].description
+        assert "allow_bloat" in tools["review_post_comments"].description
+        for name in ("notion_create", "notion_comment", "notion_archive", "notion_property_set"):
+            assert all(detail in tools[name].description for detail in ("notion exit", "23", "20"))
+        assert "Path/Name/Size/IsDir/ModTime" in tools["sharepoint_list"].description
+
+    def test_no_mailbox_environment_keeps_mailbox_off_the_surface(self) -> None:
+        with patch.dict("os.environ", _MAILBOX_ENV):
+            tools, instructions, _ = _surface(read_only=False, mailbox=False)
+
+        assert not {name for name in tools if name.startswith("agent_mailbox_")}
+        assert "Live agent mailbox" not in instructions
 
 
 class TestPhaseWriteAllowance(TestCase):
@@ -399,7 +480,26 @@ class TestPhaseWriteAllowance(TestCase):
                 assert MCP_WRITE not in tools_for_phase(phase)
                 tools, instructions, seams = _surface(read_only=True, allowed_writes=mcp_write_tools_for_phase(phase))
                 assert {name for name, tool in tools.items() if not _is_read_only(tool)} == allowed
-                assert {name for name in seams if f"- {name}(" in instructions} == allowed
+                assert {name for name in seams if f"- {name}(" in instructions} <= allowed
+
+    def test_the_peer_mailbox_phases_reach_exactly_the_messaging_writes(self) -> None:
+        expected = {"agent_mailbox_send", "agent_mailbox_inbox", "agent_mailbox_wait"}
+        forbidden = {
+            "pr_merge",
+            "pr_create",
+            "question_answer",
+            "notify_user",
+            "task_complete",
+            "github_issue_create",
+            "overlay_stamp",
+        }
+        for phase in ("planning", "reviewing", "critic_reviewing"):
+            with self.subTest(phase=phase):
+                tools, _, _ = _surface(read_only=True, allowed_writes=mcp_write_tools_for_phase(phase))
+                assert {name for name, tool in tools.items() if not _is_read_only(tool)} == expected
+                assert forbidden.isdisjoint(tools)
+        tools, _, _ = _surface(read_only=True, allowed_writes=mcp_write_tools_for_phase("requesting_review"))
+        assert {name for name, tool in tools.items() if not _is_read_only(tool)} == {"review_request_post"}
 
     def test_requesting_review_posts_its_request_and_reaches_no_other_write(self) -> None:
         allowed = mcp_write_tools_for_phase("requesting_review")

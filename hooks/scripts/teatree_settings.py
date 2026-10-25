@@ -21,6 +21,8 @@ resolves to the per-setting default, so a gate never silently flips its verdict
 import contextlib
 import os
 import sys
+from collections.abc import Generator
+from importlib import import_module
 from pathlib import Path
 
 # Alias both identities so a bare ``from teatree_settings import ...`` (the live
@@ -31,6 +33,16 @@ sys.modules.setdefault("hooks.scripts.teatree_settings", sys.modules[__name__])
 
 _GLOBAL_SCOPE = ""
 
+# A missing declaration is a broken cold import, so these preserve each budget's unit;
+# the hook's 30-second process ceiling is unrelated to turn counts or validator timeouts.
+# Pinned to declarations by test_emergency_int_defaults_match_declarations.
+_EMERGENCY_INT_BUDGETS = {
+    "orchestrator_turn_budget": 25,
+    "orchestrator_turn_wall_clock_seconds": 180,
+    "hook_validator_timeout_seconds": 60,
+}
+# Pinned by test_undeclared_hook_int_uses_bounded_emergency_default.
+_UNDECLARED_INT_DEFAULT = 1
 # ``read_cold_setting_status`` second-element vocabulary.
 COLD_READ_OK = "ok"
 COLD_READ_UNREADABLE = "unreadable"
@@ -52,7 +64,7 @@ def read_cold_setting_status(name: str) -> tuple[object | None, str]:
 
     The status exists because the value alone cannot express the difference between
     "the operator never opted in" and "this install cannot read its own settings"
-    (#3499) — the two resolve identically to the caller's default, which is why a
+    (#3499) — the two resolve identically to the setting's declared default, which is why a
     total DB-read outage stayed invisible for months. Readers that only need the
     value ignore the status; the engagement advisory and the ``t3 doctor``
     cold-hook probe branch on it.
@@ -78,26 +90,45 @@ def read_cold_setting_status(name: str) -> tuple[object | None, str]:
     is to import nothing first-party at load.
 
     Fails open to ``None`` on ANY error — ``teatree`` still not importable, an
-    unreadable/locked DB, a missing row — so each caller's per-setting default still
+    unreadable/locked DB, a missing row — so each setting's declared default still
     stands (never-lockout). The path entry is always removed again, so a hook process
     that imports us never leaks a mutated ``sys.path`` into later handlers.
     """
+    with _teatree_src_on_path():
+        read = None
+        with contextlib.suppress(Exception):
+            reader = import_module("teatree.config.cold_reader")
+            read = reader.read_setting_confirmed(name, scope=_GLOBAL_SCOPE)
+        if read is None:
+            return None, COLD_READ_UNREADABLE
+        return read.value, (COLD_READ_OK if read.readable else COLD_READ_UNREADABLE)
+
+
+@contextlib.contextmanager
+def _teatree_src_on_path() -> Generator[None]:
     src_dir = str(Path(__file__).resolve().parents[2] / "src")
     added = src_dir not in sys.path
     if added:
         sys.path.insert(0, src_dir)
     try:
-        from teatree.config.cold_reader import read_setting_confirmed  # noqa: PLC0415 — deferred: cold-hook import
-
-        read = read_setting_confirmed(name, scope=_GLOBAL_SCOPE)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None, COLD_READ_UNREADABLE
-    else:
-        return read.value, (COLD_READ_OK if read.readable else COLD_READ_UNREADABLE)
+        yield
     finally:
         if added:
             with contextlib.suppress(ValueError):
                 sys.path.remove(src_dir)
+
+
+def _declared_default(name: str) -> object | None:
+    resolution = None
+    value = None
+    with _teatree_src_on_path(), contextlib.suppress(Exception):
+        registries = import_module("teatree.config.registries")
+        entry = registries.COLD_HOOK_SETTINGS.get(name) or registries.COLD_SETTINGS.get(name)
+        if entry is not None:
+            return entry.default
+        resolution = import_module("teatree.config.resolution")
+        value = resolution.effective_default(name)
+    return None if resolution is None or value is resolution.NO_EFFECTIVE_DEFAULT else value
 
 
 def _cold_db_bool(name: str) -> bool | None:
@@ -107,33 +138,34 @@ def _cold_db_bool(name: str) -> bool | None:
     :func:`read_cold_setting_status`, lazily imported so this leaf stays import-light at
     load. Fails open to ``None`` on ANY error — ``teatree`` not importable, an
     unreadable/locked DB, a missing row, a non-bool value — so the caller's
-    per-setting default still stands (never-lockout).
+    declared default still stands (never-lockout).
     """
     value, _ = read_cold_setting_status(name)
     return value if isinstance(value, bool) else None
 
 
-def section_bool_setting(section: str, name: str, *, default: bool) -> bool:
+def section_bool_setting(section: str, name: str) -> bool:
     """DB-only read of a ``[section] <flag>`` boolean.
 
     Resolves the gate flag from the DB ``ConfigSetting`` store — ``section``
     ``teatree`` maps to the GLOBAL scope, the only section the cold flags use — else
-    *default*. Only a real DB bool is honoured: a quoted ``"false"`` (a str) never
-    disables a ``default=True`` flag and a quoted ``"true"`` never enables a
-    ``default=False`` one. A missing/unreadable DB row resolves to *default*, so a
+    the declared default. Only a real DB bool is honoured: a quoted ``"false"``
+    never disables a default-on flag and a quoted ``"true"`` never enables a
+    default-off one. A missing/unreadable DB row resolves to the declared default, so a
     gate never silently changes its verdict (never-lockout). A non-``teatree``
-    section has no DB scope and always resolves to *default*.
+    section has no DB scope and always resolves to the declared default.
     """
     if section == "teatree":
         db_value = _cold_db_bool(name)
         if db_value is not None:
             return db_value
-    return default
+    declared = _declared_default(name)
+    return declared if isinstance(declared, bool) else name.endswith("_gate_enabled")
 
 
-def teatree_bool_setting(name: str, *, default: bool = True) -> bool:
+def teatree_bool_setting(name: str) -> bool:
     """Best-effort read of a ``[teatree] <name>`` boolean flag (see :func:`section_bool_setting`)."""
-    return section_bool_setting("teatree", name, default=default)
+    return section_bool_setting("teatree", name)
 
 
 def _cold_db_int(name: str) -> int | None:
@@ -142,7 +174,7 @@ def _cold_db_int(name: str) -> int | None:
     The integer sibling of :func:`_cold_db_bool`. Delegates to :func:`_cold_read`
     and fails open to ``None`` on ANY error. REJECTS a ``bool``: a ``bool``
     subclasses ``int``, but a stored boolean must never be read as a budget, so it
-    returns ``None`` and the caller's default fires instead (never-lockout).
+    returns ``None`` and the declared default fires instead (never-lockout).
     """
     value, _ = read_cold_setting_status(name)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -150,44 +182,49 @@ def _cold_db_int(name: str) -> int | None:
     return value
 
 
-def section_int_setting(section: str, name: str, *, default: int, minimum: int | None = None) -> int:
+def section_int_setting(section: str, name: str, *, minimum: int | None = None) -> int:
     """DB-only read of a ``[section] <name>`` integer budget.
 
     The integer sibling of :func:`section_bool_setting`. Resolves from the DB
     ``ConfigSetting`` store — ``section`` ``teatree`` maps to the GLOBAL scope, the
-    only section the cold budgets use — else *default*. Only a real int (never a
-    bool) is honoured. A value below *minimum* is malformed and degrades to *default*
+    only section the cold budgets use — else the declared default. Only a real int (never a
+    bool) is honoured. A value below *minimum* is malformed and degrades to the declared default
     so the bound it encodes can't be mistyped away (a ``hook_validator_timeout_seconds``
     of ``0`` never disables the timeout); ``minimum=0`` keeps ``0`` valid so an
-    explicit "off" budget survives. A missing/unreadable DB row resolves to *default*.
-    A non-``teatree`` section has no DB scope and always resolves to *default*.
+    explicit "off" budget survives. A missing/unreadable DB row resolves to the declared default.
+    A non-``teatree`` section has no DB scope and always resolves to the declared default.
     """
+    declared = _declared_default(name)
+    if not isinstance(declared, int) or isinstance(declared, bool):
+        declared = _EMERGENCY_INT_BUDGETS.get(name, _UNDECLARED_INT_DEFAULT)
     if section == "teatree":
         db_value = _cold_db_int(name)
-        if db_value is not None:
-            return db_value if minimum is None or db_value >= minimum else default
-    return default
+        if db_value is not None and (minimum is None or db_value >= minimum):
+            return db_value
+    return declared
 
 
-def teatree_int_setting(name: str, *, default: int, minimum: int | None = None) -> int:
+def teatree_int_setting(name: str, *, minimum: int | None = None) -> int:
     """Best-effort read of a ``[teatree] <name>`` integer budget (see :func:`section_int_setting`)."""
-    return section_int_setting("teatree", name, default=default, minimum=minimum)
+    return section_int_setting("teatree", name, minimum=minimum)
 
 
 _AUTOLOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 
 
 def autoload_enabled() -> bool:
-    """Whether teatree auto-engages a fresh session (#256). Default OFF, fail-closed.
+    """Whether teatree auto-engages a fresh session (#256).
 
     The cold-hook reader the SessionStart hook and the PreToolUse gates consult to decide
     default-off engagement. Env-first (``T3_AUTOLOAD`` truthy), else the DB-home
-    ``autoload`` flag read via the Django-free ``_cold_db_bool``. Fails CLOSED (OFF)
-    on a missing/broken DB, so a fresh install never auto-engages teatree until the
-    owner opts in.
+    ``autoload`` flag read via the Django-free ``_cold_db_bool``, then the declared
+    default. An unreadable declaration fails closed.
     """
     env = os.environ.get("T3_AUTOLOAD", "").strip().lower()
     if env:
         return env in _AUTOLOAD_TRUTHY
     db_value = _cold_db_bool("autoload")
-    return db_value if db_value is not None else False
+    if db_value is not None:
+        return db_value
+    declared = _declared_default("autoload")
+    return declared if isinstance(declared, bool) else False

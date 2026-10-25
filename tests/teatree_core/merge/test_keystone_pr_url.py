@@ -6,7 +6,7 @@ path and MR number: records on both name neither, so the keystone fails closed r
 repo by whichever record came first.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
@@ -25,7 +25,7 @@ _QUERY = "teatree.core.merge.ci_rollup.CodeHostQuery"
 
 
 @contextmanager
-def _colleague_on_a_repo_private_under_its_host() -> Iterator[None]:
+def _colleague_on_a_repo_private_under_its_host() -> Generator[None]:
     with ExitStack() as stack:
         stack.enter_context(
             patch(

@@ -316,7 +316,8 @@ class TestLifecycleProvision(TestCase):
             patch.object(utils_run_mod, "subprocess") as mock_td_sp,
         ):
             mock_td_sp.run.return_value = MagicMock(returncode=0)
-            call_command("worktree", "teardown", path=backend_path)
+            # force: git is mocked wholesale, so the shipped-work proof cannot read this checkout.
+            call_command("worktree", "teardown", path=backend_path, force=True)
 
         # Teardown folds the old `clean` step — the row is deleted, not reset
         assert not Worktree.objects.filter(pk=wt_backend.pk).exists()
@@ -650,9 +651,10 @@ class TestRunBackend(TestCase):
                 "run",
                 side_effect=fake_subprocess_run,
             ),
-            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch.object(Path, "home", return_value=self._tmp_path),
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace / "t3-workspaces"),
             patch("teatree.core.runners.provision.clone_root", return_value=workspace),
-            patch("teatree.core.runners.provision.worktree_root", return_value=workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=workspace / "t3-workspaces"),
             patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
         ):
             ticket_id = cast(

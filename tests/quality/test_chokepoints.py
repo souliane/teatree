@@ -265,6 +265,7 @@ _FORGE_WRITE_BODY_METHODS = frozenset(
         "create_sub_issue",
         "update_issue",
         "update_pr_message",
+        "add_issue_labels",
     }
 )
 
@@ -287,6 +288,7 @@ _NON_CONTENT_PARAMS = frozenset(
         "repo_slugs",
         "parent_url",
         "comment_id",
+        "thread_id",
         "marker",
         "slug",
         "pr_id",

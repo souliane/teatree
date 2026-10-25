@@ -4,12 +4,15 @@ from pathlib import Path
 
 import pytest
 
+from teatree.agents import skill_injection
 from teatree.agents.context_budget import enforce_budget
+from teatree.agents.skill_assurance import SkillDispatchError
 from teatree.agents.skill_injection import (
     _is_primary,
     _read_skill_contents,
     _read_skill_contents_scoped,
     build_subagent_skill_preamble,
+    read_only_venue_skill_contents,
 )
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import resolve_skill_md
@@ -33,6 +36,91 @@ def test_read_skill_contents_reads_existing_skill(tmp_path: Path) -> None:
     result = _read_skill_contents(["my-skill"], skills_dir=tmp_path)
     assert "--- SKILL: my-skill ---" in result
     assert "# My Skill" in result
+
+
+def test_read_only_venue_embeds_the_rules_document_when_it_cannot_mount_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_skill(tmp_path, "rules", "# Core\nRead RULES.md first.")
+    (tmp_path / "rules" / "RULES.md").write_text("# Always-On Rules\n0. Security first.\n", encoding="utf-8")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
+
+    rendered = read_only_venue_skill_contents(["rules"], {"rules"})
+
+    assert "--- SKILL: rules ---" in rendered
+    assert "# Always-On Rules\n0. Security first." in rendered
+    assert rendered.index("--- RULES.md ---") < rendered.index("--- SKILL: rules ---")
+
+
+def test_read_only_venue_fails_loudly_when_the_rules_document_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_skill(tmp_path, "rules", "# Core\nRead RULES.md first.")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
+    with pytest.raises(SkillDispatchError, match=r"rules/RULES\.md") as refused:
+        read_only_venue_skill_contents(["rules"], {"rules"})
+    assert refused.value.assurance["requested"] == ["rules"]
+    assert refused.value.assurance["found"] == ["rules"]
+    assert refused.value.assurance["missing"] == []
+    assert refused.value.assurance["status"] == "injection_gap"
+
+
+_REVIEW_SECTIONS_THAT_ONLY_DRIVE_THE_CLI = (
+    "### Quality Gate Verification (Verify-Fix-Repeat)",
+    "### Receiving Code Review",
+    "### Recording a GIVE-review approval — `t3 review approve` (Mandatory)",
+    "### Concluding a no-postable-action external review — `mark_review_no_action` (Mandatory, #1077)",
+    "## Commands",
+)
+
+
+_SLACK_SECTIONS_THAT_ONLY_POST = (
+    "## Tables — use the formatter, never a hand-rolled pipe table",
+    "## mrkdwn gotchas",
+    "## Line length — wrapped at 90, at the transport",
+    "## CLI tables",
+)
+
+
+def test_read_only_venue_drops_the_review_sections_that_only_drive_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    skills = Path(__file__).resolve().parents[2] / "skills"
+    raw = (skills / "review" / "SKILL.md").read_text(encoding="utf-8")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [skills])
+
+    rendered = read_only_venue_skill_contents(["review"], {"review"})
+
+    assert all(f"\n{heading}\n" in raw for heading in _REVIEW_SECTIONS_THAT_ONLY_DRIVE_THE_CLI)
+    assert not any(heading in rendered for heading in _REVIEW_SECTIONS_THAT_ONLY_DRIVE_THE_CLI)
+    assert "### Giving Code Review" in rendered
+    assert len(raw) - len(rendered) > 8_000
+
+
+def test_read_only_venue_keeps_slack_style_without_posting_instructions(monkeypatch: pytest.MonkeyPatch) -> None:
+    skills = Path(__file__).resolve().parents[2] / "skills"
+    raw = (skills / "slack-formatting" / "SKILL.md").read_text(encoding="utf-8")
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [skills])
+
+    rendered = read_only_venue_skill_contents(["slack-formatting"], {"slack-formatting"})
+
+    assert "--- SKILL: slack-formatting ---" in rendered
+    assert "## Be concise" in rendered
+    assert all(f"\n{heading}\n" in raw for heading in _SLACK_SECTIONS_THAT_ONLY_POST)
+    assert not any(heading in rendered for heading in _SLACK_SECTIONS_THAT_ONLY_POST)
+
+
+def test_read_only_venue_section_drop_ends_at_the_next_heading_of_the_same_or_higher_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lines = ("## Keep", "kept", "### Receiving Code Review", "dropped", "#### Nested", "nested dropped")
+    body = "\n".join((*lines, "### After", "kept after", "## Commands", "dropped", ""))
+    _write_skill(tmp_path, "review", body)
+    monkeypatch.setattr(skill_injection, "harness_skills_dirs", lambda: [tmp_path])
+
+    rendered = read_only_venue_skill_contents(["review"], {"review"})
+
+    assert "kept\n" in rendered
+    assert "kept after" in rendered
+    assert "dropped" not in rendered
 
 
 def test_read_skill_contents_skips_missing_skill(tmp_path: Path) -> None:
@@ -365,6 +453,51 @@ def test_subagent_preamble_resolves_explicit_skill_md_path_form(tmp_path: Path) 
 
     assert "--- SKILL: rules ---" in preamble.text
     assert preamble.resolved == ["rules"]
+
+
+def test_subagent_preamble_deduplicates_skill_aliases(tmp_path: Path) -> None:
+    framework = tmp_path / "framework"
+    _write_skill(framework, "rules", "# Rules body")
+
+    preamble = build_subagent_skill_preamble(["t3:rules", "rules", "skills/rules/SKILL.md"], skills_dirs=[framework])
+
+    assert preamble.text.count("--- SKILL: rules ---") == 1
+    assert preamble.resolved == ["rules"]
+    assert preamble.missing == []
+
+
+def test_subagent_preamble_deduplicates_missing_skill_aliases(tmp_path: Path) -> None:
+    preamble = build_subagent_skill_preamble(["t3:ghost", "ghost", "skills/ghost/SKILL.md"], skills_dirs=[tmp_path])
+
+    assert preamble.text == ""
+    assert preamble.missing == ["ghost"]
+
+
+def test_subagent_preamble_loads_stack_skills_without_embedding_bodies(installed: Path) -> None:
+    framework = installed
+    _write_skill(framework, "rules", "# Rules body")
+    _write_skill(framework, "ac-django", "Django stack body " * 2_000)
+    _write_skill(framework, "ac-python", "Python stack body " * 2_000)
+
+    preamble = build_subagent_skill_preamble(["t3:rules", "ac-django", "ac-python"], skills_dirs=[framework])
+
+    assert len(preamble.text.encode("utf-8")) <= 21_000
+    assert "REQUIRED: Load /ac-django" in preamble.text
+    assert "REQUIRED: Load /ac-python" in preamble.text
+    assert preamble.text.count("STACK SKILLS") == 1
+    assert "Django stack body" not in preamble.text
+    assert "Python stack body" not in preamble.text
+    assert preamble.resolved == ["rules", "ac-django", "ac-python"]
+
+
+def test_subagent_preamble_reports_missing_stack_skill(tmp_path: Path) -> None:
+    framework = tmp_path / "framework"
+    _write_skill(framework, "rules", "# Rules body")
+
+    preamble = build_subagent_skill_preamble(["rules", "ac-django"], skills_dirs=[framework])
+
+    assert preamble.resolved == ["rules"]
+    assert preamble.missing == ["ac-django"]
 
 
 def test_read_skill_contents_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> None:

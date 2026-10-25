@@ -23,10 +23,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.quality.brief_constraints import ConstraintViolation, check_constraints, extract_constraints
 from teatree.quality.changed_set import ChangedSet, ChangedSetError, changed_paths, classify
-from teatree.quality.regression_scan import AstGrepUnavailableError, scan_findings
+from teatree.quality.regression_scan import AstGrepUnavailableError, NoBlockingRulesError, scan_findings
+from teatree.utils import git
 from teatree.utils.django_db.runner import runner_prefix
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 # The whole-tree doctest target — the FULL branch's ``--doctest-modules`` argument,
 # byte-identical to the pre-#122 hook's ``--doctest-modules src/teatree``.
@@ -92,6 +94,17 @@ class PushGateResult:
     astgrep_deferred: bool
     notes: tuple[str, ...]
     exit_code: int
+    astgrep_rules_present: bool = True
+
+    @property
+    def status(self) -> str:
+        if not self.astgrep_rules_present:
+            return "NO_RULES"
+        if not self.ok:
+            return "FAILED"
+        if self.astgrep_deferred:
+            return "DEFERRED"
+        return "CLEAN"
 
 
 def _full_plan(reason: str) -> PushGatePlan:
@@ -224,9 +237,13 @@ def run_push_gate(
 
     findings: list[dict] = []
     deferred = False
+    missing_rules = False
     blocking_dir = repo_root / ".ast-grep" / "blocking"
     try:
         findings = astgrep_scanner(blocking_dir, paths=plan.astgrep_scope)
+    except NoBlockingRulesError as exc:
+        missing_rules = True
+        notes.append(f"FAILED: no blocking rules declared ({exc}).")
     except AstGrepUnavailableError as exc:
         deferred = True
         notes.append(
@@ -234,7 +251,7 @@ def run_push_gate(
             "whole-tree backstop. The push is NOT blocked (CI is the guarantor); this is not a skip-as-pass."
         )
 
-    ok = sweep.ok and not findings
+    ok = sweep.ok and not findings and not missing_rules
     return PushGateResult(
         ok=ok,
         doctest_ok=sweep.ok,
@@ -242,4 +259,40 @@ def run_push_gate(
         astgrep_deferred=deferred,
         notes=tuple(notes),
         exit_code=0 if ok else _gate_exit_code(sweep),
+        astgrep_rules_present=not missing_rules,
     )
+
+
+def run_brief_constraints(repo_root: Path, *, base_ref: str, brief: str) -> tuple[ConstraintViolation, ...]:
+    constraints = extract_constraints(brief)
+    if not constraints:
+        return ()
+    changed = changed_paths(base_ref, cwd=repo_root)
+    if not any(item.kind in {"no_setting", "no_public_name"} for item in constraints):
+        return check_constraints(constraints, changed, before={}, after={})
+    base = git.merge_base(str(repo_root), base_ref)
+    before: dict[str, str] = {}
+    after: dict[str, str] = {}
+    root = repo_root.resolve()
+    for entry in changed.entries:
+        path = entry.path
+        if not path.startswith("src/teatree/") or not path.endswith(".py"):
+            continue
+        if entry.status == "A":
+            before[path] = ""
+        else:
+            try:
+                before[path] = git.run_strict(repo=str(repo_root), args=["show", f"{base}:{path}"])
+            except (OSError, CommandFailedError):
+                continue
+        current = (repo_root / path).resolve()
+        if not current.is_relative_to(root):
+            continue
+        if entry.status == "D":
+            after[path] = ""
+        else:
+            try:
+                after[path] = current.read_text(encoding="utf-8")
+            except OSError:
+                continue
+    return check_constraints(constraints, changed, before=before, after=after)

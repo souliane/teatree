@@ -32,6 +32,7 @@ recorded by policy instead of a human.
 import logging
 import os
 
+from teatree.core.modelkit.owner_action import read_action
 from teatree.core.models.approval_metrics import metrics_breached
 from teatree.core.models.approval_policy import GATE_OR_POLICY_CHANGE, PUBLIC_ISSUE_CREATE, Decision
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigSetting
@@ -115,6 +116,8 @@ def auto_answer_by_policy(question: DeferredQuestion, answer: str) -> DeferredQu
     caller's structural "consumed answered question" guard still holds. Returns the
     consumed row, or ``None`` when it was already resolved (a concurrent answer won).
     """
+    if read_action(question.evidence) is not None:
+        return None
     row = question.apply_answer(answer, resolved_via=DeferredQuestion.ResolvedVia.POLICY)
     if row is not None:
         DeferredQuestionAudit.objects.create(

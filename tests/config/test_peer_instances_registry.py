@@ -103,7 +103,7 @@ def test_an_iap_peer_renders_the_gcloud_shape_because_plain_ssh_cannot_reach_it(
     _seed_config_db(
         config_db,
         peer_instances={
-            "jumpbox": {
+            "an-iap-peer": {
                 "url": "http://127.0.0.1:9405/",
                 "tunnel": {
                     "host": "an-instance",

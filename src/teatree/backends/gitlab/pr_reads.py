@@ -1,15 +1,17 @@
-"""GitLab wave-2 read helpers — PR list/diff/commits + repo metadata (#3076).
+"""GitLab wave-2 read helpers — PR list/diff + repo metadata (#3076).
 
 Free functions the :class:`~teatree.backends.gitlab.GitLabCodeHost` delegates the
 wave-2 ``CodeHostBackend`` reads to, keeping the host class focused on the
 Protocol surface and under the module-health LOC cap — the same split shape as
 :mod:`teatree.backends.gitlab.uploads` / :mod:`teatree.backends.gitlab.subissues`.
-An unresolvable project degrades to an empty list (list reads) or a structured
-``{"error": ...}`` (``repo_metadata``) so an unknown repo never crashes the caller.
+Most unresolvable projects degrade to an empty list (list reads) or a structured
+``{"error": ...}`` (``repo_metadata``). Reads used to decide whether to alert or
+mention people raise instead, so an unknown repo is never mistaken for no activity.
 """
 
 import logging
 from collections.abc import Callable
+from typing import cast
 from urllib.parse import quote_plus, urlencode
 
 import httpx
@@ -92,10 +94,25 @@ def project_pr_file_diffs(client: GitLabAPI, project: ProjectInfo, *, pr_iid: in
     }
 
 
-def list_project_pr_commits(client: GitLabAPI, project: ProjectInfo | None, *, pr_iid: int) -> list[RawAPIDict]:
+def project_engaged_reviewers(client: GitLabAPI, project: ProjectInfo | None, *, repo: str, pr_iid: int) -> list[str]:
     if project is None:
-        return []
-    return client.get_json_paginated(f"projects/{project.project_id}/merge_requests/{pr_iid}/commits?per_page=100")
+        msg = f"Could not resolve project: {repo}"
+        raise ValueError(msg)
+    mr = client.get_json(f"projects/{project.project_id}/merge_requests/{pr_iid}")
+    reviewers = mr.get("reviewers") if isinstance(mr, dict) else None
+    if not isinstance(reviewers, list):
+        msg = f"Could not read requested reviewers for {repo}#{pr_iid}"
+        raise TypeError(msg)
+    names = list(
+        dict.fromkeys(
+            name for item in reviewers if isinstance(item, dict) if isinstance(name := item.get("username"), str)
+        )
+    )
+    approved = cast("list[str]", client.get_mr_approvals(project.project_id, pr_iid).get("approved_by", []))
+    for name in approved:
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def repo_metadata(project: ProjectInfo | None, *, repo: str) -> RawAPIDict:

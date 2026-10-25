@@ -131,6 +131,7 @@ def env(state: Path, tmp_path: Path) -> dict[str, str]:
         "TEATREE_CLAUDE_STATUSLINE_STATE_DIR": str(state),
         "T3_LOOP_REGISTRY_DIR": str(registry),
         "T3_AUTOLOAD": "0",
+        "T3_CONFIG_DB": str(tmp_path / "config.sqlite3"),
     }
 
 
@@ -329,6 +330,7 @@ class TestStandingRules:
 
     def test_the_autoload_read_stays_cold(self, transcript: Path, env: dict[str, str]) -> None:
         del env["T3_AUTOLOAD"]
+        env["T3_CONFIG_DB"] = str(transcript.parent / "absent.sqlite3")
         _append(transcript, _prompt(_UNRELATED))
 
         assert _turn_context(transcript, env) == ""

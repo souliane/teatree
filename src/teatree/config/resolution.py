@@ -27,22 +27,19 @@ would put ~110ms on every hook invocation.
 
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
 import teatree.config as _facade
+from teatree.config.declaration import stored_form
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode
 from teatree.config.known_settings import SETTING_ENTRIES
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.override_read_health import SAFETY_FAIL_CLOSED_STORED_VALUES
 from teatree.config.override_reader import GLOBAL_SCOPE_LABEL, OVERLAY_SCOPE_LABEL, load_global_rows, load_overlay_rows
-from teatree.config.setting_layers import (
-    SettingLayers,
-    apply_structured_settings,
-    drop_db_home_overlay_keys,
-    stored_form,
-)
+from teatree.config.setting_layers import SettingLayers, apply_structured_settings, drop_db_home_overlay_keys
 from teatree.config.setting_registries import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, env_pinned_value
 from teatree.config.settings import OverlayEntry, UserSettings
 from teatree.request_cache import cached_per_request
@@ -86,7 +83,12 @@ def effective_default(key: str) -> object:
 
 
 @cached_per_request
-def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool = False) -> UserSettings:
+def get_effective_settings(
+    overlay_name: str | None = None,
+    *,
+    apply_env: bool = False,
+    only_keys: frozenset[str] | None = None,
+) -> UserSettings:
     """Return the user settings under the #1775 DB-home partition + env.
 
     Every ``UserSettings`` field has exactly ONE home (see ``config/homes.py``).
@@ -162,14 +164,14 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
     # on read (that field's authoritative override tier is the DB store below). The drop
     # is LOUD (never silent) so an operator who set a DB-home key in their
     # overlays-registry entry is told the value had no effect.
-    overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(overlay_name))
+    overrides = drop_db_home_overlay_keys(overrides, resolved_overlay_name(overlay_name))
     # ``hard_pinned`` (a per-overlay/env opinion that beats the autonomy collapse,
     # including for ``mode``) is the per-overlay override layer so far. DB-home fields
     # get their SOLE value from ``ConfigSetting``: the GLOBAL scope is a workspace
     # default (NOT a hard pin), the OVERLAY scope is a per-overlay opinion (a hard
     # pin), env beats both.
-    resolved_overlay = _resolved_overlay_name(overlay_name)
-    layers = read_setting_layers(resolved_overlay)
+    resolved_overlay = resolved_overlay_name(overlay_name)
+    layers = read_setting_layers(resolved_overlay, only_keys=only_keys)
     # The overlay-code-default tier (#36): promoted constants the active overlay
     # supplies, layered BELOW every DB / env override (a row overrides) and ABOVE the
     # shipped TOML default (with no row the code default wins). Neither default tier is
@@ -202,23 +204,34 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
     )
 
 
-def read_setting_layers(overlay_name: str) -> SettingLayers:
-    """Read the shipped-defaults table and both ``ConfigSetting`` scopes, coerced once.
+def get_effective_setting(key: str, overlay_name: str | None = None) -> object:
+    """Resolve one key without parsing unrelated stored rows."""
+    dependencies = {key}
+    if key == "mode" or key in _AUTONOMY_COLLAPSED_GATE_VALUES:
+        dependencies.add("autonomy")
+    return getattr(get_effective_settings(overlay_name, only_keys=frozenset(dependencies)), key, None)
+
+
+def read_setting_layers(overlay_name: str, *, only_keys: frozenset[str] | None = None) -> SettingLayers:
+    """Read both persisted tiers and their source scopes once.
 
     Public because it is the ONE place the persisted tiers are read: the resolver folds
     them into a ``UserSettings``, and ``config.provenance`` walks the same tiers to say
     WHICH one supplied a value. A second reader would be a second resolution path.
     """
     global_rows, global_degraded = load_global_rows()
-    overlay_rows, overlay_degraded = load_overlay_rows(overlay_name)
-    db_rows = (global_rows, overlay_rows)
+    overlay, overlay_degraded = load_overlay_rows(overlay_name)
+    if only_keys is not None:
+        global_rows = {key: value for key, value in global_rows.items() if key in only_keys}
+        overlay = replace(overlay, rows={key: value for key, value in overlay.rows.items() if key in only_keys})
+    db_rows = (global_rows, overlay.rows)
     global_db, overlay_db = (_coerce_setting_rows(rows) for rows in db_rows)
     degraded = frozenset(
         label
         for label, failed in ((GLOBAL_SCOPE_LABEL, global_degraded), (OVERLAY_SCOPE_LABEL, overlay_degraded))
         if failed
     )
-    return SettingLayers(db_rows, global_db, overlay_db, degraded_scopes=degraded)
+    return SettingLayers(db_rows, global_db, overlay_db, overlay_scopes=overlay.scopes, degraded_scopes=degraded)
 
 
 def fail_closed_overrides(degraded_scopes: frozenset[str], *, supplied_by_env: set[str]) -> dict[str, Any]:
@@ -253,8 +266,8 @@ def _active_overlay_overrides() -> dict[str, Any]:
     """
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
-    overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(None))
-    overrides.update(_db_setting_overrides(_resolved_overlay_name(None)))
+    overrides = drop_db_home_overlay_keys(overrides, resolved_overlay_name(None))
+    overrides.update(_db_setting_overrides(resolved_overlay_name(None)))
     overrides.update(env_setting_overrides())
     return overrides
 
@@ -315,7 +328,7 @@ def env_setting_overrides() -> dict[str, Any]:
     return read.values
 
 
-def _resolved_overlay_name(overlay_name: str | None) -> str:
+def resolved_overlay_name(overlay_name: str | None) -> str:
     """The overlay name whose per-overlay DB rows the resolver should layer.
 
     For the named-overlay path this is the explicit ``overlay_name``; for the
@@ -366,10 +379,10 @@ def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
     request for ``teatree`` also reads the ``t3-teatree`` entry-point overlay's
     rows and vice versa) so a row written under either spelling resolves.
     """
-    return _coerce_setting_rows(load_overlay_rows(overlay_name)[0])
+    return _coerce_setting_rows(load_overlay_rows(overlay_name)[0].rows)
 
 
-def _coerce_setting_rows(rows: dict[str, Any]) -> dict[str, Any]:
+def _coerce_setting_rows(rows: Mapping[str, Any]) -> dict[str, Any]:
     """Coerce a ``{key: stored value}`` table via the DB-home parser registry.
 
     Shared by every tier that arrives in stored form: the ``ConfigSetting`` rows of

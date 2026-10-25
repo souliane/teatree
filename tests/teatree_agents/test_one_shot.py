@@ -10,7 +10,7 @@ pydantic_ai test double (zero tokens), plus the clean-room + failure contract.
 
 import json
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -39,7 +39,7 @@ class _RaisingHarness:
     """A ``Harness`` double whose ``open`` fails — exercises the degrade-to-None contract."""
 
     @asynccontextmanager
-    async def open(self, _options: ClaudeAgentOptions) -> AsyncIterator[object]:
+    async def open(self, _options: ClaudeAgentOptions) -> AsyncGenerator[object]:
         msg = "backend unavailable"
         raise RuntimeError(msg)
         yield  # pragma: no cover — unreachable, marks this an async generator
@@ -65,12 +65,12 @@ class TestRunOneShotTierResolution:
     def test_default_tier_resolves_to_the_shipped_cheap_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from teatree.agents.model_tiering import TIER_MODELS  # noqa: PLC0415 — deferred: test-local
+        from teatree.agents.model_tiering import tier_models  # noqa: PLC0415 — deferred: test-local
 
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
         harness = FakeHarness([assistant_text("ok"), result_message()])
         run_one_shot("q", OneShotSpec(system_prompt="p"), harness=harness)
-        assert harness.opened_options.model == TIER_MODELS["cheap"]
+        assert harness.opened_options.model == tier_models()["cheap"]
 
 
 class TestRunOneShotCleanRoom:

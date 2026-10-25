@@ -21,7 +21,7 @@ artifact that deadlocks the connection — not production behaviour.
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Generator
 from pathlib import Path
 from typing import Any, Self
 from unittest.mock import patch
@@ -66,6 +66,26 @@ def result_message(**overrides: Any) -> ResultMessage:
         "model_usage": None,
     }
     return ResultMessage(**{**defaults, **overrides})
+
+
+class ScriptedResponseClient:
+    def __init__(self, messages: list[object]) -> None:
+        self.messages = iter(messages)
+        self.prompts: list[str] = []
+        self.receive_calls = 0
+
+    async def query(self, prompt: str) -> None:
+        self.prompts.append(prompt)
+
+    async def receive_response(self) -> AsyncIterator[object]:
+        self.receive_calls += 1
+        for message in self.messages:
+            yield message
+            if isinstance(message, ResultMessage):
+                return
+
+    async def interrupt(self) -> None:
+        return
 
 
 def pre_compact_input(trigger: str) -> PreCompactHookInput:
@@ -128,7 +148,7 @@ class FakeHarnessSession:
     last_prompt: str = ""
 
     def __init__(self, messages: list[Any], *, delay: float = 0.0) -> None:
-        self._messages = messages
+        self._messages = iter(messages)
         self._delay = delay
         self.interrupted = False
 
@@ -153,6 +173,8 @@ class FakeHarnessSession:
             if self._delay:
                 await asyncio.sleep(self._delay)
             yield message
+            if isinstance(message, ResultMessage):
+                return
 
     async def interrupt(self) -> None:
         self.interrupted = True
@@ -173,7 +195,7 @@ class FakeHarness:
         self.opened_options: Any = None
 
     @contextlib.asynccontextmanager
-    async def open(self, options: Any) -> AsyncIterator[FakeHarnessSession]:
+    async def open(self, options: Any) -> AsyncGenerator[FakeHarnessSession]:
         self.opened_options = options
         yield FakeHarnessSession(self._messages, delay=self._delay)
 
@@ -216,7 +238,7 @@ class OneSessionHarness:
         self.session = session
 
     @contextlib.asynccontextmanager
-    async def open(self, _options: Any) -> AsyncIterator[InterruptibleSession]:
+    async def open(self, _options: Any) -> AsyncGenerator[InterruptibleSession]:
         yield self.session
 
 
@@ -226,7 +248,7 @@ def fake_sdk(
     *,
     delay: float = 0.0,
     task_usage: TaskUsage | None = None,
-) -> Iterator[type[FakeHarnessSession]]:
+) -> Generator[type[FakeHarnessSession]]:
     """Patch the default backend's SDK boundary (+ ``TaskUsage.for_task``).
 
     The patch target is ``teatree.agents.harness.ClaudeSDKClient`` — the SDK the

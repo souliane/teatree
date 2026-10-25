@@ -43,6 +43,8 @@ from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_op
 _X_LANE_HEADER = "x-lane"
 LANE_FACTORY = "factory"
 LANE_EVAL = "eval"
+ANTHROPIC_CACHE_TTL = "5m"
+ANTHROPIC_CACHE_TTL_SECONDS = int(ANTHROPIC_CACHE_TTL.removesuffix("m")) * 60
 #: The placeholder an ``openai_compatible_extra_headers`` value may carry; each run substitutes its session id.
 SESSION_PLACEHOLDER = "{session}"
 
@@ -116,7 +118,7 @@ class OpenAICompatibleLaneConfig:
         ``None`` means the credential resolves from ``OPENAI_COMPATIBLE_API_KEY``
         alone (or fails loud naming the setting).
     *   ``model`` — the ``openai_compatible_model`` id an unpinned teatree-native
-        dispatch normalises UP to; ``None`` keeps the ``PYDANTIC_AI_TIER_MODELS``
+        dispatch normalises UP to; ``None`` keeps the ``pydantic_ai_tier_models()``
         default for the dispatch's abstract tier.
     *   ``extra_headers`` — the ``openai_compatible_extra_headers`` map every request carries
         beside ``x-lane``; :data:`SESSION_PLACEHOLDER` in a value becomes the run's session id. A header off
@@ -187,6 +189,7 @@ class PydanticAiModelConfig:
     tier: str | None = None
     regulated_path: RegulatedPathPolicy | None = None
     anthropic_credential: Credential | None = None
+    context_windows: Mapping[str, int] = field(default_factory=dict)
 
 
 def native_anthropic_model_name(options: HarnessOptions) -> str:
@@ -286,6 +289,8 @@ def build_model_settings(
     # an extra a router-only install does not carry, while the runtime shape is identical (a
     # TypedDict IS a dict).
     settings: dict[str, Any] = {}
+    if binding is PydanticAiBinding.NATIVE_ANTHROPIC:
+        settings.update(anthropic_cache_settings())
     if max_tokens is not None and max_tokens > 0:
         settings["max_tokens"] = max_tokens
     if effort is not None:
@@ -298,6 +303,10 @@ def build_model_settings(
         else:
             settings["openai_reasoning_effort"] = effort
     return cast("ModelSettings", settings) if settings else None
+
+
+def anthropic_cache_settings() -> dict[str, Any]:
+    return {"cache": ANTHROPIC_CACHE_TTL, "anthropic_cache_diagnostics": True}
 
 
 def build_openai_compatible_provider(config: OpenAICompatibleLaneConfig, run: SessionRun) -> OpenAIProvider:

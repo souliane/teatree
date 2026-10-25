@@ -42,6 +42,7 @@ from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import (
     AnyOf,
     AssistantTextMatcher,
+    EvalSpec,
     ExpectItem,
     FinalStateMatcher,
     Matcher,
@@ -189,6 +190,7 @@ def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a docum
     max_turns_override: int | None = None,
     trial: int = 0,
     git_sha: str | None = None,
+    cached_specs: Sequence[EvalSpec] = (),
 ) -> "EvalRunRecord":
     from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: keep import Django-free
 
@@ -216,6 +218,8 @@ def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a docum
                 aux_cost_usd=result.run.aux_cost_usd,
                 **_token_columns(result.run.usage),
             )
+        for spec in cached_specs:
+            run.record_scenario(scenario_name=spec.name, verdict="pass", model=spec.model, terminal_reason="cached")
     return run
 
 

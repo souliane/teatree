@@ -50,7 +50,6 @@ class _GitHubBoardSync(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github.sync.cleanup_worktree"),
         ):
             GitHubSyncBackend().sync(overlay)

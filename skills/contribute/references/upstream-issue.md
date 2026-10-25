@@ -135,19 +135,19 @@ Two calls. The first writes nothing and hands back the open backlog:
 
 ```text
 github_issue_create(repo="<T3_UPSTREAM>", title="fix(<skill>): <title>", body="<built issue body>")
-  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...]}
+  → {"outcome": "judgment_required", "candidates": [...], "snapshot_token": "<token>"}
 ```
 
 Judge every candidate — this is § 4's related-issue check, now mandatory rather than
-advisory — then call again with that same snapshot:
+advisory — then call again with that same token:
 
 ```text
 github_issue_create(repo="<T3_UPSTREAM>", title=..., body=...,
-                    dedupe={"snapshot": <as returned>,
+                    dedupe={"snapshot_token": <as returned>,
                             "decisions": [{"url": ..., "fits": false, "reason": "<why not>"}]})
 ```
 
-- `created_new` → print the issue URL. Every rejection and its reason is now in the body.
+- `created_new` → print the issue URL. The supplied body is filed; each rejection and reason stays in the private audit.
 - `extended_existing` → the request was appended to that ticket's description instead.
   Print that URL and tell the user no new issue was needed.
 - `external_conflict` → a fitting ticket someone else filed. Neither edited nor

@@ -7,11 +7,11 @@ covering that existed and were not followed, so this is the deterministic
 refusal.
 
 FAIL CLOSED, which inverts every sibling gate in this directory: an un-asked
-question resolves to REFUSE, naming the probe that could not answer. There is
-no per-call ``[…-ok: <reason>]`` token. A non-force false positive may be
-released through the shared breaker's ``[fp-confirmed: <reason>]`` grant;
-force and delete refusals cannot. The owner can also use the deliberate
-config flip ``t3 <overlay> gate foreign-push disable``. The pre-push hook
+question resolves to REFUSE, naming the probe that could not answer. A non-force
+false positive carries ``[gate-escape:foreign_branch_push: <reason>]``, which the
+control DB records before the push is allowed; a force or delete refusal
+(``foreign_branch_push_force_delete``) accepts no escape. The owner can also use
+the deliberate config flip ``t3 <overlay> gate foreign-push disable``. The pre-push hook
 :mod:`teatree.hooks.foreign_mr_cli` asks a similar question and is fail-OPEN by
 construction; this gate reuses its forge seam and supplies its own tri-state.
 
@@ -62,16 +62,19 @@ dependency-free siblings.
 """
 
 import json
+import os
 import re
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import TYPE_CHECKING, Final
+from urllib.parse import urlsplit
 
 from hooks.scripts.foreign_branch_push_argv import PushSpec
 from hooks.scripts.foreign_branch_push_git import (
     GitProbe,
+    _remote_url,
     config_value,
     git_probe,
     live_remote_range,
@@ -82,6 +85,7 @@ from hooks.scripts.foreign_branch_push_git import (
 from hooks.scripts.foreign_branch_push_read import ParsedPushes, push_specs
 from hooks.scripts.foreign_branch_push_text import (
     UNPINNED,
+    credential_fault_refusal,
     default_branch_rewrite_refusal,
     foreign_commits_body,
     foreign_mr_body,
@@ -148,7 +152,7 @@ def handle_block_foreign_branch_push(data: dict) -> bool:
     parsed = push_specs(command, str(data.get("cwd", "") or ""))
     if not parsed.specs and not parsed.unread:
         return False
-    if not _teatree_bool_setting(GATE_SETTING, default=True):
+    if not _teatree_bool_setting(GATE_SETTING):
         return False
     verdict = _refusal_verdict(parsed, _ForgeRun())
     if verdict is None:
@@ -213,7 +217,7 @@ def _branch_refusal(spec: PushSpec, branch: str, run: "_ForgeRun") -> str | None
     remote_ref = remote_branch_oid(spec.work_dir, spec.remote, branch)
     if not remote_ref.ok:
         probe = f"`git ls-remote --heads {spec.remote} refs/heads/{branch}` (run in `{spec.work_dir}`)"
-        return _refuse(spec, branch, unobtainable_body(probe, remote_ref))
+        return _venue_fault(spec, branch, remote_ref) or _refuse(spec, branch, unobtainable_body(probe, remote_ref))
     if not remote_ref.out:
         return None
     # Before ownership: an owned open MR sourced from the default branch must not
@@ -231,8 +235,31 @@ def _ownership_refusal(spec: PushSpec, branch: str, branch_oid: str, run: "_Forg
     if verdict == "foreign":
         return _refuse(spec, branch, detail)
     if verdict == "unknown":
-        return _refuse(spec, branch, unobtainable_body(detail, failed))
+        return _venue_fault(spec, branch, failed) or _refuse(spec, branch, unobtainable_body(detail, failed))
     return _foreign_commit_refusal(spec, branch, branch_oid)
+
+
+def _venue_fault(spec: PushSpec, branch: str, failed: GitProbe | None) -> str | None:
+    """The venue-fault refusal when a dispatched Codex router's GitHub credential was refused, else ``None``."""
+    if failed is None or not failed.credential_refused:
+        return None
+    remote = _remote_url(spec.work_dir, spec.remote)
+    if not remote.ok:
+        return None
+    url = remote.out
+    host = urlsplit(url).hostname if "://" in url else url.partition(":")[0].rsplit("@", 1)[-1]
+    if (host or "").lower() != "github.com":
+        return None
+    with teatree_src_on_path():
+        from teatree.forge_credentials import (  # noqa: PLC0415 -- cold-hook import
+            CODEX_ROUTER_ENV,
+            FORGE_TOKEN_ENV_KEYS,
+        )
+
+    if not os.environ.get(CODEX_ROUTER_ENV):
+        return None
+    token_held = any(os.environ.get(key) for key in FORGE_TOKEN_ENV_KEYS)
+    return credential_fault_refusal(spec.remote, branch, failed, token_held=token_held, force=spec.force)
 
 
 def _default_branch_destructive_refusal(spec: PushSpec, branch: str) -> str | None:
@@ -394,7 +421,7 @@ def _open_mrs(ctx: _ForgeCtx, branch: str) -> "tuple[tuple[OpenMr, ...], GitProb
     argv = ctx.forge.mr_listing_argv(ctx.kind, ctx.repo_path, branch, ctx.host)
     probe = ctx.forge.run_forge_tool(ctx.forge.FORGE_TOOL[ctx.kind], argv, budget=remaining_timeout_s)
     if probe.stdout is None:
-        return (), GitProbe(ok=False, out="", err=probe.unresolved)
+        return (), GitProbe(ok=False, out="", err=probe.unresolved, credential_refused=probe.credential_refused)
     mrs, unusable = ctx.forge.open_mrs_in(ctx.kind, probe.stdout)
     return mrs, (_unusable_answer(unusable) if unusable else None)
 
@@ -403,7 +430,7 @@ def _forge_answer(ctx: _ForgeCtx, argv: list[str]) -> tuple[object, GitProbe | N
     """What the forge CLI answered, parsed — an empty answer is an empty array — or why there is none."""
     probe = ctx.forge.run_forge_tool(ctx.forge.FORGE_TOOL[ctx.kind], argv, budget=remaining_timeout_s)
     if probe.stdout is None:
-        return None, GitProbe(ok=False, out="", err=probe.unresolved)
+        return None, GitProbe(ok=False, out="", err=probe.unresolved, credential_refused=probe.credential_refused)
     try:
         return json.loads(probe.stdout.strip() or "[]"), None
     except ValueError:
@@ -423,16 +450,7 @@ def _foreign_commit_refusal(spec: PushSpec, branch: str, branch_oid: str) -> str
         # The default branch against itself: an empty range here is arithmetic, not
         # an unowned branch. Rung 0b already refused the destructive case.
         return default_branch_rewrite_refusal(spec.remote, branch) if spec.destructive else None
-    log = _git(spec, "log", "--format=%ae%n%an", f"{live.base_oid}..{branch_oid}")
-    if not log.ok:
-        return _refuse(
-            spec,
-            branch,
-            unobtainable_body(
-                f"`git log <live-{live.base_branch}>..<live-{branch}>` (the remote authorship range)", log
-            ),
-        )
-    authors = {line.strip() for line in log.out.splitlines() if line.strip()}
+    authors = set(live.authors)
     if not authors:
         return _refuse(spec, branch, unowned_branch_body(spec.remote, branch, live.base_branch))
     ours, unread, failed = _our_git_identities(spec)

@@ -15,6 +15,7 @@ from teatree.core.management.commands._clear_backfill_commands import ClearBackf
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
 from teatree.core.management.commands._close_commands import CloseCommands
 from teatree.core.management.commands._context_commands import ContextCommands
+from teatree.core.management.commands._critic_record_commands import CriticRecordCommands
 from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
 from teatree.core.management.commands._note_commands import NoteCommands
 from teatree.core.management.commands._plan_commands import PlanCommands
@@ -124,6 +125,7 @@ class Command(
     CloseCommands,
     AttachmentCommands,
     MergeKeystoneCommands,
+    CriticRecordCommands,
     NoteCommands,
     SweepCommands,
     TargetBranchCommands,
@@ -413,6 +415,9 @@ class Command(
             request = dataclasses.replace(request, host_kind=resolve_host_kind(request, repo_slug=verdict_slug))
             verdict_slug = _verdict_slug(request, verdict_slug)
             with transaction.atomic():
+                ReviewVerdict.objects.assert_no_standing_hold_at(
+                    slug=verdict_slug, pr_id=request.pr_id, head_sha=request.reviewed_sha
+                )
                 clear = MergeClear.issue(request)
                 # Record the durable read-side sibling (a merge-safe judgment by
                 # construction — issuance refused any non-green verdict) so a later

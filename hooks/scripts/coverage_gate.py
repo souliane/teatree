@@ -57,10 +57,11 @@ from typing import Final
 
 from hooks.scripts.existing_artifact import with_open_pr_note
 from hooks.scripts.forge_api_detect import _is_api_create_endpoint_write, _is_existing_pr_metadata_only_edit
+from hooks.scripts.git_pin_args import GIT_PINS, git_executable
 from hooks.scripts.hook_budget import remaining_timeout_s
 from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.mr_cli_fields import extract_mr_target_repo, shlex_flag_value, strip_quoted_and_heredoc
-from hooks.scripts.t3_invocation import run_t3, t3_argv
+from hooks.scripts.t3_invocation import run_t3, t3_argv, venue_fault
 
 # The moment a PR moves toward review/merge: ``gh pr ready`` (un-drafting) or a
 # non-draft ``gh pr create`` / ``glab mr create`` / an api POST to a PR/MR
@@ -158,7 +159,7 @@ def _git_probe(repo_dir: Path, args: list[str]) -> str | None:
         return None
     try:
         result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            ["git", "-C", str(repo_dir), *args],  # noqa: S607 — git resolved on PATH, as everywhere else in-hook
+            [git_executable(), *GIT_PINS, "-C", str(repo_dir), *args],
             capture_output=True,
             text=True,
             check=False,
@@ -366,7 +367,7 @@ def diff_coverage_argv(repo_dir: Path | None) -> list[str] | None:
     return argv
 
 
-def diff_coverage_finding(stdout: str) -> str | None:
+def diff_coverage_finding(stdout: str, *, unparsed_cause: str | None = None) -> str | None:
     """Return a deny reason iff *stdout* is a report JSON with ``passes`` false.
 
     The fail-open discriminator (#122). ``t3 tool diff-coverage --json`` emits
@@ -380,11 +381,13 @@ def diff_coverage_finding(stdout: str) -> str | None:
     else ``None`` (clean, crashed, or unparsable). The three no-verdict shapes
     announce themselves and the two verdict-carrying ones stay silent, so a
     ``NOTE`` distinguishes "did not measure" from "measured and passed" (#4004).
+    *unparsed_cause* names why no report came back, when the caller knows it.
     """
     try:
         report = json.loads(stdout)
     except (json.JSONDecodeError, ValueError):
-        note_gate_skipped("`t3 tool diff-coverage --json` produced no parseable report")
+        cause = f": {unparsed_cause}" if unparsed_cause else ""
+        note_gate_skipped(f"`t3 tool diff-coverage --json` produced no parseable report{cause}")
         return None
     if not isinstance(report, dict):
         note_gate_skipped("the diff-coverage report is not a JSON object")
@@ -442,7 +445,8 @@ def coverage_finding_for_command(command: str, cwd: str | None) -> str | None:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         note_gate_skipped(f"the diff-coverage measurement did not complete ({type(exc).__name__})")
         return None
-    finding = diff_coverage_finding(result.stdout or "")
+    fault = venue_fault(result.returncode, result.stderr, cwd=repo_dir)
+    finding = diff_coverage_finding(result.stdout or "", unparsed_cause=fault)
     if not _is_pr_create_command(command):
         return finding
     return with_open_pr_note(finding, repo_dir, shipped_branch(command) or "")

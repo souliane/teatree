@@ -36,6 +36,15 @@ class TestLaneBToolConfig:
         # env (env=None), byte-identical to before the credential port.
         assert LaneBToolConfig.from_options(HarnessOptions(cwd=str(tmp_path))).shell_env == {}
 
+    def test_mailbox_identity_is_removed_from_shell_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_AGENT_MAILBOX_TOKEN", "sentinel")
+        monkeypatch.setenv("T3_AGENT_MAILBOX_SOCKET", "/tmp/mailbox.sock")
+        config = LaneBToolConfig.from_options(HarnessOptions(env={"EXTRA": "retained"}), phase="coding")
+        assert "T3_AGENT_MAILBOX_TOKEN" not in config.shell_env
+        assert "T3_AGENT_MAILBOX_SOCKET" not in config.shell_env
+        assert config.shell_env["EXTRA"] == "retained"
+        assert config.shell_env["PATH"] == os.environ["PATH"]
+
     def test_from_options_override_wins_over_a_conflicting_ambient_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ambient")
         options = HarnessOptions(env={"ANTHROPIC_API_KEY": "sk-pinned"})

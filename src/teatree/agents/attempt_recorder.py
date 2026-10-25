@@ -19,7 +19,6 @@ import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from django.db import transaction
 from django.utils import timezone
 
 from teatree.agents.action_verification import action_verification_error
@@ -43,8 +42,11 @@ from teatree.core.gates.directive_interpret_gate import record_returned_directiv
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX
-from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
+from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, PUSH_OWNERSHIP_VENUE_FAULT
+from teatree.core.models import NoCurrentPlanError, SessionCommand, Task, TaskAttempt
+from teatree.core.models.critic_dispatch import CriticDispatch as _CriticDispatch
+from teatree.core.models.critic_verdict import CRITIC_EVIDENCE_UNAVAILABLE_PREFIX as _CRITIC_EVIDENCE_UNAVAILABLE_PREFIX
+from teatree.core.models.task_claim import atomic_after_checkout_exit
 
 if TYPE_CHECKING:
     from teatree.agents.pydantic_ai_turn import ToolCallEntry
@@ -60,6 +62,7 @@ class AttemptUsage:
     """
 
     agent_session_id: str = ""
+    recording_source: str = ""
     model: str = ""
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -102,7 +105,7 @@ class AttemptUsage:
     # The per-request usage records the run's transport measured (``teatree.llm.usage_tee``);
     # empty on a lane that measures none.
     usage_per_request: "list[RequestRecord]" = dataclasses.field(default_factory=list)
-    # The run's tool-call trajectory (``pydantic_ai_session._StreamedToolCapture``); empty when unmeasured.
+    # The run's tool-call trajectory (``pydantic_ai_turn.StreamedToolCapture``); empty when unmeasured.
     trajectory: "list[ToolCallEntry]" = dataclasses.field(default_factory=list)
 
 
@@ -163,7 +166,8 @@ def record_result_envelope(
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
     Validation order: the measured key-drift aliases are normalized
-    (:mod:`teatree.agents.envelope_aliases`) → schema-key check → OUTAGE check (#1764) → ACTION check
+    (:mod:`teatree.agents.envelope_aliases`) → schema-key check → routed push-credential fault
+    (coding/debugging only) → OUTAGE check (#1764) → ACTION check
     (an acting phase must have touched a tool) → per-phase evidence gate (#1284) →
     LANDING check (coding/debugging must have committed) → the PLAN record (a planning
     envelope whose plan is refused fails the attempt, never the recorder) —
@@ -200,6 +204,13 @@ def record_result_envelope(
     """
     usage = usage or AttemptUsage()
     result = normalize_envelope_aliases(result)
+    operator_inputs = list(
+        SessionCommand.objects.filter(task=task, outcome__in=["accepted_current_turn", "accepted_new_turn", "queued"])
+        .order_by("pk")
+        .values_list("text", flat=True)
+    )
+    if operator_inputs or "operator_inputs" in result:
+        result = {**result, "operator_inputs": operator_inputs}
     checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
     result = checked.result
     if checked.error:
@@ -219,15 +230,18 @@ def record_result_envelope(
 
     record_reactive_envelopes(task, result, phase=phase)
 
+    ended_at = timezone.now()
     try:
-        with transaction.atomic():
+        with atomic_after_checkout_exit(task):
+            recorded_result = with_transport_records(result, usage)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                ended_at=timezone.now(),
+                ended_at=ended_at,
                 exit_code=0,
-                result=with_transport_records(result, usage),
+                result=recorded_result,
                 **usage_fields(usage),
             )
+            SessionCommand.objects.filter(task=task, outcome="queued").update(outcome="accepted_new_turn")
             task.complete(result_artifact_path="")
     except NoCurrentPlanError as exc:
         task.refresh_from_db()
@@ -311,6 +325,8 @@ def with_transport_records(result: AgentResultBlob | None, usage: AttemptUsage |
     # through here. Never persist agent-supplied application references; the
     # bounded assurance receipt stores only a declaration marker.
     blob.pop("skill_application", None)
+    if usage is not None and usage.recording_source:
+        blob["recording_source"] = usage.recording_source
     if usage is not None and usage.usage_per_request:
         blob["usage_per_request"] = list(usage.usage_per_request)
     if usage is not None and usage.trajectory:
@@ -350,6 +366,12 @@ def _check_before_recording(
     schema_error = validate_result_keys(result)
     if schema_error:
         return _PreRecordCheck(schema_error, result)
+
+    if (
+        normalize_phase(phase or task.phase) in {"coding", "debugging"}
+        and result.get("push_ownership_venue_fault") is True
+    ):
+        return _PreRecordCheck(PUSH_OWNERSHIP_VENUE_FAULT, result)
 
     signature = outage_signature(result)
     if signature:
@@ -417,4 +439,6 @@ def _record_failure(
         **usage_fields(usage),
     )
     task.fail_claimed(reason=error)
+    if error.startswith(_CRITIC_EVIDENCE_UNAVAILABLE_PREFIX):
+        _CriticDispatch.rearm_unverified(task)
     return attempt

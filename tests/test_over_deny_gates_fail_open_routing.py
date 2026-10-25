@@ -11,6 +11,7 @@ fail-closed (see ``test_public_leak_gate_stays_fail_closed.py``).
 
 import json
 import sqlite3
+import subprocess
 from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
@@ -19,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import mr_validator, t3_invocation
 from hooks.scripts.hook_router import handle_enforce_skill_loading, handle_validate_mr_metadata
 
 
@@ -73,7 +75,7 @@ class TestValidateMrBrokenEnvRouting:
     def test_denies_on_broken_env_when_fail_open_off(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write_fail_open(home, on=False)
         # Force the "validator unresolvable" broken-env branch.
-        monkeypatch.setattr(router, "mr_validate_argv", lambda: None)
+        monkeypatch.setattr(mr_validator, "mr_validate_argv", lambda: None)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
         blocked, payload = _capture(handle_validate_mr_metadata, _mr_create())
         assert blocked is True
@@ -82,9 +84,22 @@ class TestValidateMrBrokenEnvRouting:
 
     def test_passes_through_on_broken_env_when_fail_open_on(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write_fail_open(home, on=True)
-        monkeypatch.setattr(router, "mr_validate_argv", lambda: None)
+        monkeypatch.setattr(mr_validator, "mr_validate_argv", lambda: None)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
         blocked, payload = _capture(handle_validate_mr_metadata, _mr_create())
+        assert blocked is False
+        assert payload is None
+
+    def test_a_launcher_venue_fault_passes_through_when_fail_open_on(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_fail_open(home, on=True)
+        monkeypatch.setattr(mr_validator, "mr_validate_argv", lambda: ["t3", "tool", "validate-mr"])
+        monkeypatch.setattr(t3_invocation, "unreachable_reason", lambda _path: None)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        refused = subprocess.CompletedProcess([], t3_invocation.VENUE_UNAVAILABLE_EXIT, "", "deploy/t3: refusing\n")
+        with patch.object(subprocess, "run", return_value=refused):
+            blocked, payload = _capture(handle_validate_mr_metadata, _mr_create())
         assert blocked is False
         assert payload is None
 

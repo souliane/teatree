@@ -21,7 +21,9 @@ from unittest.mock import patch
 import pytest
 import typer
 
+from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
+from teatree.eval.api_errors import UsageLimitReachedError
 from teatree.eval.backends import ANTHROPIC_API_BACKEND, API_BACKEND
 from teatree.eval.models import EvalRun, EvalSpec
 
@@ -59,6 +61,171 @@ class _StubRunner:
 
     def run(self, spec: EvalSpec) -> EvalRun:
         return _run(spec, empty=self._empty)
+
+
+class _LimitRunner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        self.calls += 1
+        raise UsageLimitReachedError
+
+
+class _LimitAfterRedRunner(_LimitRunner):
+    def run(self, spec: EvalSpec) -> EvalRun:
+        self.calls += 1
+        if self.calls == 1:
+            return dataclasses.replace(_run(spec, empty=False), is_error=True)
+        raise UsageLimitReachedError
+
+
+def test_pass_at_k_usage_limit_parks_with_a_summary(tmp_path: Path) -> None:
+    runner = _LimitRunner()
+    summary = tmp_path / "summary.md"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_pass_at_k_lane(
+            [_spec("one"), _spec("two")],
+            backend=API_BACKEND,
+            max_turns=None,
+            trials=2,
+            require="any",
+            output_format="text",
+            summary_md=summary,
+        )
+    assert exc.value.exit_code == 75
+    assert runner.calls == 1
+    assert "PARKED" in summary.read_text()
+
+
+def test_matrix_usage_limit_parks_with_a_dashboard(tmp_path: Path) -> None:
+    runner = _LimitRunner()
+    dashboard = tmp_path / "matrix.html"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_model_matrix_lane(
+            [_spec("one"), _spec("two")],
+            backend=API_BACKEND,
+            models="claude-opus-4-8",
+            max_turns=None,
+            trials=1,
+            require="any",
+            output_format="text",
+            persist=False,
+            baseline=False,
+            gate_regressions=False,
+            html_out=dashboard,
+        )
+    assert exc.value.exit_code == 75
+    assert runner.calls == 1
+    assert "PARKED" in dashboard.read_text()
+
+
+def test_matrix_keeps_a_measured_red_when_a_later_cell_hits_the_limit(tmp_path: Path) -> None:
+    runner = _LimitAfterRedRunner()
+    dashboard = tmp_path / "matrix.html"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_model_matrix_lane(
+            [_spec("red"), _spec("unmeasured"), _spec("later")],
+            backend=API_BACKEND,
+            models="claude-opus-4-8",
+            max_turns=None,
+            trials=1,
+            require="any",
+            output_format="text",
+            persist=False,
+            baseline=False,
+            gate_regressions=False,
+            html_out=dashboard,
+        )
+    assert exc.value.exit_code == 1
+    assert runner.calls == 2
+    assert "failed before the usage limit" in dashboard.read_text()
+
+
+def test_standalone_benchmark_keeps_a_measured_red_before_the_limit() -> None:
+    runner = _LimitAfterRedRunner()
+    with (
+        patch("teatree.cli.eval.benchmark.should_route_to_docker", return_value=False),
+        patch("teatree.cli.eval.benchmark.warn_local_metered"),
+        patch("teatree.cli.eval.benchmark.ensure_django"),
+        patch("teatree.cli.eval.benchmark._select_specs", return_value=[_spec("red"), _spec("unmeasured")]),
+        patch("teatree.cli.eval.benchmark.make_runner", return_value=runner),
+        pytest.raises(typer.Exit) as exc,
+    ):
+        benchmark(
+            models="claude-opus-4-8",
+            presets=None,
+            scenarios=None,
+            trials=1,
+            max_turns=None,
+            max_budget_usd=2.0,
+            output_format="text",
+            persist=False,
+            local=True,
+        )
+    assert exc.value.exit_code == 1
+    assert runner.calls == 2
+
+
+#: An all-of-k red trial settles the verdict; an any-of-k one leaves it undecided, so it parks.
+_RED_TRIAL_THEN_LIMIT = pytest.mark.parametrize(
+    ("require", "exit_code", "message"),
+    [("all", 1, "failed before the usage limit"), ("any", 75, "PARKED")],
+)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param((("red",), 2, "all", 1, "failed before the usage limit"), id="red-trial-all"),
+        pytest.param((("red",), 2, "any", 75, "PARKED"), id="red-trial-any"),
+        pytest.param((("red", "unmeasured", "later"), 1, "any", 1, "failed before the usage limit"), id="prior-red"),
+    ],
+)
+def test_pass_at_k_keeps_a_red_trial_when_the_next_trial_hits_the_limit(
+    tmp_path: Path, case: tuple[tuple[str, ...], int, str, int, str]
+) -> None:
+    scenario_names, trials, require, exit_code, message = case
+    runner = _LimitAfterRedRunner()
+    summary = tmp_path / "summary.md"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_pass_at_k_lane(
+            [_spec(name) for name in scenario_names],
+            backend=API_BACKEND,
+            max_turns=None,
+            trials=trials,
+            require=require,
+            output_format="text",
+            summary_md=summary,
+        )
+    assert exc.value.exit_code == exit_code
+    assert runner.calls == 2
+    assert message in summary.read_text()
+
+
+@_RED_TRIAL_THEN_LIMIT
+def test_matrix_keeps_a_red_trial_when_the_next_trial_hits_the_limit(
+    tmp_path: Path, require: str, exit_code: int, message: str
+) -> None:
+    runner = _LimitAfterRedRunner()
+    dashboard = tmp_path / "matrix.html"
+    with patch("teatree.cli.eval.multi_trial.make_runner", return_value=runner), pytest.raises(typer.Exit) as exc:
+        run_model_matrix_lane(
+            [_spec("red")],
+            backend=API_BACKEND,
+            models="claude-opus-4-8",
+            max_turns=None,
+            trials=2,
+            require=require,
+            output_format="text",
+            persist=False,
+            baseline=False,
+            gate_regressions=False,
+            html_out=dashboard,
+        )
+    assert exc.value.exit_code == exit_code
+    assert runner.calls == 2
+    assert message in dashboard.read_text()
 
 
 @dataclasses.dataclass

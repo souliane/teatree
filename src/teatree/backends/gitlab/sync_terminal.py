@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, cast
 import httpx
 
 from teatree.core.cleanup.cleanup import WorktreeBusyError, cleanup_worktree
+from teatree.core.cleanup.removal_proof import RemovalRefusedError
 from teatree.core.gates.dod_gate import record_terminal_dod_violation
 from teatree.core.models import Ticket, Worktree
 from teatree.types import PREntryDict, RawAPIDict, SyncResult
@@ -121,7 +122,7 @@ def apply_closed_status(ticket: Ticket, closed_urls: set[str], result: SyncResul
 
     if changed:
         # #800 N3: canonical locked RMW (was an unlocked extra save).
-        ticket.merge_extra(set_keys=cast("TicketExtra", {"prs": prs}))
+        ticket.merge_extra(set_keys={"prs": prs})
 
 
 def _scan_merged_prs(prs: RawAPIDict, merged_urls: set[str], result: SyncResult) -> tuple[bool, bool]:
@@ -151,6 +152,8 @@ def _cleanup_merged_worktrees(ticket: Ticket, result: SyncResult) -> None:
             result.errors.extend(cleanup_result.errors)
         except WorktreeBusyError as exc:
             logger.info("Keeping worktree %s (live work): %s", worktree.repo_path, exc)
+        except RemovalRefusedError as exc:
+            logger.info("Keeping worktree %s (unshipped work): %s", worktree.repo_path, exc)
         except Exception as exc:
             logger.exception("Failed to clean worktree %s", worktree.repo_path)
             result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")

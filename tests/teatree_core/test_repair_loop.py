@@ -12,6 +12,12 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.core.modelkit.task_failure_taxonomy import (
+    CANCELLED_PREFIX,
+    LEASE_EXPIRED_PREFIX,
+    PLAN_STALE_PREFIX,
+    SUPERSEDED_PREFIX,
+)
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
@@ -87,7 +93,7 @@ class TestIterationCounter(TestCase):
 
     def test_park_rows_are_not_stamped_and_do_not_advance_real_iteration(self) -> None:
         # #3689: a limit_parked attempt is a scheduling event, not a work iteration.
-        # The budget query (task_repair.phase_attempts) already EXCLUDES park rows, so
+        # The budget query (task_repair_queries.phase_attempts) already EXCLUDES park rows, so
         # the stamp must too — otherwise park rows carry bogus work-iteration numbers
         # (observed max 281 vs a cap of 5) that corrupt "attempt N/max" and the S5
         # signal. Real attempts count only real attempts; parks stay at the 0 sentinel.
@@ -101,6 +107,22 @@ class TestIterationCounter(TestCase):
         assert [first.iteration, second.iteration, third.iteration] == [1, 2, 3]
         assert park1.iteration == 0
         assert park2.iteration == 0
+
+    def test_non_work_rows_are_stamped_zero_and_do_not_advance_real_iteration(self) -> None:
+        task = self._phase_task(Ticket.objects.create(), phase="coding")
+        non_work_errors = (
+            f"{CANCELLED_PREFIX}operator",
+            f"{PLAN_STALE_PREFIX}base moved",
+            f"{SUPERSEDED_PREFIX}rework",
+            f"{LEASE_EXPIRED_PREFIX}lease held by worker expired",
+            "subscription_session: window used",
+        )
+
+        stamps = [_failed_attempt(task, error=error).iteration for error in non_work_errors]
+
+        assert stamps == [0] * len(non_work_errors)
+        assert _failed_attempt(task, error="boom").iteration == 1
+        assert task.phase_iteration_count() == 1
 
 
 class TestTerminalReasonFingerprint(TestCase):
@@ -165,6 +187,100 @@ class TestCheckRequeueAllowed(TestCase):
         # One attempt so far, distinct failures only — re-queue is fine.
         task.check_requeue_allowed()  # must not raise
 
+    def test_non_repair_kinds_do_not_spend_the_budget(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        for error in (f"{CANCELLED_PREFIX}operator", f"{PLAN_STALE_PREFIX}base", f"{SUPERSEDED_PREFIX}rework"):
+            _failed_attempt(task, error=error)
+
+        assert task.phase_iteration_count() == 0
+        task.check_requeue_allowed()
+
+    def test_superseded_route_hop_does_not_spend_the_budget(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        source = _failed_attempt(task, error="read-only executor brief refused")
+        successor = TaskAttempt.objects.create(
+            task=task,
+            ended_at=timezone.now(),
+            exit_code=0,
+            fallback_from_attempt=source,
+        )
+
+        assert task.phase_iteration_count() == 1
+        assert successor.iteration == 1
+        task.check_requeue_allowed()
+
+    def test_route_refusal_without_successor_still_spends_the_budget(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        _failed_attempt(task, error="read-only executor brief refused")
+
+        assert task.phase_iteration_count() == 1
+
+    def test_a_park_successor_does_not_supersede_work(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        source = _failed_attempt(task, error="route refusal")
+        park = TaskAttempt.objects.create(
+            task=task,
+            ended_at=timezone.now(),
+            exit_code=1,
+            error=f"{LIMIT_PARKED_PREFIX}window active",
+            fallback_from_attempt=source,
+        )
+
+        assert park.iteration == 0
+        assert task.phase_iteration_count() == 1
+
+    def test_embedded_cancel_text_remains_a_work_failure(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        failure = _failed_attempt(task, error="result_error: connection dropped, request cancelled: client gone")
+
+        assert failure.iteration == 1
+        assert task.phase_iteration_count() == 1
+
+    def test_consecutive_lease_reaps_do_not_stall_a_phase(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        for _ in range(2):
+            _failed_attempt(task, error=f"{LEASE_EXPIRED_PREFIX}lease held by worker expired")
+
+        assert task.phase_iteration_count() == 0
+        task.check_requeue_allowed()
+
+    @override_settings(MAX_PHASE_ITERATIONS=5)
+    def test_five_non_work_rows_leave_the_cap_available(self) -> None:
+        cancelled = self._phase_task(Ticket.objects.create())
+        lease_reaped = self._phase_task(Ticket.objects.create())
+        route = self._phase_task(Ticket.objects.create())
+        for index in range(5):
+            _failed_attempt(cancelled, error=f"{CANCELLED_PREFIX}operator {index}")
+            _failed_attempt(lease_reaped, error=f"{LEASE_EXPIRED_PREFIX}worker {index}")
+        previous = None
+        for index in range(5):
+            previous = TaskAttempt.objects.create(
+                task=route,
+                ended_at=timezone.now(),
+                exit_code=1,
+                error=f"route refusal {index}",
+                fallback_from_attempt=previous,
+            )
+        TaskAttempt.objects.create(
+            task=route,
+            ended_at=timezone.now(),
+            exit_code=0,
+            fallback_from_attempt=previous,
+        )
+
+        for task, expected in ((cancelled, 0), (lease_reaped, 0), (route, 1)):
+            assert task.phase_iteration_count() == expected
+            task.check_requeue_allowed()
+
+    @override_settings(MAX_PHASE_ITERATIONS=5)
+    def test_five_genuine_failures_exhaust_the_cap(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        for error in ("alpha", "bravo", "charlie", "delta", "echo"):
+            _failed_attempt(task, error=error)
+
+        with pytest.raises(MaxIterationsExceeded):
+            task.check_requeue_allowed()
+
     def test_at_cap_raises_max_iterations_exceeded(self) -> None:
         ticket = Ticket.objects.create()
         task = self._phase_task(ticket)
@@ -189,6 +305,14 @@ class TestCheckRequeueAllowed(TestCase):
         _failed_attempt(task, error="the identical failure")
         with pytest.raises(IterationStalled):
             task.check_requeue_allowed()
+
+    def test_cancel_between_identical_failures_breaks_stall_adjacency(self) -> None:
+        task = self._phase_task(Ticket.objects.create())
+        _failed_attempt(task, error="same defect")
+        _failed_attempt(task, error=f"{CANCELLED_PREFIX}operator paused retry")
+        _failed_attempt(task, error="same defect")
+
+        task.check_requeue_allowed()
 
     def test_stall_escalates_via_deferred_question(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/1")

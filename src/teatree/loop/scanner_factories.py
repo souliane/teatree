@@ -9,6 +9,8 @@ the per-overlay domain slices (``domain_jobs``) consume. Depends DOWN on
 import logging
 from typing import TYPE_CHECKING
 
+from django.utils import timezone
+
 from teatree.config import (
     Autonomy,
     PrReviewBackend,
@@ -17,6 +19,7 @@ from teatree.config import (
     effective_trusted_issue_authors,
     get_effective_settings,
 )
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.intake.budget import read_intake_budget, release_deadlocked_holder
@@ -25,6 +28,7 @@ from teatree.core.models import ImplementedIssueMarker
 from teatree.core.overlay_repos import owned_repo_slugs
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
+from teatree.loop.intake_idle_hold import idle_hold_reason
 from teatree.loop.job_identity import _TUPLE_PAIR, CANONICAL_CORE_OVERLAY
 from teatree.loop.reconcile_lanes import reconcile_holder_pr_rows_best_effort, reconcile_settled_clears_best_effort
 from teatree.loop.scanner_factory_broadcast_claims import (
@@ -41,10 +45,10 @@ from teatree.loop.scanners import (
     CallCommandMergeKeystone,
     ClaudeSelfPrReviewScanner,
     CodexReviewScanner,
+    ForgeMrStateClassifier,
     ForgePrApiClient,
     GhCodexPrApi,
     GhPrApiClient,
-    GlabGhMrStateClassifier,
     GlabPrApiClient,
     IssueDispositionScanner,
     IssueIntakeScanner,
@@ -108,7 +112,7 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
         backend=backend.messaging,
         channels=channel_ids,
         fetch_channel_history=BackendChannelHistoryFetcher(backend=backend.messaging),
-        classify_mrs=GlabGhMrStateClassifier(),
+        classify_mrs=ForgeMrStateClassifier(),
         overlay=backend.name,
         current_gitlab_username=_own_author_identity(backend),
         owner_identities=_user_identity_aliases_for_overlay(backend.name),
@@ -379,6 +383,12 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
                 merge.open_prs,
                 MERGE_STUCK_AFTER_TICKS,
             )
+    if can_claim and (idle := idle_hold_reason(settings.issue_intake_idle_hold_hours, now=timezone.now())):
+        can_claim = False
+        logger.warning("issue intake is claiming nothing new: %s", idle)
+    if can_claim and (cap := open_pr_start_cap_hold_reason()):
+        can_claim = False
+        logger.warning("issue intake is claiming nothing new: %s", cap)
     return IssueIntakeScanner(
         host=code_host,
         admit_label=settings.issue_implementer_label or factory_admission.DEFAULT_ADMIT_LABEL,

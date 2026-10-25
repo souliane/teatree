@@ -14,25 +14,31 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from django.core.management import call_command
 from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents.live_client import LiveClient, WorkerSessionFacts
-from teatree.agents.live_control import MAX_PENDING_INPUTS, ReceiptPayload
+from teatree.agents.live_control import MAX_PENDING_INPUTS, LiveFence, ReceiptPayload
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_registry import shared_registry
+from teatree.agents.prompt import build_task_prompt
 from teatree.agents.runner import TaskUsage, run_agent
-from teatree.core.models import Session, Task
+from teatree.core.models import DmContext, PendingChatInjection, Session, Task, ThreadBinding
+from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from tests.factories import planned_ticket
+from tests.teatree_loop.slack_answer.test_cycle import _USER_UID, RecordingBackend, _resolver
 
 _FAKE_CLI = Path(__file__).with_name("fake_claude_cli.py")
 _ENVELOPE = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
@@ -92,7 +98,7 @@ class _FakeCliRun:
 
 
 @contextlib.contextmanager
-def _real_sdk_on_fake_cli(run: _FakeCliRun) -> Iterator[None]:
+def _real_sdk_on_fake_cli(run: _FakeCliRun) -> Generator[None]:
     wrapper = run.root / "claude"
     wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{_FAKE_CLI}" "$@"\n', encoding="utf-8")
     wrapper.chmod(0o755)
@@ -111,6 +117,44 @@ def _real_sdk_on_fake_cli(run: _FakeCliRun) -> Iterator[None]:
 
 
 class LiveControlIntegrationTests(TestCase):
+    def test_paused_task_keeps_its_thread_messages_after_live_session_teardown(self) -> None:
+        self.task.claim(claimed_by="worker-A", lease_seconds=900)
+        run = _FakeCliRun(self.root, steps=[{"tool": "Bash", "hold_until": str(self.root / "release-tool")}])
+
+        def operator() -> ReceiptPayload:
+            _until(lambda: run.saw("holding_tool"), "the agent to sit in its tool")
+            pausing = _in_background(lambda: self.live.pause(self.task.pk, "pause", command_id="pause-once", wait=10))
+            _until(
+                lambda: any(row["state"] == "closed" for row in shared_registry().sessions()),
+                "the pause to close the live session",
+            )
+            run.release_tool.touch()
+            return pausing.result(timeout=_WAIT_LIMIT)
+
+        receipt = self.dispatch(run, operator)
+        self.task.refresh_from_db()
+        assert receipt["outcome"] == "paused"
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.not_before is not None
+        assert self.task.session_continuation == Task.SessionContinuation.SELF
+
+        ThreadBinding.bind(ticket=self.ticket, channel="C1", thread_ts="100.0")
+        backend = RecordingBackend()
+        for ts, text in (("101.0", "Keep the old adapter"), ("102.0", "resume")):
+            row = PendingChatInjection.record(
+                channel="C1", slack_ts=ts, text=text, context=DmContext(user_id=_USER_UID, thread_ts="100.0")
+            )
+            assert row is not None
+            backend.message_meta[ts] = {"ts": ts, "thread_ts": "100.0"}
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        self.task.refresh_from_db()
+        assert self.task.not_before is None
+        assert Task.objects.filter(ticket=self.ticket).count() == 1
+        assert "queued" in backend.replies[0][2]
+        assert "same task" in backend.replies[1][2]
+        assert "Keep the old adapter" in build_task_prompt(self.task)
+
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(tempfile.mkdtemp(prefix="t3-live-it-", dir="/tmp"))
@@ -133,6 +177,92 @@ class LiveControlIntegrationTests(TestCase):
 
     def pending(self) -> int:
         return int(self.live.inspect(self.task.pk)["pending_inputs"])
+
+    def test_idle_follow_up_starts_one_new_cli_turn_and_duplicate_replays_receipt(self) -> None:
+        run = _FakeCliRun(self.root, follow_up_final_text=json.dumps({"summary": "second"}), follow_up_wait_seconds=3)
+
+        def operator() -> tuple[dict[str, object], dict[str, object], ReceiptPayload, ReceiptPayload]:
+            _until(
+                lambda: any(row["state"] == "idle" for row in shared_registry().sessions()),
+                "idle session",
+            )
+            assert self.live.inspect(self.task.pk)["attempt"]
+            idle_steer = self.live.steer(self.task.pk, "wrong turn", command_id="idle-steer", wait=1)
+            receipts = []
+            for _ in range(2):
+                out = StringIO()
+                try:
+                    call_command(
+                        "live",
+                        "follow-up",
+                        str(self.task.pk),
+                        "--text",
+                        "second prompt",
+                        "--command-id",
+                        "same",
+                        "--wait",
+                        "2",
+                        "--json",
+                        stdout=out,
+                    )
+                finally:
+                    deadline = time.monotonic() + 2
+                    while run.user_turns() < 2 and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    assert run.user_turns() == 2
+                receipts.append(json.loads(out.getvalue()))
+            reused_by_steer = self.live.steer(self.task.pk, "second prompt", command_id="same", wait=1)
+            return receipts[0], receipts[1], idle_steer, reused_by_steer
+
+        with patch.object(runner_mod, "DEFAULT_IDLE_WINDOW_SECONDS", 2.0):
+            first, replay, idle_steer, reused_by_steer = self.dispatch(run, operator)
+
+        assert first == replay
+        assert first["outcome"] == "accepted_new_turn"
+        assert idle_steer["code"] == "turn_ended"
+        assert reused_by_steer["code"] == "duplicate_mismatch"
+        assert run.user_turns() == 2
+        assert run.saw("follow_up_turn")
+        stdin_log = json.dumps([row for row in run.events() if row["event"] == "stdin"])
+        assert stdin_log.count("[TeaTree operator follow-up id=same]") == 1
+        assert stdin_log.count("second prompt") == 1
+        assert self.attempt.exit_code == 0
+        assert self.attempt.result["summary"] == "second"
+
+    def test_after_the_window_closes_a_follow_up_is_offline_and_starts_nothing(self) -> None:
+        run = _FakeCliRun(self.root)
+
+        def operator() -> None:
+            _until(lambda: any(row["state"] == "idle" for row in shared_registry().sessions()), "idle session")
+
+        with patch.object(runner_mod, "DEFAULT_IDLE_WINDOW_SECONDS", 0.3):
+            self.dispatch(run, operator)
+
+        err = StringIO()
+        with pytest.raises(SystemExit) as exit_info:
+            call_command("live", "follow-up", str(self.task.pk), "--text", "late", stderr=err)
+
+        assert exit_info.value.code == 5
+        assert f"task {self.task.pk} in the task list" in err.getvalue()
+        assert "tasks create" in err.getvalue()
+        assert run.user_turns() == 1
+        assert self.attempt.exit_code == 0
+
+    def test_a_prose_only_follow_up_keeps_the_first_turns_complete_envelope(self) -> None:
+        run = _FakeCliRun(self.root, follow_up_final_text="Second turn had no envelope.")
+
+        def operator() -> ReceiptPayload:
+            _until(lambda: any(row["state"] == "idle" for row in shared_registry().sessions()), "idle session")
+            return self.live.follow_up(self.task.pk, "continue", command_id="prose", wait=1)
+
+        with patch.object(runner_mod, "DEFAULT_IDLE_WINDOW_SECONDS", 0.2):
+            receipt = self.dispatch(run, operator)
+
+        assert receipt["outcome"] == "accepted_new_turn"
+        assert run.user_turns() == 2
+        assert self.attempt.exit_code == 0
+        assert self.attempt.result["summary"] == _ENVELOPE["summary"]
+        assert self.attempt.result["files_modified"] == _ENVELOPE["files_modified"]
 
     def test_inspect_is_passive_and_reports_the_open_tool(self) -> None:
         run = _FakeCliRun(self.root, steps=[{"tool": "Bash", "hold_until": str(self.root / "release-tool")}])
@@ -298,17 +428,23 @@ class LiveControlIntegrationTests(TestCase):
     def test_a_finished_session_answers_closed_and_still_replays_its_receipts(self) -> None:
         run = _FakeCliRun(self.root, steps=[{"tool": "Bash", "hold_until": str(self.root / "release-tool")}])
 
-        def operator() -> ReceiptPayload:
+        def operator() -> tuple[ReceiptPayload, LiveFence]:
             _until(lambda: run.saw("holding_tool"), "the agent to sit in its tool")
+            facts = self.live.inspect(self.task.pk)
+            fence = LiveFence(facts["attempt"], facts["generation"])
             steering = self.steer_async("last words", command_id="kept-1")
             _until(lambda: self.pending() == 1, "the steer to be pending")
             run.release_tool.touch()
-            return steering.result(timeout=_WAIT_LIMIT)
+            return steering.result(timeout=_WAIT_LIMIT), fence
 
-        accepted = self.dispatch(run, operator)
+        accepted, fence = self.dispatch(run, operator)
 
         assert self.live.sessions() == []
-        replay = asyncio.run(shared_registry().steer(self.task.pk, "last words", command_id="kept-1", wait=1))
-        late = asyncio.run(shared_registry().steer(self.task.pk, "after the end", command_id="gone", wait=1))
+        replay = asyncio.run(
+            shared_registry().steer(self.task.pk, "last words", command_id="kept-1", wait=1, fence=fence)
+        )
+        late = asyncio.run(
+            shared_registry().steer(self.task.pk, "after the end", command_id="gone", wait=1, fence=fence)
+        )
         assert replay.as_payload() == accepted
         assert (late.outcome, late.code) == ("rejected", "session_closed")

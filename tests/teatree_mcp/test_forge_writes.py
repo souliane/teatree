@@ -11,7 +11,7 @@ forwarding, the per-service registration, and the banned-term refusal.
 """
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +22,8 @@ from asgiref.sync import async_to_sync
 from django.test import TestCase
 
 from teatree.backends.types import Service
+from teatree.core.issue_hygiene import snapshot_token_for_urls
+from teatree.core.models import SendAudit
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp.server import build_server
 from tests._send_gate import TEST_TERM_REGISTRY_JSON, allow_forge_repos
@@ -40,6 +42,7 @@ class _FakeForge:
         self.description = "Original body."
         self.author = "souliane"
         self.open_issues = open_issues or []
+        self.created_issues: dict[str, str] = {}
 
     def list_repo_open_issues(self, *, repo: str) -> list[dict[str, Any]]:
         self.calls.append(("list_repo_open_issues", {"repo": repo}))
@@ -47,7 +50,9 @@ class _FakeForge:
 
     def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> dict[str, Any]:
         self.calls.append(("create_issue", {"repo": repo, "title": title, "body": body, "labels": labels}))
-        return {"number": 5, "html_url": f"https://github.com/{repo}/issues/5"}
+        url = f"https://github.com/{repo}/issues/5"
+        self.created_issues[url] = body
+        return {"number": 5, "html_url": url}
 
     def post_issue_comment(self, *, issue_url: str, body: str) -> dict[str, Any]:
         self.calls.append(("post_issue_comment", {"issue_url": issue_url, "body": body}))
@@ -69,7 +74,7 @@ class _FakeForge:
     def get_issue(self, issue_url: str) -> dict[str, Any]:
         return {
             "html_url": issue_url,
-            "body": self.description,
+            "body": self.created_issues.get(issue_url, self.description),
             "user": {"login": self.author},
             "updated_at": "2026-09-22T00:00:00Z",
         }
@@ -79,7 +84,7 @@ class _FakeForge:
 
 
 @contextmanager
-def _forge_env(fake: _FakeForge, *, service: Service = Service.GITHUB, public: bool = False) -> Iterator[None]:
+def _forge_env(fake: _FakeForge, *, service: Service = Service.GITHUB, public: bool = False) -> Generator[None]:
     allow_forge_repos("acme/widgets", "souliane/teatree")
     with (
         patch.dict("os.environ", {"TEATREE_TERM_REGISTRY": TEST_TERM_REGISTRY_JSON}),
@@ -91,7 +96,7 @@ def _forge_env(fake: _FakeForge, *, service: Service = Service.GITHUB, public: b
 
 
 #: An empty-backlog judgment: nothing to reject, so the create commits (#162 Rule 1).
-_JUDGED_EMPTY: dict[str, Any] = {"snapshot": [], "decisions": []}
+_JUDGED_EMPTY: dict[str, Any] = {"snapshot_token": snapshot_token_for_urls([]), "decisions": []}
 
 
 def _call(tool: str, args: dict[str, Any]) -> Any:
@@ -117,8 +122,8 @@ class TestForgeIssueWriteTools(TestCase):
         assert result["issue_url"] == "https://github.com/acme/widgets/issues/5"
         assert _writes(fake)[0][0] == "create_issue"
         assert _writes(fake)[0][1]["title"] == "bug"
-        # The dedupe audit rides the body, so an empty backlog is recorded as one.
-        assert "No open candidates existed" in _writes(fake)[0][1]["body"]
+        assert fake.get_issue(result["issue_url"])["body"] == "it breaks"
+        assert "0 candidates judged" in SendAudit.objects.get(action="github_issue_create_judgment").payload_summary
 
     def test_issue_note_appends_a_requirement_to_the_description(self) -> None:
         """A requirement in a comment is invisible to a lane, so #162 routes it to the body."""
@@ -241,20 +246,40 @@ class TestIssueCreateDedupesFirst(TestCase):
             "user": {"login": author},
         }
 
+    def test_first_call_returns_a_compact_snapshot_token(self) -> None:
+        fake = _FakeForge([self._candidate()])
+        with _forge_env(fake):
+            result = _call("github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": "b"})
+
+        assert 0 < len(result["snapshot_token"]) <= 32
+        assert "snapshot" not in result
+        assert result["candidates"][0]["url"] == "https://github.com/acme/widgets/issues/3"
+        assert _writes(fake) == []
+
     def test_a_call_without_a_judgment_set_writes_nothing_and_returns_the_backlog(self) -> None:
         fake = _FakeForge([self._candidate()])
         with _forge_env(fake):
             result = _call("github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": "b"})
 
         assert result["outcome"] == "judgment_required"
-        assert result["snapshot"] == ["https://github.com/acme/widgets/issues/3"]
+        assert result["snapshot_token"] == snapshot_token_for_urls(["https://github.com/acme/widgets/issues/3"])
         assert result["candidates"][0]["title"] == "the empty case crashes"
+        assert _writes(fake) == []
+
+    def test_a_second_call_without_the_snapshot_token_writes_nothing(self) -> None:
+        fake = _FakeForge()
+        with _forge_env(fake), pytest.raises(Exception, match="snapshot_token"):
+            _call(
+                "github_issue_create",
+                {"repo": "acme/widgets", "title": "bug", "body": "b", "dedupe": {"decisions": []}},
+            )
+
         assert _writes(fake) == []
 
     def test_a_fitting_candidate_is_extended_instead_of_duplicated(self) -> None:
         fake = _FakeForge([self._candidate()])
         judged = {
-            "snapshot": ["https://github.com/acme/widgets/issues/3"],
+            "snapshot_token": snapshot_token_for_urls(["https://github.com/acme/widgets/issues/3"]),
             "decisions": [{"url": "https://github.com/acme/widgets/issues/3", "fits": True}],
         }
         with _forge_env(fake):
@@ -267,26 +292,41 @@ class TestIssueCreateDedupesFirst(TestCase):
         assert [name for name, _ in _writes(fake)] == ["update_issue"]
         assert "also handle the empty case" in fake.description
 
-    def test_a_rejected_candidate_is_recorded_in_the_new_ticket_body(self) -> None:
+    def test_two_call_creation_keeps_judgments_private(self) -> None:
         fake = _FakeForge([self._candidate()])
+        body = "A plain issue body."
+        long_reason = "different subsystem " + "x" * 220
+        with _forge_env(fake):
+            prepared = _call("github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": body})
+        assert prepared["outcome"] == "judgment_required"
+        assert prepared["snapshot_token"] == snapshot_token_for_urls(["https://github.com/acme/widgets/issues/3"])
         judged = {
-            "snapshot": ["https://github.com/acme/widgets/issues/3"],
-            "decisions": [
-                {"url": "https://github.com/acme/widgets/issues/3", "fits": False, "reason": "different subsystem"}
-            ],
+            "snapshot_token": prepared["snapshot_token"],
+            "decisions": [{"url": "https://github.com/acme/widgets/issues/3", "fits": False, "reason": long_reason}],
         }
         with _forge_env(fake):
             result = _call(
-                "github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": "b", "dedupe": judged}
+                "github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": body, "dedupe": judged}
             )
 
         assert result["outcome"] == "created_new"
-        assert "different subsystem" in _writes(fake)[0][1]["body"]
+        filed = fake.get_issue(result["issue_url"])["body"]
+        assert filed == body
+        assert "Rejected candidates" not in filed
+        assert "Dedupe check" not in filed
+        audit = SendAudit.objects.get(action="github_issue_create_judgment")
+        assert audit.target == result["issue_url"]
+        assert audit.destination == "private-judgment:github:acme/widgets"
+        assert "https://github.com/acme/widgets/issues/3" in audit.payload_summary
+        assert long_reason in audit.payload_summary
 
     def test_an_unjudged_open_ticket_refuses_the_file(self) -> None:
-        judged = {"snapshot": ["https://github.com/acme/widgets/issues/3"], "decisions": []}
+        judged = {
+            "snapshot_token": snapshot_token_for_urls(["https://github.com/acme/widgets/issues/3"]),
+            "decisions": [],
+        }
         fake = _FakeForge([self._candidate()])
-        with _forge_env(fake), pytest.raises(Exception, match="unjudged"):
+        with _forge_env(fake), pytest.raises(Exception, match="snapshot_token"):
             _call("github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": "b", "dedupe": judged})
 
         assert _writes(fake) == []
@@ -297,19 +337,42 @@ class TestIssueCreateDedupesFirst(TestCase):
         with _forge_env(fake):
             result = _call(
                 "github_issue_create",
-                {"repo": "acme/widgets", "title": "bug", "body": "b", "dedupe": {"snapshot": [], "decisions": []}},
+                {"repo": "acme/widgets", "title": "bug", "body": "b", "dedupe": _JUDGED_EMPTY},
             )
 
         assert result["outcome"] == "stale_snapshot"
         assert result["unjudged"] == ["https://github.com/acme/widgets/issues/3"]
         assert _writes(fake) == []
 
+    def test_a_closed_candidate_does_not_make_the_snapshot_stale(self) -> None:
+        fake = _FakeForge([self._candidate()])
+        with _forge_env(fake):
+            prepared = _call("github_issue_create", {"repo": "acme/widgets", "title": "bug", "body": "b"})
+            fake.open_issues.clear()
+            result = _call(
+                "github_issue_create",
+                {
+                    "repo": "acme/widgets",
+                    "title": "bug",
+                    "body": "b",
+                    "dedupe": {
+                        "snapshot_token": prepared["snapshot_token"],
+                        "decisions": [
+                            {"url": "https://github.com/acme/widgets/issues/3", "fits": False, "reason": "closed"}
+                        ],
+                    },
+                },
+            )
+
+        assert result["outcome"] == "created_new"
+        assert len(_writes(fake)) == 1
+
     def test_a_fitting_ticket_someone_else_filed_is_neither_edited_nor_duplicated(self) -> None:
         fake = _FakeForge([self._candidate(author="someone.else")])
         # The re-read immediately before the write is the authority, not the candidate row.
         fake.author = "someone.else"
         judged = {
-            "snapshot": ["https://github.com/acme/widgets/issues/3"],
+            "snapshot_token": snapshot_token_for_urls(["https://github.com/acme/widgets/issues/3"]),
             "decisions": [{"url": "https://github.com/acme/widgets/issues/3", "fits": True}],
         }
         with _forge_env(fake):

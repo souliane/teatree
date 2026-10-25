@@ -76,6 +76,11 @@
       "subcommands": []
     },
     {
+      "help": "Profile real dispatches: read share, resume-context cost and addressable upper bounds.",
+      "name": "cost_profile",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "db",
       "subcommands": [
@@ -187,6 +192,10 @@
         {
           "help": "Print the latest instruction-compliance snapshot \u2014 read-only (#2663)",
           "name": "compliance"
+        },
+        {
+          "help": "Report the daily dream funnel and whether a recurring question class has stopped",
+          "name": "funnel"
         },
         {
           "help": "Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap",
@@ -448,7 +457,7 @@
       ]
     },
     {
-      "help": "Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.",
+      "help": "Live sessions: list and inspect are passive; steer and follow-up are active.",
       "name": "live",
       "subcommands": [
         {
@@ -460,8 +469,16 @@
           "name": "steer"
         },
         {
+          "help": "Interrupt a running task and park it for an operator resume",
+          "name": "pause"
+        },
+        {
           "help": "List every live session on this host's workers (passive)",
           "name": "list"
+        },
+        {
+          "help": "Start one new turn in a still-open idle session and print its receipt (active)",
+          "name": "follow-up"
         }
       ]
     },
@@ -787,6 +804,10 @@
           "name": "discharge-pending"
         },
         {
+          "help": "Ask the owner on Slack to approve a merge correction",
+          "name": "request-void"
+        },
+        {
           "help": "Void a merge the forge records but whose content never reached the default branch",
           "name": "void-merge"
         },
@@ -1045,6 +1066,24 @@
       "subcommands": []
     },
     {
+      "help": "",
+      "name": "secrets",
+      "subcommands": [
+        {
+          "help": "Report key health without disclosing stored values",
+          "name": "status"
+        },
+        {
+          "help": "List sealed row names without decrypting values",
+          "name": "ls"
+        },
+        {
+          "help": "Classify password-store names without copying their values",
+          "name": "import-pass"
+        }
+      ]
+    },
+    {
       "help": "Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).",
       "name": "seed_loops",
       "subcommands": []
@@ -1072,7 +1111,7 @@
       ]
     },
     {
-      "help": "Render the same settings comparison as the dashboard, including peers and saved snapshots.",
+      "help": "What differs between this box and its peers, and whether it can be read as drift. Exits non-zero only when fewer than two instances answered. A completed comparison succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run.",
       "name": "settings_compare",
       "subcommands": []
     },
@@ -1099,7 +1138,7 @@
       ]
     },
     {
-      "help": "Print the five factory signals over the trailing window vs its baseline.",
+      "help": "Print the factory signals over the trailing window vs its baseline.",
       "name": "signals",
       "subcommands": []
     },
@@ -1268,8 +1307,16 @@
           "name": "reconcile-overlay"
         },
         {
+          "help": "Record a merge critic envelope for the ticket's dispatched head",
+          "name": "critic-record"
+        },
+        {
           "help": "Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08)",
           "name": "bulk-close"
+        },
+        {
+          "help": "Return guarded legacy gap members to the dream umbrella",
+          "name": "return-gaps"
         },
         {
           "help": "Prove a host body still carries the folded member's substance (#4344)",
@@ -1306,6 +1353,10 @@
         {
           "help": "Re-bind a plan to a new base \u2014 the plan-currency gate's never-lockout escape",
           "name": "plan-reaffirm"
+        },
+        {
+          "help": "Waive one rubric criterion by its text hash; an owner identity and a reason are required",
+          "name": "rubric-waive"
         },
         {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",
@@ -1494,6 +1545,10 @@
         {
           "help": "Show every checkout a live agent currently holds (#3952)",
           "name": "occupancy"
+        },
+        {
+          "help": "Record the present checkout state after the owner has inspected it",
+          "name": "attest"
         },
         {
           "help": "Register an existing on-disk checkout as a ``Worktree`` row",

@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.eval.api_runner import load_agent_definition
+from teatree.eval.agent_prompt import load_agent_definition
 from teatree.eval.discovery import find_spec
 from teatree.eval.models import AnyOf, EvalSpec, Matcher
 

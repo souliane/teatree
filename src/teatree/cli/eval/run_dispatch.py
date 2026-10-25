@@ -12,16 +12,18 @@ value set rather than ~15 positional kwargs threaded through the command body.
 import dataclasses
 from pathlib import Path
 
+import typer
 from claude_agent_sdk.types import EffortLevel
 
 from teatree.cli.eval.escalate import EscalationConfig
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, with_model
-from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
+from teatree.cli.eval.single_trial import SingleTrialGates, VerdictReuse, run_single_trial
 from teatree.eval.model_resolution import resolve_eval_model
-from teatree.eval.models import EvalSpec
+from teatree.eval.models import DEFAULT_JUDGE_BUDGET, EvalSpec
 from teatree.eval.presets import Preset, resolve_preset_model
 from teatree.eval.report import JudgeGrader
+from teatree.eval.verdict_cache import VerdictLedger, VerdictRunConfig, partition
 
 
 def _resolve_per_scenario_model(spec: EvalSpec, *, preset: Preset | None) -> EvalSpec:
@@ -82,6 +84,8 @@ class ResolvedRun:
     #: ``--models``/``--benchmark`` (enforced at CLI argument resolution), so it
     #: only ever reaches the pass@k / single-trial per-scenario lanes below.
     preset: Preset | None = None
+    verdict_cache: Path | None = None
+    judge_budget: int = DEFAULT_JUDGE_BUDGET
 
 
 def dispatch_resolved_run(
@@ -176,8 +180,28 @@ def dispatch_resolved_run(
             summary_json=run.summary_json,
         )
         return
+    reuse = VerdictReuse([], [], {})
+    if run.verdict_cache is not None:
+        ledger = VerdictLedger.load(run.verdict_cache)
+        config = VerdictRunConfig(
+            backend=run.backend,
+            effort=run.effort,
+            max_turns=run.max_turns,
+            max_budget_usd=run.max_budget_usd,
+            judge=run.judge,
+            judge_budget=run.judge_budget,
+        )
+        selected_specs = specs
+        specs, cached, content_keys = partition(specs, ledger, config)
+        cached_names = {item.name for item in cached}
+        reuse = VerdictReuse(cached, [spec for spec in selected_specs if spec.name in cached_names], content_keys)
+        typer.echo(
+            f"verdict cache: {len(cached)} cached, {len(specs)} to run",
+            err=run.output_format in {"json", "html"},
+        )
     run_single_trial(
         specs,
+        reuse=reuse,
         backend=run.backend,
         max_turns=run.max_turns,
         transcript_dir=run.transcript_dir,

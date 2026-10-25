@@ -6,6 +6,7 @@ import json
 import logging
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,6 +43,7 @@ from teatree.agents.harness_registry import (
     select_harness,
 )
 from teatree.agents.round_ceiling import ROUND_STARTED, starts_a_round
+from teatree.mcp.agent_mailbox import MailboxClient
 from tests.teatree_agents._codex_command_shape import codex_wrapped
 from tests.teatree_agents._route_fakes import write_codex_login
 
@@ -474,8 +476,6 @@ def test_codex_process_env_is_private_and_drops_ambient_credentials(tmp_path: Pa
         "GIT_AUTHOR_EMAIL": "factory@example.invalid",
         "GIT_COMMITTER_NAME": "Factory Agent",
         "GIT_COMMITTER_EMAIL": "factory@example.invalid",
-        "T3_CONFIG_DB": "/control/db.sqlite3",
-        "T3_CONTROL_DB_DIR": "/control",
         "T3_REPO": "/src/teatree",
         "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
         "T3_DISPATCHED_AGENT": "1",
@@ -881,6 +881,8 @@ def test_start_query_and_stream_translate_the_exact_protocol(
 def test_resume_reapplies_current_thread_options(fake_codex: tuple[tuple[str, ...], Path], tmp_path: Path) -> None:
     command, log = fake_codex
     options, _ = _options(log, resume=_THREAD_ID)
+    mailbox = MailboxClient(tmp_path / "mailbox.sock", "test-token")
+    options = replace(options, core=replace(options.core, mailbox=mailbox))
     session = _session(options, resume=_THREAD_ID, code_home=tmp_path / "home", command=command)
 
     async def run() -> None:

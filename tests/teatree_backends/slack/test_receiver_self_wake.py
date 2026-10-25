@@ -18,7 +18,7 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from teatree.backends.slack.receiver import QueuePaths, _probe_own_identity, _run_single_overlay
+from teatree.backends.slack.receiver import ListenerCallbacks, QueuePaths, _probe_own_identity, _run_single_overlay
 from teatree.backends.slack.self_identity import OwnSlackIdentity, is_self_originated
 
 _OWN = OwnSlackIdentity(user_id="U0BOT", bot_id="B0BOT")
@@ -56,7 +56,7 @@ def _drive(tmp_path: Path, event: dict, *, auth_body: dict | None) -> MagicMock:
             overlay=("ov", "xapp", "xoxb"),
             queues=_queues(tmp_path),
             stop_event=stop,
-            on_event=on_event,
+            callbacks=ListenerCallbacks(on_event=on_event),
         )
     return on_event
 
@@ -79,6 +79,85 @@ class TestReceiverCallbackDoesNotWakeOnItsOwnPosts:
         on_event = _drive(tmp_path, {"type": "message", "user": "U0HUMAN", "ts": "1.0"}, auth_body=_AUTH_OK)
 
         on_event.assert_called_once_with("ov", {"type": "message", "user": "U0HUMAN", "ts": "1.0"})
+
+    def test_an_app_posted_user_thread_reply_reaches_the_recorder(self, tmp_path: Path) -> None:
+        event = {
+            "type": "message",
+            "channel_type": "im",
+            "user": "U0HUMAN",
+            "ts": "1.1",
+            "thread_ts": "1.0",
+            "api_app_id": "A_OWNER_SCRIPT",
+        }
+
+        on_event = _drive(tmp_path, event, auth_body=_AUTH_OK)
+
+        on_event.assert_called_once_with("ov", event)
+
+    def test_an_app_posted_channel_thread_reply_does_not_wake(self, tmp_path: Path) -> None:
+        event = {
+            "type": "message",
+            "channel_type": "channel",
+            "user": "U0HUMAN",
+            "ts": "1.1",
+            "thread_ts": "1.0",
+            "api_app_id": "A_OWNER_SCRIPT",
+        }
+
+        _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
+
+    def test_an_app_posted_dm_without_thread_does_not_wake(self, tmp_path: Path) -> None:
+        event = {
+            "type": "message",
+            "channel_type": "im",
+            "user": "U0HUMAN",
+            "ts": "1.1",
+            "api_app_id": "A_OWNER_SCRIPT",
+        }
+
+        _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
+
+    def test_app_post_at_its_own_thread_root_does_not_wake(self, tmp_path: Path) -> None:
+        event = {
+            "type": "message",
+            "channel_type": "im",
+            "user": "U0HUMAN",
+            "ts": "1.0",
+            "thread_ts": "1.0",
+            "api_app_id": "A_SCRIPT",
+        }
+
+        _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
+
+    def test_app_post_without_a_user_does_not_wake(self, tmp_path: Path) -> None:
+        event = {"type": "message", "channel_type": "im", "ts": "1.1", "thread_ts": "1.0", "api_app_id": "A_SCRIPT"}
+
+        _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
+
+    def test_app_post_with_bot_id_does_not_wake(self, tmp_path: Path) -> None:
+        event = {
+            "type": "message",
+            "channel_type": "im",
+            "user": "U0HUMAN",
+            "bot_id": "B_OTHER",
+            "ts": "1.1",
+            "thread_ts": "1.0",
+            "api_app_id": "A_SCRIPT",
+        }
+
+        _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
+
+    def test_app_post_by_the_receiver_itself_does_not_wake(self, tmp_path: Path) -> None:
+        event = {
+            "type": "message",
+            "channel_type": "im",
+            "user": _OWN.user_id,
+            "ts": "1.1",
+            "thread_ts": "1.0",
+            "api_app_id": "A_SCRIPT",
+        }
+
+        _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
 
 
 class TestAnUnresolvedIdentityStillBreaksTheLoop:
@@ -148,7 +227,7 @@ class TestProbeOwnIdentity:
                 overlay=("ov", "xapp", "xoxb"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
-                on_event=MagicMock(),
+                callbacks=ListenerCallbacks(on_event=MagicMock()),
             )
 
         assert web_client.auth_test.call_count == 1
@@ -156,7 +235,7 @@ class TestProbeOwnIdentity:
 
 class TestIsSelfOriginated:
     def test_an_on_behalf_post_is_self_originated_with_no_identity_at_all(self) -> None:
-        # api_app_id is what drop_on_behalf_messages already keys on downstream,
+        # api_app_id is what the recorder's app-post check keys on downstream,
         # and it is stamped by Slack rather than derived, so it needs no probe.
         assert is_self_originated({"user": "U0HUMAN", "api_app_id": "A123"}, None) is True
 

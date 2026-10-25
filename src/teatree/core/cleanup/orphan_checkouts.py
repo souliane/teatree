@@ -24,7 +24,7 @@ from teatree.core.cleanup.working_tree_dirt import _porcelain_path, is_orchestra
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import effective_default_target
 from teatree.core.worktree.branch_verdict import branch_landed_for_teardown
-from teatree.core.worktree.worktree_paths import paths_match
+from teatree.core.worktree.worktree_paths import path_spellings
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -53,7 +53,7 @@ class OrphanScan:
 def db_tracked_worktree_paths() -> list[str]:
     """On-disk paths of every git worktree teatree has a ``Worktree`` row for.
 
-    Returned unresolved so :func:`paths_match` can apply its full symlink-variant set per
+    Returned unresolved so :func:`path_spellings` can apply its full symlink-variant set per
     comparison (a bare ``.resolve()`` set misses the ``/private`` literal twin a
     ``git worktree list`` path may carry).
     """
@@ -67,10 +67,11 @@ def orphan_checkouts_for_clone(repo: str, tracked: list[str]) -> list[OrphanChec
     decide what an unread clone means for it, and neither of the two may read the silence
     as "this clone has no orphans".
     """
+    tracked_spellings = path_spellings(tracked)
     return [
         OrphanCheckout(repo=repo, path=wt_path, branch=branch)
         for wt_path, branch in sorted(raw_worktree_paths(repo).items())
-        if not any(paths_match(wt_path, candidate) for candidate in tracked)
+        if tracked_spellings.isdisjoint(path_spellings([wt_path]))
     ]
 
 

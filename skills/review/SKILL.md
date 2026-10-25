@@ -67,7 +67,7 @@ When `review_skill` (env `T3_REVIEW_SKILL`) is configured, the reviewing-phase e
 
 Reviewing carries the same responsibility as implementing, so deep retrieval is a **constraint, not a rule**: the FSM `→ reviewing` transition (`teatree.core.gates.review_context_gate`) mechanically refuses until the work item is fetched from its source (Notion / GitLab — follow the MR description's links), every referenced document is downloaded + read, and the implementation is analyzed against them — return `review_context` with `work_item`, `documents`, and `analysis` in the result envelope. A diff-only verdict cannot enter `reviewing`.
 
-**NEVER directly assign a reviewer on an MR/PR — review is REQUESTED, never assigned (Non-Negotiable).** Colleague review is obtained ONLY by posting the MR link to the Slack/approval channel (`/t3:review-request` → `review-request post`); the reviewer self-claims from there. Never set a reviewer directly — not via `glab mr update --reviewer`, not via a `reviewer_ids`/`requested_reviewers` API write, not via the MR-update MCP tool's reviewer arg — least of all on the user's OWN MR (this happened on the user's MRs and is forbidden). A PreToolUse gate (`handle_block_self_reviewer_assign`) blocks every direct-assignment surface — including a raw `curl` REST write; a vetted one-off on a colleague's MR needs an explicit `[reviewer-ok: <reason>]` token. The one assignment that is not a colleague request is the overlay's own standing `pr_auto_reviewers` policy: set in the same POST that opens the MR, and caught up on already-open MRs by `t3 <overlay> review apply-reviewer-policy`, which names no username, applies only on a repo the overlay writes under a non-owner credential, and refuses any MR that identity did not author.
+**NEVER directly assign a reviewer on an MR/PR — review is REQUESTED, never assigned (Non-Negotiable).** Colleague review is obtained ONLY by posting the MR link to the Slack/approval channel (`/t3:review-request` → `review-request post`); the reviewer self-claims from there. Never set a reviewer directly — not via `glab mr update --reviewer`, not via a `reviewer_ids`/`requested_reviewers` API write, not via the MR-update MCP tool's reviewer arg — least of all on the user's OWN MR (this happened on the user's MRs and is forbidden). A PreToolUse gate (`handle_block_self_reviewer_assign`) blocks every direct-assignment surface — including a raw `curl` REST write; a vetted one-off on a colleague's MR needs an explicit `[gate-escape:no_self_reviewer_assign: <reason>]` token. The one assignment that is not a colleague request is the overlay's own standing `pr_auto_reviewers` policy: set in the same POST that opens the MR, and caught up on already-open MRs by `t3 <overlay> review apply-reviewer-policy`, which names no username, applies only on a repo the overlay writes under a non-owner credential, and refuses any MR that identity did not author.
 
 The "Self-Review Before Finalization" workflow below is a **complement** to the sub-agent pass, not a replacement. Run it first to catch the obvious things, then spawn the reviewer.
 
@@ -88,7 +88,7 @@ git merge-base --is-ancestor origin/main HEAD || git merge origin/main --no-edit
 
 Run this **before** the cleanup checklist. Resolve any conflicts the same way you would on a normal merge — no rebase, no stash.
 
-**Cold-review checkout — fetch the exact pushed head, never `git worktree add <branch>` (Non-Negotiable).** A cold-review sub-agent reviewing a PR on a fresh checkout must NOT run `git worktree add <dir> origin/<branch>` (or the local-branch form). When that branch is already checked out in another worktree on the same machine, `worktree add` fails and the agent silently falls back to a pre-existing (stale) checkout — reviewing a tree one commit behind the pushed head and producing a spurious CHANGES_NEEDED (souliane/teatree#2132). Use the verify-or-fail helper `teatree.utils.review_checkout.add_review_worktree_at_head(repo, ref=<branch>, expected_sha=<pr-head-sha>)`: it fetches the ref into a guaranteed-unique temp dir, checks it out with `git worktree add --detach FETCH_HEAD` (cannot collide with a branch worktree), and asserts the materialised HEAD equals the PR head SHA — hard-failing with `StaleReviewCheckoutError` rather than ever falling back to a stale tree. Remove the returned worktree with `teatree.utils.git.worktree_remove` when the review is done.
+**Cold-review checkout — fetch the exact pushed head, never `git worktree add <branch>` (Non-Negotiable).** A cold-review sub-agent reviewing a PR on a fresh checkout must NOT run `git worktree add <dir> origin/<branch>` (or the local-branch form). When that branch is already checked out in another worktree on the same machine, `worktree add` fails and the agent silently falls back to a pre-existing (stale) checkout — reviewing a tree one commit behind the pushed head and producing a spurious CHANGES_NEEDED (souliane/teatree#2132). Use the verify-or-fail helper `teatree.utils.review_checkout.add_review_worktree_at_head(repo, ref=<branch>, expected_sha=<pr-head-sha>)`: it fetches the ref into a guaranteed-unique temp dir, checks it out with `git worktree add --detach <dir> FETCH_HEAD` (cannot collide with a branch worktree), and asserts the materialised HEAD equals the PR head SHA — hard-failing with `StaleReviewCheckoutError` rather than ever falling back to a stale tree. Remove the returned worktree with `teatree.utils.git.worktree_remove` when the review is done.
 
 **Run the affected tests through `t3`, in the checkout — never a hand-rolled runner (Non-Negotiable).** A fresh review checkout is bare (no `uv sync`, no `.venv`), so the test run is the step where a reviewer is most tempted to improvise. `t3 <overlay> run tests` provisions the checkout first (`runtime.pre_run_steps`), spawns in the worktree it resolved, and prints the argv + cwd it used so the run is reconstructible later; a genuinely unspawnable runner names `t3 <overlay> worktree provision --path <dir>` instead of reporting a bare `Failed to spawn` (souliane/teatree#4746). The `checkout` command emits the exact invocation as its `run_tests` key.
 
@@ -127,7 +127,7 @@ t3 <overlay> review publish-findings <pr-url>    # post them to the PR (idempote
 
 `review record` posts a HOLD's findings to the PR itself, so the author sees them where the work is. That post is colleague-visible, so it passes the on-behalf pre-gate: under a forbidding posture it is WITHHELD and the reason is reported on the record result (plus a DM carrying the findings). Clear it the solution-oriented way — `t3 <overlay> config_setting set on_behalf_auto_actions '["post_e2e_evidence","post_review_findings"]'` to enable it durably for this overlay, or `t3 review approve-on-behalf <slug>#<pr> post_review_findings --approver <user-id>` for one post — then `review publish-findings` to deliver it. A payload that cannot be rendered is a loud refusal, never a `findings_count` with nothing behind it.
 
-Discharging a hold needs no new state: verdicts are newest-wins, so a later `merge_safe` recorded at the same head supersedes the HOLD.
+A hold stays active at its reviewed head despite another `merge_safe` verdict or a CLEAR. Push a fix, then review the new head.
 
 **Mechanically enforced (#4251):** a blocking finding (`blocker`/`major`/`high`/`critical`) citing a file outside the PR's own changed-file set is REFUSED at record time — by `t3 <overlay> review record` and by the headless orchestrator that records a returned `review_verdict` alike. Re-measure on the merge result, then re-record with `--merge-result-retake` (CLI) or `"merge_result_retake": true` (envelope) if the finding survives. The gate declines to judge when the changed-file set cannot be read: an unread diff proves nothing. The check is also the cheapest one available to you by hand — a finding that asserts the PR changes no `src/` file *and* reports a `src/` regression refutes itself, and `git log origin/main -- <cited-file>` names the PR actually responsible.
 
@@ -324,18 +324,15 @@ Pinned by `review_reaction_dedups_existing_reactor` (`evals/scenarios/review.yam
 
 #### The review-DONE Slack signal is `mcp__teatree__slack_react`, or `t3 slack react` with three positional arguments
 
-A finished review emits its verdict on the MR's review-broadcast message as a Slack reaction. Prefer the
-`mcp__teatree__slack_react` MCP tool — same seam, structured result; when the MCP server isn't connected there is
-exactly one CLI command for it and it takes **positional** `channel`, `ts`, and `emoji` — no `--emoji` flag,
-and no reaction subcommand under `t3 review` (there is none; do not invent one), and the emoji name
-carries **no colons**:
+React on the MR's review-broadcast message with `mcp__teatree__slack_react`, or use the CLI below when
+MCP is unavailable. Its arguments are positional; there is no `--emoji` flag or `t3 review` reaction
+subcommand. Use the emoji name without colons:
 
 ```bash
 t3 slack react <channel> <ts> <emoji>          # e.g. t3 slack react C_REVIEW 171.5 white_check_mark
 ```
 
-The verdict → emoji mapping is the one `teatree.loop.review_done_reactions.emit_review_done_reactions`
-posts, so a hand-issued reaction matches what the loop would have emitted:
+`emit_review_done_reactions` uses this mapping only on colleagues' MRs; the operator's own gets none:
 
 | verdict | emoji argument |
 | --- | --- |
@@ -459,7 +456,7 @@ The babysit-tier draft flow — the pre-flight read of existing discussions, the
 - **Default stance toward a colleague's concern:** assume it is correct until you have exhaustively disproven it. Verify it deeply against ground truth before concluding it's a non-issue; a shallow check that confirms your first instinct is not a disproof. The cost of taking a wrong concern seriously is small; the cost of dismissing a right one is a missed bug and a colleague who stops raising them.
 - **Push back when:** suggestion breaks functionality (show evidence), violates YAGNI, is based on stale context, or conflicts with user's stated architecture.
 - **Anti-performative:** No "You're absolutely right!" — just state the fix or the technical disagreement.
-- **Technical rigor:** verify reviewer suggestions against the actual codebase before implementing.
+- **Technical rigor:** verify claims in code; for tool output, run the exact command in worker and admin containers and compare live results before accepting it.
 - **Review rounds:** fix the defect class; three per MR is the cap. Full text: `skills/review/references/review-rounds.md`.
 
 #### Replying to Review Discussions
@@ -510,3 +507,7 @@ Use this **only** when there is genuinely nothing to post or approve. If you hav
 |---------|-------------|
 | `t3 ci quality-check` | Quality analysis for self-review |
 | `t3 <overlay> run tests` | Verification after review changes |
+
+### NIT lane (own PR)
+
+On the owner's own PR, this overrides Step -1 and step 4 for NITs only: BLOCKING findings are fixed directly and not posted; NIT-only findings are posted inline and tracked in one follow-up issue. See [the NIT lane](references/nit-lane.md).

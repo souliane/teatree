@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -110,7 +110,7 @@ for line in sys.stdin:
 
 class _FakeCache:
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[Path]:
+    async def session(self) -> AsyncGenerator[Path]:
         yield Path("/unused/auth.json")
 
     def persist(self) -> None:

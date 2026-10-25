@@ -1,7 +1,7 @@
 """Derived-on-read ledger queries for the factory signals (SIG-PR-1).
 
 The query engine behind :mod:`teatree.core.factory.factory_signals`: the low-level
-value types (:class:`SignalReading`, :class:`Window`) plus the five per-signal
+value types (:class:`SignalReading`, :class:`Window`) plus the six per-signal
 ``_compute_s*`` functions that read the merge/review/CI/repair ledgers, and the
 rolling-baseline regression predicates. Kept separate from the report-model +
 composition concern so each file stays single-purpose; every function here is a
@@ -17,20 +17,21 @@ from typing import NotRequired, TypedDict
 
 from django.db.models import Min
 
+from teatree.core.cycle_time.distribution import percentile
+from teatree.core.cycle_time.pull_request_flow import merged_pull_request_seconds, open_pull_requests
 from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS, max_actionable_clear_age_hours
 from teatree.core.merge.clear_scope import clear_scope_predicate
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolve_pr_repo_slug
-from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, PLAN_STALE_PREFIX, SUPERSEDED_PREFIX
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.red_card_signal import RedCardSignal
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.review_verdict import ReviewVerdict, Severity
 from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.task_repair_queries import repair_iterations, repair_observations
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
-from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.utils.url_slug import pr_ref_from_url
 
 # A five-observation floor keeps the thresholds stable at solo-factory volume.
@@ -42,6 +43,8 @@ MIN_SAMPLE = 5
 # failure fraction is this high AND the window carries at least MIN_SAMPLE work attempts,
 # so a small sample is treated as noise, not a fleet-scale collapse.
 HIGH_FAILURE_FRACTION = 0.5
+# A three-day open PR is already stalled; report it even without a merged sample.
+OPEN_PR_RED_HOURS = 72.0
 
 
 _CATCH_SEVERITIES = frozenset({Severity.BLOCKER, Severity.MAJOR})
@@ -120,6 +123,14 @@ class S5Evidence(TypedDict):
     failed_fraction: float
 
 
+class S6Evidence(TypedDict):
+    merged: int
+    open: int
+    unmeasured_open: int
+    oldest_open_hours: float
+    oldest_open_pr: str
+
+
 class LocEvidence(TypedDict):
     """Net-hand-written-LoC evidence: the two halves behind the net, and the window's commits."""
 
@@ -131,7 +142,7 @@ class LocEvidence(TypedDict):
 # The evidence payload of a :class:`Computation` — one fixed shape per signal,
 # discriminated by which compute function produced it. Replaces the former
 # ``dict[str, Any]`` so each signal's evidence keys are declared, not free-form.
-SignalEvidence = S1Evidence | S2Evidence | S3Evidence | S4Evidence | S5Evidence | LocEvidence
+SignalEvidence = S1Evidence | S2Evidence | S3Evidence | S4Evidence | S5Evidence | S6Evidence | LocEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +150,7 @@ class SignalReading:
     """One provider's reading — the seam PR-2's recipe registry consumes.
 
     ``value`` is the natural-unit measurement (a 0..1 rate for S1-S3, hours for
-    S4, a mean iteration count for S5); the recipe normalises to 0..1 with the
+    S4 and S6, a mean iteration count for S5); the recipe normalises to 0..1 with the
     signal's direction. ``window_days`` is the trailing window width.
     """
 
@@ -164,7 +175,7 @@ class Computation:
     The public provider functions expose only :attr:`reading`;
     :func:`teatree.core.factory.factory_signals.compute_factory_signals` also reads
     :attr:`evidence` (companion scalars) and :attr:`hard_red` (S4's stale-CLEAR
-    trip, which fires even when the latency sample itself is insufficient).
+    or S6's aged open-PR trip, even when the latency sample is insufficient).
     """
 
     reading: SignalReading
@@ -433,36 +444,27 @@ def compute_s4(window: Window, overlay: str, now: datetime) -> Computation:
 def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # noqa: ARG001 — uniform compute signature
     """S5 repair_iteration_burn: mean terminal iteration per succeeded (ticket, phase).
 
-    Scheduling-event attempts (limit-parks, recoverable-exhaustion dips) are excluded,
-    the same rows ``task_repair.phase_attempts`` drops from the budget query and by the
-    same idiom (a DB-level park exclude for the perf win over the 340k-row park backlog,
-    then a Python recoverable-exhaustion filter) — they are capacity events, not work
-    iterations, so they neither inflate the burn mean nor the failure fraction
-    (#3689/#3690). An operator cancellation or a rework supersede (``NON_REPAIR_KINDS``)
-    is excluded the same way — the repair loop never failed on its own merits there, and
-    the incident detector (``lifecycle_incident.py``) already agrees these are not real
-    failures, so counting them here would disagree with it while describing the same
-    attempt. A high failure fraction over a meaningful sample trips a companion hard-red
-    the scalar mean alone cannot see: a window where nearly every attempt fails leaves
-    too few success groups to measure, so the mean reads low (or insufficient) while the
-    loop is on fire.
+    The terminal-iteration mean uses the repair budget's work filter. The failure
+    fraction counts dispatch failures, including route hops and lease reaps.
     """
-    attempts = (
-        TaskAttempt.objects.filter(started_at__gte=window.start, started_at__lt=window.end)
-        .exclude(error__startswith=LIMIT_PARKED_PREFIX)
-        .select_related("task")
+    attempts = TaskAttempt.objects.filter(started_at__gte=window.start, started_at__lt=window.end).select_related(
+        "task"
     )
     if overlay:
         attempts = attempts.filter(task__ticket__overlay=overlay)
-    rows = [
+    rows = repair_iterations(attempts)
+    observed = [
         attempt
-        for attempt in attempts
-        if recoverable_exhaustion_cause(attempt.error) is None and attempt.failure_kind not in NON_REPAIR_KINDS
+        for attempt in repair_observations(attempts)
+        if not attempt.error.startswith((CANCELLED_PREFIX, PLAN_STALE_PREFIX, SUPERSEDED_PREFIX))
     ]
     groups: dict[tuple[int, str], list[int]] = defaultdict(list)
     succeeded = 0
     failed = 0
     for attempt in rows:
+        if attempt.outcome == TaskAttempt.Outcome.SUCCESS:
+            groups[attempt.task.ticket_id, attempt.task.phase].append(attempt.iteration)
+    for attempt in observed:
         # #16: classify on the explicit TaskAttempt.outcome discriminator, stamped
         # from exit_code + error at save time, instead of re-deriving it here. An
         # envelope refusal (exit_code=0 with a non-empty error) is a first-class
@@ -470,7 +472,6 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
         # non-zero exit; a blank outcome is an attempt still in flight — neither a
         # success nor a failure, excluded from both.
         if attempt.outcome == TaskAttempt.Outcome.SUCCESS:
-            groups[attempt.task.ticket_id, attempt.task.phase].append(attempt.iteration)
             succeeded += 1
         elif attempt.outcome in {TaskAttempt.Outcome.REFUSAL, TaskAttempt.Outcome.CRASH}:
             failed += 1
@@ -482,10 +483,10 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
     terminal = succeeded + failed
     failed_fraction = failed / terminal if terminal else 0.0
     hard_red = terminal >= MIN_SAMPLE and failed_fraction >= HIGH_FAILURE_FRACTION
-    reason = f"{round(failed_fraction, 3)} of {terminal} terminal work attempts failed" if hard_red else ""
+    reason = f"{round(failed_fraction, 3)} of {terminal} terminal attempts failed" if hard_red else ""
     evidence: S5Evidence = {
         "attempts": terminal,
-        "in_flight": len(rows) - terminal,
+        "in_flight": len(observed) - terminal,
         "success_groups": sample,
         "failed_fraction": round(failed_fraction, 3),
     }
@@ -501,4 +502,35 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
         evidence,
         hard_red=hard_red,
         hard_red_reason=reason,
+    )
+
+
+def compute_s6(window: Window, overlay: str, now: datetime) -> Computation:
+    durations = merged_pull_request_seconds(since=window.start, until=window.end, overlay=overlay)
+    open_rows = open_pull_requests(now=now, overlay=overlay)
+    measured = [row for row in open_rows if row.age_seconds is not None]
+    oldest = measured[0] if measured else None
+    oldest_hours = oldest.age_seconds / 3600 if oldest is not None and oldest.age_seconds is not None else 0.0
+    hard_red = oldest_hours >= OPEN_PR_RED_HOURS
+    evidence: S6Evidence = {
+        "merged": len(durations),
+        "open": len(open_rows),
+        "unmeasured_open": len(open_rows) - len(measured),
+        "oldest_open_hours": round(oldest_hours, 2),
+        "oldest_open_pr": oldest.url if oldest is not None else "",
+    }
+    status = SignalStatus.OK if len(durations) >= MIN_SAMPLE else SignalStatus.INSUFFICIENT_DATA
+    if evidence["unmeasured_open"] and not hard_red:
+        status = SignalStatus.INSTRUMENTATION_GAP
+    hours = [seconds / 3600.0 for seconds in durations]
+    return Computation(
+        SignalReading(
+            round(percentile(hours, 0.5), 3) if status == SignalStatus.OK else 0.0,
+            len(hours),
+            window.days,
+            status,
+        ),
+        evidence,
+        hard_red=hard_red,
+        hard_red_reason=f"oldest open pull request is at least {OPEN_PR_RED_HOURS:g}h old" if hard_red else "",
     )

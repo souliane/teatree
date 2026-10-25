@@ -7,7 +7,7 @@ commit-message layer — PR #831 leaked the ``Generated with [Claude
 Code]`` trailer, caught only by cold review.
 
 Used by: the ``ai-sig-scan`` tool command (``scripts/ai_signature_scan.py``),
-the pr-create-time hook gate, and the bound-merge message gate
+the in-process PreToolUse hook gate, and the bound-merge message gate
 (``teatree.core.gates.merge_message_gate``).
 
 Design — match trailer *position*, not a bare substring. A banned

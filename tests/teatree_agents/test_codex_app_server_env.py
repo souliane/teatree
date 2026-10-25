@@ -5,7 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from teatree.agents.codex_app_server_env import codex_process_env
+from teatree.agents.codex_app_server_env import codex_process_env, router_process_env
+from teatree.paths import ControlDb
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 
 _SECRETS = {
@@ -25,17 +26,101 @@ def _env(home: Path, extra: dict[str, str] | None = None, *, path: str = "/usr/b
 
 
 def test_the_routed_token_and_the_worker_cap_are_the_only_dispatch_keys_taken(tmp_path: Path) -> None:
-    env = _env(tmp_path / "home", {**_SECRETS, "GH_TOKEN": "ghp-routed", "PYTEST_XDIST_AUTO_NUM_WORKERS": "3"})
+    shared_root = tmp_path / "shared-pool"
+    env = _env(
+        tmp_path / "home",
+        {
+            **_SECRETS,
+            "GH_TOKEN": "ghp-routed",
+            "PYTEST_XDIST_AUTO_NUM_WORKERS": "3",
+            "TEATREE_PYTEST_WORKER_POOL_ROOT": str(shared_root),
+            "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loop-owner"),
+        },
+    )
 
     assert env["GH_TOKEN"] == "ghp-routed"
     assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
+    assert env["TEATREE_PYTEST_WORKER_POOL_ROOT"] == str(shared_root)
+    assert "T3_LOOP_REGISTRY_DIR" not in env
+    assert env["T3_DISPATCHED_AGENT"] == "1"
     assert not {key for key in _SECRETS if key != "GH_TOKEN"} & env.keys()
     assert "ghp-routed" not in {value for key, value in env.items() if key != "GH_TOKEN"}
     assert not {"ambient-gh-secret", "ambient-github-secret"} & set(env.values())
 
 
+def test_ambient_pool_root_reaches_codex_without_loop_registry(tmp_path: Path) -> None:
+    shared_root = tmp_path / "shared-pool"
+    env = codex_process_env(
+        tmp_path / "private-home",
+        ambient={
+            "PATH": "/usr/bin",
+            "TEATREE_PYTEST_WORKER_POOL_ROOT": str(shared_root),
+            "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loop-owner"),
+        },
+    )
+
+    assert env["TEATREE_PYTEST_WORKER_POOL_ROOT"] == str(shared_root)
+    assert "T3_LOOP_REGISTRY_DIR" not in env
+
+
+def test_codex_process_resolves_private_database_without_live_path(tmp_path: Path) -> None:
+    home = tmp_path / "codex-home"
+    live = tmp_path / "control-db" / "db.sqlite3"
+    env = codex_process_env(home, ambient={"PATH": "/usr/bin", "T3_CONFIG_DB": str(live)})
+
+    assert "T3_CONFIG_DB" not in env
+    resolved = ControlDb(env, home=home).for_repo(tmp_path).path
+    assert resolved != live
+    assert resolved.is_relative_to(home)
+
+
+def test_pool_root_does_not_expand_router_allowlist(tmp_path: Path) -> None:
+    ambient = {
+        "PATH": "/usr/bin",
+        "TEATREE_PYTEST_WORKER_POOL_ROOT": str(tmp_path / "shared-pool"),
+        "T3_LOOP_REGISTRY_DIR": str(tmp_path / "loop-owner"),
+    }
+    dispatch = {
+        "GH_TOKEN": "ghp-routed",
+        "TEATREE_PYTEST_WORKER_POOL_ROOT": ambient["TEATREE_PYTEST_WORKER_POOL_ROOT"],
+        "T3_LOOP_REGISTRY_DIR": ambient["T3_LOOP_REGISTRY_DIR"],
+    }
+
+    router_env = router_process_env(dispatch, ambient=ambient)
+
+    assert router_env == {"PATH": "/usr/bin", "GH_TOKEN": "ghp-routed"}
+
+
 def test_a_dispatch_without_a_routed_token_gets_none(tmp_path: Path) -> None:
     assert "GH_TOKEN" not in _env(tmp_path / "home")
+
+
+def test_router_keeps_worker_hook_paths_without_inheriting_other_credentials() -> None:
+    hook_env = {
+        "T3_DATA_DIR": "/tmp/t3-data",
+        "XDG_DATA_HOME": "/tmp/xdg-data",
+        "UV_TOOL_DIR": "/tmp/uv-tools",
+        "T3_HOOK_PYTHON": "/tmp/python",
+        "T3_HOOK_STATE_DIR": "/tmp/hook-state",
+        "T3_SKILL_SEARCH_DIRS": "/tmp/skills",
+        "TEATREE_TERM_REGISTRY": "test-registry",
+    }
+
+    env = router_process_env(
+        {},
+        ambient={
+            "PATH": "/usr/bin",
+            **hook_env,
+            "T3_CONFIG_DB": "/control/db.sqlite3",
+            "T3_CONTROL_DB_DIR": "/control",
+            **_SECRETS,
+        },
+    )
+
+    assert {key: env[key] for key in hook_env} == hook_env
+    assert "T3_CONTROL_DB_DIR" not in env
+    assert "T3_CONFIG_DB" not in env
+    assert not _SECRETS.keys() & env.keys()
 
 
 def test_git_answers_a_github_credential_request_with_the_routed_token(tmp_path: Path) -> None:

@@ -12,11 +12,14 @@ run whose TARGET MOVED under it is parked FAILED too, once the sweep has queued 
 """
 
 from teatree.core.claim_liveness import RELEASED_CLAIM
+from teatree.core.forge_url import is_synthetic_ticket_url
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, FailureKind
 from teatree.core.models import Task, Ticket
 from teatree.core.models.phase_landing import phase_landing_evidence
+from teatree.core.models.task_repair_queries import ticket_phase_observations
+from teatree.core.repair_loop import max_phase_iterations
 
 #: Stamped onto ``execution_reason`` when a SUPERSEDED FAILED task is retired (its
 #: phase output the ticket's FSM already reached). It is marked COMPLETED and drops
@@ -42,6 +45,17 @@ DEAD_REVIEW_STAMP = "[dead-review-retired]"
 SUPERSEDED_HEAD_STAMP = "[head-superseded-parked]"
 #: Kinds whose run failed because its target moved under it: a PR head past the review, a base past the plan.
 MOVED_TARGET_KINDS = frozenset({FailureKind.HEAD_SUPERSEDED, FailureKind.PLAN_STALE})
+
+
+def stale_plan_halt_reason(task: Task) -> str | None:
+    if is_synthetic_ticket_url(task.ticket.issue_url):
+        return None
+    stale_count = sum(
+        attempt.error.startswith(PLAN_STALE_PREFIX) for attempt in ticket_phase_observations(task.ticket_id, task.phase)
+    )
+    if stale_count < max_phase_iterations():
+        return None
+    return f"phase {normalize_phase(task.phase)!r} on ticket {task.ticket_id} reached {stale_count} stale-plan failures"
 
 
 def retire_if_dead_artifact(task: Task) -> bool:
@@ -96,7 +110,7 @@ def _has_live_successor(task: Task) -> bool:
     doomed phase still hits its budget through the successor's own row.
     """
     return Task.objects.filter(
-        ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+        ticket_id=task.ticket_id,
         phase__in=phase_spellings(normalize_phase(task.phase)),
         status__in=Task.Status.active(),
         pk__gt=task.pk,
@@ -220,4 +234,5 @@ __all__ = [
     "park_if_live_successor",
     "park_moved_target",
     "retire_if_dead_artifact",
+    "stale_plan_halt_reason",
 ]

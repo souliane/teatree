@@ -36,8 +36,8 @@ from pathlib import Path
 
 import teatree.loops as _loops_pkg
 from teatree.core.modelkit import phases
-from teatree.loop.dispatch import conditional_dispatch_kinds
-from teatree.loop.dispatch_tables import AGENT_BY_KIND, MECHANICAL_BY_KIND
+from teatree.loop.dispatch import agent_dispatching_kinds
+from teatree.loop.dispatch_tables import MECHANICAL_BY_KIND
 from teatree.loop.mechanical import HANDLERS
 from teatree.loops.base import MiniLoop
 
@@ -86,12 +86,6 @@ class _SourceEvidence:
 def unclassified_loops(loops: Iterable[MiniLoop]) -> tuple[str, ...]:
     """Every loop that declares no reach set or no determinism, in registry order."""
     return tuple(loop.name for loop in loops if loop.declared_reach is None or loop.determinism is None)
-
-
-def agent_dispatching_kinds() -> frozenset[str]:
-    """Every ``ScanSignal.kind`` whose dispatch can put an agent on the other end."""
-    mechanical = frozenset(kind for kind, (action, _zone) in MECHANICAL_BY_KIND.items() if action == "agent")
-    return frozenset(AGENT_BY_KIND) | mechanical | conditional_dispatch_kinds()
 
 
 def agent_dispatched_phases() -> frozenset[str]:

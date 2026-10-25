@@ -37,6 +37,10 @@ Edit the source command, not this file.
 
 Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 
+## `cost_profile`
+
+Profile real dispatches: read share, resume-context cost and addressable upper bounds.
+
 ## `db`
 
 | Subcommand | Description |
@@ -93,6 +97,7 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | `run` | Run one consolidation pass NOW (manual escape hatch; ignores cadence) |
 | `tick` | Run one consolidation pass IF the dream cadence has elapsed (cron entry) |
 | `compliance` | Print the latest instruction-compliance snapshot — read-only (#2663) |
+| `funnel` | Report the daily dream funnel and whether a recurring question class has stopped |
 | `gap-coverage` | Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap |
 | `gap-disposition` | Record a folded dream gap's ADDRESS (with its citation) or reasoned REJECT on its host |
 
@@ -225,13 +230,15 @@ Group root — forces sub-commands to be addressed by name.
 
 ## `live`
 
-Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.
+Live sessions: list and inspect are passive; steer and follow-up are active.
 
 | Subcommand | Description |
 | --- | --- |
 | `inspect` | Show one live session's state, tool and progress without contacting the agent |
 | `steer` | Send input into a running agent's current turn and print its receipt (active) |
+| `pause` | Interrupt a running task and park it for an operator resume |
 | `list` | List every live session on this host's workers (passive) |
+| `follow-up` | Start one new turn in a still-open idle session and print its receipt (active) |
 
 ## `loop_directive_set`
 
@@ -405,6 +412,7 @@ Pull-request delivery: ship-gated creation, the pending-PR sweep, and test-plan 
 | `merge` | REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4 keystone |
 | `sweep` | List all open PRs/MRs authored by the current user across the forge |
 | `discharge-pending` | Drop a deferred-PR obligation the drain can never discharge |
+| `request-void` | Ask the owner on Slack to approve a merge correction |
 | `void-merge` | Void a merge the forge records but whose content never reached the default branch |
 | `ensure-pr` | Create a PR for an orphan branch (idempotent, no-op when a PR already exists) |
 | `check-gates` | Check whether session gates allow a phase transition (#1118: cross-session) |
@@ -532,6 +540,14 @@ Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
 
 Signal *pid* only if it maps to a dead target AND is confirmed non-live.
 
+## `secrets`
+
+| Subcommand | Description |
+| --- | --- |
+| `status` | Report key health without disclosing stored values |
+| `ls` | List sealed row names without decrypting values |
+| `import-pass` | Classify password-store names without copying their values |
+
 ## `seed_loops`
 
 Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).
@@ -549,7 +565,7 @@ Session-lifecycle operations.
 
 ## `settings_compare`
 
-Render the same settings comparison as the dashboard, including peers and saved snapshots.
+What differs between this box and its peers, and whether it can be read as drift. Exits non-zero only when fewer than two instances answered. A completed comparison succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run.
 
 ## `shipped_seed`
 
@@ -564,7 +580,7 @@ Audit the shipped loop/preset/schedule seed set, and delete from it with a typed
 
 ## `signals`
 
-Print the five factory signals over the trailing window vs its baseline.
+Print the factory signals over the trailing window vs its baseline.
 
 ## `snapshot_settings_defaults`
 
@@ -630,7 +646,9 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `sweep-finish` | Close a sweep run, persisting its changed-ticket count — zero included |
 | `sweep-trend` | Report the changed-ticket count series, the zero streak, and any unfinished runs |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
+| `critic-record` | Record a merge critic envelope for the ticket's dispatched head |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
+| `return-gaps` | Return guarded legacy gap members to the dream umbrella |
 | `fold-check` | Prove a host body still carries the folded member's substance (#4344) |
 | `attach-gaps` | Fold pending dream gaps into an existing host ticket, proved on the forge |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
@@ -640,6 +658,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `skip-planning` | Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED |
 | `plan-reconcile-inflight` | Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added |
 | `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
+| `rubric-waive` | Waive one rubric criterion by its text hash; an owner identity and a reason are required |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
 | `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |
 | `dod-override` | Record the DoD local-E2E gate escape hatch for a ticket (#88) |
@@ -716,6 +735,7 @@ Per-worktree FSM operations.
 | Subcommand | Description |
 | --- | --- |
 | `occupancy` | Show every checkout a live agent currently holds (#3952) |
+| `attest` | Record the present checkout state after the owner has inspected it |
 | `adopt` | Register an existing on-disk checkout as a ``Worktree`` row |
 | `provision` | Run DB import + env cache + direnv + prek + overlay setup steps for one worktree |
 | `start` | Boot ``docker compose up`` for one worktree |

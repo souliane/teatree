@@ -7,7 +7,7 @@ is unconditional and is bound to a digest of the exact text the write will land.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 
 from teatree.backends.notion.errors import NotionBlockChangedError, NotionWriteNotApprovedError
 from teatree.core.gates import exact_approval
@@ -22,7 +22,7 @@ def approval_hint(target: str, action: str) -> dict[str, str]:
 
 
 @contextlib.contextmanager
-def spent_approval(target: str, action: str) -> Iterator[None]:
+def spent_approval(target: str, action: str) -> Generator[None]:
     try:
         with exact_approval.spent_approval(target, action):
             yield

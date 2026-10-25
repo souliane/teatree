@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
+from teatree.core import task_dispatch
 from teatree.core.issue_title import fetch_issue_title
 from teatree.core.merge.refusal_settlement import connect_merge_refusal_settlement
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
@@ -13,6 +14,7 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.worktree import Worktree
+from teatree.core.models.worktree_occupancy import checkout_capacity_opened
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.reaction_dispatch import get_reaction_publisher
@@ -308,6 +310,10 @@ def _auto_enqueue_task(
         logger.exception("Admission walk after saving task %s failed; the queue drain retries it", instance.pk)
 
 
+def _admit_after_checkout_capacity(**_kwargs: object) -> None:
+    transaction.on_commit(lambda: task_dispatch.admit_waiting_tasks(at="checkout capacity"), robust=True)
+
+
 def _close_session_on_terminal_task(
     sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Task,
@@ -478,6 +484,7 @@ def register_signals() -> None:
         dispatch_uid="ticket_completion_release_issue_markers",
     )
     post_save.connect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+    checkout_capacity_opened.connect(_admit_after_checkout_capacity, dispatch_uid="checkout_capacity_admission")
     post_save.connect(_close_session_on_terminal_task, sender=Task, dispatch_uid="close_session_on_terminal_task")
     post_save.connect(_stamp_issue_title_on_create, sender=Ticket, dispatch_uid="ticket_stamp_issue_title")
     connect_merge_refusal_settlement()

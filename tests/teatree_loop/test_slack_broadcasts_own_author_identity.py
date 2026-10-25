@@ -27,6 +27,7 @@ from teatree.core.models import ScannedBroadcast
 from teatree.loop.scanner_factories import _slack_broadcasts_scanner_for
 from teatree.loop.scanner_factory_broadcast_claims import _own_author_identity
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.slack_broadcast_mr_classifier import ForgeMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import MrState
 from teatree.types import RawAPIDict
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
@@ -95,13 +96,11 @@ class OwnAuthorBroadcastIdentityTests(TestCase):
     """
 
     def _build_and_scan(self, backend: OverlayBackends) -> list[ScanSignal]:
-        from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier  # noqa: PLC0415
-
-        def _classify(_self: GlabGhMrStateClassifier, urls: list[str]) -> list[MrState]:
+        def _classify(_self: ForgeMrStateClassifier, urls: list[str]) -> list[MrState]:
             return [MrState(url=url, merged=False, approved=False, author_username=OWN_AUTHOR) for url in urls]
 
         with (
-            patch.object(GlabGhMrStateClassifier, "__call__", _classify),
+            patch.object(ForgeMrStateClassifier, "__call__", _classify),
             patch("teatree.backends.loader.get_code_host_for_url", return_value=_FreeHost()),
         ):
             scanner = _slack_broadcasts_scanner_for(backend)
@@ -139,13 +138,11 @@ class OwnAuthorBroadcastIdentityTests(TestCase):
             identities=("someone.else",),
         )
 
-        from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier  # noqa: PLC0415
-
-        def _classify(_self: GlabGhMrStateClassifier, urls: list[str]) -> list[MrState]:
+        def _classify(_self: ForgeMrStateClassifier, urls: list[str]) -> list[MrState]:
             return [MrState(url=url, merged=False, approved=False, author_username=OWN_AUTHOR) for url in urls]
 
         with (
-            patch.object(GlabGhMrStateClassifier, "__call__", _classify),
+            patch.object(ForgeMrStateClassifier, "__call__", _classify),
             patch("teatree.backends.loader.get_code_host_for_url", return_value=_FreeHost()),
         ):
             scanner = _slack_broadcasts_scanner_for(backend)

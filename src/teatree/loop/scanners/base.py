@@ -9,16 +9,24 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+import httpx
+
+from teatree.backends.github.api import run_gh_unchecked
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.types import ScannerError, ScannerErrorClass
+from teatree.utils.run import CompletedProcess
 
 __all__ = [
+    "PartialScanError",
     "ScanSignal",
     "Scanner",
     "ScannerError",
     "ScannerErrorClass",
     "SignalPayload",
     "classify_gh_stderr",
+    "classify_http_error",
     "hours_since",
+    "run_gh",
 ]
 
 type SignalPayload = dict[str, Any]
@@ -67,6 +75,28 @@ def classify_gh_stderr(stderr: str) -> ScannerErrorClass:
     return ScannerErrorClass.UNKNOWN
 
 
+def classify_http_error(exc: Exception) -> ScannerErrorClass:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
+            return ScannerErrorClass.AUTH
+        if status == httpx.codes.TOO_MANY_REQUESTS:
+            return ScannerErrorClass.RATE_LIMIT
+        return ScannerErrorClass.UNKNOWN
+    if isinstance(exc, httpx.HTTPError):
+        return ScannerErrorClass.NETWORK
+    return ScannerErrorClass.UNKNOWN
+
+
+def run_gh(argv: list[str], *, resolution: ForgeTokenResolution) -> CompletedProcess[str]:
+    if resolution.state is not ForgeTokenState.TOKEN or not resolution.token:
+        detail = f"{resolution.setting} is {resolution.state.value}: {resolution.detail}"
+        return CompletedProcess(
+            args=argv, returncode=4, stdout="", stderr=f"{detail}; refusing ambient gh authentication"
+        )
+    return run_gh_unchecked(argv, token=resolution.token)
+
+
 @dataclass(frozen=True, slots=True)
 class ScanSignal:
     """One observation surfaced by a scanner during a tick.
@@ -80,6 +110,14 @@ class ScanSignal:
     kind: str
     summary: str
     payload: SignalPayload = field(default_factory=dict)
+
+
+class PartialScanError(ScannerError):
+    """A scanner failure that still hands over the signals read before it failed."""
+
+    def __init__(self, *, scanner: str, detail: str, signals: list[ScanSignal]) -> None:
+        super().__init__(scanner=scanner, error_class=ScannerErrorClass.UNKNOWN, detail=detail)
+        self.signals = signals
 
 
 @runtime_checkable

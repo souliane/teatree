@@ -24,6 +24,7 @@ from pathlib import Path
 DISPOSABLE_ROOTS_ENV = "TEATREE_DISPOSABLE_CHECKOUT_ROOTS"
 
 _DEFAULT_ROOTS: tuple[str, ...] = ("/tmp", "/var/tmp")  # noqa: S108 — naming fixed roots, not creating temp files
+DEFAULT_ROOTS = _DEFAULT_ROOTS
 
 
 def disposable_roots() -> tuple[Path, ...]:
@@ -49,4 +50,4 @@ def is_disposable_checkout(path: str | Path) -> bool:
     return any(resolved != root and resolved.is_relative_to(root) for root in disposable_roots())
 
 
-__all__ = ["DISPOSABLE_ROOTS_ENV", "disposable_roots", "is_disposable_checkout"]
+__all__ = ["DEFAULT_ROOTS", "DISPOSABLE_ROOTS_ENV", "disposable_roots", "is_disposable_checkout"]

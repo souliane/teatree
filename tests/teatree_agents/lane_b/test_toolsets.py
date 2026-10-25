@@ -18,7 +18,7 @@ import pytest
 from django.test import TestCase
 from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRunResult
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets.abstract import AbstractToolset
 from pydantic_ai.toolsets.combined import CombinedToolset
@@ -107,9 +107,12 @@ class TestHardDenyWithinAssembledToolsets:
         )
         result = _run(_agent(config, model), "go")
         assert result.output == "understood, i will not"
-        # The refusal surfaced as a RetryPromptPart carrying the deny reason.
+        # The refusal stays visible to the model as a retried tool return.
         retries = [
-            p for m in result.all_messages() for p in getattr(m, "parts", []) if type(p).__name__ == "RetryPromptPart"
+            p
+            for m in result.all_messages()
+            for p in getattr(m, "parts", [])
+            if isinstance(p, ToolReturnPart) and p.outcome == "retried"
         ]
         assert any("BLOCKED" in str(p.content) for p in retries)
 
@@ -122,8 +125,16 @@ class TestHardDenyWithinAssembledToolsets:
         result = _run(_agent(config, model), "go")
         assert result.output == "done"
         assert not [
-            p for m in result.all_messages() for p in getattr(m, "parts", []) if type(p).__name__ == "RetryPromptPart"
+            p
+            for m in result.all_messages()
+            for p in getattr(m, "parts", [])
+            if isinstance(p, ToolReturnPart) and p.outcome == "retried"
         ]
+        assert any(
+            isinstance(p, ToolReturnPart) and p.outcome == "success"
+            for m in result.all_messages()
+            for p in getattr(m, "parts", [])
+        )
 
     def test_safe_shell_command_runs(self, tmp_path: Path) -> None:
         (tmp_path / "marker").write_text("")
@@ -144,7 +155,18 @@ class TestMcpHonoursEmptyPhaseAllowance:
 
     def test_the_mounted_server_matches_the_phase_grant(self) -> None:
         for phase, serve_flags in (
-            ("reviewing", ["--read-only"]),
+            (
+                "reviewing",
+                [
+                    "--read-only",
+                    "--allow-write",
+                    "agent_mailbox_inbox",
+                    "--allow-write",
+                    "agent_mailbox_send",
+                    "--allow-write",
+                    "agent_mailbox_wait",
+                ],
+            ),
             ("requesting_review", ["--read-only", "--allow-write", "review_request_post"]),
             ("shipping", []),
             ("coding", []),
@@ -183,7 +205,7 @@ class TestMaxDenialsThreadedFromConfig:
         assert gated.max_denials == 3
 
 
-_SKILL_PATH_RE = re.compile(r"(?<![\w.-])skills/[a-z0-9_-]+/(?:SKILL\.md|references/[A-Za-z0-9_.-]+\.md)")
+_SKILL_PATH_RE = re.compile(r"(?<![\w.-])skills/[a-z0-9_-]+/(?:SKILL\.md|RULES\.md|references/[A-Za-z0-9_.-]+\.md)")
 _QUARANTINED_PHASES = ("short_describe",)
 
 
@@ -222,8 +244,8 @@ def _read_one(config: LaneBToolConfig, path: str) -> tuple[list[str], list[str]]
     model = _scripted(_call("Read", {"path": path}), _text("done"))
     result = _run(_agent(config, model), "go")
     parts = [p for m in result.all_messages() for p in getattr(m, "parts", [])]
-    returns = [str(p.content) for p in parts if type(p).__name__ == "ToolReturnPart"]
-    retries = [str(p.content) for p in parts if type(p).__name__ == "RetryPromptPart"]
+    returns = [str(p.content) for p in parts if isinstance(p, ToolReturnPart) and p.outcome == "success"]
+    retries = [str(p.content) for p in parts if isinstance(p, ToolReturnPart) and p.outcome == "retried"]
     return returns, retries
 
 
@@ -276,6 +298,7 @@ class TestSkillFilesTheContextNamesAreReadable(TestCase):
     def test_every_named_skill_file_reads_back_with_and_without_a_worktree(self) -> None:
         phases = self._reading_phases()
         assert phases, "no phase names a skill file — the path extraction went blind"
+        assert "skills/rules/RULES.md" in phases["coding"]
         worktree = self.scratch / "not-a-teatree-checkout"
         worktree.mkdir()
         unreadable: list[str] = []

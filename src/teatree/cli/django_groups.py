@@ -8,6 +8,15 @@ a focused module; the group type itself is :class:`~teatree.cli.django_group.Dja
 from teatree.cli.django_group import DjangoGroup
 
 DJANGO_GROUPS: dict[str, DjangoGroup] = {
+    "secrets": DjangoGroup(
+        "Inspect sealed credentials and plan a password-store import.",
+        [
+            ("status", "Show sealed-store key health and key IDs."),
+            ("ls", "List sealed entry names."),
+            ("import-pass", "Classify password-store entries without copying values."),
+        ],
+        core_dispatch=True,
+    ),
     "worktree": DjangoGroup(
         "Per-worktree FSM operations.",
         [
@@ -23,6 +32,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("occupancy", "Show every checkout a live agent currently holds."),
             ("claim-occupancy", "Claim a checkout for a hand-driven lane, refusing if an agent already holds it."),
             ("release-occupancy", "Hand a checkout back, naming whose claim was freed."),
+            ("attest", "Record the checkout state after the owner has inspected it."),
             ("adopt", "Register an existing on-disk checkout as a Worktree row."),
         ],
     ),
@@ -149,6 +159,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("ensure-pr", "Create a PR for an orphan branch (idempotent)."),
             ("discharge-pending", "Drop a deferred-PR obligation the drain can never discharge."),
             ("void-merge", "Void a merge whose content never reached the default branch (a human at a terminal)."),
+            ("request-void", "Ask the owner on Slack to correct a merge whose content is absent."),
             ("check-gates", "Check whether session gates allow a phase transition."),
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),
@@ -216,11 +227,13 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
     ),
     "live": DjangoGroup(
-        "Sessions running now on this host's workers: inspect them passively, steer them actively.",
+        "Sessions on this host's workers: inspect passively; steer, follow up or pause actively.",
         [
             ("list", "List every live session on this host's workers (passive)."),
             ("inspect", "Show one live session's state, tool and progress without contacting the agent."),
             ("steer", "Send input into a running agent's current turn and print its receipt (active)."),
+            ("follow-up", "Start one new turn in an idle agent session and print its receipt (active)."),
+            ("pause", "Interrupt a running task and park it for an operator resume (active)."),
         ],
         # The broker sockets are this host's runtime state, not an overlay's: core runtime only.
         core_dispatch=True,
@@ -341,6 +354,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("expedite", "Flag a ticket as an expedite/release-blocker."),
             ("attachments", "Print (and with --fetch download) a ticket's referenced attachments."),
             ("rubric-set", "Restate a ticket's rubric from explicit JSON criteria (#2241)."),
+            ("rubric-waive", "Record an owner's waiver of one rubric criterion."),
             ("rubric-grade", "Record a verifier's per-criterion PASS/FAIL on the rubric (#2241)."),
         ],
         core_dispatch=True,

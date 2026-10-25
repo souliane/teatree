@@ -40,7 +40,10 @@ from django_typer.management import TyperCommand, command
 from teatree.core.management.commands._dream_gap_commands import DreamGapCommands
 from teatree.core.management.commands._dream_report import TailTimings, _ResultFragments
 from teatree.core.models.dream_gap_ledger import dream_umbrella_url
+from teatree.loops.dream.funnel import record_funnel
 from teatree.loops.dream.pass_config import PassBudget
+from teatree.loops.dream.stranded_hosts import release_stranded_hosts
+from teatree.token_report import local_eval_reserve_decision
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
@@ -411,6 +414,9 @@ class Command(DreamGapCommands, TyperCommand):
             from teatree.loops.dream import promote  # noqa: PLC0415 — deferred: keeps command import light
             from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415 — lazy command import
 
+            reserve = local_eval_reserve_decision()
+            if not reserve.met:
+                return f"; eval promotion parked: {reserve.reason}{self._derive_evals(dry_run=dry_run)}"
             validator = promote.build_live_validator()
             outcomes = promote.promote_proposals_file(
                 _default_proposals_path(), dry_run=dry_run, live_gate=promote.LiveGate(validator=validator)
@@ -456,7 +462,7 @@ class Command(DreamGapCommands, TyperCommand):
 
         Runs unconditionally after every promoting phase has collected its gaps into
         *batch* — the batch may hold compliance/automation-ask gaps even when
-        ``memory_promote`` itself is off, so this is not gated on any one phase's
+        ``dream_memory_promote`` itself is off, so this is not gated on any one phase's
         toggle. A queued gap nudges the backlog sweep rather than waiting for its daily
         fire. A failure degrades to a WARN clause, never crashing the pass that already
         stamped its other work.
@@ -467,9 +473,14 @@ class Command(DreamGapCommands, TyperCommand):
         try:
             umbrella = dream_umbrella_url()
             outcome = batch_promote.promote_batch(umbrella_url=umbrella, batch=batch, dry_run=dry_run)
-            nudged = outcome.queued and nudge_for_dream_gaps()
             host, _repo = self._teatree_backlog_host()
             reconciled = [] if dry_run or host is None else batch_promote.reconcile_batches(host, umbrella_url=umbrella)
+            released = None if dry_run else release_stranded_hosts(umbrella_url=umbrella)
+            nudged = (
+                bool(outcome.queued or (released is not None and released.returned_gaps)) and nudge_for_dream_gaps()
+            )
+            if released is not None:
+                record_funnel(umbrella_url=umbrella, batch=batch)
         except Exception as exc:  # noqa: BLE001 — a batch-promotion failure degrades to a WARN clause
             return batch.summary + f"; WARN batch promotion raised: {type(exc).__name__}: {exc}"
         summary = batch.summary
@@ -481,6 +492,13 @@ class Command(DreamGapCommands, TyperCommand):
             summary += f"; WARN {outcome.reason}"
         if reconciled:
             summary += f", reconciled {len(reconciled)} batch ticket(s)"
+        if released is not None:
+            summary += (
+                f"; returned {released.returned_gaps} gap(s) from {released.released_hosts} stranded host(s), "
+                f"held {released.held_hosts} host(s)"
+            )
+            if released.held_reasons:
+                summary += ": " + ", ".join(f"{pk} {reason}" for pk, reason in released.held_reasons)
         return summary
 
     def _gap_phases(self) -> "GapPromotionPhases":

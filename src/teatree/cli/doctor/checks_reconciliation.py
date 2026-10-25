@@ -87,7 +87,7 @@ MAX_TASK_RESULT_ROWS = 100_000
 def _check_park_spin(now: dt.datetime | None = None) -> ReconciliationFinding:
     """ALARM when limit-park OBSERVATIONS in 24h exceed the park-spin threshold.
 
-    Query: ``TaskAttempt`` rows whose ``error`` carries ``LIMIT_PARKED_PREFIX``,
+    Query: ``TaskAttempt.objects.parks()`` (limit and checkout parks),
     ``started_at`` within 24h. Threshold: :data:`MAX_PARK_ROWS_PER_DAY`.
 
     Counts observations, not rows: an unchanged park repeated by a poller folds into one
@@ -99,10 +99,9 @@ def _check_park_spin(now: dt.datetime | None = None) -> ReconciliationFinding:
         from django.db.models import Sum  # noqa: PLC0415 — deferred: keeps this module Django-free at import
 
         from teatree.core.models import TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
-        from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX  # noqa: PLC0415 — ORM-adjacent constant
 
         cutoff = _now(now) - _DAY
-        parked = TaskAttempt.objects.filter(error__startswith=LIMIT_PARKED_PREFIX, started_at__gte=cutoff)
+        parked = TaskAttempt.objects.parks().filter(started_at__gte=cutoff)
         count = parked.count() + (parked.aggregate(repeats=Sum("park_repeats"))["repeats"] or 0)
     except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
         return _degraded(check_id, exc)
@@ -350,7 +349,7 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
 
     Query: ``TaskAttempt`` rows with ``outcome=SUCCESS`` and ``started_at`` within
     24h, grouped by ``task_id``, excluding a
-    :data:`~teatree.agents.runner_interruption.NOOP_OVER_COMPLETED_MARKER` recovery
+    :data:`~teatree.core.models.task_attempt.NOOP_OVER_COMPLETED_MARKER` recovery
     attempt. That marker is stamped when a rival's interrupted run finds its row
     already COMPLETED (#4100/#4834) — proof the claim CAS held (only one run's
     result landed), not a second success; counting it toward "this task ran twice"
@@ -361,10 +360,10 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
     """
     check_id = "duplicate_execution_count"
     try:
-        from teatree.agents.runner_interruption import (  # noqa: PLC0415 — deferred: agents import at call time
+        from teatree.core.models import (  # noqa: PLC0415 — ORM import needs the app registry
             NOOP_OVER_COMPLETED_MARKER,
+            TaskAttempt,
         )
-        from teatree.core.models import TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
 
         cutoff = _now(now) - _DAY
         successes_by_task: dict[int, int] = {}

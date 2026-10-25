@@ -87,20 +87,6 @@ def _is_url(text: object) -> bool:
     return isinstance(text, str) and text.startswith(("http://", "https://"))
 
 
-def _is_slack_user_reply(action: DispatchAction, payload: Payload) -> bool:
-    """True when *action* originated from a ``slack.user_reply`` scan signal.
-
-    The scanner emits ``summary=f"Slack user reply {ts}: {text[:80]}"`` plus
-    a payload carrying ``ts``/``text``/``channel``/``user_id``. The
-    statusline never surfaces these (the reactive Slack-answer loop owns
-    replies), so the classifier drops them before they hit the ``c.other``
-    catch-all and leak verbatim into the red zone (#1113 Defect 2).
-    """
-    if not action.detail.startswith("Slack user reply "):
-        return False
-    return isinstance(payload.get("ts"), str) and isinstance(payload.get("text"), str)
-
-
 def _ticket_number_from_url(url: str) -> str:
     match = re.search(r"(\d+)(?:/?)$", url)
     return match.group(1) if match else ""
@@ -355,13 +341,6 @@ def _classify_actions(actions: list[DispatchAction], identity_aliases: IdentityA
             continue
         payload = action.payload if isinstance(action.payload, dict) else {}
         overlay = _str_field(payload, "overlay")
-        if _is_slack_user_reply(action, payload):
-            # #1113 Defect 2 defense-in-depth: raw Slack reply text + ts must
-            # never reach ``c.other`` and render verbatim, even if the
-            # dispatcher regresses. The reply is owned by the reactive
-            # Slack-answer loop (``teatree.loop.slack_answer``); the
-            # statusline never surfaces it.
-            continue
         if action.zone == "action_needed" and _is_orphaned_task(payload):
             orphaned_counts[overlay] = orphaned_counts.get(overlay, 0) + 1
             continue

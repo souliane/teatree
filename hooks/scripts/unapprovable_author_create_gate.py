@@ -58,7 +58,7 @@ def _gate_enabled() -> bool:
     """Whether the gate is enabled (default True); an explicit ``false`` is the kill-switch."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting(GATE_SETTING, default=True)
+    return _teatree_bool_setting(GATE_SETTING)
 
 
 def raw_create_shape_reason(command: str) -> str | None:

@@ -7,6 +7,7 @@ read. Re-exported from ``teatree.agents.runner`` so ``from teatree.agents.runner
 _build_options`` stays valid.
 """
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -17,6 +18,7 @@ from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConf
 from teatree.agents import permission_modes
 from teatree.agents.compaction_guard import CompactionGuard, with_compaction_off
 from teatree.agents.envelope_stop_gate import EnvelopeStopGate, envelope_stop_hooks
+from teatree.agents.harness_registry import resolve_harness_spec
 from teatree.agents.model_tiering import (
     SpawnModelSelection,
     model_supports_thinking,
@@ -155,7 +157,7 @@ def _build_options(
     """
     overrides = overrides or SpawnOverrides()
     cwd = _resolve_task_cwd(task)
-    add_dirs = [cwd] if cwd else []
+    add_dirs: list[str | Path] = [cwd] if cwd else []
     if overrides.handoff is not None:
         add_dirs.append(str(overrides.handoff.parent))
     if overrides.harness_name == "pydantic_ai":
@@ -181,6 +183,12 @@ def _build_options(
             )
         )
     )
+    advisor_model = get_effective_settings().agent_advisor_model.strip()
+    advisor_settings = (
+        json.dumps({"advisorModel": advisor_model})
+        if advisor_model and resolve_harness_spec(overrides.harness_name or "claude_sdk").capabilities.spawns_cli_child
+        else None
+    )
     options = ClaudeAgentOptions(
         # APPEND to the claude_code preset, never REPLACE it: a plain-str
         # system_prompt maps to --system-prompt (the deleted ``claude -p`` path
@@ -201,6 +209,7 @@ def _build_options(
             exclude_dynamic_sections=True,
         ),
         model=spawn_model or None,
+        settings=advisor_settings,
         # Capacity-exhaustion degrade: when the spawn model's pool is exhausted the
         # SDK continues for a turn on the next-cheaper catalog rung rather than
         # parking the task (claude-agent-sdk ``fallback_model``). ``None`` when the
@@ -297,7 +306,7 @@ def _wire_teatree_mcp_server(options: ClaudeAgentOptions, *, phase: str) -> None
     sub-agent definition — so the shipped ``.mcp.json`` alone never gives the
     dispatched coder/reviewer/shipper the ``mcp__teatree__*`` tools; they fall back
     to shelling out to the ``t3`` CLI. The headless dispatch owns its options, so it
-    wires the server explicitly here. The launch command mirrors ``.mcp.json``
+    wires the server explicitly here. The headless launch uses the same base command
     (:mod:`teatree.core.mcp_registration` is the single source of truth), plus
     the flags *phase* launches it with (``--read-only`` without ``mcp_write``).
     """

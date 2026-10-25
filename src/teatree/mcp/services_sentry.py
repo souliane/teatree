@@ -14,7 +14,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-import httpx
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -29,15 +28,6 @@ if TYPE_CHECKING:
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
-
-INSTRUCTIONS = (
-    "- sentry_top_issues(project, limit): the most frequent unresolved Sentry "
-    "issues for a project.\n"
-    "- sentry_issue_get(issue_id): one Sentry issue's summary.\n"
-    "- sentry_issue_events(issue_id, limit): recent events for one issue.\n"
-    "- sentry_projects(): the org's Sentry projects.\n"
-    "- sentry_issue_resolve(issue_id, forge, repo, pr_iid): resolve only after the named fixing PR is live-merged."
-)
 
 
 def _client() -> "SentryIssueClient":
@@ -80,7 +70,7 @@ def _names_short_id(body: str, short_id: object) -> bool:
 async def _read[T](operation: Callable[[], T]) -> T:
     try:
         return await sync_to_async(operation, thread_sensitive=True)()
-    except httpx.HTTPError as exc:
+    except Exception as exc:
         raise ToolError(str(exc)) from exc
 
 
@@ -143,7 +133,9 @@ async def _sentry_issue_resolve(issue_id: str, forge: str, repo: str, pr_iid: in
 
     try:
         return await sync_to_async(_resolve, thread_sensitive=True)()
-    except (httpx.HTTPError, RuntimeError) as exc:
+    except ToolError:
+        raise
+    except Exception as exc:
         raise ToolError(str(exc)) from exc
 
 

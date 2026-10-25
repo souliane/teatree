@@ -18,9 +18,11 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.core import on_behalf_gate_recorded
+from teatree.core.intake.nit_priority import nit_ticket_extra
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.core.models import ImplementedIssueMarker, PullRequest, RedMrFixAttempt, Task, Ticket
-from teatree.loop.dispatch import DispatchAction
+from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
@@ -157,6 +159,11 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
         issue_url=issue_url,
         defaults={"overlay": _owning_overlay(issue_url, scan_tag), "role": Ticket.Role.AUTHOR},
     )
+    raw_issue = payload.get("raw")
+    if isinstance(raw_issue, dict):
+        updated_extra = nit_ticket_extra(ticket.extra, raw_issue)
+        if updated_extra != ticket.extra:
+            ticket.merge_extra(set_keys={"nit_follow_up": True})
     _reconcile_existing_overlay(ticket, created=created)
     _link_claimed_marker(ticket, issue_url)
     # #748: a loop/coordinator-built ticket must have a durable phase-
@@ -281,24 +288,46 @@ def _handle_red_card(action: DispatchAction) -> Task | None:
     )
 
 
-#: The remedy each un-mergeable condition's debugging task is scheduled for. The
-#: conflict wording carries the never-rebase constraint into the task itself, so the
-#: agent that picks it up does not have to re-derive it.
+_REVIEW_FINDINGS_BASE = (
+    "Auto-scheduled review-findings fix — read unresolved discussions on {pr_url} and "
+    "recorded findings via t3 <overlay> review findings <pr-url>, plus prior merge-critic "
+    "findings in the coding brief. IMPLEMENT them on that "
+    "PR's own branch, run the tests and push once. "
+)
+_VOICED_REVIEW_FINDINGS_REASON = _REVIEW_FINDINGS_BASE + (
+    "On GitLab, answer questions and push-backs in their own thread; "
+    "reply only after the push has landed with 'Fixed in <short sha>.' to each fixed thread and resolve it. "
+    "Skip any thread whose latest reply is already ours. "
+    "Answer, reply and resolve only via t3 review reply-to-discussion and t3 review resolve-discussion; "
+    "if either refuses, post nothing by another route. "
+    "On a GitHub PR there is no sanctioned reply/resolve path: fix and push only. "
+    "Never add a top-level comment or change reviewers; escalate only if the fix cannot proceed"
+)
+
+
+#: The review-findings entry is the quiet default; the conflict entry forbids rebasing.
 _FIX_REASON_BY_KIND: dict[str, str] = {
     RedMrFixAttempt.Kind.CI_RED: "Auto-scheduled red-MR fix — debug {pr_url}",
     RedMrFixAttempt.Kind.MERGE_CONFLICT: (
         "Auto-scheduled merge-conflict fix — resolve {pr_url} by MERGING the target branch "
         "into the head branch, never by rebasing"
     ),
-    # Our own MR, so the finding is IMPLEMENTED rather than commented on: read the
-    # unresolved discussions and the recorded review findings, fix them on the MR's
-    # own branch, run the tests, push. Escalate only if the fix cannot proceed.
-    RedMrFixAttempt.Kind.REVIEW_FINDINGS: (
-        "Auto-scheduled review-findings fix — read the unresolved review findings on {pr_url}, "
-        "IMPLEMENT them on that MR's own branch, run the tests and push. Never answer a finding "
-        "on our own MR with another comment; escalate only if the fix cannot proceed"
+    # A quiet fix must leave review threads unresolved as well as unanswered.
+    RedMrFixAttempt.Kind.REVIEW_FINDINGS: _REVIEW_FINDINGS_BASE
+    + (
+        "Never reply to or resolve a thread. "
+        "Never answer a finding on our own MR with another comment. "
+        "Escalate only if the fix cannot proceed"
     ),
 }
+
+
+def _fix_reason(payload: ActionPayload, pr_url: str) -> str:
+    fix_kind = fix_kind_of(payload)
+    reason = _FIX_REASON_BY_KIND[fix_kind]
+    if fix_kind == RedMrFixAttempt.Kind.REVIEW_FINDINGS and on_behalf_gate_recorded.owner_voice_permitted():
+        reason = _VOICED_REVIEW_FINDINGS_REASON
+    return reason.format(pr_url=pr_url)
 
 
 def _handle_debug(action: DispatchAction) -> Task | None:
@@ -309,8 +338,8 @@ def _handle_debug(action: DispatchAction) -> Task | None:
     the claim back and the next tick retries — the marker can no longer be burned
     before the fix ran (#1 blocker). A role conflict returns before the claim, so
     it is never touched. SIG-2 hardens WHAT is claimed (real sha / sentinel), and
-    the payload's ``fix_kind`` selects both the ledger slot and the remedy the task
-    is scheduled for.
+    the payload's ``fix_kind`` selects the ledger slot and remedy; the recorded
+    posture selects whether review findings permit in-thread replies.
     """
     payload = action.payload
     pr_url = str(payload.get("pr_url") or payload.get("url") or "")
@@ -334,7 +363,7 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             return None
         return ticket.schedule_implementing(
             "debugging",
-            reason=_FIX_REASON_BY_KIND[fix_kind_of(payload)].format(pr_url=pr_url),
+            reason=_fix_reason(payload, pr_url),
         )
 
 

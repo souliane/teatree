@@ -18,7 +18,7 @@ import itertools
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -29,7 +29,7 @@ from django.utils import timezone
 from teatree import answer_handback
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection, Session, Task, Ticket
-from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.task_handoff import RESUME_ANSWER_PREFIX
 from teatree.core.notify_question_drains import (
     drain_deferred_questions,
@@ -37,8 +37,9 @@ from teatree.core.notify_question_drains import (
     reask_escalated_questions,
 )
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
-from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
+from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
+from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
 from tests.factories import planned_ticket
@@ -47,6 +48,7 @@ from tests.factories import planned_ticket
 pytestmark = pytest.mark.django_db
 
 _CHANNEL = "D-user"
+_FREE_TEXT_CARD = replace(OWNER_DECISION["card"], options=())
 
 
 @dataclass
@@ -70,6 +72,10 @@ class FakeMessaging:
         _ = (channel, text, thread_ts)
         return {"ok": True}
 
+    def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        self.react_calls.append((channel, ts, emoji))
+        return {"ok": True}
+
     def update_message(self, *, channel: str, ts: str, text: str, blocks: list[RawAPIDict]) -> RawAPIDict:
         self.updates.append({"channel": channel, "ts": ts, "text": text, "blocks": blocks})
         return {"ok": True}
@@ -77,6 +83,10 @@ class FakeMessaging:
     def get_permalink(self, *, channel: str, ts: str) -> str:
         _ = (channel, ts)
         return "https://slack/permalink"
+
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        _ = (channel, thread_ts)
+        return []
 
 
 def _statement(text: str) -> InboundReading:
@@ -98,7 +108,7 @@ def _question(text: str, *, slack_ts: str, generation: int = 1) -> DeferredQuest
         generation=generation,
         slack_channel=_CHANNEL,
         slack_ts=slack_ts,
-        **OWNER_DECISION,
+        card=_FREE_TEXT_CARD,
     )
 
 
@@ -119,18 +129,28 @@ def _scan() -> FakeMessaging:
     return backend
 
 
+def _answer_cycle() -> FakeMessaging:
+    backend = FakeMessaging()
+    run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_statement)
+    return backend
+
+
 class TestThreadedReplyBindsItsOwnQuestion:
     def test_reply_threaded_under_the_older_mirror_answers_the_older_row(self) -> None:
         older = _question("Which DB host?", slack_ts="100.0", generation=1)
         newer = _question("Ship the release?", slack_ts="300.0", generation=2)
         _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
-        _scan()
+        _answer_cycle()
 
         older.refresh_from_db()
         newer.refresh_from_db()
         assert older.answer_text == "use postgres-1"
         assert older.resolved_via == "slack"
+        assert (
+            DeferredQuestionAudit.objects.get(question=older, action="answered").resolver_id
+            == f"slack:{OWNER_SLACK_ID}"
+        )
         assert newer.is_pending, "the newest question was resolved by a reply threaded under another"
 
     def test_threaded_reply_acks_and_claims_the_reply_row(self) -> None:
@@ -138,11 +158,11 @@ class TestThreadedReplyBindsItsOwnQuestion:
         _question("Ship the release?", slack_ts="300.0", generation=2)
         reply = _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
-        backend = _scan()
+        backend = _answer_cycle()
 
         reply.refresh_from_db()
         assert reply.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
-        assert backend.react_calls == [(_CHANNEL, "400.0", "white_check_mark")]
+        assert backend.react_calls == [(_CHANNEL, "400.0", "eyes"), (_CHANNEL, "400.0", "white_check_mark")]
 
 
 class TestExplicitIdPrefix:
@@ -234,7 +254,7 @@ class TestOptionDigitStillResolves:
         _question("Ship the release?", slack_ts="300.0", generation=2)
         _reply("2", slack_ts="400.0", thread_ts="100.0")
 
-        _scan()
+        _answer_cycle()
 
         older.refresh_from_db()
         assert older.answer_text == "No"
@@ -248,7 +268,7 @@ class TestADigitRepliesToACardQuestion:
         _question("Ship the release?", slack_ts="300.0", generation=2)
         _reply("2", slack_ts="400.0", thread_ts="100.0")
 
-        backend = _scan()
+        backend = _answer_cycle()
 
         card_row.refresh_from_db()
         assert card_row.answer_text == "No"
@@ -293,8 +313,8 @@ def _owner_is_mid_conversation(thread_root: str = "900.0") -> None:
 
 
 def _mirror_two_questions() -> tuple[DeferredQuestion, DeferredQuestion, dict[str, str]]:
-    older = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", generation=1, **OWNER_DECISION)
-    newer = DeferredQuestion.record("Ship the release?", session_id="s", run_id="r", generation=2, **OWNER_DECISION)
+    older = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", generation=1, card=_FREE_TEXT_CARD)
+    newer = DeferredQuestion.record("Ship the release?", session_id="s", run_id="r", generation=2, card=_FREE_TEXT_CARD)
     backend, roots = _threading_slack()
     with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
         drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
@@ -333,7 +353,7 @@ class TestMirroredQuestionOwnsItsThread:
         assert older.slack_ts < newer.slack_ts, "the older mirror must not also be the newest row"
 
         _reply("use postgres-1", slack_ts="2000.0", thread_ts=roots[older.slack_ts])
-        _scan()
+        _answer_cycle()
 
         older.refresh_from_db()
         newer.refresh_from_db()
@@ -345,15 +365,14 @@ class TestMirroredQuestionOwnsItsThread:
         older, newer, _roots = _mirror_two_questions()
 
         reply = _reply("use postgres-1", slack_ts="2000.0", thread_ts="900.0")
-        backend = _scan()
 
+        assert bind_reply(reply, reader=_statement, backend=FakeMessaging()) is None, (
+            "a reply in a thread hosting no question was guessed onto one"
+        )
         older.refresh_from_db()
         newer.refresh_from_db()
-        reply.refresh_from_db()
-        assert older.is_pending, "a reply in a thread hosting no question was guessed onto one"
-        assert newer.is_pending, "a reply in a thread hosting no question was guessed onto one"
-        assert reply.loop_replied_at is None, "the reply was ✅-acked for an answer nobody recorded"
-        assert backend.react_calls == []
+        assert older.is_pending
+        assert newer.is_pending
 
 
 def _recording_slack(first_ts: int, roots: dict[str, str]) -> tuple[MagicMock, list[str]]:
@@ -413,7 +432,7 @@ class TestAReplyToAReAskBumpBindsItsQuestion:
         # whatever thread root the fake says a reply to THAT message would carry.
         assert len(posted) == 2
         _reply("use postgres-1", slack_ts="9000.0", thread_ts=roots[posted[0]])
-        _scan()
+        _answer_cycle()
 
         older.refresh_from_db()
         newer.refresh_from_db()
@@ -441,7 +460,7 @@ class TestAResurfacedQuestionIsAnswerable:
 
         assert len(posted) == 2
         _reply("use postgres-1", slack_ts="9500.0", thread_ts=roots[posted[0]])
-        _scan()
+        _answer_cycle()
 
         older.refresh_from_db()
         newer.refresh_from_db()
@@ -450,7 +469,7 @@ class TestAResurfacedQuestionIsAnswerable:
 
     def test_an_unmirrored_row_is_resurfaced_at_root_and_stamped(self) -> None:
         _owner_is_mid_conversation()
-        row = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", **OWNER_DECISION)
+        row = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", card=_FREE_TEXT_CARD)
         roots: dict[str, str] = {}
         backend, posted = _recording_slack(8000, roots)
 
@@ -462,7 +481,7 @@ class TestAResurfacedQuestionIsAnswerable:
         assert roots[row.slack_ts] == row.slack_ts, "the stamped ts is mid-thread, so no reply can carry it"
 
         _reply("use postgres-1", slack_ts="9600.0", thread_ts=roots[row.slack_ts])
-        _scan()
+        _answer_cycle()
 
         row.refresh_from_db()
         assert row.answer_text == "use postgres-1"
@@ -484,13 +503,11 @@ class TestReplyThreadedUnderANonQuestion:
         only = _question("Which DB host?", slack_ts="100.0", generation=1)
         reply = _reply("fix all of them", slack_ts="400.0", thread_ts="250.0")
 
-        backend = _scan()
-
+        assert bind_reply(reply, reader=_statement, backend=FakeMessaging()) is None, (
+            "an instruction threaded under a non-question was bound as its answer"
+        )
         only.refresh_from_db()
-        reply.refresh_from_db()
-        assert only.is_pending, "an instruction threaded under a non-question was applied as its answer"
-        assert reply.loop_replied_at is None, "the instruction was claimed, so the cycle never dispatched it"
-        assert backend.react_calls == [], "the owner was ✅-acked for an answer nobody recorded"
+        assert only.is_pending
 
 
 class TestABoundAnswerSurvivesARefusedResume(TestCase):
@@ -504,6 +521,19 @@ class TestABoundAnswerSurvivesARefusedResume(TestCase):
         question.refresh_from_db()
         assert question.answer_text == "use postgres-1"
         assert not parked.child_tasks.exists()
+
+
+class TestCheckoutStopAnswer(TestCase):
+    def test_owner_answer_reaches_the_checkout_stop_consumer(self) -> None:
+        question = DeferredQuestion.objects.create(
+            question="Should the verified child writers be stopped?",
+            dedupe_marker="checkout-exit-held:7:session",
+        )
+        answered: list[DeferredQuestion] = []
+        assert apply_bound_answer(
+            BoundAnswer(question=question, answer="Stop verified writers"), on_answer=answered.append
+        )
+        assert [row.resolved_via for row in answered] == [DeferredQuestion.ResolvedVia.SLACK]
 
 
 class TestASlackAnswerResumesOnlyAnOwnerQuestion(TestCase):
@@ -545,7 +575,7 @@ class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):
         _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
         with self.captureOnCommitCallbacks(execute=True):
-            _scan()
+            _answer_cycle()
 
         assert answer_handback.collect("s") == [{"id": question.pk, "answer": "use postgres-1"}]
         question.refresh_from_db()
@@ -556,10 +586,11 @@ class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):
         _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
         with self.captureOnCommitCallbacks(execute=False):
-            _scan()
+            _answer_cycle()
 
         assert answer_handback.collect("s") == []
         question.refresh_from_db()
+        assert question.answer_text == "use postgres-1"
         assert question.applied_at is None
 
     def test_an_unreachable_mailbox_leaves_the_answer_recorded_and_unapplied(self) -> None:
@@ -569,7 +600,7 @@ class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):
         _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
 
         with patch.dict(os.environ, {"XDG_DATA_HOME": str(blocked)}), self.captureOnCommitCallbacks(execute=True):
-            _scan()
+            _answer_cycle()
 
         question.refresh_from_db()
         assert question.answer_text == "use postgres-1"

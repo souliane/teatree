@@ -45,7 +45,7 @@ def test_mutation_read_refuses_truncated_thread() -> None:
         _ = method, params, token
         return {"ok": True, "messages": [{"ts": "root"}], "response_metadata": {"next_cursor": "more"}}
 
-    with pytest.raises(SlackReadRefusedError, match="page_cap_exceeded"):
+    with pytest.raises(SlackReadRefusedError, match="page_cap_reached"):
         read_for_write(get, token="xoxp-user", channel="C1", ts="reply", thread_ts="root")
 
 

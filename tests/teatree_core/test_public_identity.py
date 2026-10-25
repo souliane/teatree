@@ -1,11 +1,11 @@
-"""#762 — scoped public-souliane noreply identity (source-fix + merge guard).
+"""#762 — scoped public-GitHub noreply identity (source-fix + merge guard).
 
 Single source of truth for: the GitHub-noreply regex (#730's pattern),
-public-`souliane/*` detection from a remote slug, and the canonical
+public-repo detection from a remote, and the canonical
 noreply identity. Reused by the worktree provisioner (source-fix:
 per-repo local git identity) and the merge-path guard (defense-in-depth
-against the server-side squash author mismatch). Strictly scoped — non-souliane /
-private remotes are NOT treated as public-souliane, so their legitimate
+against the server-side squash author mismatch). Strictly scoped — non-github /
+private remotes are NOT treated as public, so their legitimate
 real-identity attribution is untouched.
 """
 
@@ -21,6 +21,7 @@ from teatree.core.public_identity import (
     is_public_github_remote,
 )
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
+from teatree.utils.run import CommandFailedError
 
 
 class TestNoreplyPattern:
@@ -59,8 +60,6 @@ class TestPublicGithubVisibility:
 
     @staticmethod
     def _gh(visibility: str, *, rc: int = 0):
-        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
-
         def _fake(cmd: list[str], **_kw: object) -> object:
             if rc != 0:
                 raise CommandFailedError(cmd, rc, "", "not found")
@@ -95,10 +94,7 @@ class TestPublicGithubVisibility:
         with patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh("INTERNAL")):
             assert is_public_github_remote("git@github.com:acme-eng/internal-product.git") is False
 
-    def test_gh_unavailable_fails_safe_to_not_public(self) -> None:
-        # Visibility unconfirmable → do NOT proactively set noreply
-        # (leave inherited identity); the reactive hook also passes on
-        # unknown, so no hard-fail asymmetry is introduced.
+    def test_nonzero_gh_exit_is_not_public(self) -> None:
         with patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh("", rc=1)):
             assert is_public_github_remote("git@github.com:souliane/teatree.git") is False
 

@@ -18,11 +18,13 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
+from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import DeferredQuestion, PullRequest, Task, Ticket
+from teatree.core.models import DeferredQuestion, Mode, ModeOverride, PullRequest, Task, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
+from teatree.core.on_behalf_gate_recorded import owner_voice_permitted
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
 from teatree.core.tasks import execute_provision
 from teatree.loop.dispatch import DispatchAction, dispatch
@@ -31,6 +33,7 @@ from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
 from tests.factories import planned_ticket
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 
 def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
@@ -663,3 +666,129 @@ class TestEveryFixKindHasAScheduledRemedy(TestCase):
         # Each reason is formatted with ``pr_url``; one that drops the placeholder
         # would schedule a task naming no merge request.
         assert all("{pr_url}" in reason for reason in _FIX_REASON_BY_KIND.values())
+
+
+class TestReviewFindingsFixReasonFollowsThePosture(TestCase):
+    def _reason(
+        self,
+        *,
+        permitted: bool | None,
+        pr_id: int,
+        signal_kind: str = "my_pr.findings_to_fix",
+        fix_kind: str = RedMrFixAttempt.Kind.REVIEW_FINDINGS,
+    ) -> str:
+        pr_url = f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}"
+        planned_ticket(issue_url=pr_url, overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        if permitted is True:
+            seed_permitting_posture()
+        elif permitted is False:
+            seed_forbidding_posture()
+        signal = ScanSignal(
+            kind=signal_kind,
+            summary="Review findings need a fix",
+            payload={
+                "pr_url": pr_url,
+                "head_sha": f"{pr_id:040d}",
+                "fix_kind": fix_kind,
+                "overlay": "acme",
+            },
+        )
+        created = persist_agent_actions(_agent_actions(signal))
+        assert len(created) == 1
+        assert created[0].phase == "debugging"
+        return created[0].execution_reason
+
+    def test_a_permitting_posture_asks_for_thread_answers_one_push_and_resolution(self) -> None:
+        reason = self._reason(permitted=True, pr_id=201)
+        assert "https://gitlab.com/group/repo/-/merge_requests/201" in reason
+        assert "Never answer a finding on our own MR with another comment" not in reason
+        assert "push once" in reason
+        assert "Fixed in <short sha>." in reason
+        assert " and resolve it" in reason
+        assert "t3 review reply-to-discussion" in reason
+        assert "t3 review resolve-discussion" in reason
+        assert "answer questions and push-backs in their own thread" in reason
+        assert "if either refuses, post nothing by another route" in reason
+        assert "t3 <overlay> review findings <pr-url>" in reason
+        expected = (
+            "Skip any thread whose latest reply is already ours",
+            "reply only after the push has landed",
+            "On a GitHub PR there is no sanctioned reply/resolve path: fix and push only",
+            "Answer, reply and resolve only via",
+        )
+        assert not [text for text in expected if text not in reason]
+        assert "top-level comment" in reason
+        assert "change reviewers" in reason
+
+    def test_a_forbidding_posture_says_fix_and_push_only(self) -> None:
+        reason = self._reason(permitted=False, pr_id=202)
+        assert "IMPLEMENT" in reason
+        assert "push once" in reason
+        assert "Never reply to or resolve a thread" in reason
+        assert "answer questions" not in reason
+        assert "reply-to-discussion" not in reason
+        assert "resolve-discussion" not in reason
+        assert "Fixed in" not in reason
+        assert "Never answer a finding on our own MR with another comment" in reason
+        assert "Escalate only if the fix cannot proceed" in reason
+
+    def test_an_unresolvable_posture_says_fix_and_push_only(self) -> None:
+        ModeOverride.objects.all().delete()
+        Mode.objects.all().delete()
+        assert owner_voice_permitted() is False
+        assert egress_forbidden() is False
+        reason = self._reason(permitted=None, pr_id=203)
+        assert "push once" in reason
+        assert "Never reply to or resolve a thread" in reason
+        assert "reply-to-discussion" not in reason
+
+    def test_other_fix_kinds_keep_their_remedy_under_a_permitting_posture(self) -> None:
+        for pr_id, signal_kind, fix_kind in (
+            (204, "my_pr.failed", RedMrFixAttempt.Kind.CI_RED),
+            (205, "my_pr.conflicted", RedMrFixAttempt.Kind.MERGE_CONFLICT),
+        ):
+            reason = self._reason(permitted=True, pr_id=pr_id, signal_kind=signal_kind, fix_kind=fix_kind)
+            pr_url = f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}"
+            assert reason == _FIX_REASON_BY_KIND[fix_kind].format(pr_url=pr_url)
+
+    def test_posture_is_not_read_when_role_or_open_work_blocks_debugging(self) -> None:
+        for pr_id, role, open_work in (
+            (206, Ticket.Role.REVIEWER, False),
+            (207, Ticket.Role.AUTHOR, True),
+        ):
+            pr_url = f"https://gitlab.com/group/repo/-/merge_requests/{pr_id}"
+            ticket = planned_ticket(issue_url=pr_url, overlay="acme", role=role, state=Ticket.State.PLAN_RECORDED)
+            if open_work:
+                ticket.schedule_implementing("debugging", reason="existing work")
+            signal = ScanSignal(
+                kind="my_pr.findings_to_fix",
+                summary="Review findings need a fix",
+                payload={
+                    "pr_url": pr_url,
+                    "head_sha": f"{pr_id:040d}",
+                    "fix_kind": "review_findings",
+                    "overlay": "acme",
+                },
+            )
+            with patch("teatree.loop.persistence.on_behalf_gate_recorded.owner_voice_permitted") as read_posture:
+                created = persist_agent_actions(_agent_actions(signal))
+            assert created == []
+            read_posture.assert_not_called()
+
+    def test_posture_read_failure_rolls_back_the_fix_claim(self) -> None:
+        pr_url = "https://gitlab.com/group/repo/-/merge_requests/208"
+        planned_ticket(issue_url=pr_url, overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        signal = ScanSignal(
+            kind="my_pr.findings_to_fix",
+            summary="Review findings need a fix",
+            payload={"pr_url": pr_url, "head_sha": f"{208:040d}", "fix_kind": "review_findings", "overlay": "acme"},
+        )
+        errors: dict[str, str] = {}
+        with patch(
+            "teatree.loop.persistence.on_behalf_gate_recorded.owner_voice_permitted",
+            side_effect=RuntimeError("posture unreadable"),
+        ):
+            created = persist_agent_actions(_agent_actions(signal), errors=errors)
+        assert created == []
+        assert not RedMrFixAttempt.objects.filter(pr_url=pr_url).exists()
+        assert "posture unreadable" in errors["persist:t3:debug"]

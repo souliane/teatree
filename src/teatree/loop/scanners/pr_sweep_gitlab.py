@@ -27,8 +27,10 @@ from typing import TYPE_CHECKING, cast
 import httpx
 
 from teatree.core.backend_registry import get_backend_provider
-from teatree.core.merge import MergePreconditionError, execute_bound_merge
+from teatree.core.merge import MergePreconditionError
 from teatree.core.merge.host_kind import forge_for_repo_slug
+from teatree.core.merge.uncleared_merge import merge_without_clear
+from teatree.loop.scanners.base import classify_http_error
 from teatree.loop.scanners.pr_sweep_ports import PrApiClient
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult, PrSummary
 from teatree.types import RawAPIDict, ScannerError, ScannerErrorClass
@@ -54,20 +56,6 @@ def _as_str(value: object) -> str:
 
 def _as_int(value: object) -> int:
     return value if isinstance(value, int) else 0
-
-
-def _classify_http(exc: Exception) -> ScannerErrorClass:
-    """Map a GitLab transport failure onto the class the dispatcher reports."""
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        if status in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
-            return ScannerErrorClass.AUTH
-        if status == httpx.codes.TOO_MANY_REQUESTS:
-            return ScannerErrorClass.RATE_LIMIT
-        return ScannerErrorClass.UNKNOWN
-    if isinstance(exc, httpx.HTTPError):
-        return ScannerErrorClass.NETWORK
-    return ScannerErrorClass.UNKNOWN
 
 
 @dataclass(slots=True)
@@ -118,7 +106,7 @@ class GlabPrApiClient:
         (#4856) rather than discarding it.
         """
         try:
-            merged_sha = execute_bound_merge(
+            merged_sha = merge_without_clear(
                 ref=PrRef(slug=slug, pr_id=pr_id, host_kind="gitlab"),
                 expected_head_oid=expected_head_oid,
             )
@@ -146,7 +134,7 @@ class GlabPrApiClient:
             return call()
         except (httpx.HTTPError, ValueError) as exc:
             detail = f"glab {what} for {slug!r} failed: {type(exc).__name__}: {str(exc)[:200]}"
-            raise ScannerError(scanner=_SCANNER, error_class=_classify_http(exc), detail=detail) from exc
+            raise ScannerError(scanner=_SCANNER, error_class=classify_http_error(exc), detail=detail) from exc
 
 
 def _decode_mr(*, slug: str, raw: RawAPIDict) -> PrSummary:

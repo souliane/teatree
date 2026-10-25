@@ -1,5 +1,5 @@
-# teatree headless deployment — one image, five services
-# (init/worker/admin/slack-listener/watchdog) sharing named volumes so init
+# teatree headless deployment — one image, six services
+# (init/worker/admin/webhook-listener/slack-listener/watchdog) sharing named volumes so init
 # installs teatree once and worker/admin run it.
 # Agent settings and plugin state live only in the dedicated named volumes (#3359);
 # host credentials are not reused by the factory runtimes.
@@ -502,6 +502,53 @@ services:
     # simultaneous CLI. The `_check_worker_memory_cap` doctor gate is role-aware
     # and never inspects this cap, so nothing else catches an under-sized admin.
     mem_limit: 2g
+    cpus: "0.5"
+
+  # The forge receiver mounts its ledger, its signing-secret store and, read-only, its scripts
+  # and the code and tool venv the other roles run. The 1g cap accommodates the
+  # measured ~226 MiB RSS growth of one 20 MiB many-object delivery above the
+  # receiver baseline while bounding the service's share of host RAM.
+  teatree-webhooks:
+    init: true
+    image: ${TEATREE_IMAGE:-teatree-headless:latest}
+    build:
+      context: ${TEATREE_BUILD_CONTEXT:-..}
+      dockerfile: deploy/Dockerfile
+      args:
+        TEATREE_UID: ${TEATREE_UID:-1001}
+        TEATREE_SOURCE_REF: ${TEATREE_SOURCE_REF:-main}
+    entrypoint:
+      - bash
+      - ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh  # privacy-scan:allow — the box's public, documented deploy home
+    environment:
+      <<: *teatree-create-env
+      TEATREE_ROLE: webhook-listener
+      T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
+      TEATREE_WEBHOOK_PORT: ${TEATREE_WEBHOOK_PORT:-8001}
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+    volumes:
+      - teatree_control_db:/var/lib/teatree/control-db
+      - ${TEATREE_HOST_HOME:-/home/teatree}/.password-store:/home/teatree/.password-store  # privacy-scan:allow — the box's public, documented deploy home
+      - ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg:/home/teatree/.gnupg  # privacy-scan:allow — the box's public, documented deploy home
+      - type: bind
+        source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh  # privacy-scan:allow — the box's public, documented deploy home
+        target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh  # privacy-scan:allow — the box's public, documented deploy home
+        read_only: true
+      - type: bind
+        source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/git-pins.sh  # privacy-scan:allow — the box's public, documented deploy home
+        target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/git-pins.sh  # privacy-scan:allow — the box's public, documented deploy home
+        read_only: true
+      - ${TEATREE_SOURCE_MOUNT:-teatree_src}:/home/teatree/teatree:ro  # privacy-scan:allow — the box's public, documented deploy home
+      - teatree_uv:/opt/teatree/uv:ro
+    tmpfs:
+      - ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}:mode=1777,size=16m  # privacy-scan:allow — the box's public, documented deploy home
+    depends_on:
+      teatree-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    network_mode: host
+    logging: *teatree-logging
+    mem_limit: 1g
     cpus: "0.5"
 
   # The Slack Socket-Mode receiver. Runs `t3 slack listen` for every

@@ -27,6 +27,7 @@ from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests._forge_author import colleague_forge
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
@@ -80,6 +81,9 @@ class _RouteAwareFake:
 
     def resolve_user_id(self, handle: str) -> str:
         return ""
+
+    def resolve_usergroup_id(self, handle: str) -> str:
+        return "S0REVIEWERS" if handle == "reviewers-team" else ""
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
         return "https://slack.example/p1"
@@ -152,6 +156,9 @@ class TestReviewDoneReactionBypassClosed(TestCase):
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
+    def setUp(self) -> None:
+        self.enterContext(colleague_forge())
+
     def test_no_reaction_no_claim_under_ask(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, forbidding=True)
         _seed()
@@ -215,11 +222,12 @@ class TestNagPostBypassClosed(TestCase):
 
     def test_no_post_and_release_claim_under_ask(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, forbidding=True)
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
         post = _seed()
         fake = _RouteAwareFake()
         scanner = ReviewNagScanner(messaging=fake)
         with patch("teatree.loop.scanners.review_nag._consult_guard_before_nag", return_value=None):
-            signal = scanner._post_reask(post, fake, timezone.now())
+            signal = scanner._post_reask(post, fake, _Host(), timezone.now(), dt.timedelta(days=2))
         assert fake.post_message_calls == []
         assert fake.post_routed_calls == []
         post.refresh_from_db()
@@ -229,12 +237,13 @@ class TestNagPostBypassClosed(TestCase):
 
     def test_posts_with_approval(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, forbidding=True)
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
         OnBehalfApproval.record(target=_MR, action="review_nag_post", approver_id=_APPROVER)
         post = _seed()
         fake = _RouteAwareFake()
         scanner = ReviewNagScanner(messaging=fake)
         with patch("teatree.loop.scanners.review_nag._consult_guard_before_nag", return_value=None):
-            scanner._post_reask(post, fake, timezone.now())
+            scanner._post_reask(post, fake, _Host(), timezone.now(), dt.timedelta(days=2))
         assert fake.post_routed_calls == [(_COLLEAGUE, fake.post_routed_calls[0][1], _TS)]
         post.refresh_from_db()
         assert post.last_nag_at is not None

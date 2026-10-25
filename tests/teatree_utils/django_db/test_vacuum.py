@@ -11,9 +11,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from django.db import DEFAULT_DB_ALIAS
+from django.db.utils import ConnectionHandler
+from pytest_django.plugin import DjangoDbBlocker
 
+from teatree.paths import CONTROL_DB_DIR_ENV
+from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.utils.django_db.vacuum import _required_headroom_bytes, vacuum_control_db, vacuum_sqlite
+from teatree.utils.mount_points import MountEntry
 
 _ROWS = 4000
 _PAYLOAD = "x" * 512
@@ -107,15 +113,84 @@ class TestVacuumSqlite:
         try:
             outcome = vacuum_sqlite(db)
             size_while_deferred = db.stat().st_size
+            wal_size_while_deferred = Path(f"{db}-wal").stat().st_size
         finally:
             reader.close()
 
         assert size_while_deferred == before, "control: the file has caught up, so nothing was deferred"
+        assert wal_size_while_deferred > 0
         assert outcome.ran
         assert outcome.bytes_reclaimed > 0
         assert outcome.pages_after < outcome.pages_before
         assert not outcome.file_caught_up
         assert "next checkpoint" in outcome.summary
+
+    def test_idle_wal_connection_allows_vacuum_to_reclaim_the_file(self, tmp_path: Path) -> None:
+        db = tmp_path / "control.sqlite3"
+        _wal_journalled(db)
+        _bloated_db(db)
+        _delete_most_rows(db)
+        before = db.stat().st_size
+        assert _free_pages(db) > 0
+        idle = sqlite3.connect(db)
+        try:
+            assert idle.execute("SELECT COUNT(*) FROM attempt").fetchone() == (10,)
+            outcome = vacuum_sqlite(db)
+            assert outcome.ran
+            assert outcome.file_caught_up
+            assert db.stat().st_size < before
+            wal = Path(f"{db}-wal")
+            assert not wal.exists() or wal.stat().st_size == 0
+            assert db.read_bytes()[18] == 2
+        finally:
+            idle.close()
+
+    def test_boundary_commits_reset_reader_blocked_vacuum_wal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, django_db_blocker: DjangoDbBlocker
+    ) -> None:
+        db = tmp_path / "control.sqlite3"
+        _wal_journalled(db)
+        _bloated_db(db)
+        _delete_most_rows(db)
+        reader = sqlite3.connect(db, isolation_level=None)
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM attempt").fetchone()
+        wal = Path(f"{db}-wal")
+        try:
+            outcome = vacuum_sqlite(db)
+            assert outcome.ran
+            assert not outcome.file_caught_up
+            assert wal.stat().st_size > 8192
+        finally:
+            reader.close()
+
+        monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(tmp_path))
+        monkeypatch.setenv("T3_CONTROL_DB_JOURNAL_MODE", "wal")
+        with (
+            django_db_blocker.unblock(),
+            patch("teatree.db.boundary.is_running_in_container", return_value=True),
+            patch("teatree.db.write_domain.read_mount_entries", return_value=(MountEntry(Path("/"), "ext4"),)),
+            patch("teatree.db.journal_mode.JOURNAL_SIZE_LIMIT", 4096),
+        ):
+            handler = ConnectionHandler(
+                {
+                    "default": {
+                        "ENGINE": SQLITE_BOUNDARY_ENGINE,
+                        "NAME": str(db),
+                        "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
+                    }
+                }
+            )
+            try:
+                cursor = handler["default"].cursor()
+                assert cursor.execute("PRAGMA journal_size_limit").fetchone() == (4096,)
+                cursor.execute("PRAGMA wal_autocheckpoint=1")
+                cursor.execute("INSERT INTO attempt(blob) VALUES (%s)", ("first",))
+                cursor.execute("INSERT INTO attempt(blob) VALUES (%s)", ("second",))
+                assert wal.stat().st_size <= 8192
+            finally:
+                handler.close_all()
+        assert db.read_bytes()[18] == 2
 
     def test_the_reported_counts_match_an_independent_read_of_the_pragmas(self, tmp_path: Path) -> None:
         db = tmp_path / "control.sqlite3"

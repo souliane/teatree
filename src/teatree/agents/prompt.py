@@ -8,10 +8,16 @@ from typing import cast
 
 from teatree.agents.coding_prompt import _VERIFY_GATES_COMMAND, _coding_phase_directive, _stack_overlay_load_names
 from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
-from teatree.agents.dispatch_preflight import declared_seams_brief_lines, head_state_brief_lines
+from teatree.agents.dispatch_preflight import (
+    declared_seams_brief_lines,
+    head_state_brief_lines,
+    review_diff_brief_lines,
+    round_brief_lines,
+    rubric_brief_lines,
+)
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
 from teatree.agents.phase_blocks import embedded_intake_survey_json, intake_survey_lines, phase_specific_lines
-from teatree.agents.read_only_venue_brief import READ_ONLY_DIRECTIVE, ReadOnlyFacts
+from teatree.agents.read_only_venue_brief import READ_ONLY_DIRECTIVE, ReadOnlyFacts, read_only_text
 from teatree.agents.result_schema import required_evidence_for_phase
 from teatree.agents.skill_injection import (
     _ALWAYS_FULL_SKILLS,
@@ -24,7 +30,7 @@ from teatree.agents.skill_injection import (
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import Task, Ticket
+from teatree.core.models import SessionCommand, Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.task_handoff import dispatch_reason
 
@@ -152,6 +158,11 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
     lines = _task_header_lines(task, extra)
     lines.extend(_format_pr_context(extra))
     lines.extend(_ticket_context_lines(ticket))
+    queued = list(
+        SessionCommand.objects.filter(task=task, outcome="queued").order_by("pk").values_list("text", flat=True)
+    )
+    if queued:
+        lines.extend(("", "Operator messages queued for this task's next run:", *queued))
 
     lines.extend(
         ("", "Instructions:", *_OWNER_STOP_LINES, *_VERIFY_GATES_LINES, final_output_reminder_line(task.phase))
@@ -165,6 +176,7 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
                 "",
                 "PHASE: coding",
                 *head_state_brief_lines(task),
+                *round_brief_lines(task),
                 *declared_seams_brief_lines(task),
                 *_coding_phase_directive(skills, stage_exclude=stage_exclude),
             )
@@ -186,18 +198,20 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
         lines.extend(("", "Ticket context (durable knowledge store, in full):", facts.ticket_context))
     if facts.handoff:
         lines.extend(("", "Predecessor result (handoff JSON, in full):", facts.handoff))
+    if facts.review_diff:
+        lines.extend(("", f"DIFF UNDER REVIEW at dispatched head {facts.review_head}:", facts.review_diff))
+        lines.extend(("", f"WORKER CI at dispatched head {facts.review_head}: {facts.review_checks}"))
+    elif normalize_phase(task.phase) == "reviewing" and ticket.role == Ticket.Role.AUTHOR:
+        lines.extend(review_diff_brief_lines(task))
     if parent_summary := _parent_result_summary(task):
         lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))
-    lines.extend(
-        (
-            "",
-            "Instructions:",
-            *_OWNER_STOP_LINES,
-            "5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.",
-            final_output_reminder_line(task.phase),
-        )
-    )
+    if normalize_phase(task.phase) == "reviewing":
+        lines.extend(read_only_text(line) for line in (*rubric_brief_lines(task), *declared_seams_brief_lines(task)))
+    lines.extend(("", "Instructions:", *_OWNER_STOP_LINES))
+    if normalize_phase(task.phase) == "planning":
+        lines.append("5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.")
+    lines.append(final_output_reminder_line(task.phase))
     return "\n".join(lines)
 
 
@@ -261,8 +275,13 @@ def read_only_required_skills(
     phase: str, skills: list[str], *, lifecycle_skill: str, stage_skills: list[str]
 ) -> set[str]:
     """What the read-only executor must receive in full: it has neither a Skill tool nor a skill file to read."""
+    if normalize_phase(phase) in {"reviewing", "critic_reviewing"}:
+        review_full, review_explicit = _review_phase_scoping(skills)
+        needed = {"rules", lifecycle_skill, *review_full, *review_explicit}
+        return {name for name in skills if _explicit_load_name(name) in needed}
     full, explicit = required_skill_delivery(phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills)
-    return full | explicit
+    needed = full | explicit
+    return {name for name in skills if _explicit_load_name(name) in needed}
 
 
 def _assigned_reviewer_identity(task: Task) -> str:

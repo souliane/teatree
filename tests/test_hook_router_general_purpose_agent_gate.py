@@ -72,6 +72,7 @@ def _chain_denies(tool_input: dict, *, tool_name: str = "Agent") -> bool:
         return any(handler(event) for handler in router._HANDLERS["PreToolUse"])
 
 
+@pytest.mark.usefixtures("admission_governor_admits")
 class TestRegisteredChainRefusesTheBlankDispatch:
     """The anti-vacuous proof: BEFORE this gate no registered handler said no."""
 
@@ -104,7 +105,7 @@ class TestBlankDispatchIsDenied:
         reason = gate.refusal("acme-product")
         for agent in (*TYPED_AGENTS, "Explore"):
             assert agent in reason, f"the refusal must name {agent}: {reason!r}"
-        assert "[general-purpose-ok:" in reason
+        assert "[gate-escape:general_purpose_agent_gate:" in reason
         assert "acme-product" in reason
 
 
@@ -146,8 +147,9 @@ class TestNarrowlyScoped:
 
 class TestNeverLockout:
     def test_per_call_token_allows(self) -> None:
-        prompt = f"{MANAGED_BRIEF} [general-purpose-ok: vendoring an unrelated OSS diff]"
-        blocked, payload = _run({"subagent_type": "general-purpose", "prompt": prompt})
+        prompt = f"{MANAGED_BRIEF} [gate-escape:general_purpose_agent_gate: vendoring an unrelated OSS diff]"
+        with patch.object(router._gate_escape, "escape_allows", return_value=True):
+            blocked, payload = _run({"subagent_type": "general-purpose", "prompt": prompt})
         assert blocked is False
         assert payload is None
 
@@ -204,7 +206,8 @@ def _run_router(payload: dict, *, settings: dict[str, object]) -> subprocess.Com
         # Built by exclusion rather than `pop`: a `pop(key, None)` widens the value type to
         # `str | None`, which is not an environment.
         base = {**os.environ, "HOME": home, "USERPROFILE": home}
-        env: dict[str, str] = {k: v for k, v in base.items() if k != "XDG_DATA_HOME"}
+        env: dict[str, str] = {k: v for k, v in base.items() if k != "T3_CONTROL_DB_DIR"}
+        env["XDG_DATA_HOME"] = str(Path(home) / "isolated-data")
         db = Path(home) / "db.sqlite3"
         _seed_config_db(db, settings)
         env["T3_CONFIG_DB"] = str(db)

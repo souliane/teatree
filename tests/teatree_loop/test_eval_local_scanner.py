@@ -20,9 +20,13 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.config import UserSettings
+from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
+from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.credential_config import LIST_SETTING, TokenKind
 from teatree.loop.scanners.eval_local import EVAL_LOCAL_PHASE, EvalLocalScanner
+from teatree.token_report import EvalReserveDecision
 
 TEST_OVERLAY_NAME = "t3-teatree"
 
@@ -31,8 +35,11 @@ def _scanner(
     *,
     overlay_name: str = TEST_OVERLAY_NAME,
     skill: str = "running-evals",
+    reserve_met: bool = True,
 ) -> EvalLocalScanner:
-    return EvalLocalScanner(overlay_name=overlay_name, skill=skill)
+    return EvalLocalScanner(
+        overlay_name=overlay_name, skill=skill, reserve_met=lambda: EvalReserveDecision(met=reserve_met)
+    )
 
 
 def _last_eval_task(overlay_name: str = TEST_OVERLAY_NAME) -> Task | None:
@@ -44,6 +51,44 @@ def _backdate_task(task: Task, *, hours: int) -> None:
 
 
 class EvalLocalScannerTests(TestCase):
+    def test_stale_headroom_emits_a_visible_park_signal(self) -> None:
+        scanner = EvalLocalScanner(
+            overlay_name=TEST_OVERLAY_NAME,
+            skill="running-evals",
+            reserve_met=lambda: EvalReserveDecision(
+                met=False, reason="stale OAuth headroom could not be refreshed", stale=True
+            ),
+        )
+
+        signals = scanner.scan()
+
+        assert [signal.kind for signal in signals] == ["eval_local.parked"]
+        assert "stale" in signals[0].summary
+        assert _last_eval_task() is None
+
+    def test_below_reserve_queues_no_eval_task(self) -> None:
+        assert _scanner(reserve_met=False).scan() == []
+        assert _last_eval_task() is None
+
+    def test_the_default_gate_reads_the_factory_accounts_not_the_ci_allowlist(self) -> None:
+        ConfigSetting.objects.set_value(LIST_SETTING[TokenKind.OAUTH], ["anthropic/oauth/factory"])
+        AnthropicTokenUsage.objects.record(
+            "anthropic/oauth/factory",
+            TokenHealthReading(
+                organization_id="org-factory",
+                utilization_5h=0.1,
+                utilization_7d=0.1,
+                status_5h="allowed",
+                status_7d="allowed",
+                reset_5h=None,
+                reset_7d=None,
+            ),
+        )
+        assert len(EvalLocalScanner(overlay_name=TEST_OVERLAY_NAME, skill="running-evals").scan()) == 1
+
+    def test_the_default_gate_fails_closed_with_no_measured_account(self) -> None:
+        assert EvalLocalScanner(overlay_name=TEST_OVERLAY_NAME, skill="running-evals").scan() == []
+
     def test_no_prior_run_queues_task(self) -> None:
         signals = _scanner().scan()
 

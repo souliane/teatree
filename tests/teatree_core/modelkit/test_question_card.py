@@ -11,11 +11,73 @@ from teatree.core.modelkit.question_card import (
     MAX_QUESTION_CHARS,
     MAX_WORDS,
     CardOption,
+    CardView,
     QuestionCard,
+    counted,
     internal_shorthand,
     plain_text,
+    safe_ticket_card_title,
+    shown_problems,
     word_count,
 )
+
+
+def test_cut_title_retries_the_safe_short_text_when_the_full_title_is_unsafe() -> None:
+    short = "Readable short title..."
+
+    assert (
+        safe_ticket_card_title(short, {"issue_title": "Readable short title unsafe_dash_live"}, "this ticket") == short
+    )
+
+
+def test_complete_eighty_character_short_title_wins_over_unrelated_full_title() -> None:
+    short = "Readable " * 8 + "Precise!"
+    assert len(short) == 80
+    assert safe_ticket_card_title(short, {"issue_title": "Another valid title"}, "this ticket") == short
+
+
+def test_seed_cut_on_a_space_uses_the_full_title() -> None:
+    full = "The owner card should show the whole issue title when the seed stops on a space between words here"
+    short = full[:80]
+    assert short.endswith(" ")
+
+    assert safe_ticket_card_title(short, {"issue_title": full}, "this ticket") == (
+        "The owner card should show the whole issue title when the seed stops on a..."
+    )
+
+
+def test_whole_short_prefix_wins_over_the_longer_issue_title() -> None:
+    assert (
+        safe_ticket_card_title(
+            "Fix the login page", {"issue_title": "Fix the login page crash on Safari"}, "this ticket"
+        )
+        == "Fix the login page"
+    )
+
+
+def test_unrelated_ellipsis_short_wins_over_the_imported_title() -> None:
+    assert (
+        safe_ticket_card_title("Investigate the hang...", {"issue_title": "Old imported title"}, "this ticket")
+        == "Investigate the hang..."
+    )
+
+
+def test_eighty_character_seed_ends_at_a_word_boundary_without_its_issue_title() -> None:
+    short = "Improve the owner decision card so its description, selected answer and result stay clear"[:80]
+    assert short.endswith("result s")
+
+    for extra in ({"issue_title": "Short dreaming ledger title"}, {}):
+        assert safe_ticket_card_title(short, extra, "this ticket") == (
+            "Improve the owner decision card so its description, selected answer and..."
+        )
+
+
+def test_whole_eighty_character_title_matching_its_issue_title_is_kept() -> None:
+    title = "Make the owner cards readable for someone who never saw the factory before today"
+    assert len(title) == 80
+
+    assert safe_ticket_card_title(title, {"issue_title": title}, "this ticket") == title
+
 
 SAMPLE_QUESTION = "Can you mention the bot once (type @ and its name) in any Slack channel?"
 SAMPLE_WHY = "This tells me whether it is set up for channels or only for our direct messages."
@@ -358,3 +420,46 @@ class TestFromEnvelope:
 
         assert card is not None
         assert any("required" in problem or "checked facts" in problem for problem in card.problems("Is it fine?"))
+
+
+@pytest.mark.parametrize(("count", "expected"), [(0, "0 commits"), (1, "1 commit"), (2, "2 commits")])
+def test_a_count_agrees_with_its_noun(count: int, expected: str) -> None:
+    assert counted(count, "commit") == expected
+
+
+class TestInClientQuestionCard:
+    def test_file_name_stays_shorthand_for_slack_card(self) -> None:
+        question = "Can you open settings.toml today?"
+
+        assert CardView.ask_problems({"header": "Open", "question": question, "options": []}) == []
+        assert any("settings.toml" in problem for problem in shown_problems(SAMPLE_CARD.view(question)))
+
+    @pytest.mark.parametrize("question", ["Merge PR #42 now?", "Use --force?"])
+    def test_plain_words_check_names_shorthand(self, question: str) -> None:
+        problems = CardView.ask_problems({"header": "Merge", "question": question, "options": []})
+
+        assert any("internal shorthand" in problem for problem in problems)
+
+
+def test_in_client_question_checks_header_and_total_card_words() -> None:
+    card = {
+        "header": "PR #42",
+        "question": "Merge this now?",
+        "options": [{"label": f"Choice {index}", "description": "word " * 30} for index in range(4)],
+    }
+
+    problems = CardView.ask_problems(card)
+
+    assert any("the header carries internal shorthand" in problem for problem in problems)
+    assert any('must end in "?"' in problem for problem in CardView.ask_problems(card | {"question": "Merge this now"}))
+    assert any("1 option" in problem for problem in CardView.ask_problems(card | {"options": card["options"][:1]}))
+
+
+def test_in_client_word_count_skips_the_slack_reply_and_ref_lines() -> None:
+    card = {
+        "header": "Merge",
+        "question": "Merge this now?",
+        "options": [{"label": label, "description": "word " * 28} for label in ("Merge", "Wait", "Close", "Hold")],
+    }
+
+    assert CardView.ask_problems(card) == []

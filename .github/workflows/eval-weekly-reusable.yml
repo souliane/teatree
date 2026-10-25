@@ -23,6 +23,8 @@
 #   out + symlink the host so `uv sync` registers the overlay entry point and
 #   discovery resolves the overlay scenarios; `assert-scenarios` lists the names
 #   `t3 eval list` MUST discover before any API spend (broken wiring fails RED).
+#   The caller job must grant contents: write, actions: read, and
+#   pull-requests: read; called jobs cannot raise the caller's token grants.
 #
 # AUTH (`credential` input, mirrors `eval.yml`'s `T3_AGENT_HARNESS_PROVIDER` provider pin)
 #   DEFAULT `subscription_oauth` — the plan's `CLAUDE_CODE_OAUTH_TOKEN` secret
@@ -131,8 +133,12 @@ jobs:
   # guard / the caller's force) and (b) computes the per-leg {lane, shard} matrix.
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
     outputs:
-      run_eval: ${{ steps.gate.outputs.run_eval }}
+      run_eval: ${{ (steps.gate.outputs.run_eval == 'true' || steps.owed.outputs.owed != '') && steps.reserve.outputs.parked != 'true' }}
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -149,7 +155,7 @@ jobs:
       - name: Symlink the teatree host where uv.sources resolves it
         if: inputs.teatree-repo != ''
         run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -162,6 +168,35 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
+      - name: Sandbox the control DB
+        run: echo "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" >> "$GITHUB_ENV"
+      - name: Migrate the self-DB
+        run: uv run python -m teatree migrate --no-input
+      - name: Harvest owed scenarios from merged PRs
+        id: owed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LEDGER="$RUNNER_TEMP/eval-owed-ledger.json"
+          uv run t3 eval owed collect --repo "$GITHUB_REPOSITORY" --first-lookback-days 90 --out "$LEDGER"
+          uv run t3 eval owed outputs "$LEDGER" >> "$GITHUB_OUTPUT"
+      - name: Redact the owed ledger in place
+        id: redact
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.eval-oauth-tokens }}
+        run: uv run python -m teatree.eval.artifact_redaction in-place "$RUNNER_TEMP/eval-owed-ledger.json"
+      - name: Upload the owed ledger for the next scheduled run
+        if: always() && github.ref_name == github.event.repository.default_branch && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-owed-ledger
+          path: ${{ runner.temp }}/eval-owed-ledger.json
+          if-no-files-found: error
+          retention-days: 90
       # Decide whether to invoke the eval at all. `force` (a manual run) ALWAYS
       # runs. Otherwise the scheduled guard skips cleanly when NO PR merged in the
       # lookback window since the last run — nothing new to test, no API spend. The
@@ -204,9 +239,19 @@ jobs:
       # or a `shards` request that matches no leg, fails loud here rather than
       # producing an empty/invalid matrix. All three inputs are routed through
       # `env:` vars (never inlined into the script).
+      - name: Check the benchmark subscription reserve
+        id: reserve
+        if: steps.gate.outputs.run_eval == 'true' || steps.owed.outputs.owed != ''
+        env:
+          EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.eval-oauth-tokens }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
+          EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE }}
+          EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE }}
+        run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
       - name: Compute the lane+shard+effort matrix
         id: matrix
-        if: steps.gate.outputs.run_eval == 'true'
+        if: (steps.gate.outputs.run_eval == 'true' || steps.owed.outputs.owed != '') && steps.reserve.outputs.parked != 'true'
         env:
           EVAL_LANE: ${{ inputs.lane }}
           EVAL_EFFORTS: ${{ inputs.efforts }}
@@ -223,6 +268,9 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.run_eval == 'true'
     runs-on: ubuntu-latest
+    # The agent under test runs here: never inherit the caller's wider grant.
+    permissions:
+      contents: read
     strategy:
       # A red shard does not cancel the others — each leg's verdict is independent.
       fail-fast: false
@@ -263,7 +311,7 @@ jobs:
       - name: Symlink the teatree host where uv.sources resolves it
         if: inputs.teatree-repo != ''
         run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -285,7 +333,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.286
+          npm install -g @anthropic-ai/claude-code@2.1.309
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -335,7 +383,7 @@ jobs:
       # credential (below) is forwarded in via docker's `-e` pass-through, mirroring
       # `eval.yml`'s `T3_AGENT_HARNESS_PROVIDER` resolution exactly. `--benchmark` runs
       # every (lane/shard-filtered) scenario against ALL THREE tier models
-      # (frontier/balanced/cheap, resolved through the single TIER_MODELS constant)
+      # (frontier/balanced/cheap, resolved through `tier_models()`)
       # and renders the comparison matrix + a self-contained HTML dashboard — the
       # canonical weekly benchmark. `--require-executed` is UNCONDITIONAL so an
       # all-skipped run exits non-zero. `--lane`/`--shard` scope the leg to its one
@@ -355,21 +403,30 @@ jobs:
       # throttled/exhausted window. `eval-oauth-tokens` (a newline-separated secret the
       # caller may pass) is probed per token for remaining usage-window headroom
       # (scripts/eval/select_oauth.py) and the freshest is exported — masked — into
-      # $GITHUB_ENV, which the eval step below reads. BACKWARD-SAFE: with the secret
-      # unset/empty it passes the existing single `subscription-oauth-token` through
-      # unchanged. This step OWNS the credential decision, so it also exports
-      # T3_AGENT_HARNESS_PROVIDER (an all-exhausted set flips to api_key ONLY when the
-      # opt-in EVAL_API_KEY_FALLBACK repo variable is set, else it fails loud). NOTE: on a
+      # $GITHUB_ENV, which the eval step below reads. With the secret unset/empty it
+      # probes the existing single `subscription-oauth-token` against the reserve.
+      # This step OWNS the credential decision, so it also exports
+      # T3_AGENT_HARNESS_PROVIDER (an ineligible set parks). NOTE: on a
       # dynamic multi-account run the selected account is in this step's log, not the
       # cost-basis var above (which tracks the single-secret host switcher).
       - name: Select the freshest eval OAuth account
+        id: select
         env:
           EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_OAUTH_TOKENS: ${{ secrets.eval-oauth-tokens }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
-          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
-        run: uv run python scripts/eval/select_oauth.py
+          EVAL_RESERVE_5H_FREE: ${{ vars.EVAL_RESERVE_5H_FREE }}
+          EVAL_RESERVE_7D_FREE: ${{ vars.EVAL_RESERVE_7D_FREE }}
+        run: uv run python scripts/eval/select_oauth.py || [ "$?" -eq 75 ]
+      - name: Mark a benchmark parked by the reserve
+        if: steps.select.outputs.parked == 'true'
+        env:
+          SUFFIX: ${{ steps.artifact.outputs.suffix }}
+        run: |
+          printf 'parked\n' | uv run python -m teatree.eval.artifact_redaction tee "$RUNNER_TEMP/eval-benchmark-$SUFFIX.parked"
+          echo "Benchmark PARKED — no eligible subscription account." >> "$GITHUB_STEP_SUMMARY"
       - name: Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)
+        if: steps.select.outputs.parked != 'true'
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` come from the
@@ -420,6 +477,16 @@ jobs:
           # uploaded log.
           command: |
             set -o pipefail
+            LIMIT_MARKER="$RUNNER_TEMP/eval-limit-hit-$EVAL_SUFFIX"
+            RED_MARKER="$RUNNER_TEMP/eval-confirmed-red-$EVAL_SUFFIX"
+            if [ -f "$RED_MARKER" ]; then
+              echo "An earlier attempt measured a red — invoking no scenario."
+              exit 1
+            fi
+            if [ -f "$LIMIT_MARKER" ]; then
+              echo "The usage limit was hit on an earlier attempt — invoking no scenario."
+              exit 0
+            fi
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
             TAIL_LINES=400
@@ -433,6 +500,13 @@ jobs:
               --transcript-html "$MATRIX_HTML" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             rc=$?
             [ "$rc" -eq 0 ] && exit 0
+            if [ "$rc" -eq 75 ]; then
+              printf 'parked\n' | uv run python -m teatree.eval.artifact_redaction tee "$RUNNER_TEMP/eval-benchmark-$EVAL_SUFFIX.parked"
+              touch "$LIMIT_MARKER"
+              echo "Benchmark PARKED — usage limit reached." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            touch "$RED_MARKER"
             echo "::group::leg $EVAL_SUFFIX FAILED (exit $rc) — last $TAIL_LINES captured lines"
             tail -n "$TAIL_LINES" "$LOG" | uv run python -m teatree.eval.artifact_redaction tee || echo "nothing captured at $LOG"
             echo "::endgroup::"
@@ -458,6 +532,7 @@ jobs:
         run: >-
           uv run python -m teatree.eval.artifact_redaction in-place
           "$RUNNER_TEMP/eval-benchmark-$SUFFIX.html"
+          "$RUNNER_TEMP/eval-benchmark-$SUFFIX.parked"
           "$RUNNER_TEMP/eval-run-$SUFFIX.log"
       # Publish the benchmark matrix HTML dashboard THIS leg emitted. The name is
       # per-lane-and-shard (and effort) so parallel matrix legs never collide. The
@@ -466,11 +541,20 @@ jobs:
       # private report and the publish-safe summary artifact.
       - name: Upload the benchmark matrix HTML dashboard
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-benchmark-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
           if-no-files-found: warn
+      # A parked leg's marker; `publish` downloads it with the dashboards (`eval-benchmark-*`)
+      # and refuses to publish. Only a parked leg writes one, so its absence is the normal case.
+      - name: Upload the benchmark park marker
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-benchmark-${{ steps.artifact.outputs.suffix }}-parked
+          path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.parked
+          if-no-files-found: ignore
       # The captured, redacted stdout/stderr of every attempt (the `artifact_redaction tee` target
       # in the eval command). Unlike the matrix dashboard — rendered only if the run reaches
       # its end — this file exists from the first byte, so it is the one artifact that
@@ -481,7 +565,7 @@ jobs:
       # credential redaction it is unsanitized, so it stays out of the public dashboard.
       - name: Upload the raw eval run log
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-run-log-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-run-${{ steps.artifact.outputs.suffix }}.log
@@ -514,7 +598,7 @@ jobs:
       - name: Symlink the teatree host where uv.sources resolves it
         if: inputs.teatree-repo != ''
         run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
@@ -527,15 +611,25 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
+      - name: Sandbox the control DB
+        run: echo "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" >> "$GITHUB_ENV"
+      - name: Migrate the self-DB
+        run: uv run python -m teatree migrate --no-input
       # Pull every shard's benchmark matrix HTML into one dir (merge-multiple
       # flattens the per-artifact subdirs). Only the publish-safe `eval-benchmark-*`
       # HTML artifacts (verdicts + tally, no reasoning/tool transcript).
       - name: Download every shard's benchmark matrix HTML
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           path: ${{ runner.temp }}/benchmarks
           pattern: eval-benchmark-*
           merge-multiple: true
+      - name: Download the owed ledger
+        if: needs.eval.result == 'success' && inputs.lane == '' && inputs.shards == '' && github.ref_name == github.event.repository.default_branch
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: eval-owed-ledger
+          path: ${{ runner.temp }}
       # REFUSE an unmetered or INCOMPLETE dashboard. When the subscription OAuth
       # window is exhausted mid-run the remaining shards still "complete": every
       # scenario force-FAILs and the affected model reports $0.0000. When a leg
@@ -545,16 +639,27 @@ jobs:
       # shard refuses rather than shrinking the dashboard into a complete-looking
       # commit. Runs BEFORE the copy, so nothing bad reaches the working tree.
       - name: Refuse to publish an incomplete or unmetered dashboard
+        id: verify
         env:
           EVAL_MATRIX: ${{ needs.prepare.outputs.matrix }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          parked=("$RUNNER_TEMP"/benchmarks/*.parked)
+          if [ "${#parked[@]}" -gt 0 ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Benchmark PARKED — dashboard and owed ledger stay unchanged." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           EXPECTED="$(printf '%s' "$EVAL_MATRIX" | python -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-          uv run t3 eval verify-benchmark-publish "$RUNNER_TEMP/benchmarks" --expected-shards "$EXPECTED"
+          uv run t3 eval verify-benchmark-publish "$RUNNER_TEMP/benchmarks" --expected-shards "$EXPECTED" \
+            --passed-file "$RUNNER_TEMP/eval-owed-passed.txt"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
       # Copy every shard's matrix HTML into the caller's public dashboard dir. The
       # per-shard HTML files keep their lane/shard/effort suffix, so parallel legs
       # never collide. An index links them; the dir is the published dashboard.
       - name: Collect the shard matrices into the public dashboard dir
+        if: steps.verify.outputs.publish == 'true'
         env:
           DASHBOARD_PATH: ${{ inputs.dashboard-path }}
         run: |
@@ -565,6 +670,7 @@ jobs:
       # Commit + push the dashboard ONLY when it changed (an unchanged file is a
       # clean no-op — no empty commit).
       - name: Commit and push the dashboard when it changed
+        if: steps.verify.outputs.publish == 'true'
         env:
           DASHBOARD_PATH: ${{ inputs.dashboard-path }}
         run: |
@@ -578,3 +684,20 @@ jobs:
             git commit -m "docs(evals): refresh weekly behavioral-benchmark dashboard"
             git push
           fi
+      - name: Settle owed scenarios covered by the full green benchmark
+        id: settle
+        if: steps.verify.outputs.publish == 'true' && needs.eval.result == 'success' && inputs.lane == '' && inputs.shards == '' && github.ref_name == github.event.repository.default_branch
+        run: uv run t3 eval owed settle --out "$RUNNER_TEMP/eval-owed-ledger.json" --passed-file "$RUNNER_TEMP/eval-owed-passed.txt"
+      - name: Redact the settled owed ledger in place
+        id: redact
+        if: always()
+        run: uv run python -m teatree.eval.artifact_redaction in-place "$RUNNER_TEMP/eval-owed-ledger.json"
+      - name: Upload the settled owed ledger
+        if: always() && steps.settle.outcome == 'success' && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-owed-ledger
+          path: ${{ runner.temp }}/eval-owed-ledger.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90

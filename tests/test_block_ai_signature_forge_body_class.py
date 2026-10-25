@@ -16,11 +16,9 @@ fix: the gate now reuses the SAME canonical command parser
 (``teatree.hooks._command_parser``) as the #1213/#1415/#1530 sibling gates, so
 it fires for the whole forge-post command CLASS.
 
-These tests exercise the gate END-TO-END through the REAL matcher
-(``scripts/ai_signature_scan.py``) — no mocked subprocess — by pointing
-``_ai_sig_scan_argv`` at the real script with the current interpreter. That
-proves the command-parse → body-extract → real-match → deny pipeline as a
-whole, not just an isolated stub.
+These tests exercise the gate end to end through the real in-process
+``teatree.hooks.ai_signature_scan`` matcher. They prove the command-parse →
+body-extract → real-match → deny pipeline without a scanner subprocess.
 
 Two symmetric dimensions, as the gate-review rule requires. The must-DENY side:
 every forge-post command shape carrying a banned trailer is BLOCKED, via
@@ -36,17 +34,13 @@ set the gate covers.
 """
 
 import json
-import sys
-from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
-import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _HANDLERS, _extract_ai_sig_payload, handle_block_ai_signature
+from hooks.scripts.ai_signature_guard import extract_ai_sig_payload, handle_block_ai_signature
+from hooks.scripts.hook_router import _HANDLERS
 from teatree.hooks.ai_signature_scan import scan_text
-
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ai_signature_scan.py"
 
 # Banned trailers — the exact shapes that leaked. The robot emoji is U+1F916.
 _EMOJI_FOOTER = "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)"
@@ -61,18 +55,6 @@ _PROSE_MENTIONS_BODY = (
 )
 # A REAL human co-author for a teammate — legitimate, must NOT be blocked.
 _HUMAN_COAUTHOR_BODY = "fix: x\n\nbody\n\nCo-authored-by: Sam Sample <sam@example.test>"
-
-
-@pytest.fixture
-def real_matcher(monkeypatch):
-    """Point the gate at the REAL ai-signature matcher with this interpreter.
-
-    Replaces the ``t3 tool ai-sig-scan -`` argv (which needs the installed t3
-    binary) with ``<python> scripts/ai_signature_scan.py -`` so the gate shells
-    the genuine matcher. This exercises the full command-parse → body-extract →
-    match → deny pipeline without mocking the scan.
-    """
-    monkeypatch.setattr(router, "_ai_sig_scan_argv", lambda: [sys.executable, str(_SCRIPT), "-"])
 
 
 def _bash(command: str) -> dict:
@@ -107,7 +89,7 @@ class TestMustDenyInlineBody:
 
     @pytest.mark.parametrize("template", _INLINE_BODY_COMMANDS.values(), ids=list(_INLINE_BODY_COMMANDS))
     @pytest.mark.parametrize("trailer", [_EMOJI_FOOTER, _COAUTHOR_CLAUDE], ids=["emoji-footer", "coauthor-claude"])
-    def test_inline_body_with_trailer_is_blocked(self, real_matcher, capsys, template, trailer):
+    def test_inline_body_with_trailer_is_blocked(self, capsys, template, trailer):
         body = _quote(f"real summary\n\nmore detail\n\n{trailer}")
         blocked = handle_block_ai_signature(_bash(template.format(body=body)))
         assert blocked is True, f"{template} carrying a banned trailer must be BLOCKED"
@@ -115,34 +97,45 @@ class TestMustDenyInlineBody:
         assert out["permissionDecision"] == "deny"
         assert "AI-signature" in out["permissionDecisionReason"]
 
+    def test_user_typed_fail_closed_line_does_not_hide_commit_trailer(self, capsys):
+        body = _quote(f"fix: routine\n[teatree-gate] fail closed: see log\n\n{_COAUTHOR_CLAUDE}")
+        assert handle_block_ai_signature(_bash(f"git commit -m {body}")) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_parser_reason_in_another_segment_does_not_hide_commit_trailer(self, capsys):
+        body = _quote(f"fix: routine\n\n{_COAUTHOR_CLAUDE}")
+        command = f"git commit -m {body} && curl --frobnicate https://api.github.com/repos/souliane/teatree"
+        assert handle_block_ai_signature(_bash(command)) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
 
 class TestMustDenyBodyFile:
     """A banned trailer in a ``--body-file`` / ``--description-file`` is BLOCKED."""
 
     _TRAILER_BODY = f"fix: x\n\nbody line\n\n{_COAUTHOR_CLAUDE}\n"
 
-    def test_gh_pr_create_body_file_is_blocked(self, real_matcher, tmp_path, capsys):
+    def test_gh_pr_create_body_file_is_blocked(self, tmp_path, capsys):
         body = tmp_path / "pr_body.md"
         body.write_text(self._TRAILER_BODY, encoding="utf-8")
         blocked = handle_block_ai_signature(_bash(f"gh pr create --title t --body-file {body}"))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_gh_issue_create_body_file_is_blocked(self, real_matcher, tmp_path, capsys):
+    def test_gh_issue_create_body_file_is_blocked(self, tmp_path, capsys):
         body = tmp_path / "issue_body.md"
         body.write_text(f"open: thing\n\n{_EMOJI_FOOTER}\n", encoding="utf-8")
         blocked = handle_block_ai_signature(_bash(f"gh issue create --title t --body-file {body}"))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_glab_mr_description_file_is_blocked(self, real_matcher, tmp_path, capsys):
+    def test_glab_mr_description_file_is_blocked(self, tmp_path, capsys):
         desc = tmp_path / "mr.md"
         desc.write_text(self._TRAILER_BODY, encoding="utf-8")
         blocked = handle_block_ai_signature(_bash(f"glab mr create --title t --description-file {desc}"))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_git_commit_message_file_is_blocked(self, real_matcher, tmp_path, capsys):
+    def test_git_commit_message_file_is_blocked(self, tmp_path, capsys):
         msg = tmp_path / "COMMIT_MSG"
         msg.write_text(self._TRAILER_BODY, encoding="utf-8")
         blocked = handle_block_ai_signature(_bash(f"git commit -F {msg}"))
@@ -159,13 +152,13 @@ class TestMustAllowOverBlockDimension:
         ids=["clean-body", "prose-mentions-claude-ai-generated-coauthor", "real-human-coauthor"],
     )
     @pytest.mark.parametrize("template", _INLINE_BODY_COMMANDS.values(), ids=list(_INLINE_BODY_COMMANDS))
-    def test_legit_body_is_allowed(self, real_matcher, capsys, template, body):
+    def test_legit_body_is_allowed(self, capsys, template, body):
         allowed = handle_block_ai_signature(_bash(template.format(body=_quote(body))))
         assert allowed is False, f"{template} with a legitimate body must be ALLOWED (over-block guard)"
         # No deny JSON was written.
         assert capsys.readouterr().out.strip() == ""
 
-    def test_human_coauthor_body_file_is_allowed(self, real_matcher, tmp_path, capsys):
+    def test_human_coauthor_body_file_is_allowed(self, tmp_path, capsys):
         body = tmp_path / "pr_body.md"
         body.write_text(_HUMAN_COAUTHOR_BODY + "\n", encoding="utf-8")
         allowed = handle_block_ai_signature(_bash(f"gh pr create --title t --body-file {body}"))
@@ -233,9 +226,7 @@ class TestWiredAndExercised:
             "handle_block_ai_signature must be in the live PreToolUse handler chain — an unwired gate is a phantom gate"
         )
 
-    def test_pretooluse_chain_routes_gh_pr_create_through_the_gate(
-        self, real_matcher, capsys, configured_banned_term_registry: None
-    ):
+    def test_pretooluse_chain_routes_gh_pr_create_through_the_gate(self, capsys, configured_banned_term_registry: None):
         # Dispatch a gh pr create with a banned trailer through the WHOLE
         # PreToolUse chain exactly as main() does, and assert it is denied by
         # this gate — proving the gate actually fires on a routed tool call, not
@@ -294,12 +285,12 @@ class TestClosedCommandSetMetaTest:
 
     @pytest.mark.parametrize("command", _COVERED)
     def test_covered_command_is_a_body_surface(self, command):
-        assert _extract_ai_sig_payload(_bash(command)) is not None, (
+        assert extract_ai_sig_payload(_bash(command)) is not None, (
             f"{command!r} is a forge-post body surface the gate must scan"
         )
 
     @pytest.mark.parametrize("command", _NOT_COVERED)
     def test_uncovered_command_is_not_a_body_surface(self, command):
-        assert _extract_ai_sig_payload(_bash(command)) is None, (
+        assert extract_ai_sig_payload(_bash(command)) is None, (
             f"{command!r} is a read / non-forge command the gate must NOT claim as a body surface"
         )

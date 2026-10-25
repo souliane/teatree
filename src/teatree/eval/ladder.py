@@ -30,7 +30,7 @@ like the full-matrix benchmark.
 import dataclasses
 import sys
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.core.cost import tier_rank
 from teatree.eval.api_errors import NEVER_RETRY_ERRORS
 from teatree.eval.matrix import MatrixRow
@@ -67,7 +67,7 @@ _DEFAULT_LADDER_POLICY = LadderPolicy()
 
 def laddered_tier_models() -> list[str]:
     """The distinct tier model ids ordered cheapest-first (cheap < balanced < frontier)."""
-    return sorted(dict.fromkeys(TIER_MODELS.values()), key=_model_rank)
+    return sorted(dict.fromkeys(tier_models().values()), key=_model_rank)
 
 
 def _model_rank(model: str) -> int:

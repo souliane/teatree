@@ -23,6 +23,7 @@ from teatree.core.models import (
     ModeScheduleSlot,
     Prompt,
     PromptVersion,
+    SealedSecret,
     Ticket,
 )
 from teatree.core.models.config_setting import ConfigValue
@@ -100,6 +101,18 @@ class ReadOnlyAdmin(admin.ModelAdmin):
     @override
     def has_view_permission(self, request: "HttpRequest", obj: models.Model | None = None) -> bool:
         return obj is None and super().has_view_permission(request)
+
+
+@admin.register(SealedSecret)
+class SealedSecretAdmin(ReadOnlyAdmin):
+    @override
+    def get_list_display(self, request: "HttpRequest") -> list[str]:
+        return ["name", "key_id", "updated_at", "encrypted"]
+
+    @staticmethod
+    @admin.display(description="Value")
+    def encrypted(_obj: SealedSecret) -> str:
+        return "encrypted"
 
 
 def register_read_only_defaults(site: admin.AdminSite, candidates: Iterable[type[models.Model]]) -> None:

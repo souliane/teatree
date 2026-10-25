@@ -1,22 +1,15 @@
 """A command whose delivery the owner loop never confirmed stays ``unknown_delivery`` and is never replayed."""
 
 import asyncio
-import threading
+from dataclasses import replace
 from unittest.mock import patch
 
 from teatree.agents import live_registry
-from teatree.agents.live_control import ControlOutcome, ControlReceipt, LiveTask
+from teatree.agents.live_control import ControlOutcome, ControlReceipt, LiveFence, LiveTask, RejectCode
 from teatree.agents.live_registry import LiveSessionRegistry
+from tests.teatree_agents._live_owner import OwnerLoop
 
 _TASK = LiveTask(pk=7, ticket=3, phase="coding", harness="claude_sdk", model="m")
-
-
-class _Capture:
-    tool_calls = 0
-    context_tokens = None
-    last_event_at = None
-    open_tool = None
-    result_message = None
 
 
 class _SilentSession:
@@ -44,43 +37,16 @@ class _FailingSession(_SilentSession):
         raise RuntimeError(msg)
 
 
-class _OwnerLoop(threading.Thread):
-    """The session's own event loop, holding it live in the registry until ``end``."""
-
-    def __init__(self, registry: LiveSessionRegistry, session: _SilentSession) -> None:
-        super().__init__(daemon=True)
-        self._registry = registry
-        self._session = session
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._finish: asyncio.Event | None = None
-        self.attached = threading.Event()
-
-    def run(self) -> None:
-        asyncio.run(self._own())
-
-    async def _own(self) -> None:
-        self._loop = asyncio.get_running_loop()
-        self._finish = asyncio.Event()
-        async with self._registry.attach(_TASK, _Capture()) as controller:
-            controller.bind(self._session)
-            self.attached.set()
-            await self._finish.wait()
-
-    def end(self) -> None:
-        assert self._loop is not None
-        assert self._finish is not None
-        self._loop.call_soon_threadsafe(self._finish.set)
-        self.join(timeout=10)
-
-
 def _steer(registry: LiveSessionRegistry) -> ControlReceipt:
-    return asyncio.run(registry.steer(_TASK.pk, "use the attached page", command_id="c-1", wait=0.05))
+    return asyncio.run(
+        registry.steer(_TASK.pk, "use the attached page", command_id="c-1", wait=0.05, fence=_TASK.fence)
+    )
 
 
 def test_an_unconfirmed_command_stays_unknown_for_every_retry_and_is_delivered_once() -> None:
     registry = LiveSessionRegistry()
     session = _SilentSession()
-    owner = _OwnerLoop(registry, session)
+    owner = OwnerLoop(registry, _TASK, session)
     owner.start()
     assert owner.attached.wait(timeout=10)
 
@@ -99,7 +65,7 @@ def test_an_unconfirmed_command_stays_unknown_for_every_retry_and_is_delivered_o
 def test_a_delivery_that_fails_mid_flight_stays_unknown_for_every_retry_and_is_delivered_once() -> None:
     registry = LiveSessionRegistry()
     session = _FailingSession()
-    owner = _OwnerLoop(registry, session)
+    owner = OwnerLoop(registry, _TASK, session)
     owner.start()
     assert owner.attached.wait(timeout=10)
 
@@ -111,3 +77,131 @@ def test_a_delivery_that_fails_mid_flight_stays_unknown_for_every_retry_and_is_d
     outcomes = [first.outcome, retried_while_live.outcome, retried_after_close.outcome]
     assert outcomes == [ControlOutcome.UNKNOWN_DELIVERY] * 3
     assert session.steered == ["c-1"]
+
+
+class _AcceptingSession(_SilentSession):
+    async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+        del text, wait
+        self.steered.append(input_id)
+
+
+def _push(registry: LiveSessionRegistry) -> ControlReceipt:
+    return asyncio.run(registry.push(_TASK.pk, "framed peer words", command_id="peer-1", wait=1, fence=_TASK.fence))
+
+
+def test_a_peer_push_runs_on_the_owner_loop_and_keeps_no_receipt_after_close() -> None:
+    registry = LiveSessionRegistry()
+    session = _AcceptingSession()
+    owner = OwnerLoop(registry, _TASK, session)
+    owner.start()
+    assert owner.attached.wait(timeout=10)
+
+    pushed = _push(registry)
+    owner.end()
+    after_close = _push(registry)
+
+    assert pushed.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+    assert (after_close.outcome, after_close.code) == (ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)
+    assert session.steered == ["peer-1"]
+
+
+def test_a_peer_push_to_a_task_with_no_live_session_is_unknown_session() -> None:
+    receipt = _push(LiveSessionRegistry())
+
+    assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode.UNKNOWN_SESSION)
+
+
+def test_pause_runs_on_the_owner_loop_and_replays_after_detach() -> None:
+    registry = LiveSessionRegistry()
+    owner = OwnerLoop(registry, _TASK, _AcceptingSession())
+    owner.start()
+    assert owner.attached.wait(timeout=10)
+
+    first = asyncio.run(registry.pause(_TASK.pk, "pause", command_id="pause-1", wait=1, fence=_TASK.fence))
+    owner.end()
+    replay = asyncio.run(registry.pause(_TASK.pk, "pause", command_id="pause-1", wait=1, fence=_TASK.fence))
+
+    assert first == replay
+    assert first.outcome is ControlOutcome.PAUSED
+
+
+def test_old_claim_and_worker_generation_cannot_reach_a_replacement_session() -> None:
+    registry = LiveSessionRegistry()
+    current = replace(_TASK, fence=LiveFence("claim-b", "worker-b"))
+    session = _AcceptingSession()
+    with OwnerLoop(registry, current, session):
+        for stale in (
+            LiveFence("claim-a", "worker-b"),
+            LiveFence("claim-b", "worker-a"),
+        ):
+            operator = asyncio.run(registry.follow_up(_TASK.pk, "stale", command_id="old", wait=1, fence=stale))
+            peer = asyncio.run(registry.push(_TASK.pk, "stale peer", command_id="old-peer", wait=1, fence=stale))
+            assert (operator.outcome, operator.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+            assert (peer.outcome, peer.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+        assert session.steered == []
+        accepted = asyncio.run(registry.steer(_TASK.pk, "current", command_id="new", wait=1, fence=current.fence))
+        assert accepted.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+
+
+def test_a_command_for_an_older_attempt_never_reaches_the_newer_one() -> None:
+    registry = LiveSessionRegistry()
+    old = replace(_TASK, fence=LiveFence("old", "generation"))
+    new = replace(_TASK, fence=LiveFence("new", "generation"))
+    with OwnerLoop(registry, old, _AcceptingSession()):
+        pass
+    session = _AcceptingSession()
+    with OwnerLoop(registry, new, session):
+        stale = asyncio.run(registry.steer(new.pk, "old words", command_id="same", wait=1, fence=old.fence))
+        stale_push = asyncio.run(registry.push(new.pk, "old peer", command_id="old-peer", wait=1, fence=old.fence))
+        current = asyncio.run(registry.steer(new.pk, "new words", command_id="same", wait=1, fence=new.fence))
+    assert (stale.outcome, stale.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+    assert (stale_push.outcome, stale_push.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+    assert current.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+    assert session.steered == ["same"]
+
+
+def test_a_command_for_another_generation_is_stale() -> None:
+    registry = LiveSessionRegistry()
+    current = replace(_TASK, fence=LiveFence("attempt", "new-generation"))
+    session = _AcceptingSession()
+    with OwnerLoop(registry, current, session):
+        receipt = asyncio.run(
+            registry.steer(
+                current.pk, "old generation", command_id="g-1", wait=1, fence=LiveFence("attempt", "old-generation")
+            )
+        )
+    assert (receipt.outcome, receipt.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+    assert session.steered == []
+
+
+def test_a_closed_tombstone_rejects_another_fence_before_replaying_a_receipt() -> None:
+    registry = LiveSessionRegistry()
+    with OwnerLoop(registry, _TASK, _AcceptingSession()):
+        original = _steer(registry)
+
+    stale = asyncio.run(
+        registry.steer(
+            _TASK.pk,
+            "use the attached page",
+            command_id="c-1",
+            wait=0.05,
+            fence=LiveFence("old-attempt", _TASK.fence.generation),
+        )
+    )
+
+    assert original.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+    assert (stale.outcome, stale.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+
+
+def test_a_reused_command_id_cannot_replay_into_a_new_attempt() -> None:
+    registry = LiveSessionRegistry()
+    old = replace(_TASK, fence=LiveFence("old", "g"))
+    new = replace(_TASK, fence=LiveFence("new", "g"))
+    with OwnerLoop(registry, old, _AcceptingSession()):
+        original = asyncio.run(registry.steer(old.pk, "same words", command_id="reused", wait=1, fence=old.fence))
+    session = _AcceptingSession()
+    with OwnerLoop(registry, new, session):
+        retried = asyncio.run(registry.steer(new.pk, "same words", command_id="reused", wait=1, fence=old.fence))
+    assert original.outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+    assert (retried.outcome, retried.code) == (ControlOutcome.REJECTED, RejectCode.STALE_COMMAND)
+    assert session.steered == []

@@ -38,8 +38,6 @@ loop persistence flow).
 
 import json
 import logging
-import os
-import shutil
 from dataclasses import dataclass, replace
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
@@ -47,9 +45,8 @@ from teatree import forge_credentials
 from teatree.core.merge import CodeHostQuery
 from teatree.core.modelkit.forge_readability import CHECKS_FAILED
 from teatree.core.review.author_trust import classify_author
-from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr
+from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr, run_gh
 from teatree.utils.pr_ref import PrRef
-from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -325,16 +322,7 @@ class GhCodexPrApi:
     @staticmethod
     def _run_gh(argv: list[str], *, slug: str) -> tuple[int, str, str]:
         resolution = forge_credentials.resolve_slug_token(slug, forge="github", credential="github_token")
-        if resolution.state is not forge_credentials.ForgeTokenState.TOKEN:
-            detail = f"{resolution.setting} is {resolution.state.value}: {resolution.detail}"
-            return 4, "", f"{detail}; refusing ambient gh authentication"
-        gh = shutil.which("gh") or "gh"
-        env: dict[str, str] = {**os.environ, "GH_TOKEN": resolution.token}
-        env.pop("GITHUB_TOKEN", None)
-        try:
-            result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env)
-        except FileNotFoundError:
-            return 127, "", "gh not installed"
+        result = run_gh(argv, resolution=resolution)
         return result.returncode, result.stdout, result.stderr
 
 

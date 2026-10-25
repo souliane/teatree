@@ -21,7 +21,9 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.management.commands._task_cancel_auth import direct_owner_action
 from teatree.core.models import Worktree
+from teatree.core.worktree.checkout_attest import AttestRefusedError, attest_checkout
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, held_worktrees, occupancy_holder, release
 from teatree.core.worktree.worktree_paths import paths_match
 
@@ -29,10 +31,21 @@ from teatree.core.worktree.worktree_paths import paths_match
 def _worktree_for_path(raw: str) -> Worktree:
     """The registered ``Worktree`` whose checkout is *raw*, or a refusal naming the miss."""
     candidate = Path(raw).expanduser()
+    resolved = str(candidate.resolve())
+    resolved_match: Worktree | None = None
+    alias: Worktree | None = None
     for worktree in Worktree.objects.exclude(extra__worktree_path__isnull=True).order_by("pk"):
         recorded = worktree.worktree_path
-        if recorded and paths_match(Path(recorded), candidate):
+        if recorded == str(candidate):
             return worktree
+        if recorded == resolved and resolved_match is None:
+            resolved_match = worktree
+        if recorded and alias is None and paths_match(recorded, candidate):
+            alias = worktree
+    if resolved_match is not None:
+        return resolved_match
+    if alias is not None:
+        return alias
     typer.echo(
         f"  Refused: no registered worktree is recorded at {candidate}. "
         "List the live claims with `t3 <overlay> worktree occupancy`.",
@@ -53,6 +66,21 @@ class OccupancyCommands(TyperCommand):
             return
         for worktree, holder in held:
             self.stdout.write(f"  {worktree.worktree_path or '<unprovisioned>'} — {holder.describe()}")
+
+    @command()
+    def attest(self, path: str) -> None:
+        """Record the present checkout state after the owner has inspected it."""
+        if not direct_owner_action():
+            self.stderr.write("  Refused: only a direct owner command may attest a checkout.")
+            raise SystemExit(1)
+        worktree = _worktree_for_path(path)
+        try:
+            attestation = attest_checkout(worktree)
+        except AttestRefusedError as exc:
+            self.stderr.write(f"  Refused: {path} {exc}")
+            raise SystemExit(1) from exc
+        suffix = " (one dispatch; host process evidence unavailable)" if not attestation.host_evidence else ""
+        self.stdout.write(f"  attested {worktree.worktree_path} at {attestation.state.digest}{suffix}")
 
     @command(name="claim-occupancy")
     def claim_occupancy(

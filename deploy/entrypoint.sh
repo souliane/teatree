@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# teatree headless deployment entrypoint. One image, five roles selected by
+# teatree headless deployment entrypoint. One image, six roles selected by
 # $TEATREE_ROLE:
 #   init           — one-shot prep (clone + editable install + t3 setup + DB config),
-#                    exits 0. worker/admin/slack-listener depend on its successful
+#                    exits 0. worker/admin/webhook-listener/slack-listener depend on its successful
 #                    completion, so the editable-install-on-the-shared-clone happens once.
 #   worker         — runs `t3 worker` (the loop cadence owner), DEBUG off.
 #   admin          — runs `t3 admin` (Django admin under gunicorn, DEBUG off) on the box loopback.
+#   webhook-listener — serves only the signed forge receivers on the box loopback.
 #   slack-listener — runs `t3 slack listen` (the Socket-Mode receiver: records an inbound
 #                    DM and wakes the answer cycle itself, and feeds the JSONL queue the
 #                    worker's mention scanner drains). Only meaningful when an overlay is
@@ -23,7 +24,7 @@ set -euo pipefail
 # that predates the contract runs its OWN baked entrypoint instead, which matches it,
 # until the next build — never a new script on an old image. Bump both this number and
 # the Dockerfile's /usr/local/share/teatree/entrypoint-contract together.
-ENTRYPOINT_IMAGE_CONTRACT=1
+ENTRYPOINT_IMAGE_CONTRACT=2
 BAKED_ENTRYPOINT="${TEATREE_BAKED_ENTRYPOINT:-/usr/local/bin/entrypoint.sh}"
 image_contract() {
     local baked
@@ -39,7 +40,7 @@ if [ "$(readlink -f "$0")" != "$BAKED_ENTRYPOINT" ] && [ -x "$BAKED_ENTRYPOINT" 
     exec "$BAKED_ENTRYPOINT" "$@"
 fi
 
-ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin, slack-listener, watchdog}"
+ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin, slack-listener, webhook-listener, watchdog}"
 
 # Dispatch the watchdog role FIRST — before the credential/git preamble that the
 # other roles need but the watchdog neither has nor wants (root, no secrets).
@@ -56,6 +57,9 @@ if [ "$ROLE" = watchdog ]; then
     fi
     exec bash "${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/watchdog.sh" --loop
 fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "$SCRIPT_DIR/git-pins.sh"
 
 CLONE_DIR="${TEATREE_CLONE_DIR:-/home/teatree/teatree}"
 REPO_URL="${TEATREE_REPO_URL:-https://github.com/souliane/teatree.git}"
@@ -291,6 +295,13 @@ setup_disk_tmpdir() {
     export PYTEST_DEBUG_TEMPROOT="$tmproot"
 }
 setup_disk_tmpdir
+
+# Before the secret sourcing below, so no forge or chat token reaches the listener. The tool
+# venv's interpreter, because a uv tool install puts only `t3` on PATH, never `gunicorn`.
+if [ "$ROLE" = webhook-listener ]; then
+    exec "$(dirname "$(readlink -f "$(command -v t3)")")/python" -m gunicorn --workers 2 --threads 4 \
+        --bind "127.0.0.1:${TEATREE_WEBHOOK_PORT:-8001}" teatree.webhook_wsgi:application
+fi
 
 # Source a runtime secret from the box pass store when its env var is unset,
 # keeping the plaintext out of teatree.env and off argv/logs (#3454). An env
@@ -1087,7 +1098,7 @@ admin)
     exec t3 admin --host 127.0.0.1 --port "${TEATREE_ADMIN_PORT:-8000}" --no-browser
     ;;
 *)
-    echo "entrypoint: unknown TEATREE_ROLE '$ROLE' (expected init|worker|admin|slack-listener|watchdog)" >&2
+    echo "entrypoint: unknown TEATREE_ROLE '$ROLE' (expected init|worker|admin|slack-listener|webhook-listener|watchdog)" >&2
     exit 64
     ;;
 esac

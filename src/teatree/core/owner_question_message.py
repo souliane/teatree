@@ -141,7 +141,11 @@ def _asked_at(row: DeferredQuestion) -> dt.datetime:
 
 def bump_text(row: DeferredQuestion, *, now: dt.datetime) -> str:
     """The re-ping posted into the question's own thread: how long it has waited and how to answer."""
-    way = "Tap an option above, or reply here." if _view(row).options else "Reply here."
+    view = _view(row)
+    if view.action:
+        way = "Tap an option above."
+    else:
+        way = "Tap an option above, or reply here." if view.options else "Reply here."
     return f"Still waiting for your decision; I asked {age_phrase(now - _asked_at(row))}. {way}"
 
 

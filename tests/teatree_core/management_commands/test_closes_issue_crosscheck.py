@@ -14,7 +14,7 @@ subprocess + visual-QA + GitHub/GitLab network boundaries are patched.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import cast
 from unittest.mock import patch
 
@@ -78,7 +78,7 @@ def _git_boundary(
     subject: str = "feat: x",
     body: str = "",
     commit_bodies: list[str] | None = None,
-) -> Iterator[None]:
+) -> Generator[None]:
     """Patch the git boundary the gate + ``ship_preview`` reach.
 
     Mirrors ``test_close_keyword_gate._git_boundary``: ``last_commit_message``
@@ -110,7 +110,7 @@ def _git_boundary(
 
 
 @contextlib.contextmanager
-def _stub_issue(issue: dict[str, object]) -> Iterator[None]:
+def _stub_issue(issue: dict[str, object]) -> Generator[None]:
     """Patch the code-host so ``get_issue`` returns *issue* (the network boundary)."""
 
     class _Host:

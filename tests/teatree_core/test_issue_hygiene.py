@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.backend_protocols import IssueResolutionSpec
 from teatree.core.issue_hygiene import (
     MAX_APPEND_ATTEMPTS,
     CreateDecision,
@@ -33,8 +34,9 @@ from teatree.core.issue_hygiene import (
     create_or_extend_by_marker,
     record_issue_note,
     section_marker,
+    snapshot_token_for_urls,
 )
-from teatree.core.models import ConfigSetting, TicketSweepRun
+from teatree.core.models import ConfigSetting, SendAudit, TicketSweepRun
 from teatree.core.self_forge_identities import ExternalIssueRefusedError
 
 if TYPE_CHECKING:
@@ -83,12 +85,32 @@ class _FakeHost:
             self.issues.setdefault(issue_url, {})["description"] = body
         return {"web_url": issue_url}
 
-    def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> dict[str, Any]:
-        self.creates.append({"repo": repo, "title": title, "body": body, "labels": labels})
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.creates.append(
+            {
+                "repo": repo,
+                "title": title,
+                "body": body,
+                "labels": labels,
+            }
+        )
         url = f"https://gitlab.com/{repo}/-/issues/{self.next_iid}"
         self.next_iid += 1
         self.issues[url] = _issue(url, body=body, title=title)
         return {"web_url": url, "iid": self.next_iid - 1}
+
+    def create_issue_resolving_threads(self, spec: IssueResolutionSpec) -> dict[str, Any]:
+        created = self.create_issue(repo=spec.repo, title=spec.title, body=spec.body, labels=list(spec.labels))
+        self.creates[-1]["merge_request_to_resolve_discussions_of"] = spec.merge_request_iid
+        self.creates[-1]["discussion_to_resolve"] = spec.thread_id
+        return created
 
     def repo_for_issue_url(self, issue_url: str) -> str:
         return _REPO
@@ -349,8 +371,12 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert outcome.issue_url == fits
         assert host.creates == [], "a fitting ticket means no new ticket"
         assert "it flaked twice today" in host.issues[fits]["description"]
+        audit = SendAudit.objects.get(action="issue_create_judgment")
+        assert audit.target == fits
+        assert f"{fits} fits" in audit.payload_summary
+        assert "unrelated lane" in audit.payload_summary
 
-    def test_all_candidates_rejected_creates_once_and_records_every_rejection(self) -> None:
+    def test_all_candidates_rejected_creates_once_without_publishing_rejections(self) -> None:
         host = self._landscape()
         outcome = create_or_extend(
             host=host,
@@ -363,19 +389,74 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert outcome.kind == "created_new"
         assert len(host.creates) == 1
         filed = host.creates[0]["body"]
-        assert "## Dedupe check" in filed
-        assert "issues/1" in filed
-        assert "different probe" in filed
-        assert "issues/2" in filed
-        assert "unrelated lane" in filed
+        assert filed == "body text"
+        audit = SendAudit.objects.get(action="issue_create_judgment")
+        assert "issues/1" in audit.payload_summary
+        assert "different probe" in audit.payload_summary
+        assert "issues/2" in audit.payload_summary
+        assert "unrelated lane" in audit.payload_summary
 
-    def test_an_empty_backlog_records_that_no_candidates_existed(self) -> None:
+    def test_an_empty_backlog_does_not_publish_an_audit(self) -> None:
         host = _FakeHost({})
         outcome = create_or_extend(
             host=host, draft=IssueDraft(repo=_REPO, title="first ticket", body="body"), decisions=[]
         )
         assert outcome.kind == "created_new"
-        assert "no open candidates" in host.creates[0]["body"].casefold()
+        assert host.creates[0]["body"] == "body"
+        assert "0 candidates judged" in SendAudit.objects.get(action="issue_create_judgment").payload_summary
+
+    def test_a_gitlab_nit_issue_forwards_discussion_resolution_fields(self) -> None:
+        host = _FakeHost({})
+
+        outcome = create_or_extend(
+            host=host,
+            draft=IssueDraft(
+                repo=_REPO,
+                title="NIT follow-up",
+                body="Review the inline points.",
+                labels=("nit", "t3-auto"),
+                merge_request_to_resolve_discussions_of=42,
+                discussion_to_resolve="discussion-7",
+            ),
+            decisions=[],
+        )
+
+        assert outcome.kind == "created_new"
+        assert host.creates[0]["merge_request_to_resolve_discussions_of"] == 42
+        assert host.creates[0]["discussion_to_resolve"] == "discussion-7"
+
+    def test_audit_records_each_live_candidate_reason_and_ignores_stale_urls(self) -> None:
+        host = self._landscape()
+        fitting = "https://gitlab.com/acme/widgets/-/issues/1"
+        outcome = create_or_extend(
+            host=host,
+            draft=IssueDraft(repo=_REPO, title="same thing", body="body"),
+            decisions=[
+                CreateDecision(candidate_url=fitting, fits=True, reason="same request"),
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/2", reason="different"),
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/99", reason="stale"),
+            ],
+        )
+        assert outcome.kind == "extended_existing"
+        summary = SendAudit.objects.get(action="issue_create_judgment").payload_summary
+        assert "2 candidates judged" in summary
+        assert f"{fitting} fits: same request" in summary
+        assert "issues/99" not in summary
+
+    def test_stale_fitting_decision_cannot_redirect_a_live_backlog_create(self) -> None:
+        host = self._landscape()
+        outcome = create_or_extend(
+            host=host,
+            draft=IssueDraft(repo=_REPO, title="new topic", body="body"),
+            decisions=[
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/1", reason="different"),
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/2", reason="unrelated"),
+                CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/99", fits=True),
+            ],
+        )
+        assert outcome.kind == "created_new"
+        assert len(host.creates) == 1
+        assert host.updates == []
 
     def test_an_unjudged_open_candidate_refuses_the_create(self) -> None:
         """Skipping the landscape pass is the failure mode; silence is not a rejection."""
@@ -389,6 +470,7 @@ class TestCreateOrExtend(_HygieneTestCase):
                 ],
             )
         assert host.mutations == 0
+        assert SendAudit.objects.count() == 0
 
     def test_a_rejection_without_a_reason_refuses_the_create(self) -> None:
         host = self._landscape()
@@ -402,6 +484,7 @@ class TestCreateOrExtend(_HygieneTestCase):
                 ],
             )
         assert host.mutations == 0
+        assert SendAudit.objects.count() == 0
 
     def test_a_fitting_external_ticket_blocks_both_the_edit_and_the_duplicate(self) -> None:
         external = "https://gitlab.com/acme/widgets/-/issues/1"
@@ -418,6 +501,7 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert outcome.kind == "external_conflict"
         assert outcome.issue_url == external
         assert host.mutations == 0, "an external match must not be edited AND must not be duplicated"
+        assert "external_conflict" in SendAudit.objects.get(action="issue_create_judgment").payload_summary
 
     def test_a_closed_ticket_is_not_a_candidate_and_is_never_reopened(self) -> None:
         closed = "https://gitlab.com/acme/widgets/-/issues/3"
@@ -446,14 +530,16 @@ class TestCreateOrExtend(_HygieneTestCase):
             host=host,
             draft=IssueDraft(repo=_REPO, title="new thing", body="body"),
             decisions=decisions,
-            snapshot_urls=("https://gitlab.com/acme/widgets/-/issues/1", "https://gitlab.com/acme/widgets/-/issues/2"),
+            snapshot_token=snapshot_token_for_urls(
+                ("https://gitlab.com/acme/widgets/-/issues/1", "https://gitlab.com/acme/widgets/-/issues/2")
+            ),
         )
         assert outcome.kind == "stale_snapshot"
         assert new_url in outcome.unjudged
         assert host.mutations == 0
+        assert SendAudit.objects.count() == 0
 
-    def test_the_dedupe_audit_section_is_scrubbed_before_it_reaches_the_forge(self) -> None:
-        """The rejection reasons ride agent/MCP input same as the body — they must pass the same scrub."""
+    def test_a_rejection_reason_never_reaches_the_forge_write(self) -> None:
         self._scrub.stop()
         host = self._landscape()
         with patch("teatree.core.issue_hygiene.route_forge_write", return_value="REDACTED") as scrub:
@@ -472,7 +558,9 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert scrub.called
         filed = host.creates[0]["body"]
         assert "secret codename" not in filed, "an unscrubbed rejection reason must never reach the forge"
-        assert "REDACTED" in filed
+        assert filed == "REDACTED"
+        assert all("secret codename" not in call.kwargs["text"] for call in scrub.call_args_list)
+        assert "secret codename" in SendAudit.objects.get(action="issue_create_judgment").payload_summary
 
     def test_a_forge_create_error_is_raised_not_reported_as_created_new(self) -> None:
         """An unresolvable-project error dict must not be reported as a filed issue with no URL."""
@@ -489,6 +577,7 @@ class TestCreateOrExtend(_HygieneTestCase):
                     CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/2", reason="b"),
                 ],
             )
+        assert SendAudit.objects.count() == 0, "a write the forge refused must leave no judgment record"
 
 
 class TestSweepCountsWhatItFiles(_HygieneTestCase):
@@ -535,8 +624,12 @@ class TestMarkerJudgedCreate(TestCase):
         assert outcome.kind == "extended_existing"
         assert outcome.issue_url == marked
         assert host.creates == []
+        assert (
+            f"{marked} fits: marker <!-- fp: abc --> found"
+            in SendAudit.objects.get(action="issue_create_judgment").payload_summary
+        )
 
-    def test_an_unmarked_backlog_files_once_and_records_every_rejection(self) -> None:
+    def test_an_unmarked_backlog_files_once_and_logs_every_rejection(self) -> None:
         other = "https://gitlab.com/acme/widgets/-/issues/9"
         host = _FakeHost({other: _issue(other, body="unrelated")})
         with _no_scrub():
@@ -545,15 +638,20 @@ class TestMarkerJudgedCreate(TestCase):
             )
         assert outcome.kind == "created_new"
         assert len(host.creates) == 1
-        assert other in host.creates[0]["body"]
+        assert host.creates[0]["body"] == "b"
+        assert (
+            f"{other} rejected: marker <!-- fp: abc --> missing"
+            in SendAudit.objects.get(action="issue_create_judgment").payload_summary
+        )
 
-    def test_an_empty_backlog_says_so_rather_than_reading_as_unchecked(self) -> None:
+    def test_an_empty_backlog_logs_the_check_without_publishing_it(self) -> None:
         host = _FakeHost()
         with _no_scrub():
             create_or_extend_by_marker(
                 host=host, draft=IssueDraft(repo=_REPO, title="t", body="b"), marker="<!-- fp: abc -->"
             )
-        assert "No open candidates" in host.creates[0]["body"]
+        assert host.creates[0]["body"] == "b"
+        assert "0 candidates judged" in SendAudit.objects.get(action="issue_create_judgment").payload_summary
 
     def test_a_closed_marked_ticket_is_not_reused(self) -> None:
         closed = "https://gitlab.com/acme/widgets/-/issues/9"

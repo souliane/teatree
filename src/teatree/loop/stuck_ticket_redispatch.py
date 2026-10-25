@@ -23,7 +23,7 @@ by exhausting the budget below, which pages a human about a doomed phase rather 
 an honoured decision. Anything the pipeline does afterwards is a newer task, which is
 the "something changed" that puts the ticket back in play.
 
-The re-dispatch is HARD-BOUNDED by the #2009 repair-loop budget, on ONE path for
+The re-dispatch is HARD-BOUNDED by the #2009 work budget and the lease-reap bound, on ONE path for
 both classes: a ticket-phase at its iteration cap, stalled on two consecutive
 identical failures, or stalled on two consecutive failures of the same NAMED
 DETERMINISTIC :class:`FailureKind`, is NOT re-dispatched and is escalated LOUDLY via
@@ -51,21 +51,33 @@ from django.utils import timezone
 
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, stall_fingerprints, stall_kinds
-from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
+from teatree.core.modelkit.task_failure_taxonomy import (
+    LEASE_EXPIRED_PREFIX,
+    FailureKind,
+    stall_fingerprints,
+    stall_kinds,
+)
+from teatree.core.models import PlanArtifact, PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanError
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task
+from teatree.core.models.self_review import SelfReview
+from teatree.core.models.task_repair_queries import (
+    adjacent_work_attempts,
+    ticket_phase_iterations,
+    ticket_phase_observations,
+)
 from teatree.core.models.ticket_external_review import (
     ReviewDeclined,
     reviewer_dispatch_decline,
     schedule_external_review,
 )
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
-from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
-from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, max_phase_iterations, requeue_verdict
 from teatree.loop.persistence_phase_task import create_phase_task
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
 
@@ -171,16 +183,30 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
 
     One queryset, two admission predicates OR-ed: a ticket idle past *threshold_hours*
     (frozen) or one whose latest attempt for the implied phase failed (failing).
+    A newest task recorded by hand means a session is driving, so only the idle class applies.
     """
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
-        phase = _implied_phase(ticket)
-        if phase is None or ticket.newest_task_was_cancelled():
+        phase = _recoverable_phase(ticket)
+        if phase is None:
             continue
-        failing = _phase_is_failing(ticket, phase=phase) and not _review_has_no_head(ticket, phase=phase)
+        failing = (
+            _phase_is_failing(ticket, phase=phase)
+            and not _review_has_no_head(ticket, phase=phase)
+            and not ticket.newest_task_recorded_by_hand()
+        )
         if failing or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))
     return candidates
+
+
+def _recoverable_phase(ticket: Ticket) -> str | None:
+    phase = _implied_phase(ticket)
+    if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
+        return None
+    if normalize_phase(phase) == "coding" and _merge_safe_review_after_plan(ticket):
+        return None
+    return phase
 
 
 def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
@@ -196,13 +222,28 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
     """
     author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(_STATE_PHASE))
     reviewer = Q(role=Ticket.Role.REVIEWER, state__in=tuple(Ticket.pre_ship_states()))
-    open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__state__in=_OPEN_PR_STATES)
+    open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__in=PullRequest.objects.live())
     return list(
         Ticket.objects.filter(author | reviewer)
         .exclude(tasks__status__in=Task.Status.active())
         .exclude(open_pr)
         .distinct()
     )
+
+
+def idle_started_author_tickets(*, now: datetime, threshold_hours: int) -> list[Ticket]:
+    """Author tickets idle past *threshold_hours* with no active task or live PR, whose newest task was not cancelled.
+
+    The read-only half of the frozen class, for callers that hold on an idle ticket instead of
+    re-dispatching it. A reviewer ticket is someone else's PR, so it never counts as started work.
+    """
+    return [
+        ticket
+        for ticket in _live_tickets_with_nothing_in_flight()
+        if ticket.role == Ticket.Role.AUTHOR
+        and _is_idle(ticket, now=now, threshold_hours=threshold_hours)
+        and _recoverable_phase(ticket) is not None
+    ]
 
 
 def _warn_unknown_states() -> None:
@@ -231,7 +272,7 @@ def _implied_phase(ticket: Ticket) -> str | None:
 
 
 def _phase_is_failing(ticket: Ticket, *, phase: str) -> bool:
-    """Whether the latest recorded WORK attempt of *ticket*'s *phase* failed and left nothing behind.
+    """Whether the latest non-capacity attempt of *ticket*'s *phase* failed and left nothing behind.
 
     A failed attempt whose phase output DEMONSTRABLY LANDED is not a failing phase — it
     is the dead artifact of an interrupted run the ticket already advanced past, and the
@@ -246,7 +287,7 @@ def _phase_is_failing(ticket: Ticket, *, phase: str) -> bool:
     one for a genuinely deterministic failure would hide a real, reproducible defect from
     this same sweep.
     """
-    attempts = _phase_attempts(ticket, phase=phase)
+    attempts = ticket_phase_observations(ticket.pk, phase)
     if not attempts or attempts[-1].outcome not in _FAILED_OUTCOMES:
         return False
     latest = attempts[-1]
@@ -262,10 +303,32 @@ def _review_has_no_head(ticket: Ticket, *, phase: str) -> bool:
     return target is not None and not target.head_sha
 
 
-#: PR states that count as "open" (a merged PR does not keep a ticket alive).
-_OPEN_PR_STATES = frozenset(
-    {PullRequest.State.OPEN, PullRequest.State.REVIEW_REQUESTED, PullRequest.State.APPROVED},
-)
+def _merge_safe_review_after_plan(ticket: Ticket) -> bool:
+    """A merge_safe self-review at the live checkout HEAD, recorded after the latest plan."""
+    plan_time = (
+        PlanArtifact.objects.filter(ticket=ticket)
+        .order_by("-recorded_at", "-pk")
+        .values_list("recorded_at", flat=True)
+        .first()
+    )
+    path = dispatch_worktree_path(ticket)
+    review = SelfReview.latest_for(ticket)
+    if plan_time is None or not path or review is None or review.verdict != "merge_safe":
+        return False
+    try:
+        head = git.run_strict(repo=path, args=["rev-parse", "HEAD"])
+    except (CommandFailedError, OSError):
+        # Not proven reviewed; the run-start fence parks a checkout it cannot read.
+        logger.warning("stuck-redispatch: HEAD of %s unreadable for ticket %s", path, ticket.pk, exc_info=True)
+        return False
+    if review.reviewed_sha != head.lower():
+        return False
+    return TaskAttempt.objects.filter(
+        task_id=review.task_pk,
+        ended_at__gt=plan_time,
+        result__review_verdict__verdict="merge_safe",
+        result__review_verdict__reviewed_sha=head,
+    ).exists()
 
 
 def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:
@@ -353,16 +416,29 @@ def _schedule_planned_work_or_reaffirm(ticket: Ticket) -> Task:
 
 
 def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
-    """Return the loud halt reason if *ticket*'s phase is out of repair budget, else ``None``."""
-    attempts = _phase_attempts(ticket, phase=phase)
-    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
+    """Return the loud halt reason if the work or lease-reap bound is spent."""
+    attempts = ticket_phase_iterations(ticket.pk, phase)
+    observations = ticket_phase_observations(ticket.pk, phase)
+    work_ids = {attempt.pk for attempt in attempts}
+    lease_reaps = 0
+    for attempt in reversed(observations):
+        if attempt.pk in work_ids:
+            break
+        lease_reaps += attempt.error.startswith(LEASE_EXPIRED_PREFIX)
+    if lease_reaps >= max_phase_iterations():
+        return (
+            f"phase {normalize_phase(phase)!r} on ticket {ticket.pk} had "
+            f"{lease_reaps} lease reaps since its last work attempt"
+        )
+    adjacent = adjacent_work_attempts(attempts, observations)
+    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in adjacent)
     try:
         requeue_verdict(
             ticket_id=ticket.pk,
             phase=normalize_phase(phase),
             iteration_count=len(attempts),
             last_two_fingerprints=last_two,
-            last_two_deterministic_kinds=_deterministic_kinds(attempts),
+            last_two_deterministic_kinds=_deterministic_kinds(adjacent),
         )
     except (MaxIterationsExceeded, IterationStalled) as exc:
         return str(exc)
@@ -377,27 +453,6 @@ def _deterministic_kinds(attempts: list[TaskAttempt]) -> list[str]:
     dropped on one repair path and compared on another.
     """
     return stall_kinds(a.failure_kind for a in attempts[-2:])
-
-
-def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:
-    """WORK attempts of *ticket*'s ``(ticket, normalized-phase)``, oldest first.
-
-    Both a usage-window limit-PARK (``LIMIT_PARKED_PREFIX``) and a window-recoverable
-    exhaustion FAILURE (session/weekly/rate-limit — see
-    :func:`~teatree.llm.anthropic_limits.recoverable_exhaustion_cause`) are excluded: a
-    capacity dip never executed a work iteration, so it must not burn the repair budget
-    nor trip the identical-failure stall — otherwise two limit hits spuriously halt the
-    re-dispatch and page a human. API-credit exhaustion (no timed reset) still counts.
-    """
-    attempts = (
-        TaskAttempt.objects.filter(
-            task__ticket_id=ticket.pk,
-            task__phase__in=phase_spellings(normalize_phase(phase)),
-        )
-        .exclude(error__startswith=LIMIT_PARKED_PREFIX)
-        .order_by("pk")
-    )
-    return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
 
 
 def _escalate_once(ticket: Ticket, *, reason: str) -> None:

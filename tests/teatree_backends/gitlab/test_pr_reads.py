@@ -5,8 +5,8 @@ import pytest
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.pr_reads import (
-    list_project_pr_commits,
     list_project_prs,
+    project_engaged_reviewers,
     project_pr_diff,
     repo_metadata,
     state_filter,
@@ -46,6 +46,41 @@ def test_list_prs_unresolvable_project_returns_empty() -> None:
     client.get_json_paginated.assert_not_called()
 
 
+def test_unreadable_requested_reviewers_do_not_look_empty() -> None:
+    wire = GitLabWire(
+        {
+            "projects/org%2Frepo": {"id": 42, "path_with_namespace": "org/repo", "path": "repo"},
+            "projects/42/merge_requests/5": {},
+        }
+    )
+
+    with pytest.raises(TypeError, match="Could not read requested reviewers"):
+        GitLabCodeHost(client=wire).get_pr_engaged_reviewers(repo="org/repo", pr_iid=5)
+
+
+def test_approved_and_requested_reviewers_are_both_engaged() -> None:
+    wire = GitLabWire(
+        {
+            "projects/org%2Frepo": {"id": 42, "path_with_namespace": "org/repo", "path": "repo"},
+            "projects/42/merge_requests/5": {"reviewers": [{"username": "peer"}]},
+            "projects/42/merge_requests/5/approvals": {
+                "approved_by": [{"user": {"username": "approver"}}],
+                "approvals_left": 1,
+            },
+        }
+    )
+
+    assert GitLabCodeHost(client=wire).get_pr_engaged_reviewers(repo="org/repo", pr_iid=5) == ["peer", "approver"]
+
+
+def test_unresolvable_project_cannot_be_read_as_no_engaged_reviewers() -> None:
+    client = MagicMock(spec=GitLabAPI)
+
+    with pytest.raises(ValueError, match="Could not resolve project"):
+        project_engaged_reviewers(client, None, repo="org/missing", pr_iid=5)
+    client.get_json.assert_not_called()
+
+
 def test_get_pr_diff_hits_diffs_endpoint() -> None:
     client = MagicMock(spec=GitLabAPI)
     client.get_json_paginated.return_value = [{"new_path": "a.py"}]
@@ -58,20 +93,6 @@ def test_get_pr_diff_hits_diffs_endpoint() -> None:
 
 def test_get_pr_diff_unresolvable_project_returns_empty() -> None:
     assert project_pr_diff(MagicMock(spec=GitLabAPI), None, pr_iid=7) == []
-
-
-def test_list_pr_commits_hits_commits_endpoint() -> None:
-    client = MagicMock(spec=GitLabAPI)
-    client.get_json_paginated.return_value = [{"id": "abc"}]
-
-    result = list_project_pr_commits(client, _project(), pr_iid=7)
-
-    assert result == [{"id": "abc"}]
-    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests/7/commits?per_page=100")
-
-
-def test_list_pr_commits_unresolvable_project_returns_empty() -> None:
-    assert list_project_pr_commits(MagicMock(spec=GitLabAPI), None, pr_iid=7) == []
 
 
 def test_repo_metadata_returns_project_fields() -> None:

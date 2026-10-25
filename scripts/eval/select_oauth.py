@@ -22,14 +22,12 @@ below leaves the eval exactly where an unexported provider would.
 
 *   ``EVAL_CREDENTIAL`` is not ``subscription_oauth`` (e.g. an ``api_key`` run) → export
     the provider and stop; there is no OAuth account to select.
-*   ``EVAL_OAUTH_TOKENS`` unset/empty → BACKWARD-SAFE passthrough: export the existing
-    single ``CLAUDE_CODE_OAUTH_TOKEN`` secret unchanged, so behaviour is exactly as
-    before this step existed.
+*   ``EVAL_OAUTH_TOKENS`` unset/empty → probe the existing single
+    ``CLAUDE_CODE_OAUTH_TOKEN`` against the same reserve; park with exit 75 if low.
 *   A freshest account is found → export it as ``CLAUDE_CODE_OAUTH_TOKEN``.
-*   EVERY candidate is exhausted/unreachable → with ``EVAL_API_KEY_FALLBACK`` truthy
-    (opt-in, DEFAULT OFF) flip the provider to ``api_key`` so the eval rides the metered
-    ``ANTHROPIC_API_KEY`` instead; otherwise exit non-zero (fail loud), since a run on a
-    throttled account produces garbage $0.00 shards — worse than a red pre-check.
+*   Every candidate is exhausted → with ``EVAL_API_KEY_FALLBACK`` truthy (opt-in,
+    DEFAULT OFF) flip to the metered ``api_key``; any unknown or below-reserve
+    candidate parks the run instead.
 
 SECRET HYGIENE. A token value is NEVER printed as a plain log line. The winning token
 is written straight to the ``$GITHUB_ENV`` file and registered with GitHub's
@@ -44,7 +42,9 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from teatree.eval.oauth_selection import parse_tokens, select_freshest
+from teatree.account_headroom import WindowReserve
+from teatree.eval.oauth_selection import TokenProbeStatus, parse_tokens, select_freshest
+from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 
 __all__ = ["main"]
 
@@ -81,6 +81,7 @@ def _export(env_file: str | None, assignments: Mapping[str, str]) -> None:
 def main(env: Mapping[str, str] | None = None) -> int:
     environ = env if env is not None else os.environ
     github_env = environ.get("GITHUB_ENV")
+    github_output = environ.get("GITHUB_OUTPUT")
     provider = (environ.get("EVAL_CREDENTIAL") or "").strip() or SUBSCRIPTION_OAUTH
 
     if provider != SUBSCRIPTION_OAUTH:
@@ -92,16 +93,21 @@ def main(env: Mapping[str, str] | None = None) -> int:
     if not tokens:
         fallback = (environ.get(OAUTH_TOKEN_ENV) or "").strip()
         if fallback:
-            _mask(fallback)
-            _export(github_env, {PROVIDER_ENV: SUBSCRIPTION_OAUTH, OAUTH_TOKEN_ENV: fallback})
-            print("EVAL_OAUTH_TOKENS unset/empty → using the existing CLAUDE_CODE_OAUTH_TOKEN secret unchanged.")
+            tokens = [fallback]
+        else:
+            print("EVAL_OAUTH_TOKENS unset/empty and no CLAUDE_CODE_OAUTH_TOKEN secret set — nothing to select.")
             return 0
-        print("EVAL_OAUTH_TOKENS unset/empty and no CLAUDE_CODE_OAUTH_TOKEN secret set — nothing to select.")
-        return 0
 
-    selection = select_freshest(tokens)
+    reserve = WindowReserve.from_environment(environ)
+    raw_sweep = environ.get("EVAL_SWEEP_WITHIN_HOURS", "").strip()
+    sweep_within_hours = float(raw_sweep) if raw_sweep else None
+    if sweep_within_hours is not None and sweep_within_hours < 0:
+        msg = "EVAL_SWEEP_WITHIN_HOURS must be nonnegative"
+        raise ValueError(msg)
+    selection = select_freshest(tokens, reserve=reserve, sweep_within_hours=sweep_within_hours)
     winner = selection.winner
     if winner is not None:
+        _export(github_output, {"parked": "false"})
         token = tokens[winner.index]
         _mask(token)
         _export(github_env, {PROVIDER_ENV: SUBSCRIPTION_OAUTH, OAUTH_TOKEN_ENV: token})
@@ -112,15 +118,20 @@ def main(env: Mapping[str, str] | None = None) -> int:
         )
         return 0
 
-    print("no eligible OAuth account — every candidate is exhausted or unreachable:")
+    print("no eligible OAuth account:")
     for candidate in selection.candidates:
         print(f"  {candidate.label}: {candidate.reason or candidate.status.value}")
-    if _is_truthy(environ.get("EVAL_API_KEY_FALLBACK")):
+    if (
+        _is_truthy(environ.get("EVAL_API_KEY_FALLBACK"))
+        and selection.candidates
+        and all(candidate.status is TokenProbeStatus.EXHAUSTED for candidate in selection.candidates)
+    ):
         _export(github_env, {PROVIDER_ENV: API_KEY})
         print("EVAL_API_KEY_FALLBACK is set → falling back to the metered ANTHROPIC_API_KEY (api_key).")
         return 0
-    print("EVAL_API_KEY_FALLBACK is off → failing loud (a run on a throttled account is worse than a red pre-check).")
-    return 1
+    _export(github_output, {"parked": "true"})
+    print("PARKED: no OAuth account meets the eval reserve.")
+    return MEASURED_NOTHING_EXIT_CODE
 
 
 if __name__ == "__main__":

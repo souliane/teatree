@@ -1,12 +1,12 @@
 """Scoped ``os.environ`` mutation that always restores the prior state."""
 
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 
 
 @contextmanager
-def patched_environ(overrides: Mapping[str, str], *, remove: tuple[str, ...] = ()) -> Iterator[None]:
+def patched_environ(overrides: Mapping[str, str], *, remove: tuple[str, ...] = ()) -> Generator[None]:
     """Apply *overrides* to ``os.environ`` (dropping *remove* keys) for the block, then restore.
 
     Only the touched keys are saved and restored, so a concurrent, unrelated

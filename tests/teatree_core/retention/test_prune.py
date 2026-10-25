@@ -25,6 +25,7 @@ from teatree.core.models import (
     IntentClassification,
     ReplyDispatch,
     ScannedBroadcast,
+    SendAudit,
     Session,
     Task,
     TaskAttempt,
@@ -58,8 +59,12 @@ _LANE_ORDER = [
     "Task (failed)",
     "Task (completed)",
     "BotPing (payload)",
+    "IncomingEvent (forge)",
     "IncomingEvent",
     "TicketTransition",
+    "PendingChatInjection",
+    "BotPing (sent text)",
+    "SendAudit (private judgment)",
     "DBTaskResult",
 ]
 
@@ -159,6 +164,88 @@ def _exists(row: Task | TaskAttempt) -> bool:
 
 
 class IncomingEventPrunableGuardTestCase(TestCase):
+    def test_forge_identity_rows_pruned_after_8_days(self) -> None:
+        old = IncomingEvent.objects.create(
+            source="github",
+            idempotency_key="github:old",
+            received_at=timezone.now() - dt.timedelta(days=9),
+            processed_at=timezone.now(),
+        )
+        recent = IncomingEvent.objects.create(
+            source="github",
+            idempotency_key="github:recent",
+            received_at=timezone.now() - dt.timedelta(days=7),
+            processed_at=timezone.now(),
+        )
+
+        plan = plan_retention()
+
+        assert _lane(plan, "IncomingEvent (forge)").retention_days == 8
+        assert _lane(plan, "IncomingEvent (forge)").rows == 1
+        apply_retention()
+        assert not IncomingEvent.objects.filter(pk=old.pk).exists()
+        assert IncomingEvent.objects.filter(pk=recent.pk).exists()
+
+    def test_old_settled_forge_row_is_counted_once_in_plan_and_apply(self) -> None:
+        old = IncomingEvent.objects.create(
+            source="github",
+            idempotency_key="github:old-settled",
+            received_at=timezone.now() - dt.timedelta(days=31),
+            processed_at=timezone.now(),
+        )
+
+        planned = plan_retention()
+        applied = apply_retention()
+
+        assert _lane(planned, "IncomingEvent (forge)").rows == _lane(applied, "IncomingEvent (forge)").rows == 1
+        assert _lane(planned, "IncomingEvent").rows == _lane(applied, "IncomingEvent").rows == 0
+        assert not IncomingEvent.objects.filter(pk=old.pk).exists()
+
+    def test_python_and_queryset_settled_forge_rules_agree(self) -> None:
+        for source, settled, dead_lettered in (
+            ("github", True, False),
+            ("gitlab", True, False),
+            ("slack", True, False),
+            ("github", False, False),
+            ("github", True, True),
+        ):
+            with self.subTest(source=source, settled=settled, dead_lettered=dead_lettered):
+                row = IncomingEvent.objects.create(
+                    source=source,
+                    idempotency_key=f"{source}:{settled}:{dead_lettered}",
+                    received_at=timezone.now() - dt.timedelta(days=9),
+                    processed_at=timezone.now() if settled else None,
+                    dead_lettered_at=timezone.now() if dead_lettered else None,
+                )
+
+                python_result = IncomingEvent.objects.is_settled_forge(
+                    source, settled=settled, dead_lettered=dead_lettered
+                )
+                queryset_result = (
+                    IncomingEvent.objects.forge_identity_rows(timezone.now() - dt.timedelta(days=8))
+                    .filter(pk=row.pk)
+                    .exists()
+                )
+
+                assert python_result == queryset_result
+
+    def test_forge_dead_letter_keeps_payload_until_the_long_window(self) -> None:
+        for settled, source in ((False, "gitlab"), (True, "github")):
+            with self.subTest(settled=settled):
+                dead = IncomingEvent.objects.create(
+                    source=source,
+                    idempotency_key=f"{source}:dead:{settled}",
+                    received_at=timezone.now() - dt.timedelta(days=9),
+                    processed_at=timezone.now() if settled else None,
+                    dead_lettered_at=timezone.now(),
+                    payload_json={"retry": "needed"},
+                )
+
+                apply_retention()
+
+                dead.refresh_from_db()
+                assert dead.payload_json == {"retry": "needed"}
+
     def test_old_processed_event_is_prunable(self) -> None:
         event = _event(idempotency_key="k-processed")
         prunable = IncomingEvent.objects.prunable(timezone.now() - dt.timedelta(days=30))
@@ -176,6 +263,42 @@ class IncomingEventPrunableGuardTestCase(TestCase):
     def test_never_prunes_processed_event_within_window(self) -> None:
         _event(idempotency_key="k-recent", received_at=_RECENT)
         assert IncomingEvent.objects.prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
+
+
+class PrivateJudgmentRetentionTestCase(TestCase):
+    def test_plan_and_apply_prune_only_expired_private_judgments(self) -> None:
+        old = SendAudit.objects.create(
+            channel=SendAudit.Channel.OTHER,
+            destination="private-judgment:gitlab:acme/widgets",
+            action="issue_create_judgment",
+            target="https://gitlab.com/acme/widgets/-/issues/1",
+            allowlist_verdict=SendAudit.Verdict.WARNED,
+            payload_summary="old judgment",
+            created_at=_PAST_POST_MORTEM,
+        )
+        recent = SendAudit.objects.create(
+            channel=SendAudit.Channel.OTHER,
+            destination="private-judgment:gitlab:acme/widgets",
+            action="issue_create_judgment",
+            target="https://gitlab.com/acme/widgets/-/issues/2",
+            allowlist_verdict=SendAudit.Verdict.WARNED,
+            payload_summary="recent judgment",
+            created_at=_RECENT,
+        )
+        outbound = SendAudit.objects.create(
+            channel=SendAudit.Channel.GITLAB,
+            destination="gitlab:acme/widgets",
+            action="issue_create",
+            target="https://gitlab.com/acme/widgets/-/issues/3",
+            allowlist_verdict=SendAudit.Verdict.ALLOWED,
+            created_at=_PAST_POST_MORTEM,
+        )
+        planned = _lane(plan_retention(), "SendAudit (private judgment)")
+        assert planned.retention_days == 30
+        assert planned.rows == 1
+        assert _lane(apply_retention(), "SendAudit (private judgment)").rows == 1
+        assert not SendAudit.objects.filter(pk=old.pk).exists()
+        assert SendAudit.objects.filter(pk__in=(recent.pk, outbound.pk)).count() == 2
 
 
 class PlanRetentionTestCase(TestCase):

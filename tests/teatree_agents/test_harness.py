@@ -28,7 +28,7 @@ from django.test import TestCase
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
-from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models import ModelRequestParameters, StreamedResponse, override_allow_model_requests
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -54,11 +54,13 @@ from teatree.agents.harness import (
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessSpec, InvalidHarnessProviderError, register_harness
-from teatree.agents.model_tiering import TIER_MODELS, UnconfiguredOpenAICompatibleModelError
+from teatree.agents.lane_b.compaction import LateHistoryCompactor
+from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError, tier_models
 from teatree.agents.pydantic_ai_config import (
     LANE_EVAL,
     LANE_FACTORY,
     OpenAICompatibleLaneConfig,
+    PydanticAiBinding,
     PydanticAiModelConfig,
     build_openai_compatible_provider,
 )
@@ -80,6 +82,22 @@ if TYPE_CHECKING:
 
 if TYPE_CHECKING:
     from claude_agent_sdk.types import McpStdioServerConfig
+
+
+@pytest.mark.parametrize(
+    ("binding", "expected_seconds"),
+    [(PydanticAiBinding.NATIVE_ANTHROPIC, 300), (PydanticAiBinding.ROUTER, None)],
+)
+def test_shell_cache_lifetime_tracks_model_binding(binding: PydanticAiBinding, expected_seconds: int | None) -> None:
+    harness = PydanticAiHarness(model=TestModel(), phase="coding", config=PydanticAiModelConfig(binding=binding))
+    with patch.object(harness_mod, "build_lane_b_toolsets", wraps=harness_mod.build_lane_b_toolsets) as build:
+
+        async def drive() -> None:
+            async with harness.open(ClaudeAgentOptions()):
+                pass
+
+        asyncio.run(drive())
+    assert build.call_args.args[0].cache_lifetime_seconds == expected_seconds
 
 
 def test_concrete_impls_satisfy_the_harness_protocols() -> None:
@@ -238,7 +256,7 @@ class TestDriveThroughInjectedHarness(TestCase):
         # A threaded ORM read under TestCase's wrapping SQLite transaction is a
         # harness artifact (the pre-run usage sample runs in a worker thread) —
         # stub it, as the ``fake_sdk`` scaffold does, so it is not production behaviour.
-        self.task.renew_lease = lambda **_kw: None
+        self.enterContext(patch.object(self.task, "renew_lease", new=lambda **_kw: None))
 
     def test_driver_opens_the_injected_harness_and_collects(self) -> None:
         options = _build_options(self.task, "ctx", phase="coding", skills=[])
@@ -259,7 +277,7 @@ class TestDriveThroughInjectedHarness(TestCase):
             bound_env: dict[str, str]
 
             @asynccontextmanager
-            async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+            async def open(self, options: ClaudeAgentOptions) -> AsyncGenerator[Any]:
                 assert isinstance(options.mcp_servers, dict)
                 teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
                 self.bound_env = dict(teatree["env"])
@@ -538,7 +556,7 @@ def test_pydantic_ai_num_turns_reflects_the_request_count() -> None:
 def _denial_gauntlet_stream(turns: int) -> Callable[[object, AgentInfo], AsyncIterator[object]]:
     """A streamed model that repeats a denylisted ``Bash`` call *turns* times, then yields text.
 
-    Progress is derived from how many ``RetryPromptPart``s the history already
+    Progress is derived from how many retried tool returns the history already
     carries (mirrors :func:`_tool_then_text_stream`'s returned-part probe) rather
     than closed-over mutable state, so the double stays stateless and safe to
     reuse across `asyncio.run` calls.
@@ -551,7 +569,7 @@ def _denial_gauntlet_stream(turns: int) -> Callable[[object, AgentInfo], AsyncIt
             for message in (messages if isinstance(messages, list) else [])
             if isinstance(message, ModelRequest)
             for part in message.parts
-            if type(part).__name__ == "RetryPromptPart"
+            if isinstance(part, ToolReturnPart) and part.outcome == "retried"
         )
         if denials < turns:
             args = json.dumps({"command": "rm -rf /"})
@@ -1137,7 +1155,7 @@ class TestPydanticAiSkillFloorSelection(TestCase):
             skills=["floor-skill"],
             overrides=SpawnOverrides(spawn_selection=dispatch.spawn_selection),
         )
-        assert options.model == TIER_MODELS["balanced"]
+        assert options.model == tier_models()["balanced"]
         assert isinstance(dispatch.harness, PydanticAiHarness)
         model = dispatch.harness._resolve_model(HarnessOptions.from_sdk_options(options), SessionRun.start())
         assert model.model_name == "vendor/balanced"
@@ -1191,6 +1209,117 @@ class TestBuildOpenAICompatibleProvider(TestCase):
         # No built-in default: with no configured openai_compatible_credential_entry the credential's
         # effective pass_path stays None — it resolves from OPENAI_COMPATIBLE_API_KEY or fails loud.
         assert self._capture_pass_path(None) is None
+
+
+class TestPydanticAiCompaction(TestCase):
+    def test_unreadable_model_window_registry_fails_before_open(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+
+        def read_confirmed(key: str, **_kwargs: object) -> object:
+            return harness_mod.cold_reader.SettingRead(None, readable=key != "agent_model_context_windows")
+
+        with (
+            patch.object(
+                harness_mod.cold_reader,
+                "read_setting_confirmed",
+                side_effect=read_confirmed,
+            ),
+            pytest.raises(RuntimeError, match="agent_model_context_windows could not be read"),
+        ):
+            resolve_harness(phase="coding")
+
+    def test_model_window_override_is_resolved_before_open(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+
+        def read_confirmed(key: str, **_kwargs: object) -> object:
+            value = {"router/one": 131_072} if key == "agent_model_context_windows" else None
+            return harness_mod.cold_reader.SettingRead(value, readable=True)
+
+        with patch.object(
+            harness_mod.cold_reader,
+            "read_setting_confirmed",
+            side_effect=read_confirmed,
+        ):
+            harness = resolve_harness(phase="coding")
+
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness._context_windows == {"router/one": 131_072}
+
+    def test_phased_run_summarizes_a_nearly_full_seed_before_the_model_request(self) -> None:
+        history: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="task framing")]),
+            ModelResponse(parts=[TextPart(content="acknowledged")]),
+        ]
+        for index in range(20):
+            history.extend(
+                [
+                    ModelRequest(parts=[UserPromptPart(content=f"old instruction {index} " * 20)]),
+                    ModelResponse(parts=[TextPart(content=f"old answer {index} " * 20)]),
+                ]
+            )
+        harness = PydanticAiHarness(
+            model=TestModel(custom_output_text="done", call_tools=[], profile={"context_window": 1_000}),
+            history=history,
+            phase="coding",
+        )
+
+        async def drive() -> list[ModelMessage]:
+            async with harness.open(ClaudeAgentOptions()) as session:
+                await session.query("new work")
+                messages = [message async for message in session.receive_response()]
+                assert any(isinstance(message, ResultMessage) and not message.is_error for message in messages)
+                assert isinstance(session, PydanticAiHarnessSession)
+                return session.history
+
+        compacted = asyncio.run(drive())
+
+        assert "Earlier conversation summary:" in repr(compacted[1])
+        assert "old instruction 0" not in repr(compacted)
+        assert "new work" in repr(compacted)
+
+    def test_harness_built_session_compacts_and_retries_after_provider_overflow(self) -> None:
+        calls = 0
+        summaries: list[str] = []
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            nonlocal calls
+            await asyncio.sleep(0)
+            calls += 1
+            if calls == 1:
+                raise ModelHTTPError(status_code=400, model_name="test", body="context window exceeded")
+            yield "continued"
+
+        async def summarize(stale: str, _usage: object) -> str:
+            await asyncio.sleep(0)
+            summaries.append(stale)
+            return "earlier work"
+
+        original_compactor = LateHistoryCompactor
+        harness = PydanticAiHarness(
+            model=FunctionModel(stream_function=stream_fn, profile={"context_window": 200_000}),
+            history=[
+                ModelRequest(parts=[UserPromptPart(content="task")]),
+                ModelResponse(parts=[TextPart(content="old work " * 10_000)]),
+                ModelRequest(parts=[UserPromptPart(content="recent direction")]),
+            ],
+            phase="coding",
+        )
+
+        async def drive() -> None:
+            async with harness.open(ClaudeAgentOptions()) as session:
+                await session.query("new work")
+                messages = [message async for message in session.receive_response()]
+                assert any(isinstance(message, ResultMessage) and not message.is_error for message in messages)
+
+        with patch.object(
+            harness_mod,
+            "LateHistoryCompactor",
+            side_effect=lambda _summarize, **kwargs: original_compactor(summarize, **kwargs),
+        ):
+            asyncio.run(drive())
+
+        assert calls == 2
+        assert summaries
 
 
 class TestPydanticAiStepCap(TestCase):
@@ -1293,19 +1422,19 @@ class TestPydanticAiMaxTokens(TestCase):
         chosen against the frontier model's 128K would therefore 400 every ``cheap``-tier
         dispatch (Haiku 4.5 caps at 64K) while looking correct on ``frontier``.
         """
-        from teatree.agents.model_tiering import TIER_MODELS  # noqa: PLC0415 — test-local
+        from teatree.agents.model_tiering import tier_models  # noqa: PLC0415 — test-local
         from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT  # noqa: PLC0415 — test-local
 
-        # Published per-model output ceilings for the ids TIER_MODELS resolves to.
+        # Published per-model output ceilings for the ids tier_models() resolves to.
         max_output_tokens = {
             "claude-opus-5-5": 128_000,
             "claude-sonnet-5-5": 128_000,
         }
-        assert set(TIER_MODELS.values()) <= max_output_tokens.keys(), (
-            "TIER_MODELS gained a model with no known output limit — confirm its ceiling before "
+        assert set(tier_models().values()) <= max_output_tokens.keys(), (
+            "tier_models() gained a model with no known output limit — confirm its ceiling before "
             "trusting PYDANTIC_AI_MAX_TOKENS_DEFAULT against it"
         )
-        smallest = min(max_output_tokens[model] for model in TIER_MODELS.values())
+        smallest = min(max_output_tokens[model] for model in tier_models().values())
         assert smallest >= PYDANTIC_AI_MAX_TOKENS_DEFAULT
 
     def test_resolve_harness_reads_the_configured_max_tokens_synchronously(self) -> None:
@@ -1333,9 +1462,10 @@ class TestVerifierPinnedToClaude(TestCase):
     """A verification phase stays on claude_sdk even when pydantic_ai is configured (plan §4 #2)."""
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_phase_harness={})
 
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
@@ -1357,17 +1487,18 @@ class TestVerifierPinnedToClaude(TestCase):
 class TestResolveDispatchProvider(TestCase):
     """The Layer-2 provider follows the SAME phase pin Layer 1 does.
 
-    ``resolve_harness`` validates the CONFIGURED pair and then lets ``PHASE_HARNESS`` flip
+    ``resolve_harness`` validates the CONFIGURED pair and then lets ``agent_phase_harness`` flip
     Layer 1 for a verification phase. The credential must follow that flip, or a valid
     ``pydantic_ai`` deployment hands the claude_sdk child-env resolver a provider invalid
     under the harness it is actually running and every verification dispatch is refused.
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
         monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _seeded_db(tmp_path, monkeypatch, agent_phase_harness={})
 
     def test_no_configured_pin_stays_unpinned(self) -> None:
         assert resolve_dispatch_harness(phase="testing").provider is None

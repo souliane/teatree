@@ -4,7 +4,7 @@ The second leg of the Slack→Claude bridge. The PreToolUse capture arm
 records each loop-driven ``AskUserQuestion`` as a mirror-linked
 ``DeferredQuestion`` and posts it to the user's DM; the user replies on
 Slack and the reply lands as a ``PendingChatInjection`` row. This scanner
-drains unconsumed replies and applies each to the question it answers:
+applies top-level replies; the reactive answer cycle owns threaded replies:
 
 - :func:`~teatree.loop.question_binding.bind_reply` decides which question a
 reply answers. It is the ladder shared with the reactive Slack-answer cycle,
@@ -30,8 +30,9 @@ from dataclasses import dataclass
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundReader, read_inbound
-from teatree.loop.question_binding import apply_bound_answer, bind_reply, configured_owner_id
+from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply
 from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ _ACK_EMOJI = "white_check_mark"
 class AskUserQuestionReplyScanner:
     """Apply each Slack reply to the ``DeferredQuestion`` it answers (#1174).
 
-    *overlay* tags which queue to drain (``""`` drains every overlay's
+    *overlay* tags which queue to inspect (``""`` inspects every overlay's
     queue for the v1 single-overlay path). The scanner produces no
     statusline signal — the answer is read on demand with
     ``t3 <overlay> questions list --all`` — so :meth:`scan` returns an empty signal list.
@@ -65,8 +66,10 @@ class AskUserQuestionReplyScanner:
         return []
 
     def _apply_one(self, reply: PendingChatInjection, egress: OnBehalfSlackEgress) -> None:
-        bound = bind_reply(reply, reader=self.reader or read_inbound, owner_user_id=configured_owner_id(self.backend))
-        if bound is None:
+        if reply.thread_ts:
+            return  # The answer cycle owns card threads and their single binding decision.
+        bound = bind_reply(reply, reader=self.reader or read_inbound, backend=self.backend)
+        if not isinstance(bound, BoundAnswer):
             return
         if not reply.mark_loop_replied(PendingChatInjection.AnswerKind.QUESTION_REPLY):
             return
@@ -77,7 +80,7 @@ class AskUserQuestionReplyScanner:
             reply.unmark_loop_replied()
             return
         try:
-            applied = apply_bound_answer(bound, backend=self.backend)
+            applied = apply_bound_answer(bound, backend=self.backend, on_answer=apply_stop_answer)
         except Exception:
             # Nothing was applied, so the claim must go back — otherwise the
             # reply is consumed forever by a failure that never recorded it.

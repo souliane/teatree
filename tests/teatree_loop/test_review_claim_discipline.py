@@ -15,13 +15,15 @@ The binding rules, each pinned by a symmetric must-fire / must-NOT-fire pair:
     author DM.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.models import LoopState, OutboundClaim, ReviewRequestPost, ReviewVerdict
+from teatree.core.models import ConfigSetting, LoopState, OutboundClaim, ReviewRequestPost, ReviewVerdict
 from teatree.loop.dispatch import dispatch
 from teatree.loop.review_claim import (
     emit_review_done_reactions,
@@ -33,6 +35,7 @@ from teatree.loop.review_claim import (
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests._forge_author import AuthorForge, colleague_forge, reaction_forge
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import posture_permits_cm
 
@@ -46,6 +49,7 @@ class _GateOffTestCase(TestCase):
 
     def setUp(self) -> None:
         self.enterContext(posture_permits_cm())
+        self.enterContext(colleague_forge())
         allow_slack_channels(CHANNEL)
 
 
@@ -95,7 +99,7 @@ class _FakeMessaging:
 
 
 @contextmanager
-def _review_loop_disabled() -> Iterator[None]:
+def _review_loop_disabled() -> Generator[None]:
     """Disable the review mini-loop via the durable DB ``LoopState`` for the block.
 
     Loop control is DB-only — ``t3 loop disable review`` (a ``DISABLED``
@@ -468,20 +472,10 @@ class TestSlackMessageResolution(_GateOffTestCase):
 
 
 class TestReviewRecordCommandEmitsReaction(_GateOffTestCase):
-    """``t3 review record`` posts the verdict reaction set, never an author DM."""
+    """``t3 review record`` posts the verdict reaction set on a colleague's MR, never an author DM."""
 
-    def test_record_merge_safe_posts_eyes_and_check_no_dm(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        from django.core.management import call_command  # noqa: PLC0415
-
-        ReviewRequestPost.objects.create(mr_url=MR, slack_channel_id=CHANNEL, slack_thread_ts=TS)
-        backend = _FakeMessaging()
-
-        with patch(
-            "teatree.core.backend_factory.messaging_from_overlay",
-            return_value=backend,
-        ):
+    def _record_merge_safe(self, backend: _FakeMessaging) -> None:
+        with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend):
             call_command(
                 "review",
                 "record",
@@ -495,5 +489,22 @@ class TestReviewRecordCommandEmitsReaction(_GateOffTestCase):
                 "cold-reviewer",
             )
 
+    def test_record_merge_safe_posts_eyes_and_check_no_dm(self) -> None:
+        ReviewRequestPost.objects.create(mr_url=MR, slack_channel_id=CHANNEL, slack_thread_ts=TS)
+        backend = _FakeMessaging()
+
+        self._record_merge_safe(backend)
+
         assert backend.react_routed_calls == [(CHANNEL, TS, "eyes"), (CHANNEL, TS, "white_check_mark")]
+        assert backend.dm_calls == []
+
+    def test_record_on_the_operators_own_merge_request_posts_no_reaction(self) -> None:
+        ConfigSetting.objects.set_value("user_identity_aliases", ["alice"])
+        ReviewRequestPost.objects.create(mr_url=MR, slack_channel_id=CHANNEL, slack_thread_ts=TS)
+        backend = _FakeMessaging()
+
+        with reaction_forge(AuthorForge(author="alice")):
+            self._record_merge_safe(backend)
+
+        assert backend.react_routed_calls == []
         assert backend.dm_calls == []

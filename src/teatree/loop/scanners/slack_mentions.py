@@ -1,35 +1,14 @@
-"""Scan Slack mentions and DMs from the MessagingBackend and the Socket Mode queue."""
+"""Scan Slack mentions and DMs drained from the Socket Mode JSONL queue."""
 
-import json
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.loop.scanners.base import ScanSignal
-from teatree.paths import DATA_DIR
+from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
-
-
-def _default_cursor_path() -> Path:
-    return DATA_DIR / "loop" / "slack_cursor.json"
-
-
-def _read_cursors(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return {str(key): str(value) for key, value in data.items() if isinstance(value, str)}
-
-
-def _write_cursors(path: Path, data: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _ts(event: RawAPIDict) -> str:
@@ -73,19 +52,24 @@ class SlackMentionsScanner:
     mention is a no-op. The existing ``slack.mention`` signal still routes
     to ``t3:reviewer`` via the dispatcher; the side effect just persists
     the ledger and acks the user.
+
+    Each drained DM is also recorded (idempotently) as a ``PendingChatInjection``
+    row, so a DM whose live record failed — the receiver writes the JSONL line
+    first — still reaches the answer cycle without any polling.
     """
 
     backend: MessagingBackend
-    cursor_path: Path = field(default_factory=_default_cursor_path)
     overlay: str = ""
     name: str = "slack_mentions"
+    _recorder: SlackDmRecorder | None = field(default=None, init=False, repr=False)
 
     def scan(self) -> list[ScanSignal]:
-        cursors = _read_cursors(self.cursor_path)
-        mentions = self.backend.fetch_mentions(since=cursors.get("mentions", ""))
-        dms = self.backend.fetch_dms(since=cursors.get("dms", ""))
+        mentions = self.backend.fetch_mentions()
+        dms: list[RawAPIDict] = []
 
-        drained_any, foreign = self._drain_queue_into(mentions, dms)
+        drained_any, foreign, dm_records = self._drain_queue_into(mentions, dms)
+        retry_events = self._record_dms(dms) if dms else []
+        retry_ids = {id(event) for event in retry_events}
 
         signals: list[ScanSignal] = []
         for event in mentions:
@@ -98,9 +82,9 @@ class SlackMentionsScanner:
                 )
             )
             self._record_review_intent(event)
-            if ts:
-                cursors["mentions"] = max(cursors.get("mentions", ""), ts)
         for event in dms:
+            if id(event) in retry_ids:
+                continue
             ts = _ts(event)
             channel = _channel(event)
             permalink = _resolve_permalink(self.backend, channel, ts)
@@ -111,29 +95,20 @@ class SlackMentionsScanner:
                     payload={"ts": ts, "event": event, "permalink": permalink},
                 )
             )
-            if ts:
-                cursors["dms"] = max(cursors.get("dms", ""), ts)
-        if signals or drained_any:
-            # Persist the cursor advance before discarding the backing file.
-            # Decoupled from ``signals``: drained events that match no
-            # signal-producing type still advance the cursor so those events
-            # are not re-fetched on the next tick.
-            _write_cursors(self.cursor_path, cursors)
         if drained_any:
-            # Discard the backing file only after the durable cursor persist
-            # above. A crash before this point leaves the ``.draining`` file
-            # for the next drain to recover, so no mention is lost (Slack
-            # never retries them).
+            # Discard the backing file only after the DMs above are recorded. A
+            # crash before this point leaves the ``.draining`` file for the next
+            # drain to recover, so no mention is lost (Slack never retries them).
             from teatree.backends.slack.receiver import commit_drain  # noqa: PLC0415 — deferred: loaded at tick time
 
-            commit_drain(retain=foreign)
+            commit_drain(retain=foreign + [record for record in dm_records if id(record.get("event")) in retry_ids])
         return signals
 
     def _drain_queue_into(
         self,
         mentions: list[RawAPIDict],
         dms: list[RawAPIDict],
-    ) -> tuple[bool, list[dict]]:
+    ) -> tuple[bool, list[dict], list[dict]]:
         """Fold this overlay's queued Socket Mode events into the mention/DM lists.
 
         Returns whether the JSONL queue yielded anything (so :meth:`scan`
@@ -150,6 +125,7 @@ class SlackMentionsScanner:
 
         drained_any = False
         foreign: list[dict] = []
+        dm_records: list[dict] = []
         for queued in drain_event_queue():
             drained_any = True
             if not record_is_owned_by(queued, self.overlay):
@@ -161,7 +137,18 @@ class SlackMentionsScanner:
                 mentions.append(event)
             elif event_type == "message" and event.get("channel_type", "") == "im":
                 dms.append(event)
-        return drained_any, foreign
+                dm_records.append(queued)
+        return drained_any, foreign, dm_records
+
+    def _record_dms(self, dms: list[RawAPIDict]) -> list[RawAPIDict]:
+        if self._recorder is None:
+            self._recorder = SlackDmRecorder(backend=self.backend, overlay=self.overlay)
+        try:
+            self._recorder.record_events(dms)
+        except Exception:
+            logger.exception("Failed to record %d drained DM(s)", len(dms))
+            return dms
+        return self._recorder.retry_events
 
     def _record_review_intent(self, event: RawAPIDict) -> None:
         """Persist a ``ReviewAssignment`` row and post ``:eyes:`` for MR-bearing mentions.

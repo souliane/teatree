@@ -57,7 +57,9 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import urlparse
 
 from django.apps import apps
+from django.db.models import Q
 
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
 from teatree.core.intake.factory_admission import (
@@ -67,6 +69,7 @@ from teatree.core.intake.factory_admission import (
     payload_body,
     payload_labels,
 )
+from teatree.core.intake.nit_priority import is_nit_issue
 from teatree.core.intake.umbrella import umbrella_reason
 from teatree.core.models import ImplementedIssueMarker, IntakeScanCursor, UnclaimedIntakeCandidate, WaitingCandidate
 from teatree.core.review.author_trust import (
@@ -111,6 +114,7 @@ class _TickContext:
     tracked: frozenset[str]
     trusted: frozenset[str]
     readback: ReadbackIndex
+    nit_urls: frozenset[str]
 
 
 def _issue_title(issue: RawAPIDict) -> str:
@@ -219,6 +223,7 @@ class IssueIntakeScanner:
             tracked=self._tracked_issue_urls(),
             trusted=trusted,
             readback=self._readback_index(operators),
+            nit_urls=frozenset(issue_url(candidate) for candidate in candidates if is_nit_issue(candidate)),
         )
         signals: list[ScanSignal] = []
         waiting: list[WaitingCandidate] = []
@@ -238,7 +243,9 @@ class IssueIntakeScanner:
                 if verdict is None:
                     continue
                 admitted += 1
-                claiming = claiming and not (self._budget_exhausted() or self._governor_denied())
+                claiming = claiming and not (
+                    self._budget_exhausted(issue=issue, nit_urls=context.nit_urls) or self._governor_denied()
+                )
                 if claiming:
                     self._append_claim(issue, url, verdict, signals)
                     continue
@@ -285,7 +292,7 @@ class IssueIntakeScanner:
         if resume_after not in urls:
             return candidates
         start = urls.index(resume_after) + 1
-        return candidates[start:] + candidates[:start]
+        return sorted(candidates[start:] + candidates[:start], key=is_nit_issue)
 
     @staticmethod
     def _report_incomplete(walk: list[RawAPIDict], position: int) -> None:
@@ -392,15 +399,23 @@ class IssueIntakeScanner:
             },
         )
 
-    def _budget_exhausted(self) -> bool:
+    def _budget_exhausted(self, *, issue: RawAPIDict, nit_urls: frozenset[str]) -> bool:
         """True once the live in-flight count has reached ``max_concurrent``.
 
         Re-read per candidate rather than pre-computed: each successful claim
         records a new in-flight marker, so the live count is the authority.
         """
+        if reason := open_pr_start_cap_hold_reason():
+            logger.warning("IssueIntakeScanner claiming nothing new: %s", reason)
+            return True
         if self.max_concurrent <= 0:
             return False
-        return ImplementedIssueMarker.objects.in_flight_count(self.overlay_name) >= self.max_concurrent
+        active = ImplementedIssueMarker.objects.filter(overlay=self.overlay_name).exclude(
+            state__in=ImplementedIssueMarker.State.terminal()
+        )
+        if not is_nit_issue(issue):
+            active = active.exclude(Q(issue_url__in=nit_urls) | Q(ticket__extra__nit_follow_up=True))
+        return active.count() >= self.max_concurrent
 
     @staticmethod
     def _governor_denied() -> bool:
@@ -534,7 +549,7 @@ class IssueIntakeScanner:
                     f"(check the credential store and $GNUPGHOME): {'; '.join(failures)}"
                 ),
             )
-        return sorted(issues, key=lambda issue: issue_created_at(issue) or _UNDATED)
+        return sorted(issues, key=lambda issue: (is_nit_issue(issue), issue_created_at(issue) or _UNDATED))
 
     @staticmethod
     def _collect(

@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -20,7 +20,7 @@ _EGRESS_SUPPRESSOR: ContextVar[EgressSuppressor | None] = ContextVar("egress_sup
 
 
 @contextmanager
-def suppress_on_behalf_egress(suppressor: EgressSuppressor) -> Iterator[None]:
+def suppress_on_behalf_egress(suppressor: EgressSuppressor) -> Generator[None]:
     token = _EGRESS_SUPPRESSOR.set(suppressor)
     try:
         yield
@@ -80,7 +80,7 @@ _EGRESS_OBSERVER: ContextVar[EgressObserver | None] = ContextVar("on_behalf_egre
 
 
 @contextmanager
-def observe_on_behalf_egress(observer: EgressObserver) -> Iterator[None]:
+def observe_on_behalf_egress(observer: EgressObserver) -> Generator[None]:
     token = _EGRESS_OBSERVER.set(observer)
     try:
         yield
@@ -124,7 +124,7 @@ def observe_egress_errors(
     kind: EgressKind,
     *,
     destination: EgressDestination = _NO_DESTINATION,
-) -> Iterator[None]:
+) -> Generator[None]:
     try:
         yield
     except Exception as exc:

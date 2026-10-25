@@ -86,16 +86,25 @@ class _NoShadowServer(MCPServer):
 
 _READ_ONLY_NOTICE = (
     "\n\nThis server is read-only for this dispatch. Write tools registered: {writes}. "
-    "Return anything you could not write here in your result envelope."
+    "Report unmet writes in the result envelope."
 )
 
 
 def _read_only_instructions(instructions: str, *, withheld: frozenset[str], allowed_writes: frozenset[str]) -> str:
-    withheld_lines = tuple(f"- {name}(" for name in withheld - allowed_writes)
+    withheld_names = withheld - allowed_writes
+    withheld_lines = tuple(f"- {name}(" for name in withheld_names)
     sections: list[str] = []
     for section in instructions.split("\n\n"):
         lines = section.split("\n")
-        kept = [line for line in lines if not line.startswith(withheld_lines)]
+        kept = []
+        for line in lines:
+            if line.startswith(withheld_lines):
+                continue
+            if line.startswith("Mailbox tools: "):
+                names = line.removeprefix("Mailbox tools: ").split(", ")
+                kept.append("Mailbox tools: " + ", ".join(name for name in names if name not in withheld_names))
+            else:
+                kept.append(line)
         if len(kept) == len(lines) or any(line.startswith("- ") for line in kept):
             sections.append("\n".join(kept))
     return "\n\n".join(sections) + _READ_ONLY_NOTICE.format(writes=", ".join(sorted(allowed_writes)) or "none")

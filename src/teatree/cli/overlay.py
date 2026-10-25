@@ -5,7 +5,7 @@ import json as _json
 import logging
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -117,7 +117,7 @@ def _run_workers(project_path: Path, overlay_name: str, count: int, interval: fl
 
 
 @contextmanager
-def _faithful_child_exit(project_env: Path | None = None) -> Iterator[None]:
+def _faithful_child_exit(project_env: Path | None = None) -> Generator[None]:
     """Propagate a bridged child's exit code faithfully, without a traceback (PR-30).
 
     A child spawned into *project_env*'s own venv that cannot import Django dies with a
@@ -395,10 +395,10 @@ class OverlayAppBuilder:
                 None,
                 "--skills",
                 "--skill",
-                help="Skills to embed, comma-separated and/or repeated (e.g. --skills t3:rules,t3:e2e).",
+                help="Skills to include, comma-separated and/or repeated (e.g. --skills t3:rules,t3:e2e).",
             ),
         ) -> None:
-            """Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry."""
+            """Emit the skill preamble a raw Agent-tool sub-agent brief must carry."""
             names = _split_skill_args(skills or [])
             if not names:
                 typer.echo("No skills given. Pass --skills t3:rules,t3:e2e[,<overlay-skill>].", err=True)

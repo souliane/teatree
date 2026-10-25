@@ -21,11 +21,12 @@ tools carry ``read_only_hint``; the write tools name their gated seam in
 phase without the ``mcp_write`` capability launches) registers only the tools
 annotated ``read_only_hint`` — every core, service, mailbox and overlay tool passes
 the one registration choke point, and a tool with no annotation counts as a write.
-*allowed_writes* (``--allow-write``) names the write tools such a server still
-registers: the one a phase's own deliverable goes through.
+*allowed_writes* (``--allow-write``) names non-read-only tools such a server still
+registers: a phase's deliverable tool or, for planning, reviewing and critic_reviewing,
+the three peer-mailbox tools. Other read-only phases retain only mailbox self and peers.
 
-The live agent mailbox is a separate, room-scoped communication surface, present
-only when the runner binds this MCP child to a running TeaTree task.
+The live agent mailbox is a separate, addressed communication surface, present
+when the runner binds a task or an operator-authenticated attended child joins a worker.
 
 A registered overlay contributes its own tools through
 ``overlay.connectors.mcp_tool_group()``, which hands over an
@@ -39,7 +40,6 @@ than core can.
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from inspect import signature
 from typing import Any
 
@@ -47,6 +47,7 @@ from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
+from teatree.agents.live_mailbox_client import MailboxClient as NeutralMailboxClient
 from teatree.backends.types import Service
 from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
@@ -76,17 +77,14 @@ _READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 
 # Per-service tool groups, registered iff the service is in the union of
-# ``required_third_party_services`` across all registered overlays. Each entry
-# is ``(register, instructions)``; the instructions block is appended to the
-# server instructions only when the group registers, so the instructions never
-# advertise an unregistered tool.
-_SERVICE_GROUPS: dict[Service, tuple[Callable[[MCPServer], None], str]] = {
-    Service.GITHUB: (services_forge.register_github, services_forge.INSTRUCTIONS_GITHUB),
-    Service.GITLAB: (services_forge.register_gitlab, services_forge.INSTRUCTIONS_GITLAB),
-    Service.SLACK: (services_slack.register, services_slack.INSTRUCTIONS),
-    Service.NOTION: (services_notion.register, services_notion.INSTRUCTIONS),
-    Service.SENTRY: (services_sentry.register, services_sentry.INSTRUCTIONS),
-    Service.SHAREPOINT: (services_sharepoint.register, services_sharepoint.INSTRUCTIONS),
+# ``required_third_party_services`` across all registered overlays.
+_SERVICE_GROUPS: dict[Service, Callable[[MCPServer], None]] = {
+    Service.GITHUB: services_forge.register_github,
+    Service.GITLAB: services_forge.register_gitlab,
+    Service.SLACK: services_slack.register,
+    Service.NOTION: services_notion.register,
+    Service.SENTRY: services_sentry.register,
+    Service.SHAREPOINT: services_sharepoint.register,
 }
 
 
@@ -192,26 +190,11 @@ def declared_write_tool_seams(declared: frozenset[Service]) -> dict[str, WriteSe
 
 _PREAMBLE = (
     "Structured search + gate-preserving writes over teatree's internal model. "
-    "Prefer these tools over shelling out to `t3 ... list` and parsing text. The "
-    "read tools below are read-only; the write tools each wrap the exact seam the "
-    "`t3` CLI calls, so every FSM / merge / on-behalf / leak gate fires identically "
-    "(see the write-tool section at the end).\n"
-    "\n"
-    "Read tools:\n"
+    "Prefer these tools over shelling out to `t3 ... list` and parsing text; when unsure "
+    "which `t3` command exists, call command_search first. "
+    "the Teatree write tools each wrap the exact seam the `t3` CLI calls, so every FSM / "
+    "merge / on-behalf / leak gate fires identically."
 )
-
-
-@dataclass(frozen=True)
-class _ReadTool:
-    """One read-only MCP tool: its name, async handler, and instruction line.
-
-    The single source the base instructions and the registration loop both read,
-    so a read tool's name/handler/prose can never drift across the two.
-    """
-
-    name: str
-    handler: Callable[..., Awaitable[Any]]
-    instruction: str
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -314,8 +297,8 @@ async def _loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
 async def _factory_signals(*, overlay: str | None = None, window_days: int = 28) -> FactorySignalsReportDict:
     """Derived-on-read factory quality/velocity signals over the trailing window.
 
-    Returns the five signals (first-try-green, defect-escape, review-catch,
-    merge-latency, repair-burn) with fail-loud statuses (``ok`` /
+    Returns the signals (first-try-green, defect-escape, review-catch,
+    merge-latency, PR start-to-merged, repair-burn) with fail-loud statuses (``ok`` /
     ``insufficient_data`` / ``instrumentation_gap``), each signal's red-floor
     trip, and the top-level verdict (``ok`` / ``regressing`` / ``red``). Scope to
     an overlay with ``overlay``; widen the window with ``window_days``.
@@ -425,117 +408,48 @@ async def _command_search(query: str, *, limit: int = 20) -> list[dict[str, Any]
     return await sync_to_async(introspection.command_search, thread_sensitive=True)(query=query, limit=limit)
 
 
-# The always-registered read tools, in one table the base instructions and the
-# registration loop both derive from (no INSTRUCTIONS/add_tool drift).
-_READ_TOOLS: tuple[_ReadTool, ...] = (
-    _ReadTool(
-        "command_search",
-        _command_search,
-        "- command_search(query): which `t3` CLI leaf command to run for a task — "
-        "path, help summary, and whether it emits --json. Use this FIRST when unsure "
-        "which command exists.",
-    ),
-    _ReadTool(
-        "ticket_get",
-        _ticket_get,
-        "- ticket_get(ticket): one ticket's full detail (by pk / issue number / URL) incl. its visited-phase ledger.",
-    ),
-    _ReadTool(
-        "ticket_list",
-        _ticket_list,
-        "- ticket_list(overlay, state, kind, role, in_flight): enumerate tickets by "
-        "lifecycle state — the mirror of `t3 <overlay> ticket list`.",
-    ),
-    _ReadTool(
-        "ticket_search",
-        _ticket_search,
-        "- ticket_search(text, overlay, state, kind, role, in_flight): free-text "
-        "ticket search across url / description / context.",
-    ),
-    _ReadTool(
-        "worktree_status",
-        _worktree_status,
-        "- worktree_status(ticket, overlay, active_only): a ticket's or an overlay's "
-        "worktrees with FSM state, branch, db, staleness.",
-    ),
-    _ReadTool("pr_for_ticket", _pr_for_ticket, "- pr_for_ticket(ticket): the pull requests recorded for a ticket."),
-    _ReadTool(
-        "task_list",
-        _task_list,
-        "- task_list(overlay, status, phase, ticket): the autonomous loop's task "
-        "queue — the mirror of `t3 <overlay> tasks list`.",
-    ),
-    _ReadTool(
-        "question_list",
-        _question_list,
-        "- question_list(limit): the pending DeferredQuestion backlog awaiting the "
-        "user's answer (pairs with the question_answer write tool).",
-    ),
-    _ReadTool("loop_stats", _loop_stats, "- loop_stats(overlay): task-status counts plus the dead-letter total."),
-    _ReadTool(
-        "incoming_event_recent",
-        _incoming_event_recent,
-        "- incoming_event_recent(source, unprocessed_only): recent inbound platform events.",
-    ),
-    _ReadTool(
-        "config_setting_get",
-        _config_setting_get,
-        "- config_setting_get(key, overlay): a config setting's effective value, its "
-        "source (db vs file/env), and scope.",
-    ),
-    _ReadTool("gate_status", _gate_status, "- gate_status(overlay): the review-gate and raw-merge gate state."),
-    _ReadTool(
-        "factory_signals",
-        _factory_signals,
-        "- factory_signals(overlay, window_days): the five factory quality/velocity "
-        "signals with fail-loud statuses and the verdict.",
-    ),
-)
-
-_FACTORY_SCORE_TOOL = _ReadTool(
-    "factory_score",
-    _factory_score,
-    "- factory_score(overlay, window_days): the recipe-weighted factory score (available on every server build).",
-)
+_READ_TOOLS: dict[str, Callable[..., Awaitable[Any]]] = {
+    "command_search": _command_search,
+    "ticket_get": _ticket_get,
+    "ticket_list": _ticket_list,
+    "ticket_search": _ticket_search,
+    "worktree_status": _worktree_status,
+    "pr_for_ticket": _pr_for_ticket,
+    "task_list": _task_list,
+    "question_list": _question_list,
+    "loop_stats": _loop_stats,
+    "incoming_event_recent": _incoming_event_recent,
+    "config_setting_get": _config_setting_get,
+    "gate_status": _gate_status,
+    "factory_signals": _factory_signals,
+    "factory_score": _factory_score,
+}
 
 
-def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = frozenset()) -> MCPServer:
+def build_server(
+    *,
+    read_only: bool = False,
+    allowed_writes: frozenset[str] = frozenset(),
+    mailbox_client: NeutralMailboxClient | None = None,
+) -> MCPServer:
     """Assemble a fresh stdio MCP server with the read + gate-preserving write tools.
 
     Returns a new instance on every call (no import-time global) so tests can
     build and introspect a server in isolation. Django must already be
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
     *read_only* withholds every write tool not named in *allowed_writes* and drops
-    its line from the instructions.
+    its contributed overlay instruction line when present.
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)
-    write_seams = dict(write_tools.TOOL_SEAMS)
-    if agent_mailbox.MailboxClient.from_env() is not None:
-        write_seams |= agent_mailbox.TOOL_SEAMS
-    for _, group in overlay_groups:
-        write_seams |= group.seams
-    read_tools = (*_READ_TOOLS, _FACTORY_SCORE_TOOL)
+    mailbox_client = mailbox_client or agent_mailbox.MailboxClient.from_env()
 
     instructions = (
         _PREAMBLE
-        + "\n".join(tool.instruction for tool in read_tools)
-        + "".join(
-            f"\n\nDeclared-service tools ({service}):\n{group_instructions}"
-            for service, (_, group_instructions) in sorted(_SERVICE_GROUPS.items())
-            if service in declared
-        )
-        # The teatree-own write tools register UNCONDITIONALLY (unlike the
-        # fail-closed per-service groups): each wraps a `t3` CLI seam that is
-        # itself gate-guarded and no-ops safely when its backend is absent
-        # (notify_user returns sent=false with no messaging backend), so a
-        # service declaration is not their fail-closed lever — their seam is.
-        + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
-        + write_tools.INSTRUCTIONS
         + (
-            "\n\nLive agent mailbox (messages arrive on the next inbox/wait call, not as an idle wake):\n"
+            "\n\nLive agent mailbox (busy peers receive now; idle Claude peers can wake within their window):\n"
             + agent_mailbox.INSTRUCTIONS
-            if agent_mailbox.MailboxClient.from_env() is not None
+            if mailbox_client is not None
             else ""
         )
         + "".join(f"\n\nOverlay tools ({name}):\n{group.instructions}" for name, group in overlay_groups)
@@ -546,6 +460,11 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
         instructions = _read_only_instructions(
             instructions, withheld=_write_tool_names(overlay_groups), allowed_writes=allowed_writes
         )
+    write_seams = dict(write_tools.TOOL_SEAMS)
+    if mailbox_client is not None:
+        write_seams |= agent_mailbox.TOOL_SEAMS
+    for _, group in overlay_groups:
+        write_seams |= group.seams
     server = _NoShadowServer(
         "teatree",
         instructions=instructions,
@@ -553,13 +472,13 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
         allowed_writes=allowed_writes,
         write_seams=write_seams,
     )
-    for tool in read_tools:
-        server.add_tool(tool.handler, name=tool.name, annotations=_READ_ONLY)
-    for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):
+    for name, handler in _READ_TOOLS.items():
+        server.add_tool(handler, name=name, annotations=_READ_ONLY)
+    for service, register_group in sorted(_SERVICE_GROUPS.items()):
         if service in declared:
             register_group(server)
     write_tools.register(server)
-    agent_mailbox.register(server)
+    agent_mailbox.register(server, client=mailbox_client)
     # Last, and tool by tool rather than through a registrar the overlay owns:
     # the server is what puts a contributed tool on the surface, so a name it has
     # already given out is refused here rather than silently discarded by mcp.

@@ -13,11 +13,14 @@ the user's signal, and emits one ``red_card.signal`` ``ScanSignal`` so the
 dispatcher can route it to the coordinator's corrective-action workflow.
 """
 
+import datetime as dt
 from dataclasses import dataclass, field
 
 import pytest
+from django.utils import timezone
 
-from teatree.core.models import RedCardSignal
+from teatree.core.models import PendingChatInjection, RedCardSignal
+from teatree.core.models.pending_chat_injection import DmContext
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.types import RawAPIDict
 
@@ -39,18 +42,12 @@ class FakeMessaging:
 
     user_id: str = USER
     reactions: list[RawAPIDict] = field(default_factory=list)
-    dms: list[RawAPIDict] = field(default_factory=list)
     messages_by_ts: dict[tuple[str, str], RawAPIDict] = field(default_factory=dict)
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
         return []
-
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        events, self.dms = self.dms, []
-        return events
 
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -102,14 +99,12 @@ def _reaction_event(
     }
 
 
-def _dm_event(*, text: str, user: str = USER, channel: str = DM_CHANNEL, ts: str = SIGNAL_TS) -> RawAPIDict:
-    return {
-        "type": "message",
-        "user": user,
-        "channel": channel,
-        "text": text,
-        "ts": ts,
-    }
+def _record_dm(*, text: str, overlay: str = "teatree", ts: str = SIGNAL_TS) -> PendingChatInjection:
+    row = PendingChatInjection.record(
+        channel=DM_CHANNEL, slack_ts=ts, text=text, overlay=overlay, context=DmContext(user_id=USER, thread_ts="")
+    )
+    assert row is not None
+    return row
 
 
 def _agent_message(text: str = "Sure, I'll do X") -> RawAPIDict:
@@ -191,9 +186,22 @@ class TestNoEntrySignReaction:
 
 
 class TestRedCardText:
-    def test_literal_red_card_in_dm_creates_text_signal(self) -> None:
-        backend = FakeMessaging(dms=[_dm_event(text="RED CARD — that was wrong")])
+    def test_a_red_card_dm_fires_from_a_recorded_row(self) -> None:
+        _record_dm(text="that was a red card move")
+        backend = FakeMessaging()
         scanner = RedCardScanner(backend=backend, overlay="teatree")
+
+        first = scanner.scan()
+        second = scanner.scan()
+
+        assert [s.kind for s in first] == ["red_card.signal"]
+        assert first[0].payload["signal_kind"] == RedCardSignal.Kind.RED_CARD_TEXT.value
+        assert backend.react_calls == [(DM_CHANNEL, SIGNAL_TS, "eyes")]
+        assert second == []
+
+    def test_literal_red_card_in_dm_creates_text_signal(self) -> None:
+        _record_dm(text="RED CARD — that was wrong")
+        scanner = RedCardScanner(backend=FakeMessaging(), overlay="teatree")
 
         signals = scanner.scan()
 
@@ -204,42 +212,62 @@ class TestRedCardText:
         assert row.channel == DM_CHANNEL
 
     def test_case_insensitive_match(self) -> None:
-        backend = FakeMessaging(dms=[_dm_event(text="this is a red card situation")])
+        _record_dm(text="this is a red card situation")
 
-        signals = RedCardScanner(backend=backend, overlay="teatree").scan()
+        signals = RedCardScanner(backend=FakeMessaging(), overlay="teatree").scan()
 
         assert len(signals) == 1
         assert RedCardSignal.objects.count() == 1
 
     def test_red_dash_card_matches(self) -> None:
-        backend = FakeMessaging(dms=[_dm_event(text="red-card!")])
+        _record_dm(text="red-card!")
 
-        signals = RedCardScanner(backend=backend, overlay="teatree").scan()
+        signals = RedCardScanner(backend=FakeMessaging(), overlay="teatree").scan()
 
         assert len(signals) == 1
 
     def test_redcard_one_word_does_not_match(self) -> None:
-        backend = FakeMessaging(dms=[_dm_event(text="redcard")])
+        _record_dm(text="redcard")
 
-        signals = RedCardScanner(backend=backend, overlay="teatree").scan()
+        signals = RedCardScanner(backend=FakeMessaging(), overlay="teatree").scan()
 
         assert signals == []
         assert RedCardSignal.objects.count() == 0
 
     def test_word_red_alone_does_not_match(self) -> None:
-        backend = FakeMessaging(dms=[_dm_event(text="the button is red")])
+        _record_dm(text="the button is red")
 
-        signals = RedCardScanner(backend=backend, overlay="teatree").scan()
+        signals = RedCardScanner(backend=FakeMessaging(), overlay="teatree").scan()
 
         assert signals == []
         assert RedCardSignal.objects.count() == 0
 
     def test_text_signal_posts_eyes_on_user_message(self) -> None:
-        backend = FakeMessaging(dms=[_dm_event(text="RED CARD")])
+        _record_dm(text="RED CARD")
+        backend = FakeMessaging()
 
         RedCardScanner(backend=backend, overlay="teatree").scan()
 
         assert backend.react_calls == [(DM_CHANNEL, SIGNAL_TS, "eyes")]
+
+
+class TestRecordedDmScope:
+    def test_another_overlays_recorded_row_does_not_fire(self) -> None:
+        _record_dm(text="RED CARD", overlay="other", ts="1779180559.000001")
+        _record_dm(text="RED CARD", overlay="teatree", ts="1779180559.000002")
+
+        signals = RedCardScanner(backend=FakeMessaging(), overlay="teatree").scan()
+
+        assert [s.payload["ts"] for s in signals] == ["1779180559.000002"]
+
+    def test_a_row_recorded_over_24_hours_ago_does_not_fire(self) -> None:
+        stale = _record_dm(text="RED CARD", ts="1779180559.000001")
+        PendingChatInjection.objects.filter(pk=stale.pk).update(received_at=timezone.now() - dt.timedelta(hours=25))
+        _record_dm(text="RED CARD", ts="1779180559.000002")
+
+        signals = RedCardScanner(backend=FakeMessaging(), overlay="teatree").scan()
+
+        assert [s.payload["ts"] for s in signals] == ["1779180559.000002"]
 
 
 class TestIdempotency:
@@ -259,10 +287,9 @@ class TestIdempotency:
         assert RedCardSignal.objects.count() == 1
 
     def test_same_dm_seen_twice_yields_one_row(self) -> None:
-        backend = FakeMessaging(dms=[_dm_event(text="RED CARD")])
-        scanner = RedCardScanner(backend=backend, overlay="teatree")
+        _record_dm(text="RED CARD")
+        scanner = RedCardScanner(backend=FakeMessaging(), overlay="teatree")
         scanner.scan()
-        backend.dms = [_dm_event(text="RED CARD")]
         second = scanner.scan()
 
         assert second == []
@@ -271,16 +298,16 @@ class TestIdempotency:
 
 class TestOverlayScoping:
     def test_default_overlay_is_empty_string(self) -> None:
-        backend = FakeMessaging(dms=[_dm_event(text="RED CARD")])
-        RedCardScanner(backend=backend).scan()
+        _record_dm(text="RED CARD", overlay="")
+        RedCardScanner(backend=FakeMessaging()).scan()
         row = RedCardSignal.objects.get()
         assert row.overlay == ""
 
     def test_different_overlays_with_same_signal_are_distinct(self) -> None:
-        backend_a = FakeMessaging(dms=[_dm_event(text="RED CARD")])
-        backend_b = FakeMessaging(dms=[_dm_event(text="RED CARD")])
-        RedCardScanner(backend=backend_a, overlay="ovA").scan()
-        RedCardScanner(backend=backend_b, overlay="ovB").scan()
+        _record_dm(text="RED CARD", overlay="ovA")
+        _record_dm(text="RED CARD", overlay="ovB")
+        RedCardScanner(backend=FakeMessaging(), overlay="ovA").scan()
+        RedCardScanner(backend=FakeMessaging(), overlay="ovB").scan()
 
         assert RedCardSignal.objects.count() == 2
 
@@ -300,14 +327,14 @@ class TestEventShapeEdges:
         signals = RedCardScanner(backend=backend, overlay="teatree").scan()
         assert signals == []
 
-    def test_dm_without_ts_is_skipped(self) -> None:
-        backend = FakeMessaging(dms=[{"text": "RED CARD", "user": USER, "channel": DM_CHANNEL}])
-        signals = RedCardScanner(backend=backend, overlay="teatree").scan()
+    def test_dm_row_without_ts_is_skipped(self) -> None:
+        PendingChatInjection.objects.create(overlay="teatree", channel=DM_CHANNEL, slack_ts="", text="RED CARD")
+        signals = RedCardScanner(backend=FakeMessaging(), overlay="teatree").scan()
         assert signals == []
 
-    def test_dm_without_text_is_skipped(self) -> None:
-        backend = FakeMessaging(dms=[{"text": "", "user": USER, "channel": DM_CHANNEL, "ts": SIGNAL_TS}])
-        signals = RedCardScanner(backend=backend, overlay="teatree").scan()
+    def test_dm_row_without_text_is_skipped(self) -> None:
+        PendingChatInjection.objects.create(overlay="teatree", channel=DM_CHANNEL, slack_ts=SIGNAL_TS, text="")
+        signals = RedCardScanner(backend=FakeMessaging(), overlay="teatree").scan()
         assert signals == []
 
     def test_backend_without_fetch_reactions_emits_no_reaction_signals(self) -> None:
@@ -319,10 +346,6 @@ class TestEventShapeEdges:
 
         class NoReactBackend:
             user_id = USER
-
-            def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-                _ = since
-                return []
 
             def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
                 _ = channel, ts
@@ -376,9 +399,9 @@ class TestEventShapeEdges:
                 _ = channel, ts, emoji
                 raise _SlackDownError
 
-        backend = FailingReact(dms=[_dm_event(text="RED CARD")])
+        _record_dm(text="RED CARD")
 
-        signals = RedCardScanner(backend=backend, overlay="teatree").scan()
+        signals = RedCardScanner(backend=FailingReact(), overlay="teatree").scan()
 
         # Signal is still emitted; the row is persisted even though the
         # :eyes: post failed (state stays PENDING).

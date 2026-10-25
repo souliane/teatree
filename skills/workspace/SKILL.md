@@ -64,7 +64,6 @@ Key environment variables used by this skill (see `/t3:setup` for the full confi
 | `T3_WORKSPACE_DIR` | Yes | Root workspace directory |
 | `T3_BRANCH_PREFIX` | No | Prefix for worktree branches (default: initials from `git config user.name`) |
 | `T3_AUTO_SQUASH` | No | Auto-squash related unpushed commits before push (default: `false`) |
-| `T3_SHARE_DB_SERVER` | No | Share one Postgres server across worktrees (default: `true`). Each worktree gets its own DB name but connects to the same server. When `false`, each worktree starts its own Postgres container. |
 
 ### One Agent Per Checkout (#3952)
 
@@ -74,14 +73,15 @@ length of its run, and a second requester is refused with the holder named
 instead of being handed the same tree.
 
 The claim is advisory: it refuses a second requester and never evicts the
-first. Nothing deletes, reaps or kills a checkout on the strength of it, and a
-lapsed lease grants the next requester without touching the previous holder's
-process, files or branch.
+first. Nothing deletes, reaps or kills a checkout on the strength of it. A
+lapsed lease does not authorize a writing factory run while the checkout's
+process or state fence still refuses it.
 
 ```bash
 t3 <overlay> worktree occupancy                     # who holds what right now
 t3 <overlay> worktree claim-occupancy <path> --holder <id>   # take it for a hand-driven lane
 t3 <overlay> worktree release-occupancy <path>      # hand it back, naming whose claim was freed
+t3 <overlay> worktree attest <path>                  # accept a clear checkout's current state
 ```
 
 A dispatched agent needs none of these — `run_headless` takes and releases the
@@ -89,11 +89,71 @@ claim around the run. Use them when you work a branch OUTSIDE the lifecycle
 (raw `git`, a hand-driven fix), so the factory sees the tree as occupied rather
 than walking into it.
 
+A writing factory task also requires, for every checkout of its ticket, exactly
+one worktree row for the path across all tickets, no live process there, and a
+checkout matching the last attested state. A record whose task does not hold its
+checkout is a hand record: it does not update that state and mints no next phase;
+`/loop` `record-attempt` finishes its own checkout and schedules the next phase. After hand work, inspect the
+checkout and use `worktree attest` directly as the owner only when no process
+is still working there; a refused factory task parks without spending its
+repair budget and leaves the work intact. When this venue cannot read a usable
+process table, owner attestation admits one dispatch after two matching state
+reads. The next dispatch needs a fresh owner attestation.
+An attended session may attest under the owner's standing instruction after the read-only proof and terminal route in `skills/interactive/SKILL.md`.
+An interrupted factory run is re-attested at the next writer's fence only when
+the recorded custody chain, a clear host process table, and every ticket checkout
+on its recorded branch or the forge-reported head branch of an open pull request
+owned by the ticket prove it safe. An unreadable forge answer refuses; the audit
+records any qualifying pull request. Hand work needs the owner's `worktree attest` or the attended-session route in `skills/interactive/SKILL.md`.
+For a headless run recorded in a nested PID namespace, unreadable host-root namespace
+processes may be set aside and named in the audit; legacy and namespace-less tenures stay strict.
+Every admitted headless exit reaches checkout settlement; if these gaps block direct
+attestation, the next writer's fence can re-attest, including an in-session claim.
+Edits made by host processes nobody inspected become trusted state once the gaps are set aside.
+A writing run whose exit was deferred by a checkout process records that exit state;
+the next writer attests it only after the process is gone and the state is unchanged.
+A released writing run may leave a clean checkout ahead of its prior attestation.
+The next writing claim can re-attest a released same-ticket custody chain with at least
+one writer when its current holder and occupancy match, no process holds the checkout,
+the old clean digest resolves to a reflog ancestor, and the checkout HEAD matches both
+the ticket-owned GitHub pull request head and its exact live source branch ref.
+The proof reads the GitHub API with the overlay's routed token, checks the digest again,
+and records the custody and forge evidence. GitLab MRs do not enter this recovery arm.
+The pull request read needs a `gh` that returns `headRepository.nameWithOwner`
+(the worker's 2.102.1 does; the host's 2.63.2 omits it, so the proof parks there).
+An unreadable or mismatched proof parks the task for the existing owner path.
+On completion, ordinary failure, lease-expiry reap, and attested park, checkout
+settlement waits two 60-second beats for descendants and marked children, sends
+SIGTERM to survivors, waits one beat, sends SIGKILL to survivors, then checks
+for two more beats. Each signal rechecks PID and start time through a pidfd.
+The shared Codex App Server, unmarked non-descendants, and foreign processes are
+never exit stop targets; a survivor still holds the checkout. An agent-issued
+cancel waits two beats and signals nothing; an owner stop follows the narrower
+descendant-writer rule.
+A heartbeat that reclaims a free row opens a namespace-less tenure, so later recovery stays strict.
+
+An attended agent first re-checks a parked checkout read-only and attests a clean one itself under the standing instruction in `skills/interactive/SKILL.md`; it reports the action afterwards and skips unsafe checkouts without asking. A refusal that cannot be attested asks the owner in Slack. The card links the ticket,
+names the waiting step and what it will do, links any open pull request in the
+checkout's repo that it may hold up while open or says none was open when asked;
+design-review and wrap-up cards link it without claiming those steps hold it up,
+gives the commit and uncommitted-file counts and whether nothing was found running,
+and says what Accept and Decline each do. A re-ask replaces a pending card for
+the same task when its step, pull-request wording, or other displayed evidence
+changes; a card for an older checkout state is retired for every task, and its
+posted buttons are closed. Different parked tasks keep their own cards; accepting
+one retires the others for that checkout.
+Accepting rechecks the checkout and releases its parked tasks; declining leaves
+that step parked, and another step's Accept for the same state does not release
+it. A later direct owner attestation of that state releases the decline at the
+writer fence. The terminal command remains available for an owner with host access.
+Only the owner's Slack button tap can approve or decline the action card.
+
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete
 the checkout to clear a claim. `t3 <overlay> workspace ticket` refuses an
-occupied checkout too; `--take-over` is the explicit override. A fixed
-30-minute lease bounds a claim whose holder died without releasing.
+occupied checkout too; `--take-over` is the explicit override. The ordinary
+claim lease is 30 minutes; an in-session `/loop` claim uses the task's extended
+lease so a long sub-agent run keeps its checkout reservation.
 
 ### Concurrent Local Stacks (`max_concurrent_local_stacks`, #1397)
 
@@ -218,7 +278,7 @@ t3 <overlay> workspace restore <checkout-path-or-bundle-prefix> --into <checkout
 
 **The judgment layer is a separate skill.** `clean-all` is the mechanical reaper — it auto-deletes the provably-redundant and EMITs every item it could not auto-decide (`t3 <overlay> workspace emit` → a JSON array). Deciding what to DO with each emitted item — salvage unmerged work to a fresh PR (`workspace salvage`), delete a shipped/superseded item, push post-merge commits to a new PR, skip a colleague's or a live item, or keep an uncertain one — is the **`/t3:sweeping-worktrees`** skill. Load it when sweeping stale/lost worktrees, branches, or stashes, or triaging `workspace emit`.
 
-Branch names matching a `clean_ignore` glob (the DB-home `clean_ignore` setting in the `ConfigSetting` store, per-overlay overridable — set with `t3 <overlay> config_setting set clean_ignore '["spike/*", "dev-override"]'`; a `[teatree] clean_ignore` TOML value is ignored on read) are never reaped on **any** deletion path — the squash-merged-row reaper, the `CREATED`-state row loop, and every branch-prune pass (gone-remote, fully-merged, squash-merged) — for never-merge dev overrides and long-lived spikes. One shared predicate enforces this, resolving the patterns through the row's own overlay (the overlay-scope `ConfigSetting` row → the global-scope row) for worktree rows, and through the active overlay for the repo-scoped branch passes. When the squash signal is uncertain (no merged PR, non-empty diff, forge CLI absent) the worktree is **kept with a warning**, never deleted — the data-loss guards (#706/#835/#1506) are never bypassed. `clean-all` runs **fully unattended by default** (#2361): it never blocks on stdin and never prompts per worktree — an uncertain or unsynced worktree is kept with a warning, not a question. Pass `--interactive` to opt into the per-worktree push/abandon/skip prompt; the flag takes effect only when stdin/stdout are real TTYs, so it still runs unattended in a pipe or loop tick. A worktree with **uncommitted changes** (a live one an agent may be mid-task in) is always kept, never bundle-and-reaped on a merged signal (#2243) — only `force`/explicit-abandon bundles and reaps a dirty worktree.
+Branch names matching a `clean_ignore` glob (the DB-home `clean_ignore` setting in the `ConfigSetting` store, per-overlay overridable — set with `t3 <overlay> config_setting set clean_ignore '["spike/*", "dev-override"]'`; a `[teatree] clean_ignore` TOML value is ignored on read) are never reaped on **any** deletion path — the squash-merged-row reaper, the `CREATED`-state row loop, and every branch-prune pass (gone-remote, fully-merged, squash-merged) — for never-merge dev overrides and long-lived spikes. One shared predicate enforces this, resolving the patterns through the row's own overlay (the overlay-scope `ConfigSetting` row → the global-scope row) for worktree rows, and through the active overlay for the repo-scoped branch passes. When the squash signal is uncertain (no merged PR, non-empty diff, forge CLI absent) the worktree is **kept with a warning**, never deleted — the data-loss guards (#706/#835/#1506) are never bypassed. `clean-all` runs **fully unattended by default** (#2361): it never blocks on stdin and never prompts per worktree — an uncertain or unsynced worktree is kept with a warning, not a question. Pass `--interactive` to opt into the per-worktree push/abandon/skip prompt; the flag takes effect only when stdin/stdout are real TTYs, so it still runs unattended in a pipe or loop tick. A worktree with **uncommitted changes** (a live one an agent may be mid-task in) is always kept, never bundle-and-reaped on a merged signal (#2243). `force` still keeps a checkout whose unshipped work cannot be proved safe; the operator's explicit `--force` teardown and a proven-dead-checkout row release set `discard_unshipped_work`.
 
 **Env-dir ownership is one answer, and the FILESYSTEM is its primary source (#3852).** "Does a live checkout own this env dir?" is resolved from a scan of every directory carrying a `.git` under the scanned roots, UNION every checkout `git worktree list` reports across the discoverable clones, UNION the `Worktree` rows (`_workspace.checkout_registry` — the same seam the raw-orphan pass below asks, not a second answer to one question), plus each dir's own `owner-checkout.path` stamp, which inverts the one-way slug hash so liveness is proven rather than inferred. The slug is `sha256(checkout_path)`, so whether that path exists on disk IS the question; a registry answer is only a proxy. Registries alone were not enough in two ways: `paths.resolve_data_dir` mints an env dir for ANY checkout (so an unregistered agent worktree read as an orphan), and clone discovery found 1 of the clones actually present, with a never-discovered clone producing no gap at all. Every pass also stamps the env dir of each checkout it discovered, so the durable mapping grows instead of covering only newly-minted dirs.
 
@@ -240,7 +300,7 @@ Until a dir is stamped the reclaim is deliberately conservative and frees less; 
 
 **Remote-state freshness gates the whole pass.** The "is it on a remote?" probe reads local `refs/remotes/*`, which go stale when a branch is deleted upstream by anything other than this clone — the ordinary forge auto-delete-on-merge. Against a stale ref, unpushed work reads as pushed and the last copy gets reaped. So each clone's tracking refs are refreshed (`git fetch --all --prune`) before any of its orphans is classified, and a **failed refresh fails closed**: the clone is skipped whole (`SKIPPED clone <path>: could not refresh remote refs`) and nothing in it is touched. On an offline host the pass therefore reaps nothing rather than reaping wrongly.
 
-Each per-worktree teardown funnels through one resilient seam (`reap_done_worktree`), so a single bad row never aborts the whole run. The sweep wraps every call to it (`reap_done_worktrees_detailed`), so a row that raises for any reason at all is reported as its own `ERROR wt#<pk> '<branch>': <exc> — row skipped, nothing wiped` outcome and the remaining rows are still examined; before that, one raising row ended the whole first pass and every row after it went unread, so the backlog could only grow. A row whose `overlay` is no longer registered (a foreign/unregistered overlay, or a sibling-repo worktree whose overlay was uninstalled) is **skipped with a warning and the run continues** — the documented crash where `get_overlay_for_worktree` raised `ImproperlyConfigured` mid-loop is fixed. A sibling clone that cannot be classified (corrupt or origin-less, so `git default-branch`/squash detection raises) is likewise skipped, not fatal.
+Each per-worktree teardown funnels through one resilient seam (`reap_done_worktree`), so a single bad row never aborts the whole run. The sweep wraps every call to it (`reap_done_worktrees_detailed`), so a row that raises for any reason at all is reported as its own `ERROR wt#<pk> '<branch>': <exc> — row skipped, nothing wiped [checkout: <path>]` outcome and the remaining rows are still examined; before that, one raising row ended the whole first pass and every row after it went unread, so the backlog could only grow. Every reaper sweep line ends with `[checkout: <path>]`, or `[checkout: unresolvable]` when the row's path cannot be read. A row whose `overlay` is no longer registered (a foreign/unregistered overlay, or a sibling-repo worktree whose overlay was uninstalled) is **skipped with a warning and the run continues** — the documented crash where `get_overlay_for_worktree` raised `ImproperlyConfigured` mid-loop is fixed. A sibling clone that cannot be classified (corrupt or origin-less, so `git default-branch`/squash detection raises) is likewise skipped, not fatal.
 
 **A row with nothing anywhere is released by `workspace doctor --fix`, never by the sweep.** A pure ghost — the checkout dir absent here, `refs/heads/<slug>` proven absent in the row's stored clone or the single clone a name scan finds, and no surviving `git worktree` registration for the path — has no bytes for any probe to speak for, and it pins its `db_name` against the orphan-DB reaper until released. `broken_checkout.is_pure_ghost` is the predicate `--fix` tears it down on: several same-basename clones, or a ref probe that fails rather than answering "missing", keep the row. The automatic `clean-all` sweep keeps every ghost row.
 
@@ -520,7 +580,10 @@ t3 <overlay> worktree provision             # re-run; now green end-to-end
 #### A checkout `t3` does not know yet — `worktree adopt`, never `provision`
 
 `WorktreeNotFoundError: Cannot auto-detect worktree from <path>` means the checkout has
-no `Worktree` row, not that you are standing in the wrong place. Registration used to
+no `Worktree` row, not that you are standing in the wrong place.
+A declaration line in this refusal means resolution used a fallback directory and says either
+`TEATREE_INVOCATION_CWD is unset (not declared)` or
+`TEATREE_INVOCATION_CWD='<path>' is declared but does not resolve here`. Registration used to
 happen only as a side effect of resolving something else, so a worktree cut by
 `git worktree add`, by another session, or one whose row was reaped, had no verb at all
 — and `provision` is the wrong answer (it runs tenant-DB provisioning many overlays
@@ -574,7 +637,7 @@ t3 <overlay> workspace ticket <issue-url-or-id>
 # RIGHT — no ticket, ad-hoc branch: name origin/main as the start point explicitly.
 # `--no-track` is load-bearing: without it the branch tracks origin/main, so `git push`
 # refuses confusingly — and aims at main under push.default=upstream.
-git fetch origin main -q && git worktree add -b <branch> --no-track ../<repo>-wt-<slug> origin/main
+git fetch origin main -q && git worktree add -b <branch> --no-track ~/workspace/t3-workspaces/<repo>-wt-<slug> origin/main
 
 # WRONG — forks whatever the local ref holds:
 git checkout -b <branch>     # FORBIDDEN — stale local main

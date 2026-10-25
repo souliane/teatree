@@ -25,6 +25,7 @@ import pytest
 import hooks.scripts.hook_router as router
 import hooks.scripts.unknown_repo_push_gate as scope_gate
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from tests._gate_escape_audit import audited_escape
 
 if TYPE_CHECKING:
     from teatree.core.models.worktree import Worktree
@@ -176,11 +177,13 @@ class TestDegradedPathIsAudible:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         repo = _repo_with_remote(tmp_path / "nodjango", "git@github.com:randomuser/randomrepo.git")
-        monkeypatch.setattr(scope_gate, "bootstrap_teatree_django", lambda: False)
+        monkeypatch.setattr(scope_gate, "bootstrap_django_registry", lambda: False)
 
         assert router.handle_block_unknown_repo_push(_push_event("git push origin HEAD", repo)) is False
 
-        assert "SKIPPED is not PASSED" in capsys.readouterr().err
+        stderr = capsys.readouterr().err
+        assert "SKIPPED is not PASSED" in stderr
+        assert "cannot import Django" in stderr
 
     def test_broken_resolver_says_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -252,15 +255,12 @@ class TestTheDryRunExemptionBelongsToItsOwnPush:
 class TestNeverLockout:
     def test_per_call_token_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         repo = _repo_with_remote(tmp_path / "tok", "git@github.com:randomuser/randomrepo.git")
-        command = "git push origin HEAD  # [scope-push-ok: vetted one-off]"
-        assert router.handle_block_unknown_repo_push(_push_event(command, repo)) is False
+        command = "git push origin HEAD # [gate-escape:unknown_repo_push: vetted one-off]"
+        event = _push_event(command, repo)
+        with audited_escape(event) as requests:
+            assert router.handle_block_unknown_repo_push(event) is False
         assert _parse_deny(capsys) is None
-
-    def test_empty_token_does_not_allow(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        repo = _repo_with_remote(tmp_path / "tok2", "git@github.com:randomuser/randomrepo.git")
-        command = "git push origin HEAD  # [scope-push-ok: ]"
-        assert router.handle_block_unknown_repo_push(_push_event(command, repo)) is True
-        assert _parse_deny(capsys) is not None
+        assert [request["gate"] for request in requests] == ["unknown_repo_push"]
 
     def test_kill_switch_disables_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo_with_remote(tmp_path / "killed", "git@github.com:randomuser/randomrepo.git")
@@ -270,3 +270,10 @@ class TestNeverLockout:
     def test_unresolvable_cwd_fails_open(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert router.handle_block_unknown_repo_push(_push_event("git push origin HEAD", None)) is False
         assert _parse_deny(capsys) is None
+
+
+def test_legacy_scope_push_marker_does_not_allow(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo_with_remote(tmp_path / "legacy", "git@github.com:randomuser/randomrepo.git")
+    event = _push_event("git push origin HEAD # [scope-push-ok: legacy]", repo)
+    assert router.handle_block_unknown_repo_push(event) is True
+    assert _parse_deny(capsys) is not None

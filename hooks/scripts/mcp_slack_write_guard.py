@@ -59,10 +59,6 @@ _SLACK_READ_VERBS: frozenset[str] = frozenset(
 #: and ``conversationsHistory`` are the two spellings live Slack MCP servers use).
 _NAME_WORD_RE = re.compile(r"[a-z]+|[A-Z][a-z]*")
 
-#: Per-call never-lockout escape: ``[slack-mcp-ok: <reason>]`` in any string field
-#: of the tool input allows that single call (a vetted one-off). Empty reason rejects.
-_ESCAPE_RE = re.compile(r"\[slack-mcp-ok:\s*(\S[^\]]*)\]")
-
 _DENY_REASON = (
     "BLOCKED: a direct MCP Slack write bypasses teatree's Slack egress chokepoint "
     "(on-behalf gate, voice classifier, verify-by-re-read). Use teatree MCP: "
@@ -75,7 +71,7 @@ _DENY_REASON = (
     "never overlay-scoped). Recognised Slack MCP READS "
     "(get/list/search/history/info/read/view/fetch/replies/members) are unaffected; a "
     "Slack MCP tool this gate does not recognise is treated as a WRITE, so a genuine "
-    "read it has not seen lands here too. One-off escape: put `[slack-mcp-ok: <reason>]` "
+    "read it has not seen lands here too. One-off escape: put `[gate-escape:mcp_slack_write: <reason>]` "
     "in the message text."
 )
 
@@ -97,7 +93,7 @@ def is_slack_mcp_write(tool_name: str) -> bool:
     Default-DENY: only a suffix carrying a :data:`_SLACK_READ_VERBS` word is a
     read. A Slack MCP tool this roster has never seen is a write, because the
     cost of the two errors is not symmetric — an unrecognised read is one denied
-    call the operator escapes with ``[slack-mcp-ok: …]``, an unrecognised write
+    call the operator escapes with ``[gate-escape:mcp_slack_write: …]``, an unrecognised write
     is a post under the user's identity outside the egress chokepoint.
     """
     if not is_slack_mcp_tool(tool_name):
@@ -107,17 +103,12 @@ def is_slack_mcp_write(tool_name: str) -> bool:
     return not (words & _SLACK_READ_VERBS)
 
 
-def _has_escape_token(tool_input: dict) -> bool:
-    """Whether any string field of *tool_input* carries a valid ``[slack-mcp-ok: …]`` token."""
-    return any(isinstance(value, str) and _ESCAPE_RE.search(value) for value in tool_input.values())
-
-
 def _gate_enabled() -> bool:
     """Whether the gate is enabled (default True); a broken config fails OPEN to enabled."""
     try:
         from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-        return _teatree_bool_setting("mcp_slack_write_gate_enabled", default=True)
+        return _teatree_bool_setting("mcp_slack_write_gate_enabled")
     except Exception:  # noqa: BLE001 — a config-read error must never wedge the tool call.
         return True
 
@@ -128,7 +119,7 @@ def handle_block_mcp_slack_write(data: dict) -> bool:
     Fires on any ``mcp__*slack*`` tool that is not a recognised READ; a Slack READ
     tool passes through. Never-lockout: the ``[teatree]
     mcp_slack_write_gate_enabled = false`` kill-switch disables it, a
-    ``[slack-mcp-ok: <reason>]`` token in the tool input allows a single call, and
+    ``[gate-escape:mcp_slack_write: <reason>]`` token in the tool input allows a single call, and
     the deny routes through the router's shared ``_fail_open_or_deny`` chokepoint
     so the always-allowed self-rescue commands and the master ``[teatree]
     danger_gate_fail_open`` kill-switch apply. Returns True when a deny was emitted
@@ -137,9 +128,6 @@ def handle_block_mcp_slack_write(data: dict) -> bool:
     if not _gate_enabled():
         return False
     if not is_slack_mcp_write(data.get("tool_name", "")):
-        return False
-    tool_input = data.get("tool_input", {}) or {}
-    if isinstance(tool_input, dict) and _has_escape_token(tool_input):
         return False
     from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 

@@ -15,6 +15,7 @@ heuristic :attr:`is_question` lives here so the model is the single source of
 truth for "this row needs a reply".
 """
 
+import datetime as dt
 import re
 from dataclasses import dataclass
 from functools import partial
@@ -71,6 +72,8 @@ _QUESTION_TEXT_REGEX = (
     r"|.*\?\s*$)"
 )
 
+_SESSION_CLAIM_RECOVERY_AFTER = dt.timedelta(minutes=2)
+
 
 @dataclass(frozen=True, slots=True)
 class DmContext:
@@ -86,6 +89,14 @@ class DmContext:
 
 
 NO_DM_CONTEXT = DmContext()
+
+
+class PendingChatInjectionQuerySet(models.QuerySet):
+    def recorded_since(self, since: dt.datetime, *, overlay: str = "") -> "PendingChatInjectionQuerySet":
+        return self.filter(overlay=overlay, received_at__gte=since)
+
+    def prunable(self, cutoff: dt.datetime) -> "PendingChatInjectionQuerySet":
+        return self.filter(loop_replied_at__isnull=False, received_at__lt=cutoff)
 
 
 class PendingChatInjection(models.Model):
@@ -106,6 +117,7 @@ class PendingChatInjection(models.Model):
         SIMPLE = "simple", "Simple"
         DELEGATED = "delegated", "Delegated"
         QUESTION_REPLY = "question_reply", "Question reply"
+        SESSION = "session", "Session"
 
     question_text_regex: ClassVar[str] = _QUESTION_TEXT_REGEX
 
@@ -136,6 +148,8 @@ class PendingChatInjection(models.Model):
         choices=AnswerKind.choices,
     )
     eyes_reacted_at = models.DateTimeField(null=True, blank=True)
+
+    objects = PendingChatInjectionQuerySet.as_manager()
 
     class Meta:
         db_table = "teatree_pending_chat_injection"
@@ -200,27 +214,24 @@ class PendingChatInjection(models.Model):
         return None
 
     @classmethod
-    def latest_slack_ts(cls, *, overlay: str = "") -> str:
-        """The newest ``slack_ts`` recorded for *overlay*, or ``""`` when none is.
-
-        A Slack ``ts`` is a fixed-width epoch-seconds string, so the lexicographic
-        max is the chronological one; ``""`` reads as "no cursor yet".
-        """
-        newest = cls.objects.filter(overlay=overlay).aggregate(newest=models.Max("slack_ts"))["newest"]
-        return newest or ""
-
-    @classmethod
     def loop_unreplied(cls, *, overlay: str = "") -> models.QuerySet["PendingChatInjection"]:
         """Return the reactive Slack-answer loop's work-queue, oldest first.
 
         Gates on ``loop_replied_at`` (the loop's own column, #1075 / Option B),
         NOT ``answered_at``: the loop posting a reply stamps only
         ``loop_replied_at``, so it never claims the agent personally answered.
+        An unconfirmed session or question claim returns after two minutes so
+        a crashed sender can retry delivery.
 
         Pass ``overlay=""`` to scan every overlay's queue (the v1 single-
         overlay path uses ``overlay=""`` consistently).
         """
-        qs = cls.objects.filter(loop_replied_at__isnull=True)
+        stale_delivery = models.Q(
+            answer_kind__in={cls.AnswerKind.SESSION, cls.AnswerKind.QUESTION_REPLY},
+            loop_response_confirmed_at__isnull=True,
+            loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
+        )
+        qs = cls.objects.filter(models.Q(loop_replied_at__isnull=True) | stale_delivery)
         if overlay:
             qs = qs.filter(overlay=overlay)
         return qs.order_by("received_at")
@@ -244,6 +255,21 @@ class PendingChatInjection(models.Model):
             self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
         return bool(updated)
 
+    def claim_stale_loop_reply(self) -> bool:
+        updated = (
+            type(self)
+            .objects.filter(
+                pk=self.pk,
+                answer_kind__in={self.AnswerKind.SESSION, self.AnswerKind.QUESTION_REPLY},
+                loop_response_confirmed_at__isnull=True,
+                loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
+            )
+            .update(loop_replied_at=timezone.now())
+        )
+        if updated:
+            self.refresh_from_db(fields=["loop_replied_at"])
+        return bool(updated)
+
     def observe_confirmed_loop_reply(self) -> None:
         """Persist verified delivery/application, distinct from the pre-post claim."""
         confirmed = (
@@ -252,7 +278,12 @@ class PendingChatInjection(models.Model):
                 pk=self.pk,
                 loop_replied_at__isnull=False,
                 loop_response_confirmed_at__isnull=True,
-                answer_kind__in={self.AnswerKind.SIMPLE, self.AnswerKind.QUESTION_REPLY, self.AnswerKind.DELEGATED},
+                answer_kind__in={
+                    self.AnswerKind.SIMPLE,
+                    self.AnswerKind.QUESTION_REPLY,
+                    self.AnswerKind.DELEGATED,
+                    self.AnswerKind.SESSION,
+                },
             )
             .update(loop_response_confirmed_at=timezone.now())
         )

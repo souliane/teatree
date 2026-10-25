@@ -14,8 +14,12 @@ from itertools import starmap
 from typing import Final
 
 from teatree.hooks._body_file_resolution import BODY_FILE_FLAG_NAMES, STDIN_DASH, BodyFileContext, append_file_payload
-from teatree.hooks._curl_payload import _CURL_DATA_LONG_FLAGS, _CURL_FORM_FLAGS
-from teatree.hooks._inline_body_resolution import resolve_attached_value, resolve_inline_body_value
+from teatree.hooks._curl_payload import curl_groups, curl_method
+from teatree.hooks._inline_body_resolution import (
+    resolve_attached_value,
+    resolve_inline_body_value,
+    resolve_short_cluster,
+)
 from teatree.hooks._parser_primitives import (
     BODY_LONG_OPTION_FIELDS,
     BODY_SHORT_FLAGS,
@@ -23,6 +27,7 @@ from teatree.hooks._parser_primitives import (
     attached_api_field,
     canonical_leader,
     read_file_arg,
+    short_cluster_values,
     strip_wrapper_prefix,
 )
 from teatree.hooks._publish_detection import segment_word_lists
@@ -64,17 +69,14 @@ _CONTENT_VALUE_FLAGS: Final[frozenset[str]] = frozenset(
 
 _GRAPHQL_MUTATION_RE: Final[re.Pattern[str]] = re.compile(r"\bmutation\b")
 
-_CURL_METHOD_FLAGS: Final[frozenset[str]] = frozenset({"-X", "--request"})
-_CURL_IMPLIED_METHODS: Final[tuple[tuple[str, frozenset[str]], ...]] = (
-    ("HEAD", frozenset({"-I", "--head"})),
-    ("GET", frozenset({"-G", "--get"})),
-    ("PUT", frozenset({"-T", "--upload-file"})),
-    ("POST", frozenset({"-d", *_CURL_DATA_LONG_FLAGS, *_CURL_FORM_FLAGS})),
-)
 _READ_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD"})
 _FORGE_HOSTS: Final[tuple[str, ...]] = ("github.com", "gitlab.com")
 _URL_HOST_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:https?://)?(?:[^/@\s]+@)?(?P<host>[A-Za-z0-9.-]+)(?::\d+)?(?:[/?#]|$)", re.IGNORECASE
+)
+_GITLAB_API_URL_RE: Final[re.Pattern[str]] = re.compile(r"^https?://[^/\s]+/api/v4/", re.IGNORECASE)
+_SLACK_API_PATH_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:/api/|\$[A-Za-z_][A-Za-z0-9_]*/)(?:chat\.postMessage|files\.upload)(?:[?#]|$)"
 )
 
 
@@ -106,22 +108,21 @@ def _forge_call(words: list[str]) -> _ForgeCall | None:
 
 
 def _attached_free_text(word: str, long_flags: frozenset[str]) -> tuple[str, str] | None:
-    """Return ``(prefix, value)`` of an attached ``--long=value`` / ``-sVALUE`` free-text flag."""
-    if word.startswith("--"):
-        flag, sep, value = word.partition("=")
-        return (f"{flag}=", value) if sep and flag in long_flags else None
-    prefix = word[:_SHORT_FLAG_LEN]
-    if len(word) > _SHORT_FLAG_LEN and prefix in _FREE_TEXT_SHORT:
-        return prefix, word[_SHORT_FLAG_LEN:].removeprefix("=")
-    return None
+    """Return ``(prefix, value)`` of an attached ``--long=value`` free-text flag."""
+    flag, sep, value = word.partition("=")
+    return (f"{flag}=", value) if word.startswith("--") and sep and flag in long_flags else None
 
 
 def _token_carries_free_text(word: str, nxt: str) -> bool:
     if word in _FREE_TEXT_FLAGS or _attached_free_text(word, _DETECTED_LONG) is not None:
         return True
+    if any(candidate.value or nxt for candidate in short_cluster_values(word, _FREE_TEXT_SHORT)):
+        return True
     if word in _FIELD_FLAGS:
         return word == "-F" or "=" in nxt
-    return attached_api_field(word) is not None or word.startswith("-F")
+    return attached_api_field(word) is not None or any(
+        candidate.value or nxt for candidate in short_cluster_values(word, frozenset({"-F"}))
+    )
 
 
 def segment_is_forge_cli_write(words: list[str]) -> bool:
@@ -184,6 +185,8 @@ def walk_forge_free_text(
         elif (attached := _attached_free_text(word, _WALKED_LONG)) is not None:
             prefix, value = attached
             payloads.append(resolve_attached_value(value, ctx.base, raws[i], prefix))
+        elif len(word) > _SHORT_FLAG_LEN:
+            payloads.extend(resolve_short_cluster(words[i:], raws[i:], _FREE_TEXT_SHORT - generic_short, ctx.base))
     for operand in _content_operands(words):
         append_file_payload(operand, payloads, ctx, fail_closed=ctx.fail_closed_body_file, leader=leader)
 
@@ -203,28 +206,6 @@ def graphql_document_is_read(words: list[str]) -> bool:
     return False
 
 
-def _curl_flag(word: str) -> tuple[str, str | None]:
-    if word.startswith("--"):
-        flag, sep, value = word.partition("=")
-        return flag, value if sep else None
-    if word.startswith("-") and len(word) > _SHORT_FLAG_LEN:
-        return word[:_SHORT_FLAG_LEN], word[_SHORT_FLAG_LEN:]
-    return word, None
-
-
-def _curl_method(args: list[str]) -> str:
-    explicit: str | None = None
-    flags: set[str] = set()
-    for word, nxt in zip(args, [*args[1:], ""], strict=True):
-        flag, attached = _curl_flag(word)
-        if flag in _CURL_METHOD_FLAGS:
-            explicit = attached if attached is not None else nxt
-        flags.add(flag)
-    if explicit:
-        return explicit.strip("'\"").upper()
-    return next((method for method, implying in _CURL_IMPLIED_METHODS if flags & implying), "GET")
-
-
 def _url_host(url: str) -> str:
     match = _URL_HOST_RE.match(url)
     return match["host"].lower() if match else ""
@@ -234,15 +215,21 @@ def _is_forge_host(host: str) -> bool:
     return any(host == forge or host.endswith(f".{forge}") for forge in _FORGE_HOSTS)
 
 
+def _is_curl_forge_url(url: str) -> bool:
+    return _is_forge_host(_url_host(url)) or _GITLAB_API_URL_RE.match(url) is not None
+
+
 def _curl_urls(args: list[str]) -> list[str]:
-    """Every URL a ``curl`` names; a scheme-less one only when its host is a forge."""
+    """Every URL a ``curl`` names on a known host or distinctive publish API path."""
     urls: list[str] = []
     for word in args:
         candidate = word.removeprefix("--url=")
         if candidate.lower().startswith(("http://", "https://")):
             urls.append(candidate)
-        elif _is_forge_host(_url_host(candidate)):
+        elif _is_curl_forge_url(f"https://{candidate}"):
             urls.append(f"https://{candidate}")
+        elif _SLACK_API_PATH_RE.search(candidate):
+            urls.append(candidate)
     return urls
 
 
@@ -251,16 +238,24 @@ def curl_forge_targets(words: list[str]) -> list[tuple[str, str] | None]:
     rest = strip_wrapper_prefix(words)
     if not rest or canonical_leader(rest[0]) != "curl":
         return []
-    return [next(find_python_forge_rest_urls(url), None) for url in _curl_urls(rest[1:])]
+    return [
+        next(find_python_forge_rest_urls(url), None)
+        for _, positions in curl_groups(rest[1:])
+        for url in _curl_urls(positions)
+    ]
 
 
 def _segment_is_curl_forge_write(words: list[str]) -> bool:
     rest = strip_wrapper_prefix(words)
-    if not rest or canonical_leader(rest[0]) != "curl" or _curl_method(rest[1:]) in _READ_METHODS:
+    if not rest or canonical_leader(rest[0]) != "curl":
         return False
-    return any(
-        _is_forge_host(_url_host(url)) or next(find_python_forge_rest_urls(url), None) is not None
-        for url in _curl_urls(rest[1:])
+    groups = curl_groups(rest[1:])
+    forge_groups = [
+        options for options, positions in groups if any(_is_curl_forge_url(url) for url in _curl_urls(positions))
+    ]
+    return bool(forge_groups) and (
+        any(curl_method(options) not in _READ_METHODS for options in forge_groups)
+        or any(option.unknown or option.name in {"-K", "--config"} for options in forge_groups for option in options)
     )
 
 

@@ -9,7 +9,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,18 +18,12 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 from django.test import TestCase
 from pydantic_ai import Agent
-from pydantic_ai.messages import (
-    ModelResponse,
-    RetryPromptPart,
-    SystemPromptPart,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-)
+from pydantic_ai.messages import ModelResponse, SystemPromptPart, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
+import teatree.core.worktree.checkout_fence as checkout_fence_mod
 from teatree.agents._runner_options import SpawnOverrides, _build_options
 from teatree.agents.claude_cli_spawn import APPEND_PROMPT_FILE_FLAG
 from teatree.agents.context_budget import MAX_APPEND_BYTES
@@ -42,6 +36,7 @@ from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.prompt import build_system_context
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.cleanup.checkout_registry import is_tagged_cache, scan_checkout_paths
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import AutoReviewDispatch, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.types import AdequacySection, PlanAdequacy
@@ -78,12 +73,40 @@ class _Handoff(TestCase):
         data_dir = patch("teatree.paths.DATA_DIR", self.root / "data")
         data_dir.start()
         self.addCleanup(data_dir.stop)
+        process_table = patch.object(
+            checkout_fence_mod, "read_process_table", return_value=ProcessTable(frozenset(), "/proc")
+        )
+        process_table.start()
+        self.addCleanup(process_table.stop)
         self.ticket = self._ticket_with_worktree()
 
     def _ticket_with_worktree(self) -> Ticket:
         ticket = planned_ticket()
         worktree_dir = self.root / f"repo-{ticket.pk}"
         worktree_dir.mkdir()
+        git_binary = shutil.which("git")
+        assert git_binary is not None
+        subprocess.run([git_binary, "-C", str(worktree_dir), "init", "-b", "main"], check=True, capture_output=True)
+        subprocess.run(
+            [
+                git_binary,
+                "-C",
+                str(worktree_dir),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [git_binary, "-C", str(worktree_dir), "switch", "-c", "feature"], check=True, capture_output=True
+        )
         Worktree.objects.create(
             ticket=ticket, repo_path=str(worktree_dir), branch="feature", extra={"worktree_path": str(worktree_dir)}
         )
@@ -108,7 +131,7 @@ class _Handoff(TestCase):
         )
 
     @contextlib.contextmanager
-    def _delivered(self, task: Task) -> Iterator[tuple[Path, str]]:
+    def _delivered(self, task: Task) -> Generator[tuple[Path, str]]:
         with delivered_phase_handoff(task) as handoff:
             assert handoff is not None, "a task beginning a new phase after a recorded attempt must get a handoff"
             yield handoff, build_system_context(task, skills=[], handoff=handoff)
@@ -343,7 +366,7 @@ async def _adversarial_stream(seen: dict[str, str], messages, _info) -> AsyncIte
         ("tamper", TOOL_BASH, {"command": f"echo tampered >> {shlex.quote(str(handoff))}"}),
         ("own", TOOL_READ, {"path": str(handoff)}),
     )
-    answers = [part for part in parts if isinstance(part, ToolReturnPart | RetryPromptPart)]
+    answers = [part for part in parts if isinstance(part, ToolReturnPart)]
     seen["path"] = str(handoff)
     for (name, _tool, _args), answer in zip(attacks, answers, strict=False):
         seen[name] = str(answer.content)

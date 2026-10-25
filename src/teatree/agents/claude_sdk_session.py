@@ -12,7 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from claude_agent_sdk import HookMatcher, ResultMessage
+from claude_agent_sdk import AssistantMessage, CLIConnectionError, HookMatcher, ResultMessage
 from claude_agent_sdk.types import (
     HookCallback,
     HookContext,
@@ -23,6 +23,7 @@ from claude_agent_sdk.types import (
 )
 
 from teatree.agents.live_control import RejectCode, SteerRejectedError
+from teatree.agents.runner_failure_taxonomy import is_refused_resume
 
 if TYPE_CHECKING:
     from teatree.agents.harness import HarnessSession
@@ -78,7 +79,11 @@ class LiveInputQueue:
             if not item.accepted.done():
                 item.accepted.set_exception(SteerRejectedError(code))
 
-    def _take(self) -> str:
+    def reopen(self) -> None:
+        if self._ended == RejectCode.TURN_ENDED:
+            self._ended = None
+
+    def take(self) -> str:
         texts = []
         while self._pending:
             item = self._pending.popleft()
@@ -93,12 +98,12 @@ class LiveInputQueue:
         del tool_use_id, context
         if input_data.get("agent_id"):
             return {}
-        text = self._take()
+        text = self.take()
         return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}} if text else {}
 
     async def _stop(self, input_data: StopHookInput, tool_use_id: str | None, context: HookContext) -> HookJSONOutput:
         del input_data, tool_use_id, context
-        text = self._take()
+        text = self.take()
         return {"decision": "block", "reason": text} if text else {}
 
 
@@ -112,11 +117,38 @@ class ClaudeSdkSession:
     async def query(self, prompt: str) -> None:
         await self._client.query(prompt)
 
+    async def follow_up(self, prompt: str) -> None:
+        try:
+            await self._client.query(prompt)
+        except CLIConnectionError as exc:
+            raise SteerRejectedError(RejectCode.SESSION_CLOSED) from exc
+        self._inputs.reopen()
+
     async def receive_response(self) -> AsyncIterator[Any]:
-        async for message in self._client.receive_response():
-            if isinstance(message, ResultMessage):
+        held_ack: ResultMessage | None = None
+        answered = False
+        while True:
+            received = False
+            async for message in self._client.receive_response():
+                received = True
+                if isinstance(message, AssistantMessage):
+                    answered = True
+                    held_ack = None
+                if isinstance(message, ResultMessage):
+                    if not answered and is_refused_resume(message):
+                        held_ack = message
+                        continue
+                    self._inputs.end(RejectCode.TURN_ENDED)
+                    yield message
+                    return
+                yield message
+            if held_ack is None:
+                return
+            if not received:
                 self._inputs.end(RejectCode.TURN_ENDED)
-            yield message
+                yield held_ack
+                return
+            await asyncio.sleep(0)
 
     async def interrupt(self) -> None:
         await self._client.interrupt()

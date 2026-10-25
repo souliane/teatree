@@ -20,7 +20,7 @@ from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleInci
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.self_improve.schedule import DeliveryRoutes, Tier, TierResult, detectors_for_tier, run_tier
 from tests._owner_channel import OWNER_DECISION
-from tests.factories import TaskFactory, TicketFactory
+from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
 
 
 class LifecycleIncidentTests(TestCase):
@@ -65,6 +65,28 @@ class LifecycleIncidentTests(TestCase):
         Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.MERGED)
 
         assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+    def test_newer_same_phase_task_supersedes_historical_failure(self) -> None:
+        old = TaskFactory()
+        old.fail(reason="result_error: old attempt", by_holder=True)
+        TaskFactory(ticket=old.ticket, phase=old.phase)
+        other_phase = TaskFactory(ticket=old.ticket, phase="reviewing")
+        other_phase.fail(reason="result_error: current attempt", by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert len(reports) == 1
+        assert reports[0].payload["ids"] == [other_phase.pk]
+
+    def test_administrative_newer_failure_does_not_hide_old_failure(self) -> None:
+        for reason in ("cancelled: operator stopped", "superseded: rework", "plan_stale: base moved"):
+            old = TaskFactory()
+            old.fail(reason="result_error: old attempt", by_holder=True)
+            newer = TaskFactory(ticket=old.ticket, phase=old.phase)
+            newer.fail(reason=reason, by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert len(reports) == 1
+        assert reports[0].payload["count"] == 3
 
     def test_old_inbound_question_without_answer_is_an_incident(self) -> None:
         row = PendingChatInjection.record(channel="D1", slack_ts="100.1", text="Why did my task fail?")
@@ -231,6 +253,89 @@ class LifecycleIncidentTests(TestCase):
         assert reports[0].payload["kind"] == "attempt_failure_burst"
         assert reports[0].payload["cause"] == "harness_crash"
         assert reports[0].requested_rung == ActionRung.TICKET
+
+    def _attempt_burst_reports(
+        self, errors: list[str], cause: str
+    ) -> tuple[list[DetectorReport], list[int], list[int]]:
+        now = timezone.now()
+        TaskAttemptFactory.create_batch(len(errors) + 1, task=TaskFactory())
+        tasks = [TaskFactory() for _ in errors]
+        attempts = [
+            TaskAttemptFactory(task=task, exit_code=1, error=error) for task, error in zip(tasks, errors, strict=True)
+        ]
+        assert {task.pk for task in tasks}.isdisjoint(attempt.pk for attempt in attempts)
+        rows = [
+            {
+                "epoch": int(now.timestamp()),
+                "kind": "attempt.finished",
+                "entity_id": attempt.pk,
+                "ticket_id": task.ticket_id,
+                "task_id": task.pk,
+                "cause": cause,
+                "error_fingerprint": "a" * 64,
+                "trace_id": f"{index:032x}",
+                "span_id": f"{index:016x}",
+            }
+            for index, (task, attempt) in enumerate(zip(tasks, attempts, strict=True), start=1)
+        ]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / f"lifecycle-{now.date().isoformat()}.jsonl"
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            reports = LifecycleIncidentDetector(directory=Path(directory), now=lambda: now).detect()
+        return reports, [task.pk for task in tasks], [attempt.pk for attempt in attempts]
+
+    def test_usage_window_attempts_do_not_create_a_failure_burst(self) -> None:
+        errors = ["subscription_weekly: seven_day — retry after the weekly reset"] * 3
+
+        reports, _, _ = self._attempt_burst_reports(errors, "usage_limit_parked")
+
+        assert not [report for report in reports if report.payload["kind"] == "attempt_failure_burst"]
+
+    def test_api_credit_attempts_still_create_a_failure_burst(self) -> None:
+        reports, task_ids, _ = self._attempt_burst_reports(
+            ["api_credit: credit balance is too low"] * 3, "credential_exhausted"
+        )
+
+        bursts = [report for report in reports if report.payload["kind"] == "attempt_failure_burst"]
+        assert len(bursts) == 1
+        assert bursts[0].payload["count"] == 3
+        assert bursts[0].payload["ids"] == task_ids
+
+    def test_provider_budget_and_quoted_window_marker_still_create_failure_bursts(self) -> None:
+        cases = (
+            ("provider_budget: wallet depleted", "credential_exhausted"),
+            ("Traceback: subscription_weekly: marker quoted by crash", "harness_crash"),
+        )
+        for error, cause in cases:
+            with self.subTest(error=error):
+                reports, task_ids, _ = self._attempt_burst_reports([error] * 3, cause)
+                bursts = [report for report in reports if report.payload["kind"] == "attempt_failure_burst"]
+                assert len(bursts) == 1
+                assert bursts[0].payload["ids"] == task_ids
+
+    def test_mixed_attempt_burst_names_and_cites_only_real_failures(self) -> None:
+        reports, task_ids, attempt_ids = self._attempt_burst_reports(
+            ["all Claude accounts are exhausted"] * 2 + ["api_credit: credit balance is too low"] * 3,
+            "credential_exhausted",
+        )
+
+        bursts = [report for report in reports if report.payload["kind"] == "attempt_failure_burst"]
+        assert len(bursts) == 1
+        assert bursts[0].payload["count"] == 3
+        assert bursts[0].payload["ids"] == task_ids[2:]
+        evidence = bursts[0].payload["suggested_action"]
+        assert all(f'"entity_id":{attempt_id}' not in evidence for attempt_id in attempt_ids[:2])
+        assert all(f'"entity_id":{attempt_id}' in evidence for attempt_id in attempt_ids[3:])
+
+    def test_failed_usage_window_task_still_creates_task_failed_report(self) -> None:
+        task = TaskFactory()
+        task.fail(reason="subscription_weekly: weekly limit reached", by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+        assert len(reports) == 1
+        assert reports[0].payload["cause"] == "usage_limit_parked"
+        assert reports[0].payload["ids"] == [task.pk]
 
     def _burst_ticket_context(self, cause: str) -> str:
         now = timezone.now()

@@ -20,6 +20,8 @@ call-time import.
 import logging
 import time
 import traceback
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +31,15 @@ from teatree.config.settings import OverlayEntry
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+type StoredRowValue = bool | int | float | str | list[object] | Mapping[str, object] | None
+
+
+@dataclass(frozen=True, slots=True)
+class OverlayRows:
+    rows: dict[str, StoredRowValue]
+    scopes: dict[str, str]
+
+
 _logger = logging.getLogger("teatree.config")
 
 #: The two DB scope labels a degraded read is recorded under. Stable identifiers, not prose:
@@ -36,6 +47,7 @@ _logger = logging.getLogger("teatree.config")
 #: label carries no overlay NAME (the name goes in the log line instead).
 GLOBAL_SCOPE_LABEL = "global"
 OVERLAY_SCOPE_LABEL = "overlay"
+
 
 #: Frames of :func:`_calling_context`. One frame is often a memo shim or a settings helper that
 #: merely forwards; three reach the site that actually decided to read the config tier.
@@ -139,14 +151,12 @@ _READ_ATTEMPTS = 3
 _READ_RETRY_BACKOFF: tuple[float, ...] = (0.05, 0.15)
 
 
-def _read_scope_rows(
-    scope_label: str, read: "Callable[[], dict[str, Any]]", *, log_label: str = ""
-) -> tuple[dict[str, Any], bool]:
+def _read_scope_rows[T](scope_label: str, read: "Callable[[], T]", empty: T, *, log_label: str = "") -> tuple[T, bool]:
     """Run *read* with the bounded retry, returning ``(rows, degraded)``.
 
-    ``degraded`` is the distinction #3873 exists for: ``({}, False)`` is a healthy read of
-    a tier with no rows, ``({}, True)`` is a tier whose content could not be determined.
-    They are the same dict and must never be the same answer.
+    ``degraded`` is the distinction #3873 exists for: ``(empty, False)`` is a healthy read
+    of a tier with no rows, ``(empty, True)`` is a tier whose content could not be
+    determined. They share the same empty value and must never be the same answer.
 
     A genuine bootstrap state (:func:`_override_read_degrades_silently`) is neither retried
     nor reported — it is a no-op by construction, and retrying it would put the backoff on
@@ -161,19 +171,19 @@ def _read_scope_rows(
             rows = read()
         except Exception as exc:
             if _override_read_degrades_silently(exc):
-                return {}, False
+                return empty, False
             deterministic = _read_fault_is_deterministic(exc)
             if deterministic or attempt + 1 >= _READ_ATTEMPTS:
                 caller = _calling_context()
                 message = _DETERMINISTIC_READ_FAILURE_MSG if deterministic else _OVERRIDE_READ_FAILURE_MSG
                 _logger.exception(message, log_label or scope_label, caller)
                 record_degraded_read(scope_label, caller=caller)
-                return {}, True
+                return empty, True
             time.sleep(_READ_RETRY_BACKOFF[min(attempt, len(_READ_RETRY_BACKOFF) - 1)])
         else:
             note_healthy_read()
             return rows, False
-    return {}, True  # pragma: no cover — the loop always returns
+    return empty, True  # pragma: no cover — the loop always returns
 
 
 def config_store_readable() -> bool:
@@ -213,11 +223,31 @@ def load_global_rows() -> tuple[dict[str, Any], bool]:
         model = apps.get_model("core", "ConfigSetting")
         return dict(model.objects.overrides_for_scope(""))
 
-    return _read_scope_rows(GLOBAL_SCOPE_LABEL, read)
+    return _read_scope_rows(GLOBAL_SCOPE_LABEL, read, {})
 
 
-def load_overlay_rows(overlay_name: str = "") -> tuple[dict[str, Any], bool]:
-    """Read the active overlay's ``{key: value}`` rows, alias-tolerant, or ``{}``.
+def fold_overlay_rows(scope_values: Mapping[str, Mapping[str, StoredRowValue]], overlay_name: str) -> OverlayRows:
+    canonical = OverlayEntry.canonical_overlay_name(overlay_name)
+    aliases = sorted(
+        scope
+        for scope in scope_values
+        if scope != overlay_name and OverlayEntry.canonical_overlay_name(scope) == canonical
+    )
+    merged: dict[str, StoredRowValue] = {}
+    scopes: dict[str, str] = {}
+    for scope in (*aliases, overlay_name):
+        rows = scope_values.get(scope, {})
+        merged.update(rows)
+        scopes.update(dict.fromkeys(rows, scope))
+    return OverlayRows(merged, scopes)
+
+
+def column_spelling(spellings: set[str], registered: set[str]) -> str:
+    return next(iter(sorted(spellings & registered)), min(spellings))
+
+
+def load_overlay_rows(overlay_name: str = "") -> tuple[OverlayRows, bool]:
+    """Read the active overlay's rows and source scopes, alias-tolerant.
 
     Matches the row's scope to *overlay_name* canonical-alias-tolerantly (a row
     under either the short alias or the ``t3-``-prefixed entry-point name resolves
@@ -228,31 +258,28 @@ def load_overlay_rows(overlay_name: str = "") -> tuple[dict[str, Any], bool]:
     :func:`load_global_rows`: a genuine bootstrap state is silent, a runtime fault
     (incl. a ready-registry ``OperationalError`` / ``ProgrammingError``) logs loud.
     """
+    empty = OverlayRows({}, {})
     if not overlay_name:
-        return {}, False
+        return empty, False
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-    def read() -> dict[str, Any]:
+    def read() -> OverlayRows:
         model = apps.get_model("core", "ConfigSetting")
-        canonical = OverlayEntry.canonical_overlay_name(overlay_name)
-        scope_values: dict[str, dict[str, Any]] = {}
+        scope_values: dict[str, dict[str, StoredRowValue]] = {}
         for scope, key, value in model.objects.exclude(scope="").values_list("scope", "key", "value"):
-            if scope == overlay_name or OverlayEntry.canonical_overlay_name(scope) == canonical:
-                scope_values.setdefault(scope, {})[key] = value
-        merged: dict[str, Any] = {}
-        for scope in sorted(scope_values):
-            if scope != overlay_name:
-                merged.update(scope_values[scope])
-        merged.update(scope_values.get(overlay_name, {}))
-        return merged
+            scope_values.setdefault(scope, {})[key] = value
+        return fold_overlay_rows(scope_values, overlay_name)
 
-    return _read_scope_rows(OVERLAY_SCOPE_LABEL, read, log_label=f"overlay {overlay_name!r}")
+    return _read_scope_rows(OVERLAY_SCOPE_LABEL, read, empty, log_label=f"overlay {overlay_name!r}")
 
 
 __all__ = [
     "GLOBAL_SCOPE_LABEL",
     "OVERLAY_SCOPE_LABEL",
+    "OverlayRows",
+    "column_spelling",
     "config_store_readable",
+    "fold_overlay_rows",
     "load_global_rows",
     "load_overlay_rows",
 ]

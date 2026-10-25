@@ -45,16 +45,19 @@ from teatree.hooks._body_file_resolution import (
     unredirected_heredoc_bodies,
     walk_body_file_flags,
 )
-from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args
+from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args, curl_groups
 from teatree.hooks._forge_write_detection import (
+    _curl_urls,
+    _is_curl_forge_url,
     command_has_forge_free_text_publish,
     graphql_document_is_read,
     segment_is_forge_cli_write,
     segment_reads_stdin_content,
     walk_forge_free_text,
 )
-from teatree.hooks._inline_body_resolution import resolve_inline_body_value
+from teatree.hooks._inline_body_resolution import resolve_inline_body_value, resolve_short_cluster
 from teatree.hooks._publish_detection import (
+    _segment_is_git_message_publish,
     command_has_interpreter_forge_transport,
     command_has_opaque_forge_transport,
     command_has_token_aware_publish_surface,
@@ -218,6 +221,7 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
         if leader == "glab"
         else _primitives.BODY_SHORT_FLAGS
     )
+    cluster_publishes = _segment_publishes_cluster(words, leader)
     i = 0
     n = len(words)
     while i < n:
@@ -236,11 +240,17 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
         if attached_handled:
             i += 1
             continue
-        if word in short_flags and i + 1 < n:
-            payloads.append(resolve_inline_body_value(words[i + 1], base, raws[i + 1]))
-            i += 2
-            continue
-        i += 1
+        if word in short_flags or cluster_publishes:
+            payloads.extend(resolve_short_cluster(words[i:], raws[i:], short_flags, base))
+        i += 2 if word in short_flags and i + 1 < n else 1
+
+
+def _segment_publishes_cluster(words: list[str], leader: str) -> bool:
+    return (
+        (leader in {"gh", "glab"} and segment_is_forge_cli_write(words))
+        or (leader == "git" and _segment_is_git_message_publish(words))
+        or (leader == "t3" and _segment_is_t3_publish(words))
+    )
 
 
 def _handle_api_input(arg: str, payloads: list[str]) -> None:
@@ -299,7 +309,7 @@ def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], bas
         elif lenient:
             resolved: list[str] = []
             _handle_field_assignment(assignment, resolved, base, raw, reads_file=reads_file)
-            payloads.extend(part for part in resolved if not _primitives.is_fail_closed_sentinel(part))
+            payloads.extend(part for part in resolved if part not in _primitives.BODY_SOURCE_SENTINELS)
     for i, word in enumerate(words):
         if word == "--input" and i + 1 < len(words):
             _handle_api_input(words[i + 1], payloads)
@@ -422,13 +432,27 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     # walker so the anchored source is never scanned (#2278/#2270/#32).
     if append_t3_review_note_payload(words, raws, payloads, ctx):
         return
-    walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
+    walk_body_file_flags(
+        words, payloads, leader=first, ctx=ctx, cluster_publishes=_segment_publishes_cluster(words, first)
+    )
     if first in {"gh", "glab"}:
         _walk_api_fields(words, raws, payloads, ctx.base)
         if segment_is_forge_cli_write(words):
             walk_forge_free_text(words, raws, payloads, ctx, first)
     if first == "curl":
-        _walk_curl_args(words, payloads, raws=raws, base=ctx.base)
+        transfers = curl_groups(words[1:])
+        forge_groups = {
+            index
+            for index, (_, positions) in enumerate(transfers)
+            if any(_is_curl_forge_url(url) for url in _curl_urls(positions))
+        }
+        publish_groups = forge_groups | {
+            index
+            for index, (_, positions) in enumerate(transfers)
+            if any(segment_is_substring_publish(["curl", url]) for url in _curl_urls(positions))
+        }
+        group_targets = {index: index in forge_groups for index in publish_groups}
+        _walk_curl_args(words, payloads, raws=raws, base=ctx.base, group_targets=group_targets)
     # Gated on the ACTUAL classification (write verb + forge URL), not merely
     # the python leader: ``extract_bash_payload`` also backs
     # ``extract_secret_scan_text``, which runs on EVERY Bash command
@@ -477,6 +501,8 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     the gate scans the real body and applies the private-repo carve-out instead
     of fail-closing on a clean post whose body it could not read.
     """
+    # Bash drops NUL bytes from its input, so removing them changes nothing bash runs.
+    command = command.replace(_primitives.REASON_MARKER, "")
     parts: list[str] = []
     tokens = tokenize(command)
     # Heredocs fed straight to a CONSUMER (stdin / ``$(cat <<EOF)``) are part of

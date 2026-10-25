@@ -31,10 +31,14 @@ import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
-from teatree.core.models import Session, Task, Ticket
+from django.db import transaction
+
+from teatree.core.managers_issue_match import reference_issue_q
+from teatree.core.models import Session, SessionCommand, Task, ThreadBinding, Ticket
 from teatree.core.models.question_text import question_fingerprint
+from teatree.core.models.thread_binding import slack_command_id
 from teatree.loop.inbound_reading import InboundReading
-from teatree.url_classify import find_forge_urls
+from teatree.url_classify import find_forge_refs
 from teatree.utils.url_slug import slack_conversation_anchor
 
 logger = logging.getLogger(__name__)
@@ -144,6 +148,7 @@ class WorkOrigin:
     slack_ts: str
     coalesced_ts: tuple[str, ...]
     text: str
+    thread_root: str = ""
 
 
 def dispatch_work(
@@ -177,42 +182,85 @@ def dispatch_work(
         origin.text,
     )
     subject = (reading.work_summary or text).strip()
-    ticket, _created = Ticket.objects.get_or_create(
-        issue_url=slack_conversation_anchor(channel=channel, slack_ts=slack_ts),
-        defaults={
-            "overlay": overlay,
-            "role": Ticket.Role.AUTHOR,
-            "short_description": subject[:_DESCRIPTION_LIMIT],
-            "extra": {
-                _SLACK_ANSWER_KEY: {
-                    "channel": channel,
-                    "slack_ts": slack_ts,
-                    "coalesced_ts": list(coalesced_ts),
-                    "question": text,
-                    "fingerprint": fingerprint,
-                    "intent": str(reading.intent),
-                    "implies_work": True,
-                    "work_summary": reading.work_summary,
-                }
-            },
-        },
-    )
-    if ticket.overlay != overlay:
-        # The lane's overlay is the QUEUE's, never one `save()` inferred from the umbrella
-        # anchor: `find_coverage` scans `ticket__overlay=<unit overlay>`, so a diverged
-        # value hides this lane and the next report of the same problem mints a rival.
-        # An EXISTING row is where that divergence survives, so this must not gate on
-        # `created` — a fresh row was just handed the queue's overlay and cannot diverge.
-        Ticket.objects.filter(pk=ticket.pk).update(overlay=overlay)
-        ticket.overlay = overlay
-    session = Session.objects.create(ticket=ticket, overlay=overlay, agent_id=DISPATCH_PHASE)
-    return Task.objects.create(
-        ticket=ticket,
-        session=session,
-        subject=(reading.work_summary or text)[:120],
-        phase=DISPATCH_PHASE,
-        execution_reason=_execution_reason(reading, slack_ts=slack_ts, text=text),
-    )
+    root = origin.thread_root or slack_ts
+    with transaction.atomic():
+        binding = (
+            ThreadBinding.objects.select_related("ticket")
+            .filter(overlay=overlay, channel=channel, thread_ts=root)
+            .first()
+        )
+        if (
+            binding is not None
+            and (
+                existing := SessionCommand.objects.filter(
+                    command_id=slack_command_id(overlay, channel, slack_ts)
+                ).first()
+            )
+            is not None
+        ):
+            if existing.ticket_id != binding.ticket_id or existing.text != text:
+                msg = "A Slack message already belongs to another session command"
+                raise ValueError(msg)
+            return existing.task
+        if binding is None:
+            ticket, _created = Ticket.objects.get_or_create(
+                issue_url=slack_conversation_anchor(channel=channel, slack_ts=slack_ts),
+                defaults={
+                    "overlay": overlay,
+                    "role": Ticket.Role.AUTHOR,
+                    "short_description": subject[:_DESCRIPTION_LIMIT],
+                    "extra": {
+                        _SLACK_ANSWER_KEY: {
+                            "channel": channel,
+                            "slack_ts": root,
+                            "coalesced_ts": list(coalesced_ts),
+                            "question": text,
+                            "fingerprint": fingerprint,
+                            "intent": str(reading.intent),
+                            "implies_work": True,
+                            "work_summary": reading.work_summary,
+                        }
+                    },
+                },
+            )
+            if ticket.overlay != overlay:
+                Ticket.objects.filter(pk=ticket.pk).update(overlay=overlay)
+                ticket.overlay = overlay
+            ThreadBinding.bind(ticket=ticket, channel=channel, thread_ts=root)
+        else:
+            ticket = binding.ticket
+            extra = dict(ticket.extra or {})
+            prior = dict(extra.get(_SLACK_ANSWER_KEY) or {})
+            prior.update(
+                channel=channel,
+                slack_ts=root,
+                coalesced_ts=sorted({*prior.get("coalesced_ts", []), *coalesced_ts, slack_ts}),
+                question=text,
+                fingerprint=fingerprint,
+                intent=str(reading.intent),
+                implies_work=True,
+                work_summary=reading.work_summary,
+            )
+            extra[_SLACK_ANSWER_KEY] = prior
+            ticket.extra = extra
+            ticket.save(update_fields=["extra"])
+        session = Session.objects.create(ticket=ticket, overlay=overlay, agent_id=DISPATCH_PHASE)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            subject=(reading.work_summary or text)[:120],
+            phase=DISPATCH_PHASE,
+            execution_reason=_execution_reason(reading, slack_ts=slack_ts, text=text),
+        )
+        if binding is not None:
+            SessionCommand.objects.create(
+                command_id=slack_command_id(overlay, channel, slack_ts),
+                ticket=ticket,
+                task=task,
+                text=text,
+                outcome="queued_followup",
+            )
+        return task
 
 
 def _execution_reason(reading: InboundReading, *, slack_ts: str, text: str) -> str:
@@ -259,12 +307,12 @@ def _subject_coverage(*, text: str, overlay: str) -> Coverage | None:
     a ticket between phases is still someone's work, and dispatching alongside it
     is exactly the rival lane this function exists to prevent.
     """
-    urls = find_forge_urls(text)
+    urls = find_forge_refs(text)
     if not urls:
         return None
     for url in urls:
         ticket = (
-            Ticket.objects.filter(overlay=overlay, issue_url=url)
+            Ticket.objects.filter(reference_issue_q(url), overlay=overlay)
             .exclude(state__in=Ticket._SETTLED_STATES)  # noqa: SLF001 — the model's SSOT terminal set
             .order_by("-pk")
             .first()

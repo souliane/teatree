@@ -14,7 +14,7 @@ import typer
 from teatree.cli.eval.audit import audit
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
-from teatree.cli.eval.changed_scenarios import changed_scenarios
+from teatree.cli.eval.changed_scenarios import ChangedScenarios
 from teatree.cli.eval.ci_account import ci_account_app
 from teatree.cli.eval.ci_heal import ci_heal_app
 from teatree.cli.eval.ci_status import ci_status
@@ -29,6 +29,7 @@ from teatree.cli.eval.merge_summaries import merge_summaries
 from teatree.cli.eval.merge_summary_json import merge_summary_json
 from teatree.cli.eval.merged_prs_since import merged_prs_since
 from teatree.cli.eval.negative_control import negative_control
+from teatree.cli.eval.owed import owed_app
 from teatree.cli.eval.prepare_transcript import prepare_transcript
 from teatree.cli.eval.quarantine import quarantine_app
 from teatree.cli.eval.reachability_lane import reachability
@@ -36,6 +37,7 @@ from teatree.cli.eval.set_baseline import set_baseline
 from teatree.cli.eval.skill_command_lane import skill_command_validity
 from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
+from teatree.cli.eval.verdict_cache import verdict_cache_app
 from teatree.cli.eval.verify_benchmark_publish import verify_benchmark_publish
 
 
@@ -51,7 +53,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("reachability")(reachability)
     eval_app.command("skill-prose-judge")(skill_prose_judge)
     eval_app.command("audit")(audit)
-    eval_app.command("changed-scenarios")(changed_scenarios)
+    eval_app.command("changed-scenarios")(ChangedScenarios)
     eval_app.command("ci-trigger")(ci_trigger)
     eval_app.command("ci-status")(ci_status)
     eval_app.add_typer(ci_heal_app, name="ci-heal")
@@ -68,3 +70,5 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.add_typer(corpus_app, name="corpus")
     eval_app.add_typer(label_app, name="label")
     eval_app.add_typer(quarantine_app, name="quarantine")
+    eval_app.add_typer(owed_app, name="owed")
+    eval_app.add_typer(verdict_cache_app, name="verdict-cache")

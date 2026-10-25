@@ -12,14 +12,14 @@ them). What is NOT reused is its sibling ``is_colleague_mr``: that gate
 fails OPEN — an unreadable author reads as "own MR", which merely relaxes a
 prose cap. Here the same neutral would relax a CONSENT gate, so the polarity
 is inverted and stated once: this module reports ``True`` only when the
-author is PROVED to be the owner. An unreadable MR, an author-less payload,
-an unresolvable identity, or any transport failure all report ``False`` and
-leave the post gated exactly as before.
+author is PROVED to be the owner. An unreadable MR or an author-less payload
+reports ``False``; an unresolvable posting identity still gates unless the
+author is a configured alias or a bot declared for the API host.
 
 Identity is the union of the POSTING credential's own ``current_username``
 (the strongest signal — it IS the identity the reply publishes as) and the
-configured ``user_identity_aliases``, so an MR authored under a secondary
-forge alias is still recognised as the owner's own work.
+configured ``user_identity_aliases`` and the logins declared in
+``self_forge_identities`` for the API host.
 """
 
 from typing import TYPE_CHECKING
@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 from teatree.cli.review.shape_gate import fetch_mr_author
 from teatree.core.modelkit.gate_verdict import guarded_read
 from teatree.core.review.review_candidate import author_is_self
-from teatree.core.self_forge_identities import issue_author_is_self
+from teatree.core.self_forge_identities import declared_identities_for_url, issue_author_is_self
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabAPI
@@ -37,14 +37,17 @@ def owner_authored_mr(api: "GitLabAPI", repo: str, mr: int) -> bool:
     """Whether *repo*!*mr* was authored by one of the owner's own forge identities.
 
     The single seam the review CLI uses to prove the author-side carve-out's
-    precondition. Never raises; every failure reports ``False``.
+    precondition. Never raises; a failed identity source contributes no proof.
     """
     author = fetch_mr_author(api, repo.replace("/", "%2F"), mr)
     if not author:
         return False
     identity = guarded_read("the posting GitLab identity", api.current_username, neutral="")
     aliases = guarded_read("the owner's configured forge handles", _configured_aliases, neutral=())
-    return author_is_self(author, current_user=identity.value, self_identities=aliases.value)
+    bots = guarded_read(
+        "the bots declared for the API host", lambda: declared_identities_for_url(api.base_url), neutral=()
+    )
+    return author_is_self(author, current_user=identity.value, self_identities=(*aliases.value, *bots.value))
 
 
 def self_approval_refusal(api: "GitLabAPI", repo: str, mr: int) -> str:

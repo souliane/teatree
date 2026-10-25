@@ -31,7 +31,7 @@ from teatree.utils.postgres_secret import PostgresPasswordUnavailableError
 from tests.teatree_core.conftest import CommandOverlay
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 
 # The host-address decision itself moved to ``teatree.utils.ports.docker_host_address`` and is
@@ -203,7 +203,7 @@ def _make_worktree(
 
 
 @contextmanager
-def _fake_pass_store(*, writable: bool = True) -> "Iterator[dict[str, str]]":
+def _fake_pass_store(*, writable: bool = True) -> "Generator[dict[str, str]]":
     """Patch ``pass`` with a read-consistent in-memory store, yielded for inspection.
 
     Read-consistent is the point: a fake that accepts writes but always reads back empty

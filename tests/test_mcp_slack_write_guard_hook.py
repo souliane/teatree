@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_block_mcp_slack_write
 from hooks.scripts.mcp_slack_write_guard import TEATREE_MCP_SERVERS, is_slack_mcp_write
 from teatree.core.mcp_registration import TEATREE_MCP_SERVER_NAME
@@ -154,9 +155,13 @@ class TestClassifier:
 
 
 class TestNeverLockout:
-    def test_escape_token_allows_a_single_write(self, capsys: pytest.CaptureFixture[str]) -> None:
-        tool_input = {"channel": "C-x", "text": "hi [slack-mcp-ok: vetted one-off]"}
+    def test_escape_token_allows_a_single_write(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+
+        tool_input = {"channel": "C-x", "text": "hi [gate-escape:mcp_slack_write: vetted one-off]"}
         event = _event("mcp__slack__slack_send_message", tool_input)
+        monkeypatch.setattr(router._gate_escape, "escape_allows", lambda data, gate_id: gate_id == "mcp_slack_write")
         assert handle_block_mcp_slack_write(event) is False
         assert _parse_deny(capsys) is None
 

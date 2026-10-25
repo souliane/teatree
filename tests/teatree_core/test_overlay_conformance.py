@@ -1,5 +1,6 @@
 import importlib.metadata
 import inspect
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
@@ -13,6 +14,9 @@ from teatree.core.overlay_conformance import (
     conforming_or_raise,
     overlay_signature_violations,
 )
+
+if TYPE_CHECKING:
+    from teatree.core.overlay_metadata import OverlayMetadata
 
 
 def _sig(fn) -> inspect.Signature:
@@ -183,7 +187,7 @@ class TestConformanceHelpers:
 class TestDiscoveryEnforcesConformance:
     def test_entry_point_overlay_with_bad_signature_raises(self, monkeypatch) -> None:
         class _BadOverlay(OverlayBase):
-            metadata = _DropsKeywordMeta()
+            metadata = cast("OverlayMetadata", _DropsKeywordMeta())
 
             def get_repos(self) -> list[str]:
                 return []

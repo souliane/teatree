@@ -337,10 +337,8 @@ def preview_loop_jobs(name: str, scanner_context: BuildJobsContext) -> list[_Sca
     :func:`_admission_block` the live tick applies. This function therefore combines no
     enable planes of its own (``tests/conformance/test_enable_verdict_seam.py``).
 
-    Everything downstream of selection is the live path unchanged: ``build_jobs`` runs
-    the same ``_followup_jobs_for_overlay``, so the ``Mode.egress`` posture still
-    selects the colleague scanners (or selects none), and the preview REPORTS that
-    rather than bypassing it.
+    Built-in jobs follow the live selection path and posture. The preview context omits
+    overlay hooks, whose external writes cannot be suppressed by the preview transport.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 

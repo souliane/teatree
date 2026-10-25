@@ -10,6 +10,11 @@ load-bearing invariant — that a token value never reaches any captured output.
 
 import datetime as dt
 import json
+import os
+import shutil
+import subprocess
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from django.test import TestCase
@@ -17,13 +22,18 @@ from django.test import TestCase
 from teatree.ci_oauth_switch import (
     CI_ACCOUNT_VARIABLE,
     CI_OAUTH_POOL_SECRET,
+    CI_OAUTH_POOL_VARIABLE,
     CI_OAUTH_SECRET,
     WEIGHT_5H,
     WEIGHT_7D,
     CiAccountSwitcher,
+    CiAccountSwitchError,
+    GhClient,
     NoEligibleAccountError,
     select_account,
 )
+from teatree.config import get_effective_settings
+from teatree.core.models import ConfigSetting
 from teatree.credential_config import TokenKind
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.token_report import TokenAccountRow, TokenSource, TokenStatus
@@ -71,8 +81,15 @@ def _live_rows() -> list[TokenAccountRow]:
     ]
 
 
+SECRET_SET_FLAGS = frozenset({"--repo", "-R"})
+
+
 class FakeGh:
-    """A recording ``gh`` stand-in: canned variable value, captured argv + stdin."""
+    """A recording ``gh`` stand-in: canned variable value, captured argv + stdin.
+
+    ``secret set`` accepts only this switcher's stdin-only argv shape; the installed-gh
+    test checks the real client's flag set.
+    """
 
     def __init__(
         self, *, active: str = "", pool_accounts: str | None = None, fail_on: str = "", fail_output: str = "boom"
@@ -87,6 +104,10 @@ class FakeGh:
     def __call__(self, args: list[str], *, stdin_text: str | None = None) -> tuple[int, str]:
         self.calls.append(list(args))
         self.stdin.append(stdin_text)
+        if args[:2] == ["secret", "set"]:
+            unknown = [part for part in args[3:] if part.startswith("-") and part not in SECRET_SET_FLAGS]
+            if unknown:
+                return 1, f"unknown flag: {unknown[0]}"
         if self.fail_on and self.fail_on in args:
             return 1, self.fail_output
         if args[0] == "api":
@@ -104,11 +125,30 @@ class FakeGh:
         return any(call[:2] == ["variable", "set"] for call in self.calls)
 
 
-def _switcher(gh: FakeGh) -> CiAccountSwitcher:
+def _switcher(gh: GhClient) -> CiAccountSwitcher:
     return CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _account: SECRET_TOKEN)
 
 
 class TestPoolReconciliation:
+    def test_unset_allowlist_refuses_without_touching_github(self) -> None:
+        gh = FakeGh()
+        with pytest.raises(RuntimeError, match="allowlist"):
+            _switcher(gh).reconcile_pool(_live_rows())
+        assert gh.calls == []
+
+    def test_only_allowlisted_accounts_are_published(self) -> None:
+        gh = FakeGh()
+        switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda account: account)
+        accounts = switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
+        assert accounts == (SOULIANE,)
+        assert gh.stdin[0] == SOULIANE
+
+    def test_allowlisted_account_missing_from_store_refuses_before_writing(self) -> None:
+        gh = FakeGh()
+        with pytest.raises(CiAccountSwitchError, match="not configured"):
+            _switcher(gh).reconcile_pool(_live_rows(), allowlist=("missing",))
+        assert gh.calls == []
+
     def test_readable_pool_membership_is_read_back(self) -> None:
         gh = FakeGh(pool_accounts=json.dumps([SOULIANE, SPARE_ACCOUNT]))
         assert _switcher(gh).active_pool_accounts() == (SOULIANE, SPARE_ACCOUNT)
@@ -121,7 +161,7 @@ class TestPoolReconciliation:
         tokens = {SOULIANE: "sk-token-one", SPARE_ACCOUNT: "sk-token-two", SPENT_ACCOUNT: "sk-token-three"}
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=tokens.__getitem__)
 
-        accounts = switcher.reconcile_pool(_live_rows())
+        accounts = switcher.reconcile_pool(_live_rows(), allowlist=tuple(tokens))
 
         assert accounts == tuple(sorted(tokens))
         pool_writes = [i for i, args in enumerate(gh.calls) if args[:3] == ["secret", "set", CI_OAUTH_POOL_SECRET]]
@@ -134,8 +174,8 @@ class TestPoolReconciliation:
         tokens = {SOULIANE: "sk-token-one", SPARE_ACCOUNT: "sk-token-two"}
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=tokens.__getitem__)
 
-        switcher.reconcile_pool(_live_rows()[:2])
-        assert switcher.reconcile_pool(_live_rows()[:1]) == (SOULIANE,)
+        switcher.reconcile_pool(_live_rows()[:2], allowlist=tuple(tokens))
+        assert switcher.reconcile_pool(_live_rows()[:1], allowlist=(SOULIANE,)) == (SOULIANE,)
 
         bodies = [body for args, body in zip(gh.calls, gh.stdin, strict=True) if CI_OAUTH_POOL_SECRET in args]
         assert bodies == ["sk-token-one\nsk-token-two", "sk-token-one"]
@@ -145,7 +185,7 @@ class TestPoolReconciliation:
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _: "")
 
         with pytest.raises(RuntimeError, match="no token stored"):
-            switcher.reconcile_pool(_live_rows())
+            switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
         assert not gh.wrote_secret
 
     def test_failed_pool_write_reports_gh_error_without_leaking_token(self) -> None:
@@ -153,9 +193,149 @@ class TestPoolReconciliation:
         switcher = _switcher(gh)
 
         with pytest.raises(RuntimeError) as caught:
-            switcher.reconcile_pool(_live_rows())
+            switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
         assert "permission denied" in str(caught.value)
         assert SECRET_TOKEN not in str(caught.value)
+        assert not gh.wrote_variable
+
+    def test_failed_pool_write_redacts_multiple_overlapping_tokens(self) -> None:
+        short = "secret-value"
+        long = "secret-value-long"
+        tokens = {SOULIANE: short, SPARE_ACCOUNT: long}
+        gh = FakeGh(fail_on=CI_OAUTH_POOL_SECRET, fail_output=f"write failed: {short} and {long}")
+        switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=tokens.__getitem__)
+
+        with pytest.raises(CiAccountSwitchError) as caught:
+            switcher.reconcile_pool(_live_rows(), allowlist=tuple(tokens))
+
+        assert short not in str(caught.value)
+        assert long not in str(caught.value)
+        assert "-long" not in str(caught.value)
+        assert "write failed" in str(caught.value)
+        assert not gh.wrote_variable
+
+
+def _switch_secret(gh: GhClient) -> None:
+    _switcher(gh).switch(_live_rows(), run_start=RUN_START, allowlist=(SOULIANE,))
+
+
+def _reconcile_pool_secret(gh: GhClient) -> None:
+    _switcher(gh).reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
+
+
+SECRET_WRITES: list[tuple[str, Callable[[GhClient], None]]] = [
+    (CI_OAUTH_SECRET, _switch_secret),
+    (CI_OAUTH_POOL_SECRET, _reconcile_pool_secret),
+]
+
+
+def _write_custom_token(secret: str, gh: GhClient, token: str) -> None:
+    switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _account: token)
+    if secret == CI_OAUTH_SECRET:
+        switcher.switch(_live_rows(), run_start=RUN_START, allowlist=(SOULIANE,))
+    else:
+        switcher.reconcile_pool(_live_rows(), allowlist=(SOULIANE,))
+
+
+class TestSecretSetArgv:
+    @pytest.mark.parametrize(("secret", "write"), SECRET_WRITES)
+    def test_the_value_rides_on_stdin_with_no_body_flag(self, secret: str, write: Callable[[GhClient], None]) -> None:
+        gh = FakeGh(active=SPENT_ACCOUNT)
+
+        write(gh)
+
+        index = next(i for i, call in enumerate(gh.calls) if call[:2] == ["secret", "set"])
+        receipt = CI_ACCOUNT_VARIABLE if secret == CI_OAUTH_SECRET else CI_OAUTH_POOL_VARIABLE
+        receipt_index = next(i for i, call in enumerate(gh.calls) if call[:3] == ["variable", "set", receipt])
+        assert gh.calls[index] == ["secret", "set", secret, "--repo", "souliane/teatree"]
+        assert gh.stdin[index] == SECRET_TOKEN
+        assert receipt_index > index
+
+    @pytest.mark.parametrize(("secret", "write"), SECRET_WRITES)
+    def test_the_installed_gh_accepts_the_argv(
+        self, secret: str, write: Callable[[GhClient], None], tmp_path: Path
+    ) -> None:
+        gh_path = shutil.which("gh") or pytest.skip("gh is not installed")
+        recorded: list[list[str]] = []
+
+        def record(args: list[str], *, stdin_text: str | None = None) -> tuple[int, str]:
+            recorded.append(args)
+            return 0, ""
+
+        write(record)
+        argv = next(args for args in recorded if args[:2] == ["secret", "set"])
+        assert argv[2] == secret
+        clean_env = {"GH_CONFIG_DIR": str(tmp_path), "HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
+        for args in recorded:
+            result = subprocess.run(
+                [gh_path, *args, "--help"], text=True, capture_output=True, env=clean_env, timeout=30, check=False
+            )
+            assert result.returncode == 0, (args, result.stderr)
+
+        retired = subprocess.run(
+            [gh_path, *argv, "--body-file", "-", "--help"],
+            text=True,
+            capture_output=True,
+            env=clean_env,
+            timeout=30,
+            check=False,
+        )
+        assert retired.returncode != 0
+        assert "unknown flag: --body-file" in retired.stderr
+
+    @pytest.mark.parametrize("secret", [CI_OAUTH_SECRET, CI_OAUTH_POOL_SECRET])
+    def test_failed_write_redacts_query_delimited_value(self, secret: str) -> None:
+        token = "secret&tail"
+        gh = FakeGh(fail_on=secret, fail_output=f"failed: token={token}")
+
+        with pytest.raises(CiAccountSwitchError) as caught:
+            _write_custom_token(secret, gh, token)
+
+        assert str(caught.value).endswith(": failed: token=<redacted>")
+        assert not gh.wrote_variable
+
+    @pytest.mark.parametrize("secret", [CI_OAUTH_SECRET, CI_OAUTH_POOL_SECRET])
+    def test_failed_write_sanitizes_other_credentials(self, secret: str) -> None:
+        gh = FakeGh(fail_on=secret, fail_output="GH_TOKEN=value")
+
+        with pytest.raises(CiAccountSwitchError) as caught:
+            _write_custom_token(secret, gh, "separate-secret")
+
+        assert str(caught.value).endswith(": GH_TOKEN=<redacted>")
+
+    @pytest.mark.parametrize("secret", [CI_OAUTH_SECRET, CI_OAUTH_POOL_SECRET])
+    def test_failed_write_limits_error_detail_to_500_characters(self, secret: str) -> None:
+        gh = FakeGh(fail_on=secret, fail_output="x" * 2000)
+
+        with pytest.raises(CiAccountSwitchError) as caught:
+            _write_custom_token(secret, gh, "separate-secret")
+
+        detail = str(caught.value).partition("(exit 1): ")[2]
+        assert detail == "x" * 500
+
+    @pytest.mark.parametrize("secret", [CI_OAUTH_SECRET, CI_OAUTH_POOL_SECRET])
+    def test_failed_write_replaces_value_before_cutting_error(self, secret: str) -> None:
+        token = "secret&tail"
+        gh = FakeGh(fail_on=secret, fail_output="x" * 497 + token)
+
+        with pytest.raises(CiAccountSwitchError) as caught:
+            _write_custom_token(secret, gh, token)
+
+        detail = str(caught.value).partition("(exit 1): ")[2]
+        assert detail == "x" * 497 + "[RE"
+
+
+class TestEmptyAllowlistFailsClosed(TestCase):
+    def test_shipped_default_refuses_both_writes_without_calling_gh(self) -> None:
+        allowlist = get_effective_settings().eval_ci_account_allowlist
+        assert allowlist == []
+        gh = FakeGh(active=SPENT_ACCOUNT)
+
+        with pytest.raises(NoEligibleAccountError, match="allowlist"):
+            _switcher(gh).reconcile_pool(_live_rows(), allowlist=allowlist)
+        with pytest.raises(NoEligibleAccountError, match="allowlist"):
+            _switcher(gh).switch(_live_rows(), run_start=RUN_START, allowlist=allowlist)
+        assert gh.calls == []
 
 
 class TestSelectionRule(TestCase):
@@ -255,11 +435,34 @@ class TestSelectionRule(TestCase):
 class TestSwitch(TestCase):
     """Applying the selection to the repo secret + its readable account variable."""
 
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [SOULIANE, SPARE_ACCOUNT, SPENT_ACCOUNT])
+
+    def test_manual_switch_uses_only_allowlisted_accounts(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [SPARE_ACCOUNT])
+        gh = FakeGh(active=SPENT_ACCOUNT)
+        outcome = _switcher(gh).switch(
+            _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+        )
+        assert outcome.account == SPARE_ACCOUNT
+        assert gh.wrote_secret
+
+    def test_manual_switch_refuses_an_unset_allowlist(self) -> None:
+        ConfigSetting.objects.set_value("eval_ci_account_allowlist", [])
+        gh = FakeGh(active=SPENT_ACCOUNT)
+        with pytest.raises(NoEligibleAccountError, match="allowlist"):
+            _switcher(gh).switch(
+                _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+            )
+        assert not gh.wrote_secret
+
     def test_switch_writes_the_secret_and_records_the_account(self) -> None:
         gh = FakeGh(active=SPENT_ACCOUNT)
         switcher = _switcher(gh)
 
-        outcome = switcher.switch(_live_rows(), run_start=RUN_START)
+        outcome = switcher.switch(
+            _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+        )
 
         assert outcome.changed is True
         assert outcome.applied is True
@@ -272,7 +475,7 @@ class TestSwitch(TestCase):
         gh = FakeGh()
         switcher = _switcher(gh)
 
-        switcher.switch(_live_rows(), run_start=RUN_START)
+        switcher.switch(_live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist)
 
         flat_argv = " ".join(part for call in gh.calls for part in call)
         assert SECRET_TOKEN not in flat_argv
@@ -282,7 +485,9 @@ class TestSwitch(TestCase):
         gh = FakeGh(active=SOULIANE)
         switcher = _switcher(gh)
 
-        outcome = switcher.switch(_live_rows(), run_start=RUN_START)
+        outcome = switcher.switch(
+            _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+        )
 
         assert outcome.changed is False
         assert outcome.applied is False
@@ -294,7 +499,12 @@ class TestSwitch(TestCase):
         gh = FakeGh(active=SPENT_ACCOUNT)
         switcher = _switcher(gh)
 
-        outcome = switcher.switch(_live_rows(), run_start=RUN_START, dry_run=True)
+        outcome = switcher.switch(
+            _live_rows(),
+            run_start=RUN_START,
+            allowlist=get_effective_settings().eval_ci_account_allowlist,
+            dry_run=True,
+        )
 
         assert outcome.changed is True
         assert outcome.applied is False
@@ -311,7 +521,7 @@ class TestSwitch(TestCase):
         ]
 
         with pytest.raises(NoEligibleAccountError) as caught:
-            switcher.switch(rows, run_start=RUN_START)
+            switcher.switch(rows, run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist)
 
         message = str(caught.value)
         for account in (SOULIANE, SPARE_ACCOUNT, SPENT_ACCOUNT):
@@ -325,7 +535,7 @@ class TestSwitch(TestCase):
         switcher = _switcher(gh)
 
         with pytest.raises(NoEligibleAccountError) as caught:
-            switcher.switch([], run_start=RUN_START)
+            switcher.switch([], run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist)
 
         assert "anthropic_oauth_pass_paths" in str(caught.value)
         assert not gh.wrote_secret
@@ -335,7 +545,9 @@ class TestSwitch(TestCase):
         switcher = _switcher(gh)
 
         with pytest.raises(RuntimeError) as caught:
-            switcher.switch(_live_rows(), run_start=RUN_START)
+            switcher.switch(
+                _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+            )
 
         assert SECRET_TOKEN not in str(caught.value)
         assert "permission denied" in str(caught.value)
@@ -348,9 +560,27 @@ class TestSwitch(TestCase):
         switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _account: "")
 
         with pytest.raises(RuntimeError):
-            switcher.switch(_live_rows(), run_start=RUN_START)
+            switcher.switch(
+                _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+            )
 
         assert not gh.wrote_secret
+
+    def test_newline_bearing_token_refuses_before_switch_write(self) -> None:
+        for token in ("first\nsecond", "first\rsecond"):
+            with self.subTest(token=repr(token)):
+                gh = FakeGh(active=SPENT_ACCOUNT)
+                switcher = CiAccountSwitcher(
+                    repo="souliane/teatree", gh=gh, secret_reader={SOULIANE: token}.__getitem__
+                )
+
+                with pytest.raises(CiAccountSwitchError, match="newline"):
+                    switcher.switch(
+                        _live_rows(), run_start=RUN_START, allowlist=get_effective_settings().eval_ci_account_allowlist
+                    )
+
+                assert not gh.wrote_secret
+                assert not gh.wrote_variable
 
     def test_active_account_reads_the_readable_companion_variable(self) -> None:
         gh = FakeGh(active=SPARE_ACCOUNT)

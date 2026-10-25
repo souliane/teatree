@@ -13,7 +13,14 @@ from tests.factories import MergeAuditFactory, MergeClearFactory
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
-GRADED_SIGNAL_IDS = ["first_try_green", "defect_escape", "review_catch", "merge_latency", "repair_burn"]
+GRADED_SIGNAL_IDS = [
+    "first_try_green",
+    "defect_escape",
+    "review_catch",
+    "merge_latency",
+    "pr_start_to_merged",
+    "repair_burn",
+]
 VISIBILITY_SIGNAL_IDS = ["net_hand_written_loc"]
 
 

@@ -13,18 +13,22 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import tier_models
 from teatree.config import get_effective_settings
-from teatree.core.models import ModeOverride, Session, Task, Ticket
+from teatree.core.cleanup.process_table import ProcessTable
+from teatree.core.models import ModeOverride, Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.task_claim import claim_generation
+from teatree.core.worktree.checkout_state import checkout_state
+from teatree.core.worktree.occupancy import occupancy_holder
 from teatree.loop.admit_budget import write_admit_budget
 from teatree.loop.drain import set_worker_quiescing
 from teatree.skill_support import index as skill_index
 from tests._loop_principal_env import pinned_loop_principal
 from tests._pr_open_state_stub import mint_open_pr_review
 from tests._unreadable_apm_manifest import NOT_UTF8_MANIFEST, UNPARSABLE_MANIFEST, unreadable_running_manifest
-from tests.factories import planned_ticket
+from tests.factories import WorktreeFactory, planned_ticket
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
 def _seed_cold_config(db: Path, key: str, value: object) -> None:
@@ -88,6 +92,85 @@ class TestClaimNextPayload(_LoopDispatchTest):
         assert payload[0]["task_id"] == task.pk
         assert payload[0]["subagent"] == "t3:coder"
 
+    def test_dirty_unattested_checkout_parks_before_emitting_spawn(self) -> None:
+        task = self._author_task()
+        with tempfile.TemporaryDirectory() as root:
+            checkout = Path(root) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=3)
+            WorktreeFactory(ticket=task.ticket, extra={"worktree_path": str(checkout)})
+            stdout = StringIO()
+            with patch(
+                "teatree.core.worktree.checkout_fence.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ):
+                call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
+        assert json.loads(stdout.getvalue()) == []
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_pristine_checkout_is_claimed_before_emitting_spawn(self) -> None:
+        task = self._author_task()
+        with tempfile.TemporaryDirectory() as root:
+            checkout = Path(root) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
+            worktree = WorktreeFactory(ticket=task.ticket, extra={"worktree_path": str(checkout)})
+            stdout = StringIO()
+            with patch(
+                "teatree.core.worktree.checkout_fence.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ):
+                call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+            assert json.loads(stdout.getvalue())[0]["task_id"] == task.pk
+            held = occupancy_holder(Worktree.objects.get(pk=worktree.pk))
+            assert held is not None
+            assert held.holder == f"task:{task.pk}"
+            assert (
+                held.expires_at - held.since
+            ).total_seconds() == get_effective_settings().watchdog_max_runtime_seconds
+
+    def test_a_recorded_in_session_run_attests_before_the_next_phase_claim(self) -> None:
+        ticket = planned_ticket(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        task = ticket.schedule_coding()
+        with tempfile.TemporaryDirectory() as root:
+            checkout = Path(root) / "checkout"
+            _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
+            worktree = WorktreeFactory(ticket=ticket, extra={"worktree_path": str(checkout)})
+            claimed = StringIO()
+            with patch(
+                "teatree.core.worktree.checkout_fence.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ):
+                call_command("loop_dispatch", "claim-next", "--json", stdout=claimed)
+            pristine = Worktree.objects.get(pk=worktree.pk).get_extra()["attested_state"]
+            (checkout / "a.py").write_text("in-session edit\n")
+
+            with patch(
+                "teatree.core.worktree.occupancy.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ):
+                call_command(
+                    "tasks",
+                    "record-attempt",
+                    str(task.pk),
+                    json.dumps({"summary": "done", "files_modified": [{"path": "a.py", "action": "modified"}]}),
+                    claim_token=json.loads(claimed.getvalue())[0]["claim_token"],
+                    stdout=StringIO(),
+                )
+
+            finished = Worktree.objects.get(pk=worktree.pk)
+            assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
+            assert occupancy_holder(finished) is None
+            assert finished.get_extra()["attested_state"] != pristine
+            assert finished.get_extra()["attested_state"] == checkout_state(checkout).digest
+            with patch(
+                "teatree.core.worktree.checkout_fence.read_process_table",
+                return_value=ProcessTable(frozenset(), "/proc"),
+            ):
+                next_claim = StringIO()
+                call_command("loop_dispatch", "claim-next", "--json", stdout=next_claim)
+            assert json.loads(next_claim.getvalue())[0]["phase"] == "testing"
+
     def test_spawn_payload_carries_type_prefixed_display_name(self) -> None:
         # PR-12: every spawn is named t3-<type>-<id> so the Agent tool call is
         # attributable, never an anonymous general-purpose spawn.
@@ -129,7 +212,7 @@ class TestClaimNextPayload(_LoopDispatchTest):
 
         entry = json.loads(stdout.getvalue())[0]
         assert "model" in entry
-        assert entry["model"] == TIER_MODELS["frontier"]
+        assert entry["model"] == tier_models()["frontier"]
         assert isinstance(entry["skill_bundle"], list)
 
     def test_payload_never_carries_an_effort_key(self) -> None:

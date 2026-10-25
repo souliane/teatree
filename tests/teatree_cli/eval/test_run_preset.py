@@ -1,7 +1,7 @@
 """``t3 eval run --preset`` — apply a model-tier PRESET at the per-scenario seam.
 
 End-to-end through the real typer CLI with a stubbed api runner — no live model
-call, no concrete model-id literal (asserted via ``TIER_MODELS``/``resolve_tier``).
+call, no concrete model-id literal (asserted via ``tier_models()``/``resolve_tier``).
 """
 
 from pathlib import Path

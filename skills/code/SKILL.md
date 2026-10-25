@@ -80,8 +80,8 @@ For a quick ad-hoc fix with no overlay/ticket (a typo, a one-line doc change), c
 git fetch origin main -q
 # `--no-track` is load-bearing: without it the new branch tracks origin/main, so
 # `git push` on it refuses confusingly — and aims at main under push.default=upstream.
-git worktree add -b <short-branch> --no-track ../<repo>-wt-<slug> origin/main
-cd ../<repo>-wt-<slug>
+git worktree add -b <short-branch> --no-track ~/workspace/t3-workspaces/<repo>-wt-<slug> origin/main
+cd ~/workspace/t3-workspaces/<repo>-wt-<slug>
 # only now: Edit / Write the file
 ```
 
@@ -116,7 +116,7 @@ The goal is to surface the missed step so the user can redirect early, not to ad
 
 ### 0d. Dream Gap-Batch Tickets — Claim Only What You Delivered (Non-Negotiable)
 
-A ticket carrying `extra['dream_gap_batch']` hosts dream gaps the backlog sweep folded into it ([#4776](https://github.com/souliane/teatree/issues/4776)); each gap's substance is folded into the issue body under `## Folded in: dream-gap <gap_key>`. Fix each gap independently, and record each one with `t3 dream gap-disposition <id> <gap_key> --citation "<evidence>"` (addressed) or `--reject "<why>"` — the host's rubric refuses merge until `t3 dream gap-coverage --ticket <id>` exits 0.
+A ticket carrying `extra['dream_gap_batch']` hosts dream gaps the backlog sweep folded into it ([#4776](https://github.com/souliane/teatree/issues/4776)); each gap's substance is folded into the issue body under `## Folded in: dream-gap <gap_key>`. Fix each gap independently, and record each one with `t3 dream gap-disposition <id> <gap_key> --citation "<evidence>"` (addressed), `--reject "<why>"` (rejected), or `--misfit "<why this host cannot address it>"` (returned to the umbrella) — the host's rubric refuses merge until `t3 dream gap-coverage --ticket <id>` exits 0.
 
 A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): `ticket.context` lists every gap the pass queued, each with its `gap_key` and, when its ledger row exists, its full `Rule:` / `Evidence:` / `Fix in:` lines — work from those, never the truncated title. A pass with 300 pending gaps mints ONE such ticket, not 300 — fix each gap in the manifest independently.
 
@@ -130,7 +130,7 @@ A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#
 
 An engaged session is re-reminded of this on a cadence rather than expected to recall it — the `standing-golden-rule` directive ([`../interactive/SKILL.md`](../interactive/SKILL.md) § "Standing directives", readable with `t3 loop directives show`). It arrives as context on a turn you were already taking, so it costs nothing. The reminder is advisory; the rule below is the rule.
 
-**"Just fix it fast" is NOT a license to skip the plan.** Under urgency, especially across multiple tickets, plan first, then code. Present a per-target plan in ordinary user-visible text, or record it in a `TaskCreate`/`TaskUpdate` whose subject and description together name every target and give each its own implementation and verification actions. A placeholder task is denied until the plan exists. Read, Grep, Glob, and Bash commands classified read-only stay open while preparing the plan; an unclassifiable command or classifier error is treated as an action. A `[visible-plan-ok: <reason>]` escape needs a non-empty reason. Internal planning alone does not count. Ask questions, edit, commit, push, and dispatch only after every target is covered. If a target is unreadable, state a provisional plan for it before asking the smallest unblock question.
+**"Just fix it fast" is NOT a license to skip the plan.** Under urgency, especially across multiple tickets, plan first, then code. Present a per-target plan in ordinary user-visible text, or record it in a `TaskCreate`/`TaskUpdate` whose subject and description together name every target and give each its own implementation and verification actions. A placeholder task is denied until the plan exists. Read, Grep, Glob, and Bash commands classified read-only stay open while preparing the plan; an unclassifiable command or classifier error is treated as an action. A `[gate-escape:visible_plan_gate: <reason>]` escape needs a non-empty reason. Internal planning alone does not count. Ask questions, edit, commit, push, and dispatch only after every target is covered. If a target is unreadable, state a provisional plan for it before asking the smallest unblock question.
 
 **Ordering for urgent multi-ticket work:** before an ambiguity question, write, or dispatch, emit one target-labeled provisional plan block per ticket. Each block names the target and states the prospective sequence: inspect the target, implement the change, add/run the focused test and verify it, then commit/push separately. Treat unknown details as explicit plan assumptions to verify; ambiguity is not a reason to defer planning. Read-only investigation and task recording remain available while drafting the plan. Only after every block is visible may you ask one minimal question or delegate. If you read or record tasks first, still present every target-labeled plan block before changing code.
 
@@ -306,7 +306,7 @@ are in [`docs/module-health.md`](../../docs/module-health.md).
 
 - **When adding a prek hook, check for CI duplication.** After adding a new hook to `.pre-commit-config.yaml`, grep the repo's `.gitlab-ci.yml` (or equivalent) for any job that runs the same script directly. If found, remove the standalone CI job — having the check run twice wastes CI time and creates maintenance confusion. One source of truth: prek.
 - Run linting after each significant change.
-- Run type checking if the project uses it.
+- Run type checking if the project uses it. Measure ty diagnostics through the hook's own entry (`uv run ty check`); the bare `.venv/bin/ty` lacks `VIRTUAL_ENV`, so PEP 723 script dependencies fail to resolve and inflate the count with phantom unresolved-import errors.
 - Run the relevant test suite frequently — don't batch test runs.
 - **The affected-tests lane is GREEN locally before any push (mandatory) — the lane, never the whole suite.** A narrow node run proves your new test; the affected lane proves you broke nothing else the diff can reach. The discipline is do-X-not-Y: do run the lane and confirm it passes in this same response *before* `pr create` / `git push`; do **not** run the whole suite locally, and do not push to let CI tell you whether you regressed something. A local whole-tree sweep pays for what CI's required sharded lane is about to run anyway — measured, that duplication is most of a 3.5h ticket ([#3994](https://github.com/souliane/teatree/issues/3994)).
 

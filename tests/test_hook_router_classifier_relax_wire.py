@@ -19,7 +19,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -73,7 +73,7 @@ def _ask_relax_question() -> dict:
 
 
 @contextmanager
-def _sanctioned_home() -> Iterator[tuple[str, str, str]]:
+def _sanctioned_home() -> Generator[tuple[str, str, str]]:
     """Yield ``(home, settings_path, transcript_path)`` with a Step-3 approval on record.
 
     The transcript carries the sanctioned classifier-relax AskUserQuestion + an

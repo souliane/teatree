@@ -1,24 +1,61 @@
 """Render loaded skills into prompt text.
 
 A headless or sub-agent dispatch inherits none of the orchestrator's loaded
-skills, so the dispatched prompt must carry the ``SKILL.md`` bodies inline. This
-module resolves skill names to their ``SKILL.md`` files and concatenates the
-bodies — the shared building block for both the agent system context
-(``prompt.build_system_context``) and the raw Agent-tool sub-agent preamble
-(``build_subagent_skill_preamble``). It depends only on the filesystem, never
-the ORM, so a Django-free caller (the ``t3 <overlay> skill-preamble`` CLI) can
-emit a preamble without bootstrapping Django.
+skills, so the dispatched prompt must carry required skill text. This module
+resolves skill names for the agent system context (``prompt.build_system_context``)
+and the raw Agent-tool sub-agent preamble (``build_subagent_skill_preamble``).
+It depends only on the filesystem, never the ORM, so a Django-free caller (the
+``t3 <overlay> skill-preamble`` CLI) can emit a preamble without bootstrapping Django.
 """
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.agents.skill_files import reach_line
+from teatree.agents.skill_assurance import SkillDispatchError, required_load_line
+from teatree.agents.skill_files import reach_line, rules_document_path
 from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
+_READ_ONLY_SKILL_SECTIONS = {
+    "review": frozenset(
+        {
+            "### Quality Gate Verification (Verify-Fix-Repeat)",
+            "### Receiving Code Review",
+            "### Recording a GIVE-review approval — `t3 review approve` (Mandatory)",
+            "### Concluding a no-postable-action external review — `mark_review_no_action` (Mandatory, #1077)",
+            "## Commands",
+        }
+    ),
+    "slack-formatting": frozenset(
+        {
+            "## Tables — use the formatter, never a hand-rolled pipe table",
+            "## mrkdwn gotchas",
+            "## Line length — wrapped at 90, at the transport",
+            "## CLI tables",
+        }
+    ),
+}
+_HEADING = re.compile(r"^(#{2,6}) ")
+
+
+def _read_only_skill_text(name: str, content: str) -> str:
+    omitted = _READ_ONLY_SKILL_SECTIONS.get(name, frozenset())
+    if not omitted:
+        return content
+    kept: list[str] = []
+    skipped_level = 0
+    for line in content.splitlines(keepends=True):
+        heading = _HEADING.match(line)
+        if heading and skipped_level and len(heading[1]) <= skipped_level:
+            skipped_level = 0
+        if heading and line.rstrip() in omitted:
+            skipped_level = len(heading[1])
+        if not skipped_level:
+            kept.append(line)
+    return "".join(kept)
 
 
 def _resolve_dirs(skills_dir: Path | None) -> list[Path]:
@@ -34,14 +71,6 @@ def _skill_section(name: str, content: str) -> str:
 def _with_reach_line(sections: list[str], dirs: Sequence[Path]) -> str:
     """Join *sections* under the reach line, which leads so a budget cut can never drop it."""
     return "\n\n".join((reach_line(dirs[0]), *sections)) if sections else ""
-
-
-def required_load_line(name: str, skill_md: Path | None) -> str:
-    """One mandatory Skill-tool load, in the grammar ``skill_assurance`` recognises as delivered."""
-    load = f"REQUIRED: Load /{name} via the Skill tool before you start"
-    if skill_md is None:
-        return f"{load}; no SKILL.md resolves for it on this host."
-    return f"{load}; if this lane has no Skill tool, Read `{skill_md}` in full."
 
 
 def _is_stack_skill(name: str) -> bool:
@@ -146,16 +175,25 @@ def _read_skill_contents_scoped(
 
 
 def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str:
-    """Each skill in *embedded* in full and every other one by name only: the venue mounts no skill file."""
+    """Embed primary skills and the rules document; this venue mounts no skill files."""
     dirs = harness_skills_dirs()
     sections: list[str] = []
     absent: list[str] = []
     for name in skills:
+        bare = bare_skill_name(name)
         skill_md = resolve_skill_md(name, dirs) if _is_primary(name, embedded) else None
         if skill_md is None:
-            absent.append(bare_skill_name(name))
+            absent.append(bare)
         else:
-            sections.append(_skill_section(bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
+            if bare == "rules":
+                rules_md = rules_document_path(skill_md)
+                try:
+                    rules_text = rules_md.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    missing = f"{bare}/{rules_md.name}"
+                    raise SkillDispatchError.missing_document(bare, missing) from exc
+                sections.append(f"--- RULES.md ---\n{rules_text}")
+            sections.append(_skill_section(bare, _read_only_skill_text(bare, skill_md.read_text(encoding="utf-8"))))
     reach = "Only the skill text below reaches this venue: no skill file it cites is mounted here."
     if absent:
         reach = f"{reach} Not available here: {', '.join(absent)}."
@@ -164,16 +202,16 @@ def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str
 
 _SUBAGENT_PREAMBLE_HEADER = (
     "# Required skills (a dispatched sub-agent does not auto-load them)\n"
-    "Follow every rule in the skills below as if you had loaded them via the Skill tool,\n"
+    "Follow the embedded rules and load each required stack skill via the Skill tool,\n"
     "before reading files, running commands, or writing code."
 )
 
 
 @dataclass(frozen=True)
 class SkillPreamble:
-    """The inline skill bodies a raw Agent-tool sub-agent brief must carry.
+    """The skill text a raw Agent-tool sub-agent brief must carry.
 
-    ``text`` is the concatenated header + ``SKILL.md`` bodies (empty when no
+    ``text`` is the header, resolved skill bodies, and stack load directives (empty when no
     requested skill resolved). ``resolved`` and ``missing`` carry the bare skill
     names that were and were not found, so a caller can fail loud on a typo or
     an overlay skill absent for the active overlay rather than ship a brief that
@@ -186,24 +224,31 @@ class SkillPreamble:
 
 
 def build_subagent_skill_preamble(skills: list[str], *, skills_dirs: Sequence[Path]) -> SkillPreamble:
-    """Concatenate each skill's ``SKILL.md`` into a sub-agent dispatch preamble.
+    """Render requested skills once into a sub-agent dispatch preamble.
 
     A sub-agent spawned through the raw harness Agent tool inherits none of the
-    orchestrator's loaded skills, so the orchestrator must prepend the skill
-    bodies to the brief. Each name resolves against *skills_dirs* in order
-    (the framework skills dir first, then the active overlay's skills dir), so
-    an overlay skill body reaches the sub-agent exactly as a framework one does.
+    orchestrator's loaded skills, so the orchestrator must prepend this text.
+    Stack skills are required loads; other resolved skills carry their bodies.
     """
-    sections: list[str] = []
+    stack: list[str] = []
+    bodies: list[str] = []
     resolved: list[str] = []
     missing: list[str] = []
+    seen: set[str] = set()
     for name in skills:
+        bare = bare_skill_name(name)
+        if bare in seen:
+            continue
+        seen.add(bare)
         skill_md = resolve_skill_md(name, skills_dirs)
         if skill_md is None:
-            missing.append(name)
-            continue
-        bare = bare_skill_name(name)
-        sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
-        resolved.append(bare)
+            missing.append(bare)
+        elif _is_stack_skill(bare):
+            stack.append(bare)
+            resolved.append(bare)
+        else:
+            bodies.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
+            resolved.append(bare)
+    sections = [*_stack_load_block(stack, skills_dirs), *bodies]
     text = f"{_SUBAGENT_PREAMBLE_HEADER}\n\n" + _with_reach_line(sections, skills_dirs) if sections else ""
     return SkillPreamble(text=text, resolved=resolved, missing=missing)

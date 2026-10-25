@@ -4,6 +4,8 @@ Every ``subprocess.run`` / ``subprocess.Popen`` call in ``src/teatree`` MUST go
 through these wrappers.  Raw subprocess usage is the ``subprocess-egress``
 chokepoint in ``src/teatree/quality/chokepoints.yaml``, enforced by the
 ``check-chokepoints`` prek hook (see ``scripts/hooks/check_chokepoints.py``).
+Every ``git`` argv leaves pinned by :class:`~teatree.utils.git_pins.GitPins`, so a ``core.fsmonitor`` /
+``core.hooksPath`` planted in a checkout's config cannot run in the control plane.
 
 Three entry points:
 
@@ -22,12 +24,15 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import DEVNULL, PIPE, STDOUT, CompletedProcess, Popen, SubprocessError, TimeoutExpired
 from typing import IO, cast
+
+from teatree.utils.git_pins import GitPins
 
 # The command could not be REACHED, as opposed to having run and failed: absent from
 # ``PATH`` (``FileNotFoundError``), not executable (``PermissionError``), or stalled past
@@ -41,6 +46,7 @@ SUBPROCESS_UNREACHABLE: tuple[type[BaseException], ...] = (OSError, SubprocessEr
 # ``_last_lines`` n=20 — so a tail this size keeps the diagnostic while capping
 # retention. ``run_streamed`` keeps only the last this-many stderr lines.
 STREAMED_STDERR_RETAINED_LINES = 200
+type ProcessStream = int | IO[bytes] | IO[str] | None
 
 __all__ = [
     "DEVNULL",
@@ -112,6 +118,79 @@ def _last_lines(text: str, *, n: int) -> str:
     return "\n".join(lines[-n:])
 
 
+def _git_probe_timeout(cmd: Sequence[str], timeout: float | None, started: float) -> float:
+    if timeout is None:
+        return 5.0
+    remaining = timeout - (time.monotonic() - started)
+    if remaining <= 0:
+        raise TimeoutExpired(cmd, timeout)
+    return min(remaining, 5.0)
+
+
+def _trusted_hooks_path(
+    cmd: Sequence[str], common_dir: str, *, env: dict[str, str] | None, cwd: str | Path | None, timeout: float
+) -> str:
+    probe = subprocess.run(
+        GitPins.hooks_path_probe(cmd),
+        env=env,
+        cwd=str(cwd) if cwd is not None else None,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if probe.returncode not in {0, 1}:
+        raise CommandFailedError(cmd, probe.returncode, probe.stdout, probe.stderr)
+    default = str(Path(common_dir) / "hooks")
+    if probe.returncode == 1:
+        return default
+    scope, separator, configured = probe.stdout.rstrip("\n").partition("\t")
+    if not separator or not configured or "\n" in configured:
+        raise CommandFailedError(cmd, 1, probe.stdout, "invalid core.hooksPath probe result")
+    if scope in {"system", "global"}:
+        return configured
+    if Path(configured).is_absolute() and Path(configured).resolve() == Path(default).resolve():
+        return default
+    raise CommandFailedError(cmd, 1, "", f"untrusted {scope} core.hooksPath on control-plane git write")
+
+
+def _pinned_git_argv(
+    cmd: Sequence[str],
+    *,
+    env: dict[str, str] | None = None,
+    cwd: str | Path | None = None,
+    timeout: float | None = None,
+) -> tuple[list[str], float | None]:
+    if not GitPins.needs_hooks(cmd):
+        return GitPins.argv(cmd), timeout
+    started = time.monotonic()
+    probe = subprocess.run(
+        GitPins.common_dir_probe(cmd),
+        env=env,
+        cwd=str(cwd) if cwd is not None else None,
+        capture_output=True,
+        text=True,
+        timeout=_git_probe_timeout(cmd, timeout, started),
+        check=False,
+    )
+    common_dir = probe.stdout.removesuffix("\n")
+    if probe.returncode != 0 or not common_dir or "\n" in common_dir or not Path(common_dir).is_absolute():
+        raise CommandFailedError(cmd, probe.returncode or 1, probe.stdout, probe.stderr)
+    hooks_path = _trusted_hooks_path(
+        cmd,
+        common_dir,
+        env=env,
+        cwd=cwd,
+        timeout=_git_probe_timeout(cmd, timeout, started),
+    )
+    remaining = None
+    if timeout is not None:
+        remaining = timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            raise TimeoutExpired(cmd, timeout)
+    return GitPins.argv(cmd, hooks_path=hooks_path), remaining
+
+
 def run_checked(
     cmd: Sequence[str],
     *,
@@ -125,19 +204,20 @@ def run_checked(
     Always captures stdout/stderr as text.  Callers never silently swallow
     failures — if non-zero is expected, use :func:`run_allowed_to_fail`.
     """
+    argv, remaining_timeout = _pinned_git_argv(cmd, env=env, cwd=cwd, timeout=timeout)
     result = subprocess.run(
-        list(cmd),
+        argv,
         env=env,
         cwd=str(cwd) if cwd is not None else None,
         input=stdin_text,
         capture_output=True,
         text=True,
-        timeout=timeout,
+        timeout=remaining_timeout,
         check=False,
     )
     if result.returncode != 0:
         raise CommandFailedError(cmd, result.returncode, result.stdout, result.stderr)
-    return result
+    return CompletedProcess(list(cmd), result.returncode, result.stdout, result.stderr)
 
 
 def _kill_process_group(process: "Popen[str]") -> None:
@@ -183,8 +263,14 @@ def run_bounded_group(
     ``subprocess.run`` reserves that drain for its ``_mswindows`` branch for the same
     reason.
     """
+    try:
+        argv, remaining_timeout = _pinned_git_argv(cmd, env=env, timeout=timeout)
+    except CommandFailedError as error:
+        if expected_codes is None:
+            return CompletedProcess(list(cmd), error.returncode, error.stdout, error.stderr)
+        raise
     with subprocess.Popen(
-        list(cmd),
+        argv,
         env=env,
         stdin=PIPE if stdin_text is not None else DEVNULL,
         stdout=PIPE,
@@ -193,7 +279,7 @@ def run_bounded_group(
         start_new_session=True,
     ) as process:
         try:
-            stdout, stderr = process.communicate(input=stdin_text, timeout=timeout)
+            stdout, stderr = process.communicate(input=stdin_text, timeout=remaining_timeout)
         except TimeoutExpired:
             _kill_process_group(process)
             process.wait()
@@ -222,19 +308,25 @@ def run_allowed_to_fail(  # noqa: PLR0913 — each keyword-only param is one doc
     *stdin_text* mirrors :func:`run_checked`: when given it is fed to the child's
     stdin (piping a dump/SQL/credential in rather than materialising a temp file).
     """
+    try:
+        argv, remaining_timeout = _pinned_git_argv(cmd, env=env, cwd=cwd, timeout=timeout)
+    except CommandFailedError as error:
+        if expected_codes is None:
+            return CompletedProcess(list(cmd), error.returncode, error.stdout, error.stderr)
+        raise
     result = subprocess.run(
-        list(cmd),
+        argv,
         env=env,
         cwd=str(cwd) if cwd is not None else None,
         input=stdin_text,
         capture_output=True,
         text=True,
-        timeout=timeout,
+        timeout=remaining_timeout,
         check=False,
     )
     if expected_codes is not None and result.returncode not in expected_codes:
         raise CommandFailedError(cmd, result.returncode, result.stdout, result.stderr)
-    return result
+    return CompletedProcess(list(cmd), result.returncode, result.stdout, result.stderr)
 
 
 def run_streamed(
@@ -264,8 +356,15 @@ def run_streamed(
     diagnostic without the unbounded growth.
     """
     captured: deque[str] = deque(maxlen=STREAMED_STDERR_RETAINED_LINES)
+    try:
+        argv, _ = _pinned_git_argv(cmd, env=env, cwd=cwd)
+    except CommandFailedError as error:
+        if check:
+            raise
+        sys.stderr.write(error.stderr)
+        return error.returncode
     with Popen(
-        list(cmd),
+        argv,
         env=env,
         cwd=str(cwd) if cwd is not None else None,
         stderr=PIPE,
@@ -295,8 +394,9 @@ def spawn(
     or a file handle) — when both are ``None`` the streams inherit the
     parent's.
     """
+    argv, _ = _pinned_git_argv(cmd, env=env, cwd=cwd)
     return subprocess.Popen(
-        list(cmd),
+        argv,
         env=env,
         cwd=str(cwd) if cwd is not None else None,
         stdout=stdout,
@@ -325,7 +425,8 @@ def spawn_byte_pipe(cmd: Sequence[str]) -> BytePipe:
     stream (an HTTP body, a compressed payload) must not have it decoded and re-encoded.
     ``stderr`` is discarded — nothing reads it, and an unread PIPE can fill and block the child.
     """
-    process = subprocess.Popen(list(cmd), stdin=PIPE, stdout=PIPE, stderr=DEVNULL)
+    argv, _ = _pinned_git_argv(cmd)
+    process = subprocess.Popen(argv, stdin=PIPE, stdout=PIPE, stderr=DEVNULL)
     return BytePipe(process=process, stdin=cast("IO[bytes]", process.stdin), stdout=cast("IO[bytes]", process.stdout))
 
 
@@ -333,24 +434,26 @@ def spawn_session_leader(
     cmd: Sequence[str],
     *,
     env: dict[str, str] | None = None,
-    stdout: int | IO[bytes] | IO[str] | None = None,
-    stderr: int | IO[bytes] | IO[str] | None = None,
+    cwd: str | Path | None = None,
+    stdio: tuple[ProcessStream, ProcessStream, ProcessStream] = (DEVNULL, None, None),
 ) -> Popen[str]:
     """Spawn a background process that LEADS its own process group.
 
     ``start_new_session=True`` makes the child a session/group leader, so the
     caller can ``os.killpg(os.getpgid(proc.pid), …)`` the WHOLE group (the child
     plus any grandchildren it spawns) on a deadline — an OS-level kill boundary a
-    plain :func:`spawn` cannot give. ``stdin`` is always ``DEVNULL`` (a detached
-    background process must never inherit or block on the parent's stdin). ``env``
+    plain :func:`spawn` cannot give. ``stdio[0]`` defaults to ``DEVNULL`` so a detached
+    process cannot block on the parent's input. ``env``
     replaces the child's environment when given (pass ``{**os.environ, …}`` to extend).
     """
+    argv, _ = _pinned_git_argv(cmd, env=env, cwd=cwd)
     return subprocess.Popen(
-        list(cmd),
+        argv,
         env=env,
-        stdin=DEVNULL,
-        stdout=stdout,
-        stderr=stderr,
+        cwd=str(cwd) if cwd is not None else None,
+        stdin=stdio[0],
+        stdout=stdio[1],
+        stderr=stdio[2],
         start_new_session=True,
         text=True,
     )

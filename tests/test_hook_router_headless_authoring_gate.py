@@ -14,18 +14,25 @@ paired with its opposite so a uniformly-permissive gate (which would pass the al
 and a uniformly-restrictive one (which would pass the refuse-cases) both go red.
 """
 
+import contextlib
 import json
 import os
 import sqlite3
-from collections.abc import Iterator
+import tempfile
+from collections.abc import Generator, Iterator
 from pathlib import Path
 from unittest import mock
 
 import pytest
+from django.test import TestCase
 
 import hooks.scripts.hook_router as router
 from hooks.scripts import headless_authoring_gate as gate
+from teatree.core.models.gate_escape import GateEscape
+from tests._gate_escape_audit import audited_escape
 from tests._git_repo import make_git_repo, run_git
+
+pytestmark = pytest.mark.usefixtures("admission_governor_admits")
 
 #: The env an INTERACTIVE Claude Code CLI session presents. The SDK transport sets
 #: ``CLAUDE_CODE_ENTRYPOINT=sdk-py`` and strips ``CLAUDECODE`` from the child env, so these
@@ -43,16 +50,22 @@ def _run_chain(data: dict) -> bool:
     return any(handler(data) is True for handler in router._HANDLERS["PreToolUse"])
 
 
-@pytest.fixture
-def engaged_session(tmp_path: Path) -> Iterator[Path]:
-    """A teatree-ENGAGED interactive session under the headless posture, in a main clone."""
+@contextlib.contextmanager
+def _engaged(state_dir: Path) -> Generator[Path]:
     with (
-        mock.patch.object(router, "STATE_DIR", tmp_path),
+        mock.patch.object(router, "STATE_DIR", state_dir),
         mock.patch.object(router, "_teatree_engaged", return_value=True),
         mock.patch.object(gate, "_path_is_in_live_worktree", return_value=False),
         mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
         mock.patch.dict(os.environ, _INTERACTIVE_ENV, clear=False),
     ):
+        yield state_dir
+
+
+@pytest.fixture
+def engaged_session(tmp_path: Path) -> Iterator[Path]:
+    """A teatree-ENGAGED interactive session under the headless posture, in a main clone."""
+    with _engaged(tmp_path):
         yield tmp_path
 
 
@@ -158,35 +171,11 @@ class TestTheCarveOutsHold:
         # The foil that proves the carve-out discriminates rather than swallowing the gate.
         assert _run_chain(_edit("/wt/3873/src/teatree/x.py")) is True
 
-    def test_an_audited_override_unblocks_exactly_one_action(self, engaged_session: Path, tmp_path: Path) -> None:
-        allowed = {
-            "session_id": "s1",
-            "tool_name": "Edit",
-            "tool_input": {
-                "file_path": "/repo/src/teatree/x.py",
-                "new_string": "fix [headless-authoring-ok: factory is down, restoring it]",
-            },
-        }
-        assert _run_chain(allowed) is False
-        # Exactly one: the NEXT call, without the token, is refused again.
-        assert _run_chain(_edit()) is True
-
-    def test_the_override_is_recorded_with_its_reason(self, engaged_session: Path) -> None:
-        data = {
-            "session_id": "s1",
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/repo/src/teatree/x.py", "new_string": "[headless-authoring-ok: emergency]"},
-        }
-        _run_chain(data)
-        audit = engaged_session / "s1.authoring-overrides"
-        assert audit.is_file()
-        assert "emergency" in audit.read_text(encoding="utf-8")
-
     def test_an_empty_override_reason_does_not_unblock(self, engaged_session: Path) -> None:
         data = {
             "session_id": "s1",
             "tool_name": "Edit",
-            "tool_input": {"file_path": "/repo/src/teatree/x.py", "new_string": "[headless-authoring-ok: ]"},
+            "tool_input": {"file_path": "/repo/src/teatree/x.py", "new_string": "[gate-escape:headless_authoring: ]"},
         }
         assert _run_chain(data) is True
 
@@ -352,26 +341,14 @@ class TestTheWorktreeCarveOutIsReachableFromAPrimaryCloneCwd:
         assert _run_gate(_bash(f"cd {clone} && git commit -m 'new work'", str(worktree))) is True
 
 
-class TestTheOverrideIsReachableFromACommitMessage:
-    """The audited escape must be reachable from the calls most likely to need it.
-
-    The scan window stopped at 512 characters, so a token placed in a commit message — the
-    documented emergency shape, and the one call a truncating scanner is guaranteed to miss
-    — was never seen, and the escape hatch did not exist for it.
-    """
+class TestALongCommitMessageIsStillRefused:
+    """A commit message past the 512-character window is refused unless it carries a token."""
 
     @staticmethod
     def _long_message(tail: str) -> str:
         body = "restore the factory\n\n" + ("detail line for the commit message\n" * 40)
         assert len(body) > 512, "the body must clear the old window for this case to mean anything"
         return body + tail
-
-    def test_a_token_beyond_the_old_window_is_seen(
-        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
-    ) -> None:
-        clone, _worktree = clone_and_live_worktree
-        message = self._long_message("[headless-authoring-ok: the factory itself is down]")
-        assert _run_gate(_bash(f"git commit -m '{message}'", str(clone))) is False
 
     def test_the_same_long_message_without_a_token_is_still_refused(
         self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
@@ -486,12 +463,56 @@ class TestTheOverrideMustLiveInTheCallsOwnText:
     putting the token there.
     """
 
-    def test_a_token_in_the_command_unblocks(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
-        managed, _unmanaged = managed_and_unmanaged
-        command = "git push origin HEAD  # [headless-authoring-ok: the factory itself is down]"
-        assert _run_gate(_bash(command, str(managed))) is False
-
     def test_a_token_only_in_the_description_does_not_unblock(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
         data = _bash("git push origin HEAD", str(managed_and_unmanaged[0]))
-        data["tool_input"]["description"] = "[headless-authoring-ok: the factory itself is down]"
+        data["tool_input"]["description"] = "[gate-escape:headless_authoring: the factory itself is down]"
         assert _run_gate(data) is True
+
+
+def test_a_legacy_marker_does_not_unblock(engaged_session: Path) -> None:
+    data = {
+        "session_id": "s1",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "/repo/src/teatree/x.py", "new_string": "fix [headless-authoring-ok: emergency]"},
+    }
+    assert _run_chain(data) is True
+
+
+def test_a_token_whose_audit_cannot_be_recorded_stays_refused(engaged_session: Path) -> None:
+    data = {
+        "session_id": "s1",
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/repo/src/teatree/x.py",
+            "new_string": "fix [gate-escape:headless_authoring: emergency]",
+        },
+    }
+    with audited_escape(data, recorded=False) as requests:
+        assert _run_chain(data) is True
+    assert [request["gate"] for request in requests] == ["headless_authoring"]
+
+
+class TestTheOverrideIsAudited(TestCase):
+    def test_a_token_is_recorded_then_unblocks_exactly_one_action(self) -> None:
+        tokened = {
+            "session_id": "s1",
+            "tool_name": "Edit",
+            "tool_use_id": "call-1",
+            "tool_input": {
+                "file_path": "/repo/src/teatree/x.py",
+                "new_string": "fix [gate-escape:headless_authoring: factory is down, restoring it]",
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp, _engaged(Path(tmp)):
+            with audited_escape(tokened, via_cli=True):
+                assert _run_chain(tokened) is False
+            plain = _edit()
+            with audited_escape(plain, via_cli=True):
+                assert _run_chain(plain) is True
+        row = GateEscape.objects.get()
+        assert (row.gate, row.session_id, row.call_id, row.reason) == (
+            "headless_authoring",
+            "s1",
+            "call-1",
+            "factory is down, restoring it",
+        )

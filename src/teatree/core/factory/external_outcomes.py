@@ -1,7 +1,7 @@
 """The forge-read external-outcome measure (#4506).
 
 Every signal in :mod:`teatree.core.factory.factory_signals` is derived from
-teatree's own ledgers, so all five can read healthy through a window in which
+teatree's own ledgers, so every one can read healthy through a window in which
 nothing reached ``main`` — tasks reporting ``completed`` is not evidence that
 anything shipped. This module reads the one number the factory cannot write for
 itself: how many pull requests the FORGE says were merged in the trailing window.

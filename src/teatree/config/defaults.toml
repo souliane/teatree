@@ -70,10 +70,11 @@ excluded_skills = [] # list — skills never offered to an agent, whatever the l
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
 agent_max_turns = 250 # int — turn ceiling for one agent run
+agent_route_paid_fallback = false # bool — allow an ordered agent route to fall through to a metered lane
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
 backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
 dogfood_smoke_skill = "dogfooding" # str — skill the dogfood smoke loop runs
-envelope_stop_gate_refusals = 2 # int — refuse a turn that ends without the required result envelope
+envelope_stop_gate_refusals = 2 # int — envelope-less turn-ends one run may have refused; 0 disables
 eval_local_skill = "running-evals" # str — skill the local eval loop runs
 harness_skill_exclusions = [] # list — box-wide Claude Code or Codex skills removed from that harness until explicitly installed again
 mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
@@ -103,8 +104,9 @@ schema_readiness_gate_enabled = true # bool — refuse new work while the contro
 approved_recipe_sha = "" # str — commit of the provisioning recipe the operator reviewed and approved
 billing_cycle_anchor_day = 0 # int — day of the month the subscription's usage window resets
 boost_concurrency = 0 # int — extra concurrent units allowed while the box is in boost
-contribute_plugin_dir = false # bool — directory holding the plugin a contribute run writes to
+contribute_plugin_dir = false # bool — pass --plugin-dir to the launched agent so a contribute run edits this checkout
 db_backup_retention_days = 7 # int — days a database backup is kept before it is pruned
+eval_ci_account_allowlist = [] # list — password-store OAuth accounts allowed in the CI eval pool
 issue_implementer_label = "" # str — label an issue must carry for the implementer to claim it
 issue_implementer_max_concurrent = 3 # int — fallback in-flight ceiling when the resource loop has no adaptive reading
 sdk_monthly_credit_usd = 200.0 # float — monthly SDK credit the cost tracker measures spend against
@@ -128,6 +130,9 @@ dogfood_smoke_overlay = "" # str — overlay the dogfood smoke run exercises
 [teatree.Loops.dream]
 dream_memory_promote = true # bool — let the dream pass promote a core-gap memory to a fix
 
+[teatree.Loops.followup]
+review_nag_max_interval_days = 30 # int — ceiling on the review nag's widening re-ask interval
+
 [teatree.Loops.housekeeping]
 auto_update_require_green_main = true # bool — only self-update onto a main whose CI is green
 pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clone
@@ -136,6 +141,7 @@ pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clo
 gitlab_events_subscription = "" # str — Pub/Sub subscription the inbox loop pulls GitLab webhook events from; empty is off
 
 [teatree.Loops.issue_implementer]
+issue_intake_idle_hold_hours = 0 # int — hours a started ticket may sit idle before intake claims nothing new; 0 is off
 issue_intake_pass_budget_seconds = 45.0 # float — seconds the intake scanner walks candidates before recording a resume point
 
 [teatree.Loops.news]
@@ -183,6 +189,7 @@ review_skill_alternates = [] # list — extra skills whose recorded run also sat
 
 [teatree.Gates.Quality."Merge & done"]
 expected_required_contexts = [] # list — CI check names a pull request must carry before it can merge (workflow names on a plan-restricted GitHub Free fallback — #4844)
+forced_repro_gate_enabled = true # bool — require an executed pre-fix failing run for fix tickets at coding, testing and ship
 
 [teatree.Gates.Quality."Critic & send proxy"]
 bulk_close_threshold = 5 # int — how many closes in one run count as a bulk action needing approval
@@ -198,7 +205,6 @@ mr_title_regex = "^(feat|fix|improvement|config|techdebt|chore|docs|refactor|tes
 orchestrator_bash_gate_enabled = true # bool — refuse heavy shell commands run directly by the orchestrator
 review_exempt_repos = [] # list — repos whose merge requests need no review request (a `!` prefix un-exempts one)
 review_exempt_repos_count_toward_group_readiness = true # bool — let review-exempt merge requests still hold their work group
-review_nag_max_interval_days = 30 # int — ceiling on the review nag's widening re-ask interval
 snapshot_baseline_gate_enabled = true # bool — refuse a snapshot diff taken against a stale baseline
 solo_repo_url_pattern = "" # str — regex matching repos the operator works on alone
 
@@ -223,6 +229,7 @@ orchestrator_delegation_gate_enabled = true # bool — refuse an unbounded orche
 orchestrator_turn_budget = 25 # int — output-token budget for one orchestrator turn
 orchestrator_turn_wall_clock_seconds = 180 # int — seconds one orchestrator turn may take
 out_of_band_merge_gate_enabled = true # bool — refuse a merge that skipped the recorded review path
+owner_question_gate_enabled = true # bool — refuse batched or shorthand owner questions and decisions left in reply prose
 plan_edit_gate_enabled = true # bool — refuse a source edit made while the session is still planning
 raw_pr_create_gate_enabled = true # bool — refuse a raw MR/PR create that would open it under the wrong identity
 self_dm_gate_enabled = true # bool — refuse Slack MCP writes to the operator's own DM under the user token
@@ -234,6 +241,7 @@ unbacked_claim_gate_enabled = true # bool — refuse a diagnosis or an escalatio
 unknown_repo_push_gate_enabled = true # bool — refuse a push to a repo teatree does not recognise
 verbatim_paste_gate_enabled = true # bool — refuse a publish whose body reproduces the operator's own words verbatim
 visible_plan_gate_enabled = true # bool — refuse an action until a plan for every named ticket is in visible assistant text
+worktree_containment_gate_enabled = true # bool — refuse a linked worktree checkout outside allowed roots
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
 artifact_idle_days = 2.0 # float — days a checkout's rebuildable build products may sit untouched before eviction — a ceiling that decays with free disk between disk_warn_free_gb and disk_crit_free_gb, and stops gating below it
@@ -255,7 +263,7 @@ task_result_retention_days = 1 # int — days a task result row is kept
 [teatree.Infrastructure.Provisioning]
 admission_pressure_shed_at = 0.9 # float — pressure at which expensive agents are refused while review and ship keep draining
 admission_write_concurrency_per_core = 0.5 # float — agents the admission governor admits per CPU core before weekly pacing, in every dispatch lane
-cheap_phase_admission_ceiling = 2 # int — review lane width: reviewing/critic/shipping agents admitted outside the coding ceiling, one review executor each (min 1)
+cheap_phase_admission_ceiling = 2 # int — per-class width (min 1): reviews and shipping/review requests are each capped at this width inside a cheap lane one seat wider; machine brakes spare both classes
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
 idle_stack_e2e_recent_minutes = 60 # int — minutes an E2E run keeps a stack safe from the idle reaper
 idle_stack_idle_minutes = 30 # int — minutes of inactivity after which a local stack counts as idle

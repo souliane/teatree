@@ -107,6 +107,13 @@ class NoEligibleAccountError(CiAccountSwitchError):
         self.rejected = rejected
 
 
+def _allowed_accounts(allowlist: Sequence[str]) -> set[str]:
+    if not allowlist:
+        message = "eval CI account allowlist is empty; CI credentials were left untouched"
+        raise NoEligibleAccountError(message)
+    return set(allowlist)
+
+
 @dataclass(frozen=True)
 class Rejection:
     """One candidate that cannot serve the run, and why."""
@@ -246,17 +253,21 @@ class CiAccountSwitcher:
             return None
         return tuple(accounts)
 
-    def reconcile_pool(self, rows: Sequence[TokenAccountRow]) -> tuple[str, ...]:
-        """Replace CI's eval pool with every configured pass-backed OAuth account.
+    def reconcile_pool(self, rows: Sequence[TokenAccountRow], *, allowlist: Sequence[str] = ()) -> tuple[str, ...]:
+        """Replace CI's eval pool with allowlisted pass-backed OAuth accounts.
 
         The GitHub secret is write-only, so refresh it every reconciliation cycle.
         All pass entries are resolved before the first write; one missing token cannot
         silently shrink the pool. A readable identity variable is written only after
         the secret succeeds, letting doctor detect configuration drift.
         """
-        accounts = tuple(sorted({row.account for row in rows if _is_candidate(row)}))
-        if not accounts:
-            raise CiAccountSwitchError(_NO_CANDIDATES)
+        allowed = _allowed_accounts(allowlist)
+        configured = {row.account for row in rows if _is_candidate(row)}
+        accounts = tuple(sorted(allowed))
+        missing = set(accounts) - configured
+        if missing:
+            message = f"allowlisted accounts are not configured: {sorted(missing)}"
+            raise CiAccountSwitchError(message)
         tokens: list[str] = []
         for account in accounts:
             token = self._secret_reader(account)
@@ -267,17 +278,7 @@ class CiAccountSwitcher:
                 message = f"token at {account!r} contains a newline — the CI pool was left untouched"
                 raise CiAccountSwitchError(message)
             tokens.append(token)
-        body = "\n".join(tokens)
-        code, out = self._gh(
-            ["secret", "set", CI_OAUTH_POOL_SECRET, "--repo", self._repo, "--body-file", "-"],
-            stdin_text=body,
-        )
-        if code != 0:
-            detail = redact_secrets(out.strip())
-            for token in tokens:
-                detail = detail.replace(token, "[REDACTED]")
-            message = f"`gh secret set {CI_OAUTH_POOL_SECRET}` failed on {self._repo} (exit {code}): {detail[:500]}"
-            raise CiAccountSwitchError(message)
+        self._put_secret(CI_OAUTH_POOL_SECRET, tokens)
         code, out = self._gh(
             ["variable", "set", CI_OAUTH_POOL_VARIABLE, "--repo", self._repo, "--body", json.dumps(accounts)]
         )
@@ -290,7 +291,12 @@ class CiAccountSwitcher:
         return accounts
 
     def switch(
-        self, rows: Sequence[TokenAccountRow], *, run_start: dt.datetime, dry_run: bool = False
+        self,
+        rows: Sequence[TokenAccountRow],
+        *,
+        run_start: dt.datetime,
+        allowlist: Sequence[str] = (),
+        dry_run: bool = False,
     ) -> SwitchOutcome:
         """Select from *rows* and point the CI secret at the winner.
 
@@ -298,7 +304,8 @@ class CiAccountSwitcher:
         rejected — rather than leaving a spent account in place and reporting success.
         A *dry_run*, and an already-optimal secret, both leave the forge untouched.
         """
-        selection = select_account(rows, run_start=run_start)
+        allowed = _allowed_accounts(allowlist)
+        selection = select_account([row for row in rows if row.account in allowed], run_start=run_start)
         best = selection.best
         if best is None:
             raise NoEligibleAccountError(self._no_eligible_message(selection), rejected=selection.rejected)
@@ -333,14 +340,20 @@ class CiAccountSwitcher:
         if not token:
             empty = f"no token stored at {account!r} — the CI secret was left untouched"
             raise CiAccountSwitchError(empty)
-        code, out = self._gh(
-            ["secret", "set", CI_OAUTH_SECRET, "--repo", self._repo, "--body-file", "-"], stdin_text=token
-        )
+        if "\n" in token or "\r" in token:
+            message = f"token at {account!r} contains a newline — the CI secret was left untouched"
+            raise CiAccountSwitchError(message)
+        self._put_secret(CI_OAUTH_SECRET, [token])
+
+    def _put_secret(self, name: str, tokens: list[str]) -> None:
+        """Set secret *name* to *tokens*, one per line, the value on stdin only — gh has no body-file flag."""
+        code, out = self._gh(["secret", "set", name, "--repo", self._repo], stdin_text="\n".join(tokens))
         if code != 0:
-            # Keep the actionable gh stderr, but never echo the value supplied on stdin.
-            # The shared sanitizer additionally strips NAME=value/header/query secrets.
-            detail = redact_secrets(out.replace(token, "[REDACTED]").strip())[:500]
-            failed = f"`gh secret set {CI_OAUTH_SECRET}` failed on {self._repo} (exit {code}): {detail}"
+            detail = out
+            for token in sorted((token for token in tokens if token), key=len, reverse=True):
+                detail = detail.replace(token, "[REDACTED]")
+            detail = redact_secrets(detail.strip())[:500]
+            failed = f"`gh secret set {name}` failed on {self._repo} (exit {code}): {detail}"
             raise CiAccountSwitchError(failed)
 
     def _record_account(self, account: str) -> None:

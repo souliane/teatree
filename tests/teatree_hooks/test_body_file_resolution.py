@@ -13,6 +13,7 @@ from teatree.hooks._body_file_resolution import (
     append_file_payload,
     heredoc_files_map,
     unredirected_heredoc_bodies,
+    walk_body_file_flags,
 )
 from teatree.hooks._command_parser import extract_bash_payload
 from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL
@@ -55,6 +56,18 @@ class TestStaleFileVsHeredocSuperset:
         payloads: list[str] = []
         append_file_payload(str(missing), payloads, ctx, fail_closed=True, leader="gh")
         assert payloads == [FAIL_CLOSED_SENTINEL]
+
+    def test_clustered_file_read_requires_a_publishing_segment(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text("acmecorp", encoding="utf-8")
+        ctx = BodyFileContext(heredoc_files={}, fail_closed_body_file=True)
+        read_payloads: list[str] = []
+        walk_body_file_flags(["-nF", str(body)], read_payloads, leader="git", ctx=ctx)
+        assert read_payloads == []
+
+        publish_payloads: list[str] = []
+        walk_body_file_flags(["-aF", str(body)], publish_payloads, leader="git", ctx=ctx, cluster_publishes=True)
+        assert "acmecorp" in publish_payloads
 
 
 class TestNonGitBodyFileBaseIsAnchoredOnTheHarnessCwd:

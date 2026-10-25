@@ -24,6 +24,8 @@ from teatree.core.forge_pr_probe import (
     PrProbeOutcome,
     find_open_pr_for_branch,
     forge_cli_env,
+    github_exact_branch_head,
+    github_open_pr_head,
     gitlab_cli_env,
     probe_github_open_pr,
     probe_gitlab_open_pr,
@@ -111,6 +113,115 @@ class TestPrProbeMappers:
         assert not PrProbe.found(_GH_URL).is_unknown
 
 
+class TestGithubHeadProof:
+    def test_open_pr_head_uses_one_authenticated_list(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        head = "9c1d47a3070c15313130866a042b532960690982"
+        branch = "5368-a-writing-run-that-moves-its-branch-merg"
+        url = "https://github.com/souliane/teatree/pull/5407"
+        payload = [
+            {
+                "url": url,
+                "headRepository": {"id": "R_kgDORe_NCA", "name": "teatree", "nameWithOwner": "souliane/teatree"},
+                "headRefName": branch,
+                "headRefOid": head,
+            }
+        ]
+        seen = _fake_cli(monkeypatch, _completed(json.dumps(payload)))
+        assert github_open_pr_head(tmp_path, branch) == (url, "souliane/teatree", branch, head)
+        assert seen == [
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--json",
+                "url,headRepository,headRefName,headRefOid",
+                "--limit",
+                "2",
+                "--head",
+                branch,
+            ]
+        ]
+
+    def test_open_pr_head_refuses_ambiguous_branch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        row = {
+            "url": _GH_URL,
+            "headRepository": {"nameWithOwner": "acme/widgets"},
+            "headRefName": "feature",
+            "headRefOid": "a" * 40,
+        }
+        _fake_cli(monkeypatch, _completed(json.dumps([row, {**row, "url": _GH_URL + "-other"}])))
+        assert github_open_pr_head(tmp_path, "feature") is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "garbage",
+            "[]",
+            json.dumps(
+                [
+                    {
+                        "url": _GH_URL,
+                        "headRepository": {"nameWithOwner": "acme/widgets"},
+                        "headRefName": "feature",
+                        "headRefOid": "oops",
+                    }
+                ]
+            ),
+            json.dumps(
+                [
+                    {
+                        "url": _GH_URL,
+                        "headRepository": {"nameWithOwner": "acme/widgets"},
+                        "headRefName": 7,
+                        "headRefOid": "a" * 40,
+                    }
+                ]
+            ),
+        ],
+    )
+    def test_open_pr_head_refuses_malformed_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: str
+    ) -> None:
+        _fake_cli(monkeypatch, _completed(payload))
+        assert github_open_pr_head(tmp_path, "feature") is None
+
+    def test_missing_repository_owner_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        row = {
+            "url": "https://github.com/souliane/teatree/pull/5407",
+            "headRepository": {"id": "R_kgDORe_NCA", "name": "teatree"},
+            "headRefName": "5368-a-writing-run-that-moves-its-branch-merg",
+            "headRefOid": "9c1d47a3070c15313130866a042b532960690982",
+        }
+        _fake_cli(monkeypatch, _completed(json.dumps([row])))
+        assert github_open_pr_head(tmp_path, row["headRefName"]) is None
+        assert "headRepository.nameWithOwner" in caplog.text
+
+    def test_exact_branch_ref_uses_routed_gh_api(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        head = "b" * 40
+        seen = _fake_cli(monkeypatch, _completed(json.dumps({"ref": "refs/heads/feature", "object": {"sha": head}})))
+        assert github_exact_branch_head(tmp_path, "acme/widgets", "feature", "github.com") == head
+        assert seen == [["gh", "api", "--hostname", "github.com", "repos/acme/widgets/git/ref/heads/feature"]]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "garbage",
+            "[]",
+            '{"ref":"refs/heads/other","object":{"sha":"' + "a" * 40 + '"}}',
+            '{"ref":"refs/heads/feature","object":{"sha":"nope"}}',
+        ],
+    )
+    def test_exact_branch_ref_refuses_malformed_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: str
+    ) -> None:
+        _fake_cli(monkeypatch, _completed(payload))
+        assert github_exact_branch_head(tmp_path, "acme/widgets", "feature", "github.com") is None
+
+
 class TestFindOpenPrForBranch:
     """The sniffing entry: found / none / unknown across both forges and both fail modes."""
 
@@ -120,8 +231,7 @@ class TestFindOpenPrForBranch:
         probe = find_open_pr_for_branch(repo, "feature")
         assert probe.outcome is PrProbeOutcome.FOUND
         assert probe.url == _GH_URL
-        assert seen[0][0] == "gh"
-        assert "--head" in seen[0]
+        assert seen == [["gh", "pr", "list", "--state", "open", "--json", "url", "--limit", "1", "--head", "feature"]]
 
     def test_gitlab_found(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo(tmp_path, remote="https://gitlab.com/acme/widgets.git")
@@ -146,6 +256,20 @@ class TestFindOpenPrForBranch:
         repo = _repo(tmp_path, remote="git@github.com:acme/widgets.git")
         _fake_cli(monkeypatch, FileNotFoundError("gh"))
         assert find_open_pr_for_branch(repo, "feature").outcome is PrProbeOutcome.UNKNOWN
+
+    def test_github_timeout_is_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo = _repo(tmp_path, remote="git@github.com:acme/widgets.git")
+        assert forge_pr_probe._PROBE_TIMEOUT_SECONDS == 30
+        seen: list[dict[str, Any]] = []
+
+        def _run(_cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            seen.append(kwargs)
+            raise subprocess.TimeoutExpired(_cmd, forge_pr_probe._PROBE_TIMEOUT_SECONDS)
+
+        monkeypatch.setattr(forge_pr_probe, "run_allowed_to_fail", _run)
+        assert forge_pr_probe._github_cli_stdout(["gh", "pr", "list"], repo) is None
+        assert find_open_pr_for_branch(repo, "feature").outcome is PrProbeOutcome.UNKNOWN
+        assert [kwargs.get("timeout") for kwargs in seen] == [forge_pr_probe._PROBE_TIMEOUT_SECONDS] * 2
 
     def test_unparsable_json_is_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo(tmp_path, remote="git@github.com:acme/widgets.git")

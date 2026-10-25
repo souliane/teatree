@@ -88,6 +88,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "fold link, a retired owner, a stranded memory row, or (with --ticket) an undispositioned gap",
     ),
     Capability(
+        "teatree dream funnel",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits daily gap counts and recurring question class status; unknown classes exit 1",
+    ),
+    Capability(
         "teatree worktree adopt",
         json_output=True,
         exit_codes=("0", "1"),
@@ -127,6 +133,19 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0", "2", "3", "4", "5"),
         note="--json emits the steer receipt; active: 0 accepted_current_turn, 3 rejected, 4 unknown_delivery, "
         "5 offline",
+    ),
+    Capability(
+        "teatree live pause",
+        json_output=True,
+        exit_codes=("0", "2", "3", "4", "5"),
+        note="--json emits the pause receipt; active: 0 paused, 3 rejected, 4 unknown_delivery, 5 offline",
+    ),
+    Capability(
+        "teatree live follow-up",
+        json_output=True,
+        exit_codes=("0", "2", "3", "4", "5"),
+        note="--json emits the follow-up receipt; active: 0 accepted_new_turn, 3 rejected, "
+        "4 unknown_delivery, 5 offline",
     ),
     Capability("teatree signals", json_output=True, exit_codes=("0",)),
     Capability(
@@ -239,6 +258,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json emits the repo-scoped stacked-delivery target override; 1 when ticket, repo, or branch is invalid",
     ),
     Capability(
+        "teatree ticket critic-record",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits whether the supplied merge critic envelope was recorded for the dispatched head",
+    ),
+    Capability(
         "teatree ticket rework-hold",
         json_output=True,
         exit_codes=("0", "1"),
@@ -306,6 +331,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json for the watchdog; --slack-roundtrip adds the deep live Slack round-trip probe (#3411)",
     ),
     Capability("cost", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree cost_profile",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="1 names why no profile can be built: no real dispatches, no context_tokens, or an unreadable store",
+    ),
     Capability("tokens", json_output=True, exit_codes=("0",)),
     Capability(
         "push",

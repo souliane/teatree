@@ -29,10 +29,16 @@ _MIN_PROBE_CALL_SITES = 7
 #: Where a merged-detection primitive may legitimately be invoked, and why.
 _ALLOWED: dict[str, str] = {
     "core/worktree/branch_classification.py": "the canonical three-layer detector itself",
+    "core/worktree/checkout_released.py": (
+        "proves the released writer's recorded anchor precedes the current PR head — checkout custody, not landed-ness"
+    ),
     "utils/git_branch.py": "the thin `branch_merged` wrapper the canonical detector's layer (c) calls",
     "core/management/commands/repro.py": "proves a RED sha is an ancestor of a GREEN sha — provenance, not landed-ness",
     "agents/repro_phase_recorder.py": (
         "proves the recorded RED sha precedes the GREEN run — repro provenance, not branch landed-ness"
+    ),
+    "agents/own_pr_review_head.py": (
+        "proves the checkout head precedes the forge PR head before a fast-forward — review currency, not landed-ness"
     ),
     "core/merge/conflict_only.py": "proves a merge's second parent is an ancestor of a FRESH base — review currency",
     "core/management/commands/_workspace/cleanup.py": (

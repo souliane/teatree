@@ -19,7 +19,7 @@ from django.test import TestCase
 from teatree.core.backend_protocols import PrOpenState, PullRequestSpec
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.models import Ticket, Worktree
-from teatree.core.runners.ship import ShipExecutor
+from teatree.core.runners.ship import PrSpecContext, ShipExecutor
 
 _BODY = "feat: subject\n\nCloses #1234"
 
@@ -73,7 +73,9 @@ class TestShipResolvesTheSlugFromTheCheckout:
             patch("teatree.core.runners.ship.git.remote_url", return_value="https://github.com/eng-group/product.git"),
             patch("teatree.core.runners.ship.get_overlay_publish_gates", return_value=["eng-group/*"]),
         ):
-            spec = ShipExecutor._build_pr_spec(ticket, _FakeHost(), str(tmp_path / "worktrees" / "1234"), "feat-x", {})
+            spec = ShipExecutor.build_pr_spec(
+                ticket, _FakeHost(), PrSpecContext(str(tmp_path / "worktrees" / "1234"), "feat-x", {})
+            )
 
         assert "Closes" not in spec.description
 
@@ -98,7 +100,7 @@ class TestShipResolvesTheSlugFromTheCheckout:
             patch("teatree.core.runners.ship.git.remote_url", return_value="https://github.com/souliane/teatree.git"),
             patch("teatree.core.runners.ship.get_overlay_publish_gates", return_value=["eng-group/*"]),
         ):
-            spec = ShipExecutor._build_pr_spec(ticket, _FakeHost(), str(tmp_path / "wt"), "feat-y", {})
+            spec = ShipExecutor.build_pr_spec(ticket, _FakeHost(), PrSpecContext(str(tmp_path / "wt"), "feat-y", {}))
 
         assert "Closes #1234" in spec.description
 

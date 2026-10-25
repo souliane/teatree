@@ -15,7 +15,7 @@ Scoped to the ``Agent``/``Task`` dispatch tools by exact name. The ``TaskCreate`
 / ``TaskUpdate`` todo writes carry a description and no ``subagent_type``, so a
 name-prefix match would deny them and block task tracking.
 
-Never-lockout: a per-call ``[general-purpose-ok: <reason>]`` token and the
+Never-lockout: a per-call ``[gate-escape:general_purpose_agent_gate: <reason>]`` token and the
 ``general_purpose_agent_gate_enabled`` kill-switch
 (``t3 <overlay> gate general-purpose disable``) both ALLOW, an unreadable
 registry yields no tokens and therefore no deny, and the deny routes through
@@ -31,14 +31,12 @@ import re
 import sys
 
 from hooks.scripts.managed_repo import overlays_registry
+from hooks.scripts.orchestration_boundary_signals import DISPATCH_TOOLS
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("general_purpose_agent_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.general_purpose_agent_gate", sys.modules[__name__])
-
-#: The two harness tool names that spawn a sub-agent.
-DISPATCH_TOOLS = frozenset({"Agent", "Task"})
 
 #: An absent or empty ``subagent_type`` defaults to this one.
 BLANK_SUBAGENT_TYPE = "general-purpose"
@@ -46,13 +44,6 @@ BLANK_SUBAGENT_TYPE = "general-purpose"
 _REPO_LIST_KEYS = ("workspace_repos", "frontend_repos", "public_repos")
 _BRIEF_FIELDS = ("prompt", "description")
 _MIN_TOKEN_CHARS = 3
-
-# Per-call escape, mirroring the sibling gates' ``[…-ok: <reason>]`` tokens. The
-# leading ``\S`` is what rejects an empty reason.
-_GENERAL_PURPOSE_OK_RE = re.compile(r"\[general-purpose-ok:\s*(\S[^\]]*?)\s*\]")
-#: Scanned prefix of each brief field — a token buried deep in a long brief must
-#: not silently authorise the dispatch (the ``[quote-ok:]`` precedent).
-_TOKEN_SCAN_CHARS = 512
 
 _ALTERNATIVES = (
     "t3:coder (implement), t3:debugger (diagnose/fix), t3:tester (tests + CI), "
@@ -103,7 +94,7 @@ def refusal(repo_token: str) -> str:
         "no repo guidelines, no runbook, no memory — so it rediscovers the stack from scratch "
         "and works outside the workflow. Re-dispatch with an agent that carries the context: "
         f"{_ALTERNATIVES} — or Explore for read-only fan-out search. If this really is generic "
-        "work outside that repo, add `[general-purpose-ok: <reason>]` to the prompt."
+        "work outside that repo, add `[gate-escape:general_purpose_agent_gate: <reason>]` to the prompt."
     )
 
 
@@ -112,18 +103,11 @@ def _brief_fields(tool_input: dict) -> list[str]:
     return [value for value in values if isinstance(value, str) and value]
 
 
-def _escape_reason(fields: list[str]) -> str | None:
-    for value in fields:
-        if match := _GENERAL_PURPOSE_OK_RE.search(value[:_TOKEN_SCAN_CHARS]):
-            return match.group(1).strip()
-    return None
-
-
 def _gate_enabled() -> bool:
     """Whether the gate is enabled (default True), fail-open on a broken config."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
-    return _teatree_bool_setting("general_purpose_agent_gate_enabled", default=True)
+    return _teatree_bool_setting("general_purpose_agent_gate_enabled")
 
 
 def _blank_dispatch_fields(data: dict) -> list[str]:
@@ -156,8 +140,5 @@ def handle_block_general_purpose_agent(data: dict) -> bool:
         return False
     repo_token = named_managed_repo(" ".join(fields))
     if repo_token is None:
-        return False
-    if reason := _escape_reason(fields):
-        sys.stderr.write(f"NOTE: general-purpose agent gate skipped via [general-purpose-ok: {reason}].\n")
         return False
     return _fail_open_or_deny(data, refusal(repo_token), gate_id="general_purpose_agent_gate")

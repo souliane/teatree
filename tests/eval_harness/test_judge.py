@@ -26,6 +26,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
+from teatree.eval.api_errors import UsageLimitReachedError
 from teatree.eval.cost_observation import ConservativeSuiteBudget
 from teatree.eval.judge import (
     JUDGE_DEFAULT_BUDGET_USD,
@@ -346,6 +347,23 @@ class TestClaudeJudgeGrade(TestCase):
             patch("teatree.eval.judge.query", _boom),
             patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
             pytest.raises(RuntimeError, match="kaboom"),
+        ):
+            ClaudeJudge().grade(spec, _run())
+
+    def test_subscription_limit_while_grading_propagates_as_a_usage_limit(self) -> None:
+        spec = _spec(judge=JudgeSpec(rubric="x"))
+
+        async def _limited(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+            await asyncio.sleep(0)
+            reason = "Claude Code returned an error result: You've hit your weekly limit"
+            raise RuntimeError(reason)
+            yield  # pragma: no cover
+
+        with (
+            patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.eval.judge.query", _limited),
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
+            pytest.raises(UsageLimitReachedError),
         ):
             ClaudeJudge().grade(spec, _run())
 

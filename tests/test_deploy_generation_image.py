@@ -17,11 +17,14 @@ DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 BASE = DEPLOY / "docker-compose.yml"
 GENERATION = DEPLOY / "docker-compose.generation.yml"
 HOST_IDENTITY = DEPLOY / "docker-compose.host-identity.yml"
-ROLES = ("teatree-init", "teatree-worker", "teatree-admin", "teatree-slack-listener")
+ROLES = ("teatree-init", "teatree-worker", "teatree-admin", "teatree-slack-listener", "teatree-webhooks")
 RUNTIME_SERVICES = (*ROLES, "teatree-watchdog")
 SOURCE_TARGET = "/home/teatree/teatree"
 UV_VOLUME_TARGET = "/opt/teatree/uv"
 BAKED_ENTRYPOINT = ["/usr/local/bin/entrypoint.sh"]
+CHECKOUT_SCRIPT_TARGETS = {
+    str(Path(SOURCE_TARGET).parent / "teatree-deploy/deploy" / name) for name in ("entrypoint.sh", "git-pins.sh")
+}
 BASH = shutil.which("bash") or ""
 
 
@@ -83,8 +86,11 @@ class TestTheOverrideDropsEverythingTheCheckoutSupplies:
     def test_the_entrypoint_is_the_images_own(self, name: str) -> None:
         assert _load(GENERATION)["services"][name]["entrypoint"] == BAKED_ENTRYPOINT
 
-    def test_the_clone_dir_is_left_to_the_image(self, name: str) -> None:
-        assert isinstance(_load(GENERATION)["services"][name]["environment"]["TEATREE_CLONE_DIR"], _Reset)
+
+@pytest.mark.parametrize("name", tuple(name for name in RUNTIME_SERVICES if name != "teatree-webhooks"))
+def test_the_clone_dir_is_left_to_the_image(name: str) -> None:
+    assert "TEATREE_CLONE_DIR" in _load(BASE)["services"][name]["environment"]
+    assert isinstance(_load(GENERATION)["services"][name]["environment"]["TEATREE_CLONE_DIR"], _Reset)
 
 
 def test_the_roller_is_a_one_shot_that_cannot_write_the_checkout() -> None:
@@ -130,6 +136,8 @@ class TestTheRenderedGenerationStack:
             targets = _rendered_targets(services[name])
             assert SOURCE_TARGET not in targets, name
             assert UV_VOLUME_TARGET not in targets, name
+            if name == "teatree-webhooks":
+                assert CHECKOUT_SCRIPT_TARGETS.isdisjoint(targets)
             assert services[name]["entrypoint"] == BAKED_ENTRYPOINT, name
             assert "build" not in services[name], name
             assert "TEATREE_CLONE_DIR" not in services[name]["environment"], name
@@ -141,6 +149,8 @@ class TestTheRenderedGenerationStack:
 
         for name in ROLES:
             kept = [t for t in _rendered_targets(base[name]) if t not in {SOURCE_TARGET, UV_VOLUME_TARGET}]
+            if name == "teatree-webhooks":
+                kept = [target for target in kept if target not in CHECKOUT_SCRIPT_TARGETS]
             assert _rendered_targets(generation[name]) == kept, name
 
     def test_host_identity_still_merges_on_top_of_the_override(self, tmp_path: Path) -> None:
@@ -155,11 +165,13 @@ class TestTheRenderedGenerationStack:
             BASE,
             GENERATION,
             TEATREE_ADMIN_PORT="8100",
+            TEATREE_WEBHOOK_PORT="8101",
             TEATREE_COMPOSE_PROJECT="zddproof",
             TEATREE_WATCHDOG_DEPLOY_LOCK="/host-tmp/zddproof.lock",
         )
 
         assert services["teatree-admin"]["environment"]["TEATREE_ADMIN_PORT"] == "8100"
+        assert services["teatree-webhooks"]["environment"]["TEATREE_WEBHOOK_PORT"] == "8101"
         watchdog = services["teatree-watchdog"]["environment"]
         assert watchdog["TEATREE_WATCHDOG_PROJECT"] == "zddproof"
         assert watchdog["TEATREE_WATCHDOG_DEPLOY_LOCK"] == "/host-tmp/zddproof.lock"

@@ -2,6 +2,15 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Final, TypedDict
 
+from teatree.core.models.checkout_proof import (
+    AutoAttestation,
+    CheckoutCustody,
+    DeferredCheckoutExit,
+    DeferredExitAttestation,
+    ReleasedPrHeadAttestation,
+)
+from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
+
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
 
@@ -44,6 +53,8 @@ class VisualQAPageDetail(TypedDict):
 
 
 class VisualQASummary(TypedDict, total=False):
+    repo_path: str
+    head_sha: str
     targets: list[str]
     skipped_reason: str
     not_run_reason: str
@@ -51,6 +62,9 @@ class VisualQASummary(TypedDict, total=False):
     pages_checked: int
     errors: int
     details: list[VisualQAPageDetail]
+    unchecked_reasons: dict[str, str]
+    report_markdown: str
+    bypass: dict[str, str]
 
 
 class PRApprovalsSerialized(TypedDict, total=False):
@@ -105,20 +119,6 @@ class PREntrySerialized(TypedDict, total=False):
     draft_comments_count: int
 
 
-class DreamGapEntry(TypedDict, total=False):
-    gap_key: str
-    cluster_key: str
-    title: str
-    citation: str
-    theme: str
-    detail: str
-
-
-class DreamGapDisposition(TypedDict):
-    disposition: str
-    evidence: str
-
-
 class PlanningHandoff(TypedDict, total=False):
     planning_task: int
     phase: str
@@ -127,6 +127,10 @@ class PlanningHandoff(TypedDict, total=False):
 
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
+    nit_follow_up: bool
+    nit_lane_receipts: dict[str, JSONObject]
+    nit_publication: dict[str, JSONObject]
+    forced_repro_disabled_scopes: list[str]
     # Self-improvement repair tickets need this marker to classify their own
     # task failures separately from the incidents they are investigating.
     source: str
@@ -135,6 +139,7 @@ class TicketExtra(TypedDict, total=False):
     # ship can tell whether the *current* invoking branch's PR exists,
     # without short-circuiting on the truthiness of the shared ``pr_urls``.
     pr_url_by_branch: dict[str, str]
+    unverified_pr_by_branch: dict[str, str]
     # ARBITER (F1.3): the ``PullRequest`` rows are the system of record for PR
     # facts (their FSM ``state`` is the authority). This ``prs`` map is a
     # DENORMALIZED SYNC CACHE — a JSON snapshot the dashboard read-model
@@ -231,6 +236,7 @@ class TicketExtra(TypedDict, total=False):
     anti_vacuity_attestations: "dict[str, AntiVacuityAttestation]"
     rubric_grades_by_head: "dict[str, dict[str, dict[str, str]]]"
     rubric_grades_recorded: bool
+    rubric_waivers: list[dict[str, str | int]]
     # #1661 per-ticket FixRecord read by ``fix_dod_gate`` at ``mark_delivered`` for
     # ``kind=fix``; written from the agent result envelope by
     # ``agents.fix_record_recorder``. ``fix_record_override`` is the audited escape
@@ -269,7 +275,7 @@ class TicketExtra(TypedDict, total=False):
     # ``dream_gap_claimed_delivered`` is the coder/reviewer-recorded subset of gap
     # keys actually delivered, verified independently at review before the
     # reconcile checks a box or retires a memory. See ``teatree.loops.dream.batch_promote``.
-    dream_gap_batch: "list[dict[str, str]]"
+    dream_gap_batch: "list[DreamGapEntry]"
     dream_gap_claimed_delivered: list[str]
     # The umbrella host's queue of a pass's collected gaps awaiting the backlog sweep's
     # fold into an existing host, and a host's per-gap address/reject record.
@@ -279,6 +285,8 @@ class TicketExtra(TypedDict, total=False):
     # ``schedule_planned_work`` mints it when ``plan()`` fires.
     planning_handoff: "PlanningHandoff"
     dream_gap_dispositions: "dict[str, DreamGapDisposition]"
+    dream_gap_released: DreamGapRelease
+    dream_funnel: list[DreamFunnelEntry]
     # #2886: durable pydantic_ai conversation store, keyed by the ``Task.pk`` whose run produced
     # it and selected through ``Task.session_continuation``; see ``teatree.agents.pydantic_ai_resume``.
     pydantic_ai_threads: dict[str, list[object]]
@@ -467,6 +475,7 @@ class RubricGrade(TypedDict, total=False):
     ordinal: int
     status: str
     rationale: str
+    text_hash: str
 
 
 class FixRecord(TypedDict, total=False):
@@ -731,6 +740,12 @@ class WorktreeSiblingFields(TypedDict, total=False):
 
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
+    attested_state: str
+    direct_attested_state: str
+    direct_attested_at: str
+    checkout_custody: CheckoutCustody
+    auto_attestation: AutoAttestation | DeferredExitAttestation | ReleasedPrHeadAttestation
+    deferred_exit: DeferredCheckoutExit
     clone_path: str
     services: list[str]
     urls: dict[str, str]

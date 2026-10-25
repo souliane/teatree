@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
+from tests._planted_git_config import plant_exec_config
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 BASH = shutil.which("bash") or ""
@@ -64,7 +65,7 @@ def _fork(tmp_path: Path, *, nested_core: bool = True, record_refresh_seconds: i
     root = tmp_path / ("fork" if nested_core else "teatree")
     deploy = root / "vendor" / "teatree" / "deploy" if nested_core else root / "deploy"
     deploy.mkdir(parents=True)
-    for name in ("roll.sh", "build-generation.sh", "generation-topology.sh", "deploy-lock.sh"):
+    for name in ("roll.sh", "build-generation.sh", "generation-topology.sh", "deploy-lock.sh", "git-pins.sh"):
         shutil.copy2(DEPLOY / name, deploy / name)
         (deploy / name).chmod((deploy / name).stat().st_mode | stat.S_IXUSR)
     roll = deploy / "roll.sh"
@@ -122,6 +123,19 @@ def test_rolls_origins_default_branch_tip_from_its_own_image(tmp_path: Path) -> 
     assert f"image=teatree-factory:{fork.sha}" in (tmp_path / "roll.env").read_text()
 
 
+def test_roll_does_not_run_planted_git_commands(tmp_path: Path) -> None:
+    fork = _fork(tmp_path)
+    planted = plant_exec_config(fork.root, tmp_path / "planted")
+    _git(fork.root, "status", "--porcelain")
+    assert planted.fired
+    planted.marker.unlink()
+
+    result = _roll(tmp_path, fork)
+
+    assert result.returncode == 0, result.stderr
+    assert planted.fired == []
+
+
 def _forwarded(*extra: str) -> str:
     names = ["TEATREE_DEPLOY_CHECKOUT", "TEATREE_HOST_HOME", "TEATREE_HOST_OS", "TEATREE_UID", "TEATREE_SOURCE_MOUNT"]
     names += ["TEATREE_DOCKER_SOCKET_GID", "TEATREE_WORKER_CPUS", "TEATREE_WORKER_MEM_LIMIT", "TEATREE_HOST_TMP"]
@@ -150,6 +164,7 @@ def test_a_second_stack_rolls_under_its_own_project_and_forwards_its_identity(tm
         "TEATREE_COMPOSE_PROJECT": "zddproof",
         "TEATREE_PROMOTED_TAG": "zdd:latest",
         "TEATREE_ADMIN_PORT": "8100",
+        "TEATREE_WEBHOOK_PORT": "8101",
         "TEATREE_IMAGE_REPOSITORY": "registry.example/team/teatree-factory",
     }
 

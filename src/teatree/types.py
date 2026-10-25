@@ -161,8 +161,8 @@ class ChannelReadRefusedError(RuntimeError):
     """A messaging backend was refused a CHANNEL-scoped read (never "the channel is empty").
 
     The single-channel counterpart to the empty-return convention :class:`ScannerError`
-    protects for scanners. A bot token reads only channels the bot was invited to, and
-    Slack reports that as ``not_in_channel`` / ``channel_not_found`` — swallowing it into
+    protects for scanners. Bot reads require membership; user reads follow Slack
+    permissions. Slack reports ``not_in_channel`` / ``channel_not_found`` — swallowing that into
     ``[]`` tells an interactive caller "this channel is quiet", the opposite of the truth.
     Poll loops keep the swallowing read; anyone asking about ONE channel gets this.
 
@@ -171,10 +171,10 @@ class ChannelReadRefusedError(RuntimeError):
     """
 
     def __init__(self, channel: str, error_code: str) -> None:
+        advice = "" if channel.startswith("D") else f"If the bot was not invited, use `/invite @<bot>` in {channel}. "
         super().__init__(
-            f"Cannot read channel {channel!r}: {error_code}. A bot token reads only channels the bot has been "
-            f"invited to — invite it (`/invite @<bot>` in {channel}) or pass a channel id it is a member of. "
-            f"This is NOT an empty channel.",
+            f"Cannot read channel {channel!r}: {error_code}. The selected token cannot read it. "
+            f"{advice}A user token may read channels its owner can access. This is NOT an empty channel.",
         )
         self.channel = channel
         self.error_code = error_code
@@ -184,17 +184,15 @@ class ChannelReadRefusedError(RuntimeError):
 class RunCommand:
     """Structured run command with explicit working directory.
 
-    Used by ``OverlayBase.runtime.run_commands()`` to describe how each service
-    is launched. Every service comes up via ``docker compose up`` — the
-    overlay supplies argv + cwd metadata that other CLI verbs reuse
-    (``t3 <overlay> run tests``, ``run backend``, ``run build-frontend``).
-    The runner never spawns anything on the host.
+    Used by ``OverlayBase.runtime.run_commands()`` to describe how services
+    launch and by ``visual_qa_server()`` to serve a checkout in the browser's
+    own network namespace. The latter runs the supplied argv in ``cwd`` after
+    pre-run steps, under a sandboxed environment and a process-group boundary.
 
-    ``env`` names extra environment variables for the run; the runners merge it
-    over ``os.environ`` (overlay values win, inherited env preserved) when they
-    exec argv, so an overlay expresses ``FOO=bar sometool`` as structured data
-    instead of a ``sh -lc`` wrap. An empty default keeps every existing
-    ``RunCommand(args=..., cwd=...)`` call site byte-identical.
+    ``env`` names extra environment variables for the run. Service runners merge
+    it over ``os.environ``; visual QA first removes inherited config-DB and
+    settings overrides, then adds its scratch paths and allocated port. An empty
+    default keeps existing ``RunCommand(args=..., cwd=...)`` call sites stable.
     """
 
     args: list[str] = field(default_factory=list)
@@ -408,7 +406,6 @@ class ProvisionStep:
 # ── Sync types (shared vocabulary between core and backends) ─────────
 
 LAST_SYNC_CACHE_KEY = "teatree_followup_last_sync"
-PENDING_REVIEWS_CACHE_KEY = "teatree_pending_reviews"
 
 type RawAPIDict = dict[str, object]
 type PREntryDict = dict[str, object]

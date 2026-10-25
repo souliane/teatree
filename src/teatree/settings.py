@@ -140,21 +140,9 @@ TEMPLATES = [
 # write lock at transaction start and concurrent writers block instead of
 # racing — restoring the invariant the ``select_for_update()`` calls assume.
 #
-# ``journal_mode=TRUNCATE`` — rollback journal, not WAL. WAL coordinates its
-# writers through an mmap'd ``-shm`` sidecar; a process that maps it
-# shared-writable on Docker Desktop's ``fakeowner`` filesystem is killed by
-# SIGBUS (measured: the worker and its ``loops_tick`` children restarting twice
-# a minute, ``RestartCount`` 8 -> 131 in one session), and the same incoherence
-# cross-linked pages in ``teatree_outbound_claim``. Rollback-journal mode maps
-# nothing, so there is nothing to go incoherent.
-#
-# The control DB now lives in a named volume — a real Linux filesystem with no
-# VM boundary — which removes that constraint, so restoring WAL for its reader
-# concurrency is available. It is deliberately NOT taken here: it is a separate,
-# measurable change, and nothing in this module may assume the sidecars are
-# absent (the volume is the DB's DIRECTORY precisely so they have somewhere to
-# live). Writer serialization does not depend on the choice either way — it
-# comes from ``transaction_mode`` and ``timeout`` below.
+# Journal mode is selected per file-backed connection in the boundary engine:
+# WAL only on a proven local control volume, TRUNCATE on uncertain and host-reachable paths. Writer
+# serialization comes from ``transaction_mode`` and ``timeout`` below.
 #
 # ``timeout`` maps to SQLite's ``busy_timeout``: a blocked writer waits this
 # long for the reserved lock before raising ``database is locked`` instead of
@@ -167,7 +155,6 @@ TEMPLATES = [
 # flips that test RED.
 SQLITE_WRITE_SERIALIZATION_OPTIONS = {
     "timeout": 30,
-    "init_command": "PRAGMA journal_mode=TRUNCATE;",
     "transaction_mode": "IMMEDIATE",
 }
 
@@ -175,11 +162,9 @@ SQLITE_WRITE_SERIALIZATION_OPTIONS = {
 # a database the containerized stack owns can only be opened read-only from the
 # host. Two writers on opposite sides of Docker Desktop's shared-folder layer
 # have already cross-linked pages in this install's ``teatree_outbound_claim``.
-# Dropping WAL (above) removes the mmap'd ``-shm`` that carried that particular
-# incoherence, but SQLite's remaining cross-process locking is POSIX advisory
-# locking over the same layer, so the boundary stands on its own. Serializing
-# writers is correct WITHIN one coherence domain and does nothing across two —
-# see teatree/db/boundary.py.
+# Host-reachable paths use TRUNCATE to avoid shared-memory sidecars, but SQLite's
+# cross-process locking remains POSIX advisory across the VM boundary. The
+# read-only boundary stands on its own — see teatree/db/boundary.py.
 SQLITE_BOUNDARY_ENGINE = "teatree.db.sqlite3_boundary"
 
 DATABASES = {

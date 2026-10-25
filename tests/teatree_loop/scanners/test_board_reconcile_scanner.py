@@ -4,17 +4,19 @@ A janitor whose only evidence is its own success message is indistinguishable fr
 one that does nothing — this box has a tick that reports ``58 signal(s), 58
 action(s)`` while nothing advances. So the scanner emits exactly one signal per
 APPLIED transition, naming the ticket, both states and the evidence, and emits
-nothing at all on a run that changed nothing.
+nothing at all on a run that changed nothing. A merged transition with no
+``MergeAudit`` still reports, flagged ``(no merge audit)``, so a ticketed merge in a
+repo the owner-alert scanner does not watch is not read as routine.
 """
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from unittest.mock import patch
 
 from django.test import TestCase
 
 from teatree.core.backend_protocols import PrMergeState, PrOpenState
-from teatree.core.models import Ticket
+from teatree.core.models import MergeAudit, MergeClear, Ticket
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners import board_reconcile
@@ -25,7 +27,7 @@ _URL = "https://github.com/souliane/teatree/pull/3816"
 
 
 @contextlib.contextmanager
-def _merged_forge(url: str = _URL) -> Iterator[None]:
+def _merged_forge(url: str = _URL) -> Generator[None]:
     """Stand in for the live forge: *url* reads MERGED, anything else UNKNOWN."""
 
     def _probe(pr_url: str) -> PrOpenState:
@@ -53,6 +55,18 @@ class TestBoardReconcileScanner(TestCase):
         assert signals[0].payload["from_state"] == Ticket.State.NOT_STARTED
         assert signals[0].payload["to_state"] == Ticket.State.MERGED
         assert "forge" in signals[0].payload["reason"]
+        assert signals[0].summary.endswith(" (no merge audit)")
+
+    def test_an_audited_merged_transition_carries_no_audit_flag(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED, issue_url=_URL)
+        clear = MergeClear.objects.create(ticket=ticket, pr_id=3816, slug="souliane/teatree", reviewed_sha="a" * 40)
+        MergeAudit.objects.create(clear=clear, merged_sha="b" * 40, repo_slug="souliane/teatree")
+
+        with _merged_forge():
+            signals = BoardReconcileScanner(overlay_name="t3-teatree").scan()
+
+        assert [s.kind for s in signals] == ["board.reconciled"]
+        assert "no merge audit" not in signals[0].summary
 
     def test_a_run_that_changed_nothing_is_silent(self) -> None:
         Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED, issue_url=_URL)

@@ -58,6 +58,7 @@ _ENVIRONMENTAL_ADDED = {
     FailureKind.HEAD_SUPERSEDED,
     # A base that moved under the plan is not a fault in the work either (#5030).
     FailureKind.PLAN_STALE,
+    FailureKind.RESUME_REFUSED,
 }
 
 
@@ -240,6 +241,19 @@ class TestALeakBlockIsNeverRetried:
     def test_an_egress_block_halts(self) -> None:
         reason = LimitMatch(phrase="egress_blocked", cause=LimitCause.LEAK_BLOCKED).as_reason()
         assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.HALT
+
+
+class TestResumeRefusalPrefix:
+    @pytest.mark.parametrize(
+        ("prefix", "expected"),
+        [
+            ("landing_unverified:", FailureKind.LANDING_UNVERIFIED),
+            ("provision_failed:", FailureKind.PROVISION_FAILED),
+        ],
+    )
+    def test_quoted_refusal_does_not_reclassify_a_different_failure(self, prefix: str, expected: str) -> None:
+        reason = f"{prefix} detail quoted the resumed conversation ended without taking a turn"
+        assert classify_failure(reason) == expected
 
 
 class TestThePlanGateRefusalIsNamed:

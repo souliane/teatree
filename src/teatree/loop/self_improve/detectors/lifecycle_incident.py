@@ -14,11 +14,12 @@ from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind, is_causeless
-from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
+from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.models.question_withheld import WITHHELD_ACTION
 from teatree.core.models.task_phase_disposition import PHASE_WEDGE_MARKER_RE
 from teatree.core.telemetry.admission import checked_lifecycle_observations
+from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
@@ -122,6 +123,10 @@ class LifecycleIncidentDetector:
             for row in observations
             if row["kind"] == "attempt.finished" and row["cause"] not in {"success", *_RECOVERED_KINDS}
         ]
+        errors = dict(
+            TaskAttempt.objects.filter(pk__in={row["entity_id"] for row in attempts}).values_list("pk", "error")
+        )
+        attempts = [row for row in attempts if recoverable_exhaustion_cause(errors.get(row["entity_id"], "")) is None]
         cutoffs = self._attempt_evidence_cutoffs(attempts)
         by_cause: dict[str, set[int]] = defaultdict(set)
         recent = []
@@ -245,6 +250,7 @@ class LifecycleIncidentDetector:
             Task.objects.filter(status=Task.Status.FAILED)
             .exclude(failure_kind__in=_RECOVERED_KINDS)
             .exclude(ticket__state__in=Ticket.finished_states())
+            .without_newer_phase_sibling()
         )
         if self.overlay_name:
             tasks = tasks.filter(ticket__overlay=self.overlay_name)

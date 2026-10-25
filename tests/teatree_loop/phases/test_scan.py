@@ -127,6 +127,15 @@ def test_scan_phase_times_out_hung_scanner_and_records_error() -> None:
     assert "timeout" in outcome.errors["hung"].lower() or "timed" in outcome.errors["hung"].lower()
 
 
+def test_two_overlay_timeouts_keep_distinct_error_labels() -> None:
+    jobs = [
+        _ScannerJob(scanner=_HungScanner(), overlay="alpha"),
+        _ScannerJob(scanner=_HungScanner(), overlay="beta"),
+    ]
+    outcome = scan_phase(jobs, per_job_timeout=0.01)
+    assert set(outcome.errors) == {"hung[alpha]", "hung[beta]"}
+
+
 def test_timed_out_scanner_error_is_labelled_abandoned() -> None:
     """F5.9: a timed-out scanner thread is abandoned (kept running), not cancelled.
 

@@ -42,7 +42,7 @@ Overlay-scoped commands require `t3 <overlay> <subcommand>` (e.g., `t3 teatree`)
 ```bash
 t3 loop start                         # Start a Claude Code session (the worker runs the loops)
 t3 loops tick --loop <name>           # Run one enabled loop's tick (per-loop only; bare `t3 loops tick` is a hard error, #2650)
-t3 loops tick --loop followup --dry-run  # Preview the followup posts without posting; exits 1 on a guard breach, 3 if nothing was selected
+t3 loops tick --loop followup --dry-run  # Preview built-in followup posts; exits 1 on a breach, 3 if incomplete
 t3 loop status                        # Show the loop's last-rendered statusline
 t3 <overlay> resetdb                  # Drop and recreate the SQLite database
 t3 <overlay> worktree adopt <path>       # Register an existing checkout — row only, no provisioning
@@ -192,7 +192,7 @@ On the facets (`overlay.provisioning`, `.runtime`, `.e2e`, `.review`, `.config`,
 | `provisioning` | `repo_clone_url(repo_name)`, `env_extra(worktree)`, `db_import_strategy(worktree)`, `db_import(...)`, `post_db_steps(...)`, `services_config(worktree)`, `compose_file(...)`, `symlinks(...)`, `envrc_lines(...)`, `docker_services(...)`, `health_checks(...)`, `cleanup_steps(...)`, `resolve_variant(...)` |
 | `runtime` | `run_commands(worktree)`, `pre_run_steps(...)`, `test_command(...)`, `lint_command(...)`, `verify_endpoints(...)`, `readiness_probes(...)` |
 | `e2e` | `env_extras(...)`, `preflight(...)`, `run_provenance(spec_path)`, `scenarios(spec_path)`, `playwright_args(spec_path)`, `spec_paths(...)` |
-| `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)`, `mandatory_e2e_exempt_repo_slugs(...)` |
+| `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)`, `mandatory_e2e_exempt_repo_slugs(...)`, `get_followup_scanners(backend)` |
 | `config` | `get_gitlab_token()`, `get_github_token()`, `get_slack_token()`, `get_review_channel()`, `secret_pass_key(...)`, … (credentials, URLs, labels) |
 | `connectors` | `preflight()`, `mcp_tool_group()` |
 

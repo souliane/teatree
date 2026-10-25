@@ -52,12 +52,9 @@ class RecordingBackend:
     thread_replies: dict[str, list[RawAPIDict]] = field(default_factory=dict)
     read_after_post: bool = True
     post_reply_raises: bool = False
+    user_id: str = _USER_UID
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
-        _ = since
-        return []
-
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
         return []
 

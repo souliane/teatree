@@ -48,7 +48,7 @@ _ALWAYS_METERED_SUBCOMMANDS = ("benchmark",)
 #: Fixed container mount point for the WRITABLE artifacts directory. The repo is
 #: mounted ``:ro`` (a metered run must never mutate the working tree), so a run
 #: that emits an artifact (the per-trial transcript report) writes it here, on a
-#: separate bind-mount of a fresh, empty staging directory the caller copies the
+#: separate bind-mount of an isolated staging directory the caller copies the
 #: reports out of (``run_docker.RunDockerArgs.dispatch``).
 ARTIFACTS_MOUNT = "/artifacts"
 
@@ -187,8 +187,8 @@ def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = Non
     :data:`ARTIFACTS_MOUNT` so an in-container run that emits an artifact (the
     per-trial transcript report) writes it there and the file lands back on the
     host — the repo mount itself is ``:ro``. It is the agent's only writable host
-    path, so the caller passes a fresh, empty staging directory, never the reports'
-    own directory.
+    path, so the caller passes an isolated staging directory, never the reports'
+    own directory. Verdict reuse may stage a sanitized ledger there first.
     """
     if shutil.which("docker") is None:
         raise DockerUnavailableError

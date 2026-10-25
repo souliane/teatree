@@ -2,7 +2,7 @@
 
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -37,7 +37,7 @@ _NOW = datetime(2026, 6, 1, 12, tzinfo=UTC)
 
 
 @contextmanager
-def pinned_reader_namespace() -> Iterator[None]:
+def pinned_reader_namespace() -> Generator[None]:
     """Pin the seam the liveness DECISIONS share; `current_owner` binds its own and is not pinned."""
     with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):  # patch-binding: defining-module
         yield

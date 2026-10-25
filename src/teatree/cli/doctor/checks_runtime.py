@@ -12,6 +12,7 @@ from typing import Final
 
 import typer
 
+from teatree.utils.compose_project import production_compose_project
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 RESTART_LOOP_MIN_RESTARTS: Final = 20
@@ -64,10 +65,19 @@ def _check_worker_running() -> bool:
 
 
 def _inspect_compose_containers() -> list[str] | None:
-    """A ``service, restarts, exit, started, status`` row per compose container; ``None`` if docker cannot answer."""
+    """A ``service, restarts, exit, started, status`` row per deployed-stack container; ``None`` if docker is mute."""
     try:
         listed = run_allowed_to_fail(
-            ["docker", "ps", "--all", "--quiet", "--filter", "label=com.docker.compose.service"],
+            [
+                "docker",
+                "ps",
+                "--all",
+                "--quiet",
+                "--filter",
+                f"label=com.docker.compose.project={production_compose_project()}",
+                "--filter",
+                "label=com.docker.compose.service",
+            ],
             expected_codes=None,
             timeout=_DOCKER_TIMEOUT_SECONDS,
         )

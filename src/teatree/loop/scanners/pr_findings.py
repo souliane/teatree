@@ -25,6 +25,8 @@ A finding reaches this module as one of two signals:
 * a ``review_verdict`` of ``hold`` is a
     :class:`~teatree.core.models.review_verdict.ReviewVerdict` row, read at the PR's
     live head through :class:`ReviewVerdictReader`;
+* a merge-quality critic item that remains unmet is read at the same head through
+    :class:`CriticFindingReader`;
 * an inline note on the forge bumps ``user_notes_count``, which
     :class:`~teatree.loop.scanners.my_prs.MyPrsScanner` carries as the
     ``my_pr.draft_notes`` signal.
@@ -43,8 +45,11 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Protocol, override
 
+from teatree.core.gates.merge_quality_gate import unmet_items
+from teatree.core.models.critic_verdict import CriticVerdict
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 from teatree.core.review.review_candidate import author_is_self
 from teatree.utils.url_slug import pr_ref_from_url
@@ -78,9 +83,26 @@ def disposition_for_author(author: str, *, self_identities: Iterable[str]) -> Fi
 
 
 class ReviewVerdictReader(Protocol):
-    """Resolves the EFFECTIVE (newest-wins) recorded verdict state at a PR's live head."""
+    """Resolves the recorded verdict state, including standing holds, at a PR's live head."""
 
     def state_for(self, *, url: str, head_sha: str) -> HeadVerdictState | None: ...
+
+
+class CriticFindingReader(Protocol):
+    def unmet_for(self, *, url: str, head_sha: str) -> bool: ...
+
+
+class RecordedCriticFindingReader(CriticFindingReader):
+    @override
+    def unmet_for(self, *, url: str, head_sha: str) -> bool:
+        ref = pr_ref_from_url(url)
+        if ref is None or not head_sha:
+            return False
+        ticket = PullRequest.objects.owning_ticket(slug=ref.slug, pr_id=ref.pr_id, pr_url=url)
+        if ticket is None:
+            return False
+        verdict = CriticVerdict.objects.latest_for(ticket=ticket, transition="merge", head_sha=head_sha)
+        return verdict is not None and bool(unmet_items(verdict))
 
 
 @dataclass(slots=True)
@@ -105,11 +127,15 @@ class RecordedVerdictReader:
             return None
 
 
-def unaddressed_review_findings(*, verdict_state: HeadVerdictState | None, notes_count: int) -> bool:
+def unaddressed_review_findings(
+    *, verdict_state: HeadVerdictState | None, notes_count: int, critic_unmet: bool = False
+) -> bool:
     """Whether this head still owes work for review findings.
 
     One rule per state, because each state means something different:
 
+    * ``critic_unmet`` — the merge critic failed an item at THIS head, so a
+        reviewer's merge-safe verdict cannot discharge the separate critic gate;
     * ``HOLD`` — a cold reviewer looked at THIS head and blocked it. That is a
         finding whether or not anything was posted on the forge: the headless
         reviewer is Bash-denied and RETURNS its findings, so a HOLD frequently
@@ -120,7 +146,7 @@ def unaddressed_review_findings(*, verdict_state: HeadVerdictState | None, notes
     * ``NO_MERGE_SAFE`` / ``None`` — nobody has judged this head. The forge's own
         note count is the only evidence there is, so it decides.
     """
-    if verdict_state is HeadVerdictState.HOLD:
+    if critic_unmet or verdict_state is HeadVerdictState.HOLD:
         return True
     if verdict_state is HeadVerdictState.MERGE_SAFE:
         return False
@@ -128,7 +154,9 @@ def unaddressed_review_findings(*, verdict_state: HeadVerdictState | None, notes
 
 
 __all__ = [
+    "CriticFindingReader",
     "FindingDisposition",
+    "RecordedCriticFindingReader",
     "RecordedVerdictReader",
     "ReviewVerdictReader",
     "disposition_for_author",

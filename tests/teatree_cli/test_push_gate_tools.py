@@ -3,12 +3,67 @@
 from pathlib import Path
 from unittest.mock import patch
 
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.cli.push_gate_tools import _brief_for_worktree
+from teatree.core.models import PlanArtifact, Session, Task, Ticket, Worktree
+from teatree.quality.brief_constraints import ConstraintViolation
 from teatree.quality.push_gate import PushGatePlan, PushGateResult
 
 runner = CliRunner()
+
+
+class TestWorktreeBrief(TestCase):
+    def test_pending_future_coding_task_does_not_constrain_the_current_push(self) -> None:
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="teatree",
+            repo_path="souliane/teatree",
+            branch="feature",
+            extra={"worktree_path": "/tmp/brief-pending-task"},
+        )
+        session = Session.objects.create(ticket=ticket)
+        PlanArtifact.objects.create(ticket=ticket, plan_text="Current plan")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+            execution_reason="No migration.",
+        )
+        future = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.PENDING,
+            execution_reason="No new setting.",
+        )
+
+        brief = _brief_for_worktree(Path("/tmp/brief-pending-task"))
+
+        assert brief == "Current plan\nNo migration."
+        assert "No new setting." not in brief
+
+        future.status = Task.Status.CLAIMED
+        future.save(update_fields=["status"])
+        assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo new setting."
+
+        future.status = Task.Status.FAILED
+        future.save(update_fields=["status"])
+        assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo migration."
+
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="debugging",
+            status=Task.Status.COMPLETED,
+            execution_reason="No extra migration.",
+        )
+        assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo extra migration."
+
 
 _SCOPED = PushGatePlan(
     is_full=False,
@@ -66,6 +121,21 @@ class TestPlanModes:
 
 
 class TestRunMode:
+    def test_plain_word_constraint_refuses_before_doctest(self) -> None:
+        with (
+            patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
+            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value="No migration."),
+            patch(
+                "teatree.cli.push_gate_tools.run_brief_constraints",
+                return_value=(ConstraintViolation("no_migration", "0002.py", "migration changed: 0002.py"),),
+            ),
+            patch("teatree.cli.push_gate_tools.run_push_gate") as sweep,
+        ):
+            result = runner.invoke(app, ["tool", "push-gate", "--run"])
+        assert result.exit_code == 1
+        assert "brief constraint FAILED (no_migration)" in result.output
+        sweep.assert_not_called()
+
     def test_run_exit_zero_when_clean(self) -> None:
         ok = PushGateResult(
             ok=True,
@@ -78,9 +148,30 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=ok),
+            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
         assert result.exit_code == 0
+        assert "ast-grep: CLEAN" in result.output
+
+    def test_run_reports_no_rules_as_a_distinct_failure(self) -> None:
+        no_rules = PushGateResult(
+            ok=False,
+            doctest_ok=True,
+            astgrep_findings=(),
+            astgrep_deferred=False,
+            notes=("FAILED: no blocking rules declared",),
+            exit_code=1,
+            astgrep_rules_present=False,
+        )
+        with (
+            patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
+            patch("teatree.cli.push_gate_tools.run_push_gate", return_value=no_rules),
+            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
+        ):
+            result = runner.invoke(app, ["tool", "push-gate", "--run"])
+        assert result.exit_code == 1
+        assert "ast-grep: NO_RULES" in result.output
 
     def test_run_exit_nonzero_on_finding(self) -> None:
         finding = {"check_id": "x", "path": "src/teatree/a.py", "start": {"line": 3}}
@@ -95,6 +186,7 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=bad),
+            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
         assert result.exit_code == 1
@@ -112,6 +204,7 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=aborted),
+            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
 

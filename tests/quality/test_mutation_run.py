@@ -67,6 +67,16 @@ class TestBuildMutmutConfig:
         cfg = build_mutmut_config(("src/teatree/x.py",), tests_dir=("tests/teatree_core/",))
         assert "tests/teatree_core/" in cfg
 
+    def test_exact_test_selection_is_optional(self) -> None:
+        original = build_mutmut_config(("src/teatree/x.py",), tests_dir=("tests/",))
+        selected = build_mutmut_config(
+            ("src/teatree/x.py",),
+            tests_dir=("tests/test_x.py",),
+            test_selection=("tests/test_x.py::test_one",),
+        )
+        assert "pytest_add_cli_args_test_selection" not in original
+        assert "pytest_add_cli_args_test_selection =\n    tests/test_x.py::test_one\n" in selected
+
 
 class TestUsableCpuCount:
     def test_affinity_caps_cgroup_v2_quota(self) -> None:

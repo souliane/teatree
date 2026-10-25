@@ -41,6 +41,7 @@ from teatree.cli import (
     push_gate_tools,
     reap_orphan_groups,
     ref_baseline_tools,
+    review_evidence_tools,
     skill_ref_tools,
     test_path_mirror_tools,
     test_shape_tools,
@@ -103,6 +104,7 @@ _TOOL_MODULES = (
     push_gate_tools,
     reap_orphan_groups,
     ref_baseline_tools,
+    review_evidence_tools,
     skill_ref_tools,
     test_path_mirror_tools,
     test_shape_tools,
@@ -181,6 +183,7 @@ app.command()(_capabilities.capabilities)
 app.command()(_agent.agent)
 app.command()(_sessions.sessions)
 app.command()(_cost.cost)
+app.command()(_cost.cost_profile)
 app.command()(_tokens.tokens)
 app.command()(_speak.speak)
 app.command()(_push.push)
@@ -392,7 +395,7 @@ def _contribute_enabled() -> bool:
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — pre-Django read off the module-load path
 
-    return cold_reader.bool_setting("contribute", default=False)
+    return cold_reader.bool_setting("contribute")
 
 
 def _overlay_editable_from_source(top_package: str) -> bool:

@@ -14,20 +14,70 @@ phase-independent, so it covers every such phase. Only a reason that names an ow
 decision (``user_input_kind``) is an owner question (#5096).
 """
 
+import dataclasses
+from datetime import timedelta
+
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
+from teatree.agents.session_lineage import resume_session_id
+from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
 from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.task_attempt import RESUME_CONTEXT_CAP_TOKENS
 from teatree.core.models.task_handoff import (
     RESUME_ANSWER_PREFIX,
     RESUME_CONTINUATION_CLAUSE,
     dispatch_reason,
     record_deferred_question,
+    release_operator_pause,
+    resume_on_answer,
     schedule_resume,
 )
 from tests._owner_channel import OWNER_CARD, owner_stop
 from tests.factories import planned_ticket
+
+
+class TestOperatorPause(TestCase):
+    def test_a_newer_non_pause_attempt_keeps_the_gate_closed(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            status=Task.Status.PENDING,
+            not_before=timezone.now() + timedelta(days=1),
+        )
+        TaskAttempt.objects.create(task=task, error="operator_paused: paused by the operator")
+        TaskAttempt.objects.create(task=task, error="worker restarted")
+
+        assert not release_operator_pause(task)
+        task.refresh_from_db()
+        assert task.not_before is not None
+
+    def test_resume_releases_the_gate_and_the_task_continues_its_own_conversation(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.PENDING,
+            not_before=timezone.now() + timedelta(days=3650),
+            session_continuation=Task.SessionContinuation.SELF,
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            error="operator_paused: paused by the operator",
+            agent_session_id="0f1e2d3c-4b5a-4968-8776-655443322110",
+        )
+
+        assert release_operator_pause(task)
+        task.refresh_from_db()
+        assert task.not_before is None
+        assert task.status == Task.Status.PENDING
+        assert resume_session_id(task) == "0f1e2d3c-4b5a-4968-8776-655443322110"
+        assert not release_operator_pause(task)
+        assert Task.objects.count() == 1
 
 
 class TestRecordDeferredQuestionAudience(TestCase):
@@ -265,3 +315,67 @@ class TestResumeNeedsAPlan(TestCase):
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
 
         assert schedule_resume(parked, answer="scope it to X").phase == "planning"
+
+
+class TestAnOwnerActionCardResumesNothing(TestCase):
+    def test_only_a_card_without_an_action_resumes_its_task(self) -> None:
+        action = ActionRequest(kind=OwnerActionKind.ATTEST, target="1", binding="digest")
+        for card, marker, resumes in (
+            (OWNER_CARD, "", True),
+            (dataclasses.replace(OWNER_CARD, action=action), action_marker(action), False),
+        ):
+            with self.subTest(resumes=resumes):
+                ticket = planned_ticket()
+                task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+                row = DeferredQuestion.record("Should I go ahead?", parked_task=task, dedupe_marker=marker, card=card)
+                answered = row.apply_answer("Yes", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+                assert answered is not None
+
+                assert (resume_on_answer(answered, task) is not None) == resumes
+
+
+class TestAnOverCapParentResumesFresh(TestCase):
+    """A needs-input parent whose conversation outgrew the resume cap answers FRESH, carrying the exchange."""
+
+    QUESTION = "Which vault entry should the deploy use?"
+    ANSWER = "use the vault entry"
+
+    def _answered(self, context_tokens: int) -> tuple[Task, Task]:
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        TaskAttempt.objects.create(
+            task=task,
+            result=owner_stop(self.QUESTION, "credentials"),
+            context_tokens=context_tokens,
+            context_window_tokens=1_000_000,
+        )
+        ticket.merge_extra(merge_into_dicts={"pydantic_ai_threads": {str(task.pk): "stored-thread"}})
+        task.complete()
+        answered = DeferredQuestion.objects.get(parked_task=task).apply_answer(
+            self.ANSWER, resolved_via=DeferredQuestion.ResolvedVia.SLACK
+        )
+        child = resume_on_answer(answered, task) if answered is not None else None
+        assert child is not None
+        return task, child
+
+    def test_an_over_cap_parent_yields_a_fresh_child_carrying_the_question_and_the_answer(self) -> None:
+        _, child = self._answered(RESUME_CONTEXT_CAP_TOKENS + 1)
+
+        assert child.session_continuation == Task.SessionContinuation.FRESH
+        prompt = dispatch_reason(child)
+        assert self.ANSWER in prompt
+        assert self.QUESTION in prompt
+        assert RESUME_CONTINUATION_CLAUSE not in prompt
+
+    def test_an_over_cap_parent_loses_its_stored_thread(self) -> None:
+        task, _ = self._answered(RESUME_CONTEXT_CAP_TOKENS + 1)
+
+        assert not task.ticket.has_task_thread(int(task.pk))
+
+    def test_an_under_cap_parent_still_resumes_its_own_conversation(self) -> None:
+        task, child = self._answered(RESUME_CONTEXT_CAP_TOKENS)
+
+        assert child.session_continuation == Task.SessionContinuation.PARENT
+        assert child.execution_reason == f"{RESUME_ANSWER_PREFIX} {self.ANSWER}."
+        assert RESUME_CONTINUATION_CLAUSE in dispatch_reason(child)
+        assert task.ticket.has_task_thread(int(task.pk))

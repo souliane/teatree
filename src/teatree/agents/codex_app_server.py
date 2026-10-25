@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import shutil
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -15,6 +15,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from teatree.agents import codex_app_server_events
 from teatree.agents.codex_app_server_env import codex_command, codex_process_env
 from teatree.agents.codex_app_server_errors import (
+    METHOD_NOT_FOUND,
     auth_persist_error,
     managed_auth_error,
     request_error,
@@ -27,9 +28,8 @@ from teatree.agents.codex_app_server_options import (
     CodexAppServerError,
     CodexAppServerOptions,
     codex_container_unavailable_reason,
-    codex_login_unavailable_reason,
     codex_model_unavailable_reason,
-    codex_phase_policy_unavailable_reason,
+    codex_worker_unavailable_reason,
     container_is_the_sandbox,
 )
 from teatree.agents.codex_approval_gate import APPROVAL_METHODS, approval_decision
@@ -40,8 +40,9 @@ from teatree.agents.codex_read_only_executor import (
     executor_availability_reason,
     read_only_executor_refusal,
 )
+from teatree.agents.codex_turn_steering import CodexTurnSteering
 from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallbackError, HarnessFallbackKind, HarnessSpec
-from teatree.agents.sdk_tool_map import phase_bars_write_tools, sdk_disallowed_tools_for_phase
+from teatree.agents.sdk_tool_map import phase_bars_write_tools
 
 if TYPE_CHECKING:
     from teatree.agents.harness import HarnessSession
@@ -71,8 +72,6 @@ CODEX_APP_SERVER_CAPABILITIES = HarnessCapabilities(
     managed_lane=True,
 )
 
-_METHOD_NOT_FOUND = -32601
-
 
 def codex_capabilities() -> HarnessCapabilities:
     return replace(CODEX_APP_SERVER_CAPABILITIES, mcp=not container_is_the_sandbox())
@@ -83,7 +82,7 @@ class _StreamFailure:
     error: CodexAppServerError | HarnessFallbackError
 
 
-class CodexAppServerSession:
+class CodexAppServerSession(CodexTurnSteering):
     def __init__(
         self,
         options: CodexAppServerOptions,
@@ -157,7 +156,7 @@ class CodexAppServerSession:
         if not open_thread:
             return
         method = "thread/resume" if self.resume else "thread/start"
-        params = _thread_params(self.options)
+        params = _thread_params(self.options, resuming=bool(self.resume))
         if self.resume:
             params = {"threadId": self.resume, **params}
         response = await self._request(method, params)
@@ -196,15 +195,19 @@ class CodexAppServerSession:
         self.turn_id = str(turn.get("id", "")) if isinstance(turn, dict) else ""
         if not self.turn_id:
             raise CodexAppServerError.missing_turn()
+        self._turn_opened(self.turn_id)
 
     async def receive_response(self) -> AsyncIterator[object]:
-        while True:
-            event = await self._next_event()
-            messages, completed = self.translator.translate(event, thread_id=self.thread_id, model=self.model)
-            for message in messages:
-                yield message
-            if completed:
-                return
+        try:
+            while True:
+                event = await self._next_event()
+                messages, completed = self.translator.translate(event, thread_id=self.thread_id, model=self.model)
+                for message in messages:
+                    yield message
+                if completed:
+                    return
+        finally:
+            self._turn_closed()
 
     async def interrupt(self) -> None:
         if self.thread_id and self.turn_id:
@@ -214,6 +217,7 @@ class CodexAppServerSession:
         if self._closing:
             return
         self._closing = True
+        self._turn_closed(session=True)
         process = self.process
         if process is None:
             return
@@ -352,7 +356,14 @@ class CodexAppServerSession:
     def _route_server_request(self, message: dict[str, Any]) -> None:
         method = message["method"]
         is_approval = isinstance(method, str) and method in APPROVAL_METHODS
-        task = asyncio.create_task((self._respond_approval if is_approval else self._refuse_server_request)(message))
+        handler = (
+            self._respond_approval
+            if is_approval
+            else self._respond_mailbox
+            if method == "item/tool/call"
+            else self._refuse_server_request
+        )
+        task = asyncio.create_task(handler(message))
         self._server_request_tasks.add(task)
         task.add_done_callback(self._server_request_done)
 
@@ -364,8 +375,18 @@ class CodexAppServerSession:
     async def _refuse_server_request(self, message: dict[str, Any]) -> None:
         if not self._closing:
             await self._write(
-                {"id": message["id"], "error": {"code": _METHOD_NOT_FOUND, "message": "Unsupported server request."}}
+                {"id": message["id"], "error": {"code": METHOD_NOT_FOUND, "message": "Unsupported server request."}}
             )
+
+    async def _respond_mailbox(self, message: dict[str, Any]) -> None:
+        result = await codex_app_server_events.mailbox_tool_result(
+            message.get("params"), self._tool_events.approval_options
+        )
+        if result is None:
+            await self._refuse_server_request(message)
+            return
+        if not self._closing:
+            await self._write({"id": message["id"], "result": result})
 
     async def _respond_approval(self, message: dict[str, Any]) -> None:
         params = message.get("params")
@@ -388,14 +409,6 @@ class CodexAppServerSession:
                         await self._steer_refusal(thread_id, turn_id, reason)
                 finally:
                     await self._write({"id": message["id"], "result": {"decision": decision}})
-
-    async def _steer_refusal(self, thread_id: str, turn_id: str, reason: str) -> None:
-        steer = {
-            "threadId": thread_id,
-            "expectedTurnId": turn_id,
-            "input": [{"type": "text", "text": f"TeaTree PreToolUse refused the action: {reason}"}],
-        }
-        await asyncio.wait_for(self._request("turn/steer", steer), timeout=5)
 
     async def _drain_stderr(self) -> None:
         process = self.process
@@ -450,7 +463,7 @@ class CodexAppServerHarness:
         self.read_only_phase = read_only_phase
 
     @asynccontextmanager
-    async def open(self, options: ClaudeAgentOptions) -> AsyncIterator["HarnessSession"]:
+    async def open(self, options: ClaudeAgentOptions) -> AsyncGenerator["HarnessSession"]:
         if self.refusal:
             raise HarnessFallbackError(self.refusal, kind=HarnessFallbackKind.ACCESS, side_effects_started=False)
         from teatree.agents import (  # noqa: PLC0415 — late import avoids a transport cycle
@@ -524,29 +537,10 @@ def _codex_unavailable_reason(context: "HarnessBuildContext") -> str | None:
         return executor_availability_reason(context.phase) or codex_model_unavailable_reason(
             resolve_codex_home(), context.model
         )
-    return _worker_unavailable_reason(context)
+    return codex_worker_unavailable_reason(context)
 
 
-def _worker_unavailable_reason(context: "HarnessBuildContext") -> str | None:
-    if context.phase and (
-        reason := codex_phase_policy_unavailable_reason(sdk_disallowed_tools_for_phase(context.phase))
-    ):
-        return f"phase {context.phase!r} {reason.lower()}"
-    if container_is_the_sandbox() and (rules := sorted((resolve_codex_home() / "rules").glob("*.rules"))):
-        # Codex 0.155.1 has no app-server switch to ignore user rules, and an ALLOW skips the approval gate.
-        return f"execpolicy rules would bypass TeaTree approvals: {', '.join(str(rule) for rule in rules)}"
-    if context.phase == "architectural_review" and context.task is not None and container_is_the_sandbox():
-        from teatree.agents.codex_app_server_route import (  # noqa: PLC0415 — Django models are not importable at agents import time
-            starts_in_managed_main_clone,
-        )
-
-        if starts_in_managed_main_clone(context.task):
-            return "architectural_review starts in a managed main clone where the container is Codex's sandbox"
-    home = resolve_codex_home()
-    return codex_login_unavailable_reason(home) or codex_model_unavailable_reason(home, context.model)
-
-
-def _thread_params(options: CodexAppServerOptions) -> dict[str, Any]:
+def _thread_params(options: CodexAppServerOptions, *, resuming: bool = False) -> dict[str, Any]:
     params: dict[str, Any] = {
         "cwd": options.core.cwd,
         "developerInstructions": options.core.system_prompt,
@@ -558,4 +552,6 @@ def _thread_params(options: CodexAppServerOptions) -> dict[str, Any]:
         params["model"] = options.core.model
     if options.config:
         params["config"] = options.config
+    if options.core.mailbox is not None and not resuming:
+        params["dynamicTools"] = codex_app_server_events.dynamic_mailbox_tools(options.mailbox_phase)
     return params

@@ -14,6 +14,7 @@ from enum import StrEnum
 from typing import Protocol, TypedDict, runtime_checkable
 
 from teatree.core.evidence.forge_content import PrContentSnapshot
+from teatree.core.modelkit.forge_merge_state import MergeConflictState, PrMergeState
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.types import RawAPIDict
@@ -24,7 +25,7 @@ from teatree.types import RawAPIDict
 # door ``ReviewState`` comes through, and it puts ``HEAD_SHA_UNREADABLE`` beside
 # its siblings ``ROLLUP_QUERY_FAILED`` / ``CHANGED_PATHS_UNAVAILABLE``, which is
 # where a backend author looks for it anyway.
-__all__ = ["HEAD_SHA_UNREADABLE", "ReviewState"]
+__all__ = ["HEAD_SHA_UNREADABLE", "MergeConflictState", "PrMergeState", "ReviewState"]
 
 
 class BackendResolutionError(Exception):
@@ -185,47 +186,6 @@ class PullRequestSpec:
     draft: bool = False
 
 
-class MergeConflictState(StrEnum):
-    """Whether the PR/MR conflicts with its target branch, per the forge.
-
-    Three-valued for the same reason :class:`DraftState` is: both forges compute
-    mergeability asynchronously, so "not conflicted" and "not answered yet" are
-    genuinely different facts and a ``bool`` collapses them into the benign one.
-    A conflict probe that launders an unanswered read into ``CLEAN`` makes the
-    conflict sweep silently inert — and one that launders it into ``CONFLICTED``
-    dispatches a fix for a merge request that has nothing wrong with it.
-
-    ``UNKNOWN`` is what every unreadable case maps to — a transport failure, an
-    unparsable payload, a forge that has not finished checking — and no consumer
-    acts on it in either direction.
-    """
-
-    CONFLICTED = "conflicted"
-    CLEAN = "clean"
-    UNKNOWN = "unknown"
-
-
-@dataclass(frozen=True, slots=True)
-class PrMergeState:
-    """The PR/MR's merge state from the forge — used for the §928 reconciliation.
-
-    ``state`` is the forge's PR state (``OPEN`` / ``MERGED`` / ``CLOSED``, always
-    upper-cased so ``is_merged`` works across GitHub and GitLab);
-    ``merge_commit_oid`` is the resulting squash/merge commit when the PR is
-    already merged (else ``""``). ``conflict`` is the target-branch conflict axis,
-    defaulting to ``UNKNOWN`` so a backend that cannot read it is never mistaken
-    for one reporting a clean merge.
-    """
-
-    state: str
-    merge_commit_oid: str
-    conflict: MergeConflictState = MergeConflictState.UNKNOWN
-
-    @property
-    def is_merged(self) -> bool:
-        return self.state.upper() == "MERGED"
-
-
 _ROLLUP_QUERY_FAILED_KEY = "_teatree_rollup_query_failed"
 ROLLUP_QUERY_FAILED: "RawAPIDict" = {_ROLLUP_QUERY_FAILED_KEY: True}
 """Sentinel rollup entry — the backend could not read the live checks rollup.
@@ -359,15 +319,20 @@ class PipelineRead:
         return not self.unreadable_reason
 
 
+@dataclass(frozen=True, slots=True)
+class IssueResolutionSpec:
+    repo: str
+    title: str
+    body: str
+    labels: tuple[str, ...]
+    merge_request_iid: int | None
+    thread_id: str = ""
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 @runtime_checkable  # noqa: PLR0904 — method count IS the code-host capability surface, mirrored by the concrete backends.
 class CodeHostBackend(Protocol):
-    """Pull/merge requests + issue fetch — the canonical code-host concern.
-
-    PR is the canonical term in core; GitLab implementations translate
-    MR ↔ PR at the API edge. ``repo`` + ``pr_iid`` is the natural unit on
-    both APIs (GitLab ``merge_requests/<iid>``, GitHub ``pulls/<number>``).
-    """
+    """Canonical code-host interface for pull requests and issues."""
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict: ...  # pragma: no branch
 
@@ -438,6 +403,8 @@ class CodeHostBackend(Protocol):
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def get_pr_engaged_reviewers(self, *, repo: str, pr_iid: int) -> list[str]: ...  # pragma: no branch
+
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:  # pragma: no branch
         """Whether a submitted review (or its summary note) on the PR already carries *marker*."""
         ...
@@ -449,6 +416,10 @@ class CodeHostBackend(Protocol):
         :class:`PartialReviewPublishError`.
         """
         ...
+
+    def list_review_threads(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def resolve_review_thread(self, *, repo: str, pr_iid: int, thread_id: str) -> RawAPIDict: ...  # pragma: no branch
 
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # pragma: no branch
         """Thread-structured, author-carrying discussion read (#3340).
@@ -518,6 +489,8 @@ class CodeHostBackend(Protocol):
         labels: list[str] | None = None,
     ) -> RawAPIDict: ...  # pragma: no branch
 
+    def create_issue_resolving_threads(self, spec: "IssueResolutionSpec") -> RawAPIDict: ...  # pragma: no branch
+
     def create_sub_issue(
         self,
         *,
@@ -535,6 +508,8 @@ class CodeHostBackend(Protocol):
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict: ...  # pragma: no branch
 
     def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def add_issue_labels(self, *, issue_url: str, labels: tuple[str, ...]) -> RawAPIDict: ...  # pragma: no branch
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
 
@@ -614,14 +589,12 @@ class CIService(Protocol):
 class MessagingBackend(Protocol):
     """Messaging — mentions, DMs, posts, reactions, user lookup.
 
-    The single Protocol covers both inbound (fetch_mentions, fetch_dms) and
+    The single Protocol covers both inbound (fetch_mentions, fetch_reactions) and
     outbound (post_message, post_reply, react) concerns plus user-id
     resolution for routing.
     """
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
-
-    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
 
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
 
@@ -679,6 +652,8 @@ class MessagingBackend(Protocol):
     def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 
     def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch
+
+    def resolve_unique_active_user_id(self, handle: str) -> str: ...  # pragma: no branch
 
     def resolve_usergroup_id(self, handle: str) -> str: ...  # pragma: no branch
 

@@ -75,6 +75,9 @@ AGENT_BY_KIND: dict[str, str] = {
 }
 
 STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
+    "merge.unaudited": "action_needed",
+    "owner_action.result": "in_flight",
+    "review_nag.mention_held": "action_needed",
     # The MR-triage surveyor names what an open MR needs next. Every verdict it
     # emits is an owner decision it deliberately does not take, so it belongs where
     # the owner looks for what they owe rather than in the in-flight fallback.
@@ -150,6 +153,8 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # Hourly CI credential-pool reconciliation failed; a stale eval secret needs
     # operator repair rather than an invisible generic in-flight fallback.
     "ci_oauth_pool.failed": "action_needed",
+    # A stale local reserve reading needs attention before evals can spend safely.
+    "eval_local.parked": "action_needed",
     # A configured pool targeting a repository this deployment does not own is
     # an actionable configuration mismatch; the scanner safely makes no write.
     "ci_oauth_pool.unowned": "action_needed",
@@ -188,6 +193,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "review_request.pause_unreadable": "action_needed",
     "review_request.authorship_unreadable": "action_needed",
     "review_request.resume_gated": "action_needed",
+    "review_request.resume_mention_held": "action_needed",
     "review_request.resume_failed": "in_flight",
     # The followup sender: a sent request went out under the owner's name and a refusal is put
     # to them; a deferral (a hold, a declined or moved head, a transient read) retries itself.
@@ -338,13 +344,6 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # tick (the orphan sweep only reaps MERGED/CLOSED PRs, not open
     # self-authored ones).
     "reviewer_pr.task_self_authored": ("mechanical", "reviewer_task_self_authored"),
-    # #1113 Defect 2: ``SlackDmInboundScanner`` emits ``slack.user_reply`` per
-    # drained user reply. The real consumer is the reactive Slack-answer loop
-    # (``teatree.loop.slack_answer`` — drains the ``PendingChatInjection`` rows
-    # this scanner records, see ``slack_dm_inbound`` docstring). Without an
-    # explicit mechanical route, the signal fell through to the statusline
-    # fallback and leaked raw ``ts``/``text`` verbatim into ``action_needed``.
-    "slack.user_reply": ("mechanical", "slack_user_reply"),
     "notion.unrouted": ("webhook", "n8n"),
     # #1295 cap B: Slack @-mention pickup → mechanically assign the user
     # as reviewer on the MR. Once GitLab acknowledges the assignment, the

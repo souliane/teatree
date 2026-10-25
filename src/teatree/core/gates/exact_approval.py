@@ -4,7 +4,7 @@ import contextlib
 import hashlib
 import json
 import shlex
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
@@ -34,7 +34,7 @@ def approval_hint(target: str, action: str) -> dict[str, str]:
 
 
 @contextlib.contextmanager
-def spent_approval(target: str, action: str) -> Iterator[None]:
+def spent_approval(target: str, action: str) -> Generator[None]:
     """Keep the claim and audit outside the outbound request's potentially long transaction."""
     approval = _claim(target, action)
     try:
