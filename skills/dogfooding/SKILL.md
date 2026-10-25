@@ -238,7 +238,7 @@ listed.
 
 For each confirmed bug, in severity order:
 
-1. File through `mcp__teatree__github_issue_create` — never a raw `gh issue create`, which skips the #162 dedupe — with label `bug`, clear reproduction (paste the relevant `tick.json` excerpt and the rendered statusline line), severity, and the scanner / module to look at. The tool answers the first call with `judgment_required` plus the open backlog; judge each candidate and call again with `dedupe={"snapshot": ..., "decisions": [...]}`. A dogfood finding that already has a ticket gets **appended** to it, which is the outcome you want — a second ticket for the same stale signal kind is the backlog noise Step 4 told you to dedupe away.
+1. File through `mcp__teatree__github_issue_create` — never a raw `gh issue create`, which skips the #162 dedupe — with label `bug`, clear reproduction (paste the relevant `tick.json` excerpt and the rendered statusline line), severity, and the scanner / module to look at. The tool answers the first call with `judgment_required` plus the open backlog; judge each candidate and call again with `dedupe={"snapshot_token": ..., "decisions": [...]}`. A dogfood finding that already has a ticket gets **appended** to it, which is the outcome you want — a second ticket for the same stale signal kind is the backlog noise Step 4 told you to dedupe away.
 2. Implement per `/t3:wip` rules (worktree via `t3 teatree workspace ticket`, TDD against the existing scanner/dispatch tests in `tests/teatree_loop/`, `t3:reviewer` sub-agent, sequential merge).
 3. Close the issue via the PR.
 
