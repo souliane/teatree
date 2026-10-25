@@ -252,12 +252,42 @@ class TestAnOverlayChoosesTheRepoAWorkItemIsFiledIn(TestCase):
         assert Ticket.objects.get(issue_url=filed).is_admissible()
         assert f"<{filed}|#7100>" in reply
 
+    def test_the_chooser_receives_the_title_and_body_in_order_when_only_the_body_names_a_repo(self) -> None:
+        title = "Document the follow-up flow"
+        body = f"Apply it to {_REPO_B}."
+        received: list[tuple[str, str]] = []
+
+        def choose(*, title: str, body: str, candidates: tuple[str, ...]) -> str:
+            received.append((title, body))
+            return _pick_by_slug(title=title, body=body, candidates=candidates)
+
+        self.metadata.choose = choose
+        self._record({"title": title, "body": body})
+
+        assert received == [(title, body)]
+        assert [call["repo"] for call in self.host.created] == [_REPO_B]
+
+    def test_the_recorder_looks_up_the_ticket_overlay_by_its_real_name(self) -> None:
+        requested: list[str] = []
+
+        def lookup(overlay: str, title: str, body: str) -> str:
+            requested.append(overlay)
+            assert overlay == "t3-teatree"
+            return _pick_by_slug(title=title, body=body, candidates=(_REPO_A, _REPO_B))
+
+        with mock.patch("teatree.core.answering.work_item_filing.filing_repo", side_effect=lookup):
+            self._record({"title": "Document the follow-up flow", "body": f"Apply it to {_REPO_B}."})
+
+        assert requested == ["t3-teatree"]
+        assert [call["repo"] for call in self.host.created] == [_REPO_B]
+
     def test_the_dedupe_read_the_gated_writes_and_the_create_all_use_the_chosen_repo(self) -> None:
         with mock.patch("teatree.core.answering.work_item_filing.route_forge_write", wraps=route_forge_write) as routed:
             self._record({"title": f"Document the flow in {_REPO_B}", "body": "Write it up."})
 
         assert self.host.searched == [_REPO_B]
         assert [call.kwargs["repo"] for call in routed.call_args_list] == [_REPO_B, _REPO_B]
+        assert [call.kwargs["target"] for call in routed.call_args_list] == [_REPO_B, _REPO_B]
         assert [call["repo"] for call in self.host.created] == [_REPO_B]
 
     def test_an_item_naming_both_repos_is_refused_naming_the_candidates(self) -> None:
@@ -283,16 +313,24 @@ class TestAnOverlayChoosesTheRepoAWorkItemIsFiledIn(TestCase):
         assert "Could not file" not in reply, reply
 
     def test_the_hook_is_not_asked_when_the_item_names_an_existing_issue(self) -> None:
-        self._assert_hook_stays_quiet({"existing_issue_url": f"https://github.com/{_REPO_A}/issues/4526"})
+        self.metadata.repos = []
+        url = f"https://github.com/{_REPO_A}/issues/4526"
+        self._assert_hook_stays_quiet({"existing_issue_url": url})
+        assert f"<{url}|#4526>" in self.backend.replies[0][2]
+        assert self.host.created == []
 
     def test_the_hook_is_not_asked_when_the_item_declares_no_work(self) -> None:
         self._assert_hook_stays_quiet({"no_work_reason": "answered from recorded state"})
 
     def test_the_hook_is_not_asked_when_the_request_is_already_tracked(self) -> None:
+        self.metadata.repos = []
+        url = f"https://github.com/{_REPO_A}/issues/4242"
         self._assert_hook_stays_quiet(
             {"title": f"Sync {_REPO_A} with {_REPO_B}", "body": "b"},
-            work_issue_url=f"https://github.com/{_REPO_A}/issues/4242",
+            work_issue_url=url,
         )
+        assert f"<{url}|#4242>" in self.backend.replies[0][2]
+        assert self.host.created == []
 
     def test_a_hook_naming_an_undeclared_repo_is_refused(self) -> None:
         self.metadata.choose = lambda **_: "someone/else"

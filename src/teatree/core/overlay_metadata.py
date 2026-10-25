@@ -80,12 +80,14 @@ class OverlayMetadata:
     def get_followup_repos(self) -> list[str]:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return []
 
-    def choose_filing_repo(self, *, title: str, body: str, candidates: tuple[str, ...]) -> str:  # noqa: PLR6301, ARG002 — overlay hook default: instance method by contract; args consumed by per-overlay overrides
+    @staticmethod
+    def choose_filing_repo(*, title: str, body: str, candidates: tuple[str, ...]) -> str:
         """The repo a work item is filed in, one of *candidates* (the overlay's owned repos, never empty) (#5508).
 
         Default is the first. An overlay overrides this to route by the item's text and returns one
         candidate verbatim, or raises ``WorkItemFilingError`` naming the candidates when the text does not decide.
         """
+        del title, body
         return candidates[0]
 
     def get_skill_metadata(self) -> SkillMetadata:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
