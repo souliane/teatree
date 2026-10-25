@@ -1,7 +1,7 @@
 """Shared checking report renderers."""
 
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from teatree.core.ref_render import render_ref
 
@@ -20,6 +20,19 @@ class CheckGroupDict(TypedDict):
     title: str
     items: list[CheckItemDict]
     total: int
+
+
+class RemainingItemDict(CheckItemDict):
+    kind: str
+    steps: list[str]
+    eta: dict
+
+
+class RemainingGroupDict(CheckGroupDict):
+    eta: dict
+    queue: dict
+    durations: list[dict]
+    holds: dict
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,8 +64,8 @@ class CheckItem:
 class CheckGroup:
     """One titled group of items, with the full pre-cap total.
 
-    ``total`` is the count before the cap (``total >= len(items)``) so the
-    renderer can append "…and X more" without re-querying.
+    ``total`` is the count before the cap, so the renderer can append
+    "…and X more" without re-querying. RemainingGroup excludes its meta rows.
     """
 
     title: str
@@ -79,3 +92,47 @@ class CheckGroup:
         if self.total > cap:
             lines.append(f"  …and {self.total - cap} more")
         return lines
+
+
+@dataclass(frozen=True, slots=True)
+class RemainingItem(CheckItem):
+    kind: str = ""
+    steps: tuple[str, ...] = ()
+    eta: dict = field(default_factory=dict)
+    duration_phases: tuple[str, ...] = ()
+    ticket_id: int | None = None
+    hold: str = ""
+
+    def to_dict(self) -> RemainingItemDict:
+        return cast(
+            "RemainingItemDict",
+            {**super().to_dict(), "kind": self.kind, "steps": list(self.steps), "eta": self.eta},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RemainingGroup(CheckGroup):
+    eta: dict = field(default_factory=dict)
+    queue: dict = field(default_factory=dict)
+    durations: list[dict] = field(default_factory=list)
+    holds: dict = field(default_factory=dict)
+
+    def render(self, *, cap: int = DEFAULT_CAP) -> list[str]:
+        if not self.items:
+            return []
+        shown = self.items[2 : 2 + max(0, cap)]
+        lines = [self.title, *(item.render() for item in self.items[:2]), *(item.render() for item in shown)]
+        if self.total > len(shown):
+            lines.append(f"  …and {self.total - len(shown)} more")
+        return lines
+
+    def to_dict(self) -> RemainingGroupDict:
+        return RemainingGroupDict(
+            title=self.title,
+            items=[item.to_dict() for item in self.items],
+            total=self.total,
+            eta=self.eta,
+            queue=self.queue,
+            durations=self.durations,
+            holds=self.holds,
+        )

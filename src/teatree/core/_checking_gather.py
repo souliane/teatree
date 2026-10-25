@@ -12,48 +12,57 @@ from django.db import models
 from django.db.models import F, OuterRef, Q, Subquery
 
 from teatree.core.checking_types import CheckItem
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.task_cancel_source import operator_cancel_q
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 
 
-def _recent_failed_tasks(now: datetime, task_scope: Q) -> dict[int, str]:
-    latest_task_id = Task.objects.filter(ticket_id=OuterRef("task__ticket_id")).order_by("-pk").values("pk")[:1]
-    recent_failed: dict[int, str] = {}
-    for ticket_id, failure_kind in (
-        TaskAttempt.objects.filter(task__status=Task.Status.FAILED, ended_at__gte=now - timedelta(days=7))
+def _latest_failed_tasks(now: datetime, task_scope: Q) -> dict[int, str]:
+    latest_task_id = Task.objects.filter(ticket_id=OuterRef("ticket_id")).order_by("-pk").values("pk")[:1]
+    latest_attempt_kind = (
+        TaskAttempt.objects.filter(task_id=OuterRef("pk")).order_by("-ended_at", "-pk").values("failure_kind")[:1]
+    )
+    latest_attempt_end = (
+        TaskAttempt.objects.filter(task_id=OuterRef("pk")).order_by("-ended_at", "-pk").values("ended_at")[:1]
+    )
+    cutoff = now - timedelta(days=7)
+    failed = (
+        Task.objects.filter(status=Task.Status.FAILED)
         .filter(task_scope)
-        .annotate(_latest_task_id=Subquery(latest_task_id))
-        .filter(task_id=F("_latest_task_id"))
-        .order_by("task_id", "-ended_at", "-pk")
-        .values_list("task__ticket_id", "failure_kind")
-    ):
-        recent_failed.setdefault(ticket_id, str(failure_kind))
-    return recent_failed
+        .annotate(
+            _latest_task_id=Subquery(latest_task_id),
+            _attempt_kind=Subquery(latest_attempt_kind),
+            _attempt_end=Subquery(latest_attempt_end),
+        )
+        .filter(pk=F("_latest_task_id"))
+        .filter(Q(_attempt_end__gte=cutoff) | Q(_attempt_end__isnull=True, created_at__gte=cutoff))
+        .values_list("ticket_id", "failure_kind", "_attempt_kind")
+    )
+    return {ticket_id: kind or attempt_kind or "" for ticket_id, kind, attempt_kind in failed}
 
 
 def _merge_safe_prs(prs: list[PullRequest]) -> set[tuple[str, int]]:
     heads: dict[tuple[str, int], str] = {}
     holds: set[tuple[str, int]] = set()
     passes: set[tuple[str, int]] = set()
-    for slug, pr_id, reviewed_sha, verdict in (
+    for verdict in (
         ReviewVerdict.objects.filter(pr_id__in=[int(pr.iid) for pr in prs if pr.iid.isdigit()])
         .order_by("-recorded_at", "-pk")
-        .values_list("slug", "pr_id", "reviewed_sha", "verdict")
+        .only("slug", "pr_id", "reviewed_sha", "verdict")
     ):
-        key = slug.casefold(), pr_id
-        head = reviewed_sha.strip().lower()
+        key = verdict.slug.casefold(), verdict.pr_id
+        head = verdict.reviewed_sha.strip().lower()
         if heads.setdefault(key, head) != head:
             continue
-        if verdict == ReviewVerdict.Verdict.MERGE_SAFE:
+        if verdict.is_merge_safe():
             passes.add(key)
-        else:
+        if verdict.stands_as_hold():
             holds.add(key)
     return passes - holds
 
@@ -275,7 +284,7 @@ def failed_attempts(*, since: datetime, now: datetime, overlay_name: str) -> mod
     attempts = (
         TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
         .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
-        .exclude(failure_kind=FailureKind.CANCELLED)
+        .exclude(operator_cancel_q())
         .select_related("task__ticket")
         .order_by("-ended_at")
     )

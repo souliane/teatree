@@ -82,6 +82,19 @@ class TestStepHistory(TestCase):
         _run(minutes=60)
         assert StepHistory.measure(timezone.now()).estimate("coding") is None
 
+    def test_running_step_widens_to_seven_days_when_recent_samples_all_finished(self) -> None:
+        now = timezone.now()
+        history = StepHistory(
+            now=now,
+            spans={
+                "reviewing": [
+                    *((now - timedelta(hours=1), 30.0) for _ in range(5)),
+                    *((now - timedelta(days=2), 60.0) for _ in range(5)),
+                ]
+            },
+        )
+        assert history.remaining_measured("reviewing", 45) == (15.0, 15.0, "7d")
+
     def test_completed_task_uses_last_non_park_attempt_even_if_failed(self) -> None:
         for minutes in (50, 55, 60, 65, 70):
             _run(minutes=minutes, error="temporary failure" if minutes == 60 else "")

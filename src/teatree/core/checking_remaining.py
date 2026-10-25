@@ -1,17 +1,16 @@
 """Read-only Remaining group for the checking report."""
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
 
 from django.db.models import Q
 
-from teatree.core._checking_gather import _merge_safe_prs, _recent_failed_tasks, ticket_url
+from teatree.core._checking_gather import _latest_failed_tasks, _merge_safe_prs, ticket_url
 from teatree.core.admission_priority import ADMISSION_ORDER, admission_priority_annotations
 from teatree.core.agent_admission import headless_lane_widths
-from teatree.core.checking_types import DEFAULT_CAP, CheckGroup, CheckGroupDict, CheckItem, CheckItemDict
-from teatree.core.cycle_time.eta import format_minutes, queue_waves, remaining_given_elapsed
+from teatree.core.checking_types import DEFAULT_CAP, RemainingGroup, RemainingItem
+from teatree.core.cycle_time.eta import format_minutes, queue_waves
 from teatree.core.cycle_time.step_history import StepEstimate, StepHistory
 from teatree.core.lifecycle_pipeline import PIPELINE, TicketSnapshot, resolve_plan
 from teatree.core.managers import ADMITTED_INFLIGHT_WINDOW
@@ -30,54 +29,6 @@ STEP_PHASE = {
 POST_PR = ("independent review", "merge", "deploy")
 PHASE_LABEL = {"reviewing": "factory review", "coding": "coding"}
 NO_WORK_BASIS = "no current work in scope"
-
-
-class RemainingItemDict(CheckItemDict):
-    kind: str
-    steps: list[str]
-    eta: dict
-
-
-class RemainingGroupDict(CheckGroupDict):
-    eta: dict
-    queue: dict
-    durations: list[dict]
-    holds: dict
-
-
-@dataclass(frozen=True, slots=True)
-class RemainingItem(CheckItem):
-    kind: str = ""
-    steps: tuple[str, ...] = ()
-    eta: dict = field(default_factory=dict)
-    duration_phases: tuple[str, ...] = ()
-    ticket_id: int | None = None
-    hold: str = ""
-
-    def to_dict(self) -> RemainingItemDict:
-        return cast(
-            "RemainingItemDict",
-            {**super().to_dict(), "kind": self.kind, "steps": list(self.steps), "eta": self.eta},
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class RemainingGroup(CheckGroup):
-    eta: dict = field(default_factory=dict)
-    queue: dict = field(default_factory=dict)
-    durations: list[dict] = field(default_factory=list)
-    holds: dict = field(default_factory=dict)
-
-    def to_dict(self) -> RemainingGroupDict:
-        return RemainingGroupDict(
-            title=self.title,
-            items=[item.to_dict() for item in self.items],
-            total=self.total,
-            eta=self.eta,
-            queue=self.queue,
-            durations=self.durations,
-            holds=self.holds,
-        )
 
 
 def empty_remaining(*, dormant: int = 0) -> RemainingGroup:
@@ -137,13 +88,6 @@ def _lane(phase: str) -> str:
     return cheap.value if cheap is not None else "expensive"
 
 
-def _running_measured(estimate: StepEstimate, elapsed: float) -> tuple[tuple[float, float] | None, str]:
-    remaining = remaining_given_elapsed(estimate.samples, elapsed)
-    if remaining is None:
-        return None, f"running longer than all {estimate.n} {estimate.window} samples"
-    return remaining, ""
-
-
 def _duration_phase(step: str, task: Task | None, index: int) -> str:
     basis = STEP_PHASE.get(step, step)
     if index or task is None:
@@ -156,6 +100,44 @@ def _duration_phase(step: str, task: Task | None, index: int) -> str:
     return phase if step == PHASE_LABEL.get(phase, phase) else basis
 
 
+def _task_matches_step(task: Task | None, step: str) -> bool:
+    if task is None:
+        return False
+    phase = normalize_phase(task.phase)
+    if step in {"coding", "rework"}:
+        return phase in {"coding", "debugging"}
+    if step == "factory review":
+        return phase in REVIEW_PHASES
+    return step == phase
+
+
+def _running_measured(
+    history: StepHistory, phase: str, estimate: StepEstimate, elapsed: float
+) -> tuple[tuple[float, float] | None, str, str]:
+    measured = history.remaining_measured(phase, elapsed)
+    if measured is not None:
+        note = f"{phase}: {measured[2]} elapsed survivors" if measured[2] != estimate.window else ""
+        return measured[:2], "", note
+    count = len(history.spans.get(phase, ()))
+    reason = (
+        f"running longer than all {count} 7d samples"
+        if count > estimate.n
+        else f"running longer than all {estimate.n} {estimate.window} samples"
+    )
+    return None, reason, ""
+
+
+def _queue_delay(
+    task: Task | None, phase: str, estimate: StepEstimate, queue: "QueueState"
+) -> tuple[float, float] | str:
+    queue_phase = task.phase if task is not None else phase
+    lane = _lane(queue_phase)
+    waves = queue_waves(ahead=queue.ahead(task, queue_phase), occupied=queue.occupied[lane], seats=queue.seats[lane])
+    if waves is None:
+        return f"no seats for {lane} lane"
+    return waves * estimate.median_minutes, waves * estimate.p80_minutes
+
+
 @dataclass(frozen=True, slots=True)
 class QueueState:
     now: datetime
@@ -166,6 +148,9 @@ class QueueState:
     seats: dict[str, int]
     oldest: datetime | None
     oldest_phase: str | None
+
+    def is_waiting(self, task: Task | None) -> bool:
+        return bool(task and any(row.pk == task.pk for row in self.pending))
 
     def has_seat(self, task: Task | None) -> bool:
         return bool(
@@ -196,7 +181,7 @@ class QueueState:
             now=now,
             pending=pending,
             claimed=Counter(normalize_phase(task.phase) for task in tasks if task.status == Task.Status.CLAIMED),
-            pending_counts=Counter(normalize_phase(task.phase) for task in tasks if task.status == Task.Status.PENDING),
+            pending_counts=Counter(normalize_phase(task.phase) for task in pending),
             occupied=Counter(
                 {
                     "expensive": Task.objects.expensive_lane_occupancy(),
@@ -229,6 +214,7 @@ def _eta_for_item(
 ) -> tuple[dict, str]:
     median = p80 = 0.0
     defaults: set[str] = set()
+    running_since = (task.admitted_at or task.claimed_at) if task and task.status == Task.Status.CLAIMED else None
     for index, (step, phase) in enumerate(zip(steps, duration_phases, strict=True)):
         estimate = history.estimate(phase)
         if estimate is None:
@@ -237,20 +223,15 @@ def _eta_for_item(
                 "p80_minutes": None,
                 "basis": "no default: no completed-task history",
             }, "ETA unknown (no default: no completed-task history)"
-        if (
-            index == 0
-            and step not in {"merge", "deploy"}
-            and task is not None
-            and task.status == Task.Status.CLAIMED
-            and task.admitted_at
-        ):
-            elapsed = max(0.0, (queue.now - task.admitted_at).total_seconds() / 60)
+        if index == 0 and step not in {"merge", "deploy"} and running_since is not None:
+            elapsed = max(0.0, (queue.now - running_since).total_seconds() / 60)
             if estimate.basis == "measured":
-                remaining, reason = _running_measured(estimate, elapsed)
+                remaining, reason, note = _running_measured(history, phase, estimate, elapsed)
                 if remaining is None:
                     return {"median_minutes": None, "p80_minutes": None, "basis": reason}, f"ETA unknown ({reason})"
                 median += remaining[0]
                 p80 += remaining[1]
+                defaults.add(note)
             else:
                 remaining_default = history.remaining_default(elapsed)
                 if remaining_default is None:
@@ -263,17 +244,14 @@ def _eta_for_item(
             if estimate.basis != "measured":
                 defaults.add(f"{phase}: {estimate.basis}")
             if index == 0 and step not in {"merge", "deploy"} and not queue.has_seat(task):
-                queue_phase = task.phase if task is not None else phase
-                lane = _lane(queue_phase)
-                ahead = queue.ahead(task, queue_phase)
-                waves = queue_waves(ahead=ahead, occupied=queue.occupied[lane], seats=queue.seats[lane])
-                if waves is None:
-                    reason = f"no seats for {lane} lane"
-                    return {"median_minutes": None, "p80_minutes": None, "basis": reason}, f"ETA unknown ({reason})"
-                median += waves * estimate.median_minutes
-                p80 += waves * estimate.p80_minutes
+                delay = _queue_delay(task, phase, estimate, queue)
+                if isinstance(delay, str):
+                    return {"median_minutes": None, "p80_minutes": None, "basis": delay}, f"ETA unknown ({delay})"
+                median += delay[0]
+                p80 += delay[1]
             median += estimate.median_minutes
             p80 += estimate.p80_minutes
+    defaults.discard("")
     result = {
         "median_minutes": round(median, 1),
         "p80_minutes": round(p80, 1),
@@ -305,17 +283,15 @@ class RemainingSnapshot:
         question_scope = Q(parked_task__ticket__overlay__in=overlay_names) if overlay_names is not None else Q()
         prs = list(
             PullRequest.objects.live()
-            .filter(task_scope)
+            .filter(task_scope, ticket__role=Ticket.Role.AUTHOR)
             .exclude(ticket__state__in=[Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED])
             .select_related("ticket")
             .order_by("-pk")
         )
-        active = list(
-            Task.objects.filter(status__in=Task.Status.active())
-            .filter(task_scope)
-            .select_related("ticket")
-            .order_by("created_at", "pk")
+        all_active = list(
+            Task.objects.filter(status__in=Task.Status.active()).select_related("ticket").order_by("created_at", "pk")
         )
+        active = [task for task in all_active if overlay_names is None or task.ticket.overlay in overlay_names]
         owner_questions = list(
             DeferredQuestion.owner_pending()
             .filter(
@@ -325,9 +301,7 @@ class RemainingSnapshot:
             )
             .select_related("parked_task")
         )
-        recent_failed = _recent_failed_tasks(
-            now, Q(task__ticket__overlay__in=overlay_names) if overlay_names is not None else Q()
-        )
+        recent_failed = _latest_failed_tasks(now, task_scope)
         relevant_ids = (
             {pr.ticket_id for pr in prs}
             | {task.ticket_id for task in active}
@@ -351,7 +325,7 @@ class RemainingSnapshot:
             dormant=dormant,
             verdicts=_merge_safe_prs(prs),
             queue=QueueState.from_tasks(
-                list(Task.objects.filter(status__in=Task.Status.active())),
+                all_active,
                 list(
                     Task.objects.waiting_for_admission()
                     .annotate(**admission_priority_annotations())
@@ -373,19 +347,20 @@ def _work_item(
     hold, status = _hold_for_item(snapshot, ticket, tasks)
     merge_safe = bool(pr and pr.iid.isdigit() and (pr.repo.casefold(), int(pr.iid)) in snapshot.verdicts)
     steps = remaining_steps(ticket.state, task.phase if task else "", has_pr=pr is not None, merge_safe=merge_safe)
-    duration_phases = tuple(_duration_phase(step, task, index) for index, step in enumerate(steps))
+    step_task = task if steps and _task_matches_step(task, steps[0]) else None
+    duration_phases = tuple(_duration_phase(step, step_task, index) for index, step in enumerate(steps))
     if hold:
         eta = {"median_minutes": None, "p80_minutes": None, "basis": hold}
         eta_text = f"ETA unknown ({hold})"
     else:
         eta, eta_text = _eta_for_item(
-            steps=steps, duration_phases=duration_phases, task=task, history=history, queue=snapshot.queue
+            steps=steps, duration_phases=duration_phases, task=step_task, history=history, queue=snapshot.queue
         )
     overlay_tag = f" [{ticket.overlay}]" if snapshot.tag_overlays else ""
-    if task and task.status == Task.Status.CLAIMED:
+    if step_task and step_task.status == Task.Status.CLAIMED:
         current = f"{steps[0]} (running)"
-    elif task:
-        ahead = snapshot.queue.ahead(task, task.phase)
+    elif step_task and (snapshot.queue.is_waiting(step_task) or snapshot.queue.has_seat(step_task)):
+        ahead = snapshot.queue.ahead(step_task, step_task.phase)
         current = f"{steps[0]} (queued, {ahead} ahead)"
     else:
         current = steps[0]
@@ -413,7 +388,8 @@ def _hold_for_item(snapshot: RemainingSnapshot, ticket: Ticket, tasks: list[Task
         return "blocked", f"blocked (parked until {until:%H:%M} UTC) · "
     if not tasks and ticket.pk in snapshot.recent_failed:
         kind = snapshot.recent_failed[ticket.pk]
-        return "halted", f"halted ({dict(FailureKind.choices).get(kind, kind).lower()}) · "
+        label = dict(FailureKind.choices).get(kind, kind).lower() if kind else ""
+        return "halted", f"halted{f' ({label})' if label else ''} · "
     return "", ""
 
 
@@ -463,7 +439,9 @@ def _eta_totals(items: list[RemainingItem]) -> tuple[dict, Counter[str]]:
     return eta_total, held
 
 
-def _summarize(snapshot: RemainingSnapshot, history: StepHistory, items: list[RemainingItem]) -> RemainingGroup:
+def _summarize(
+    snapshot: RemainingSnapshot, history: StepHistory, items: list[RemainingItem], cap: int
+) -> RemainingGroup:
     eta_total, held = _eta_totals(items)
     median_total = eta_total["median_minutes"]
     p80_total = eta_total["p80_minutes"]
@@ -489,27 +467,29 @@ def _summarize(snapshot: RemainingSnapshot, history: StepHistory, items: list[Re
         url="",
         kind="summary",
         detail=(
-            f"{total_text} · {len(items)} items, {unknown} unknown, {held['halted']} halted, "
+            f"{total_text} · {len(items)} {'item' if len(items) == 1 else 'items'}, "
+            f"{unknown} unknown, {held['halted']} halted, "
             f"{held['blocked']} blocked, {owner_count} waiting on you, {snapshot.dormant} dormant"
             + (f" · basis: {legend}" if legend else "")
         ),
     )
     queue = snapshot.queue.to_dict()
+    oldest = format_minutes(queue["oldest_pending_minutes"]) if snapshot.queue.oldest else "none"
+    oldest_phase = f" {queue['oldest_pending_phase']}" if queue["oldest_pending_phase"] else ""
     queue_item = RemainingItem(
         label="Queue",
         url="",
         kind="queue",
         detail=(
             f"claimed {_format_counts(queue['claimed'])}; pending {_format_counts(queue['pending'])}; oldest "
-            f"{format_minutes(queue['oldest_pending_minutes']) if snapshot.queue.oldest else 'none'} "
-            f"{queue['oldest_pending_phase'] or ''}; "
+            f"{oldest}{oldest_phase}; "
             f"seats {_format_counts(queue['seats'])}"
         ),
     )
     return RemainingGroup(
         title="Remaining",
-        items=[summary, queue_item, *items[: DEFAULT_CAP - 2]],
-        total=len(items) + 2,
+        items=[summary, queue_item, *items[:cap]],
+        total=len(items),
         eta=eta_total,
         queue=queue,
         durations=durations,
@@ -521,24 +501,16 @@ def _format_counts(counts: dict[str, int]) -> str:
     return ", ".join(f"{name} {count}" for name, count in sorted(counts.items())) or "none"
 
 
-def gather_remaining(*, now: datetime, overlay_names: list[str] | None, tag_overlays: bool) -> RemainingGroup:
+def gather_remaining(
+    *, now: datetime, overlay_names: list[str] | None, tag_overlays: bool, cap: int = DEFAULT_CAP
+) -> RemainingGroup:
     snapshot = RemainingSnapshot.load(now=now, overlay_names=overlay_names, tag_overlays=tag_overlays)
     active_by_ticket: dict[int, list[Task]] = defaultdict(list)
     for task in snapshot.active:
         active_by_ticket[task.ticket_id].append(task)
-    owner_ticket_ids = {
-        parked_task.ticket_id
-        for question in snapshot.owner_questions
-        if (parked_task := question.parked_task) is not None
-    }
     pr_ticket_ids = {pr.ticket_id for pr in snapshot.prs}
-    relevant = pr_ticket_ids | active_by_ticket.keys() | owner_ticket_ids | snapshot.recent_failed.keys()
-    work: list[tuple[Ticket, PullRequest | None]] = [
-        (pr.ticket, pr) for pr in snapshot.prs if pr.ticket.role == Ticket.Role.AUTHOR
-    ]
-    work.extend(
-        (ticket, None) for ticket in snapshot.open_author if ticket.pk in relevant and ticket.pk not in pr_ticket_ids
-    )
+    work: list[tuple[Ticket, PullRequest | None]] = [(pr.ticket, pr) for pr in snapshot.prs]
+    work.extend((ticket, None) for ticket in snapshot.open_author if ticket.pk not in pr_ticket_ids)
     if not work and not snapshot.active and not snapshot.owner_questions:
         return empty_remaining(dormant=snapshot.dormant)
     history = StepHistory.measure(now) if work else StepHistory(now=now, spans={})
@@ -546,4 +518,4 @@ def gather_remaining(*, now: datetime, overlay_names: list[str] | None, tag_over
         (_work_item(snapshot, history, ticket, pr, active_by_ticket.get(ticket.pk, [])) for ticket, pr in work),
         key=lambda item: 2 if item.hold else int(item.kind != "pr"),
     )
-    return _summarize(snapshot, history, items)
+    return _summarize(snapshot, history, items, cap)

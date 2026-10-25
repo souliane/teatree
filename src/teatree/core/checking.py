@@ -50,8 +50,15 @@ from teatree.core._checking_gather import (
     motion_for_overlay,
     ticket_url,
 )
-from teatree.core.checking_remaining import RemainingGroup, RemainingGroupDict, empty_remaining, gather_remaining
-from teatree.core.checking_types import DEFAULT_CAP, CheckGroup, CheckGroupDict, CheckItem
+from teatree.core.checking_remaining import empty_remaining, gather_remaining
+from teatree.core.checking_types import (
+    DEFAULT_CAP,
+    CheckGroup,
+    CheckGroupDict,
+    CheckItem,
+    RemainingGroup,
+    RemainingGroupDict,
+)
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
@@ -124,7 +131,7 @@ class CheckingReport:
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 for group in groups):
+        if all(group.total == 0 and not group.items for group in groups):
             return f"Nothing since {stamp}."
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
         lines = [header]
@@ -184,7 +191,7 @@ class AllOverlaysReport:
         )
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 for group in groups):
+        if all(group.total == 0 and not group.items for group in groups):
             return f"Nothing since {stamp}."
         lines = [f"Since {stamp} · all overlays"]
         for group in groups:
@@ -268,6 +275,7 @@ def gather_all_overlays_report(
             now=max((window[1] for window in overlay_windows.values()), default=effective_since),
             overlay_names=list(overlay_windows),
             tag_overlays=True,
+            cap=cap,
         ),
     )
 
@@ -339,7 +347,9 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
-        remaining=gather_remaining(now=now, overlay_names=[overlay_name] if overlay_name else None, tag_overlays=False),
+        remaining=gather_remaining(
+            now=now, overlay_names=[overlay_name] if overlay_name else None, tag_overlays=False, cap=cap
+        ),
     )
 
 

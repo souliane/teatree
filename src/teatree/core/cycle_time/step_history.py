@@ -116,6 +116,17 @@ class StepHistory:
             return StepEstimate.measured(step, older, "7d")
         return self._default_estimate(step)
 
+    def remaining_measured(self, step: str, elapsed_minutes: float) -> tuple[float, float, str] | None:
+        rows = self.spans.get(step, [])
+        recent = [minutes for ended, minutes in rows if ended >= self.now - timedelta(hours=24)]
+        all_samples = [minutes for _ended, minutes in rows]
+        for window, samples in (("24h", recent), ("7d", all_samples)):
+            if len(samples) >= MIN_SAMPLES:
+                remaining = remaining_given_elapsed(samples, elapsed_minutes)
+                if remaining is not None:
+                    return *remaining, window
+        return None
+
     def _default_estimate(self, step: str) -> StepEstimate | None:
         candidates = [
             (percentile(values, 0.5), percentile(values, 0.8), key, values, window)

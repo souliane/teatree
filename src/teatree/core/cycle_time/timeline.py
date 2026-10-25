@@ -23,10 +23,9 @@ from teatree.core.cost import AttemptUsage, CostBreakdown
 from teatree.core.cycle_time.spans import PhaseSpan, spans_for_tickets
 from teatree.core.cycle_time.work_intervals import Engagement, merged_seconds
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import BILLED_COLUMNS, PARK_ERROR_Q, TaskAttempt
-from teatree.core.models.task_cancel_source import CANCEL_SOURCE_KEY
+from teatree.core.models.task_cancel_source import operator_cancel_q
 from teatree.core.models.ticket import Ticket
 
 
@@ -204,7 +203,7 @@ def _annotated_attempts(attempts: models.QuerySet[TaskAttempt]) -> models.QueryS
             output_field=models.BooleanField(),
         ),
         cancelled=models.ExpressionWrapper(
-            models.Q(result__has_key=CANCEL_SOURCE_KEY) | models.Q(failure_kind=FailureKind.CANCELLED),
+            operator_cancel_q(),
             output_field=models.BooleanField(),
         ),
         parked=models.ExpressionWrapper(PARK_ERROR_Q, output_field=models.BooleanField()),
