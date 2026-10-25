@@ -111,13 +111,17 @@ class _SquashLandedFixture(TestCase):
         _run_git("update-ref", "-d", f"refs/heads/{branch}", cwd=self.bare)
         _run_git("fetch", "-q", "--prune", "origin", cwd=self.repo_main)
 
-    def _cleanup(self, worktree: Worktree, *, strict_hygiene: bool, force: bool = False) -> CleanupResult:
+    def _cleanup(
+        self, worktree: Worktree, *, strict_hygiene: bool, force: bool = False, discard: bool = False
+    ) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
             mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
-            return cleanup_worktree(worktree, strict_hygiene=strict_hygiene, force=force)
+            return cleanup_worktree(
+                worktree, strict_hygiene=strict_hygiene, force=force, discard_unshipped_work=discard
+            )
 
 
 class TestSquashMergedWorktreeIsReclaimed(_SquashLandedFixture):
@@ -154,7 +158,7 @@ class TestSquashMergedWorktreeIsReclaimed(_SquashLandedFixture):
 class TestUnlandedWorkIsStillRefused(_SquashLandedFixture):
     """Guards, not proofs: these pass before the change and fail if it over-widens."""
 
-    def test_refuses_a_genuinely_unpushed_branch_and_force_remains_the_escape(self) -> None:
+    def test_refuses_a_genuinely_unpushed_branch_and_only_discard_removes_it(self) -> None:
         worktree, wt_path = self._worktree_on("4423-unpushed")
         self._commit(wt_path, _FEATURE, "never pushed\n", "feat: genuinely unpushed")
 
@@ -162,10 +166,14 @@ class TestUnlandedWorkIsStillRefused(_SquashLandedFixture):
             self._cleanup(worktree, strict_hygiene=False)
         assert wt_path.exists(), "unpushed work must survive a non-forced teardown"
 
-        result = self._cleanup(worktree, strict_hygiene=False, force=True)
+        with pytest.raises(RuntimeError, match="not proven shipped"):
+            self._cleanup(worktree, strict_hygiene=False, force=True)
+        assert wt_path.exists(), "force alone must not skip the shipped-work proof"
 
-        assert result.clean is True, f"force teardown reported errors: {result.errors}"
-        assert not wt_path.exists(), "force must remain the escape for the ambiguous case"
+        result = self._cleanup(worktree, strict_hygiene=False, force=True, discard=True)
+
+        assert result.clean is True, f"discard teardown reported errors: {result.errors}"
+        assert not wt_path.exists(), "an explicit discard must remain the escape for the ambiguous case"
 
     def test_refuses_a_local_only_branch_whose_work_was_reverted(self) -> None:
         """#2205 — the tree matches the target by coincidence, yet no copy exists anywhere else.

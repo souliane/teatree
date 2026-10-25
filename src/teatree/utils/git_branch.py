@@ -7,9 +7,12 @@ here resolves or mutates a branch/ref by shelling out through the
 
 import os
 import re
+from dataclasses import dataclass
+from enum import Enum
+from subprocess import TimeoutExpired
 
 from teatree.utils.git_remote_ops import config_value
-from teatree.utils.git_run import check, run, run_strict
+from teatree.utils.git_run import check, git_env_non_interactive, run, run_strict, run_with_status
 
 DETACHED_HEAD = "HEAD"
 
@@ -17,6 +20,64 @@ DIFF_BASE_ENV = "T3_DIFF_COVERAGE_BASE"
 DIFF_BASE_CONFIG_KEY = "teatree.targetBranch"
 
 _RAW_SHA = re.compile(r"\A[0-9a-f]{7,40}\Z")
+REMOTE_REF_TIMEOUT_SECONDS = 30
+
+
+class RefPresence(Enum):
+    PRESENT = "present"
+    ABSENT = "absent"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteRefListing:
+    heads: frozenset[str] | None
+    timed_out: bool = False
+
+
+def list_remote_refs(repo: str) -> RemoteRefListing:
+    try:
+        result = run_with_status(
+            repo=repo,
+            args=["ls-remote", "--heads", "origin"],
+            env=git_env_non_interactive(),
+            timeout=REMOTE_REF_TIMEOUT_SECONDS,
+        )
+    except TimeoutExpired:
+        return RemoteRefListing(None, timed_out=True)
+    except OSError:
+        return RemoteRefListing(None)
+    if result.returncode != 0:
+        return RemoteRefListing(None)
+    names = frozenset(
+        line.partition("refs/heads/")[2] for line in result.stdout.splitlines() if "\trefs/heads/" in line
+    )
+    return RemoteRefListing(names)
+
+
+def show_ref(repo: str, ref: str) -> RefPresence:
+    try:
+        result = run_with_status(repo=repo, args=["show-ref", "--verify", "--quiet", ref])
+    except OSError:
+        return RefPresence.UNKNOWN
+    return {0: RefPresence.PRESENT, 1: RefPresence.ABSENT}.get(result.returncode, RefPresence.UNKNOWN)
+
+
+def _local_ref_presence(repo: str, branch: str) -> RefPresence:
+    for ref in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
+        presence = show_ref(repo, ref)
+        if presence is not RefPresence.ABSENT:
+            return presence
+    return RefPresence.ABSENT
+
+
+def ref_presence(repo: str, branch: str, listing: RemoteRefListing) -> RefPresence:
+    local = _local_ref_presence(repo, branch)
+    if local is not RefPresence.ABSENT:
+        return local
+    if listing.heads is None:
+        return RefPresence.UNKNOWN
+    return RefPresence.PRESENT if branch in listing.heads else RefPresence.ABSENT
 
 
 def resolve_diff_base(repo: str = ".") -> str:

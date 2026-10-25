@@ -23,6 +23,7 @@ from django.test import TestCase
 from teatree.cli.update import _tracked_dirty_paths as update_tracked_dirty_paths
 from teatree.core.cleanup.cleanup import _EffectiveTarget
 from teatree.core.cleanup.orphan_checkouts import orphan_is_dirty
+from teatree.core.cleanup.removal_proof import removal_refusal
 from teatree.core.cleanup.unshipped_work import probe_unshipped_work
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.handover_orchestration import _has_pending_work
@@ -67,6 +68,7 @@ class TestEveryDirtinessDeciderSeesTheIndex(TestCase):
                 real_uncommitted_reasons(str(self.checkout), target)
             ),
             "cleanup.unshipped_work.probe_unshipped_work": lambda: probe_unshipped_work(self.checkout).exists,
+            "cleanup.removal_proof.removal_refusal": lambda: bool(removal_refusal(self.checkout, clone=self.clone)),
             "cleanup.orphan_checkouts.orphan_is_dirty": lambda: orphan_is_dirty(str(self.checkout)),
             "_workspace.cleanup._worktree_clean": lambda: not _worktree_clean(str(self.checkout)),
             "models.ticket_worktree_checks.worktree_tracked_dirty_path": lambda: bool(

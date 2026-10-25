@@ -14,7 +14,13 @@ from teatree.core.provision.provision_report import ProvisionReport, StepResult
 from teatree.core.provision.provision_timebox import ProgressAlert, alert_provision_user, run_timeboxed_db_import
 from teatree.core.provision.step_runner import run_provision_steps, run_step
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, worktree_pg_connection, write_env_cache
+from teatree.core.worktree.worktree_env import (
+    CACHE_DIRNAME,
+    CACHE_FILENAME,
+    EnvrcProvenance,
+    worktree_pg_connection,
+    write_env_cache,
+)
 from teatree.utils.env import patched_environ
 
 logger = logging.getLogger(__name__)
@@ -94,6 +100,7 @@ def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
     missing = [ln for ln in lines if ln not in existing]
     if missing:
         envrc.write_text(existing.rstrip() + "\n" + "\n".join(missing) + "\n")
+    EnvrcProvenance.record(Path(wt_path), lines)
 
 
 def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) -> str | None:

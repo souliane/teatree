@@ -16,7 +16,8 @@ from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists, cleanup_worktree
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.cleanup.preview import preview_line
-from teatree.core.cleanup.working_tree_dirt import _porcelain_path, is_orchestration_debris
+from teatree.core.cleanup.removal_proof import removal_refusal
+from teatree.core.cleanup.working_tree_dirt import _worktree_clean as _clean_worktree
 from teatree.core.intake.resolve import match_worktree_by_path
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import (
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+_worktree_clean = _clean_worktree
 
 
 def _refuse_if_unpushed(repo: str, name: str, *, remote_ref_was_present: bool) -> str:
@@ -107,17 +109,20 @@ def _prune_squash_merged(
     caller's pre-prune sample of ``origin/<name>``'s tracking ref, the
     forge-CLI-free squash-merge signal threaded into the guard.
     """
+    wt_path = wt_map.get(name, "")
     refusal = _refuse_if_unpushed(repo, name, remote_ref_was_present=remote_ref_was_present)
     if refusal:
-        return refusal
-    wt_path = wt_map.get(name, "")
+        return f"{refusal} [checkout: {wt_path}]" if wt_path else refusal
+    if wt_path and (proof := removal_refusal(Path(wt_path), clone=Path(repo), sweep=True)):
+        return f"SKIPPED '{name}': {proof}"
+    label = f"Prune squash-merged branch: {name}" + (f" [checkout: {wt_path}]" if wt_path else "")
     if dry_run:
-        return preview_line(f"Prune squash-merged branch: {name}", dry_run=True)
+        return preview_line(label, dry_run=True)
     if wt_path:
         git.worktree_remove(repo, wt_path)
         prune_worktrees(repo)
     git.branch_delete(repo, name)
-    return f"Pruned squash-merged branch: {name}"
+    return f"Pruned squash-merged branch: {name}" + (f" [checkout: {wt_path}]" if wt_path else "")
 
 
 class WorktreeReaper:
@@ -164,30 +169,6 @@ class WorktreeReaper:
                     entry.rmdir()
                     removed.append(f"Removed empty dir: {entry.name}")
         return removed
-
-
-def _worktree_clean(wt_path: str) -> bool:
-    """Whether the worktree holds no REAL uncommitted work (env cache + orchestration debris ignored).
-
-    Gates a working-tree removal, so it fails CLOSED: a status that cannot be
-    read (not a checkout, corrupt index, lock contention) reads DIRTY — a
-    lenient probe degraded such an error to "" and authorised removing a
-    checkout nothing had actually examined. Two instruments must both agree the
-    tree is clean (``git status --porcelain`` AND ``git diff HEAD``), and only
-    the shared :data:`~teatree.core.cleanup.working_tree_dirt.ORCHESTRATION_DEBRIS_PREFIXES`
-    are ignorable — anything unrecognised is real work and keeps the worktree.
-    """
-    if not Path(wt_path).is_dir():
-        return False
-    try:
-        # ``-uall``: an untracked dir must list its files, or debris and real work collapse into one entry.
-        porcelain = git.run_strict(repo=wt_path, args=["status", "--porcelain", "--untracked-files=all"])
-        diff_head = git.run_strict(repo=wt_path, args=["diff", "HEAD", "--name-only"])
-    except CommandFailedError:
-        return False
-    entries = [_porcelain_path(line) for line in porcelain.splitlines()]
-    entries.extend(line.strip() for line in diff_head.splitlines())
-    return all(not entry or is_orchestration_debris(entry) for entry in entries)
 
 
 def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = False) -> str:
@@ -237,8 +218,6 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = 
             guard_live_worktree(row, respect_liveness=True, force=False)
         except WorktreeBusyError as exc:
             return f"SKIPPED '{name}': {exc}"
-    if not _worktree_clean(wt_path):
-        return f"SKIPPED '{name}': worktree has uncommitted changes — keeping {wt_path}"
     unsynced = git.unsynced_commits(repo, name)
     if (
         unsynced
@@ -246,12 +225,20 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = 
         and not branch_landed_for_teardown(repo, name, f"origin/{git.default_branch(repo)}")
     ):
         return f"SKIPPED '{name}': {len(unsynced)} commit(s) ahead of origin/main — keeping {wt_path}"
+    if proof := removal_refusal(Path(wt_path), clone=Path(repo), row=row, sweep=True):
+        if "changed or ignored file(s)" in proof:
+            return f"SKIPPED '{name}': worktree has uncommitted changes — {proof}"
+        return f"SKIPPED '{name}': {proof}"
     if dry_run:
-        return preview_line(f"Remove gone-remote worktree (branch kept): {name}", dry_run=True)
-    if git.worktree_remove(repo, wt_path):
+        return preview_line(f"Remove gone-remote worktree (branch kept): {name} [checkout: {wt_path}]", dry_run=True)
+    removed = git.worktree_remove(repo, wt_path)
+    if removed:
         prune_worktrees(repo)
-        return f"Removed gone-remote worktree (branch kept): {name}"
-    return f"SKIPPED '{name}': git worktree remove failed for {wt_path}"
+    return (
+        f"Removed gone-remote worktree (branch kept): {name} [checkout: {wt_path}]"
+        if removed
+        else f"SKIPPED '{name}': git worktree remove failed for {wt_path}"
+    )
 
 
 def _prune_gone_remote_worktrees(
