@@ -19,6 +19,8 @@ import pytest
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.models import DmContext, PendingChatInjection, Session, Task, TaskAttempt
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.loop.inbound_reading import read_inbound
+from teatree.loop.question_binding import AmbiguousCards, BoundAnswer, bind_reply
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
@@ -135,6 +137,7 @@ class TestATypedAnswerClosesTheRootCard:
         )
         assert reply is not None
         backend = FakeMessaging(thread=["100.1", "100.2", "100.3"])
+        assert bind_reply(reply, reader=read_inbound, backend=backend) == AmbiguousCards((first.pk, second.pk))
 
         _scan(backend)
 
@@ -145,6 +148,23 @@ class TestATypedAnswerClosesTheRootCard:
         assert backend.react_calls == []
         assert first.is_pending
         assert second.is_pending
+
+    def test_a_card_thread_reply_is_left_for_the_answer_cycle(self) -> None:
+        card = _record_question(generation=1, slack_ts="100.2")
+        reply = PendingChatInjection.record(
+            channel=_CHANNEL, slack_ts="200.0", text="Yes", context=DmContext(user_id=OWNER_SLACK_ID, thread_ts="100.1")
+        )
+        assert reply is not None
+        backend = FakeMessaging(thread=["100.1", "100.2"])
+        assert isinstance(bind_reply(reply, reader=read_inbound, backend=backend), BoundAnswer)
+
+        _scan(backend)
+
+        reply.refresh_from_db()
+        card.refresh_from_db()
+        assert reply.loop_replied_at is None
+        assert backend.react_calls == []
+        assert card.is_pending
 
 
 class TestDigitReplyResolvesOption:
