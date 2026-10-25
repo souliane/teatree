@@ -66,7 +66,6 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
     return (
         "",
         "RECORD YOUR VERDICT BY RETURNING IT in final JSON; maker≠checker: do NOT try `t3 <overlay> review record`.",
-        "The orchestrator records it and releases the review lock:",
         '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
         f'                     "reviewer_identity": "{identity or REVIEWER_IDENTITY_INSTRUCTION}",',
         '                     "gh_verify_result": "green"|"pending"|"failed",',
@@ -87,13 +86,10 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             if read_only_venue
             else ("`reviewed_sha` MUST be the full 40-char SHA you reviewed (`git rev-parse HEAD`):")
         ),
-        "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
-        "A verdict for any other head is REFUSED. If the checkout resolves to a different tree, return",
-        '  "review_head_mismatch": {"observed_sha": "<full 40-char HEAD SHA>", "reason": "<checkout failure>"}',
-        "without review_verdict or needs_user_input. The factory retries once at the live PR head,",
-        "then records a card if the mismatch persists. Review a moved live head when checkout succeeds.",
-        "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
-        "dispatched one, so a verdict that names no head records nothing at all.",
+        "A verdict for another head is REFUSED. On checkout mismatch, return",
+        '  "review_head_mismatch": {"observed_sha": "<40-char SHA>", "reason": "<why>"}',
+        "without review_verdict or owner question. Factory retries once at the live head; a repeat records a card.",
+        "Missing `reviewed_sha` is REFUSED; never infer it from dispatch.",
         "A blocking finding (blocker/major/high/critical) outside PR-changed files is REFUSED and records nothing.",
         "Branch-only probes may blame main; recheck on the MERGE RESULT.",
         *(

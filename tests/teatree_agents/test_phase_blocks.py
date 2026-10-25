@@ -367,12 +367,11 @@ class TestEnvelopeVerdictPhasesIsExactlyWhatTheBriefTeaches(TestCase):
 
     def test_reviewer_brief_keeps_head_refusal_and_one_live_head_retry(self) -> None:
         brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
-        assert "A verdict for any other head is REFUSED" in brief
+        assert "A verdict for another head is REFUSED" in brief
         assert '"review_head_mismatch": {"observed_sha":' in brief
-        assert "without review_verdict or needs_user_input" in brief
-        assert "factory retries once at the live PR head" in brief
-        assert "OMITTING `reviewed_sha` is REFUSED too" in brief
-        assert "dispatched one, so a verdict that names no head records nothing at all" in brief
+        assert "without review_verdict or owner question" in brief
+        assert "Factory retries once at the live head" in brief
+        assert "Missing `reviewed_sha` is REFUSED" in brief
 
     def _phases_briefed_for_the_envelope(self) -> set[str]:
         return {
