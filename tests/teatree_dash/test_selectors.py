@@ -1,6 +1,7 @@
 """``build_kanban_columns`` groups tickets by FSM state with the right card badges (#3162)."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -8,6 +9,7 @@ from django.utils import timezone
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.dash import selectors
 from teatree.dash.selectors import STALE_ERROR_AFTER, BoardFilters, KanbanBoard, KanbanCard, build_kanban_columns
 from tests.factories import PullRequestFactory, SessionFactory, TaskAttemptFactory, TaskFactory, TicketFactory
 
@@ -30,6 +32,41 @@ def _find_card(board: KanbanBoard, ticket_id: int) -> KanbanCard | None:
             if card.ticket_id == ticket_id:
                 return card
     return None
+
+
+def _column(board: KanbanBoard, state: str) -> selectors.KanbanColumn:
+    return next(column for group in board.groups for column in group.columns if column.state == state)
+
+
+class KanbanColumnPagingTestCase(TestCase):
+    def test_each_column_is_counted_in_the_database_and_builds_only_its_slice(self) -> None:
+        for _ in range(120):
+            TicketFactory(state=State.DELIVERED)
+        TicketFactory(state=State.WORK_STARTED)
+
+        with patch("teatree.dash.selectors._card", wraps=selectors._card) as build_card:
+            board = build_kanban_columns(BoardFilters(pages={State.DELIVERED: 1}))
+
+        delivered = _column(board, State.DELIVERED)
+        assert (delivered.count, len(delivered.cards), delivered.page) == (120, 50, 1)
+        assert _column(board, State.WORK_STARTED).count == 1
+        assert build_card.call_count == 51
+
+    def test_a_page_past_the_end_shows_the_last_page(self) -> None:
+        for _ in range(55):
+            TicketFactory(state=State.NOT_STARTED)
+
+        column = _column(build_kanban_columns(BoardFilters(pages={State.NOT_STARTED: 99})), State.NOT_STARTED)
+
+        assert (column.page, len(column.cards)) == (1, 5)
+
+    def test_a_column_that_fits_one_page_is_not_split(self) -> None:
+        for _ in range(50):
+            TicketFactory(state=State.SCOPED)
+
+        column = _column(build_kanban_columns(), State.SCOPED)
+
+        assert (column.page, len(column.cards), column.count) == (0, 50, 50)
 
 
 class BuildKanbanColumnsTestCase(TestCase):
@@ -87,6 +124,27 @@ class BuildKanbanColumnsTestCase(TestCase):
         card = _find_card(build_kanban_columns(), ticket.pk)
         assert card is not None
         assert card.last_error == "boom: it failed"
+
+    def test_redispatch_hides_obsolete_cancellation_without_erasing_audit(self) -> None:
+        ticket = TicketFactory(state=State.TESTED)
+        old_task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="failed")
+        attempt = TaskAttemptFactory(task=old_task, error="cancelled: re-dispatched tomorrow")
+        TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="pending")
+
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.last_error == ""
+        assert TaskAttempt.objects.filter(pk=attempt.pk).exists()
+
+    def test_new_task_does_not_hide_unrelated_failure(self) -> None:
+        ticket = TicketFactory(state=State.TESTED)
+        old_task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="failed")
+        TaskAttemptFactory(task=old_task, error="review found a defect")
+        TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="pending")
+
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.last_error == "review found a defect"
 
     def test_last_error_cleared_when_latest_attempt_succeeded(self) -> None:
         # A later successful attempt (no error) must clear the red: the board
@@ -155,3 +213,50 @@ class BuildKanbanColumnsTestCase(TestCase):
         board = build_kanban_columns(BoardFilters(text="widget"))
         ids = [c.ticket_id for cards in _cards_by_state(board).values() for c in cards]
         assert ids == [keep.pk]
+
+
+class DwellMinutePrecisionTestCase(TestCase):
+    def _dwell_after(self, elapsed: timedelta) -> str:
+        baseline = timezone.now().replace(second=0, microsecond=0)
+        ticket = TicketFactory(state=State.WORK_STARTED)
+        transition = TicketTransition.objects.create(
+            ticket=ticket, from_state=State.SCOPED, to_state=State.WORK_STARTED, triggered_by="start"
+        )
+        TicketTransition.objects.filter(pk=transition.pk).update(created_at=baseline)
+        with patch("teatree.dash.selectors.timezone.now", return_value=baseline + elapsed):
+            card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        return card.dwell
+
+    def test_hour_dwell_format(self) -> None:
+        assert self._dwell_after(timedelta(hours=1, minutes=5)) == "1 h 05 min"
+
+    def test_day_dwell_format(self) -> None:
+        assert self._dwell_after(timedelta(days=2, hours=3)) == "2 d 3 h"
+
+    def test_cancelled_error_remains_visible_until_a_redispatch_exists(self) -> None:
+        ticket = TicketFactory(state=State.TESTED)
+        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="failed")
+        TaskAttemptFactory(task=task, error="cancelled: before retry")
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.last_error == "cancelled: before retry"
+
+    def test_dwell_stays_constant_within_a_minute_and_never_shows_seconds(self) -> None:
+        baseline = timezone.now().replace(second=0, microsecond=0)
+        ticket = TicketFactory(state=State.WORK_STARTED)
+        transition = TicketTransition.objects.create(
+            ticket=ticket, from_state=State.SCOPED, to_state=State.WORK_STARTED, triggered_by="start"
+        )
+        TicketTransition.objects.filter(pk=transition.pk).update(created_at=baseline)
+        with patch("teatree.dash.selectors.timezone.now", return_value=baseline + timedelta(seconds=5)):
+            first = _find_card(build_kanban_columns(), ticket.pk)
+        with patch("teatree.dash.selectors.timezone.now", return_value=baseline + timedelta(seconds=15)):
+            second = _find_card(build_kanban_columns(), ticket.pk)
+        with patch("teatree.dash.selectors.timezone.now", return_value=baseline + timedelta(seconds=65)):
+            third = _find_card(build_kanban_columns(), ticket.pk)
+        assert first is not None
+        assert second is not None
+        assert third is not None
+        assert first.dwell == second.dwell == "< 1 min"
+        assert third.dwell == "1 min"

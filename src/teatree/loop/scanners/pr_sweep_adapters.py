@@ -14,6 +14,9 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree import forge_credentials
+from teatree.backends.github.pr_reads import approval_count
+from teatree.core.merge.uncleared_merge import merge_without_clear
+from teatree.core.review.pr_next_action import APPROVED, AWAITING_APPROVAL, UNKNOWN
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr, run_gh
 from teatree.loop.scanners.pr_behind_base import (
@@ -38,8 +41,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _GH_NOT_INSTALLED_RC = 127
+_GH_APPROVALS = {"APPROVED": APPROVED, "REVIEW_REQUIRED": AWAITING_APPROVAL, "CHANGES_REQUESTED": AWAITING_APPROVAL}
 #: More open PRs than this is refused, never read as a partial listing.
 OPEN_PR_CEILING = 500
+_THREAD_BATCH_SIZE = 25
 
 
 class GhPrJson(TypedDict, total=False):
@@ -50,6 +55,9 @@ class GhPrJson(TypedDict, total=False):
     isDraft: bool
     url: str
     title: str
+    createdAt: str
+    updatedAt: str
+    reviewDecision: str
     reviews: list[object]
     statusCheckRollup: list[object]
     mergeable: str
@@ -71,6 +79,7 @@ class GhReviewJson(TypedDict, total=False):
     """Shape of one review entry inside ``GhPrJson.reviews``."""
 
     state: str
+    author: GhAuthorJson
 
 
 def _as_str(value: object) -> str:
@@ -106,6 +115,10 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         rollup=tuple(cast("RawAPIDict", item) for item in rollup if isinstance(item, dict)),
         url=url,
         title=title,
+        created_at=_as_str(raw.get("createdAt")),
+        updated_at=_as_str(raw.get("updatedAt")),
+        approvals=_GH_APPROVALS.get(_as_str(raw.get("reviewDecision")).upper(), UNKNOWN),
+        approval_count=approval_count(raw.get("reviews")),
         is_conflicted=_gh_is_conflicted(raw),
         behind_main=_gh_reports_behind(raw),
         base_ref=_as_str(raw.get("baseRefName")),
@@ -174,6 +187,30 @@ def _open_pr_rows(out: str, *, slug: str) -> list[object]:
     return data
 
 
+def _review_thread_counts(payload: str, numbers: list[int]) -> dict[int, int]:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict) or data.get("errors"):
+        return {}
+    repository = data.get("data", {}).get("repository") if isinstance(data.get("data"), dict) else None
+    if not isinstance(repository, dict):
+        return {}
+    counts: dict[int, int] = {}
+    for number in numbers:
+        pr = repository.get(f"p{number}")
+        threads = pr.get("reviewThreads") if isinstance(pr, dict) else None
+        if not isinstance(threads, dict):
+            continue
+        page_info, nodes = threads.get("pageInfo"), threads.get("nodes")
+        if not isinstance(page_info, dict) or page_info.get("hasNextPage") is not False or not isinstance(nodes, list):
+            continue
+        if all(isinstance(node, dict) and type(node.get("isResolved")) is bool for node in nodes):
+            counts[number] = sum(node["isResolved"] is False for node in nodes)
+    return counts
+
+
 @dataclass(slots=True)
 class GhPrApiClient:
     """``gh``-backed :class:`teatree.loop.scanners.pr_sweep.PrApiClient`.
@@ -194,8 +231,8 @@ class GhPrApiClient:
             str(OPEN_PR_CEILING + 1),
             "--json",
             (
-                "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,"
-                "baseRefName,headRefName,headRepositoryOwner,author,isCrossRepository"
+                "number,headRefOid,isDraft,url,title,createdAt,updatedAt,reviewDecision,reviews,statusCheckRollup,"
+                "mergeable,mergeStateStatus,baseRefName,headRefName,headRepositoryOwner,author,isCrossRepository"
             ),
         ]
         rc, out, err = self._run_gh(argv, slug=slug)
@@ -215,7 +252,33 @@ class GhPrApiClient:
             )
         data = _open_pr_rows(out, slug=slug)
         decoded = [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
-        return self._resolve_behind_base(slug=slug, prs=decoded)
+        return self._resolve_review_threads(slug=slug, prs=self._resolve_behind_base(slug=slug, prs=decoded))
+
+    def _resolve_review_threads(self, *, slug: str, prs: list[PrSummary]) -> list[PrSummary]:
+        owner, _, name = slug.partition("/")
+        if not owner or not name or not prs:
+            return prs
+        counts: dict[int, int] = {}
+        for start in range(0, len(prs), _THREAD_BATCH_SIZE):
+            chunk = prs[start : start + _THREAD_BATCH_SIZE]
+            aliases = " ".join(
+                f"p{pr.number}: pullRequest(number: {pr.number}) {{ reviewThreads(first: 100) "
+                "{ pageInfo { hasNextPage } nodes { isResolved } } }"
+                for pr in chunk
+            )
+            query = f"query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{ {aliases} }} }}"
+            rc, out, _err = self._run_gh(["api", "graphql", "-f", f"query={query}"], slug=slug)
+            resolved = _review_thread_counts(out, [pr.number for pr in chunk]) if rc == 0 else {}
+            counts.update(resolved)
+            if rc != 0 or len(resolved) != len(chunk):
+                logger.warning(
+                    "pr_sweep review-thread read incomplete for %s: %d/%d PRs (rc=%d)",
+                    slug,
+                    len(resolved),
+                    len(chunk),
+                    rc,
+                )
+        return [replace(pr, unresolved_threads=counts.get(pr.number)) for pr in prs]
 
     def _resolve_behind_base(self, *, slug: str, prs: list[PrSummary]) -> list[PrSummary]:
         """Replace each PR's fallback behind-ness with the compare answer (#4526).
@@ -294,10 +357,10 @@ class GhPrApiClient:
         carries ``str(exc)`` in the returned :class:`BoundMergeResult.refusal`
         (#4856) instead of discarding it.
         """
-        from teatree.core.merge import MergePreconditionError, execute_bound_merge  # noqa: PLC0415 — tick-time import
+        from teatree.core.merge import MergePreconditionError  # noqa: PLC0415 — tick-time import
 
         try:
-            merged_sha = execute_bound_merge(ref=PrRef(slug=slug, pr_id=pr_id), expected_head_oid=expected_head_oid)
+            merged_sha = merge_without_clear(ref=PrRef(slug=slug, pr_id=pr_id), expected_head_oid=expected_head_oid)
         except MergePreconditionError as exc:
             return BoundMergeResult(merged=False, refusal=str(exc))
         return BoundMergeResult(merged=True, merged_sha=merged_sha)

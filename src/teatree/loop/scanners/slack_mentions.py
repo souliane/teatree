@@ -67,9 +67,9 @@ class SlackMentionsScanner:
         mentions = self.backend.fetch_mentions()
         dms: list[RawAPIDict] = []
 
-        drained_any, foreign = self._drain_queue_into(mentions, dms)
-        if dms:
-            self._record_dms(dms)
+        drained_any, foreign, dm_records = self._drain_queue_into(mentions, dms)
+        retry_events = self._record_dms(dms) if dms else []
+        retry_ids = {id(event) for event in retry_events}
 
         signals: list[ScanSignal] = []
         for event in mentions:
@@ -83,6 +83,8 @@ class SlackMentionsScanner:
             )
             self._record_review_intent(event)
         for event in dms:
+            if id(event) in retry_ids:
+                continue
             ts = _ts(event)
             channel = _channel(event)
             permalink = _resolve_permalink(self.backend, channel, ts)
@@ -99,14 +101,14 @@ class SlackMentionsScanner:
             # drain to recover, so no mention is lost (Slack never retries them).
             from teatree.backends.slack.receiver import commit_drain  # noqa: PLC0415 — deferred: loaded at tick time
 
-            commit_drain(retain=foreign)
+            commit_drain(retain=foreign + [record for record in dm_records if id(record.get("event")) in retry_ids])
         return signals
 
     def _drain_queue_into(
         self,
         mentions: list[RawAPIDict],
         dms: list[RawAPIDict],
-    ) -> tuple[bool, list[dict]]:
+    ) -> tuple[bool, list[dict], list[dict]]:
         """Fold this overlay's queued Socket Mode events into the mention/DM lists.
 
         Returns whether the JSONL queue yielded anything (so :meth:`scan`
@@ -123,6 +125,7 @@ class SlackMentionsScanner:
 
         drained_any = False
         foreign: list[dict] = []
+        dm_records: list[dict] = []
         for queued in drain_event_queue():
             drained_any = True
             if not record_is_owned_by(queued, self.overlay):
@@ -134,15 +137,18 @@ class SlackMentionsScanner:
                 mentions.append(event)
             elif event_type == "message" and event.get("channel_type", "") == "im":
                 dms.append(event)
-        return drained_any, foreign
+                dm_records.append(queued)
+        return drained_any, foreign, dm_records
 
-    def _record_dms(self, dms: list[RawAPIDict]) -> None:
+    def _record_dms(self, dms: list[RawAPIDict]) -> list[RawAPIDict]:
         if self._recorder is None:
             self._recorder = SlackDmRecorder(backend=self.backend, overlay=self.overlay)
         try:
             self._recorder.record_events(dms)
         except Exception:
             logger.exception("Failed to record %d drained DM(s)", len(dms))
+            return dms
+        return self._recorder.retry_events
 
     def _record_review_intent(self, event: RawAPIDict) -> None:
         """Persist a ``ReviewAssignment`` row and post ``:eyes:`` for MR-bearing mentions.

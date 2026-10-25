@@ -30,6 +30,10 @@ class TestOpenPrsFromSignals:
         prs = open_prs_from_signals(signals)
         assert [pr.iid for pr in prs] == [1, 2, 3]
 
+    def test_includes_findings_that_the_factory_must_fix(self) -> None:
+        signal = _signal("my_pr.findings_to_fix", iid=4, title="review findings")
+        assert [pr.iid for pr in open_prs_from_signals([signal])] == [4]
+
     def test_ignores_non_pr_signals(self) -> None:
         signals = [
             _signal("my_pr.open", iid=1, title="keep"),

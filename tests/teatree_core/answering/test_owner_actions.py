@@ -245,7 +245,7 @@ class TestCheckoutAttestation(TestCase):
                         context=DmContext(user_id=_OWNER, thread_ts=thread_ts),
                     )
                     assert reply is not None
-                    assert bind_reply(reply, reader=_statement, owner_user_id=_OWNER) is None
+                    assert not isinstance(bind_reply(reply, reader=_statement, backend=_owner_backend()), BoundAnswer)
                     row.refresh_from_db()
                     assert row.is_pending
                     assert self._carry_out() == []

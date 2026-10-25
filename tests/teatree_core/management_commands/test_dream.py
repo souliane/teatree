@@ -9,6 +9,7 @@ engine is a typed seam.
 
 import datetime as dt
 import json
+import os
 import tempfile
 from contextlib import redirect_stdout
 from dataclasses import replace
@@ -23,6 +24,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.cli.doctor.checks_loop import _check_dream_consolidation_blocked
+from teatree.core.management.commands.dream import Command
 from teatree.core.models import (
     ConsolidatedMemory,
     DreamRunMarker,
@@ -34,7 +36,10 @@ from teatree.core.models import (
 )
 from teatree.core.models.dream_gap_ledger import pending_entries
 from teatree.core.models.dream_run_marker import OUTCOME_FAILED, OUTCOME_GATES_FAILED
+from teatree.core.models.transition import TicketTransition
 from teatree.hooks import _repo_visibility
+from teatree.loop import global_scanner_factories
+from teatree.loops.dream.batch_promote import BatchOutcome, PromotionBatch
 from teatree.loops.dream.engine import DistilledCluster, DreamRunResult
 from teatree.loops.dream.gates import DreamQaReport, GateResult
 from teatree.loops.dream.loop import (
@@ -48,8 +53,118 @@ from teatree.loops.dream.loop import (
 )
 from teatree.loops.dream.pass_config import PassBudget
 from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, WeightedSnippet
+from teatree.loops.dream.stranded_hosts import StrandedReleaseReport
 from teatree.token_report import EvalReserveDecision
+from tests._git_repo import make_git_repo, run_git
 from tests._send_gate import allow_forge_repos
+
+
+class TestStrandedRelease(TestCase):
+    def test_queued_batch_nudges_once_after_stranded_release(self) -> None:
+        events: list[str] = []
+        outcome = BatchOutcome(queued=True, umbrella_url="https://github.com/o/r/issues/249", gap_count=1)
+
+        def release(*, umbrella_url: str) -> StrandedReleaseReport:
+            events.append("release")
+            return StrandedReleaseReport(released_hosts=1, returned_gaps=1, held_hosts=0, held_reasons=())
+
+        def nudge() -> bool:
+            events.append("nudge")
+            return True
+
+        with (
+            patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=outcome.umbrella_url),
+            patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
+            patch("teatree.loops.dream.batch_promote.promote_batch", return_value=outcome),
+            patch("teatree.core.management.commands.dream.release_stranded_hosts", side_effect=release),
+            patch("teatree.loops.backlog_sweep.loop.nudge_for_dream_gaps", side_effect=nudge),
+            patch("teatree.core.management.commands.dream.record_funnel"),
+        ):
+            summary = Command()._promote_batch(batch=PromotionBatch(), dry_run=False)
+
+        assert events == ["release", "nudge"]
+        assert "queued 1 gap(s)" in summary
+
+    def test_returned_gaps_nudge_the_sweep_after_release(self) -> None:
+        events: list[str] = []
+        outcome = BatchOutcome(queued=False, umbrella_url="https://github.com/o/r/issues/249", gap_count=0)
+
+        def release(*, umbrella_url: str) -> StrandedReleaseReport:
+            events.append("release")
+            return StrandedReleaseReport(
+                released_hosts=1,
+                returned_gaps=2,
+                held_hosts=2,
+                held_reasons=((12, "live worktree"), (13, "pull request row")),
+            )
+
+        def nudge() -> bool:
+            events.append("nudge")
+            return True
+
+        with (
+            patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=outcome.umbrella_url),
+            patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
+            patch("teatree.loops.dream.batch_promote.promote_batch", return_value=outcome),
+            patch("teatree.core.management.commands.dream.release_stranded_hosts", side_effect=release),
+            patch("teatree.loops.backlog_sweep.loop.nudge_for_dream_gaps", side_effect=nudge),
+            patch("teatree.core.management.commands.dream.record_funnel"),
+        ):
+            summary = Command()._promote_batch(batch=PromotionBatch(), dry_run=False)
+
+        assert events == ["release", "nudge"]
+        assert "returned 2 gap(s) from 1 stranded host(s)" in summary
+        assert "held 2 host(s): 12 live worktree, 13 pull request row" in summary
+
+    def test_daily_funnel_records_real_pass_and_skips_dry_run(self) -> None:
+        batch = PromotionBatch()
+        outcome = BatchOutcome(queued=False, umbrella_url="https://github.com/o/r/issues/249", gap_count=0)
+        with (
+            patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=outcome.umbrella_url),
+            patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
+            patch("teatree.loops.dream.batch_promote.promote_batch", return_value=outcome),
+            patch("teatree.core.management.commands.dream.release_stranded_hosts") as release,
+            patch("teatree.core.management.commands.dream.record_funnel") as record,
+        ):
+            Command()._promote_batch(batch=batch, dry_run=False)
+            Command()._promote_batch(batch=batch, dry_run=True)
+
+        assert release.call_count == 1
+        assert record.call_count == 1
+
+    def test_branch_existing_nowhere_releases_during_promotion(self) -> None:
+        umbrella_url = "https://github.com/o/r/issues/249"
+        Ticket.objects.create(issue_url=umbrella_url)
+        host = Ticket.objects.create(
+            issue_url=f"{umbrella_url}#dream-batch=old",
+            state=Ticket.State.WORK_STARTED,
+            extra={"branch": "gone", "dream_gap_batch": [{"gap_key": "g1", "cluster_key": "g1"}]},
+        )
+        TicketTransition.objects.create(ticket=host, from_state="not_started", to_state="work_started")
+        TicketTransition.objects.filter(ticket=host).update(created_at=timezone.now() - dt.timedelta(days=30))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = make_git_repo(root / "seed")
+            run_git(root, "clone", "-q", "--bare", str(seed), str(root / "origin.git"))
+            run_git(root, "clone", "-q", str(root / "origin.git"), str(root / "workspace" / "o" / "r"))
+            with (
+                patch.dict(os.environ, {"T3_WORKSPACE_DIR": str(root / "workspace")}),
+                patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=umbrella_url),
+                patch("teatree.core.models.dream_gap_ledger.dream_umbrella_url", return_value=umbrella_url),
+                patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
+                patch(
+                    "teatree.loops.dream.batch_promote.promote_batch",
+                    return_value=BatchOutcome(queued=False, umbrella_url=umbrella_url, gap_count=0),
+                ),
+            ):
+                summary = Command()._promote_batch(batch=PromotionBatch(), dry_run=False)
+
+        host.refresh_from_db()
+        assert host.state == Ticket.State.IGNORED
+        assert "branch gone absent locally, in tracking, and on origin" in host.extra["dream_gap_released"]["reason"]
+        assert "returned 1 gap(s) from 1 stranded host(s), held 0 host(s)" in summary
+        assert "held 0 host(s)" in summary
+
 
 _COMMAND = "teatree.core.management.commands.dream.Command"
 
@@ -901,11 +1016,11 @@ class DreamMemoryPromotionWiringTestCase(_DreamTickEnabledMixin, TestCase):
         stdout = StringIO()
         with (
             patch("teatree.loops.dream.batch_promote.reconcile_batches", return_value=[]),
-            patch("teatree.loops.dream.batch_promote.reconcile_batches", return_value=[]),
             patch(
                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
                 return_value=(object(), "souliane/teatree"),
             ),
+            patch.object(global_scanner_factories, "dream_umbrella_url", return_value=umbrella.issue_url),
             patch("teatree.loops.enable_verdict.loop_admits", return_value=True),
         ):
             self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
@@ -914,7 +1029,7 @@ class DreamMemoryPromotionWiringTestCase(_DreamTickEnabledMixin, TestCase):
         assert Ticket.objects.exclude(issue_url__startswith="backlog-sweep://").count() == work_tickets_before
         assert [entry["gap_key"] for entry in umbrella.extra["dream_gap_pending"]] == ["gap-x"]
         assert not Task.objects.filter(phase__in=["planning", "coding"]).exists()
-        assert Task.objects.filter(phase="backlog_sweep").count() == 1
+        assert Task.objects.filter(phase="backlog_sweep").count() == 1, stdout.getvalue()
         assert "queued 1 gap(s) for the backlog sweep" in stdout.getvalue()
 
     def test_promotion_runs_and_reports_when_toggle_on(self) -> None:

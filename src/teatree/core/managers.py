@@ -1,5 +1,7 @@
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, Unpack, cast
 
 from django.apps import apps
@@ -171,6 +173,21 @@ class TicketQuerySet(models.QuerySet):
 
 
 class WorktreeQuerySet(models.QuerySet):
+    def sharing_checkout(
+        self,
+        path: str | Path,
+        *,
+        ticket_id: int | None = None,
+        path_matches: Callable[[str, str | Path], bool],
+    ) -> list["Worktree"]:
+        rows = self.select_related("ticket")
+        if ticket_id is not None:
+            rows = rows.exclude(ticket_id=ticket_id)
+        return [row for row in rows if row.worktree_path and path_matches(row.worktree_path, path)]
+
+    def runtime_peers(self, worktree: "Worktree") -> list["Worktree"]:
+        return list(self.exclude(pk=worktree.pk).select_related("ticket"))
+
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         return _for_overlay(self, overlay)
 
