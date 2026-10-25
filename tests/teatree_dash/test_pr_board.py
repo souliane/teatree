@@ -17,6 +17,8 @@ from teatree.core.review.pr_inventory import PrInventoryEntry, PrInventorySnapsh
 from teatree.dash.pr_board import PrBoard, PrBoardCard, build_pr_board
 from tests.factories import PullRequestFactory, TaskAttemptFactory, TaskFactory, TicketFactory
 
+_UNVERIFIED_REASON = "Forge facts not verified by a recent tick"
+
 
 def _group(board: PrBoard, name: str) -> list[str]:
     return [card.ref for group in board.groups if group.name == name for card in group.cards]
@@ -120,7 +122,7 @@ class PrBoardTestCase(TestCase):
 
         assert card.group == "Blocked"
         assert card.next_actor == "Factory"
-        assert "not verified" in card.next_action
+        assert card.next_action.startswith(_UNVERIFIED_REASON)
         assert "stale" in board.inventory_warning
 
     def test_unverified_or_stale_snapshot_names_the_blocker_on_every_card(self) -> None:
@@ -148,7 +150,7 @@ class PrBoardTestCase(TestCase):
                 for pr in (ready, waiting, pending):
                     assert cards[pr.url].group == "Blocked"
                     assert cards[pr.url].next_actor == "Factory"
-                    assert "not verified" in cards[pr.url].next_action
+                    assert cards[pr.url].next_action.startswith(_UNVERIFIED_REASON)
 
     def test_owner_question_and_active_task_precede_unverified_blocker(self) -> None:
         owner = PullRequestFactory(ticket=TicketFactory())
@@ -247,7 +249,9 @@ class PrBoardTestCase(TestCase):
 
     def test_stale_empty_snapshot_never_hides_an_open_recorded_pr(self) -> None:
         pr = PullRequestFactory(overlay="teatree")
-        stale = PrInventorySnapshot(overlay="teatree", observed_at=timezone.now() - timedelta(days=3), entries=())
+        stale = PrInventorySnapshot(
+            overlay="teatree", observed_at=timezone.now() - timedelta(days=3), entries=(), watched_repos=(pr.repo,)
+        )
         with patch("teatree.dash.pr_board.read_inventory", return_value=(stale,)):
             board = build_pr_board()
         assert [card.ref for group in board.groups for card in group.cards] == [f"{pr.repo}!{pr.iid}"]
