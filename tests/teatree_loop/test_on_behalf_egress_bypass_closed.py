@@ -27,6 +27,7 @@ from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests._forge_author import colleague_forge
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
@@ -154,6 +155,9 @@ class TestReviewDoneReactionBypassClosed(TestCase):
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
+
+    def setUp(self) -> None:
+        self.enterContext(colleague_forge())
 
     def test_no_reaction_no_claim_under_ask(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, forbidding=True)

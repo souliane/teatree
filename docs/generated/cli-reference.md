@@ -1538,9 +1538,10 @@ Usage: t3 review-request post [OPTIONS]
 │ *  --mr-url           TEXT  Canonical MR/PR URL to post. [required]          │
 │ *  --approver         TEXT  User id that recorded the #960 approval.         │
 │                             [required]                                       │
-│ *  --ticket-id        TEXT  Ticket whose review evidence is checked.         │
-│                             [required]                                       │
-│ *  --head-sha         TEXT  Full reviewed head SHA. [required]               │
+│    --ticket-id        TEXT  Ticket whose review evidence is checked          │
+│                             (default: owner).                                │
+│    --head-sha         TEXT  Full reviewed head SHA (needed when a ticket     │
+│                             owns it).                                        │
 │    --title            TEXT  Review-request subject (recommended).            │
 │    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
