@@ -432,11 +432,11 @@ async def _task_list(
 
 
 async def _question_list(*, limit: int = 50) -> list[dict[str, Any]]:
-    """Pending DeferredQuestion rows — the backlog awaiting the user's answer.
+    """Pending owner questions — the backlog awaiting the user's answer.
 
     The read counterpart to the ``question_answer`` write tool. Returns each
     pending question's id, text, raw options, originating session, and Slack
-    ``ts`` / ``channel`` (when mirrored), newest first.
+    ``ts`` / ``channel`` (when mirrored), oldest first.
     """
     return await sync_to_async(introspection.question_list, thread_sensitive=True)(limit=limit)
 

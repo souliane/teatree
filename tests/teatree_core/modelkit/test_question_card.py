@@ -22,6 +22,19 @@ from teatree.core.modelkit.question_card import (
 )
 
 
+def test_card_subject_round_trips_through_evidence() -> None:
+    card = QuestionCard(
+        decision=OwnerDecision.ARCHITECTURE,
+        checked=("The change is ready for review.",),
+        blocker="The merge waits for the owner.",
+        why="The owner needs to read the change before it merges.",
+        subject="https://github.com/example/repo/pull/12",
+    )
+
+    assert card.to_evidence()["subject"] == card.subject
+    assert QuestionCard.from_row(card.to_evidence(), "") == card
+
+
 def test_cut_title_retries_the_safe_short_text_when_the_full_title_is_unsafe() -> None:
     short = "Readable short title..."
 

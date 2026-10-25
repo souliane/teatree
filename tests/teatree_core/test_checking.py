@@ -12,6 +12,7 @@ are omitted, and an all-empty report collapses to one line.
 
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -28,14 +29,18 @@ from teatree.core.checking import (
     gather_all_overlays_report,
     gather_checking_report,
 )
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
+from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from tests._owner_channel import OWNER_DECISION
+from teatree.core.models.waiting_item import WaitingItem
+from tests._owner_channel import OWNER_DECISION, owner_card
 
 _SHA = "a" * 40
 _REVIEWER = "cold-reviewer"
@@ -395,8 +400,67 @@ class TestNeedsYouGroup(CheckingTestBase):
         labels = [item.label for item in report.needs_you.items]
         assert any(label.startswith(f"Q{owner.pk}:") for label in labels)
         assert not any(label.startswith(f"Q{internal.pk}:") for label in labels)
-        assert "1 internal escalations: factory work, not questions" in labels
-        assert report.needs_you.total == 2
+        assert report.needs_you.total == 1
+        assert report.internal_escalations == 1
+        assert "1 internal escalations" in report.to_terse()
+        assert report.to_dict()["internal_escalations"] == 1
+
+    def test_all_wait_kinds_are_oldest_first_and_linked(self) -> None:
+        oldest = DeferredQuestion.record(
+            "May I use this plan?", card=replace(owner_card(), subject="https://example.com/plan")
+        )
+        newest = DeferredQuestion.record(
+            "May I use this scope?", card=replace(owner_card(), subject="https://example.com/scope")
+        )
+        DeferredQuestion.objects.filter(pk=oldest.pk).update(created_at=self.now - timedelta(days=10))
+        DeferredQuestion.objects.filter(pk=newest.pk).update(created_at=self.now - timedelta(days=1))
+        ticket = self._ticket()
+        pr = PullRequest.objects.create(
+            ticket=ticket,
+            overlay=self.OVERLAY,
+            url="https://github.com/acme/widgets/pull/31",
+            repo="acme/widgets",
+            iid="31",
+        )
+        pr.request_review()
+        pr.approve()
+        pr.save()
+        PullRequest.objects.filter(pk=pr.pk).update(review_requested_at=self.now - timedelta(days=7))
+        review = ReviewAssignment.record(
+            ReviewIntent(
+                mr_url="https://github.com/acme/widgets/pull/32",
+                user_id="u1",
+                channel="C1",
+                slack_ts="1.1",
+                trigger="reaction",
+                overlay=self.OVERLAY,
+            )
+        )
+        ReviewAssignment.objects.filter(pk=review.pk).update(observed_at=self.now - timedelta(days=5))
+        manual = WaitingItem.objects.add("Read the plan")
+        WaitingItem.objects.filter(pk=manual.pk).update(created_at=self.now - timedelta(days=3))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert [item.kind for item in report.needs_you.items] == [
+            "question",
+            "merge_authorization",
+            "review_request",
+            "manual",
+            "question",
+        ]
+        assert [item.age_days for item in report.needs_you.items] == [10, 7, 5, 3, 1]
+        assert [item.url for item in report.needs_you.items[:3]] == ["https://example.com/plan", pr.url, review.mr_url]
+        assert report.needs_you.total == 5
+
+    def test_kept_decisions_are_owner_only(self) -> None:
+        for decision in OwnerDecision:
+            DeferredQuestion.record("May I proceed?", card=owner_card(decision))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, cap=10)
+
+        assert {item.kind for item in report.needs_you.items} == {"question"}
+        assert [item.owner_only for item in report.needs_you.items] == [True, True, True, True, False, False]
 
     def test_failed_attempt_surfaces_blocker_with_clickable_url(self) -> None:
         ticket = self._ticket(state=Ticket.State.WORK_STARTED)

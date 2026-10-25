@@ -14,8 +14,8 @@ Four groups, each scoped to one overlay over the window ``[since, now)``:
 * **In-flight** — the latest :class:`TicketTransition` per ticket inside the
     window (the standup latest-per-ticket dedup), plus completed background
     :class:`TaskAttempt` runs.
-* **Needs you** — pending :class:`DeferredQuestion` rows (NOT window-bounded: a
-    pending question still needs the user however old it is) plus failed
+* **Needs you** — all four live waiting kinds (NOT window-bounded: a
+    pending wait still needs the user however old it is) plus failed
     ``TaskAttempt`` runs inside the window. Failed agent runs are the durable
     proxy for "blocked" — core makes no live forge calls; an overlay opts into
     richer signals via :meth:`OverlayBase.get_checking_sources`.
@@ -26,45 +26,33 @@ Multi-overlay aggregation (``gather_all_overlays_report``):
 
 :func:`gather_all_overlays_report` merges per-overlay groups into a single
 :class:`AllOverlaysReport`. Each overlay-scoped item carries an ``[overlay]``
-inline tag in its detail so the reader can tell provenance. The global
-:class:`DeferredQuestion` query runs exactly once for the whole report — not
-once per overlay — so a pending question never appears more than once.
+inline tag in its detail so the reader can tell provenance. The global owner
+waiting gather runs exactly once, so a pending question never appears twice.
 """
 
 import operator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TypedDict
 
 from django.db.models import Count, Max, Sum
 
+from teatree.core import checking_types
 from teatree.core._checking_gather import (
     _MergedScope,
-    deferred_questions,
+    internal_escalation_count,
     merged_entries_from_qs,
     merged_group_from_qs,
     motion_for_overlay,
+    owner_wait_items,
     ticket_url,
 )
+from teatree.core.checking_types import DEFAULT_CAP, CheckGroup, CheckGroupDict, CheckItem
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 
-#: Per-group item cap; beyond it the renderer appends "…and X more".
-DEFAULT_CAP = 5
-
-
-class CheckItemDict(TypedDict):
-    label: str
-    url: str
-    detail: str
-    title: str
-
-
-class CheckGroupDict(TypedDict):
-    title: str
-    items: list[CheckItemDict]
-    total: int
+CheckItemDict = checking_types.CheckItemDict
 
 
 class CheckingReportDict(TypedDict):
@@ -73,6 +61,7 @@ class CheckingReportDict(TypedDict):
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
     metered: CheckGroupDict
+    internal_escalations: int
     terse: str
 
 
@@ -83,68 +72,8 @@ class AllOverlaysReportDict(TypedDict):
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
     metered: CheckGroupDict
+    internal_escalations: int
     terse: str
-
-
-@dataclass(frozen=True, slots=True)
-class CheckItem:
-    """One line in a group — a clickable reference plus optional detail.
-
-    ``url`` is the clickable target (a PR/issue/ticket URL, or an actionable
-    command for a deferred question). ``title`` is the human-readable
-    description rendered inline next to the id (#2092), so a reader never sees a
-    bare/link-only ``#N`` they can't interpret. The shared
-    :func:`teatree.core.ref_render.render_ref` chokepoint produces the
-    ``[#N (short title)](url)`` shape every listing surface uses.
-    """
-
-    label: str
-    url: str
-    detail: str = ""
-    title: str = ""
-
-    def to_dict(self) -> CheckItemDict:
-        return CheckItemDict(label=self.label, url=self.url, detail=self.detail, title=self.title)
-
-    def render(self) -> str:
-        from teatree.core.ref_render import render_ref  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-        ref = render_ref(self.label, title=self.title, url=self.url)
-        return f"  - {ref} — {self.detail}" if self.detail else f"  - {ref}"
-
-
-@dataclass(frozen=True, slots=True)
-class CheckGroup:
-    """One titled group of items, with the full pre-cap total.
-
-    ``total`` is the count before the cap (``total >= len(items)``) so the
-    renderer can append "…and X more" without re-querying.
-    """
-
-    title: str
-    items: list[CheckItem] = field(default_factory=list)
-    total: int = 0
-
-    def to_dict(self) -> CheckGroupDict:
-        return CheckGroupDict(
-            title=self.title,
-            items=[item.to_dict() for item in self.items],
-            total=self.total,
-        )
-
-    def render(self, *, cap: int = DEFAULT_CAP) -> list[str]:
-        """Render the group header + capped items, or ``[]`` when empty.
-
-        An empty group is omitted entirely (returns no lines). A group with
-        more than *cap* items appends a ``…and X more`` line.
-        """
-        if self.total == 0:
-            return []
-        lines = [self.title]
-        lines.extend(item.render() for item in self.items[:cap])
-        if self.total > cap:
-            lines.append(f"  …and {self.total - cap} more")
-        return lines
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +85,7 @@ class CheckingReport:
     in_flight: CheckGroup
     needs_you: CheckGroup
     metered: CheckGroup
+    internal_escalations: int = 0
 
     @property
     def groups(self) -> list[CheckGroup]:
@@ -168,6 +98,7 @@ class CheckingReport:
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
+            internal_escalations=self.internal_escalations,
             terse=self.to_terse(),
         )
 
@@ -185,12 +116,14 @@ class CheckingReport:
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 for group in groups):
+        if all(group.total == 0 for group in groups) and not self.internal_escalations:
             return f"Nothing since {stamp}."
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
         lines = [header]
         for group in groups:
             lines.extend(group.render(cap=cap))
+        if self.internal_escalations:
+            lines.append(f"{self.internal_escalations} internal escalations: factory work, not questions")
         return "\n".join(lines)
 
 
@@ -210,6 +143,7 @@ class AllOverlaysReport:
     in_flight: CheckGroup
     needs_you: CheckGroup
     metered: CheckGroup
+    internal_escalations: int = 0
 
     @property
     def groups(self) -> list[CheckGroup]:
@@ -223,6 +157,7 @@ class AllOverlaysReport:
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
+            internal_escalations=self.internal_escalations,
             terse=self.to_terse(),
         )
 
@@ -239,11 +174,13 @@ class AllOverlaysReport:
         )
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 for group in groups):
+        if all(group.total == 0 for group in groups) and not self.internal_escalations:
             return f"Nothing since {stamp}."
         lines = [f"Since {stamp} · all overlays"]
         for group in groups:
             lines.extend(group.render(cap=cap))
+        if self.internal_escalations:
+            lines.append(f"{self.internal_escalations} internal escalations: factory work, not questions")
         return "\n".join(lines)
 
 
@@ -280,9 +217,8 @@ def gather_all_overlays_report(
     *overlay_windows* maps overlay name → ``(since, now)`` pair.
     *overlay_configs* maps overlay name → ``(code_host, overlay_repos)`` pair.
 
-    The global :class:`DeferredQuestion` query runs exactly ONCE — pending
-    questions are not scoped per overlay, so repeating the query per overlay
-    would duplicate them in the output.
+    The global waiting gather runs exactly ONCE — pending questions are not
+    scoped per overlay, so repeating the gather would duplicate them.
 
     Overlay-scoped items (merged, in-flight, failed attempts) have their
     detail text suffixed with ``[overlay]`` so the reader sees provenance.
@@ -295,7 +231,7 @@ def gather_all_overlays_report(
         reverse=True,
     )
     overlay_slug = next(iter(overlay_windows), "") or "<overlay>"
-    needs_you_items = deferred_questions(overlay_slug=overlay_slug)
+    needs_you_items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug)]
     needs_you_items.extend(failed_items)
     effective_since = earliest_since or next(iter(overlay_windows.values()), (None, None))[0] or datetime.now(UTC)
     metered_groups = [
@@ -314,6 +250,7 @@ def gather_all_overlays_report(
         ),
         in_flight=CheckGroup(title="In-flight", items=in_flight_items[:cap], total=len(in_flight_items)),
         needs_you=CheckGroup(title="Needs you", items=needs_you_items[:cap], total=len(needs_you_items)),
+        internal_escalations=internal_escalation_count(),
         metered=CheckGroup(
             title="Metered",
             items=[item for _, item in metered_entries[:cap]],
@@ -388,6 +325,7 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         merged=_merged_group(since=since, now=now, scope=scope, cap=cap),
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
+        internal_escalations=internal_escalation_count(),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
     )
 
@@ -466,10 +404,8 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
 
 
 def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
-    items: list[CheckItem] = []
-
     overlay_slug = overlay_name or "<overlay>"
-    items.extend(deferred_questions(overlay_slug=overlay_slug))
+    items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name)]
 
     failed = (
         TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)

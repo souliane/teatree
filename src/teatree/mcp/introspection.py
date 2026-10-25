@@ -23,16 +23,17 @@ _DEFAULT_QUESTION_LIMIT = 50
 
 
 def question_list(*, limit: int = _DEFAULT_QUESTION_LIMIT) -> list[dict[str, Any]]:
-    """Pending ``DeferredQuestion`` rows — the backlog awaiting the user's answer.
+    """Pending owner questions, oldest first.
 
-    The read counterpart to the ``question_answer`` write tool: delegates to
-    ``DeferredQuestion.pending`` (the same not-yet-answered/dismissed set the
-    Stop-hook nag and the deferred-question poster read), newest first. Each row
+    These rows require an authenticated owner reply in Slack; the internal
+    ``question_answer`` write tool cannot settle them. The list delegates to
+    ``DeferredQuestion.owner_pending`` (the not-yet-answered/dismissed owner set
+    that the deferred-question poster reads). Each row
     carries the question text, the raw ``options`` string, the originating
     ``session_id``, and the Slack ``ts`` / ``channel`` when the question was
     mirrored to Slack.
     """
-    rows = DeferredQuestion.pending().order_by("-created_at", "-pk")[: _capped(limit, _DEFAULT_QUESTION_LIMIT)]
+    rows = DeferredQuestion.owner_pending().order_by("created_at", "pk")[: _capped(limit, _DEFAULT_QUESTION_LIMIT)]
     return [
         {
             "id": row.pk,

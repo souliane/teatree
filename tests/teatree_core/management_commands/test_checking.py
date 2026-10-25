@@ -10,6 +10,7 @@ tests never touch the real DATA_DIR.
 
 import json
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from datetime import timedelta
 from io import StringIO
 from pathlib import Path
@@ -24,9 +25,11 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, Session, Task, TaskAttempt
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
+from tests._owner_channel import owner_card
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -184,8 +187,22 @@ class TestCheckingShow:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay", "--json")
         payload = json.loads(out)
-        assert set(payload) == {"since", "merged", "in_flight", "needs_you", "metered", "terse"}
+        assert set(payload) == {"since", "merged", "in_flight", "needs_you", "metered", "internal_escalations", "terse"}
         assert payload["merged"]["items"][0]["label"] == "acme/widgets#7"
+
+    def test_json_separates_owner_waits_from_internal_escalations(self, checkpoint_file: Path) -> None:
+        owner = DeferredQuestion.record(
+            "May I publish this?", card=replace(owner_card(), subject="https://github.com/acme/widgets/pull/8")
+        )
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--json", "--no-advance"))
+
+        assert payload["needs_you"]["total"] == 1
+        assert payload["needs_you"]["items"][0]["row_id"] == owner.pk
+        assert payload["needs_you"]["items"][0]["url"] == "https://github.com/acme/widgets/pull/8"
+        assert payload["internal_escalations"] == 1
+        assert payload["terse"].splitlines()[-1] == "1 internal escalations: factory work, not questions"
 
     def test_overlay_scoping_excludes_other_overlay(
         self, checkpoint_file: Path, monkeypatch: pytest.MonkeyPatch

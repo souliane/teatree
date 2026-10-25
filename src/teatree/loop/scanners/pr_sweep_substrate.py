@@ -14,6 +14,7 @@ from teatree.core.backend_protocols import changed_paths_unavailable
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
 from teatree.core.models.merge_clear import diff_paths_are_substrate
+from teatree.core.owner_waits import ask_owner_to_read
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 from teatree.utils.pr_ref import PrRef
 
@@ -96,9 +97,13 @@ def substrate_hold_key(pr: PrSummary, *, reviewed_sha: str) -> str:
 def ping_substrate_hold(pinger: "SubstratePinger | None", *, pr: PrSummary, reviewed_sha: str, error: str) -> None:
     """DM the owner ONCE that a substrate merge is held (ping-and-hold).
 
-    No-op when no pinger is wired. Best-effort: a pinger error never aborts the
-    sweep — the substrate clear is still held; only the DM is missed.
+    The owner card is recorded even without a pinger. Best-effort: a pinger
+    error never aborts the sweep — the substrate clear is still held.
     """
+    try:
+        ask_owner_to_read(pr.url, pr.title, reviewed_sha)
+    except Exception:
+        logger.exception("pr_sweep failed to record substrate-hold card for %s#%d", pr.slug, pr.number)
     if pinger is None:
         return
     try:

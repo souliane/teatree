@@ -22,12 +22,17 @@ reads right while the underlying gate silently stopped blocking) turns this file
 red.
 """
 
+import os
+from unittest.mock import patch
+
 import pytest
 from django.test import TestCase
 
 from teatree.cli.review.default_draft import publish_live_post
 from teatree.core.gates.live_post_gate import APPROVE_LIVE_POST_USAGE, UNGATED_ALTERNATIVES, LivePostBlockedError
-from teatree.core.models import LivePostApproval
+from teatree.core.modelkit.question_card import QuestionCard, plain_text
+from teatree.core.models import DeferredQuestion, LivePostApproval
+from teatree.core.models.live_post_approval import canonical_mr_scope
 
 _MR = "acme-internal/widget!42"
 
@@ -90,6 +95,53 @@ class TestGateBehaviourNotJustWording(TestCase):
         assert code == 1
         assert "live post blocked (#1207)" in message
         assert calls == [], "unauthorised: the publish body must never run"
+
+    def test_refused_live_post_asks_once_and_approval_settles_the_question(self) -> None:
+        for _ in range(2):
+            message, code = publish_live_post(repo="acme-internal/widget", mr=42, publish=lambda: ("OK", 0))
+            assert code == 1
+            assert "live post blocked" in message
+
+        rows = list(DeferredQuestion.owner_pending())
+        assert len(rows) == 1
+        assert rows[0].evidence["decision"] == "public_post"
+        assert canonical_mr_scope(rows[0].evidence["subject"]) == _MR
+
+        LivePostApproval.record(mr_url=_MR, slack_ts="1700000000.000100", slack_user_id="U-OWNER")
+        assert publish_live_post(repo="acme-internal/widget", mr=42, publish=lambda: ("OK", 0)) == ("OK", 0)
+        rows[0].refresh_from_db()
+        assert rows[0].status == DeferredQuestion.STATUS_DISMISSED
+
+        message, code = publish_live_post(repo="acme-internal/widget", mr=42, publish=lambda: ("OK", 0))
+        assert code == 1
+        assert "live post blocked" in message
+        pending = list(DeferredQuestion.owner_pending())
+        assert len(pending) == 1
+        assert pending[0].pk != rows[0].pk
+
+    def test_refusal_card_links_the_actual_review_host(self) -> None:
+        with patch.dict(os.environ, {"GITLAB_URL": "https://gitlab.example.com/api/v4"}):
+            _message, code = publish_live_post(repo="acme-internal/widget", mr=42, publish=lambda: ("OK", 0))
+
+        assert code == 1
+        row = DeferredQuestion.owner_pending().get()
+        card = QuestionCard.from_row(row.evidence, row.options_json)
+        assert card is not None
+        assert card.subject == "https://gitlab.example.com/acme-internal/widget/-/merge_requests/42"
+        assert card.subject in plain_text(card.view(row.question))
+
+    def test_unreadable_review_url_still_blocks_and_records_the_wait(self) -> None:
+        with (
+            patch(
+                "teatree.cli.review.forge_target.resolve_base_url", side_effect=RuntimeError("forge URL unavailable")
+            ),
+            self.assertLogs("teatree.core.gates.live_post_gate", level="ERROR") as logs,
+        ):
+            _message, code = publish_live_post(repo="acme-internal/widget", mr=42, publish=lambda: ("OK", 0))
+
+        assert code == 1
+        assert DeferredQuestion.owner_pending().count() == 1
+        assert any("forge URL unavailable" in line for line in logs.output)
 
     def test_a_genuine_recorded_approval_clears_the_gate_and_is_consumed_single_use(self) -> None:
         LivePostApproval.record(mr_url="acme-internal/widget!42", slack_ts="1700000000.000100", slack_user_id="U-OWNER")

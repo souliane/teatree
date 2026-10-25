@@ -9,11 +9,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from teatree.core.checking_types import OwnerWaitItem
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.waiting import WaitingKind, gather_waiting
 
 if TYPE_CHECKING:
     from teatree.core.checking import CheckItem
@@ -241,23 +243,31 @@ def motion_for_overlay(
     return in_flight, failed
 
 
-def deferred_questions(*, overlay_slug: str) -> list:
-    """Pending owner questions as :class:`CheckItem` rows, plus one line counting the internal escalations."""
-    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
-
-    items: list = []
-    for question in DeferredQuestion.owner_pending():
-        snippet = question.question.strip().replace("\n", " ")[:60]
+def owner_wait_items(*, overlay_slug: str, overlay: str = "") -> list[OwnerWaitItem]:
+    """Every live owner wait, oldest first, from the shared waiting lane."""
+    waits = sorted(gather_waiting(overlay), key=lambda entry: entry.age, reverse=True)
+    items: list[OwnerWaitItem] = []
+    for wait in waits:
+        question = wait.kind == WaitingKind.QUESTION
+        label = f"Q{wait.row_id}: {wait.ref}" if question else wait.ref
+        detail = (
+            f"answer in its Slack thread, or t3 {overlay_slug} questions dismiss {wait.row_id} --reason '<evidence>'"
+            if question
+            else f"waiting {max(0, wait.age.days)}d"
+        )
         items.append(
-            CheckItem(
-                label=f"Q{question.pk}: {snippet}",
-                url="",
-                detail=(
-                    f"answer in its Slack thread, or t3 {overlay_slug} questions dismiss {question.pk} "
-                    "--reason '<evidence>'"
-                ),
+            OwnerWaitItem(
+                label=label,
+                url=wait.url,
+                detail=detail,
+                kind=wait.kind,
+                age_days=max(0, wait.age.days),
+                row_id=wait.row_id,
+                owner_only=wait.owner_only,
             )
         )
-    if internal := DeferredQuestion.internal_pending().count():
-        items.append(CheckItem(label=f"{internal} internal escalations: factory work, not questions", url=""))
     return items
+
+
+def internal_escalation_count() -> int:
+    return DeferredQuestion.internal_pending().count()

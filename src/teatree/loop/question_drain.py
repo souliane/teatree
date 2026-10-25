@@ -45,12 +45,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone
 
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.question_subject import finished_subject_reason
+from teatree.core.owner_waits import canonical_wait_subject
 from teatree.core.question_heal import HEAL_CHECKS
 from teatree.loop.question_subjects import SubjectIndex
 
@@ -122,6 +123,7 @@ class SweepContext:
     cleared_halts: frozenset[int]
     #: Per ``HEAL_CHECKS`` name, the rows it proved healed and why.
     healed: Mapping[str, Mapping[int, str]]
+    settled_pr_subjects: Mapping[str, str]
 
     @classmethod
     def build(cls, questions: Sequence[DeferredQuestion]) -> "SweepContext":
@@ -132,6 +134,7 @@ class SweepContext:
             superseded_parked=_superseded_parked_questions(questions),
             cleared_halts=_cleared_halt_questions(questions, index),
             healed={name: check(questions) for name, check in HEAL_CHECKS},
+            settled_pr_subjects=_settled_pr_subjects(questions),
         )
 
 
@@ -242,6 +245,40 @@ def _pr_terminal(question: DeferredQuestion, context: SweepContext) -> Decision 
     return Decision(Verdict.DRAIN, f"every pull request recorded for the subject is settled ({settled})")
 
 
+def _settled_pr_subjects(questions: Sequence[DeferredQuestion]) -> dict[str, str]:
+    subjects = {
+        canonical_wait_subject(subject)
+        for question in questions
+        if isinstance((subject := question.evidence.get("subject")), str) and subject
+    }
+    if not subjects:
+        return {}
+    iterator = iter(subjects)
+    selector = Q(url__istartswith=next(iterator))
+    for subject in iterator:
+        selector |= Q(url__istartswith=subject)
+    states: dict[str, list[str]] = {}
+    urls: dict[str, str] = {}
+    for pr in PullRequest.objects.filter(selector).only("url", "state"):
+        identity = canonical_wait_subject(pr.url)
+        if identity in subjects:
+            states.setdefault(identity, []).append(pr.state)
+            urls[identity] = pr.url
+    return {
+        identity: f"pull request {urls[identity]} is {', '.join(sorted(set(pr_states)))}"
+        for identity, pr_states in states.items()
+        if all(state in _SETTLED_PR_STATES for state in pr_states)
+    }
+
+
+def _subject_pr_settled(question: DeferredQuestion, context: SweepContext) -> Decision | None:
+    subject = question.evidence.get("subject")
+    if not isinstance(subject, str):
+        return None
+    reason = context.settled_pr_subjects.get(canonical_wait_subject(subject))
+    return Decision(Verdict.DRAIN, reason) if reason is not None else None
+
+
 def _superseded_parked_questions(questions: Sequence[DeferredQuestion]) -> frozenset[int]:
     """The parked rows whose ``(ticket, phase)`` lane has since completed a NEWER run.
 
@@ -334,6 +371,7 @@ SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (
     *((name, _heal_resolver(name)) for name, _check in HEAL_CHECKS),
     ("halt_trigger_cleared", _halt_trigger_cleared),
     ("parked_task_superseded", _parked_task_superseded),
+    ("subject_pr_settled", _subject_pr_settled),
     ("pr_terminal", _pr_terminal),
     ("subject_terminal", _subject_terminal),
 )

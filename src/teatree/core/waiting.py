@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.pull_request import PullRequest
@@ -68,6 +70,8 @@ class WaitingEntry:
     age: timedelta = field(default=timedelta())
     url: str = ""
     entry_id: int | None = None
+    row_id: int | None = None
+    owner_only: bool = False
 
 
 def format_age(age: timedelta) -> str:
@@ -97,14 +101,20 @@ def gather_waiting(overlay: str) -> list[WaitingEntry]:
 
 
 def _question_entries(now: datetime) -> list[WaitingEntry]:
-    return [
-        WaitingEntry(
-            kind=WaitingKind.QUESTION,
-            ref=question.question.strip().replace("\n", " ")[:_QUESTION_REF_LEN],
-            age=now - question.created_at,
+    entries: list[WaitingEntry] = []
+    for question in DeferredQuestion.owner_pending():
+        card = QuestionCard.from_row(question.evidence, question.options_json)
+        entries.append(
+            WaitingEntry(
+                kind=WaitingKind.QUESTION,
+                ref=question.question.strip().replace("\n", " ")[:_QUESTION_REF_LEN],
+                age=now - question.created_at,
+                url=card.subject if card else "",
+                row_id=question.pk,
+                owner_only=card is None or card.decision in OWNER_KEPT_DECISIONS,
+            )
         )
-        for question in DeferredQuestion.owner_pending()
-    ]
+    return entries
 
 
 def _merge_authorization_entries(now: datetime, overlay: str) -> list[WaitingEntry]:
