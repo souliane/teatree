@@ -9,7 +9,12 @@ from teatree.core.modelkit.gate_registry import get
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.task import Task
 from teatree.core.models.task_repair_queries import next_repair_iteration
-from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX, PARK_ERROR_PREFIXES
+from teatree.core.models.usage_window_state import (
+    CHECKOUT_PARKED_PREFIX,
+    LIMIT_PARKED_PREFIX,
+    OPERATOR_PAUSED_PREFIX,
+    PARK_ERROR_PREFIXES,
+)
 from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.core.telemetry.admission import LifecycleEvent, record_lifecycle_event
 from teatree.utils.session_ref import session_ref
@@ -35,12 +40,26 @@ CANDIDATE_FAULT_KINDS = frozenset(
     {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
 )
 READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
+# Stamped in no-op recovery summaries; read by doctor duplicate-execution and skill-gap checks.
+NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
 
 
-PARK_ERROR_Q = models.Q(error__startswith=LIMIT_PARKED_PREFIX) | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
+PARK_ERROR_Q = (
+    models.Q(error__startswith=LIMIT_PARKED_PREFIX)
+    | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
+    | models.Q(error__startswith=OPERATOR_PAUSED_PREFIX)
+)
 
 
 class TaskAttemptQuerySet(models.QuerySet):
+    def skill_loads_in_session(self, session_id: str) -> list[str]:
+        if not session_id:
+            return []
+        prior_loads = self.filter(agent_session_id=session_id).values_list(
+            "result__skill_assurance__observed_loads", flat=True
+        )
+        return [name for loads in prior_loads if isinstance(loads, list) for name in loads if isinstance(name, str)]
+
     def parks(self) -> "TaskAttemptQuerySet":
         return self.filter(PARK_ERROR_Q)
 

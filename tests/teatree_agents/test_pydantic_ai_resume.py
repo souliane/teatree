@@ -251,4 +251,8 @@ class TestAnAnsweredContinuationThatHitsAUsageLimit(TestCase):
         assert "limit_parked: " in attempt.error
         resumed = rehydrate_thread_for_resume(self.resume)
         assert resumed is not None
-        assert resumed.history == self.history
+        kept = len(self.history)
+        assert resumed.history[:kept] == self.history
+        [interrupted_request, interrupted_response] = resumed.history[kept:]
+        assert "The user answered your earlier question: postgres" in repr(interrupted_request)
+        assert interrupted_response.parts == []

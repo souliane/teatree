@@ -14,6 +14,7 @@ re-derived per call site.
 
 import logging
 import re
+from dataclasses import dataclass
 from decimal import Decimal
 
 from teatree.backends.slack.self_identity import is_self_authored, resolve_own_identity
@@ -21,6 +22,12 @@ from teatree.core.backend_protocols import MessagingBackend
 
 logger = logging.getLogger(__name__)
 _SLACK_TS = re.compile(r"^[0-9]{1,15}\.[0-9]{1,9}$")
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedReply:
+    ts: str | None
+    text: str
 
 
 def _timestamp(value: object) -> Decimal | None:
@@ -56,7 +63,7 @@ def bot_reply_present_in_thread(
     channel: str,
     thread_root: str,
     after_ts: str | None = None,
-    expected_ts: str | None = None,
+    expected_ts: str | ExpectedReply | None = None,
 ) -> bool:
     """True iff a relevant bot reply is visible under *thread_root*.
 
@@ -68,8 +75,10 @@ def bot_reply_present_in_thread(
     empty reads, and read failures all report ``False``.
     """
     floor = _timestamp(after_ts) if after_ts is not None else None
-    expected = _timestamp(expected_ts) if expected_ts is not None else None
-    if (after_ts is not None and floor is None) or (expected_ts is not None and expected is None):
+    expected_value = expected_ts.ts if isinstance(expected_ts, ExpectedReply) else expected_ts
+    expected_text = expected_ts.text if isinstance(expected_ts, ExpectedReply) else None
+    expected = _timestamp(expected_value) if expected_value is not None else None
+    if (after_ts is not None and floor is None) or (expected_value is not None and expected is None):
         return False
     identity = resolve_own_identity(backend)
     if identity is None:
@@ -82,6 +91,8 @@ def bot_reply_present_in_thread(
         return False
     for reply in replies:
         if not is_self_authored(reply, identity):
+            continue
+        if expected_text is not None and reply.get("text") != expected_text:
             continue
         if floor is None and expected is None:
             return True

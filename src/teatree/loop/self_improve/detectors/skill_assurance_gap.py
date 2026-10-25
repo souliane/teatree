@@ -7,10 +7,11 @@ from datetime import datetime, timedelta
 from itertools import starmap
 from typing import ClassVar
 
-from django.db.models import F, OuterRef, Subquery
+from django.db.models import F, OuterRef, Q, Subquery
 from django.utils import timezone
 
-from teatree.core.models import SelfImproveFiring, TaskAttempt, Ticket, TicketTransition
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.models import NOOP_OVER_COMPLETED_MARKER, SelfImproveFiring, TaskAttempt, Ticket, TicketTransition
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
@@ -72,6 +73,17 @@ class SkillAssuranceGapDetector:
         rows = TaskAttempt.objects.filter(started_at__gte=timezone.now() - _WINDOW)
         if self.overlay_name:
             rows = rows.filter(task__ticket__overlay=self.overlay_name)
+        rows = rows.exclude(failure_kind=FailureKind.USAGE_LIMIT_PARKED)
+        rows = rows.exclude(
+            Q(result__summary__isnull=False)
+            & Q(
+                result__summary__regex=(
+                    rf"^{re.escape(NOOP_OVER_COMPLETED_MARKER)}"
+                    rf"|{re.escape(f' — {NOOP_OVER_COMPLETED_MARKER}')}"
+                )
+            )
+        )
+        rows = rows.exclude(num_turns=0, result__skill_assurance__status="unverified")
         recent = rows.order_by("-pk").values("pk", "started_at", "task__ticket__overlay", "result__skill_assurance")[
             :_RECENT_ATTEMPTS
         ]

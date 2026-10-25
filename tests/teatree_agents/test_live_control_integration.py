@@ -33,9 +33,12 @@ from teatree.agents.live_client import LiveClient, WorkerSessionFacts
 from teatree.agents.live_control import MAX_PENDING_INPUTS, LiveFence, ReceiptPayload
 from teatree.agents.live_mailbox import shared_broker
 from teatree.agents.live_registry import shared_registry
+from teatree.agents.prompt import build_task_prompt
 from teatree.agents.runner import TaskUsage, run_agent
-from teatree.core.models import Session, Task
+from teatree.core.models import DmContext, PendingChatInjection, Session, Task, ThreadBinding
+from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from tests.factories import planned_ticket
+from tests.teatree_loop.slack_answer.test_cycle import _USER_UID, RecordingBackend, _resolver
 
 _FAKE_CLI = Path(__file__).with_name("fake_claude_cli.py")
 _ENVELOPE = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
@@ -114,6 +117,44 @@ def _real_sdk_on_fake_cli(run: _FakeCliRun) -> Generator[None]:
 
 
 class LiveControlIntegrationTests(TestCase):
+    def test_paused_task_keeps_its_thread_messages_after_live_session_teardown(self) -> None:
+        self.task.claim(claimed_by="worker-A", lease_seconds=900)
+        run = _FakeCliRun(self.root, steps=[{"tool": "Bash", "hold_until": str(self.root / "release-tool")}])
+
+        def operator() -> ReceiptPayload:
+            _until(lambda: run.saw("holding_tool"), "the agent to sit in its tool")
+            pausing = _in_background(lambda: self.live.pause(self.task.pk, "pause", command_id="pause-once", wait=10))
+            _until(
+                lambda: any(row["state"] == "closed" for row in shared_registry().sessions()),
+                "the pause to close the live session",
+            )
+            run.release_tool.touch()
+            return pausing.result(timeout=_WAIT_LIMIT)
+
+        receipt = self.dispatch(run, operator)
+        self.task.refresh_from_db()
+        assert receipt["outcome"] == "paused"
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.not_before is not None
+        assert self.task.session_continuation == Task.SessionContinuation.SELF
+
+        ThreadBinding.bind(ticket=self.ticket, channel="C1", thread_ts="100.0")
+        backend = RecordingBackend()
+        for ts, text in (("101.0", "Keep the old adapter"), ("102.0", "resume")):
+            row = PendingChatInjection.record(
+                channel="C1", slack_ts=ts, text=text, context=DmContext(user_id=_USER_UID, thread_ts="100.0")
+            )
+            assert row is not None
+            backend.message_meta[ts] = {"ts": ts, "thread_ts": "100.0"}
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        self.task.refresh_from_db()
+        assert self.task.not_before is None
+        assert Task.objects.filter(ticket=self.ticket).count() == 1
+        assert "queued" in backend.replies[0][2]
+        assert "same task" in backend.replies[1][2]
+        assert "Keep the old adapter" in build_task_prompt(self.task)
+
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(tempfile.mkdtemp(prefix="t3-live-it-", dir="/tmp"))

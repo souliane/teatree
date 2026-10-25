@@ -55,7 +55,7 @@ from teatree.core.modelkit.reask_cadence import (
     owner_quiet_at,
     reask_key,
 )
-from teatree.core.models import BotPing, DeferredQuestion, LoopLease
+from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyOutcome, NotifyReason
 from teatree.core.owner_question_message import (
@@ -355,7 +355,13 @@ def _stamp_mirror_from(row: DeferredQuestion, key: str) -> bool:
     so a concurrent drain cannot re-stamp.
     """
     ping = BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).first()
-    return bool(ping and ping.posted_ts and row.mark_mirrored(channel=ping.channel_ref, slack_ts=ping.posted_ts))
+    stamped = bool(ping and ping.posted_ts and row.mark_mirrored(channel=ping.channel_ref, slack_ts=ping.posted_ts))
+    if stamped and (parked_task := row.parked_task) is not None:
+        try:
+            ThreadBinding.bind(ticket=parked_task.ticket, channel=row.slack_channel, thread_ts=row.slack_ts)
+        except ValueError:
+            logger.exception("Question mirror thread binding conflicts with a different ticket")
+    return stamped
 
 
 def reask_escalated_questions(
