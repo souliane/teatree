@@ -20,7 +20,7 @@ from django.test import TestCase
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import DeferredQuestion, Mode, ModeOverride, PullRequest, Task, Ticket
+from teatree.core.models import DeferredQuestion, HeadCarryOver, Mode, ModeOverride, PullRequest, Task, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
@@ -230,6 +230,16 @@ class TestCodexReviewZoneRevived(TestCase):
         assert (
             Task.objects.filter(ticket__issue_url="https://github.com/o/r/pull/7", phase="codex_reviewing").count() == 1
         )
+
+    def test_a_head_whose_records_followed_an_unchanged_patch_arms_no_review(self) -> None:
+        HeadCarryOver.objects.create(
+            slug="o/r", pr_id=102, from_head="a" * 40, to_head="b" * 40, outcome=HeadCarryOver.Outcome.CARRIED
+        )
+
+        created = persist_agent_actions(_agent_actions(self._signal(pr_id=102, head_sha="b" * 40)))
+
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=102).exists()
 
     def test_role_conflict_does_not_burn_marker(self) -> None:
         Ticket.objects.create(issue_url="https://github.com/o/r/pull/13", overlay="acme", role=Ticket.Role.AUTHOR)

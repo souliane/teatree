@@ -289,7 +289,7 @@ class TestBranchCurrencyBriefLines(TestCase):
             assert "git merge --no-edit origin/main" in brief
             assert "NEVER rebase" in brief
 
-    def test_behind_but_clean_prescribes_merging_before_gating(self) -> None:
+    def test_behind_but_clean_prescribes_no_merge_because_it_only_moves_the_head(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bare, clone = _remote_and_clone(root)
@@ -299,6 +299,8 @@ class TestBranchCurrencyBriefLines(TestCase):
             brief = "\n".join(branch_currency_brief_lines(_currency_task(clone, issue="https://e.test/i/2")))
 
             assert "1 commit(s) behind origin/main and merges clean." in brief
+            assert "No merge needed" in brief
+            assert "git merge" not in brief
             assert "CONFLICTS" not in brief
 
     def test_current_branch_states_the_check_ran(self) -> None:

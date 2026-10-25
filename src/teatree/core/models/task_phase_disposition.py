@@ -14,11 +14,13 @@ from typing import TYPE_CHECKING
 from django.db.models import Max
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
+from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.plan_decision import has_plan_decision
 from teatree.core.models.self_review import SelfReview
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.ticket_worktree_checks import worktree_head_sha
 from teatree.core.repair_loop import max_phase_iterations, terminal_reason_fingerprint
 
 if TYPE_CHECKING:
@@ -172,6 +174,8 @@ def queue_self_review_rework(ticket: Ticket, review: SelfReview, *, after: "Task
     Keyed on the parent link, and after another coding or shipping completion on reworks newer than it:
     a replay never re-mints, yet a rework failed or cancelled before that completion is replaced once.
     """
+    if _superseded_by_live_head(ticket, review):
+        return
     reworks = ticket.tasks.filter(parent_task_id=review.task_pk, phase__in=phase_spellings("coding"))
     if after is not None:
         reworks = reworks.filter(pk__gt=after.pk)
@@ -182,6 +186,25 @@ def queue_self_review_rework(ticket: Ticket, review: SelfReview, *, after: "Task
         _record_hold_cap(ticket, review, laps=len(earlier_laps) + 1)
         return
     ticket.schedule_self_review_rework(ticket.tasks.get(pk=review.task_pk), review)
+
+
+def _superseded_by_live_head(ticket: Ticket, review: SelfReview) -> bool:
+    """Whether the HOLD judged a head the ticket worktree has moved off, failing its still-pending reworks.
+
+    A HOLD is a verdict on one tree: its findings say nothing about the commits that came after it, and a rework
+    minted for it makes a coder fix code that is no longer the branch. A claimed rework is left alone — an agent
+    is on it. An unknown worktree head, or a HOLD that recorded none, keeps the rework (nothing proves it stale).
+    """
+    live = worktree_head_sha(ticket)
+    if not live or not review.reviewed_sha or live.startswith(review.reviewed_sha):
+        return False
+    reason = f"{HEAD_SUPERSEDED_PREFIX}self-review HOLD at {review.reviewed_sha[:12]}, the ticket is now at {live[:12]}"
+    pending = ticket.tasks.pending_in_phase("coding").filter(
+        parent_task_id=review.task_pk, status=ticket.tasks.model.Status.PENDING
+    )
+    for rework in pending:
+        rework.fail(reason=reason, by_holder=False)
+    return True
 
 
 def _record_hold_cap(ticket: Ticket, review: SelfReview, *, laps: int) -> None:
