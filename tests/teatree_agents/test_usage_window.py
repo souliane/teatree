@@ -40,11 +40,13 @@ from teatree.core.models import (
     Ticket,
     UsageWindowState,
 )
-from teatree.core.models.anthropic_token_usage import REJECTED_STATUS, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import HEALTH_TTL, REJECTED_STATUS, TokenHealthReading
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.task_repair_queries import phase_attempts
+from teatree.credential_config import api_key_lane_available
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from tests.factories import planned_ticket
+from tests.teatree_agents._metered_keys import KEY_1, KEY_2, SCOPE, cap_the_plans, route_metered_keys
 from tests.teatree_agents._sdk_fake import fake_sdk, result_message
 
 
@@ -740,3 +742,91 @@ class TestImmediateRequeueOnFailover(django.test.TestCase):
 
         task.refresh_from_db()
         assert task.not_before == now + timedelta(days=7), "no meter to fail over to — quiesce, exactly as today"
+
+
+class TestMeteredCreditRefusal(django.test.TestCase):
+    """A key refused for credit is spent until its health row lapses: rotate to another key, else wait for the plans."""
+
+    def setUp(self) -> None:
+        self.now = timezone.now()
+        self.task = _claimed_task()
+
+    def _refused(self, signer: str = KEY_1, *, match: LimitMatch = _CREDIT_MATCH) -> TaskAttempt | None:
+        return park_or_rotate_on_limit(
+            self.task,
+            match,
+            lane=TaskAttempt.Lane.METERED,
+            now=self.now,
+            signal=LimitSignal(account=signer),
+        )
+
+    def test_the_first_key_is_marked_and_the_task_requeued_onto_the_second(self) -> None:
+        route_metered_keys(self, [KEY_1, KEY_2])
+        cap_the_plans()
+
+        parked = self._refused()
+
+        assert parked is not None
+        assert parked.error.startswith(LIMIT_PARKED_PREFIX)
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.not_before is not None
+        assert self.task.not_before <= self.now
+        spent = AnthropicTokenUsage.objects.get(pass_path=KEY_1)
+        assert spent.is_exhausted
+        assert spent.valid_until == self.now + HEALTH_TTL
+        assert api_key_lane_available(scope=SCOPE)
+
+    def test_the_only_key_parks_the_task_until_the_plan_reset(self) -> None:
+        route_metered_keys(self, [KEY_1])
+        reset = cap_the_plans()
+
+        parked = self._refused()
+
+        assert parked is not None
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.not_before == reset
+
+    def test_an_ambient_key_parks_until_the_plan_reset_and_never_requeues(self) -> None:
+        route_metered_keys(self, [])
+        reset = cap_the_plans()
+
+        parked = self._refused(signer="")
+
+        assert parked is not None
+        self.task.refresh_from_db()
+        assert self.task.not_before == reset
+        assert reset > self.now
+        assert not AnthropicTokenUsage.objects.exists()
+
+    def test_with_no_key_and_no_plan_window_the_task_still_fails(self) -> None:
+        route_metered_keys(self, [])
+
+        assert self._refused(signer="") is None
+        assert not AnthropicTokenUsage.objects.exists()
+
+    def test_plans_only_is_unchanged(self) -> None:
+        route_metered_keys(self, [KEY_1, KEY_2], provider="subscription_oauth")
+        cap_the_plans()
+
+        assert self._refused() is None
+        assert not AnthropicTokenUsage.objects.exists()
+
+    def test_a_credit_refusal_through_run_agent_marks_the_signing_key_and_requeues(self) -> None:
+        route_metered_keys(self, [KEY_1, KEY_2])
+        cap_the_plans()
+        refusal = result_message(
+            subtype="error_during_execution", is_error=True, result="The request failed: you are out of credits."
+        )
+
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        with fake_sdk([refusal]):
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.error.startswith(f"{LIMIT_PARKED_PREFIX}api_credit:")
+        assert task.status == Task.Status.PENDING
+        assert list(AnthropicTokenUsage.objects.values_list("pass_path", flat=True)) == [KEY_1]
