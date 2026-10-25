@@ -44,6 +44,7 @@ def test_pr_ref_is_a_link_when_the_forge_url_is_valid() -> None:
         link_url="https://github.com/example/repo/pull/1",
         title="PR title",
         ref="example/repo!1",
+        author="",
         age="1 h",
         created_at=None,
         ci="unknown",

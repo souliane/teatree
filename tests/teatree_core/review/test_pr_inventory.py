@@ -10,8 +10,10 @@ import pytest
 from teatree.core.review.pr_inventory import (
     PrInventoryEntry,
     PrInventoryError,
+    PrInventorySnapshot,
     elapsed_label,
     mark_inventory_unknown,
+    merged_entries,
     read_inventory,
     write_inventory,
 )
@@ -35,6 +37,74 @@ def _entry(number: int) -> PrInventoryEntry:
 
 
 class PrInventoryTestCase(TestCase):
+    def test_sweep_keeps_a_more_precise_approval_count_than_the_own_scan(self) -> None:
+        at = datetime(2026, 10, 23, 12, tzinfo=UTC)
+        own = replace(_entry(1), head_sha="a" * 40, approvals="approved", approvals_display="approved")
+        sweep = replace(_entry(1), head_sha="a" * 40, approvals="approved", approvals_display="1/unknown (approved)")
+        snapshots = (
+            PrInventorySnapshot("own:teatree:github", at, (own,)),
+            PrInventorySnapshot("teatree", at, (sweep,)),
+        )
+        assert merged_entries(snapshots)[own.url].approvals_display == "1/unknown (approved)"
+
+    def test_review_facts_from_a_prior_head_do_not_cross_to_a_new_head(self) -> None:
+        at = datetime(2026, 10, 23, 12, tzinfo=UTC)
+        own = replace(_entry(1), head_sha="a" * 40, approvals="approved", threads="0 unresolved")
+        sweep = replace(_entry(1), head_sha="b" * 40, approvals="unknown", threads="unknown")
+        snapshots = (
+            PrInventorySnapshot("own:teatree:github", at, (own,)),
+            PrInventorySnapshot("teatree", at, (sweep,)),
+        )
+        entry = merged_entries(snapshots)[own.url]
+        assert (entry.approvals, entry.threads) == ("unknown", "unknown")
+
+    def test_newer_sweep_review_verdict_wins_over_owned_snapshot_on_the_same_head(self) -> None:
+        at = datetime(2026, 10, 23, 12, tzinfo=UTC)
+        own = replace(
+            _entry(1),
+            head_sha="a" * 40,
+            approvals="approved",
+            approvals_display="1/1 (approved)",
+            threads="0 unresolved",
+        )
+        sweep = replace(
+            _entry(1),
+            head_sha="a" * 40,
+            approvals="awaiting approval",
+            approvals_display="0/1 (awaiting approval)",
+            threads="1 unresolved",
+        )
+        snapshots = (
+            PrInventorySnapshot("own:teatree:github", at, (own,)),
+            PrInventorySnapshot("teatree", at + timedelta(minutes=1), (sweep,)),
+        )
+        entry = merged_entries(snapshots)[own.url]
+        assert (entry.approvals, entry.approvals_display, entry.threads) == (
+            "awaiting approval",
+            "0/1 (awaiting approval)",
+            "1 unresolved",
+        )
+
+    def test_newer_own_ci_failure_wins_over_older_green_sweep(self) -> None:
+        at = datetime(2026, 10, 23, 12, tzinfo=UTC)
+        sweep = replace(_entry(1), head_sha="a" * 40, ci="green")
+        own = replace(_entry(1), head_sha="a" * 40, ci="red")
+        snapshots = (
+            PrInventorySnapshot("own:teatree:github", at + timedelta(minutes=1), (own,)),
+            PrInventorySnapshot("teatree", at, (sweep,)),
+        )
+        assert merged_entries(snapshots)[own.url].ci == "red"
+
+    def test_newer_unknown_thread_read_is_not_filled_from_an_older_zero(self) -> None:
+        at = datetime(2026, 10, 23, 12, tzinfo=UTC)
+        own = replace(_entry(1), head_sha="a" * 40, threads="0 unresolved")
+        sweep = replace(_entry(1), head_sha="a" * 40, threads="unknown")
+        snapshots = (
+            PrInventorySnapshot("own:teatree:github", at, (own,)),
+            PrInventorySnapshot("teatree", at + timedelta(minutes=1), (sweep,)),
+        )
+        assert merged_entries(snapshots)[own.url].threads == "unknown"
+
     def test_age_under_one_minute_is_labelled_without_rounding_up(self) -> None:
         now = datetime(2026, 10, 24, 12, tzinfo=UTC)
         assert elapsed_label(now - timedelta(seconds=30), now) == "< 1 min"

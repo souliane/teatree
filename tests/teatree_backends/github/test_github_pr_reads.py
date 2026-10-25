@@ -152,6 +152,30 @@ class TestApprovalState:
         assert state["approvals_left"] == 0
         assert state["unresolved_resolvable"] == 0
 
+    def test_approval_state_reports_count_and_effective_branch_requirement(self) -> None:
+        threads = json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}})
+        detail = json.dumps(
+            {
+                "reviewDecision": "REVIEW_REQUIRED",
+                "baseRefName": "main",
+                "reviews": [
+                    {"state": "APPROVED", "author": {"login": "reviewer"}},
+                    {"state": "COMMENTED", "author": {"login": "reviewer"}},
+                ],
+            }
+        )
+        with (
+            self._route(decision=detail, threads=threads),
+            patch.object(
+                pr_reads,
+                "_gh_api_get",
+                return_value=[{"type": "pull_request", "parameters": {"required_approving_review_count": 2}}],
+            ) as rules,
+        ):
+            state = pr_reads.approval_state(repo="o/r", pr_iid=9, token="t")
+        assert (state["count"], state["required"], state["approvals_left"]) == (1, 2, 1)
+        rules.assert_called_once_with("repos/o/r/rules/branches/main", token="t")
+
     def test_unreadable_threads_fail_closed(self) -> None:
         with self._route(decision=json.dumps({"reviewDecision": "APPROVED"}), threads="not json"):
             state = pr_reads.approval_state(repo="o/r", pr_iid=9, token="t")

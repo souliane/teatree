@@ -93,6 +93,7 @@ class PrSummary:
     updated_at: str = ""
     approvals: str = UNKNOWN
     approval_count: int | None = None
+    unresolved_threads: int | None = None
     is_conflicted: bool = False
     behind_main: bool = False
     # The two refs the behind-base compare needs (#4526). ``compare_head_ref`` is

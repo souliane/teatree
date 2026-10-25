@@ -384,6 +384,8 @@ class MyPrsScanner:
             threads=threads,
             draft=bool(pr.get("draft")),
             head_sha=_str_field(payload, "head_sha"),
+            author=author_username(pr),
+            owned=True,
         )
 
     def _inventory_key(self) -> str:

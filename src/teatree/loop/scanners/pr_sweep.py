@@ -215,7 +215,7 @@ class PrSweepScanner:
                 self._log_attempt(attempt)
                 signals.append(signal_from_attempt(attempt, overlay=self.overlay))
             if attempt is None or not attempt.merged:
-                inventory.append(inventory_entry(pr, attempt))
+                inventory.append(inventory_entry(pr, attempt, identities=self.self_identities))
         if not errors:
             self._write_inventory_for_scan(inventory, errors)
         elif self.inventory_invalidator is not None:

@@ -44,7 +44,7 @@ class ForgeInventoryTimestampTestCase(TestCase):
         }
         with patch.object(GhPrApiClient, "_run_gh", return_value=(0, json.dumps([raw]), "")) as run:
             pr = GhPrApiClient().list_open_prs(slug="souliane/teatree")[0]
-        fields = run.call_args.args[0]
+        fields = run.call_args_list[0].args[0]
         assert "createdAt" in fields[fields.index("--json") + 1]
         assert "updatedAt" in fields[fields.index("--json") + 1]
         assert pr.created_at == raw["createdAt"]
@@ -69,6 +69,11 @@ class ForgeInventoryTimestampTestCase(TestCase):
 
 
 class ForgeApprovalsTestCase(TestCase):
+    def test_foreign_author_is_recorded_without_claiming_factory_ownership(self) -> None:
+        pr = replace(_pr(7, created_at="2026-10-01T10:00:00Z"), author="contributor")
+        entry = inventory_entry(pr, None, identities=("owner",))
+        assert (entry.author, entry.owned) == ("contributor", False)
+
     def _listed_github_pr(self, reviews: list[dict[str, object]]) -> PrSummary:
         raw = {
             "number": 7,
@@ -83,6 +88,72 @@ class ForgeApprovalsTestCase(TestCase):
     def test_github_listing_carries_observed_approval_count_with_unknown_requirement(self) -> None:
         pr = self._listed_github_pr([{"state": "APPROVED", "author": {"login": "reviewer"}}])
         assert inventory_entry(pr, None).approvals_display == "1/unknown (approved)"
+
+    def test_github_listing_carries_unresolved_threads_from_a_complete_forge_read(self) -> None:
+        raw = {"number": 7, "headRefOid": "a" * 40, "url": "https://github.com/souliane/teatree/pull/7"}
+        threads = {
+            "data": {
+                "repository": {
+                    "p7": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"isResolved": False}, {"isResolved": True}, {"isResolved": False}],
+                        }
+                    }
+                }
+            }
+        }
+        with patch.object(
+            GhPrApiClient,
+            "_run_gh",
+            side_effect=[(0, json.dumps([raw]), ""), (0, json.dumps(threads), "")],
+        ):
+            (pr,) = GhPrApiClient().list_open_prs(slug="souliane/teatree")
+        assert inventory_entry(pr, None).threads == "2 unresolved"
+
+    def test_failed_thread_read_does_not_claim_a_complete_count(self) -> None:
+        raw = {"number": 7, "headRefOid": "a" * 40, "url": "https://github.com/souliane/teatree/pull/7"}
+        threads = {
+            "data": {
+                "repository": {
+                    "p7": {"reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{"isResolved": True}]}}
+                }
+            }
+        }
+        with patch.object(
+            GhPrApiClient,
+            "_run_gh",
+            side_effect=[(0, json.dumps([raw]), ""), (1, json.dumps(threads), "rate limited")],
+        ):
+            (pr,) = GhPrApiClient().list_open_prs(slug="souliane/teatree")
+        assert inventory_entry(pr, None).threads == "unknown"
+
+    def test_github_thread_read_batches_twenty_six_prs(self) -> None:
+        raw = [
+            {"number": number, "headRefOid": "a" * 40, "url": f"https://github.com/souliane/teatree/pull/{number}"}
+            for number in range(1, 27)
+        ]
+
+        def response(numbers: range) -> str:
+            return json.dumps(
+                {
+                    "data": {
+                        "repository": {
+                            f"p{number}": {"reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}}
+                            for number in numbers
+                        }
+                    }
+                }
+            )
+
+        with patch.object(
+            GhPrApiClient,
+            "_run_gh",
+            side_effect=[(0, json.dumps(raw), ""), (0, response(range(1, 26)), ""), (0, response(range(26, 27)), "")],
+        ) as run:
+            prs = GhPrApiClient().list_open_prs(slug="souliane/teatree")
+        assert run.call_count == 3
+        assert [pr.unresolved_threads for pr in prs] == [0] * 26
 
     def test_github_approval_count_takes_each_reviewers_standing_review_only(self) -> None:
         pr = self._listed_github_pr(
@@ -113,7 +184,7 @@ class ForgeApprovalsTestCase(TestCase):
                 raw = {"number": 7, "headRefOid": "a" * 40, "url": "u", "reviewDecision": decision}
                 with patch.object(GhPrApiClient, "_run_gh", return_value=(0, json.dumps([raw]), "")) as run:
                     pr = GhPrApiClient().list_open_prs(slug="souliane/teatree")[0]
-                fields = run.call_args.args[0]
+                fields = run.call_args_list[0].args[0]
                 assert "reviewDecision" in fields[fields.index("--json") + 1]
                 assert pr.approvals == expected
 

@@ -9,7 +9,7 @@
           {% for card in group.cards %}
             <article id="pr-{{ card.dom_id }}" class="card pr-card" data-pr-card="{{ card.ref }}">
               <div class="card-top">{% if card.link_url %}<a class="card-num" href="{{ card.link_url }}" target="_blank" rel="noopener noreferrer">{{ card.title }}</a>{% else %}<span class="card-num">{{ card.title }}</span>{% endif %}{% if card.draft %}<span class="chip">Draft</span>{% endif %}</div>
-              <p class="pr-card-meta">{% if card.link_url %}<a href="{{ card.link_url }}" target="_blank" rel="noopener noreferrer">{{ card.ref }}</a>{% else %}{{ card.ref }}{% endif %} · age {{ card.age }}</p>
+              <p class="pr-card-meta">{% if card.link_url %}<a href="{{ card.link_url }}" target="_blank" rel="noopener noreferrer">{{ card.ref }}</a>{% else %}{{ card.ref }}{% endif %}{% if card.author %} · by {{ card.author }}{% endif %} · age {{ card.age }}</p>
               <dl class="pr-card-facts">
                 <div><dt>CI</dt><dd>{{ card.ci }}</dd></div>
                 <div><dt>Approvals</dt><dd>{{ card.approvals }}</dd></div>

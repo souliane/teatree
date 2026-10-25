@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -40,6 +40,8 @@ class PrInventoryEntry:
     reason: str = ""
     head_sha: str = ""
     approvals_display: str = ""
+    author: str = ""
+    owned: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +160,9 @@ def _read_snapshot(path: Path) -> PrInventorySnapshot:
         or not isinstance(verified, bool)
     )
     invalid_entry = any(
-        type(value) is not (int if name == "iid" else bool if name == "draft" else str)
+        (value is not None and type(value) is not bool)
+        if name == "owned"
+        else type(value) is not (int if name == "iid" else bool if name == "draft" else str)
         for entry in entries
         for name, value in asdict(entry).items()
     )
@@ -179,7 +183,31 @@ def read_inventory(*, directory: Path | None = None) -> tuple[PrInventorySnapsho
 
 def merged_entries(snapshots: Iterable[PrInventorySnapshot]) -> dict[str, PrInventoryEntry]:
     ordered = sorted(snapshots, key=lambda item: (not item.overlay.startswith("own:"), item.observed_at))
-    return {entry.url: entry for snapshot in ordered for entry in snapshot.entries}
+    owned: dict[str, tuple[PrInventoryEntry, datetime]] = {}
+    merged: dict[str, PrInventoryEntry] = {}
+    for snapshot in ordered:
+        for entry in snapshot.entries:
+            resolved = entry
+            if snapshot.overlay.startswith("own:"):
+                owned[entry.url] = (entry, snapshot.observed_at)
+            elif (
+                (own_record := owned.get(entry.url)) is not None
+                and own_record[0].head_sha
+                and own_record[0].head_sha == entry.head_sha
+            ):
+                own, own_at = own_record
+                preferred = own if own_at > snapshot.observed_at else entry
+                resolved = replace(
+                    entry,
+                    ci=preferred.ci,
+                    approvals=preferred.approvals,
+                    approvals_display=preferred.approvals_display,
+                    threads=preferred.threads,
+                    author=own.author or entry.author,
+                    owned=True,
+                )
+            merged[entry.url] = resolved
+    return merged
 
 
 def parse_time(value: str | datetime | None) -> datetime | None:

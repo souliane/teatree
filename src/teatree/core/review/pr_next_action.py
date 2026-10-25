@@ -55,6 +55,7 @@ class PrActionFacts:
     threads_blocking: bool
     draft: bool
     verified: bool
+    owned: bool | None
 
 
 def approvals_label(approvals_left: int) -> str:
@@ -139,7 +140,9 @@ def _blocked_reason(facts: PrActionFacts) -> str:
             return blocker
     elif facts.ci.lower() in _RED_CI:
         return FIX_CI
-    if facts.threads_blocking and (unresolved := _UNRESOLVED_THREADS.fullmatch(facts.threads)):
+    if (facts.threads_blocking or approvals_met(facts.approvals) is True) and (
+        unresolved := _UNRESOLVED_THREADS.fullmatch(facts.threads)
+    ):
         return f"Resolve {unresolved[1]} unresolved thread(s)"
     return ""
 
@@ -160,13 +163,30 @@ def _factory_task(facts: PrActionFacts) -> PrNextAction | None:
     return PrNextAction("Factory working", "Factory", facts.working) if facts.working else None
 
 
+def _foreign_pr(facts: PrActionFacts) -> PrNextAction | None:
+    if facts.owned is not False or facts.entry is None or facts.failure:
+        return None
+    if reason := _blocked_reason(facts):
+        return PrNextAction("Blocked", "PR author", reason)
+    if facts.ci.lower() in _PENDING_CI:
+        return PrNextAction("Factory working", "CI", "Wait for CI to finish")
+    return PrNextAction("Waiting on colleagues", "PR author", facts.entry.next_task or "Await PR author")
+
+
 def _blocked(facts: PrActionFacts) -> PrNextAction | None:
     reason = _blocked_reason(facts)
     return PrNextAction("Blocked", "Factory", reason) if reason else None
 
 
 def _ready(facts: PrActionFacts) -> PrNextAction | None:
-    if approvals_met(facts.approvals) is not True or facts.ci.lower() not in _GREEN_CI or facts.draft:
+    if facts.entry is not None and facts.entry.reason:
+        return None
+    if (
+        approvals_met(facts.approvals) is not True
+        or facts.ci.lower() not in _GREEN_CI
+        or facts.draft
+        or facts.threads != "0 unresolved"
+    ):
         return None
     if facts.verified:
         return PrNextAction("Ready to merge or merging", "Factory", "Merge through the ticket keystone")
@@ -195,6 +215,18 @@ def _unreadable_approvals(facts: PrActionFacts) -> PrNextAction | None:
     return PrNextAction("Blocked", "Factory", "Approvals unreadable; check the forge")
 
 
+def _unreadable_threads(facts: PrActionFacts) -> PrNextAction | None:
+    if (
+        facts.entry is None
+        or facts.entry.reason
+        or facts.ci.lower() not in _GREEN_CI
+        or approvals_met(facts.approvals) is not True
+        or facts.threads == "0 unresolved"
+    ):
+        return None
+    return PrNextAction("Blocked", "Factory", "Review threads unreadable; check the forge")
+
+
 def _observed_next_task(facts: PrActionFacts) -> PrNextAction | None:
     if facts.entry is None or not facts.entry.next_task:
         return None
@@ -205,9 +237,11 @@ def _observed_next_task(facts: PrActionFacts) -> PrNextAction | None:
 _RULES = (
     _owner_waiting,
     _factory_task,
+    _foreign_pr,
     _blocked,
     _ready,
     _authorization,
+    _unreadable_threads,
     _awaiting_review,
     _unreadable_approvals,
     _observed_next_task,

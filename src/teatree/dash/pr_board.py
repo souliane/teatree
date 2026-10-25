@@ -34,6 +34,7 @@ class PrBoardCard:
     link_url: str
     title: str
     ref: str
+    author: str
     age: str
     created_at: datetime | None
     ci: str
@@ -320,6 +321,7 @@ def _facts(subject: _Subject, sources: PrBoardSources) -> PrActionFacts:
         threads_blocking=threads_blocking,
         draft=entry.draft if entry is not None else False,
         verified=subject.url in sources.verified_urls,
+        owned=entry.owned if entry is not None else None,
     )
 
 
@@ -347,6 +349,7 @@ def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
         link_url=_web_link(url),
         title=title,
         ref=ref,
+        author=entry.author if entry is not None else "",
         age=elapsed_label(created, sources.now),
         created_at=created,
         ci=facts.ci,

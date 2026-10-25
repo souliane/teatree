@@ -3,7 +3,8 @@
 from datetime import UTC, datetime
 
 from teatree.core.review.pr_inventory import PrInventoryEntry
-from teatree.core.review.pr_next_action import UNKNOWN, approvals_text, ci_label, sweep_next_task
+from teatree.core.review.pr_next_action import UNKNOWN, approvals_text, ci_label, sweep_next_task, threads_label
+from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 
@@ -16,7 +17,9 @@ def pr_created_at(pr: PrSummary) -> datetime:
     return created.astimezone(UTC) if created.tzinfo is not None else datetime.max.replace(tzinfo=UTC)
 
 
-def inventory_entry(pr: PrSummary, attempt: MergeAttempt | None) -> PrInventoryEntry:
+def inventory_entry(
+    pr: PrSummary, attempt: MergeAttempt | None, *, identities: tuple[str, ...] = ()
+) -> PrInventoryEntry:
     """The PR's inventory row; *attempt* is ``None`` when the sweep could not evaluate it."""
     reason = attempt.reason if attempt else "evaluation_failed"
     return PrInventoryEntry(
@@ -35,10 +38,18 @@ def inventory_entry(pr: PrSummary, attempt: MergeAttempt | None) -> PrInventoryE
         ci=ci_label(reason, failing_required=bool(attempt and attempt.failing_required)),
         approvals=pr.approvals,
         approvals_display=approvals_text(pr.approvals, pr.approval_count, None),
-        threads=UNKNOWN,
+        threads=threads_label(pr.unresolved_threads) if pr.unresolved_threads is not None else UNKNOWN,
         draft=pr.is_draft,
         reason=reason,
         head_sha=pr.head_sha,
+        author=pr.author,
+        owned=(
+            author_is_self(
+                pr.author.casefold(), current_user="", self_identities=(name.casefold() for name in identities)
+            )
+            if pr.author and identities
+            else None
+        ),
     )
 
 

@@ -1,14 +1,17 @@
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
 
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.task import Task
+from teatree.core.models.ticket import Ticket
 from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS, RepoOwner
 from teatree.core.review.pr_inventory import PrInventoryEntry, PrInventorySnapshot
 from teatree.dash.pr_board import PrBoard, PrBoardCard, build_pr_board
@@ -196,16 +199,24 @@ class PrBoardTestCase(TestCase):
 
         shared = "https://github.com/souliane/teatree/pull/7"
         unwatched = "https://github.com/souliane/teatree/pull/8"
+        sweep_shared = replace(entry(shared, "flag_conflict", "Fix merge conflict"), head_sha="a" * 40)
+        own_shared = replace(
+            entry(shared, "my_pr.open", "Inspect PR"),
+            head_sha="a" * 40,
+            approvals="approved",
+            approvals_display="1/unknown (approved)",
+            threads="2 unresolved",
+        )
         snapshots = (
             PrInventorySnapshot(
                 overlay="teatree",
                 observed_at=timezone.now(),
-                entries=(entry(shared, "flag_conflict", "Fix merge conflict"),),
+                entries=(sweep_shared,),
             ),
             PrInventorySnapshot(
                 overlay="own:teatree:github",
                 observed_at=timezone.now(),
-                entries=(entry(shared, "my_pr.open", "Inspect PR"), entry(unwatched, "my_pr.open", "Review PR")),
+                entries=(own_shared, entry(unwatched, "my_pr.open", "Review PR")),
             ),
         )
         with patch("teatree.dash.pr_board.read_inventory", return_value=snapshots):
@@ -214,6 +225,7 @@ class PrBoardTestCase(TestCase):
         assert board.total == 2
         assert cards[shared].group == "Blocked"
         assert cards[shared].next_action == "Fix merge conflict"
+        assert (cards[shared].approvals, cards[shared].threads) == ("1/unknown (approved)", "2 unresolved")
         assert cards[unwatched].next_action == "Review PR"
 
     def test_fresh_red_ci_blocks_an_approved_recorded_pr(self) -> None:
@@ -364,14 +376,53 @@ class PrBoardFreshObservationTestCase(TestCase):
 
     def test_fresh_approved_green_observation_is_ready(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory())
+        card = self._card(pr, _observed_entry(pr, threads="0 unresolved"))
+        assert card.group == "Ready to merge or merging"
+        assert (card.ci, card.approvals) == ("green", "approved")
+
+    def test_green_approved_pr_with_unreadable_threads_is_not_ready(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        card = self._card(pr, _observed_entry(pr))
+        assert (card.group, card.next_action) == ("Blocked", "Review threads unreadable; check the forge")
+
+    def test_green_approved_pr_with_unresolved_threads_is_blocked(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        card = self._card(pr, _observed_entry(pr, threads="2 unresolved"))
+        assert (card.group, card.next_action) == ("Blocked", "Resolve 2 unresolved thread(s)")
+
+    def test_foreign_pr_names_its_author_as_the_next_actor(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory(role=Ticket.Role.REVIEWER))
+        entry = _observed_entry(pr, author="contributor", owned=False, ci="red", next_task="Fix failing CI")
+        card = self._card(pr, entry)
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            html = self.client.get(reverse("dash:board")).content.decode()
+        assert (card.group, card.next_actor, card.next_action, card.author) == (
+            "Blocked",
+            "PR author",
+            "Fix failing CI",
+            "contributor",
+        )
+        assert "by contributor" in html
+
+    def test_foreign_conflict_is_blocked_while_ci_is_pending(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory(role=Ticket.Role.REVIEWER))
+        entry = _observed_entry(pr, owned=False, ci="pending", decision="flag_conflict", next_task="Fix merge conflict")
+        card = self._card(pr, entry)
+        assert (card.group, card.next_actor, card.next_action) == ("Blocked", "PR author", "Fix merge conflict")
+
+    def test_green_approved_pr_without_merge_authorization_waits_for_review(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
         card = self._card(
             pr,
             _observed_entry(
                 pr, reason="no_clear_for_head", next_task="Obtain independent review and merge authorization"
             ),
         )
-        assert card.group == "Ready to merge or merging"
-        assert (card.ci, card.approvals) == ("green", "approved")
+        assert (card.group, card.next_action) == (
+            "Waiting on colleagues",
+            "Obtain independent review and merge authorization",
+        )
 
     def test_approved_green_draft_is_not_ready(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory())
