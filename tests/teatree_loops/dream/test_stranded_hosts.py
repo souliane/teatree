@@ -283,14 +283,14 @@ class TestHeldShells(_StrandedCase):
 
     def test_a_shell_with_a_pull_request_state_or_row_is_held(self) -> None:
         opened = _in_state(_old_host(_shell_url("opened")), Ticket.State.PR_OPENED)
-        in_review = _in_state(_old_host(_shell_url("review"), keys=("g2",)), Ticket.State.REVIEW_REQUESTED)
+        review_requested = _in_state(_old_host(_shell_url("review"), keys=("g2",)), Ticket.State.REVIEW_REQUESTED)
         with_row = _old_host(_shell_url("row"), keys=("g3",))
         PullRequestFactory(ticket=with_row)
 
         report = release_stranded_hosts(umbrella_url=UMBRELLA)
 
         assert (report.released_hosts, report.held_hosts) == (0, 3)
-        for host in (opened, in_review, with_row):
+        for host in (opened, review_requested, with_row):
             host.refresh_from_db()
             assert host.extra["dream_gap_batch"]
         assert self.pending_keys() == []
@@ -333,12 +333,12 @@ class TestRealIssueHost(_StrandedCase):
 
     def test_a_state_at_or_after_pr_opened_holds_the_real_issue_without_a_row(self) -> None:
         opened = _in_state(_old_host(f"{REAL_ISSUE}1"), Ticket.State.PR_OPENED)
-        in_review = _in_state(_old_host(f"{REAL_ISSUE}2"), Ticket.State.REVIEW_REQUESTED)
+        review_requested = _in_state(_old_host(f"{REAL_ISSUE}2"), Ticket.State.REVIEW_REQUESTED)
 
         report = release_stranded_hosts(umbrella_url=UMBRELLA)
 
         assert (report.released_hosts, report.held_hosts) == (0, 2)
-        for host in (opened, in_review):
+        for host in (opened, review_requested):
             host.refresh_from_db()
             assert host.extra["dream_gap_batch"] == _entries("g1")
         assert self.pending_keys() == []
