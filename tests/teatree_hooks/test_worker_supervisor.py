@@ -10,6 +10,7 @@ error. ``main`` never raises into the SessionStart hook.
 
 import io
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -36,6 +37,31 @@ def test_no_spawn_when_the_flock_is_held() -> None:
     spawn = _Spy()
     assert supervisor.resurrect_worker(flock_free=lambda: False, spawn=spawn) == "already-running"
     assert spawn.calls == 0
+
+
+def test_remote_target_file_skips_probe_and_spawn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path))
+    (tmp_path / "factory-target").write_text("factory.example\n")
+    spawn = _Spy()
+    probe = _Spy()
+    assert supervisor.resurrect_worker(flock_free=probe, spawn=spawn) == "remote-factory"
+    assert probe.calls == spawn.calls == 0
+
+
+def test_remote_environment_skips_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("T3_FACTORY_TARGET", "factory.example")
+    spawn = _Spy()
+    assert supervisor.resurrect_worker(flock_free=lambda: True, spawn=spawn) == "remote-factory"
+    assert spawn.calls == 0
+
+
+def test_local_environment_overrides_remote_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path))
+    (tmp_path / "factory-target").write_text("factory.example\n")
+    monkeypatch.setenv("T3_FACTORY_TARGET", "local")
+    spawn = _Spy()
+    assert supervisor.resurrect_worker(flock_free=lambda: True, spawn=spawn) == "spawned"
+    assert spawn.calls == 1
 
 
 def test_fails_open_when_spawn_raises() -> None:

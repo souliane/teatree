@@ -11,10 +11,10 @@ A standalone infrastructure hook (like the sibling SessionStart ``bootstrap-cli.
 rather than a router handler: ``hook_router.py`` is a grandfathered shrink-only
 god-module, so a new SessionStart trigger lives here instead of growing it.
 
-It reads no posture of its own, and must not: a worker whose preset admits nothing parks
+It reads no worker posture of its own: a worker whose preset admits nothing parks
 with its executors stopped and its process alive, because the schedule boundary that
 re-admits work is driven from that process — so "should anything run" is the worker's
-question, and this hook only guarantees there IS a worker to ask it. Crash-proof /
+question, and for a local session this hook guarantees there IS a worker to ask it. Crash-proof /
 fail-open / silent throughout: a failure to probe the flock or spawn yields a no-op,
 never an exception into the SessionStart hook, and it boots NO Django (#2879 parity). On
 a fully-headless box with no Claude session ever opening, the operator starts
@@ -25,6 +25,8 @@ only covers the session-present case.
 import argparse
 import sys
 from collections.abc import Callable
+
+from remote_factory_target import remote_factory_target_active
 
 # Alias the bare and ``hooks.scripts.`` identities so the live hook and a test
 # importing either name operate on ONE module object.
@@ -71,12 +73,14 @@ def resurrect_worker(
     flock_free: Callable[[], bool] = _flock_is_free,
     spawn: Callable[[], None] = _spawn_worker,
 ) -> str:
-    """Spawn a detached worker iff the flock is free; return the action.
+    """Spawn for a local target with a free flock; return the action.
 
-    Returns ``"already-running"`` (a worker holds the flock), ``"spawned"`` (a fresh
-    worker was launched), or ``"error"`` (fail-open).
+    Returns ``"remote-factory"`` for a remote target, ``"already-running"`` for a
+    held flock, ``"spawned"`` for a launch, or ``"error"`` on failure.
     """
     try:
+        if remote_factory_target_active():
+            return "remote-factory"
         if not flock_free():
             return "already-running"
         spawn()
