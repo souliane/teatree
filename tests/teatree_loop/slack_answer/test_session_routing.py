@@ -1,5 +1,6 @@
 """Bound Slack thread routing through the public answer cycle."""
 
+from dataclasses import replace
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
@@ -29,6 +30,8 @@ from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work
 from teatree.loop.slack_answer.session_routing import SLACK_STEER_WAIT_SECONDS
 from tests._owner_channel import owner_card
 from tests.teatree_loop.slack_answer.test_cycle import _BOT_UID, _USER_UID, RecordingBackend, _resolver
+
+_FREE_TEXT_CARD = replace(owner_card(), options=())
 
 
 class TestBoundTicketThread(TestCase):
@@ -887,7 +890,7 @@ class TestBoundTicketThread(TestCase):
             slack_channel="C1",
             parked_task=parked,
             task_session=parked.session,
-            card=owner_card(),
+            card=_FREE_TEXT_CARD,
         )
         row = self._message("Use the new API")
         backend = RecordingBackend()
@@ -918,7 +921,7 @@ class TestBoundTicketThread(TestCase):
             slack_channel="C1",
             parked_task=parked,
             task_session=parked.session,
-            card=owner_card(),
+            card=_FREE_TEXT_CARD,
         )
         row = self._message("Use the new API")
         backend = RecordingBackend(read_after_post=False)
@@ -954,7 +957,7 @@ class TestBoundTicketThread(TestCase):
             slack_channel="C1",
             parked_task=parked,
             task_session=parked.session,
-            card=owner_card(),
+            card=_FREE_TEXT_CARD,
         )
         row = self._message("Use the new API")
         backend = RecordingBackend(post_reply_raises=True)
@@ -984,7 +987,7 @@ class TestBoundTicketThread(TestCase):
     def test_question_resume_notice_replays_after_sender_crash(self) -> None:
         parked = self._bound_task()
         question = DeferredQuestion.record(
-            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=owner_card()
+            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=_FREE_TEXT_CARD
         )
         row = self._message("Use the new API")
         backend = RecordingBackend()
@@ -1013,7 +1016,7 @@ class TestBoundTicketThread(TestCase):
         parked = self._bound_task()
         ThreadBinding.objects.filter(ticket=parked.ticket).delete()
         question = DeferredQuestion.record(
-            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=owner_card()
+            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=_FREE_TEXT_CARD
         )
         row = self._message("Use the new API")
         backend = RecordingBackend(post_reply_raises=True)
@@ -1102,7 +1105,7 @@ class TestBoundTicketThread(TestCase):
     def test_question_answer_crash_before_receipt_reports_uncertainty(self) -> None:
         parked = self._bound_task()
         question = DeferredQuestion.record(
-            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=owner_card()
+            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=_FREE_TEXT_CARD
         )
         row = self._message("Use the new API")
         backend = RecordingBackend()

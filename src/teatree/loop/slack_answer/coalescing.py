@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from teatree.core.models import PendingChatInjection
+from teatree.loop.question_binding import _addressed
 
 # Consecutive messages from the same user on the same channel, with no
 # bot reply between them and received within this window, are one logical
@@ -72,6 +73,8 @@ def _continues(prev: PendingChatInjection, nxt: PendingChatInjection) -> bool:
     if prev.thread_ts != nxt.thread_ts:
         # Two threads are two conversations: a unit binds on its LEAD's thread,
         # so coalescing across them feeds one question the other's answer.
+        return False
+    if _addressed(nxt.text) is not None:
         return False
     if not nxt.user_id:
         # No user attribution → cannot prove same author; never coalesce.

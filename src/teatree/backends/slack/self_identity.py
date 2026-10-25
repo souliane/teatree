@@ -7,16 +7,12 @@ can apply them at its read chokepoint without a backwards import to the loop
 layer; the loop scanner re-exports them via
 :mod:`teatree.loop.scanners.slack_self_filter`.
 
-Four transforms, four failure doctrines:
+Three transforms, three failure doctrines:
 
 *   :func:`filter_self_messages` — DROP the bot's own DMs before they reach
     :class:`PendingChatInjection`, so the bot never "answers" its own outbound
     posts (#1346). **Fail-closed**: an unresolved identity returns ``None`` and
     the scanner refuses to enqueue any row that turn.
-*   :func:`drop_on_behalf_messages` — DROP messages posted through the Slack
-    Web API when a caller needs a blanket filter (#1941). The DM recorder
-    instead admits an owner-authored reply in a recorded owner-card thread.
-    **Structural, no identity needed**: the ``api_app_id`` field is the signal.
 *   :func:`strip_self_audio_attachments` — STRIP the bot's own TTS audio
     attachment when reading Slack, so the loop never re-ingests a spoken copy
     of text it already wrote (#2089). **Fail-open**: an unresolved identity
@@ -195,15 +191,6 @@ def is_on_behalf_posted(message: RawAPIDict) -> bool:
     return isinstance(api_app_id, str) and bool(api_app_id)
 
 
-def drop_on_behalf_messages(messages: list[RawAPIDict]) -> list[RawAPIDict]:
-    """Unlike :func:`filter_self_messages`, needs no bot identity (#1941).
-
-    ``api_app_id`` presence is a structural property of how Slack delivered
-    the message, so this filter never fails closed on an unresolved identity.
-    """
-    return [m for m in messages if not is_on_behalf_posted(m)]
-
-
 def is_self_originated(message: RawAPIDict, identity: OwnSlackIdentity | None) -> bool:
     """True iff this app produced *message*, rather than a human typing it (#4707).
 
@@ -213,7 +200,7 @@ def is_self_originated(message: RawAPIDict, identity: OwnSlackIdentity | None) -
     wake. The three signals are ordered by what each needs:
 
     *   ``api_app_id`` — posted through the Web API by an app, exactly
-        :func:`drop_on_behalf_messages`'s test, and structural so an
+        :func:`is_on_behalf_posted`'s test, and structural so an
         unresolved identity cannot cost it.
     *   ``bot_id`` — any bot authorship. A bot-token post always carries it,
         so this one breaks the loop even with ``auth.test`` unavailable; the
@@ -286,7 +273,6 @@ def strip_self_audio_attachments(
 
 __all__ = [
     "OwnSlackIdentity",
-    "drop_on_behalf_messages",
     "filter_self_messages",
     "identity_from_auth_test",
     "is_on_behalf_posted",

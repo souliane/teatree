@@ -10,6 +10,7 @@ from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion, PendingChatInjection
 from teatree.core.question_heal import live_owner_questions
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.question_binding import cards_in_thread
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
@@ -24,9 +25,10 @@ class Backend(ThreadBackend):
     updates: list[dict[str, object]] = field(default_factory=list)
     reads: list[str] = field(default_factory=list)
     read_error: bool = False
+    auth_user_id: str = "UBOT"
 
     def auth_test(self) -> RawAPIDict:
-        return {"ok": True, "user_id": "UBOT", "bot_id": "B_BOT_SELF"}
+        return {"ok": True, "user_id": self.auth_user_id, "bot_id": "B_BOT_SELF"}
 
     def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
         self.reads.append(thread_ts)
@@ -130,6 +132,14 @@ class TestThreadCardReplies(TestCase):
         assert report.answered_question == 1
         assert backend.reads == ["200.1"]
 
+    def test_root_fast_path_honors_channel_and_reply_time(self) -> None:
+        _card("201.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+
+        assert cards_in_thread(channel="D_OTHER", thread_ts="201.1", before_ts="201.2", backend=backend)[0] == []
+        assert cards_in_thread(channel=CHANNEL, thread_ts="201.1", before_ts="201.1", backend=backend)[0] == []
+        assert backend.reads == []
+
     def test_api_posted_owner_reply_binds_a_root_card_that_holds_bot_reminders(self) -> None:
         decoy = _card("250.1")
         card = _card("300.1")
@@ -165,6 +175,133 @@ class TestThreadCardReplies(TestCase):
         assert recorded == 1
         assert card.answer_text == "Approve"
         assert report.answered_question == 1
+
+    def test_free_text_outside_options_gets_a_note_and_leaves_card_pending(self) -> None:
+        card = _card("335.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["335.2"] = {"ts": "335.2", "thread_ts": "335.1"}
+        reply = _event(backend, ts="335.2", root="335.1", text="Something else")
+        assert reply is not None
+
+        _cycle(backend)
+
+        card.refresh_from_db()
+        reply.refresh_from_db()
+        assert card.is_pending
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert any("Approve" in text and "Decline" in text for _, _, text in backend.replies)
+
+    def test_top_level_option_rejection_confirms_its_own_reply_thread(self) -> None:
+        card = _card("335.3")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        reply = _event(backend, ts="335.4", root="", text="Something else")
+        assert reply is not None
+
+        _cycle(backend)
+
+        card.refresh_from_db()
+        reply.refresh_from_db()
+        assert card.is_pending
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert any(ts == "335.4" and "Approve" in text for _, ts, text in backend.replies)
+
+    def test_second_coalesced_id_reply_selects_its_own_card_and_logs_both_rows(self) -> None:
+        first = _card("336.2")
+        second = _card("336.3")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.thread_replies["336.1"] = [{"ts": "336.1"}, {"ts": "336.2"}, {"ts": "336.3"}]
+        first_reply = _event(backend, ts="336.4", root="336.1", text="approve")
+        second_reply = _event(backend, ts="336.5", root="336.1", text=f"#{second.pk} decline")
+        assert first_reply is not None
+        assert second_reply is not None
+
+        with self.assertLogs("teatree.loop.question_binding", level="INFO") as logs:
+            _cycle(backend)
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert first.is_pending
+        assert second.answer_text == "Decline"
+        assert sum("336.4" in line for line in logs.output) == 1
+        assert sum("336.5" in line for line in logs.output) == 1
+
+    def test_each_row_of_an_unsplit_card_thread_turn_has_a_decision_log(self) -> None:
+        card = _card("336.6")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["336.7"] = {"ts": "336.7", "thread_ts": "336.6"}
+        _event(backend, ts="336.7", root="336.6", text="maybe")
+        _event(backend, ts="336.8", root="336.6", text="later")
+
+        with self.assertLogs("teatree.loop.question_binding", level="INFO") as logs:
+            _cycle(backend)
+
+        card.refresh_from_db()
+        assert card.is_pending
+        assert sum("336.7" in line for line in logs.output) == 1
+        assert sum("336.8" in line for line in logs.output) == 1
+
+    def test_addressed_tap_only_card_gets_a_note(self) -> None:
+        card = _action_card("337.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["337.2"] = {"ts": "337.2", "thread_ts": "337.1"}
+        reply = _event(backend, ts="337.2", root="337.1", text=f"#{card.pk} Accept")
+        assert reply is not None
+
+        _cycle(backend)
+
+        card.refresh_from_db()
+        reply.refresh_from_db()
+        assert card.is_pending
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert any("tap" in text.lower() for _, _, text in backend.replies)
+
+    def test_api_post_by_other_user_in_card_thread_is_not_recorded(self) -> None:
+        _card("338.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        event = {**_api_owner_reply("338.2", "338.1"), "user": "U_OTHER"}
+
+        assert SlackDmRecorder(backend=backend).record_events([event]) == 0
+        assert not PendingChatInjection.objects.filter(slack_ts="338.2").exists()
+
+    def test_api_bot_post_in_card_thread_is_not_recorded(self) -> None:
+        _card("339.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        event = {**_api_owner_reply("339.2", "339.1"), "bot_id": "B_OTHER"}
+
+        assert SlackDmRecorder(backend=backend).record_events([event]) == 0
+        assert not PendingChatInjection.objects.filter(slack_ts="339.2").exists()
+
+    def test_own_api_post_in_card_thread_is_not_recorded(self) -> None:
+        _card("340.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.auth_user_id = OWNER_SLACK_ID
+
+        assert SlackDmRecorder(backend=backend).record_events([_api_owner_reply("340.2", "340.1")]) == 0
+        assert not PendingChatInjection.objects.filter(slack_ts="340.2").exists()
+
+    def test_api_post_in_closed_card_thread_is_not_recorded(self) -> None:
+        card = _card("341.1")
+        card.apply_answer("Approve", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        backend = Backend(user_id=OWNER_SLACK_ID)
+
+        assert SlackDmRecorder(backend=backend).record_events([_api_owner_reply("341.2", "341.1")]) == 0
+        assert not PendingChatInjection.objects.filter(slack_ts="341.2").exists()
+
+    def test_failed_thread_read_does_not_lose_a_direct_message_in_the_batch(self) -> None:
+        _card("342.2")
+        backend = Backend(user_id=OWNER_SLACK_ID, read_error=True)
+        failed = _api_owner_reply("342.3", "342.1")
+        direct = {"ts": "342.4", "user": OWNER_SLACK_ID, "channel": CHANNEL, "text": "hello"}
+        recorder = SlackDmRecorder(backend=backend)
+
+        with self.assertLogs("teatree.loop.scanners.slack_dm_recorder", level="WARNING"):
+            assert recorder.record_events([failed, direct]) == 1
+
+        assert not PendingChatInjection.objects.filter(slack_ts="342.3").exists()
+        assert PendingChatInjection.objects.filter(slack_ts="342.4").exists()
+        backend.read_error = False
+        backend.thread_replies["342.1"] = [{"ts": "342.1"}, {"ts": "342.2"}]
+        assert recorder.record_events([failed]) == 1
 
     def test_api_app_post_without_configured_owner_is_not_recorded(self) -> None:
         card = _card("340.1")

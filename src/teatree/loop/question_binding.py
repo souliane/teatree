@@ -84,12 +84,14 @@ class CardThreadStop(StrEnum):
     TAPS_ONLY = "the card takes taps only"
     CLOSED = "no pending card in this thread"
     NOT_WAITING = "the named question is not waiting"
+    OPTIONS_ONLY = "the reply does not match a card option"
 
 
 @dataclass(frozen=True, slots=True)
 class UnmatchedCardThread:
     reason: CardThreadStop
     question_id: int | None = None
+    options: tuple[str, ...] = ()
 
 
 def configured_owner_id(backend: object) -> str:
@@ -143,12 +145,16 @@ def bind_reply(
 
 def _bind_found(
     reply: PendingChatInjection, *, question: DeferredQuestion, body: str, reader: InboundReader, key: str
-) -> BoundAnswer | None:
+) -> BoundAnswer | UnmatchedCardThread | None:
     if is_action_question(question):
         _log_reply(reply, f"ignored: {CardThreadStop.TAPS_ONLY}")
-        return None
+        return UnmatchedCardThread(CardThreadStop.TAPS_ONLY) if reply.thread_ts else None
     answer = resolve_answer(body, question, reader=reader)
     if answer is None:
+        if question.audience == DeferredQuestion.Audience.OWNER_QUESTION and _recorded_options(question):
+            _log_reply(reply, f"rejected: {CardThreadStop.OPTIONS_ONLY}")
+            options = tuple(str(option.get("label", "")) for option in _recorded_options(question) or [])
+            return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, question.pk, options)
         _log_reply(reply, "ignored: the text reads as a question")
         return None
     _log_reply(reply, f"bound question {question.pk}", key=key)
@@ -165,6 +171,21 @@ def _log_reply(reply: PendingChatInjection, decision: str, *, key: str = "") -> 
             decision,
             f" key={key}" if key else "",
         )
+
+
+def log_coalesced_replies(
+    rows: list[PendingChatInjection], result: BoundAnswer | AmbiguousCards | UnmatchedCardThread | None
+) -> None:
+    if isinstance(result, BoundAnswer):
+        decision = f"bound question {result.question.pk} as part of a coalesced turn"
+    elif isinstance(result, AmbiguousCards):
+        decision = f"ambiguous: questions {result.question_ids} share this thread"
+    elif isinstance(result, UnmatchedCardThread):
+        decision = f"rejected: {result.reason}"
+    else:
+        decision = "ignored: this coalesced turn did not select a card"
+    for row in rows[1:]:
+        _log_reply(row, decision)
 
 
 def apply_bound_answer(
@@ -250,14 +271,15 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
     A digit ``N`` requires the question's ``options_hash`` to still match the
     live option set: a mismatch returns ``None`` (stale — no wrong-label
     application) so the reply is left for the ordinary DM path; a matching hash
-    with ``N`` in range maps to ``options[N-1].label``, and an out-of-range ``N``
-    is applied verbatim. A digit is unambiguous, so it never costs a model turn.
+    with ``N`` in range maps to ``options[N-1].label``. An out-of-range digit
+    is applied as typed only for questions without recorded owner-card options.
 
-    A free-text body used to be applied verbatim, which meant a message that was
+    A free-text body used to be applied as typed, which meant a message that was
     itself a QUESTION got consumed as the answer to the pending one, claimed, and
     reacted ✅ — the owner's question answered by nobody and marked handled. So a
-    non-digit body is READ first, and an interrogative one returns ``None``: it is
-    left to the reactive cycle, which answers it or dispatches it. The asymmetry
+    non-digit body on other questions is READ first, and an interrogative one
+    returns ``None``: it is left to the reactive cycle, which answers it or dispatches it. Owner
+    option cards accept only recorded labels without a model read. The asymmetry
     is deliberate — mistaking a question for an answer destroys the question,
     while mistaking an answer for a question costs one extra round trip.
     """
@@ -265,11 +287,15 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
         return None
     match = _DIGIT_RE.match(text)
     if match is None:
-        for option in _recorded_options(question) or []:
+        options = _recorded_options(question) or []
+        for option in options:
             label = str(option.get("label", ""))
             if label and label.casefold() == text.strip().casefold():
                 return label
-        if reader(text).intent is InboundIntent.QUESTION:
+        if (
+            not (options and question.audience == DeferredQuestion.Audience.OWNER_QUESTION)
+            and reader(text).intent is InboundIntent.QUESTION
+        ):
             return None
         answer = text
     else:
@@ -278,6 +304,9 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
             return None
         index = int(match.group(1))
         answer = str(options[index - 1].get("label", "")) or text if 1 <= index <= len(options) else text
+    if question.audience == DeferredQuestion.Audience.OWNER_QUESTION and _recorded_options(question):
+        labels = {str(option.get("label", "")) for option in _recorded_options(question) or []}
+        return answer if answer in labels else None
     return answer
 
 
@@ -412,5 +441,6 @@ __all__ = [
     "bind_reply",
     "cards_in_thread",
     "configured_owner_id",
+    "log_coalesced_replies",
     "resolve_answer",
 ]

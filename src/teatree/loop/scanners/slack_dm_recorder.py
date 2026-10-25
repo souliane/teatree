@@ -62,6 +62,7 @@ class SlackDmRecorder:
     backend: MessagingBackend
     overlay: str = ""
     _cached_identity: OwnSlackIdentity | None = field(default=None, init=False, repr=False)
+    retry_events: list[RawAPIDict] = field(default_factory=list, init=False, repr=False)
 
     def _identity(self) -> OwnSlackIdentity | None:
         if self._cached_identity is None:
@@ -70,12 +71,19 @@ class SlackDmRecorder:
 
     def record_events(self, events: list[RawAPIDict]) -> int:
         """Record each DM in *events* that survives the write-side filters; return the NEW rows."""
+        self.retry_events = []
         dms = filter_self_messages(events, self._identity())
         if dms is None:
             return 0
         recorded = 0
         for event in dms:
-            if is_on_behalf_posted(event) and not self._owner_card_reply(event):
+            try:
+                owner_card_reply = is_on_behalf_posted(event) and self._owner_card_reply(event)
+            except Exception:
+                logger.exception("Slack thread read failed for DM event %s; retrying", _event_ts(event))
+                self.retry_events.append(event)
+                continue
+            if is_on_behalf_posted(event) and not owner_card_reply:
                 if _event_thread_ts(event):
                     logger.info("Slack reply %s ignored: posted through an app token", _event_ts(event))
                 continue
@@ -93,7 +101,7 @@ class SlackDmRecorder:
             before_ts=_event_ts(event),
             backend=self.backend,
         )
-        return any(card.audience == DeferredQuestion.Audience.OWNER_QUESTION for card in cards)
+        return any(card.is_pending and card.audience == DeferredQuestion.Audience.OWNER_QUESTION for card in cards)
 
     def _record_one(self, event: RawAPIDict) -> bool:
         ts = _event_ts(event)

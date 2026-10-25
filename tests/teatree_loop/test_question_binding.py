@@ -18,7 +18,7 @@ import itertools
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -47,6 +47,7 @@ from tests.factories import planned_ticket
 pytestmark = pytest.mark.django_db
 
 _CHANNEL = "D-user"
+_FREE_TEXT_CARD = replace(OWNER_DECISION["card"], options=())
 
 
 @dataclass
@@ -102,7 +103,7 @@ def _question(text: str, *, slack_ts: str, generation: int = 1) -> DeferredQuest
         generation=generation,
         slack_channel=_CHANNEL,
         slack_ts=slack_ts,
-        **OWNER_DECISION,
+        card=_FREE_TEXT_CARD,
     )
 
 
@@ -301,8 +302,8 @@ def _owner_is_mid_conversation(thread_root: str = "900.0") -> None:
 
 
 def _mirror_two_questions() -> tuple[DeferredQuestion, DeferredQuestion, dict[str, str]]:
-    older = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", generation=1, **OWNER_DECISION)
-    newer = DeferredQuestion.record("Ship the release?", session_id="s", run_id="r", generation=2, **OWNER_DECISION)
+    older = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", generation=1, card=_FREE_TEXT_CARD)
+    newer = DeferredQuestion.record("Ship the release?", session_id="s", run_id="r", generation=2, card=_FREE_TEXT_CARD)
     backend, roots = _threading_slack()
     with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
         drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
@@ -458,7 +459,7 @@ class TestAResurfacedQuestionIsAnswerable:
 
     def test_an_unmirrored_row_is_resurfaced_at_root_and_stamped(self) -> None:
         _owner_is_mid_conversation()
-        row = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", **OWNER_DECISION)
+        row = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", card=_FREE_TEXT_CARD)
         roots: dict[str, str] = {}
         backend, posted = _recording_slack(8000, roots)
 

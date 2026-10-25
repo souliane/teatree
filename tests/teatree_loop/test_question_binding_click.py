@@ -181,6 +181,25 @@ class TestTheTapRoundTrip(TestCase):
         assert row.answer_text == "Yes"
         assert backend.update_message.call_args.kwargs["ts"] == nested_ts
 
+    def test_a_nested_card_tap_selects_its_own_timestamp_before_the_root(self) -> None:
+        root, backend = _posted_card()
+        nested = DeferredQuestion.record(
+            "Can I ship the other widgets?",
+            card=OWNER_CARD,
+            slack_channel=_CHANNEL,
+            slack_ts="1800000000.000500",
+        )
+        payload = _tap(nested)
+        payload["message"]["thread_ts"] = root.slack_ts
+
+        assert answer_from_click(payload, backend=backend)
+
+        root.refresh_from_db()
+        nested.refresh_from_db()
+        assert root.is_pending
+        assert nested.answer_text == "Yes"
+        assert backend.update_message.call_args.kwargs["ts"] == nested.slack_ts
+
     def test_a_tap_on_a_dismissed_question_says_it_no_longer_needs_an_answer(self) -> None:
         row, backend = _posted_card()
         row.mark_stale("the widgets shipped without asking")

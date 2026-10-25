@@ -36,7 +36,6 @@ in recorded owner-card threads; other app posts remain filtered.
 
 from teatree.backends.slack.self_identity import (
     OwnSlackIdentity,
-    drop_on_behalf_messages,
     filter_self_messages,
     is_on_behalf_posted,
     is_self_authored,
@@ -47,7 +46,6 @@ from teatree.backends.slack.self_identity import (
 
 __all__ = [
     "OwnSlackIdentity",
-    "drop_on_behalf_messages",
     "filter_self_messages",
     "is_on_behalf_posted",
     "is_self_authored",

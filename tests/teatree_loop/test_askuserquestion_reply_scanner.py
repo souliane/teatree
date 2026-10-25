@@ -13,12 +13,14 @@ a question result).
 import hashlib
 import json
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
 import pytest
 
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.models import DmContext, PendingChatInjection, Session, Task, TaskAttempt
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.loop.question_binding import AmbiguousCards
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
@@ -101,16 +103,16 @@ class TestATypedAnswerClosesTheRootCard:
         question = DeferredQuestion.record(
             "Can I ship the widgets?", slack_channel=_CHANNEL, slack_ts="100.0", **OWNER_DECISION
         )
-        _record_reply("tomorrow, please", slack_ts="200.0")
+        _record_reply("Yes", slack_ts="200.0")
         backend = FakeMessaging()
 
         _scan(backend)
 
         question.refresh_from_db()
-        assert question.answer_text == "tomorrow, please"
+        assert question.answer_text == "Yes"
         [update] = backend.updates
         assert (update["channel"], update["ts"]) == (_CHANNEL, "100.0")
-        assert "You answered: tomorrow, please" in str(update["text"])
+        assert "You chose: Yes" in str(update["text"])
         assert update["blocks"]
 
     def test_a_reply_sent_before_the_card_was_posted_edits_nothing(self) -> None:
@@ -121,6 +123,20 @@ class TestATypedAnswerClosesTheRootCard:
         _scan(backend)
 
         assert backend.updates == []
+
+    def test_an_ambiguous_binding_is_never_applied_or_acknowledged(self) -> None:
+        question = _record_question(generation=1, slack_ts="100.0")
+        reply = _record_reply("Yes", slack_ts="200.0")
+        backend = FakeMessaging()
+
+        with patch(
+            "teatree.loop.scanners.askuserquestion_reply.bind_reply", return_value=AmbiguousCards((question.pk,))
+        ):
+            _scan(backend)
+
+        reply.refresh_from_db()
+        assert reply.loop_replied_at is None
+        assert backend.react_calls == []
 
 
 class TestDigitReplyResolvesOption:
@@ -274,15 +290,15 @@ class TestParkedTaskHeadlessResume:
             parked_task=parked,
             **OWNER_DECISION,
         )
-        _record_reply("use postgres-1", slack_ts="200.0")
+        _record_reply("Yes", slack_ts="200.0")
 
         _scan(FakeMessaging())
 
         question.refresh_from_db()
-        assert question.answer_text == "use postgres-1"
+        assert question.answer_text == "Yes"
         resume = parked.child_tasks.get()
         assert resume.parent_task_id == parked.pk
-        assert "use postgres-1" in resume.execution_reason
+        assert "Yes" in resume.execution_reason
         assert resume_session_id(resume) == _RESUME_UUID
 
     def test_resume_is_not_double_queued_on_re_scan(self) -> None:
@@ -295,7 +311,7 @@ class TestParkedTaskHeadlessResume:
             parked_task=parked,
             **OWNER_DECISION,
         )
-        _record_reply("use postgres-1", slack_ts="200.0")
+        _record_reply("Yes", slack_ts="200.0")
 
         _scan(FakeMessaging())
         _scan(FakeMessaging())

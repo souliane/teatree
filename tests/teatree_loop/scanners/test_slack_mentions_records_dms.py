@@ -10,8 +10,10 @@ from django.test import TestCase
 
 from teatree.backends.slack import receiver
 from teatree.core.models import PendingChatInjection
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.types import RawAPIDict
+from tests._owner_channel import OWNER_CARD, OWNER_SLACK_ID
 
 _HUMAN_DM_TS = "1700000000.000100"
 _HUMAN_DM: RawAPIDict = {
@@ -78,3 +80,38 @@ class TestDrainedDmsAreRecorded(TestCase):
         self._scan()
 
         assert list(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == [_HUMAN_DM_TS]
+
+    def test_a_failed_card_thread_read_is_retained_while_another_dm_records(self) -> None:
+        card = DeferredQuestion.record("Can I ship?", card=OWNER_CARD, slack_channel="D1", slack_ts="100.2")
+        failed = {
+            **_HUMAN_DM,
+            "ts": "100.3",
+            "thread_ts": "100.1",
+            "user": OWNER_SLACK_ID,
+            "api_app_id": "A_OWNER_SCRIPT",
+        }
+        direct = {**_HUMAN_DM, "ts": "100.4", "user": OWNER_SLACK_ID}
+        self._enqueue(failed, direct)
+
+        @dataclass
+        class ReadingBackend(FakeMessaging):
+            user_id: str = OWNER_SLACK_ID
+            read_error: bool = True
+
+            def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+                if self.read_error:
+                    message = "Slack read refused"
+                    raise RuntimeError(message)
+                return [{"ts": thread_ts}, {"ts": card.slack_ts}]
+
+        backend = ReadingBackend()
+        scanner = SlackMentionsScanner(backend=backend, overlay="demo")
+        scanner.scan()
+
+        assert list(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == ["100.4"]
+        assert [record["event"]["ts"] for record in receiver.drain_event_queue()] == ["100.3"]
+
+        backend.read_error = False
+        scanner.scan()
+
+        assert set(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == {"100.3", "100.4"}
