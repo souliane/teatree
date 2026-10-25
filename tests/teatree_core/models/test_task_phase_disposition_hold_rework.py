@@ -78,6 +78,20 @@ class TestHoldReworkTargetsTheLiveHead(TestCase):
 
         assert Task.objects.filter(ticket=ticket, phase="coding", status=Task.Status.PENDING).count() == 1
 
+    def test_a_coding_completion_on_a_superseded_head_re_enters_testing_instead_of_stranding_the_ticket(self) -> None:
+        ticket, _live = _ticket_with_worktree_at_head(self.tmp_path)
+        held = completed_self_review(ticket, "hold", reviewed_sha=head(1))
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        hand_fix = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        hand_fix.claim(claimed_by="coder")
+
+        hand_fix.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+        assert Task.objects.filter(ticket=ticket, phase="testing", status=Task.Status.PENDING).count() == 1
+        assert not Task.objects.filter(ticket=ticket, phase="coding", parent_task=held).exists()
+
     def test_an_unknown_worktree_head_keeps_the_rework_behaviour(self) -> None:
         ticket = author_ticket()
         completed_self_review(ticket, "hold", reviewed_sha=head(1))

@@ -110,7 +110,9 @@ def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
     """Fire a completed coding task's transition, or escalate a wedge; ``True`` iff one fired.
 
     Only the rework parented on a held self-review discharges it: any other coding run on a
-    held ticket queues that rework instead, so the HOLD's own findings always reach a coder.
+    held ticket queues that rework instead, so the HOLD's own findings always reach a coder —
+    unless the ticket has moved past the HOLD's head, which that run then addressed: it is
+    re-tested and re-reviewed at the head it left.
     """
     if ticket.state == Ticket.State.PLAN_RECORDED:
         ticket.code(parent_task=task)
@@ -121,7 +123,7 @@ def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
         # early ticket) legitimately mints coding before PLAN_RECORDED; ``code_direct`` advances it.
         ticket.code_direct(parent_task=task)
     elif ticket.state in transition_source_states("address_self_review") and (held := SelfReview.open_hold_for(ticket)):
-        if task.parent_task_id != held.task_pk:
+        if task.parent_task_id != held.task_pk and not _head_past(ticket, held):
             queue_self_review_rework(ticket, held, after=task)
             return False
         ticket.address_self_review(parent_task=task)
@@ -173,8 +175,10 @@ def queue_self_review_rework(ticket: Ticket, review: SelfReview, *, after: "Task
 
     Keyed on the parent link, and after another coding or shipping completion on reworks newer than it:
     a replay never re-mints, yet a rework failed or cancelled before that completion is replaced once.
+    A HOLD whose head the ticket has moved past queues nothing: its still-pending reworks fail instead.
     """
-    if _superseded_by_live_head(ticket, review):
+    if live := _head_past(ticket, review):
+        _fail_pending_reworks(ticket, review, live=live)
         return
     reworks = ticket.tasks.filter(parent_task_id=review.task_pk, phase__in=phase_spellings("coding"))
     if after is not None:
@@ -188,23 +192,25 @@ def queue_self_review_rework(ticket: Ticket, review: SelfReview, *, after: "Task
     ticket.schedule_self_review_rework(ticket.tasks.get(pk=review.task_pk), review)
 
 
-def _superseded_by_live_head(ticket: Ticket, review: SelfReview) -> bool:
-    """Whether the HOLD judged a head the ticket worktree has moved off, failing its still-pending reworks.
+def _head_past(ticket: Ticket, review: SelfReview) -> str:
+    """The ticket worktree's head when it has moved off the tree *review* judged, else ''.
 
-    A HOLD is a verdict on one tree: its findings say nothing about the commits that came after it, and a rework
-    minted for it makes a coder fix code that is no longer the branch. A claimed rework is left alone — an agent
-    is on it. An unknown worktree head, or a HOLD that recorded none, keeps the rework (nothing proves it stale).
+    A HOLD is a verdict on one tree: its findings say nothing about the commits that came after it, so a rework
+    minted for it makes a coder fix code that is no longer the branch. An unknown worktree head, or a HOLD that
+    recorded none, proves nothing stale, so the rework stays.
     """
     live = worktree_head_sha(ticket)
-    if not live or not review.reviewed_sha or live.startswith(review.reviewed_sha):
-        return False
+    return live if live and review.reviewed_sha and not live.startswith(review.reviewed_sha) else ""
+
+
+def _fail_pending_reworks(ticket: Ticket, review: SelfReview, *, live: str) -> None:
+    """Fail the reworks of *review* no agent has claimed; a claimed one is left, an agent is on it."""
     reason = f"{HEAD_SUPERSEDED_PREFIX}self-review HOLD at {review.reviewed_sha[:12]}, the ticket is now at {live[:12]}"
     pending = ticket.tasks.pending_in_phase("coding").filter(
         parent_task_id=review.task_pk, status=ticket.tasks.model.Status.PENDING
     )
     for rework in pending:
         rework.fail(reason=reason, by_holder=False)
-    return True
 
 
 def _record_hold_cap(ticket: Ticket, review: SelfReview, *, laps: int) -> None:
