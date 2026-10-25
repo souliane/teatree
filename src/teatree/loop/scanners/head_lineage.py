@@ -154,23 +154,33 @@ class GhLineageReader:
         raise _UnreadableError(msg)
 
 
-def head_is_carried(*, slug: str, pr_id: int, head_sha: str, host_kind: str, reader: LineageReader) -> bool:
-    """Whether *head_sha*'s records followed an unchanged patch from an earlier head.
+def carried_head_row(
+    *, slug: str, pr_id: int, head_sha: str, host_kind: str, reader: LineageReader
+) -> HeadCarryOver | None:
+    """The ledger row deciding *head_sha*, or ``None`` when none is recorded yet.
 
-    The question both the sweep and the review-arming handlers ask: a carried head was already reviewed, so
-    arming another round on it is churn. A failure of the carry itself never blocks the caller — it proceeds
-    exactly as it did before the carry existed.
+    A failure of the carry itself never blocks the caller — it proceeds exactly as it did before the carry existed.
     """
     try:
-        row = carry_over_head(slug=slug, pr_id=pr_id, live_head=head_sha, host_kind=host_kind, read_lineage=reader)
+        return carry_over_head(slug=slug, pr_id=pr_id, live_head=head_sha, host_kind=host_kind, read_lineage=reader)
     except Exception:
         logger.exception("head carry-over failed for %s#%d at %s", slug, pr_id, head_sha[:8])
-        return False
+        return None
+
+
+def head_is_carried(*, slug: str, pr_id: int, head_sha: str, host_kind: str, reader: LineageReader) -> bool:
+    """Whether *head_sha* arrived from an earlier head with the patch unchanged, so its records may have followed."""
+    row = carried_head_row(slug=slug, pr_id=pr_id, head_sha=head_sha, host_kind=host_kind, reader=reader)
     return row is not None and row.outcome == HeadCarryOver.Outcome.CARRIED
 
 
 def review_head_is_carried(*, slug: str, pr_id: int, head_sha: str, pr_url: str) -> bool:
-    """:func:`head_is_carried` for a review-arming handler, which reads the live forge under its routed token."""
-    return head_is_carried(
+    """Whether a review verdict followed an unchanged patch to *head_sha*: arming another round on it is churn.
+
+    The review-arming handlers read the live forge under their routed token. A head the patch left unchanged
+    that nothing reviewed (a branch update on a PR with no verdict) is still reviewed in the normal round.
+    """
+    row = carried_head_row(
         slug=slug, pr_id=pr_id, head_sha=head_sha, host_kind=forge_from_remote(pr_url), reader=GhLineageReader()
     )
+    return row is not None and row.reviewed_by_carry

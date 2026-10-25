@@ -233,13 +233,33 @@ class TestCodexReviewZoneRevived(TestCase):
 
     def test_a_head_whose_records_followed_an_unchanged_patch_arms_no_review(self) -> None:
         HeadCarryOver.objects.create(
-            slug="o/r", pr_id=102, from_head="a" * 40, to_head="b" * 40, outcome=HeadCarryOver.Outcome.CARRIED
+            slug="o/r",
+            pr_id=102,
+            from_head="a" * 40,
+            to_head="b" * 40,
+            outcome=HeadCarryOver.Outcome.CARRIED,
+            carried={"review_verdicts": 1},
         )
 
         created = persist_agent_actions(_agent_actions(self._signal(pr_id=102, head_sha="b" * 40)))
 
         assert created == []
         assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=102).exists()
+
+    def test_a_head_the_patch_left_unchanged_that_no_verdict_followed_is_armed(self) -> None:
+        HeadCarryOver.objects.create(
+            slug="o/r",
+            pr_id=103,
+            from_head="a" * 40,
+            to_head="b" * 40,
+            outcome=HeadCarryOver.Outcome.CARRIED,
+            carried={"review_verdicts": 0},
+        )
+
+        created = persist_agent_actions(_agent_actions(self._signal(pr_id=103, head_sha="b" * 40)))
+
+        assert len(created) == 1
+        assert CodexReviewMarker.objects.filter(slug="o/r", pr_id=103).count() == 1
 
     def test_role_conflict_does_not_burn_marker(self) -> None:
         Ticket.objects.create(issue_url="https://github.com/o/r/pull/13", overlay="acme", role=Ticket.Role.AUTHOR)

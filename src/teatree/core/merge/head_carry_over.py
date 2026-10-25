@@ -25,11 +25,14 @@ from teatree.core.models import (
     CriticVerdict,
     HeadCarryOver,
     MergeClear,
+    PullRequest,
     ReviewVerdict,
     ReviewVerdictError,
+    Rubric,
     Ticket,
 )
 from teatree.core.models.ticket_evidence import recorded_anti_vacuity_attestation
+from teatree.core.review.nit_publish import carry_nit_publication, critic_nits, pr_url_for_nits, review_nits
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -161,24 +164,36 @@ def _open_clears(slug: str, pr_id: int) -> list[MergeClear]:
 
 
 def _newest_other_head(*, slug: str, pr_id: int, head: str) -> str | None:
-    """The head, other than *head*, that a record of this PR was most recently written at."""
-    stamped: list[tuple[datetime, str]] = [
+    """The head, other than *head*, that a record of this PR was most recently written at.
+
+    A head holding a record outranks one only a branch update names: the update leaves nothing to carry.
+    """
+    ticket = resolve_gated_ticket(slug=slug, pr_id=pr_id)
+    records: list[tuple[datetime, str]] = [
         *ReviewVerdict.objects.for_pr(slug, pr_id).values_list("recorded_at", "reviewed_sha"),
         *((clear.issued_at, clear.reviewed_sha) for clear in _open_clears(slug, pr_id)),
-        *BranchUpdateAttempt.objects.filter(slug__iexact=slug.strip(), pr_id=pr_id).values_list(
-            "attempted_at", "head_sha"
-        ),
+        *_critic_heads(ticket),
     ]
-    if (ticket := resolve_gated_ticket(slug=slug, pr_id=pr_id)) is not None:
-        stamped.extend(CriticVerdict.objects.filter(ticket=ticket).values_list("recorded_at", "head_sha"))
-    others = [(at, sha.lower()) for at, sha in stamped if sha and sha.lower() != head]
-    return max(others)[1] if others else None
+    updates = BranchUpdateAttempt.objects.filter(slug__iexact=slug.strip(), pr_id=pr_id).values_list(
+        "attempted_at", "head_sha"
+    )
+    for stamped in (records, list(updates)):
+        if others := [(at, sha.lower()) for at, sha in stamped if sha and sha.lower() != head]:
+            return max(others)[1]
+    return None
+
+
+def _critic_heads(ticket: Ticket | None) -> "list[tuple[datetime, str]]":
+    """The ticket's critic heads, only when the ticket has the one PR they can belong to."""
+    if ticket is None or PullRequest.objects.filter(ticket=ticket).count() > 1:
+        return []
+    return list(CriticVerdict.objects.filter(ticket=ticket).values_list("recorded_at", "head_sha"))
 
 
 def _carry_records(move: _Move) -> dict[str, int]:
     """Re-record every store's rows at the new head; a store already holding a row there is left as it is."""
     ticket = resolve_gated_ticket(slug=move.slug, pr_id=move.pr_id)
-    verdicts = _verdicts_to_carry(move)
+    verdicts = list(ReviewVerdict.objects.for_pr(move.slug, move.pr_id).filter(reviewed_sha=move.from_head))
     critics = _critic_verdicts_to_carry(ticket, move)
     clears = [clear for clear in _open_clears(move.slug, move.pr_id) if clear.reviewed_sha == move.from_head]
     for verdict in verdicts:
@@ -192,12 +207,11 @@ def _carry_records(move: _Move) -> dict[str, int]:
         "critic_verdicts": len(critics),
         "merge_clears": len(clears),
         "anti_vacuity": int(_carry_attestation(ticket, move)),
+        "rubric_grades": 0
+        if ticket is None
+        else Rubric.carry_grades(ticket, from_head=move.from_head, to_head=move.to_head),
+        "nit_receipts": 0 if ticket is None else _carry_nit_receipts(ticket, move, verdicts, critics),
     }
-
-
-def _verdicts_to_carry(move: _Move) -> list[ReviewVerdict]:
-    at_pr = ReviewVerdict.objects.for_pr(move.slug, move.pr_id)
-    return [] if at_pr.filter(reviewed_sha=move.to_head).exists() else list(at_pr.filter(reviewed_sha=move.from_head))
 
 
 def _critic_verdicts_to_carry(ticket: Ticket | None, move: _Move) -> list[CriticVerdict]:
@@ -216,3 +230,20 @@ def _carry_attestation(ticket: Ticket | None, move: _Move) -> bool:
     if ticket is None or recorded_anti_vacuity_attestation(ticket, move.to_head).get("head_sha") == move.to_head:
         return False
     return ticket.carry_anti_vacuity_attestation(move.from_head, move.to_head)
+
+
+def _carry_nit_receipts(
+    ticket: Ticket, move: _Move, verdicts: list[ReviewVerdict], critics: list[CriticVerdict]
+) -> int:
+    points = tuple(
+        dict.fromkeys(
+            (
+                *critic_nits(item for critic in critics for item in critic.item_verdicts()),
+                *(point for verdict in verdicts for point in review_nits(verdict.structured_findings)),
+            )
+        )
+    )
+    pr_url = pr_url_for_nits(ticket, move.to_head)
+    if not points or not pr_url:
+        return 0
+    return carry_nit_publication(ticket, pr_url=pr_url, from_head=move.from_head, to_head=move.to_head, points=points)

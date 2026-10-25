@@ -65,3 +65,8 @@ class HeadCarryOver(models.Model):
 
     def __str__(self) -> str:
         return f"head-carry-over<{self.slug}#{self.pr_id} {self.from_head[:8]}->{self.to_head[:8]} {self.outcome}>"
+
+    @property
+    def reviewed_by_carry(self) -> bool:
+        """Whether a review verdict followed the patch to this head, so a review round on it would repeat one."""
+        return self.outcome == self.Outcome.CARRIED and self.carried.get("review_verdicts", 0) > 0

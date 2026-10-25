@@ -95,8 +95,15 @@ class TestACarriedHeadArmsNoReview(TestCase):
     _OLD = "a" * 40
     _NEW = "b" * 40
 
-    def _carry_row(self, outcome: HeadCarryOver.Outcome) -> None:
-        HeadCarryOver.objects.create(slug="o/r", pr_id=95, from_head=self._OLD, to_head=self._NEW, outcome=outcome)
+    def _carry_row(self, outcome: HeadCarryOver.Outcome, *, review_verdicts: int = 1) -> None:
+        HeadCarryOver.objects.create(
+            slug="o/r",
+            pr_id=95,
+            from_head=self._OLD,
+            to_head=self._NEW,
+            outcome=outcome,
+            carried={"review_verdicts": review_verdicts},
+        )
 
     def test_a_carried_head_creates_no_marker_and_no_task(self) -> None:
         self._carry_row(HeadCarryOver.Outcome.CARRIED)
@@ -105,6 +112,14 @@ class TestACarriedHeadArmsNoReview(TestCase):
 
         assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=95).exists()
         assert not Task.objects.filter(ticket__issue_url=_PR_URL.replace("90", "95")).exists()
+
+    def test_a_head_the_patch_left_unchanged_that_no_verdict_followed_is_armed(self) -> None:
+        self._carry_row(HeadCarryOver.Outcome.CARRIED, review_verdicts=0)
+
+        task = handle_self_pr_review(_action(pr_id=95, head_sha=self._NEW))
+
+        assert task is not None
+        assert CodexReviewMarker.objects.filter(slug="o/r", pr_id=95, head_sha=self._NEW).count() == 1
 
     def test_a_head_whose_patch_changed_is_armed(self) -> None:
         self._carry_row(HeadCarryOver.Outcome.REFUSED)
