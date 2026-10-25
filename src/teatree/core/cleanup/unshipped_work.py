@@ -19,10 +19,7 @@ honest instead of an operator discovering it mid-recovery.
 
 import logging
 import os
-from collections.abc import Generator
-from contextlib import contextmanager
-from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TypedDict
 
@@ -50,45 +47,6 @@ _INDEX_AWARE_BASE = "HEAD"
 _RENAME_STATUS = frozenset("RC")
 MAX_IGNORED_PATCH_BYTES = 8 * 1024 * 1024
 COMMIT_PATCH_BATCH_SIZE = 128
-_REMOTE_READ_CACHE: ContextVar[dict[tuple[str, str, tuple[str, ...]], dict[str, str] | git.RemoteReadError] | None] = (
-    ContextVar("unshipped_remote_read_cache", default=None)
-)
-
-
-@contextmanager
-def cached_remote_reads() -> Generator[None]:
-    if _REMOTE_READ_CACHE.get() is not None:
-        yield
-        return
-    token = _REMOTE_READ_CACHE.set({})
-    try:
-        yield
-    finally:
-        _REMOTE_READ_CACHE.reset(token)
-
-
-def _remote_heads(checkout: Path, remote: str, branches: tuple[str, ...], *, fresh: bool) -> dict[str, str]:
-    cache = None if fresh else _REMOTE_READ_CACHE.get()
-    key: tuple[str, str, tuple[str, ...]] | None = None
-    if cache is not None:
-        common = Path(git.run_strict(repo=str(checkout), args=["rev-parse", "--git-common-dir"]))
-        if not common.is_absolute():
-            common = checkout / common
-        key = (str(common.resolve()), remote, branches)
-        cached = cache.get(key)
-        if isinstance(cached, git.RemoteReadError):
-            raise cached
-        if cached is not None:
-            return cached
-    try:
-        present = remote_head_shas(str(checkout), branches, remote=remote)
-    except git.RemoteReadError as exc:
-        if cache is not None and key is not None:
-            cache[key] = exc
-        raise
-    if cache is not None and key is not None:
-        cache[key] = present
-    return present
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,13 +125,26 @@ def _uncommitted_patch(checkout: Path, ignored_paths: list[str], base_ref: str =
     throwaway index; if either is refused, degrade to the tracked-only delta
     rather than report the whole checkout unreadable.
     """
-    included_ignored = [path for path in ignored_paths if (checkout / path).lstat().st_size <= MAX_IGNORED_PATCH_BYTES]
     try:
-        return git.full_worktree_diff(str(checkout), base_ref, also=included_ignored)
+        return git.full_worktree_diff(str(checkout), base_ref, also=ignored_paths)
     except CommandFailedError:
-        if included_ignored:
+        if ignored_paths:
             raise
         return _tracked_patch(checkout, base_ref)
+
+
+def _capturable_ignored(checkout: Path, paths: list[str]) -> tuple[list[str], list[str]]:
+    included: list[str] = []
+    omitted: list[str] = []
+    total = 0
+    for path in paths:
+        size = (checkout / path).lstat().st_size
+        if total + size > MAX_IGNORED_PATCH_BYTES:
+            omitted.append(path)
+        else:
+            included.append(path)
+            total += size
+    return included, omitted
 
 
 def _tracked_patch(checkout: Path, base_ref: str) -> str:
@@ -190,7 +161,7 @@ def _ignored_paths_or_error(checkout: Path) -> tuple[list[str], str]:
 
 
 def _live_unpushed_commits(
-    checkout: Path, local: list[str], base_ref: str = _INDEX_AWARE_BASE, *, fresh_remote: bool = False
+    checkout: Path, local: list[str], base_ref: str = _INDEX_AWARE_BASE
 ) -> tuple[list[str], bool, tuple[str, ...]]:
     output = git.run_strict(
         repo=str(checkout), args=["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]
@@ -204,37 +175,20 @@ def _live_unpushed_commits(
                 refs.setdefault(remote, []).append((branch, ref, sha))
     live: list[str] = []
     answered = False
-    present_branches: set[tuple[str, str]] = set()
     for remote, entries in refs.items():
         try:
-            present = _remote_heads(
-                checkout, remote, tuple(sorted(branch for branch, _, _ in entries)), fresh=fresh_remote
-            )
+            present = remote_head_shas(str(checkout), (branch for branch, _, _ in entries), remote=remote)
         except git.RemoteReadError:
             continue
         answered = True
-        present_branches.update((remote, branch) for branch in present)
         live.extend(ref for branch, ref, sha in entries if present.get(branch) == sha)
     if not answered:
         return local, True, ()
-    surviving: list[str] = []
-    try:
-        default = git.default_branch(str(checkout))
-    except RuntimeError:
-        default = ""
-    if (
-        ("origin", default) in present_branches
-        and git.current_branch(str(checkout)) != default
-        and git.check(repo=str(checkout), args=["show-ref", "--verify", "--quiet", f"refs/heads/{default}"])
-    ):
-        surviving.append(f"refs/heads/{default}")
-    output = git.run_strict(repo=str(checkout), args=["log", base_ref, "--not", *live, *surviving, "--oneline"])
+    output = git.run_strict(repo=str(checkout), args=["log", base_ref, "--not", *live, "--oneline"])
     return [line for line in output.splitlines() if line.strip()], False, tuple(live)
 
 
-def probe_unshipped_work(
-    checkout: Path, *, base_ref: str = _INDEX_AWARE_BASE, fresh_remote: bool = False
-) -> UnshippedWork:
+def probe_unshipped_work(checkout: Path, *, base_ref: str = _INDEX_AWARE_BASE) -> UnshippedWork:
     """Read ``checkout``'s unshipped delta without mutating it.
 
     Read-only on purpose: the checkout may be KEPT and may hold a live agent, so
@@ -265,20 +219,23 @@ def probe_unshipped_work(
             changed = git.run_strict(repo=str(checkout), args=["diff", "--name-only", "-z", base_ref])
             untracked = git.run_strict(repo=str(checkout), args=["ls-files", "-z", "--others", "--exclude-standard"])
             dirty_paths = sorted((set(changed.split("\0")) | set(untracked.split("\0")) | set(ignored_paths)) - {""})
+        included_ignored, omitted_ignored = _capturable_ignored(checkout, ignored_paths)
+        if omitted_ignored:
+            reason = f"ignored content exceeds {MAX_IGNORED_PATCH_BYTES} bytes: {', '.join(omitted_ignored)}"
+            partial_error = f"{partial_error}; {reason}" if partial_error else reason
         try:
-            uncommitted_patch = _uncommitted_patch(checkout, ignored_paths, base_ref)
+            uncommitted_patch = _uncommitted_patch(checkout, included_ignored, base_ref)
         except (CommandFailedError, OSError) as exc:
-            if not ignored_paths:
+            if not included_ignored:
                 raise
-            partial_error = f"{checkout}: could not include ignored content ({exc})"
+            reason = f"{checkout}: could not include ignored content ({exc})"
+            partial_error = f"{partial_error}; {reason}" if partial_error else reason
             try:
                 uncommitted_patch = git.full_worktree_diff(str(checkout), base_ref)
             except CommandFailedError:
                 uncommitted_patch = _tracked_patch(checkout, base_ref)
         local_unpushed = git.commits_absent_from_all_remotes(str(checkout), base_ref)
-        unpushed_commits, remote_unverified, live_refs = _live_unpushed_commits(
-            checkout, local_unpushed, base_ref, fresh_remote=fresh_remote
-        )
+        unpushed_commits, remote_unverified, live_refs = _live_unpushed_commits(checkout, local_unpushed, base_ref)
         commits_patch = _commits_patch(checkout, unpushed_commits)
     except (CommandFailedError, OSError) as exc:
         return UnshippedWork(unreadable=f"{checkout}: could not read unshipped work ({exc})")
@@ -364,15 +321,17 @@ class RecordDefaults(TypedDict, total=False):
     unreadable: str
 
 
-def _record_defaults(branch: str, overlay: str, prefix: Path, work: UnshippedWork) -> RecordDefaults:
+def _record_defaults(branch: str, overlay: str, prefix: Path | None, work: UnshippedWork) -> RecordDefaults:
     """The row fields to write — an unreadable read updates the cause, never the delta.
 
     Blanking ``dirty_paths``/``unpushed_commits`` because THIS venue could not
     read the checkout discards the last successful capture's account of what is
     in there, which is the only account anything has.
     """
-    if work.unreadable:
-        partial: RecordDefaults = {"artifact_prefix": str(prefix), "unreadable": work.unreadable}
+    if work.unreadable or prefix is None:
+        partial: RecordDefaults = {"unreadable": work.unreadable}
+        if prefix is not None:
+            partial["artifact_prefix"] = str(prefix)
         # A blank branch/overlay is "the caller did not say", not "it has none".
         if branch:
             partial["branch"] = branch
@@ -390,7 +349,7 @@ def _record_defaults(branch: str, overlay: str, prefix: Path, work: UnshippedWor
 
 
 def _record_capture(
-    checkout: Path, branch: str, overlay: str, prefix: Path, work: UnshippedWork
+    checkout: Path, branch: str, overlay: str, prefix: Path | None, work: UnshippedWork
 ) -> UnshippedWorkRecord:
     record, _ = UnshippedWorkRecord.objects.update_or_create(
         checkout_path=str(checkout),
@@ -425,13 +384,17 @@ def _capture(checkout: Path, branch: str, overlay: str, artifact_root: Path | No
         return None
     root = artifact_root if artifact_root is not None else get_data_dir(ARTIFACT_NAMESPACE)
     prefix = _bundle_prefix(root, checkout)
+    bundle_written = True
     try:
         _write_bundle(prefix, checkout, branch, work)
-    except OSError:
+    except OSError as exc:
         logger.exception("unshipped-work: could not write the salvage bundle for %s", checkout)
+        bundle_written = False
+        reason = f"{checkout}: could not write salvage bundle ({exc})"
+        work = replace(work, unreadable=f"{work.unreadable}; {reason}" if work.unreadable else reason)
     # The control DB is file-backed SQLite and the factory writes it from many
     # agents at once, so a momentary lock here is routine, not a failure (#1520).
-    return retry_on_locked(lambda: _record_capture(checkout, branch, overlay, prefix, work))
+    return retry_on_locked(lambda: _record_capture(checkout, branch, overlay, prefix if bundle_written else None, work))
 
 
 def capture_unshipped_work(

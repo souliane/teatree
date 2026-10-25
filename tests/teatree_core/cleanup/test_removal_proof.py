@@ -12,6 +12,7 @@ from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.models import Ticket, Worktree
 from teatree.utils import git
 from teatree.utils.git_sync import RemoteReadError
+from teatree.utils.git_sync import fetch_branch as real_fetch_branch
 from tests.teatree_core.cleanup._shared import _run_git, forge_reporting
 
 
@@ -131,6 +132,50 @@ class TestRemovalProof(TestCase):
         _run_git("merge", "-q", "--ff-only", "feat", cwd=self.clone)
         _run_git("push", "-q", "origin", "main", cwd=self.clone)
 
+        assert removal_refusal(self.checkout, clone=self.clone) == ""
+
+    def test_lagging_tracking_ref_refreshes_before_landed_proof(self) -> None:
+        old_target = git.run_strict(repo=str(self.clone), args=["rev-parse", "origin/main"])
+        (self.checkout / "feature.txt").write_text("new\n", encoding="utf-8")
+        _run_git("add", "feature.txt", cwd=self.checkout)
+        _run_git("commit", "-q", "-m", "feature", cwd=self.checkout)
+        _run_git("merge", "-q", "--squash", "feat", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "squash feature", cwd=self.clone)
+        _run_git("push", "-q", "origin", "main", cwd=self.clone)
+        _run_git("update-ref", "refs/remotes/origin/main", old_target, cwd=self.clone)
+
+        assert removal_refusal(self.checkout, clone=self.clone) == ""
+        assert git.run_strict(repo=str(self.clone), args=["rev-parse", "origin/main"]) != old_target
+
+    def test_edit_arriving_during_target_refresh_keeps_checkout(self) -> None:
+        old_target = git.run_strict(repo=str(self.clone), args=["rev-parse", "origin/main"])
+        (self.checkout / "feature.txt").write_text("new\n", encoding="utf-8")
+        _run_git("add", "feature.txt", cwd=self.checkout)
+        _run_git("commit", "-q", "-m", "feature", cwd=self.checkout)
+        _run_git("merge", "-q", "--squash", "feat", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "squash feature", cwd=self.clone)
+        _run_git("push", "-q", "origin", "main", cwd=self.clone)
+        _run_git("update-ref", "refs/remotes/origin/main", old_target, cwd=self.clone)
+
+        def edit_during_fetch(repo: str, branch: str, remote: str = "origin") -> None:
+            (self.checkout / "late.txt").write_text("keep\n", encoding="utf-8")
+            real_fetch_branch(repo, branch, remote=remote)
+
+        with patch("teatree.core.cleanup.removal_proof.fetch_branch", side_effect=edit_during_fetch):
+            refusal = removal_refusal(self.checkout, clone=self.clone)
+
+        assert "late.txt" in refusal
+
+    def test_dangling_head_uses_recovered_commit_for_landed_proof(self) -> None:
+        (self.checkout / "feature.txt").write_text("new\n", encoding="utf-8")
+        _run_git("add", "feature.txt", cwd=self.checkout)
+        _run_git("commit", "-q", "-m", "feature", cwd=self.checkout)
+        _run_git("merge", "-q", "--squash", "feat", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "squash feature", cwd=self.clone)
+        _run_git("push", "-q", "origin", "main", cwd=self.clone)
+        _run_git("update-ref", "-d", "refs/heads/feat", cwd=self.clone)
+
+        assert git.current_branch(str(self.checkout)) == git.DETACHED_HEAD
         assert removal_refusal(self.checkout, clone=self.clone) == ""
 
     def test_merged_tip_uses_checked_out_branch_name(self) -> None:

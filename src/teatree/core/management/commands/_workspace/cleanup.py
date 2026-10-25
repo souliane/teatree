@@ -17,7 +17,6 @@ from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_trackin
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.cleanup.preview import preview_line
 from teatree.core.cleanup.removal_proof import removal_refusal
-from teatree.core.cleanup.working_tree_dirt import _worktree_clean
 from teatree.core.intake.resolve import match_worktree_by_path
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import (
@@ -217,8 +216,6 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = 
             guard_live_worktree(row, respect_liveness=True, force=False)
         except WorktreeBusyError as exc:
             return f"SKIPPED '{name}': {exc}"
-    if not _worktree_clean(wt_path):
-        return f"SKIPPED '{name}': worktree has uncommitted changes — keeping {wt_path}"
     unsynced = git.unsynced_commits(repo, name)
     if (
         unsynced
@@ -227,6 +224,8 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = 
     ):
         return f"SKIPPED '{name}': {len(unsynced)} commit(s) ahead of origin/main — keeping {wt_path}"
     if proof := removal_refusal(Path(wt_path), clone=Path(repo), row=row, sweep=True):
+        if "changed or ignored file(s)" in proof:
+            return f"SKIPPED '{name}': worktree has uncommitted changes — {proof}"
         return f"SKIPPED '{name}': {proof}"
     if dry_run:
         return preview_line(f"Remove gone-remote worktree (branch kept): {name} [checkout: {wt_path}]", dry_run=True)

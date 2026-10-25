@@ -26,7 +26,7 @@ from teatree.core.cleanup.cleanup_dirt_guard import guard_or_warn_dirty_worktree
 from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
 from teatree.core.cleanup.cleanup_result import CleanupResult
 from teatree.core.cleanup.removal_proof import RemovalRefusedError, removal_refusal
-from teatree.core.cleanup.unshipped_work import cached_remote_reads, capture_unshipped_work
+from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.worktree._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps, shared_resources
@@ -413,10 +413,8 @@ def _run_data_loss_guards(
     pushed-but-unmerged branches; sync backends and interactive clean-all want
     it, the automated FSM teardown path passes ``strict_hygiene=False``.
 
-    One narrower path is NOT routed here: ``_workspace.cleanup._prune_squash_merged``
-    deletes a branch+worktree directly via ``git.worktree_remove/branch_delete``,
-    but only AFTER ``is_squash_merged()`` confirmed the content is on a remote,
-    so it is low risk.
+    ``_workspace.cleanup._prune_squash_merged`` also runs the shared removal
+    proof before deleting a linked checkout.
     """
     if force or not repo_main.is_dir():
         return
@@ -518,7 +516,6 @@ def _remove_overlay_pass_entry(overlay: "OverlayBase | None", worktree: Worktree
         step_errors.append(f"pass-entry removal failed for ticket #{ticket.pk}: {exc}")
 
 
-@cached_remote_reads()
 def cleanup_worktree(
     worktree: Worktree,
     *,

@@ -41,7 +41,7 @@ from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
 from teatree.core.cleanup.removal_proof import RemovalRefusedError, removal_refusal
-from teatree.core.cleanup.unshipped_work import cached_remote_reads, capture_unshipped_work
+from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
@@ -338,7 +338,6 @@ def _pre_gate_outcome(worktree: Worktree, *, workspace: Path, verdict: ReapPreGa
     )
 
 
-@cached_remote_reads()
 def reap_done_worktree(
     worktree: Worktree,
     *,
@@ -498,7 +497,6 @@ def _wipe_proven_redundant(
     return ReapOutcome("wiped", f"Wiped '{worktree.branch}' ({signal.source}): {result.label}", errors=result.errors)
 
 
-@cached_remote_reads()
 def reap_done_worktrees_detailed(workspace: Path, *, dry_run: bool) -> list[ReapOutcome]:
     """The one consolidated reaping pass — full :class:`ReapOutcome` per Worktree row.
 

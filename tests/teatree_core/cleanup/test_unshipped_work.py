@@ -118,6 +118,17 @@ class TestProbeSeesTheIndex(_CheckoutFixture):
 
         assert "dump.local" in work.dirty_paths
         assert "zzzzzzzz" not in work.uncommitted_patch
+        assert "dump.local" in work.unreadable
+
+    def test_ignored_bundle_marks_aggregate_limit_as_partial(self) -> None:
+        (self.checkout / ".gitignore").write_text("*.local\n", encoding="utf-8")
+        (self.checkout / "first.local").write_bytes(b"\0" * (5 * 1024 * 1024))
+        (self.checkout / "second.local").write_bytes(b"\0" * (5 * 1024 * 1024))
+
+        work = probe_unshipped_work(self.checkout)
+
+        assert sorted(work.ignored_paths) == ["first.local", "second.local"]
+        assert "second.local" in work.unreadable
 
     def test_unreadable_ignored_content_never_claims_a_complete_capture(self) -> None:
         (self.checkout / ".gitignore").write_text("notes.local\n", encoding="utf-8")
@@ -142,7 +153,7 @@ class TestProbeSeesTheIndex(_CheckoutFixture):
 
         assert any(commit.startswith(sha[:7]) for commit in work.unpushed_commits)
 
-    def test_stale_default_tracking_ref_does_not_make_inherited_history_unpushed(self) -> None:
+    def test_stale_default_tracking_ref_keeps_inherited_history_unproven(self) -> None:
         other = self.checkout.parent / "other"
         _run_git("clone", "-q", str(self.origin), str(other), cwd=self.checkout.parent)
         _run_git("config", "user.email", "t@t", cwd=other)
@@ -155,8 +166,9 @@ class TestProbeSeesTheIndex(_CheckoutFixture):
         work = probe_unshipped_work(self.checkout)
 
         assert work.unreadable == ""
-        assert work.unpushed_commits == []
-        assert work.commits_patch == ""
+        assert len(work.unpushed_commits) == 1
+        assert work.unpushed_commits[0].endswith(" initial")
+        assert "tracked.py" in work.commits_patch
 
     def test_unreachable_remote_preserves_the_local_result_and_marks_it_unverified(self) -> None:
         with patch("teatree.core.cleanup.unshipped_work.remote_head_shas", side_effect=RemoteReadError("offline")):
@@ -518,6 +530,16 @@ class TestAFailedReadNeverOverwritesAGoodCapture(_CheckoutFixture):
         assert bundle_path(first.artifact_prefix, ".files").read_text(encoding="utf-8") == "tracked.py\n"
         assert second.dirty_paths == ["tracked.py"], "a read this venue could not do proves nothing about the delta"
         assert second.unreadable
+
+    def test_failed_bundle_write_does_not_claim_artifacts_exist(self) -> None:
+        self._stage_only()
+
+        with patch("teatree.core.cleanup.unshipped_work._write_bundle", side_effect=PermissionError("owner differs")):
+            record = self._capture()
+
+        assert record is not None
+        assert record.artifact_prefix == ""
+        assert "owner differs" in record.unreadable
 
     def test_the_cause_lands_on_its_own_key_and_a_later_good_read_clears_it(self) -> None:
         self._stage_only()

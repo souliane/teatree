@@ -132,7 +132,7 @@ cancel waits two beats and signals nothing; an owner stop follows the narrower
 descendant-writer rule.
 A heartbeat that reclaims a free row opens a namespace-less tenure, so later recovery stays strict.
 
-An attestable refusal also asks the owner in Slack. The card links the ticket,
+An attended agent first re-checks a parked checkout read-only and attests a clean one itself under the standing instruction in `skills/interactive/SKILL.md`; it reports the action afterwards and skips unsafe checkouts without asking. A refusal that cannot be attested asks the owner in Slack. The card links the ticket,
 names the waiting step and what it will do, links any open pull request in the
 checkout's repo that it may hold up while open or says none was open when asked;
 design-review and wrap-up cards link it without claiming those steps hold it up,

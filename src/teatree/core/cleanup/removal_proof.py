@@ -11,6 +11,7 @@ from teatree.core.worktree.branch_classification import effective_default_target
 from teatree.core.worktree.branch_verdict import branch_landed_for_teardown
 from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils import git
+from teatree.utils.git_sync import RemoteReadError, fetch_branch
 from teatree.utils.run import CommandFailedError
 
 
@@ -22,10 +23,9 @@ def _tip_landed(checkout: Path, ref: str, target: str) -> bool:
     return branch_landed_for_teardown(str(checkout), ref, target)
 
 
-def _commit_refusal(checkout: Path, clone: Path, work: UnshippedWork, ref: str) -> str:
+def _commit_refusal(checkout: Path, work: UnshippedWork, ref: str, target: str) -> str:
     if not work.unpushed_commits:
         return ""
-    target = effective_default_target(str(clone))
     if f"refs/remotes/{target}" in work.live_refs and _tip_landed(checkout, ref, target):
         return ""
     return f"{len(work.unpushed_commits)} commit(s) on no live remote ref"
@@ -62,6 +62,31 @@ def _checked_branch(checkout: Path) -> str:
     return branch
 
 
+def _refresh_target(checkout: Path, clone: Path, work: UnshippedWork, ref: str) -> tuple[UnshippedWork, str]:
+    target = effective_default_target(str(clone))
+    if (
+        not work.unreadable
+        and work.unpushed_commits
+        and not work.remote_unverified
+        and f"refs/remotes/{target}" not in work.live_refs
+    ):
+        remote, target_branch = target.split("/", 1)
+        fetch_branch(str(clone), target_branch, remote=remote)
+        work = probe_unshipped_work(checkout, base_ref=ref)
+    return work, target
+
+
+def _file_refusal(work: UnshippedWork, operation: Literal["remove", "move"]) -> str:
+    if work.unreadable:
+        return work.unreadable
+    paths = (
+        work.ignored_paths
+        if operation == "move"
+        else [path for path in work.dirty_paths if not is_orchestration_debris(path)]
+    )
+    return f"{len(paths)} changed or ignored file(s): {', '.join(paths[:3])}" if paths else ""
+
+
 def removal_refusal(
     checkout: Path,
     *,
@@ -81,27 +106,23 @@ def removal_refusal(
         if sweep and row is not None and row.ticket.state not in Ticket.marker_release_states():
             return prefix + f"in-flight ticket {row.ticket.ticket_number or row.ticket_id} owns the checkout"
         return prefix + reason if (reason := _row_refusal(checkout, row, sweep=False, target="")) else ""
-    work = probe_unshipped_work(checkout, fresh_remote=True)
+    work = probe_unshipped_work(checkout)
     ref = "HEAD"
     if work.head_missing and (recovered := git.recovered_head_sha_after_ref_gone(str(checkout))):
         ref = recovered
-        work = probe_unshipped_work(checkout, base_ref=ref, fresh_remote=True)
-    unsafe_paths = (
-        work.ignored_paths
-        if operation == "move"
-        else [path for path in work.dirty_paths if not is_orchestration_debris(path)]
-    )
-    reason = work.unreadable
-    if not reason and unsafe_paths:
-        reason = f"{len(unsafe_paths)} changed or ignored file(s): {', '.join(unsafe_paths[:3])}"
+        work = probe_unshipped_work(checkout, base_ref=ref)
+    try:
+        work, target = _refresh_target(checkout, clone, work, ref)
+    except (RuntimeError, CommandFailedError, RemoteReadError) as exc:
+        return prefix + f"could not verify commits ({exc})"
+    reason = _file_refusal(work, operation)
     branch = ""
     if not reason:
         try:
             branch = _checked_branch(checkout)
-            target = effective_default_target(str(clone))
-            reason = _commit_refusal(checkout, clone, work, branch if branch != git.DETACHED_HEAD else ref)
+            reason = _commit_refusal(checkout, work, ref if ref != "HEAD" else branch, target)
             reason = reason or _row_refusal(checkout, row, sweep=sweep, target=target)
-        except (RuntimeError, CommandFailedError) as exc:
+        except (RuntimeError, CommandFailedError, RemoteReadError) as exc:
             reason = f"could not verify commits ({exc})"
     if not reason:
         reason = (
