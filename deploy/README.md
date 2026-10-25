@@ -1395,6 +1395,7 @@ role** from the image-baked, committed template `deploy/claude-settings.template
 deliberate model, permission mode, `autoMode` grants, `autoCompactEnabled`, a
 one-character skill description listing cap (`skillListingMaxDescChars: 1`), and a
 box-sized `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` instead of stock CLI defaults.
+Dynamic workflows are enabled with an advisory `small` size and a hard cap of two concurrent agents per workflow run; these template settings reach new sessions after an image rebuild and init re-run.
 The complete `~/.claude` tree is a factory-owned named volume. Host settings,
 credentials, plugins, skills, sessions, and memories are never mounted into the
 factory; only the generated settings and state created by factory runs live there.
