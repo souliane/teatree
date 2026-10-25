@@ -31,13 +31,12 @@ def _commit_refusal(checkout: Path, clone: Path, work: UnshippedWork) -> str:
 
 
 def _row_refusal(checkout: Path, row: Worktree | None, *, sweep: bool, target: str) -> str:
-    if row is None:
-        return ""
-    for peer in Worktree.objects.sharing_checkout(checkout, ticket_id=row.ticket_id, path_matches=paths_match):
+    ticket_id = row.ticket_id if row is not None else None
+    for peer in Worktree.objects.sharing_checkout(checkout, ticket_id=ticket_id, path_matches=paths_match):
         if peer.ticket.state not in Ticket.marker_release_states():
             ticket_ref = peer.ticket.ticket_number or peer.ticket_id
             return f"in-flight ticket {ticket_ref} shares the checkout"
-    if sweep and row.ticket.state not in Ticket.marker_release_states():
+    if sweep and row is not None and row.ticket.state not in Ticket.marker_release_states():
         count = git.run_strict(repo=str(checkout), args=["rev-list", "--count", f"{target}..HEAD"])
         if count == "0":
             return "fresh checkout on an in-flight ticket"

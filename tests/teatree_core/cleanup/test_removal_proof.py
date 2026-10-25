@@ -65,6 +65,11 @@ class TestRemovalProof(TestCase):
 
         assert "in-flight ticket" in removal_refusal(self.checkout, clone=self.clone, row=row)
 
+    def test_rowless_removal_keeps_checkout_recorded_by_in_flight_ticket(self) -> None:
+        self._row(4, Ticket.State.REVIEW_REQUESTED)
+
+        assert "in-flight ticket" in removal_refusal(self.checkout, clone=self.clone)
+
     def test_sweep_keeps_fresh_in_flight_checkout_and_explicit_teardown_clears(self) -> None:
         row = self._row(3, Ticket.State.REVIEW_REQUESTED)
 
