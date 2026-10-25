@@ -3,11 +3,9 @@
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import TypedDict, cast
 from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
-from django.db.models import Q
 from django.utils import timezone
 
 from teatree.config import get_effective_settings
@@ -20,27 +18,13 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS
 from teatree.core.review.pr_inventory import PrInventoryEntry, elapsed_label, merged_entries, parse_time, read_inventory
-from teatree.core.review.pr_next_action import GROUPS, UNKNOWN, PrActionFacts, decide, threads_label
+from teatree.core.review.pr_next_action import GROUPS, UNKNOWN, PrActionFacts, decide
 from teatree.dash.selectors import last_failure_by_ticket
 from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, oldest_pending_phase_tasks
 
 _ACTIVE_PR_STATES = (PullRequest.State.OPEN, PullRequest.State.REVIEW_REQUESTED, PullRequest.State.APPROVED)
 _ACTIVE_TASK_STATES = (Task.Status.PENDING, Task.Status.CLAIMED)
 _STALE_INVENTORY_AFTER = timedelta(minutes=30)
-
-
-class CachedPr(TypedDict, total=False):
-    repo: str
-    iid: int
-    title: str
-    state: str
-    pipeline_status: str
-    approvals: dict[str, int]
-    discussions: list[dict[str, str]]
-    updated_at: str
-    review_requested: bool
-    review_permalink: str
-    draft: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +80,7 @@ def _web_link(value: str) -> str:
 @dataclass(frozen=True, slots=True)
 class PrObservation:
     entries: dict[str, PrInventoryEntry]
-    observed_at: dict[str, datetime]
+    watched: dict[str, tuple[datetime, frozenset[str]]]
     verified_urls: set[str]
     warning: str
 
@@ -108,47 +92,26 @@ def _inventory(now: datetime) -> PrObservation:
         return PrObservation({}, {}, set(), f"PR inventory unavailable: {exc}")
     if not snapshots:
         return PrObservation({}, {}, set(), "PR inventory unavailable; showing recorded pull requests.")
-    fresh = [snapshot for snapshot in snapshots if now - snapshot.observed_at <= _STALE_INVENTORY_AFTER]
-    stale = [snapshot for snapshot in snapshots if snapshot not in fresh]
+    fresh = [
+        snapshot for snapshot in snapshots if snapshot.verified and now - snapshot.observed_at <= _STALE_INVENTORY_AFTER
+    ]
+    stale = [snapshot for snapshot in snapshots if snapshot.verified and snapshot not in fresh]
+    unknown = [snapshot for snapshot in snapshots if not snapshot.verified]
     verified = merged_entries(fresh)
-    observed_at = {
-        snapshot.overlay: snapshot.observed_at for snapshot in fresh if not snapshot.overlay.startswith("own:")
+    watched = {
+        snapshot.overlay: (
+            snapshot.observed_at,
+            frozenset(snapshot.watched_repos or (entry.repo for entry in snapshot.entries)),
+        )
+        for snapshot in fresh
+        if not snapshot.overlay.startswith("own:")
     }
-    warning = f"PR inventory is stale for {', '.join(sorted(item.overlay for item in stale))}." if stale else ""
-    return PrObservation({**merged_entries(stale), **verified}, observed_at, set(verified), warning)
-
-
-def _cached_prs(tickets: list[Ticket]) -> tuple[dict[str, Ticket], dict[str, CachedPr]]:
-    owners: dict[str, Ticket] = {}
-    cache: dict[str, CachedPr] = {}
-    for ticket in tickets:
-        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-        prs = extra.get("prs")
-        if not isinstance(prs, dict):
-            continue
-        for url, raw in prs.items():
-            if isinstance(url, str) and isinstance(raw, dict):
-                owners[url] = ticket
-                cache[url] = cast("CachedPr", raw)
-    return owners, cache
-
-
-def _approval_text(raw: CachedPr) -> str:
-    approvals = raw.get("approvals")
-    if not isinstance(approvals, dict):
-        return UNKNOWN
-    count = approvals.get("count")
-    required = approvals.get("required")
-    return f"{count}/{required}" if isinstance(count, int) and isinstance(required, int) else UNKNOWN
-
-
-def _thread_text(raw: CachedPr) -> tuple[str, bool]:
-    discussions = raw.get("discussions")
-    if not isinstance(discussions, list):
-        return UNKNOWN, False
-    statuses = [item.get("status") for item in discussions if isinstance(item, dict)]
-    unresolved = sum(status in {"waiting_reviewer", "needs_reply"} for status in statuses)
-    return threads_label(unresolved), "needs_reply" in statuses
+    warnings = []
+    if stale:
+        warnings.append(f"PR inventory is stale for {', '.join(sorted(item.overlay for item in stale))}.")
+    if unknown:
+        warnings.append(f"PR inventory freshness is unknown for {', '.join(sorted(item.overlay for item in unknown))}.")
+    return PrObservation({**merged_entries((*stale, *unknown)), **verified}, watched, set(verified), " ".join(warnings))
 
 
 def _owner_questions(urls: set[str], ticket_ids: set[int]) -> tuple[dict[str, str], dict[int, str]]:
@@ -184,8 +147,6 @@ class PrBoardSources:
     observed: dict[str, PrInventoryEntry]
     verified_urls: set[str]
     rows_by_url: dict[str, PullRequest]
-    owners: dict[str, Ticket]
-    cache: dict[str, CachedPr]
     tickets_by_issue_url: dict[str, Ticket]
     tasks: dict[int, Task]
     queued: dict[int, dict[str, int]]
@@ -197,22 +158,17 @@ class PrBoardSources:
     warning: str
 
 
-def _ticket_state(
-    urls: set[str], rows_by_url: dict[str, PullRequest]
-) -> tuple[dict[str, Ticket], dict[str, CachedPr], dict[str, Ticket], set[int]]:
+def _ticket_state(urls: set[str], rows_by_url: dict[str, PullRequest]) -> tuple[dict[str, Ticket], set[int]]:
     tickets = list(
-        Ticket.objects.filter(Q(issue_url__in=urls) | Q(extra__has_key="prs")).only(
-            "id", "issue_url", "short_description", "extra", "state", "role"
-        )
+        Ticket.objects.filter(issue_url__in=urls).only("id", "issue_url", "short_description", "state", "role")
     )
-    owners, cache = _cached_prs(tickets)
     by_issue_url = {ticket.issue_url: ticket for ticket in tickets if ticket.issue_url}
     ticket_ids = {
         ticket.pk
         for url in urls
-        if (ticket := rows_by_url[url].ticket if url in rows_by_url else owners.get(url) or by_issue_url.get(url))
+        if (ticket := rows_by_url[url].ticket if url in rows_by_url else by_issue_url.get(url))
     }
-    return owners, cache, by_issue_url, ticket_ids
+    return by_issue_url, ticket_ids
 
 
 def _active_tasks(ticket_ids: set[int]) -> tuple[dict[int, Task], dict[int, dict[str, int]], dict[int, TaskAttempt]]:
@@ -230,12 +186,15 @@ def _active_tasks(ticket_ids: set[int]) -> tuple[dict[int, Task], dict[int, dict
 
 
 def _visible_pr_urls(
-    observed: dict[str, PrInventoryEntry], observed_at: dict[str, datetime], rows_by_url: dict[str, PullRequest]
+    observed: dict[str, PrInventoryEntry],
+    watched: dict[str, tuple[datetime, frozenset[str]]],
+    rows_by_url: dict[str, PullRequest],
 ) -> set[str]:
-    """Observed PRs, plus every recorded row a fresh complete snapshot of its overlay cannot contradict."""
+    """Observed PRs, plus every recorded row no fresh verified sweep that watched its repository can contradict."""
     urls = set(observed)
     for row in rows_by_url.values():
-        seen_at = observed_at.get(row.overlay)
+        observation = watched.get(row.overlay)
+        seen_at = observation[0] if observation and row.repo in observation[1] else None
         newer_than_snapshot = (
             seen_at is not None and row.create_verified_at is not None and row.create_verified_at > seen_at
         )
@@ -254,13 +213,8 @@ def _collect_sources() -> PrBoardSources:
     rows_by_url = {
         row.url: row for row in PullRequest.objects.filter(state__in=_ACTIVE_PR_STATES).select_related("ticket")
     }
-    urls = _visible_pr_urls(observation.entries, observation.observed_at, rows_by_url)
-    owners, cache, by_issue_url, ticket_ids = _ticket_state(urls, rows_by_url)
-    if not observation.observed_at:
-        urls.update(
-            url for url, raw in cache.items() if raw.get("state") in {"open", "opened", "review_requested", "approved"}
-        )
-        ticket_ids.update(ticket.pk for ticket in owners.values())
+    urls = _visible_pr_urls(observation.entries, observation.watched, rows_by_url)
+    by_issue_url, ticket_ids = _ticket_state(urls, rows_by_url)
     tasks, queued, attempts = _active_tasks(ticket_ids)
     questions_by_url, questions_by_ticket = _owner_questions(urls, ticket_ids)
     return PrBoardSources(
@@ -269,8 +223,6 @@ def _collect_sources() -> PrBoardSources:
         observation.entries,
         observation.verified_urls,
         rows_by_url,
-        owners,
-        cache,
         by_issue_url,
         tasks,
         queued,
@@ -283,13 +235,11 @@ def _collect_sources() -> PrBoardSources:
     )
 
 
-def _card_identity(
-    entry: PrInventoryEntry | None, row: PullRequest | None, raw: CachedPr, ticket: Ticket | None
-) -> tuple[str, str]:
-    repo = entry.repo if entry is not None else row.repo if row is not None else str(raw.get("repo", ""))
-    iid = entry.iid if entry is not None else row.iid if row is not None else raw.get("iid", "?")
+def _card_identity(entry: PrInventoryEntry | None, row: PullRequest | None, ticket: Ticket | None) -> tuple[str, str]:
+    repo = entry.repo if entry is not None else row.repo if row is not None else ""
+    iid = entry.iid if entry is not None else row.iid if row is not None else "?"
     ref = f"{repo}!{iid}"
-    title = entry.title if entry is not None else str(raw.get("title") or (ticket.short_description if ticket else ""))
+    title = entry.title if entry is not None else ticket.short_description if ticket else ""
     return title or ref, ref
 
 
@@ -321,43 +271,44 @@ class _Subject:
     entry: PrInventoryEntry | None
     row: PullRequest | None
     ticket: Ticket | None
-    raw: CachedPr
     post: ReviewRequestPost | None
     task: Task | None
 
     @property
     def repo(self) -> str:
-        return self.entry.repo if self.entry else self.row.repo if self.row else str(self.raw.get("repo", ""))
+        return self.entry.repo if self.entry else self.row.repo if self.row else ""
 
 
 def _subject(url: str, sources: PrBoardSources) -> _Subject:
     entry = sources.observed.get(url)
     row = sources.rows_by_url.get(url)
-    ticket = row.ticket if row is not None else sources.owners.get(url) or sources.tickets_by_issue_url.get(url)
+    ticket = row.ticket if row is not None else sources.tickets_by_issue_url.get(url)
     return _Subject(
         url=url,
         entry=entry,
         row=row,
         ticket=ticket,
-        raw=sources.cache.get(url, {}),
         post=sources.review_posts.get(url),
         task=sources.tasks.get(ticket.pk) if ticket is not None else None,
     )
 
 
 def _facts(subject: _Subject, sources: PrBoardSources) -> PrActionFacts:
-    entry, raw, ticket, task = subject.entry, subject.raw, subject.ticket, subject.task
+    entry, ticket, task = subject.entry, subject.ticket, subject.task
     if entry is not None:
-        ci, approvals, threads, threads_blocking = entry.ci, entry.approvals, entry.threads, True
+        ci, approvals, threads, threads_blocking = (
+            entry.ci,
+            entry.approvals,
+            entry.threads,
+            entry.decision == "my_pr.findings_to_fix",
+        )
     else:
-        threads, threads_blocking = _thread_text(raw)
-        ci, approvals = str(raw.get("pipeline_status") or UNKNOWN), _approval_text(raw)
+        ci, approvals, threads, threads_blocking = UNKNOWN, UNKNOWN, UNKNOWN, False
     return PrActionFacts(
         entry=entry,
         working=f"{task.phase} ({task.status})" if task is not None else "",
         failure=sources.failures.get(ticket.pk, ("", ""))[0] if ticket is not None else "",
         review_requested=subject.post is not None
-        or raw.get("review_requested") is True
         or (subject.row is not None and subject.row.state == PullRequest.State.REVIEW_REQUESTED),
         question=(
             sources.questions_by_url.get(subject.url, "")
@@ -367,7 +318,7 @@ def _facts(subject: _Subject, sources: PrBoardSources) -> PrActionFacts:
         approvals=approvals,
         threads=threads,
         threads_blocking=threads_blocking,
-        draft=entry.draft if entry is not None else bool(raw.get("draft")),
+        draft=entry.draft if entry is not None else False,
         verified=subject.url in sources.verified_urls,
     )
 
@@ -379,7 +330,7 @@ def _review_link(subject: _Subject) -> str:
         if post and post.slack_channel_id and post.slack_thread_ts
         else ""
     )
-    return _web_link(str(subject.raw.get("review_permalink") or slack))
+    return _web_link(slack)
 
 
 def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
@@ -388,8 +339,8 @@ def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
     facts = _facts(subject, sources)
     outcome = decide(facts)
     created = parse_time(entry.created_at if entry is not None else row.create_verified_at if row is not None else None)
-    updated = entry.updated_at if entry is not None else subject.raw.get("updated_at")
-    title, ref = _card_identity(entry, row, subject.raw, ticket)
+    updated = entry.updated_at if entry is not None else None
+    title, ref = _card_identity(entry, row, ticket)
     return PrBoardCard(
         dom_id=sha256(url.encode()).hexdigest()[:16],
         url=url,
@@ -399,7 +350,7 @@ def _card(url: str, sources: PrBoardSources) -> PrBoardCard:
         age=elapsed_label(created, sources.now),
         created_at=created,
         ci=facts.ci,
-        approvals=facts.approvals,
+        approvals=(entry.approvals_display if entry is not None else "") or facts.approvals,
         threads=facts.threads,
         last_activity=elapsed_label(updated if isinstance(updated, (str, datetime)) else None, sources.now),
         next_actor=outcome.actor,

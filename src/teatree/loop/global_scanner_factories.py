@@ -15,7 +15,7 @@ from teatree.config import discover_active_overlay, discover_overlays, get_effec
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.core.models.dream_gap_ledger import dream_umbrella_url
-from teatree.core.review.pr_inventory import write_inventory
+from teatree.core.review.pr_inventory import mark_inventory_unknown, write_inventory
 from teatree.generation import in_place_update_refusal
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain, single_overlay_messaging_jobs
 from teatree.loop.job_identity import CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
@@ -468,6 +468,7 @@ def build_default_jobs(
                             host=host,
                             overlay_name="",
                             inventory_writer=write_inventory,
+                            inventory_invalidator=mark_inventory_unknown,
                             verdict_reader=RecordedVerdictReader(),
                             critic_reader=RecordedCriticFindingReader(),
                         ),

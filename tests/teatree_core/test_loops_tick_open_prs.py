@@ -41,6 +41,7 @@ def _entry(number: int, *, age: timedelta, next_task: str, repo: str = "souliane
         approvals="unknown",
         threads="unknown",
         draft=False,
+        head_sha="a" * 40,
     )
 
 
@@ -193,6 +194,22 @@ class TestTickRepairsStalledPrs(django.test.TestCase):
         assert f"queued TODO-{task.pk} coding" in first
         assert f"in flight: TODO-{task.pk} coding" in second
         assert "Fix failing CI" in task.execution_reason
+
+    def test_failed_repair_on_the_same_head_is_not_queued_again(self) -> None:
+        entry = self._stalled()
+
+        reports = []
+        for tick in range(4):
+            reports.append(
+                _run([_InventoryScanner("teatree", [entry])])
+                if tick == 0
+                else _next_tick([_InventoryScanner("teatree", [entry])])
+            )
+            Task.objects.filter(phase="coding").update(status=Task.Status.FAILED)
+
+        assert Task.objects.filter(phase="coding").count() == 1
+        assert "queued TODO-" in reports[0]
+        assert all("already attempted" in report for report in reports[1:])
 
     def test_a_stall_with_no_safe_repair_is_recorded_once_and_listed_each_tick(self) -> None:
         entry = self._stalled(state=Ticket.State.PR_OPENED)

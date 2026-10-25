@@ -168,7 +168,10 @@ def _report_to_dict(
         "actions": [asdict(action) for action in report.actions],
         "skipped": bool(blocked_reason),
         "skipped_reason": blocked_reason,
-        "open_prs": [asdict(row) for row in open_prs],
+        "open_prs": [
+            {key: getattr(row, key) for key in ("ref", "url", "age", "next_task", "started", "stall")}
+            for row in open_prs
+        ],
         "stall_repairs": [asdict(repair) for repair in stall_repairs],
     }
 

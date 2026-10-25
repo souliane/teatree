@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from teatree.core.review.pr_inventory import PrInventoryEntry
-from teatree.core.review.pr_next_action import UNKNOWN, ci_label, sweep_next_task
+from teatree.core.review.pr_next_action import UNKNOWN, approvals_text, ci_label, sweep_next_task
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 
@@ -34,9 +34,11 @@ def inventory_entry(pr: PrSummary, attempt: MergeAttempt | None) -> PrInventoryE
         decision=attempt.decision if attempt else "evaluation_failed",
         ci=ci_label(reason, failing_required=bool(attempt and attempt.failing_required)),
         approvals=pr.approvals,
+        approvals_display=approvals_text(pr.approvals, pr.approval_count, None),
         threads=UNKNOWN,
         draft=pr.is_draft,
         reason=reason,
+        head_sha=pr.head_sha,
     )
 
 

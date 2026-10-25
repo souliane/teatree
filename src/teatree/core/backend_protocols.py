@@ -11,7 +11,7 @@ multiple concerns (e.g. GitLab provides code hosting and CI in one client).
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, TypedDict, runtime_checkable
+from typing import NotRequired, Protocol, TypedDict, runtime_checkable
 
 from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
@@ -53,6 +53,8 @@ class ApprovalState(TypedDict):
     approvals_left: int
     approved_by: list[str]
     unresolved_resolvable: int
+    count: NotRequired[int]
+    required: NotRequired[int]
 
 
 class PrOpenState(StrEnum):

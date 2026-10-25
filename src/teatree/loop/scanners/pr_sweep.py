@@ -192,7 +192,8 @@ class PrSweepScanner:
     #: #4063: the per-pass merge-update allowance, reset by :meth:`scan` so a base
     #: that moves under a whole open-PR set mints a bounded number of CI runs.
     branch_update_budget: branch_update.TickBudget = field(default_factory=branch_update.TickBudget)
-    inventory_writer: Callable[[str, list[PrInventoryEntry]], object] | None = None
+    inventory_writer: Callable[..., object] | None = None
+    inventory_invalidator: Callable[[str], object] | None = None
     name: str = "pr_sweep"
 
     def scan(self) -> list[ScanSignal]:
@@ -217,6 +218,8 @@ class PrSweepScanner:
                 inventory.append(inventory_entry(pr, attempt))
         if not errors:
             self._write_inventory_for_scan(inventory, errors)
+        elif self.inventory_invalidator is not None:
+            self.inventory_invalidator(self.overlay)
         if errors and not signals:
             # #1287: nothing produced this pass, so surface the first error and let the dispatcher record it.
             raise errors[0]
@@ -253,7 +256,7 @@ class PrSweepScanner:
         if self.inventory_writer is None:
             return
         try:
-            self.inventory_writer(self.overlay, inventory)
+            self.inventory_writer(self.overlay, inventory, watched_repos=self.repos)
         except (OSError, ValueError) as exc:
             errors.append(
                 ScannerError(

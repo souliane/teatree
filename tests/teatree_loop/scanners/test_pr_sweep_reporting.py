@@ -1,15 +1,23 @@
 import json
+import os
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+import pytest
 from django.test import TestCase
 
+from teatree.core.models.pull_request import PullRequest
+from teatree.core.review.pr_inventory import PrInventoryEntry, mark_inventory_unknown, write_inventory
+from teatree.dash.pr_board import build_pr_board
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.pr_sweep import MergeAttempt, PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient
 from teatree.loop.scanners.pr_sweep_gitlab import GlabPrApiClient
-from tests.factories import PullRequestFactory
+from teatree.loop.scanners.pr_sweep_reporting import inventory_entry
+from tests.factories import PullRequestFactory, TicketFactory
 
 
 def _pr(number: int, *, created_at: str) -> PrSummary:
@@ -61,6 +69,43 @@ class ForgeInventoryTimestampTestCase(TestCase):
 
 
 class ForgeApprovalsTestCase(TestCase):
+    def _listed_github_pr(self, reviews: list[dict[str, object]]) -> PrSummary:
+        raw = {
+            "number": 7,
+            "headRefOid": "a" * 40,
+            "url": "https://github.com/souliane/teatree/pull/7",
+            "reviewDecision": "APPROVED",
+            "reviews": reviews,
+        }
+        with patch.object(GhPrApiClient, "_run_gh", return_value=(0, json.dumps([raw]), "")):
+            return GhPrApiClient().list_open_prs(slug="souliane/teatree")[0]
+
+    def test_github_listing_carries_observed_approval_count_with_unknown_requirement(self) -> None:
+        pr = self._listed_github_pr([{"state": "APPROVED", "author": {"login": "reviewer"}}])
+        assert inventory_entry(pr, None).approvals_display == "1/unknown (approved)"
+
+    def test_github_approval_count_takes_each_reviewers_standing_review_only(self) -> None:
+        pr = self._listed_github_pr(
+            [
+                {"state": "APPROVED", "author": {"login": "ann"}},
+                {"state": "COMMENTED", "author": {"login": "ann"}},
+                {"state": "APPROVED", "author": {"login": "bob"}},
+                {"state": "CHANGES_REQUESTED", "author": {"login": "bob"}},
+                {"state": "APPROVED", "author": {"login": "cat"}},
+                {"state": "APPROVED", "author": {"login": "cat"}},
+            ]
+        )
+        assert pr.approval_count == 2
+
+    def test_github_listing_without_a_review_list_leaves_the_approval_count_unknown(self) -> None:
+        raw = {"number": 7, "headRefOid": "a" * 40, "url": "u", "reviewDecision": "REVIEW_REQUIRED"}
+        with patch.object(GhPrApiClient, "_run_gh", return_value=(0, json.dumps([raw]), "")):
+            pr = GhPrApiClient().list_open_prs(slug="souliane/teatree")[0]
+        assert inventory_entry(pr, None).approvals_display == "awaiting approval"
+
+    def test_github_listing_with_no_reviews_counts_zero_approvals(self) -> None:
+        assert self._listed_github_pr([]).approval_count == 0
+
     def test_github_review_decision_is_listed_and_mapped(self) -> None:
         decisions = {"APPROVED": "approved", "REVIEW_REQUIRED": "awaiting approval", "": "unknown"}
         for decision, expected in decisions.items():
@@ -85,6 +130,48 @@ class ForgeApprovalsTestCase(TestCase):
 
 
 class PrSweepInventoryTestCase(TestCase):
+    def test_partial_repo_failure_revokes_previous_ready_snapshot(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory(), state=PullRequest.State.APPROVED)
+        entry = PrInventoryEntry(
+            url=pr.url,
+            repo=pr.repo,
+            iid=int(pr.iid),
+            title="Ready PR",
+            created_at="2026-10-01T10:00:00Z",
+            updated_at="2026-10-02T10:00:00Z",
+            next_task="Review or merge PR",
+            decision="my_pr.open",
+            ci="green",
+            approvals="approved",
+            threads="0 unresolved",
+            draft=False,
+        )
+        api = Mock()
+        api.list_open_prs.side_effect = [
+            [],
+            ScannerError(scanner="pr_sweep", error_class=ScannerErrorClass.UNKNOWN, detail="forge unavailable"),
+        ]
+        scanner = PrSweepScanner(
+            repos=(pr.repo, "other/repo"),
+            api=api,
+            keystone=Mock(),
+            notifier=Mock(),
+            overlay=pr.overlay,
+            inventory_writer=write_inventory,
+            inventory_invalidator=mark_inventory_unknown,
+        )
+        with TemporaryDirectory() as temporary, patch.dict(os.environ, {"T3_DATA_DIR": str(Path(temporary))}):
+            write_inventory(pr.overlay, [entry], watched_repos=(pr.repo, "other/repo"))
+            assert (
+                next(card for group in build_pr_board().groups for card in group.cards).group
+                == "Ready to merge or merging"
+            )
+            with pytest.raises(ScannerError):
+                scanner.scan()
+            board = build_pr_board()
+        assert next(card for group in board.groups for card in group.cards).group != "Ready to merge or merging"
+        assert "unknown" in board.inventory_warning
+
     def test_complete_tick_records_all_prs_and_serves_started_then_oldest(self) -> None:
         prs = [_pr(number, created_at=f"2026-10-{26 - number:02d}T10:00:00Z") for number in range(1, 26)]
         PullRequestFactory(url=prs[0].url, iid=str(prs[0].number))
@@ -143,7 +230,7 @@ class PrSweepInventoryTestCase(TestCase):
         )
 
         assert scanner.scan() == []
-        writer.assert_called_once_with("", [])
+        writer.assert_called_once_with("", [], watched_repos=("souliane/teatree",))
 
     def test_partial_forge_failure_preserves_previous_complete_snapshot(self) -> None:
         api = Mock()
@@ -248,7 +335,13 @@ class MyPrsInventoryTestCase(TestCase):
 
     def test_green_pr_records_the_forge_approvals_and_threads(self) -> None:
         host = self._host()
-        host.get_mr_approvals.return_value = {"approvals_left": 0, "approved_by": ["a"], "unresolved_resolvable": 2}
+        host.get_mr_approvals.return_value = {
+            "approvals_left": 0,
+            "approved_by": ["a"],
+            "count": 1,
+            "required": 1,
+            "unresolved_resolvable": 2,
+        }
         writer = Mock()
 
         MyPrsScanner(host=host, overlay_name="teatree", inventory_writer=writer).scan()
@@ -256,6 +349,17 @@ class MyPrsInventoryTestCase(TestCase):
         (entry,) = writer.call_args.args[1]
         host.get_mr_approvals.assert_called_once_with(repo="souliane/teatree", pr_iid=1)
         assert (entry.ci, entry.approvals, entry.threads) == ("green", "approved", "2 unresolved")
+        assert entry.approvals_display == "1/1 (approved)"
+
+    def test_approvals_without_a_count_show_the_label_alone(self) -> None:
+        host = self._host()
+        host.get_mr_approvals.return_value = {"approvals_left": 1, "approved_by": [], "unresolved_resolvable": 0}
+        writer = Mock()
+
+        MyPrsScanner(host=host, overlay_name="teatree", inventory_writer=writer).scan()
+
+        (entry,) = writer.call_args.args[1]
+        assert entry.approvals_display == "awaiting approval"
 
     def test_unreadable_approvals_are_recorded_as_unknown(self) -> None:
         host = self._host()
@@ -266,6 +370,15 @@ class MyPrsInventoryTestCase(TestCase):
 
         (entry,) = writer.call_args.args[1]
         assert (entry.approvals, entry.threads) == ("unknown", "unknown")
+
+    def test_unparsable_pr_ref_does_not_claim_approval(self) -> None:
+        host = self._host()
+        host.list_my_prs.return_value[0]["web_url"] = "https://example.test/not-a-pr"
+        writer = Mock()
+        MyPrsScanner(host=host, overlay_name="teatree", inventory_writer=writer).scan()
+        (entry,) = writer.call_args.args[1]
+        assert (entry.approvals, entry.threads) == ("unknown", "unknown")
+        host.get_mr_approvals.assert_not_called()
 
     def test_red_pr_does_not_spend_an_approvals_read(self) -> None:
         host = self._host(status="failed")
@@ -325,3 +438,30 @@ class MyPrsInventoryTestCase(TestCase):
 
         assert len(signals) == 1
         writer.assert_not_called()
+
+    def test_failed_next_list_read_revokes_ready_freshness(self) -> None:
+        host = self._host()
+        host.get_mr_approvals.return_value = {"approvals_left": 0, "unresolved_resolvable": 0}
+        host.list_my_prs.side_effect = [host.list_my_prs.return_value, RuntimeError("forge unavailable")]
+        url = host.list_my_prs.return_value[0]["web_url"]
+        PullRequestFactory(ticket=TicketFactory(), url=url, state=PullRequest.State.APPROVED)
+        scanner = MyPrsScanner(
+            host=host,
+            identities=("owner",),
+            overlay_name="teatree",
+            inventory_writer=write_inventory,
+            inventory_invalidator=mark_inventory_unknown,
+        )
+
+        with TemporaryDirectory() as temporary, patch.dict(os.environ, {"T3_DATA_DIR": str(Path(temporary))}):
+            scanner.scan()
+            assert (
+                next(card for group in build_pr_board().groups for card in group.cards).group
+                == "Ready to merge or merging"
+            )
+            scanner.scan()
+            board = build_pr_board()
+
+        card = next(card for group in board.groups for card in group.cards)
+        assert card.group != "Ready to merge or merging"
+        assert "unknown" in board.inventory_warning

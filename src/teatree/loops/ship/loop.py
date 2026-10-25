@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from teatree.core.review.pr_inventory import write_inventory
+from teatree.core.review.pr_inventory import mark_inventory_unknown, write_inventory
 from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
@@ -36,6 +36,7 @@ def _build_jobs(
                     host=host,
                     overlay_name="",
                     inventory_writer=write_inventory,
+                    inventory_invalidator=mark_inventory_unknown,
                     verdict_reader=RecordedVerdictReader(),
                     critic_reader=RecordedCriticFindingReader(),
                 ),

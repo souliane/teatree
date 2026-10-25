@@ -11,7 +11,7 @@ from teatree.core.models import RedMrFixAttempt
 from teatree.core.models.review_verdict import HeadVerdictState
 from teatree.core.review.mr_ci_state import GREEN_STATUSES, carries_pipeline_field, pipeline_status
 from teatree.core.review.pr_inventory import PrInventoryEntry
-from teatree.core.review.pr_next_action import UNKNOWN, approvals_label, my_pr_next_task, threads_label
+from teatree.core.review.pr_next_action import UNKNOWN, approvals_label, approvals_text, my_pr_next_task, threads_label
 from teatree.core.review.review_candidate import author_username
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.pr_findings import (
@@ -28,6 +28,10 @@ from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
+
+
+def _known_count(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
 
 
 def _str_field(data: RawAPIDict, *names: str) -> str:
@@ -161,6 +165,7 @@ class MyPrsScanner:
     critic_reader: CriticFindingReader | None = None
     overlay_name: str = ""
     inventory_writer: Callable[[str, list[PrInventoryEntry]], object] | None = None
+    inventory_invalidator: Callable[[str], object] | None = None
     name: str = "my_prs"
 
     def scan(self) -> list[ScanSignal]:
@@ -318,10 +323,14 @@ class MyPrsScanner:
         return competing <= own
 
     def _write_complete_inventory(self, signals: list[ScanSignal], *, complete: bool) -> None:
-        if not complete or self.inventory_writer is None:
+        if not complete:
+            self._invalidate_inventory()
+            return
+        if self.inventory_writer is None:
             return
         if any(not _str_field(signal.payload, "url") for signal in signals):
-            logger.warning("my_prs found a PR without a URL; preserving the prior complete inventory")
+            logger.warning("my_prs found a PR without a URL; the prior inventory no longer counts as verified")
+            self._invalidate_inventory()
             return
         entries = [self._inventory_entry(signal) for signal in signals]
         try:
@@ -329,16 +338,25 @@ class MyPrsScanner:
         except (OSError, ValueError):
             logger.warning("my_prs could not record its PR inventory; signals are unaffected", exc_info=True)
 
-    def _forge_review_facts(self, url: str) -> tuple[str, str]:
+    def _invalidate_inventory(self) -> None:
+        if self.inventory_invalidator is not None:
+            self.inventory_invalidator(self._inventory_key())
+
+    def _forge_review_facts(self, url: str) -> tuple[str, str, str]:
         ref = pr_ref_from_url(url)
         if ref is None:
-            return UNKNOWN, UNKNOWN
+            return UNKNOWN, UNKNOWN, UNKNOWN
         try:
             state = self.host.get_mr_approvals(repo=ref.slug, pr_iid=ref.pr_id)
-            return approvals_label(state["approvals_left"]), threads_label(state["unresolved_resolvable"])
+            label = approvals_label(state["approvals_left"])
+            return (
+                label,
+                threads_label(state["unresolved_resolvable"]),
+                approvals_text(label, _known_count(state.get("count")), _known_count(state.get("required"))),
+            )
         except Exception:
             logger.warning("my_prs could not read approvals for %s", url, exc_info=True)
-            return UNKNOWN, UNKNOWN
+            return UNKNOWN, UNKNOWN, UNKNOWN
 
     def _inventory_entry(self, signal: ScanSignal) -> PrInventoryEntry:
         payload = signal.payload
@@ -348,7 +366,9 @@ class MyPrsScanner:
         ref = pr_ref_from_url(url)
         status = _str_field(payload, "status")
         ci = _ci_label(signal.kind, status)
-        approvals, threads = self._forge_review_facts(url) if ci == "green" else (UNKNOWN, UNKNOWN)
+        approvals, threads, approval_display = (
+            self._forge_review_facts(url) if ci == "green" else (UNKNOWN, UNKNOWN, UNKNOWN)
+        )
         return PrInventoryEntry(
             url=url,
             repo=ref.slug if ref else "unknown repo",
@@ -360,8 +380,10 @@ class MyPrsScanner:
             decision=signal.kind,
             ci=ci,
             approvals=approvals,
+            approvals_display=approval_display,
             threads=threads,
             draft=bool(pr.get("draft")),
+            head_sha=_str_field(payload, "head_sha"),
         )
 
     def _inventory_key(self) -> str:

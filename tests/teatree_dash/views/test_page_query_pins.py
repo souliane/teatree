@@ -27,7 +27,7 @@ from teatree.core.models.session import Session
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from tests.factories import TicketFactory
+from tests.factories import PullRequestFactory, TicketFactory
 from tests.teatree_dash._overlay_venue import core_overlay_only
 
 State = Ticket.State
@@ -156,16 +156,11 @@ class DashboardPageQueryPlansTestCase(TestCase):
             with self.subTest(page=name):
                 self._assert_pinned(reverse(name), expected)
 
-    def test_pr_board_stays_flat_for_cards_owned_by_the_ticket_cache(self) -> None:
+    def test_pr_board_stays_flat_for_cards_owned_by_recorded_pull_requests(self) -> None:
         measured: list[tuple[int, int]] = []
-        seeded = 0
         for scale in (2, 8):
             for _ in range(scale):
-                seeded += 1
-                url = f"https://example.test/cache/{seeded}"
-                TicketFactory(
-                    state=State.TESTED, extra={"prs": {url: {"state": "opened", "title": f"cached {seeded}"}}}
-                )
+                PullRequestFactory(ticket=TicketFactory(state=State.TESTED))
             cache.clear()
             with CaptureQueriesContext(connection) as queries:
                 body = self.client.get(reverse("dash:board"), **_LOOPBACK).content.decode()

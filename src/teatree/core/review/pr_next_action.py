@@ -65,6 +65,12 @@ def threads_label(unresolved: int) -> str:
     return f"{unresolved} unresolved"
 
 
+def approvals_text(label: str, count: int | None, required: int | None) -> str:
+    if count is None and required is None:
+        return label
+    return f"{UNKNOWN if count is None else count}/{UNKNOWN if required is None else required} ({label})"
+
+
 def approvals_met(approvals: str) -> bool | None:
     if approvals == APPROVED:
         return True

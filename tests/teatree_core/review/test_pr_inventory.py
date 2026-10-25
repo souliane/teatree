@@ -1,13 +1,20 @@
 import json
 from dataclasses import asdict, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
 import pytest
 
-from teatree.core.review.pr_inventory import PrInventoryEntry, PrInventoryError, read_inventory, write_inventory
+from teatree.core.review.pr_inventory import (
+    PrInventoryEntry,
+    PrInventoryError,
+    elapsed_label,
+    mark_inventory_unknown,
+    read_inventory,
+    write_inventory,
+)
 
 
 def _entry(number: int) -> PrInventoryEntry:
@@ -28,6 +35,10 @@ def _entry(number: int) -> PrInventoryEntry:
 
 
 class PrInventoryTestCase(TestCase):
+    def test_age_under_one_minute_is_labelled_without_rounding_up(self) -> None:
+        now = datetime(2026, 10, 24, 12, tzinfo=UTC)
+        assert elapsed_label(now - timedelta(seconds=30), now) == "< 1 min"
+
     def test_inventory_preserves_twenty_five_prs_and_overlay_identity(self) -> None:
         at = datetime(2026, 10, 23, 12, tzinfo=UTC)
         with TemporaryDirectory() as root:
@@ -49,6 +60,51 @@ class PrInventoryTestCase(TestCase):
             snapshots = read_inventory(directory=directory)
             assert len(snapshots) == 1
             assert snapshots[0].entries == ()
+
+    def test_marking_unknown_keeps_the_prior_observation_but_no_longer_verifies_it(self) -> None:
+        at = datetime(2026, 10, 23, 12, tzinfo=UTC)
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            write_inventory(
+                "teatree", [_entry(1)], directory=directory, observed_at=at, watched_repos=("souliane/teatree",)
+            )
+            mark_inventory_unknown("teatree", directory=directory)
+
+            (snapshot,) = read_inventory(directory=directory)
+            assert (snapshot.verified, snapshot.observed_at, snapshot.watched_repos) == (
+                False,
+                at,
+                ("souliane/teatree",),
+            )
+            assert [entry.iid for entry in snapshot.entries] == [1]
+
+    def test_marking_unknown_without_a_prior_snapshot_records_an_empty_unverified_one(self) -> None:
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            mark_inventory_unknown("teatree", directory=directory)
+
+            (snapshot,) = read_inventory(directory=directory)
+            assert (snapshot.verified, snapshot.entries, snapshot.watched_repos) == (False, (), ())
+
+    def test_a_fresh_write_verifies_an_unknown_snapshot_again(self) -> None:
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            mark_inventory_unknown("teatree", directory=directory)
+            write_inventory("teatree", [_entry(1)], directory=directory)
+
+            (snapshot,) = read_inventory(directory=directory)
+            assert snapshot.verified
+
+    def test_malformed_snapshot_metadata_fails_loudly(self) -> None:
+        base = {"overlay": "teatree", "observed_at": "2026-10-23T12:00:00+00:00", "entries": []}
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            target = directory / "malformed.json"
+            for extra in ({"watched_repos": "souliane/teatree"}, {"watched_repos": [7]}, {"verified": "yes"}):
+                with self.subTest(extra=extra):
+                    target.write_text(json.dumps({**base, **extra}), encoding="utf-8")
+                    with pytest.raises(ValueError, match="inventory"):
+                        read_inventory(directory=directory)
 
     def test_unreadable_snapshot_fails_loudly(self) -> None:
         with TemporaryDirectory() as root:

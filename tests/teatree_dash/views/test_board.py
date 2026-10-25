@@ -11,6 +11,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from django.contrib.auth import get_user_model
+from django.template.loader import render_to_string
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -19,6 +20,7 @@ from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.review.pr_inventory import PrInventoryEntry, write_inventory
+from teatree.dash.pr_board import PrBoard, PrBoardCard, PrBoardGroup
 from teatree.dash.selectors import BOARD_COLUMNS
 from tests.factories import PullRequestFactory, TaskAttemptFactory, TaskFactory, TicketFactory
 
@@ -33,6 +35,41 @@ _SECTION_RE = re.compile(r'<section class="kanban-group" data-pr-group="([^"]+)"
 _CARD_RE = re.compile(
     r'<article id="pr-[0-9a-f]{16}" class="card pr-card" data-pr-card="([^"]+)">(.*?)</article>', re.DOTALL
 )
+
+
+def test_pr_ref_is_a_link_when_the_forge_url_is_valid() -> None:
+    card = PrBoardCard(
+        dom_id="a" * 16,
+        url="https://github.com/example/repo/pull/1",
+        link_url="https://github.com/example/repo/pull/1",
+        title="PR title",
+        ref="example/repo!1",
+        age="1 h",
+        created_at=None,
+        ci="unknown",
+        approvals="unknown",
+        threads="unknown",
+        last_activity="unknown",
+        next_actor="Factory",
+        next_action="Inspect",
+        group="Blocked",
+        ticket_id=None,
+        draft=False,
+        review_link="",
+        review_age="unknown",
+        review_reasks=0,
+        review_due="unknown",
+        work_agent="",
+        work_since="",
+        last_result="",
+        enqueue_buttons=(),
+    )
+    html = render_to_string(
+        "dash/partials/_pr_columns.html",
+        {"pr_board": PrBoard(groups=(PrBoardGroup("Blocked", (card,)),), total=1, inventory_warning="")},
+    )
+    assert '<a href="https://github.com/example/repo/pull/1"' in html
+    assert ">example/repo!1</a>" in html
 
 
 @dataclass(frozen=True, slots=True)

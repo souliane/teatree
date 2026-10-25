@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 _GH_NOT_INSTALLED_RC = 127
 _GH_APPROVALS = {"APPROVED": APPROVED, "REVIEW_REQUIRED": AWAITING_APPROVAL, "CHANGES_REQUESTED": AWAITING_APPROVAL}
+_GH_STANDING_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
 #: More open PRs than this is refused, never read as a partial listing.
 OPEN_PR_CEILING = 500
 
@@ -76,6 +77,23 @@ class GhReviewJson(TypedDict, total=False):
     """Shape of one review entry inside ``GhPrJson.reviews``."""
 
     state: str
+    author: GhAuthorJson
+
+
+def _approval_count(reviews: object) -> int | None:
+    if not isinstance(reviews, list):
+        return None
+    standing: dict[str, str] = {}
+    for review in reviews:
+        if not isinstance(review, dict):
+            return None
+        author = _login(review.get("author"))
+        if not author:
+            return None
+        state = _as_str(review.get("state")).upper()
+        if state in _GH_STANDING_REVIEW_STATES:
+            standing[author] = state
+    return sum(state == "APPROVED" for state in standing.values())
 
 
 def _as_str(value: object) -> str:
@@ -114,6 +132,7 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         created_at=_as_str(raw.get("createdAt")),
         updated_at=_as_str(raw.get("updatedAt")),
         approvals=_GH_APPROVALS.get(_as_str(raw.get("reviewDecision")).upper(), UNKNOWN),
+        approval_count=_approval_count(raw.get("reviews")),
         is_conflicted=_gh_is_conflicted(raw),
         behind_main=_gh_reports_behind(raw),
         base_ref=_as_str(raw.get("baseRefName")),

@@ -216,6 +216,32 @@ class BuildKanbanColumnsTestCase(TestCase):
 
 
 class DwellMinutePrecisionTestCase(TestCase):
+    def _dwell_after(self, elapsed: timedelta) -> str:
+        baseline = timezone.now().replace(second=0, microsecond=0)
+        ticket = TicketFactory(state=State.WORK_STARTED)
+        transition = TicketTransition.objects.create(
+            ticket=ticket, from_state=State.SCOPED, to_state=State.WORK_STARTED, triggered_by="start"
+        )
+        TicketTransition.objects.filter(pk=transition.pk).update(created_at=baseline)
+        with patch("teatree.dash.selectors.timezone.now", return_value=baseline + elapsed):
+            card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        return card.dwell
+
+    def test_hour_dwell_format(self) -> None:
+        assert self._dwell_after(timedelta(hours=1, minutes=5)) == "1 h 05 min"
+
+    def test_day_dwell_format(self) -> None:
+        assert self._dwell_after(timedelta(days=2, hours=3)) == "2 d 3 h"
+
+    def test_cancelled_error_remains_visible_until_a_redispatch_exists(self) -> None:
+        ticket = TicketFactory(state=State.TESTED)
+        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), phase="reviewing", status="failed")
+        TaskAttemptFactory(task=task, error="cancelled: before retry")
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.last_error == "cancelled: before retry"
+
     def test_dwell_stays_constant_within_a_minute_and_never_shows_seconds(self) -> None:
         baseline = timezone.now().replace(second=0, microsecond=0)
         ticket = TicketFactory(state=State.WORK_STARTED)

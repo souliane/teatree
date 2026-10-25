@@ -9,7 +9,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.task import Task
-from teatree.core.review.mr_triage import RepoOwner
+from teatree.core.review.mr_triage import DEFAULT_THRESHOLDS, RepoOwner
 from teatree.core.review.pr_inventory import PrInventoryEntry, PrInventorySnapshot
 from teatree.dash.pr_board import PrBoard, PrBoardCard, build_pr_board
 from tests.factories import PullRequestFactory, TaskAttemptFactory, TaskFactory, TicketFactory
@@ -58,20 +58,19 @@ class PrBoardTestCase(TestCase):
         assert _group(board, "Factory working") == [f"{active.repo}!{active.iid}"]
         assert _group(board, "Waiting on colleagues") == [f"{waiting.repo}!{waiting.iid}"]
 
+    def test_active_factory_work_precedes_a_red_observed_blocker(self) -> None:
+        ticket = TicketFactory()
+        pr = PullRequestFactory(ticket=ticket)
+        TaskFactory(ticket=ticket, phase="coding", status=Task.Status.CLAIMED)
+        entry = _observed_entry(pr, ci="red", next_task="Fix failing CI")
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
+        assert (card.group, card.next_actor) == ("Factory working", "Factory")
+
     def _approved_green_pr(self) -> PullRequest:
         ticket = TicketFactory()
         pr = PullRequestFactory(ticket=ticket, state=PullRequest.State.APPROVED)
-        ticket.extra = {
-            "prs": {
-                pr.url: {
-                    "title": "Ready PR",
-                    "pipeline_status": "success",
-                    "approvals": {"count": 2, "required": 2},
-                    "discussions": [],
-                }
-            }
-        }
-        ticket.save(update_fields=["extra"])
         return PullRequest.objects.get(pk=pr.pk)
 
     def _observed(self, pr: PullRequest, *, age: timedelta) -> tuple[PrInventorySnapshot, ...]:
@@ -119,7 +118,7 @@ class PrBoardTestCase(TestCase):
         card = next(card for group in build_pr_board().groups for card in group.cards)
 
         assert card.group == "Blocked"
-        assert "not verified" in card.next_action
+        assert "unreadable" in card.next_action
 
     def test_failed_task_is_blocked_and_unknown_facts_are_explicit(self) -> None:
         ticket = TicketFactory()
@@ -136,13 +135,30 @@ class PrBoardTestCase(TestCase):
         assert card.threads == "unknown"
 
     def test_complete_snapshot_removes_a_closed_pr_record(self) -> None:
-        PullRequestFactory(overlay="teatree")
+        pr = PullRequestFactory(overlay="teatree")
         with patch(
             "teatree.dash.pr_board.read_inventory",
-            return_value=(PrInventorySnapshot(overlay="teatree", observed_at=timezone.now(), entries=()),),
+            return_value=(
+                PrInventorySnapshot(
+                    overlay="teatree", observed_at=timezone.now(), entries=(), watched_repos=(pr.repo,)
+                ),
+            ),
         ):
             board = build_pr_board()
         assert board.total == 0
+
+    def test_fresh_sweep_does_not_hide_an_unwatched_repo(self) -> None:
+        pr = PullRequestFactory(repo="other/repo")
+        watched_pr = PullRequestFactory(repo="watched/repo")
+        snapshot = PrInventorySnapshot(
+            overlay=pr.overlay,
+            observed_at=timezone.now(),
+            entries=(_observed_entry(watched_pr),),
+            watched_repos=("watched/repo",),
+        )
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            board = build_pr_board()
+        assert {card.url for group in board.groups for card in group.cards} == {pr.url, watched_pr.url}
 
     def test_stale_empty_snapshot_never_hides_an_open_recorded_pr(self) -> None:
         pr = PullRequestFactory(overlay="teatree")
@@ -156,7 +172,7 @@ class PrBoardTestCase(TestCase):
         taken = timezone.now() - timedelta(minutes=5)
         newer = PullRequestFactory(overlay="teatree", create_verified_at=taken + timedelta(minutes=2))
         PullRequestFactory(overlay="teatree", create_verified_at=taken - timedelta(minutes=2))
-        snapshot = PrInventorySnapshot(overlay="teatree", observed_at=taken, entries=())
+        snapshot = PrInventorySnapshot(overlay="teatree", observed_at=taken, entries=(), watched_repos=(newer.repo,))
         with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
             board = build_pr_board()
         assert [card.ref for group in board.groups for card in group.cards] == [f"{newer.repo}!{newer.iid}"]
@@ -200,11 +216,9 @@ class PrBoardTestCase(TestCase):
         assert cards[shared].next_action == "Fix merge conflict"
         assert cards[unwatched].next_action == "Review PR"
 
-    def test_fresh_red_ci_overrides_stale_green_ticket_cache(self) -> None:
+    def test_fresh_red_ci_blocks_an_approved_recorded_pr(self) -> None:
         ticket = TicketFactory()
         pr = PullRequestFactory(ticket=ticket, state=PullRequest.State.APPROVED)
-        ticket.extra = {"prs": {pr.url: {"pipeline_status": "success", "approvals": {"count": 2, "required": 2}}}}
-        ticket.save(update_fields=["extra"])
         entry = PrInventoryEntry(
             url=pr.url,
             repo=pr.repo,
@@ -276,7 +290,7 @@ class PrBoardTestCase(TestCase):
         assert card.ticket_id == ticket.pk
         assert card.group == "Needs you"
 
-    def test_cache_only_closed_pr_is_not_presented_as_open(self) -> None:
+    def test_ticket_cache_is_not_an_open_pr_source(self) -> None:
         open_url = "https://gitlab.example/org/repo/-/merge_requests/41"
         closed_url = "https://gitlab.example/org/repo/-/merge_requests/42"
         TicketFactory(
@@ -290,7 +304,7 @@ class PrBoardTestCase(TestCase):
 
         board = build_pr_board()
         urls = {card.url for group in board.groups for card in group.cards}
-        assert open_url in urls
+        assert open_url not in urls
         assert closed_url not in urls
 
     def test_unreadable_inventory_is_visible_and_recorded_pr_survives(self) -> None:
@@ -327,13 +341,8 @@ class PrBoardFreshObservationTestCase(TestCase):
         inventory.start()
         self.addCleanup(inventory.stop)
 
-    def _stale_ready_cache(self) -> PullRequest:
-        ticket = TicketFactory()
-        pr = PullRequestFactory(ticket=ticket, state=PullRequest.State.APPROVED)
-        ticket.extra = {
-            "prs": {pr.url: {"pipeline_status": "success", "approvals": {"count": 2, "required": 2}, "discussions": []}}
-        }
-        ticket.save(update_fields=["extra"])
+    def _approved_recorded_pr(self) -> PullRequest:
+        pr = PullRequestFactory(ticket=TicketFactory(), state=PullRequest.State.APPROVED)
         return PullRequest.objects.get(pk=pr.pk)
 
     def _card(self, pr: PullRequest, entry: PrInventoryEntry) -> PrBoardCard:
@@ -341,7 +350,7 @@ class PrBoardFreshObservationTestCase(TestCase):
         with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
             return next(card for group in build_pr_board().groups for card in group.cards)
 
-    def test_fresh_observation_blocks_a_ready_claim_the_stale_cache_would_make(self) -> None:
+    def test_fresh_observation_blocks_a_ready_claim_the_recorded_approval_would_make(self) -> None:
         cases = {
             "draft": ("Blocked", {"reason": "draft", "ci": "unknown", "draft": True}),
             "changes requested": ("Blocked", {"reason": "changes_requested", "ci": "unknown"}),
@@ -349,10 +358,9 @@ class PrBoardFreshObservationTestCase(TestCase):
         }
         for name, (group, overrides) in cases.items():
             with self.subTest(name):
-                pr = self._stale_ready_cache()
+                pr = self._approved_recorded_pr()
                 card = self._card(pr, _observed_entry(pr, next_task=name, **overrides))
                 assert card.group == group
-                assert card.approvals != "2/2"
 
     def test_fresh_approved_green_observation_is_ready(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory())
@@ -384,6 +392,14 @@ class PrBoardFreshObservationTestCase(TestCase):
         card = self._card(pr, entry)
         assert (card.group, card.next_action) == ("Blocked", entry.next_task)
 
+    def test_card_shows_the_approval_count_of_required_and_the_unresolved_thread_count(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        entry = _observed_entry(
+            pr, approvals="awaiting approval", approvals_display="1/2 (awaiting approval)", threads="3 unresolved"
+        )
+        card = self._card(pr, entry)
+        assert (card.approvals, card.threads) == ("1/2 (awaiting approval)", "3 unresolved")
+
     def test_green_pr_awaiting_approval_waits_on_the_reviewer(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory())
         card = self._card(pr, _observed_entry(pr, approvals="awaiting approval"))
@@ -397,11 +413,11 @@ class PrBoardFreshObservationTestCase(TestCase):
     def test_waiting_reviewer_thread_does_not_block_the_factory(self) -> None:
         ticket = TicketFactory()
         pr = PullRequestFactory(ticket=ticket)
-        ticket.extra = {
-            "prs": {pr.url: {"pipeline_status": "success", "discussions": [{"status": "waiting_reviewer"}]}}
-        }
-        ticket.save(update_fields=["extra"])
-        card = next(card for group in build_pr_board().groups for card in group.cards)
+        ReviewRequestPost.objects.create(mr_url=pr.url, slack_channel_id="C1", slack_thread_ts="1.0")
+        entry = _observed_entry(pr, approvals="awaiting approval", threads="1 unresolved")
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
         assert card.group != "Blocked"
         assert card.threads == "1 unresolved"
 
@@ -415,16 +431,17 @@ class PrBoardActionDetailsTestCase(TestCase):
     def test_red_ci_and_unresolved_threads_are_blocked_with_reasons(self) -> None:
         red_ticket = TicketFactory()
         red = PullRequestFactory(ticket=red_ticket)
-        red_ticket.extra = {"prs": {red.url: {"pipeline_status": "failed"}}}
-        red_ticket.save(update_fields=["extra"])
         thread_ticket = TicketFactory()
         threaded = PullRequestFactory(ticket=thread_ticket)
-        thread_ticket.extra = {
-            "prs": {threaded.url: {"pipeline_status": "success", "discussions": [{"status": "needs_reply"}]}}
-        }
-        thread_ticket.save(update_fields=["extra"])
-
-        board = build_pr_board()
+        entries = (
+            _observed_entry(red, ci="red", next_task="Fix failing CI"),
+            _observed_entry(
+                threaded, ci="green", approvals="approved", threads="1 unresolved", decision="my_pr.findings_to_fix"
+            ),
+        )
+        snapshot = PrInventorySnapshot(overlay=red.overlay, observed_at=timezone.now(), entries=entries)
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            board = build_pr_board()
         cards = {card.url: card for group in board.groups for card in group.cards}
         assert cards[red.url].group == "Blocked"
         assert "CI" in cards[red.url].next_action
@@ -434,18 +451,16 @@ class PrBoardActionDetailsTestCase(TestCase):
     def test_ready_requires_all_approvals_as_well_as_green_ci(self) -> None:
         ticket = TicketFactory()
         pr = PullRequestFactory(ticket=ticket, state=PullRequest.State.APPROVED)
-        ticket.extra = {"prs": {pr.url: {"pipeline_status": "success", "approvals": {"count": 1, "required": 2}}}}
-        ticket.save(update_fields=["extra"])
-
-        card = next(card for group in build_pr_board().groups for card in group.cards)
+        entry = _observed_entry(pr, approvals="1/2")
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
         assert card.group == "Waiting on colleagues"
         assert "approval" in card.next_action.lower()
 
     def test_review_request_shows_link_age_reasks_and_due(self) -> None:
         ticket = TicketFactory(overlay="t3-teatree")
         pr = PullRequestFactory(ticket=ticket, overlay="t3-teatree")
-        ticket.extra = {"prs": {pr.url: {"review_permalink": "https://app.slack.com/archives/C1/p1234567890000000"}}}
-        ticket.save(update_fields=["extra"])
         ReviewRequestPost.objects.create(
             mr_url=pr.url,
             overlay="t3-teatree",
@@ -462,6 +477,27 @@ class PrBoardActionDetailsTestCase(TestCase):
         assert card.review_reasks == 2
         assert card.review_due != "unknown"
         assert card.review_age != "unknown"
+
+    def test_reask_due_uses_the_last_nag_clock(self) -> None:
+        ticket = TicketFactory(overlay="t3-teatree")
+        pr = PullRequestFactory(ticket=ticket, overlay="t3-teatree")
+        last_nag = timezone.now() - timedelta(hours=6)
+        post = ReviewRequestPost.objects.create(
+            mr_url=pr.url,
+            overlay="t3-teatree",
+            nag_count=2,
+            last_nag_at=last_nag,
+        )
+        ReviewRequestPost.objects.filter(pk=post.pk).update(created_at=last_nag - timedelta(days=20))
+        overlay = SimpleNamespace(review=SimpleNamespace(repo_owner_for_slug=lambda _slug: RepoOwner.ENGINEERING))
+        settings = SimpleNamespace(review_nag_max_interval_days=30)
+        with (
+            patch("teatree.dash.pr_board.get_overlay", return_value=overlay),
+            patch("teatree.dash.pr_board.get_effective_settings", return_value=settings),
+        ):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
+        expected = last_nag + DEFAULT_THRESHOLDS.nag_interval_for_attempt(RepoOwner.ENGINEERING, 2)
+        assert card.review_due == expected.strftime("%Y-%m-%d %H:%M UTC")
 
     def test_factory_task_shows_agent_since_and_last_result(self) -> None:
         ticket = TicketFactory()

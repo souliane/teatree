@@ -38,6 +38,8 @@ class PrInventoryEntry:
     threads: str
     draft: bool
     reason: str = ""
+    head_sha: str = ""
+    approvals_display: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,8 @@ class OpenPrRow:
     next_task: str
     started: bool
     stall: str
+    head_sha: str = ""
+    decision: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +59,8 @@ class PrInventorySnapshot:
     overlay: str
     observed_at: datetime
     entries: tuple[PrInventoryEntry, ...]
+    watched_repos: tuple[str, ...] = ()
+    verified: bool = True
 
 
 def _directory(directory: Path | None) -> Path:
@@ -71,15 +77,27 @@ def write_inventory(
     *,
     directory: Path | None = None,
     observed_at: datetime | None = None,
+    watched_repos: tuple[str, ...] = (),
 ) -> Path:
+    snapshot = PrInventorySnapshot(
+        overlay=overlay,
+        observed_at=observed_at or timezone.now(),
+        entries=tuple(entries),
+        watched_repos=watched_repos,
+    )
+    return _write_snapshot(snapshot, directory)
+
+
+def _write_snapshot(snapshot: PrInventorySnapshot, directory: Path | None) -> Path:
     root = _directory(directory)
     root.mkdir(parents=True, exist_ok=True)
-    target = _path(overlay, root)
-    snapshot = PrInventorySnapshot(overlay=overlay, observed_at=observed_at or timezone.now(), entries=tuple(entries))
+    target = _path(snapshot.overlay, root)
     payload = {
         "overlay": snapshot.overlay,
         "observed_at": snapshot.observed_at.isoformat(),
         "entries": [asdict(entry) for entry in snapshot.entries],
+        "watched_repos": list(snapshot.watched_repos),
+        "verified": snapshot.verified,
     }
     temporary: Path | None = None
     try:
@@ -97,6 +115,21 @@ def write_inventory(
     return target
 
 
+def mark_inventory_unknown(overlay: str, *, directory: Path | None = None) -> Path:
+    path = _path(overlay, _directory(directory))
+    prior = _read_snapshot(path) if path.exists() else None
+    return _write_snapshot(
+        PrInventorySnapshot(
+            overlay=overlay,
+            observed_at=prior.observed_at if prior else timezone.now(),
+            entries=prior.entries if prior else (),
+            watched_repos=prior.watched_repos if prior else (),
+            verified=False,
+        ),
+        directory,
+    )
+
+
 def _read_snapshot(path: Path) -> PrInventorySnapshot:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -110,24 +143,31 @@ def _read_snapshot(path: Path) -> PrInventorySnapshot:
         entries = tuple(PrInventoryEntry(**row) for row in payload["entries"])
         observed_at = datetime.fromisoformat(payload["observed_at"])
         overlay = payload["overlay"]
+        watched_repos = tuple(payload.get("watched_repos", ()))
+        verified = payload.get("verified", True)
     except (TypeError, KeyError, ValueError) as exc:
         message = f"Unreadable PR inventory: {path}"
         raise PrInventoryError(message) from exc
     if observed_at.tzinfo is None:
         message = f"PR inventory time has no timezone: {path}"
         raise PrInventoryError(message)
-    if (
-        not isinstance(overlay, str)
-        or not overlay
-        or any(
-            type(value) is not (int if name == "iid" else bool if name == "draft" else str)
-            for entry in entries
-            for name, value in asdict(entry).items()
-        )
-    ):
+    invalid_identity = not isinstance(overlay, str) or not overlay
+    invalid_metadata = (
+        not isinstance(payload.get("watched_repos", ()), list | tuple)
+        or any(not isinstance(repo, str) for repo in watched_repos)
+        or not isinstance(verified, bool)
+    )
+    invalid_entry = any(
+        type(value) is not (int if name == "iid" else bool if name == "draft" else str)
+        for entry in entries
+        for name, value in asdict(entry).items()
+    )
+    if invalid_identity or invalid_metadata or invalid_entry:
         message = f"Unreadable PR inventory: {path}"
         raise PrInventoryError(message)
-    return PrInventorySnapshot(overlay=overlay, observed_at=observed_at, entries=entries)
+    return PrInventorySnapshot(
+        overlay=overlay, observed_at=observed_at, entries=entries, watched_repos=watched_repos, verified=verified
+    )
 
 
 def read_inventory(*, directory: Path | None = None) -> tuple[PrInventorySnapshot, ...]:
@@ -191,6 +231,8 @@ def open_pr_rows(started_at: datetime, *, now: datetime | None = None) -> list[O
             next_task=entry.next_task,
             started=entry.url in started,
             stall=stall_cause(entry),
+            head_sha=entry.head_sha,
+            decision=entry.decision,
         )
         for entry in ordered
     ]
