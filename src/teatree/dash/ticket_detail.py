@@ -213,6 +213,7 @@ def _tasks(ticket: Ticket) -> tuple[tuple[TaskRow, ...], int]:
     newest_attempts = (
         TaskAttempt.objects.alias(rank=Window(RowNumber(), partition_by="task_id", order_by=F("pk").desc()))
         .filter(rank__lte=ATTEMPT_ROWS)
+        .with_previous_end()
         .order_by("-pk")
     )
     owned = ticket.tasks  # Django reverse FK
@@ -265,7 +266,7 @@ def _attempt_row(attempt: TaskAttempt) -> AttemptRow:
 def _attempt_duration(attempt: TaskAttempt) -> str:
     if attempt.ended_at is None:
         return ""
-    return _humanize_duration((attempt.ended_at - attempt.started_at).total_seconds())
+    return _humanize_duration((attempt.ended_at - attempt.display_started_at).total_seconds())
 
 
 def _sessions(ticket: Ticket) -> tuple[SessionRow, ...]:
