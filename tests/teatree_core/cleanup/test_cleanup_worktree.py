@@ -1374,7 +1374,7 @@ class TestCleanupWorktreeRefuseBeforeDestroy(TestCase):
     """Guards refuse BEFORE any destructive step, and a dirty worktree is kept by default.
 
     Two data-loss regressions: (1) uncommitted changes must not be wiped by
-    default on an unattended teardown — ``keep_if_dirty`` defaults ``True`` so a
+    default on an unattended teardown — a
     dirty worktree raises and is kept; (2) a refused teardown must not have
     already destroyed the per-worktree docker volume — the git data-loss guards
     run ahead of ``docker_compose_down(remove_volumes=True)``.

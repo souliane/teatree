@@ -523,8 +523,8 @@ def cleanup_worktree(
     *,
     force: bool = False,
     strict_hygiene: bool = True,
-    keep_if_dirty: bool = True,
     respect_liveness: bool = True,
+    discard_unshipped_work: bool = False,
 ) -> CleanupResult:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
 
@@ -535,8 +535,9 @@ def cleanup_worktree(
     routes ``result.errors`` to its visible channel (``SyncResult.errors`` for
     sync backends, runner detail for runners).
 
-    ``force=True`` bypasses legacy liveness and hygiene checks, while the shared
-    shipped-work proof still protects the checkout, including explicit abandon.
+    ``force=True`` bypasses legacy liveness and hygiene checks, never the shared
+    shipped-work proof; only ``discard_unshipped_work=True`` (an explicit operator
+    abandon) removes a checkout the proof cannot clear.
 
     Data-loss guard (#706, always on): raises ``RuntimeError`` when the branch
     has commits on NO remote ref — removing the worktree would destroy them
@@ -547,15 +548,13 @@ def cleanup_worktree(
     :func:`_raise_if_genuinely_ahead`. Sync backends and interactive
     ``clean-all`` keep it on; the FSM teardown path passes ``strict_hygiene=False``.
 
-    Dirty-worktree guard (``keep_if_dirty``, default ON — fail-closed): a
-    worktree with uncommitted changes is KEPT — ``RuntimeError`` is raised before
-    any destructive step rather than reaping it — see
+    Dirty-worktree guard (always on — fail-closed): a worktree with uncommitted
+    changes is KEPT — ``RuntimeError`` is raised before any destructive step
+    rather than reaping it — see
     :func:`~teatree.core.cleanup.cleanup_dirt_guard.guard_or_warn_dirty_worktree`.
-    Uncommitted edits are on no remote, so
-    an unattended teardown (sync-backend "Done" cleanup, FSM teardown) must never
-    wipe them by default. Only an explicit ``keep_if_dirty=False`` caller
-    warns-and-proceeds; ``force=True`` (the proven-redundant reaper / explicit
-    abandon) overrides it.
+    Uncommitted edits are on no remote, so an unattended teardown (sync-backend
+    "Done" cleanup, FSM teardown) must never wipe them; ``force=True`` (the
+    proven-redundant reaper / explicit abandon) overrides the guard.
 
     The unshipped-work capture precedes the refusal, preserving an observation
     even when the checkout remains in place.
@@ -583,12 +582,12 @@ def cleanup_worktree(
     # worktree it then "kept". Both probe the SAME git-resolved effective target
     # (immune to a drifted DB slug, aware of a dangling post-merge HEAD).
     target = _effective_target(str(repo_main), wt_path, worktree)
-    # Ahead of the guards, so it also covers the ``force=True`` hard-delete they
-    # do not protect — the one path where unshipped work leaves no trace.
+    # Ahead of the guards, so it also covers the ``discard_unshipped_work`` hard-delete
+    # they do not protect — the one path where unshipped work leaves no trace.
     capture_unshipped_work(Path(wt_path), branch=worktree.branch, overlay=worktree.overlay)
-    guard_or_warn_dirty_worktree(worktree, wt_path, target, keep_if_dirty=keep_if_dirty, force=force)
+    guard_or_warn_dirty_worktree(worktree, wt_path, target, force=force)
     _run_data_loss_guards(repo_main, worktree, target, force=force, strict_hygiene=strict_hygiene)
-    if refusal := removal_refusal(Path(wt_path), clone=repo_main, row=worktree):
+    if not discard_unshipped_work and (refusal := removal_refusal(Path(wt_path), clone=repo_main, row=worktree)):
         raise RemovalRefusedError(refusal)
 
     compose_shared, db_shared, pass_shared = shared_resources(worktree)

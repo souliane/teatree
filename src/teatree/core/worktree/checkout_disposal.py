@@ -52,21 +52,20 @@ def disposal_refusal(path: Path, *, clone: Path, requesting_ticket_id: int | Non
             f"{path} is held by ticket {occupant}, which has a live session or an active task. "
             f"Refusing to remove or re-create a checkout with a live writer."
         )
-    if not claims_to_be_a_checkout(path):
-        if entry := next(path.iterdir(), None):
-            return f"{path} is nonempty without a git checkout; keeping {entry.name}"
-        return ""
-    if admin_entry_for(path, clone) is not None:
-        requesting_row = None
-        if requesting_ticket_id is not None:
-            requesting_row = next(
-                (
-                    row
-                    for row in Worktree.objects.filter(ticket_id=requesting_ticket_id)
-                    if row.worktree_path and paths_match(row.worktree_path, path)
-                ),
-                None,
-            )
+    claims_checkout = claims_to_be_a_checkout(path)
+    if not claims_checkout and (entry := next(path.iterdir(), None)):
+        return f"{path} is nonempty without a git checkout; keeping {entry.name}"
+    requesting_row = None
+    if requesting_ticket_id is not None:
+        requesting_row = next(
+            (
+                row
+                for row in Worktree.objects.filter(ticket_id=requesting_ticket_id)
+                if row.worktree_path and paths_match(row.worktree_path, path)
+            ),
+            None,
+        )
+    if not claims_checkout or admin_entry_for(path, clone) is not None:
         return removal_refusal(path, clone=clone, row=requesting_row)
     return _unproven_refusal(path, clone)
 

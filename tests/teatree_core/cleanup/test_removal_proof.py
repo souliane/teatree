@@ -80,6 +80,8 @@ class TestRemovalProof(TestCase):
             ticket=ticket, overlay="test", repo_path="clone", branch="empty", extra={"worktree_path": str(empty)}
         )
         assert "in-flight ticket" in removal_refusal(empty, clone=self.clone)
+        assert removal_refusal(empty, clone=self.clone, row=row) == ""
+        assert "in-flight ticket" in removal_refusal(empty, clone=self.clone, row=row, sweep=True)
         row.delete()
         (empty / "notes.txt").write_text("keep\n", encoding="utf-8")
         assert "no resolvable HEAD" in removal_refusal(empty, clone=self.clone)

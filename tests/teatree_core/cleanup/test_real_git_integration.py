@@ -18,6 +18,7 @@ from django.test import TestCase
 from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.cleanup.unshipped_work import bundle_path
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
+from teatree.core.runners.worktree_teardown import WorktreeTeardownRunner
 from tests.teatree_core.cleanup._shared import _GIT, _RM, _clean_env, _run_git
 
 
@@ -66,13 +67,13 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
             extra=extras,
         )
 
-    def _cleanup(self, worktree: Worktree) -> CleanupResult:
+    def _cleanup(self, worktree: Worktree, *, discard_unshipped_work: bool = False) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
             mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
-            return cleanup_worktree(worktree, force=True)
+            return cleanup_worktree(worktree, force=True, discard_unshipped_work=discard_unshipped_work)
 
     def _registered_worktrees(self) -> str:
         return subprocess.run(
@@ -114,6 +115,36 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
 
         assert self.wt_path.is_dir()
         assert str(self.wt_path) in self._registered_worktrees()
+
+    def test_discard_unshipped_work_removes_what_force_alone_keeps(self) -> None:
+        wt = self._make_worktree(with_extras=True)
+        (self.wt_path / "feature.py").write_text("value = 1\n", encoding="utf-8")
+        _run_git("add", "feature.py", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "local feature", cwd=self.wt_path)
+        (self.wt_path / "notes.txt").write_text("scratch\n", encoding="utf-8")
+
+        self._cleanup(wt, discard_unshipped_work=True)
+
+        assert not self.wt_path.exists()
+        assert str(self.wt_path) not in self._registered_worktrees()
+        assert not Worktree.objects.filter(pk=wt.pk).exists()
+
+    def test_explicit_force_teardown_discards_but_an_unforced_one_keeps(self) -> None:
+        wt = self._make_worktree(with_extras=True)
+        (self.wt_path / "notes.txt").write_text("scratch\n", encoding="utf-8")
+
+        with (
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
+        ):
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+            unforced = WorktreeTeardownRunner(wt).run()
+            assert not unforced.ok
+            assert (self.wt_path / "notes.txt").is_file()
+            forced = WorktreeTeardownRunner(wt, force=True).run()
+
+        assert forced.ok
+        assert not self.wt_path.exists()
 
     def test_removes_worktree_when_extras_missing_path(self) -> None:
         """#460 — without ``worktree_path`` in extras the dir + registry entry must still be removed."""

@@ -70,7 +70,7 @@ def removal_refusal(
     except OSError as exc:
         return prefix + f"could not read directory ({exc})"
     if empty:
-        if row is not None and row.ticket.state not in Ticket.marker_release_states():
+        if sweep and row is not None and row.ticket.state not in Ticket.marker_release_states():
             return prefix + f"in-flight ticket {row.ticket.ticket_number or row.ticket_id} owns the checkout"
         return prefix + reason if (reason := _row_refusal(checkout, row, sweep=False, target="")) else ""
     work = probe_unshipped_work(checkout)

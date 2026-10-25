@@ -63,6 +63,17 @@ class TestDisposalNeedsPositiveProof(_CheckoutFixture):
     def test_a_path_that_is_not_there_is_disposable(self) -> None:
         assert disposal_refusal(self.tmp / "nothing-here", clone=self.clone) == ""
 
+    def test_an_empty_directory_with_an_in_flight_foreign_row_is_kept(self) -> None:
+        empty = self.tmp / "checkouts" / "empty"
+        empty.mkdir(parents=True)
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3", repos=["repo"])
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="repo", branch="feature", extra={"worktree_path": str(empty)}
+        )
+
+        assert "in-flight ticket" in disposal_refusal(empty, clone=self.clone)
+        assert disposal_refusal(empty, clone=self.clone, requesting_ticket_id=ticket.pk) == ""
+
     def test_a_checkout_the_acting_clone_vouches_for_is_disposable(self) -> None:
         # The ordinary leftover the reconcile step exists to reap: our own clone
         # holds its admin entry, so removing it is a decision this context owns.
