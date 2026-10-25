@@ -9,7 +9,7 @@ def test_locked_pydantic_packages_match_the_declared_floors() -> None:
     dependencies = set(manifest["project"]["dependencies"])
     assert "pydantic>=2.14.1,<3" in dependencies
     assert "pydantic-settings>=2.16" in dependencies
-    assert "pydantic-ai-slim[anthropic,openai]>=2.56,<3" in dependencies
+    assert "pydantic-ai-slim[anthropic,openai]>=2.60,<3" in dependencies
 
     lock = tomllib.loads((_ROOT / "uv.lock").read_text(encoding="utf-8"))
     versions = {package["name"]: package["version"] for package in lock["package"]}
@@ -25,7 +25,7 @@ def test_locked_pydantic_packages_match_the_declared_floors() -> None:
     } == {
         "pydantic": "2.14.1",
         "pydantic-core": "2.50.1",
-        "pydantic-settings": "2.16.0",
-        "pydantic-ai-slim": "2.56.0",
-        "pydantic-graph": "2.56.0",
+        "pydantic-settings": "2.16.1",
+        "pydantic-ai-slim": "2.60.0",
+        "pydantic-graph": "2.60.0",
     }

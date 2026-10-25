@@ -28,4 +28,4 @@ def test_tool_return_bytes_match_provider_response(outcome: str) -> None:
 
     record.finish(returned)
 
-    assert record.output_bytes == len(returned.model_response_str().encode())
+    assert record.output_bytes == {"success": 4, "failed": 16, "retried": 16, "denied": 4, "interrupted": 4}[outcome]

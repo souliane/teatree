@@ -275,7 +275,7 @@ def _stubbed_part(part: ToolReturnPart) -> ToolReturnPart:
     pydantic_ai writes each processed history back into the run, so an existing stub must
     survive untouched — re-stubbing it would overwrite the original size with the stub's own.
     """
-    if isinstance(part.content, str) and part.content.startswith(_ELIDED_PREFIX):
+    if part.outcome == "retried" or (isinstance(part.content, str) and part.content.startswith(_ELIDED_PREFIX)):
         return part
     rendered = part.model_response_str()
     # A shell command may have side effects (commit, push, migrate): never invite a blind re-run.

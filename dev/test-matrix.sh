@@ -50,7 +50,7 @@ for py in "${versions[@]}"; do
         --user "$(id -u):$(id -g)" \
         -e HOME=/tmp \
         -v "$PWD":/app:ro \
-        "${git_mount[@]}" \
+        ${git_mount[@]+"${git_mount[@]}"} \
         -v "${venv_dir}":/tmp/.venv \
         -v "${CACHE_DIR}/uv":/tmp/.uv \
         -e UV_PROJECT_ENVIRONMENT=/tmp/.venv \

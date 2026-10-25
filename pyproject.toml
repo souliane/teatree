@@ -128,14 +128,15 @@ dependencies = [
   # module whose client raises on import — so Lane B's MCP toolset stays
   # unavailable either way, and the probe in ``teatree.agents.lane_b.mcp`` must
   # answer that by attempting the real import rather than by module presence.
-  "pydantic-ai-slim[anthropic,openai]>=2.3,<3",
+  "pydantic>=2.14.1,<3",
+  "pydantic-ai-slim[anthropic,openai]>=2.60,<3",
   # ``teatree.config.schema.TeatreeSettingsSchema`` is a ``pydantic_settings``
   # ``BaseSettings`` model whose TOML source reads the shipped ``defaults.toml`` —
   # a RUNTIME import (``shipped_defaults()``), same class as the runtime deps
   # above, so it must be in the installed tool env, not only transitively via
-  # ``mcp``. The ``>=2.14.2`` floor stays in ``constraint-dependencies`` below
+  # ``mcp``. The ``>=2.16.0`` floor stays in ``constraint-dependencies`` below
   # (GHSA-4xgf-cpjx-pc3j) and continues to gate this direct dependency.
-  "pydantic-settings>=2.14.2",
+  "pydantic-settings>=2.16",
   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
   # EVERY ``t3`` invocation, which in turn makes the §17.6 gate-15
@@ -749,12 +750,8 @@ package = true
 # A new release is locked only once it is seven days old; dated escapes and their routine: BLUEPRINT §15.
 exclude-newer = "7 days"
 
-# Floor a transitive dependency above a published advisory without promoting it
-# to a direct dependency. `pydantic-settings` is pulled in by `mcp`; versions
-# >= 2.12.0, < 2.14.2 carry GHSA-4xgf-cpjx-pc3j (NestedSecretsSettingsSource
-# follows symlinks outside secrets_dir). Patched in 2.14.2. Drop the entry once
-# `mcp` floors it itself.
-constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
+# Keep transitive consumers above the direct dependency's runtime floor.
+constraint-dependencies = [ "pydantic-settings>=2.16.0" ]
 
 # Empty, not deleted: `uv-overrides.txt` and the `--overrides`/`UV_OVERRIDE`
 # every unattended `uv tool install` passes stay wired, so the next entry is a
@@ -778,7 +775,6 @@ override-dependencies = [  ]
 anthropic = "2026-10-23T23:18:48Z"
 asgiref = "2026-10-23T08:13:15Z"
 certifi = "2026-10-23T11:36:17Z"
-chardet = "2026-10-18T00:06:26Z"
 claude-agent-sdk = "2026-10-22T23:14:32Z"
 coverage = "2026-10-22T16:06:51Z"
 googleapis-common-protos = "2026-10-22T23:43:37Z"

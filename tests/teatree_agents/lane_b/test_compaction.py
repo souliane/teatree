@@ -367,6 +367,17 @@ class TestStaleToolResultsAreElided:
         history = _tool_trajectory(20, size=3)
         assert elide_stale_tool_results(history) == history
 
+    def test_a_retried_refusal_stays_verbatim(self) -> None:
+        history = _tool_trajectory(20)
+        refusal = "denied: " + "do not retry this write; " * 100
+        history[2] = ModelRequest(
+            parts=[ToolReturnPart(tool_name="Bash", content=refusal, tool_call_id="c0", outcome="retried")]
+        )
+
+        result = elide_stale_tool_results(history)
+
+        assert _returned(result)[0].content == refusal
+
     def test_zero_disables_the_pass(self) -> None:
         history = _tool_trajectory(20)
         assert elide_stale_tool_results(history, 0) == history

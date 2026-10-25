@@ -16,7 +16,6 @@ exclude-newer-span = "P7D"
 anthropic = "2026-10-23T23:18:48Z"
 asgiref = "2026-10-23T08:13:15Z"
 certifi = "2026-10-23T11:36:17Z"
-chardet = "2026-10-18T00:06:26Z"
 claude-agent-sdk = "2026-10-22T23:14:32Z"
 coverage = "2026-10-22T16:06:51Z"
 googleapis-common-protos = "2026-10-22T23:43:37Z"
@@ -43,7 +42,7 @@ wcwidth = "2026-10-20T16:02:44Z"
 xlsxwriter = "2026-10-22T00:26:04Z"
 
 [manifest]
-constraints = [{ name = "pydantic-settings", specifier = ">=2.14.2" }]
+constraints = [{ name = "pydantic-settings", specifier = ">=2.16.0" }]
 
 [[package]]
 name = "annotated-doc"
@@ -3540,6 +3539,7 @@ dependencies = [
     { name = "packaging" },
     { name = "pillow" },
     { name = "playwright" },
+    { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["anthropic", "openai"] },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
@@ -3624,8 +3624,9 @@ requires-dist = [
     { name = "packaging", specifier = ">=24,<27" },
     { name = "pillow", specifier = ">=12.3" },
     { name = "playwright", specifier = ">=1.63,<2" },
-    { name = "pydantic-ai-slim", extras = ["anthropic", "openai"], specifier = ">=2.3,<3" },
-    { name = "pydantic-settings", specifier = ">=2.14.2" },
+    { name = "pydantic", specifier = ">=2.14.1,<3" },
+    { name = "pydantic-ai-slim", extras = ["anthropic", "openai"], specifier = ">=2.60,<3" },
+    { name = "pydantic-settings", specifier = ">=2.16" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.35" },
     { name = "tomlkit", specifier = ">=0.13" },
