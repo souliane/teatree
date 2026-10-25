@@ -90,3 +90,23 @@ class TestRemovalProof(TestCase):
         _run_git("update-ref", "refs/heads/main", base, cwd=self.origin)
 
         assert "no live remote ref" in removal_refusal(self.checkout, clone=self.clone)
+
+    def test_reverted_default_branch_does_not_prove_a_commit_still_landed(self) -> None:
+        (self.checkout / "feature.txt").write_text("new\n", encoding="utf-8")
+        _run_git("add", "feature.txt", cwd=self.checkout)
+        _run_git("commit", "-q", "-m", "feature", cwd=self.checkout)
+        _run_git("merge", "-q", "--squash", "feat", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "squash feature", cwd=self.clone)
+        _run_git("revert", "--no-edit", "HEAD", cwd=self.clone)
+        _run_git("push", "-q", "origin", "main", cwd=self.clone)
+
+        assert "no live remote ref" in removal_refusal(self.checkout, clone=self.clone)
+
+    def test_commit_landed_on_live_default_branch_can_be_removed(self) -> None:
+        (self.checkout / "feature.txt").write_text("new\n", encoding="utf-8")
+        _run_git("add", "feature.txt", cwd=self.checkout)
+        _run_git("commit", "-q", "-m", "feature", cwd=self.checkout)
+        _run_git("merge", "-q", "--ff-only", "feat", cwd=self.clone)
+        _run_git("push", "-q", "origin", "main", cwd=self.clone)
+
+        assert removal_refusal(self.checkout, clone=self.clone) == ""

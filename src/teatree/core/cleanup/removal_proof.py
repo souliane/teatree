@@ -6,11 +6,7 @@ from teatree.core.cleanup.ignored_files import is_orchestration_debris
 from teatree.core.cleanup.unshipped_work import UnshippedWork, probe_unshipped_work
 from teatree.core.forge_pr_probe import find_open_pr_for_branch
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree.branch_classification import (
-    _branch_tree_matches_squash,
-    content_equivalence_blockers,
-    effective_default_target,
-)
+from teatree.core.worktree.branch_classification import effective_default_target
 from teatree.core.worktree.branch_verdict import branch_landed_for_teardown
 from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils import git
@@ -21,20 +17,15 @@ class RemovalRefusedError(RuntimeError):
     pass
 
 
-def _tip_landed(checkout: Path, branch: str, target: str) -> bool:
-    repo = str(checkout)
-    return (
-        not content_equivalence_blockers(repo, "HEAD", target)
-        or (branch != git.DETACHED_HEAD and _branch_tree_matches_squash(repo, branch))
-        or branch_landed_for_teardown(repo, "HEAD", target)
-    )
+def _tip_landed(checkout: Path, target: str) -> bool:
+    return branch_landed_for_teardown(str(checkout), "HEAD", target)
 
 
-def _commit_refusal(checkout: Path, clone: Path, work: UnshippedWork, branch: str) -> str:
+def _commit_refusal(checkout: Path, clone: Path, work: UnshippedWork) -> str:
     if not work.unpushed_commits:
         return ""
     target = effective_default_target(str(clone))
-    if f"refs/remotes/{target}" in work.live_refs and _tip_landed(checkout, branch, target):
+    if f"refs/remotes/{target}" in work.live_refs and _tip_landed(checkout, target):
         return ""
     return f"{len(work.unpushed_commits)} commit(s) on no live remote ref"
 
@@ -89,7 +80,7 @@ def removal_refusal(
         try:
             branch = git.current_branch(str(checkout))
             target = effective_default_target(str(clone))
-            reason = _commit_refusal(checkout, clone, work, branch)
+            reason = _commit_refusal(checkout, clone, work)
             reason = reason or _row_refusal(checkout, row, sweep=sweep, target=target)
         except (RuntimeError, CommandFailedError) as exc:
             reason = f"could not verify commits ({exc})"
