@@ -141,6 +141,7 @@ pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clo
 gitlab_events_subscription = "" # str — Pub/Sub subscription the inbox loop pulls GitLab webhook events from; empty is off
 
 [teatree.Loops.issue_implementer]
+issue_intake_idle_hold_hours = 0 # int — hours a started ticket may sit idle before intake claims nothing new; 0 is off
 issue_intake_pass_budget_seconds = 45.0 # float — seconds the intake scanner walks candidates before recording a resume point
 issue_intake_repos = [] # list — Repo slugs replacing the overlay-owned intake scope; undeclared repos allowed; branch-like prefixes rejected; empty or all-invalid uses owned repos
 

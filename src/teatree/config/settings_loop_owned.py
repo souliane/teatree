@@ -181,7 +181,7 @@ class _InboxLoopSettings:
 
 @dataclass
 class _IssueImplementerLoopSettings:
-    """The intake scanner's repo scope, walk budget, ceilings, and labels."""
+    """The intake scanner's repo scope, walk budget, and idle-hold window; ceilings and labels are kill switches."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "issue_implementer")
 
@@ -204,6 +204,13 @@ class _IssueImplementerLoopSettings:
         spec=SettingSpec(
             help="seconds the intake scanner walks candidates before recording a resume point",
             parse=_parse_strict_float,
+        ),
+    )
+    issue_intake_idle_hold_hours: int = setting(
+        0,
+        spec=SettingSpec(
+            help="hours a started ticket may sit idle before intake claims nothing new; 0 is off",
+            parse=_parse_strict_int,
         ),
     )
 

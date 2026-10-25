@@ -59,6 +59,7 @@ from urllib.parse import urlparse
 from django.apps import apps
 from django.db.models import Q
 
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
 from teatree.core.intake.factory_admission import (
@@ -404,6 +405,9 @@ class IssueIntakeScanner:
         Re-read per candidate rather than pre-computed: each successful claim
         records a new in-flight marker, so the live count is the authority.
         """
+        if reason := open_pr_start_cap_hold_reason():
+            logger.warning("IssueIntakeScanner claiming nothing new: %s", reason)
+            return True
         if self.max_concurrent <= 0:
             return False
         active = ImplementedIssueMarker.objects.filter(overlay=self.overlay_name).exclude(

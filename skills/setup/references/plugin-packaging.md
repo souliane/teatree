@@ -62,8 +62,9 @@ payload. The cache path uses the version in the installed entry from
 `codex plugin list --json`, not the TeaTree package version. An installed
 plugin with a stale or content-drifted copy is removed and re-added. Every
 add, including a replacement, is verified against the filesystem afterward.
-If the copy still differs, `CodexCliError` makes strict setup fail and the
-worker refuse to start rather than use stale skills. Non-strict setup prints
+If the copy still differs, `CodexCliError` fails the Codex registration, which
+makes strict setup fail and the worker refuse to start rather than use stale
+skills whenever Codex is credentialed (or no tool is). Non-strict setup prints
 `WARN  Codex served plugin {served} still differs from the TeaTree payload after add — setup continues.`
 with `{served}` replaced by the served cache path.
 
