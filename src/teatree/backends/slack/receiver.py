@@ -41,7 +41,6 @@ from teatree.backends.slack.listener_heartbeat import (
 from teatree.backends.slack.self_identity import (
     OwnSlackIdentity,
     identity_from_auth_test,
-    is_on_behalf_posted,
     is_self_authored,
     is_self_originated,
 )
@@ -330,8 +329,7 @@ def _may_be_user_token_thread_reply(event: dict, identity: OwnSlackIdentity | No
     user = event.get("user")
     thread_ts = event.get("thread_ts")
     return (
-        is_on_behalf_posted(event)
-        and isinstance(user, str)
+        isinstance(user, str)
         and bool(user)
         and isinstance(thread_ts, str)
         and bool(thread_ts)

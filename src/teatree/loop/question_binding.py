@@ -62,6 +62,7 @@ if TYPE_CHECKING:
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
 OPTION_ACTION_PREFIX = "owner-question-option-"
+_READS_AS_QUESTION = "the text reads as a question"
 logger = logging.getLogger(__name__)
 
 
@@ -138,7 +139,8 @@ def bind_reply(
             return inferred
         question, key = inferred
     if question is None:
-        _log_reply(reply, "ignored: no pending card in this thread" if reply.thread_ts else "ignored: no pending card")
+        no_card = "no pending card in this thread" if reply.thread_ts else "no pending card"
+        _log_reply(reply, f"ignored: {key or no_card}")
         return None
     return _bind_found(reply, question=question, body=body, reader=reader, key=key)
 
@@ -155,7 +157,7 @@ def _bind_found(
             _log_reply(reply, f"rejected: {CardThreadStop.OPTIONS_ONLY}")
             options = tuple(str(option.get("label", "")) for option in _recorded_options(question) or [])
             return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, question.pk, options)
-        _log_reply(reply, "ignored: the text reads as a question")
+        _log_reply(reply, f"ignored: {_READS_AS_QUESTION}")
         return None
     _log_reply(reply, f"bound question {question.pk}", key=key)
     return BoundAnswer(question=question, answer=answer, answered_by=reply.user_id)
@@ -400,7 +402,7 @@ def _thread_cards(
     pending = [card for card in matched if card.is_pending and not is_action_question(card)]
     if len(pending) > 1:
         if resolve_answer(body, pending[0], reader=reader) is None:
-            return None, ""
+            return None, _READS_AS_QUESTION
         return AmbiguousCards(tuple(card.pk for card in pending))
     if pending:
         return pending[0], key

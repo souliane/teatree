@@ -140,6 +140,22 @@ class TestThreadCardReplies(TestCase):
         assert cards_in_thread(channel=CHANNEL, thread_ts="201.1", before_ts="201.1", backend=backend)[0] == []
         assert backend.reads == []
 
+    def test_a_later_unrelated_card_does_not_join_a_root_card_thread(self) -> None:
+        root = _card("260.1")
+        unrelated = _card("260.5")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.thread_replies["260.1"] = [{"ts": "260.1"}, _bot_reminder("260.2", "260.1")]
+        reply = _event(backend, ts="260.9", root="260.1")
+        assert reply is not None
+
+        _cycle(backend)
+
+        root.refresh_from_db()
+        unrelated.refresh_from_db()
+        assert root.answer_text == "Approve"
+        assert unrelated.is_pending
+        assert backend.reads == ["260.1"]
+
     def test_api_posted_owner_reply_binds_a_root_card_that_holds_bot_reminders(self) -> None:
         decoy = _card("250.1")
         card = _card("300.1")
@@ -511,7 +527,8 @@ class TestThreadCardReplies(TestCase):
         reply = _event(backend, ts="750.4", root="750.1", text="What does each option change?")
         assert reply is not None
 
-        _cycle(backend)
+        with self.assertLogs("teatree.loop.question_binding", level="INFO") as logs:
+            _cycle(backend)
 
         first.refresh_from_db()
         second.refresh_from_db()
@@ -520,3 +537,5 @@ class TestThreadCardReplies(TestCase):
         assert second.is_pending
         assert reply.answer_kind != PendingChatInjection.AnswerKind.ACK
         assert not any("Start your reply" in text for _, _, text in backend.replies)
+        assert "the text reads as a question" in " ".join(logs.output)
+        assert "no pending card in this thread" not in " ".join(logs.output)

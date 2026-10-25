@@ -106,6 +106,13 @@ class TestRecordThenWake(django.test.TestCase):
         assert PendingChatInjection.objects.count() == 0
         assert self._queued_wakes() == 1
 
+    def test_an_app_posted_non_dm_event_still_wakes(self) -> None:
+        event = {"type": "app_mention", "ts": "1.0", "text": "hi", "api_app_id": "A_OTHER"}
+        with patch.object(slack_inbound, "messaging_from_overlay", return_value=self.backend):
+            slack_inbound.record_and_wake_slack_answer("demo", event)
+
+        assert self._queued_wakes() == 1
+
     def test_a_channel_message_is_not_recorded_as_a_dm(self) -> None:
         with patch.object(slack_inbound, "messaging_from_overlay", return_value=self.backend):
             slack_inbound.record_and_wake_slack_answer("demo", {**_DM, "channel_type": "channel"})

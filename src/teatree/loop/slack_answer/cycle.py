@@ -58,7 +58,13 @@ from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionC
 from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, memoized_reader, read_inbound
-from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply, log_coalesced_replies
+from teatree.loop.question_binding import (
+    AmbiguousCards,
+    BoundAnswer,
+    apply_bound_answer,
+    bind_reply,
+    log_coalesced_replies,
+)
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.session_routing import (
@@ -443,6 +449,8 @@ def _process_unit(
     result = bind_reply(unit.lead, reader=read, backend=backend, text=unit.text)
     log_coalesced_replies(unit.rows, result)
     bound = result if isinstance(result, BoundAnswer) else None
+    if isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result):
+        return
     if binding is not None and _live_receipt(backend, unit, report, binding, (read, bound)):
         return
     if _card_result_reply(backend, unit, report, result):

@@ -11,6 +11,7 @@ from django.test import TestCase
 from teatree.backends.slack import receiver
 from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_CARD, OWNER_SLACK_ID
@@ -106,12 +107,24 @@ class TestDrainedDmsAreRecorded(TestCase):
 
         backend = ReadingBackend()
         scanner = SlackMentionsScanner(backend=backend, overlay="demo")
-        scanner.scan()
+        first = scanner.scan()
 
         assert list(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == ["100.4"]
+        assert [signal.payload["ts"] for signal in first if signal.kind == "slack.dm"] == ["100.4"]
         assert [record["event"]["ts"] for record in receiver.drain_event_queue()] == ["100.3"]
 
         backend.read_error = False
-        scanner.scan()
+        retried = scanner.scan()
 
         assert set(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == {"100.3", "100.4"}
+        assert [signal.payload["ts"] for signal in retried if signal.kind == "slack.dm"] == ["100.3"]
+
+    def test_a_batch_whose_recording_raised_stays_queued_and_emits_no_dm_signal(self) -> None:
+        self._enqueue(_HUMAN_DM)
+        scanner = SlackMentionsScanner(backend=FakeMessaging(), overlay="demo")
+
+        with patch.object(SlackDmRecorder, "record_events", side_effect=RuntimeError("database unavailable")):
+            signals = scanner.scan()
+
+        assert [signal for signal in signals if signal.kind == "slack.dm"] == []
+        assert [record["event"]["ts"] for record in receiver.drain_event_queue()] == [_HUMAN_DM_TS]

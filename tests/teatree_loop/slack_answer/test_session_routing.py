@@ -881,6 +881,35 @@ class TestBoundTicketThread(TestCase):
         client.steer.assert_called_once()
         assert stop_answer.call_args.args[0].pk == question.pk
 
+    def test_two_pending_cards_in_a_bound_ticket_thread_get_the_choice_before_any_steer(self) -> None:
+        parked = self._bound_task()
+        cards = [
+            DeferredQuestion.record(
+                question,
+                slack_ts=ts,
+                slack_channel="C1",
+                parked_task=parked,
+                task_session=parked.session,
+                card=owner_card(),
+            )
+            for question, ts in (("Which API?", "100.2"), ("Which database?", "100.3"))
+        ]
+        row = self._message("Yes")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        backend.thread_replies["100.0"] = [{"ts": "100.0"}, {"ts": "100.2"}, {"ts": "100.3"}]
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": parked.pk, "ticket": parked.ticket_id, "state": "busy", "steerable": True}
+        ]
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        client.steer.assert_not_called()
+        assert all(card.is_pending for card in DeferredQuestion.objects.filter(pk__in=[c.pk for c in cards]))
+        assert any(all(f"#{card.pk}" in text for card in cards) for _, _, text in backend.replies)
+
     def test_question_card_answer_resolves_when_sibling_is_pending(self) -> None:
         parked = self._bound_task()
         Task.objects.create(ticket=parked.ticket, session=parked.session, phase="coding")

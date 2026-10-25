@@ -99,6 +99,11 @@ class TestReceiverCallbackDoesNotWakeOnItsOwnPosts:
 
         _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
 
+    def test_app_post_without_a_user_does_not_wake(self, tmp_path: Path) -> None:
+        event = {"type": "message", "ts": "1.1", "thread_ts": "1.0", "api_app_id": "A_SCRIPT"}
+
+        _drive(tmp_path, event, auth_body=_AUTH_OK).assert_not_called()
+
     def test_app_post_with_bot_id_does_not_wake(self, tmp_path: Path) -> None:
         event = {
             "type": "message",

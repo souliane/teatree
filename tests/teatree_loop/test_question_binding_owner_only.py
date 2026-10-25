@@ -106,7 +106,7 @@ class TestOnlyTheOwnersReplyBinds(TestCase):
         _reply(f"#{question.pk} yes", author=OWNER_SLACK_ID)
         backend = _scan(FakeMessaging())
         question.refresh_from_db()
-        assert question.answer_text == "Yes"
+        assert question.answer_text == "yes"
         assert question.resolved_via == DeferredQuestion.ResolvedVia.SLACK
         assert backend.react_calls != []
 

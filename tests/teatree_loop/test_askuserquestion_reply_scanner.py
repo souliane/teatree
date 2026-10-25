@@ -13,14 +13,12 @@ a question result).
 import hashlib
 import json
 from dataclasses import dataclass, field
-from unittest.mock import patch
 
 import pytest
 
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.models import DmContext, PendingChatInjection, Session, Task, TaskAttempt
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.loop.question_binding import AmbiguousCards
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
@@ -48,6 +46,7 @@ class FakeMessaging:
     raise_on_react: bool = False
     route_token: str = "self"
     user_id: str = OWNER_SLACK_ID
+    thread: list[str] = field(default_factory=list)
 
     def _is_self_dm(self, channel: str) -> bool:
         _ = channel
@@ -71,6 +70,10 @@ class FakeMessaging:
     def get_permalink(self, *, channel: str, ts: str) -> str:
         _ = (channel, ts)
         return self.permalink
+
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        _ = (channel, thread_ts)
+        return [{"ts": ts} for ts in self.thread]
 
 
 def _record_question(*, generation: int, slack_ts: str, session_id: str = "s", run_id: str = "r") -> DeferredQuestion:
@@ -124,19 +127,24 @@ class TestATypedAnswerClosesTheRootCard:
 
         assert backend.updates == []
 
-    def test_an_ambiguous_binding_is_never_applied_or_acknowledged(self) -> None:
-        question = _record_question(generation=1, slack_ts="100.0")
-        reply = _record_reply("Yes", slack_ts="200.0")
-        backend = FakeMessaging()
+    def test_a_reply_that_matches_two_cards_in_its_thread_is_left_unclaimed(self) -> None:
+        first = _record_question(generation=1, slack_ts="100.2", session_id="s1")
+        second = _record_question(generation=1, slack_ts="100.3", session_id="s2")
+        reply = PendingChatInjection.record(
+            channel=_CHANNEL, slack_ts="200.0", text="Yes", context=DmContext(user_id=OWNER_SLACK_ID, thread_ts="100.1")
+        )
+        assert reply is not None
+        backend = FakeMessaging(thread=["100.1", "100.2", "100.3"])
 
-        with patch(
-            "teatree.loop.scanners.askuserquestion_reply.bind_reply", return_value=AmbiguousCards((question.pk,))
-        ):
-            _scan(backend)
+        _scan(backend)
 
         reply.refresh_from_db()
+        first.refresh_from_db()
+        second.refresh_from_db()
         assert reply.loop_replied_at is None
         assert backend.react_calls == []
+        assert first.is_pending
+        assert second.is_pending
 
 
 class TestDigitReplyResolvesOption:
