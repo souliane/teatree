@@ -40,6 +40,8 @@ CANDIDATE_FAULT_KINDS = frozenset(
     {FailureKind.HARNESS_CRASH, FailureKind.LANDING_UNVERIFIED, FailureKind.RESULT_ERROR, FailureKind.RESUME_REFUSED}
 )
 READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
+# Stamped in no-op recovery summaries; read by doctor duplicate-execution and skill-gap checks.
+NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
 
 
 PARK_ERROR_Q = (
@@ -50,6 +52,25 @@ PARK_ERROR_Q = (
 
 
 class TaskAttemptQuerySet(models.QuerySet):
+    def with_previous_end(self) -> "TaskAttemptQuerySet":
+        """Annotate ``previous_end``, when the task's previous finished attempt ended."""
+        previous = (
+            self.model.objects.filter(
+                task=models.OuterRef("task"), pk__lt=models.OuterRef("pk"), ended_at__isnull=False
+            )
+            .order_by("-pk")
+            .values("ended_at")[:1]
+        )
+        return self.annotate(previous_end=models.Subquery(previous))
+
+    def skill_loads_in_session(self, session_id: str) -> list[str]:
+        if not session_id:
+            return []
+        prior_loads = self.filter(agent_session_id=session_id).values_list(
+            "result__skill_assurance__observed_loads", flat=True
+        )
+        return [name for loads in prior_loads if isinstance(loads, list) for name in loads if isinstance(name, str)]
+
     def parks(self) -> "TaskAttemptQuerySet":
         return self.filter(PARK_ERROR_Q)
 
@@ -380,6 +401,8 @@ class TaskAttempt(models.Model):
 
     objects = TaskAttemptQuerySet.as_manager()
 
+    previous_end: datetime | None  # annotation only: a page that forgets ``with_previous_end()`` raises
+
     class Meta:
         db_table = "teatree_taskattempt"
         indexes = (
@@ -466,6 +489,18 @@ class TaskAttempt(models.Model):
                 ),
                 using=using,
             )
+
+    @property
+    def display_started_at(self) -> datetime:
+        """When a finished attempt started working: its task's admission, never before the previous attempt ended.
+
+        ``started_at`` is the insert stamp, written when the run ends, so it stays the figure wherever no admission
+        can be measured (no stamp, or one overwritten by a later admission).
+        """
+        admitted = self.task.admitted_at
+        if admitted is None or self.ended_at is None or admitted > self.ended_at:
+            return self.started_at
+        return max(admitted, self.previous_end or admitted)
 
     def _classify_failure_kind(self) -> str:
         """Name this attempt's failure cause from ``error`` (#3957), blank when it did not fail.
