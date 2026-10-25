@@ -91,7 +91,7 @@ def run_mr_validator(
         return GateSkipped(reason=_EXEC_FAILED_REASON.format(exc=exc))
 
 
-_UNRESOLVABLE = "is not resolvable"
+_UNRESOLVABLE = "cannot reach the teatree app because its t3 launcher is not resolvable"
 
 _MR_VALIDATE_BROKEN_ENV_DENY = (
     "Cannot validate MR title/description — the overlay validator (`t3 tool validate-mr`) {cause}. Refusing to "

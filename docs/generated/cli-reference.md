@@ -1538,9 +1538,10 @@ Usage: t3 review-request post [OPTIONS]
 │ *  --mr-url           TEXT  Canonical MR/PR URL to post. [required]          │
 │ *  --approver         TEXT  User id that recorded the #960 approval.         │
 │                             [required]                                       │
-│ *  --ticket-id        TEXT  Ticket whose review evidence is checked.         │
-│                             [required]                                       │
-│ *  --head-sha         TEXT  Full reviewed head SHA. [required]               │
+│    --ticket-id        TEXT  Ticket whose review evidence is checked          │
+│                             (default: owner).                                │
+│    --head-sha         TEXT  Full reviewed head SHA (needed when a ticket     │
+│                             owns it).                                        │
 │    --title            TEXT  Review-request subject (recommended).            │
 │    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4358,8 +4359,9 @@ Usage: t3 setup [OPTIONS] [COMMAND] [ARGS]...
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --skip-plugin                  Skip Claude and Codex plugin registration.    │
 │ --strict-agent-skills          Exit non-zero unless required skills,         │
-│                                inventory, and both TeaTree plugins are       │
-│                                ready.                                        │
+│                                inventory, and the TeaTree plugins of the     │
+│                                credentialed agent tools (both when none is)  │
+│                                are ready.                                    │
 │ --write-automode               Deep-merge the committed Claude-settings      │
 │                                template (recommended autoMode grants +       │
 │                                managed keys) into ~/.claude/settings.json.   │

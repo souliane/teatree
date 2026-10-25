@@ -16,7 +16,11 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from teatree.config import get_effective_settings
+from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.gates.review_request_guard import overlay_for_mr_url
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.review.review_candidate import is_self_authored
 from teatree.loop.review_claim_signals import reaction_already_present, record_reaction_claim
 
 if TYPE_CHECKING:
@@ -50,8 +54,8 @@ def emit_review_done_reactions(
     teatree's own ledger (#3564). Reacting routes through
     :meth:`MessagingBackend.react_routed` so a colleague/channel message
     goes out under the personal ``xoxp`` token (#1750). Returns the emojis
-    actually posted; ``[]`` when the PR has no tracked Slack message or no
-    messaging backend is available.
+    actually posted; ``[]`` when the PR has no tracked Slack message, no
+    messaging backend is available, or the PR is not provably a colleague's.
     """
     if messaging is None:
         return []
@@ -59,6 +63,9 @@ def emit_review_done_reactions(
     if resolved is None:
         return []
     channel, ts, target_url = resolved
+    if not _colleague_authored(target_url):
+        logger.info("emit_review_done_reactions: %s is not provably a colleague's — no reaction", target_url)
+        return []
     egress = OnBehalfSlackEgress(messaging)
     live = _live_message(messaging, channel=channel, ts=ts)
     posted: list[str] = []
@@ -74,6 +81,16 @@ def emit_review_done_reactions(
             record_reaction_claim(channel=channel, ts=ts, emoji=emoji, target_url=target_url)
             posted.append(emoji)
     return posted
+
+
+def _colleague_authored(mr_url: str) -> bool:
+    try:
+        overlay = overlay_for_mr_url(mr_url) or None
+        identities = get_effective_settings(overlay).user_identity_aliases
+        return is_self_authored(mr_url, code_host_from_overlay(overlay), identities) is False
+    except Exception:
+        logger.exception("emit_review_done_reactions: authorship dependencies unreadable for %s", mr_url)
+        return False
 
 
 def _live_message(messaging: "MessagingBackend", *, channel: str, ts: str) -> "RawAPIDict | None":

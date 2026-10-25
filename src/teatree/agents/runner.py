@@ -25,6 +25,7 @@ from teatree.agents.harness_registry import (
 )
 from teatree.agents.live_control import DEFAULT_IDLE_WINDOW_SECONDS
 from teatree.agents.model_tiering import resolve_spawn_effort
+from teatree.agents.own_pr_review_head import prepare_own_pr_review_head
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
 from teatree.agents.read_only_venue_brief import ReadOnlyBriefRefusedError
@@ -464,6 +465,8 @@ def _preflight(
     overlay_skill_metadata: SkillMetadata,
 ) -> _Preflight | TaskAttempt:
     """The refusals that must all pass before a turn can be billed, as one short-circuit."""
+    if (held := prepare_own_pr_review_head(task, phase=phase)) is not None:
+        return held
     refusal = pre_harness_refusal(task, phase=phase)
     if refusal is not None:
         logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
