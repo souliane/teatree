@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import RedMrFixAttempt
@@ -164,6 +165,7 @@ class MyPrsScanner:
     verdict_reader: ReviewVerdictReader | None = None
     critic_reader: CriticFindingReader | None = None
     overlay_name: str = ""
+    host_origin: str = ""
     inventory_writer: Callable[[str, list[PrInventoryEntry]], object] | None = None
     inventory_invalidator: Callable[[str], object] | None = None
     name: str = "my_prs"
@@ -340,7 +342,10 @@ class MyPrsScanner:
 
     def _invalidate_inventory(self) -> None:
         if self.inventory_invalidator is not None:
-            self.inventory_invalidator(self._inventory_key())
+            try:
+                self.inventory_invalidator(self._inventory_key())
+            except (OSError, ValueError):
+                logger.warning("my_prs could not invalidate its PR inventory; signals are unaffected", exc_info=True)
 
     def _forge_review_facts(self, url: str) -> tuple[str, str, str]:
         ref = pr_ref_from_url(url)
@@ -389,11 +394,13 @@ class MyPrsScanner:
         )
 
     def _inventory_key(self) -> str:
-        source = "|".join(sorted(self.allowed_url_prefixes)) or (
-            f"{type(self.host).__module__}.{type(self.host).__qualname__}"
-        )
-        suffix = sha256(source.encode()).hexdigest()[:16]
-        return f"own:{self.overlay_name}:{suffix}"
+        prefixes = "|".join(sorted(self.allowed_url_prefixes))
+        first = urlsplit(self.allowed_url_prefixes[0]) if self.allowed_url_prefixes else None
+        origin = self.host_origin or (f"{first.scheme}://{first.netloc}" if first and first.netloc else "")
+        host_key = origin or f"{type(self.host).__module__}.{type(self.host).__qualname__}"
+        host_hash = sha256(host_key.encode()).hexdigest()[:16]
+        scope_hash = sha256((prefixes or host_key).encode()).hexdigest()[:16]
+        return f"own:{self.overlay_name}:{host_hash}:{scope_hash}"
 
     def _resolve_identities(self) -> tuple[str, ...]:
         # Multi-identity wins: caller supplied an explicit alias set, use it

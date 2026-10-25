@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from urllib.parse import urlsplit
 
 from django.utils import timezone
 
@@ -18,6 +19,8 @@ from teatree.paths import data_dir_root
 
 MINUTES_PER_HOUR = 60
 HOURS_PER_DAY = 24
+OWN_SOURCE_PARTS = 4
+LEGACY_OWN_SOURCE_PARTS = 3
 _UNKNOWN_TIME = datetime.max.replace(tzinfo=UTC)
 logger = logging.getLogger(__name__)
 
@@ -76,6 +79,11 @@ def _path(overlay: str, directory: Path) -> Path:
     return directory / f"{sha256(overlay.encode()).hexdigest()}.json"
 
 
+def _origin_hash(url: str) -> str:
+    parsed = urlsplit(url)
+    return sha256(f"{parsed.scheme}://{parsed.netloc}".encode()).hexdigest()[:16]
+
+
 def write_inventory(
     overlay: str,
     entries: list[PrInventoryEntry],
@@ -116,6 +124,7 @@ def _write_snapshot(snapshot: PrInventorySnapshot, directory: Path | None) -> Pa
         temporary.replace(target)
         if snapshot.overlay.startswith("own:"):
             prefix = snapshot.overlay.rsplit(":", 1)[0] + ":"
+            current_parts = snapshot.overlay.split(":")
             for old_path in root.glob("*.json"):
                 if old_path == target:
                     continue
@@ -123,7 +132,14 @@ def _write_snapshot(snapshot: PrInventorySnapshot, directory: Path | None) -> Pa
                     old = _read_snapshot(old_path)
                 except PrInventoryError:
                     continue
-                if old.overlay.startswith(prefix):
+                old_parts = old.overlay.split(":")
+                same_host_legacy = (
+                    len(current_parts) == OWN_SOURCE_PARTS
+                    and len(old_parts) == LEGACY_OWN_SOURCE_PARTS
+                    and old_parts[:2] == current_parts[:2]
+                    and all(_origin_hash(entry.url) == current_parts[2] for entry in old.entries)
+                )
+                if old.overlay.startswith(prefix) or same_host_legacy:
                     old_path.unlink(missing_ok=True)
     finally:
         if temporary is not None:
@@ -210,7 +226,7 @@ def read_inventory(
             continue
         overlay = snapshot.overlay
         if overlay.startswith("own:"):
-            overlay = overlay.rsplit(":", 1)[0].removeprefix("own:")
+            overlay = overlay.split(":", 2)[1]
         if active is not None and overlay and overlay not in active:
             path.unlink(missing_ok=True)
             logger.info("Pruned PR inventory for removed overlay %s", overlay)

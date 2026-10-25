@@ -52,10 +52,10 @@ never DM, to keep the DM channel quiet.
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.pull_request import PullRequest
-from teatree.core.review.pr_inventory import PrInventoryEntry
 from teatree.loop.scanners import pr_sweep_branch_update as branch_update
 from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
@@ -69,7 +69,12 @@ from teatree.loop.scanners.pr_sweep_decision import (
     with_ci_context,
 )
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
-from teatree.loop.scanners.pr_sweep_reporting import inventory_entry, pr_created_at, signal_from_attempt
+from teatree.loop.scanners.pr_sweep_reporting import (
+    inventory_entry,
+    pr_created_at,
+    signal_from_attempt,
+    write_inventory_for_scan,
+)
 from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
 from teatree.loop.scanners.pr_sweep_ticket_gate import precondition_skip_reason, unowned_pr_refusal
 from teatree.loop.scanners.pr_sweep_types import (
@@ -87,6 +92,9 @@ from teatree.loop.scanners.pr_sweep_types import (
     blocked_merge_attempt,
     skip_attempt,
 )
+
+if TYPE_CHECKING:
+    from teatree.core.review.pr_inventory import PrInventoryEntry
 
 __all__ = [
     "CLEAR_PRESENT_UNUSABLE_REASON",
@@ -217,9 +225,12 @@ class PrSweepScanner:
             if attempt is None or not attempt.merged:
                 inventory.append(inventory_entry(pr, attempt, identities=self.self_identities))
         if not errors:
-            self._write_inventory_for_scan(inventory, errors)
+            write_inventory_for_scan(self.inventory_writer, self.overlay, inventory, self.repos, errors)
         elif self.inventory_invalidator is not None:
-            self.inventory_invalidator(self.overlay)
+            try:
+                self.inventory_invalidator(self.overlay)
+            except (OSError, ValueError):
+                logger.warning("pr_sweep could not invalidate its PR inventory; signals are unaffected", exc_info=True)
         if errors and not signals:
             # #1287: nothing produced this pass, so surface the first error and let the dispatcher record it.
             raise errors[0]
@@ -251,18 +262,6 @@ class PrSweepScanner:
         except Exception:
             logger.exception("pr_sweep failed to evaluate %s#%s", pr.slug, pr.number)
             return None
-
-    def _write_inventory_for_scan(self, inventory: list[PrInventoryEntry], errors: list[ScannerError]) -> None:
-        if self.inventory_writer is None:
-            return
-        try:
-            self.inventory_writer(self.overlay, inventory, watched_repos=self.repos)
-        except (OSError, ValueError) as exc:
-            errors.append(
-                ScannerError(
-                    scanner="pr_sweep", error_class=ScannerErrorClass.UNKNOWN, detail=f"inventory write failed: {exc}"
-                )
-            )
 
     def evaluate_one(self, *, slug: str, pr_id: int) -> MergeAttempt | None:
         """Run the same decision ladder for a single open PR, on demand (#2026).

@@ -1,11 +1,12 @@
 """PR sweep ordering and durable status reporting."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from teatree.core.review.pr_inventory import PrInventoryEntry
 from teatree.core.review.pr_next_action import UNKNOWN, approvals_text, ci_label, sweep_next_task, threads_label
 from teatree.core.review.review_candidate import author_is_self
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 
 
@@ -15,6 +16,25 @@ def pr_created_at(pr: PrSummary) -> datetime:
     except ValueError:
         return datetime.max.replace(tzinfo=UTC)
     return created.astimezone(UTC) if created.tzinfo is not None else datetime.max.replace(tzinfo=UTC)
+
+
+def write_inventory_for_scan(
+    writer: Callable[..., object] | None,
+    overlay: str,
+    entries: list[PrInventoryEntry],
+    repos: tuple[str, ...],
+    errors: list[ScannerError],
+) -> None:
+    if writer is None:
+        return
+    try:
+        writer(overlay, entries, watched_repos=repos)
+    except (OSError, ValueError) as exc:
+        errors.append(
+            ScannerError(
+                scanner="pr_sweep", error_class=ScannerErrorClass.UNKNOWN, detail=f"inventory write failed: {exc}"
+            )
+        )
 
 
 def inventory_entry(

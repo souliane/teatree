@@ -66,6 +66,7 @@ def _jobs_for_backend_hosts(
                     scanner=MyPrsScanner(
                         host=code_host,
                         overlay_name=tag,
+                        host_origin=_web_origin_for_host(code_host),
                         inventory_writer=write_inventory,
                         inventory_invalidator=mark_inventory_unknown,
                         identities=backend.identities,

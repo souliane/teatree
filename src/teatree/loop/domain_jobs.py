@@ -82,7 +82,11 @@ from teatree.loop.scanners.owner_actions import OwnerActionScanner
 from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.scanners.review_nag_mention import IDENTITY_LOOKUP_ERRORS
-from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
+from teatree.loop.tick_resolvers import (
+    _allowed_url_prefixes_for_host,
+    _identity_alias_groups_for_overlay,
+    _web_origin_for_host,
+)
 from teatree.loops.enable_verdict import loop_admits
 from teatree.messaging import notify_with_fallback
 
@@ -210,6 +214,7 @@ def _ship_jobs_for_overlay(
                     scanner=MyPrsScanner(
                         host=code_host,
                         overlay_name=tag,
+                        host_origin=_web_origin_for_host(code_host),
                         inventory_writer=write_inventory,
                         inventory_invalidator=mark_inventory_unknown,
                         identities=backend.identities,

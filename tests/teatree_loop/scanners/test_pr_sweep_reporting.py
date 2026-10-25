@@ -389,6 +389,27 @@ class PrSweepInventoryFactsTestCase(TestCase):
         with patch.object(PrSweepScanner, "_evaluate", return_value=attempt):
             assert len(scanner.scan()) == 1
 
+    def test_a_failing_inventory_invalidation_preserves_merge_signals(self) -> None:
+        pr = _pr(1, created_at="2026-10-01T10:00:00Z")
+        api = Mock()
+        api.list_open_prs.side_effect = [
+            [pr],
+            ScannerError(scanner="pr_sweep", error_class=ScannerErrorClass.AUTH, detail="401"),
+        ]
+        scanner = PrSweepScanner(
+            repos=("souliane/teatree", "other/repo"),
+            api=api,
+            keystone=Mock(),
+            notifier=Mock(),
+            inventory_invalidator=Mock(side_effect=OSError("disk full")),
+        )
+        attempt = MergeAttempt(slug=pr.slug, pr_id=1, decision="merged", url=pr.url)
+
+        with patch.object(PrSweepScanner, "_evaluate", return_value=attempt):
+            signals = scanner.scan()
+
+        assert [signal.kind for signal in signals] == ["pr_sweep.merged"]
+
 
 class MyPrsInventoryTestCase(TestCase):
     def _host(self, *, status: str = "success") -> Mock:
@@ -524,6 +545,35 @@ class MyPrsInventoryTestCase(TestCase):
 
         assert len(signals) == 1
         writer.assert_not_called()
+
+    def test_a_failing_inventory_invalidation_preserves_owned_pr_signals(self) -> None:
+        host = self._host(status="failed")
+        host.list_my_prs.side_effect = [host.list_my_prs.return_value, RuntimeError("forge unavailable")]
+        scanner = MyPrsScanner(
+            host=host,
+            identities=("one", "two"),
+            overlay_name="teatree",
+            inventory_invalidator=Mock(side_effect=OSError("disk full")),
+        )
+
+        signals = scanner.scan()
+
+        assert [signal.kind for signal in signals] == ["my_pr.failed"]
+
+    def test_same_class_hosts_with_empty_prefixes_keep_distinct_inventory_keys(self) -> None:
+        keys = []
+        for origin in ("https://gitlab-one.example", "https://gitlab-two.example"):
+            writer = Mock()
+            MyPrsScanner(
+                host=self._host(),
+                overlay_name="teatree",
+                host_origin=origin,
+                inventory_writer=writer,
+            ).scan()
+            keys.append(writer.call_args.args[0])
+
+        assert keys[0] != keys[1]
+        assert all(key.startswith("own:teatree:") for key in keys)
 
     def test_failed_next_list_read_revokes_verified_own_inventory(self) -> None:
         host = self._host()

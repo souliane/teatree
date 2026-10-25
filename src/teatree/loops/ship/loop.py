@@ -22,6 +22,7 @@ def _build_jobs(
     from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415 — deferred: loaded at tick time, not import
     from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.loop.scanners import MyPrsScanner  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loop.tick_resolvers import _web_origin_for_host  # noqa: PLC0415 — deferred: loaded at tick time
 
     if backends:
         all_backends = tuple(backends)
@@ -35,6 +36,7 @@ def _build_jobs(
                 scanner=MyPrsScanner(
                     host=host,
                     overlay_name="",
+                    host_origin=_web_origin_for_host(host),
                     inventory_writer=write_inventory,
                     inventory_invalidator=mark_inventory_unknown,
                     verdict_reader=RecordedVerdictReader(),

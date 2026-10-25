@@ -1,6 +1,7 @@
 import json
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -237,6 +238,33 @@ class PrInventoryTestCase(TestCase):
             snapshots = read_inventory(directory=directory)
 
         assert [(snapshot.overlay, snapshot.entries[0].iid) for snapshot in snapshots] == [("own:teatree:new", 2)]
+
+    def test_source_key_change_prunes_only_its_host_and_preserves_other_hosts(self) -> None:
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            write_inventory("own:teatree:host-a:old-scope", [_entry(1)], directory=directory)
+            write_inventory("own:teatree:host-b:scope", [_entry(2)], directory=directory)
+            write_inventory("own:teatree:host-a:new-scope", [_entry(3)], directory=directory)
+
+            snapshots = read_inventory(directory=directory, active_overlays=("teatree",))
+
+        assert {snapshot.overlay: snapshot.entries[0].iid for snapshot in snapshots} == {
+            "own:teatree:host-a:new-scope": 3,
+            "own:teatree:host-b:scope": 2,
+        }
+
+    def test_new_host_key_prunes_legacy_snapshot_for_the_same_host(self) -> None:
+        host_hash = sha256(b"https://github.com").hexdigest()[:16]
+        with TemporaryDirectory() as root:
+            directory = Path(root)
+            write_inventory("own:teatree:old-scope", [_entry(1)], directory=directory)
+            write_inventory(f"own:teatree:{host_hash}:new-scope", [_entry(2)], directory=directory)
+
+            snapshots = read_inventory(directory=directory, active_overlays=("teatree",))
+
+        assert [(snapshot.overlay, snapshot.entries[0].iid) for snapshot in snapshots] == [
+            (f"own:teatree:{host_hash}:new-scope", 2)
+        ]
 
     def test_invalid_write_is_refused_and_leaves_the_prior_snapshots_readable(self) -> None:
         with TemporaryDirectory() as root:

@@ -43,6 +43,7 @@ from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.scanners.self_update import CORE_REPO_LABEL
 from teatree.loop.scanners.self_update_ci import ForgeMainCiStatus
+from teatree.loop.tick_resolvers import _web_origin_for_host
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +468,7 @@ def build_default_jobs(
                         scanner=MyPrsScanner(
                             host=host,
                             overlay_name="",
+                            host_origin=_web_origin_for_host(host),
                             inventory_writer=write_inventory,
                             inventory_invalidator=mark_inventory_unknown,
                             verdict_reader=RecordedVerdictReader(),
