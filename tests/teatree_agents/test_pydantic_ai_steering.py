@@ -1,56 +1,22 @@
 import asyncio
-import threading
 from dataclasses import replace
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 from django.test import TestCase
-from pydantic_ai import Agent
-from pydantic_ai.capabilities import ProcessHistory
-from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.harness import PydanticAiHarness, pydantic_ai_thread
-from teatree.agents.live_control import ControlOutcome, LiveTask, RejectCode, SteerRejectedError
+from teatree.agents.live_control import ControlOutcome, FollowUpSession, LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_registry import LiveSessionRegistry
 from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
-from teatree.agents.pydantic_ai_steering import PeerInputAdmission, SteerablePydanticAiSession
+from teatree.agents.pydantic_ai_steering import SteerablePydanticAiSession
 from teatree.agents.runner_stream import StreamCapture
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
-
-
-def test_a_steer_is_admitted_into_the_next_model_request_and_acknowledged_only_then() -> None:
-    async def run() -> None:
-        queue = LiveInputQueue()
-        processor = PeerInputAdmission(queue)
-        pending = asyncio.create_task(queue.submit("peer nonce", wait=1))
-        await asyncio.sleep(0)
-        assert not pending.done()
-
-        original = [ModelRequest(parts=[UserPromptPart("go")])]
-        admitted = await processor(original)
-
-        await pending
-        assert admitted is not original
-        assert admitted[0].parts[0] == original[0].parts[0]
-        assert [part.content for part in admitted[0].parts if isinstance(part, UserPromptPart)] == ["go", "peer nonce"]
-
-    asyncio.run(run())
-
-
-def test_an_expired_wait_never_enters_a_later_request() -> None:
-    async def run() -> None:
-        queue = LiveInputQueue()
-        with pytest.raises(SteerRejectedError) as error:
-            await queue.submit("expired", wait=0)
-        assert error.value.code == RejectCode.NOT_ACCEPTED_IN_TIME
-        admitted = await PeerInputAdmission(queue)([ModelRequest(parts=[UserPromptPart("go")])])
-        assert [part.content for part in admitted[0].parts if isinstance(part, UserPromptPart)] == ["go"]
-
-    asyncio.run(run())
 
 
 def test_a_running_pydantic_ai_session_admits_input_before_its_next_request() -> None:
@@ -91,6 +57,41 @@ async def _collect(session: SteerablePydanticAiSession) -> list[object]:
     return [message async for message in session.receive_response()]
 
 
+def test_an_idle_pydantic_session_takes_a_follow_up_as_a_new_turn() -> None:
+    async def run() -> tuple[str, list[str]]:
+        requests: list[str] = []
+
+        async def model(messages: object, _info: AgentInfo) -> object:
+            requests.append(repr(messages))
+            await asyncio.sleep(0)
+            yield "done"
+
+        harness = PydanticAiHarness(model=FunctionModel(stream_function=model))
+        async with harness.open(ClaudeAgentOptions()) as session:
+            assert isinstance(session, SteerablePydanticAiSession)
+            assert isinstance(session, FollowUpSession)
+            with pytest.raises(SteerRejectedError) as early:
+                await session.follow_up("too early")
+            assert early.value.code == RejectCode.NOT_IDLE
+            await session.query("first turn")
+            await _collect(session)
+            await session.follow_up("second turn")
+            await _collect(session)
+            session_id = session.session_id
+        with pytest.raises(SteerRejectedError) as closed:
+            await session.follow_up("too late")
+        assert closed.value.code == RejectCode.SESSION_CLOSED
+        return session_id, requests
+
+    session_id, requests = asyncio.run(run())
+
+    assert session_id
+    assert len(requests) == 2
+    assert "first turn" in requests[0]
+    assert "first turn" in requests[1]
+    assert "second turn" in requests[1]
+
+
 def test_reopen_clears_only_a_finished_turn_and_preserves_first_end_reason() -> None:
     async def run() -> None:
         queue = LiveInputQueue()
@@ -126,14 +127,17 @@ def test_input_after_the_turn_or_after_close_is_refused() -> None:
     asyncio.run(run())
 
 
-def test_input_pending_during_the_final_request_is_refused_when_the_turn_ends() -> None:
+def test_input_during_the_final_request_redirects_into_the_same_run() -> None:
     async def run() -> None:
         entered = asyncio.Event()
         release = asyncio.Event()
+        requests: list[str] = []
 
-        async def model(_messages: object, _info: AgentInfo) -> object:
-            entered.set()
-            await release.wait()
+        async def model(messages: object, _info: AgentInfo) -> object:
+            requests.append(repr(messages))
+            if len(requests) == 1:
+                entered.set()
+                await release.wait()
             yield "done"
 
         harness = PydanticAiHarness(model=FunctionModel(stream_function=model))
@@ -147,9 +151,9 @@ def test_input_pending_during_the_final_request_is_refused_when_the_turn_ends() 
             assert not steering.done()
             release.set()
             await running
-            with pytest.raises(SteerRejectedError) as ended:
-                await steering
-            assert ended.value.code == RejectCode.TURN_ENDED
+            await steering
+            assert len(requests) == 2
+            assert "late" in requests[1]
 
     asyncio.run(run())
 
@@ -180,26 +184,6 @@ def test_provider_failure_refuses_pending_input_as_turn_ended() -> None:
             with pytest.raises(SteerRejectedError) as ended:
                 await steering
             assert ended.value.code == RejectCode.TURN_ENDED
-
-    asyncio.run(run())
-
-
-def test_several_waiting_messages_are_admitted_once_each_in_arrival_order() -> None:
-    async def run() -> None:
-        queue = LiveInputQueue()
-        first = asyncio.create_task(queue.submit("first nonce", wait=1))
-        second = asyncio.create_task(queue.submit("second nonce", wait=1))
-        await asyncio.sleep(0)
-        processor = PeerInputAdmission(queue)
-
-        admitted = await processor([ModelRequest(parts=[UserPromptPart("go")])])
-        await asyncio.gather(first, second)
-
-        appended = [part.content for part in admitted[0].parts if isinstance(part, UserPromptPart)][1:]
-        assert len(appended) == 1
-        assert appended[0].count("first nonce") == appended[0].count("second nonce") == 1
-        assert appended[0].index("first nonce") < appended[0].index("second nonce")
-        assert await processor(admitted) is admitted
 
     asyncio.run(run())
 
@@ -267,38 +251,35 @@ def test_admission_does_not_depend_on_the_dispatch_phase() -> None:
     asyncio.run(run())
 
 
-def test_the_processor_runs_on_the_session_loop() -> None:
-    class _RecordingQueue(LiveInputQueue):
-        def __init__(self) -> None:
-            super().__init__()
-            self.threads: list[int] = []
-
-        def take(self) -> str:
-            self.threads.append(threading.get_ident())
-            return super().take()
-
-    queue = _RecordingQueue()
-    agent: Agent[None, str] = Agent(
-        TestModel(custom_output_text="done"), capabilities=[ProcessHistory(PeerInputAdmission(queue))]
-    )
-
-    asyncio.run(agent.run("go"))
-
-    assert queue.threads == [threading.get_ident()]
-
-
 class AdmittedTextResumeTests(TestCase):
     def test_a_resume_rehydrates_the_peer_text_admitted_in_the_parked_run(self) -> None:
         async def run() -> list[ModelMessage]:
-            queue = LiveInputQueue()
-            agent: Agent[None, str] = Agent(
-                TestModel(custom_output_text="done"), capabilities=[ProcessHistory(PeerInputAdmission(queue))]
-            )
-            pending = asyncio.create_task(queue.submit("resumable nonce", wait=1))
-            await asyncio.sleep(0)
-            result = await agent.run("go")
-            await pending
-            return result.all_messages()
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            requests = 0
+
+            async def stream_fn(_messages: object, _info: AgentInfo) -> object:
+                nonlocal requests
+                requests += 1
+                if requests == 1:
+                    entered.set()
+                    await release.wait()
+                    yield {0: DeltaToolCall(name="no_such_tool", json_args="{}", tool_call_id="c1")}
+                else:
+                    yield "done"
+
+            harness = PydanticAiHarness(model=FunctionModel(stream_function=stream_fn))
+            async with harness.open(ClaudeAgentOptions()) as live:
+                assert isinstance(live, SteerablePydanticAiSession)
+                await live.query("go")
+                turn = asyncio.create_task(_collect(live))
+                await entered.wait()
+                steering = asyncio.create_task(live.steer("resumable nonce", input_id="n1", wait=2))
+                await asyncio.sleep(0)
+                release.set()
+                await steering
+                await turn
+                return live.history
 
         ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)

@@ -166,6 +166,7 @@ class AgentResult(OwnerStop, total=False):
     tests_passed: int
     tests_failed: int
     decisions: list[str]
+    operator_inputs: list[str]
     review_verdict: ReviewVerdictEnvelope
     review_context: ReviewContextEnvelope
     anti_vacuity: AntiVacuityEnvelope
@@ -285,6 +286,11 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "type": "array",
             "items": {"type": "string"},
             "description": "Design decisions the agent made during execution.",
+        },
+        "operator_inputs": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Accepted live operator directions recorded by the control path.",
         },
         "review_verdict": {
             "type": "object",

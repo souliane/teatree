@@ -127,6 +127,8 @@ _STATUS_TERMS = (
     "prs open",
     "in flight",
     "in progress",
+    "how is it going",
+    "how's it going",
 )
 
 #: ``why … <trouble>`` reads as a question but wants investigation, so it must be tested

@@ -1,8 +1,7 @@
-"""A factory run cut off short of a clean result keeps the work it finished, and never runs compacted.
+"""A factory run cut off short of a clean result keeps the work it finished, and compacts natively near its window.
 
 A Claude-lane run can end three ways before its terminal result: the per-run turn ceiling, the
-runtime ceiling, and a full context window — the normal end of a long run once compaction is
-switched off. Each discarded an envelope the run had already written. These drive the real
+runtime ceiling, and a full context window. Each discarded an envelope the run had already written. These drive the real
 dispatch through a scripted SDK stream that can also fire the hooks the dispatch registered.
 """
 
@@ -137,39 +136,22 @@ class _Dispatch(TestCase):
         return attempt
 
 
-class TestTheFactoryRunsUncompacted(_Dispatch):
-    def test_the_claude_child_is_spawned_with_compaction_switched_off(self) -> None:
+class TestTheFactoryCompactsNatively(_Dispatch):
+    def test_the_claude_child_keeps_native_compaction_on(self) -> None:
         session = self._dispatch(self._task(), [assistant_tool_use(), assistant_text(_CODED), result_message()])
 
-        assert session.options.env.get("DISABLE_COMPACT") == "1"
+        assert "DISABLE_COMPACT" not in session.options.env
+        assert "PreCompact" not in (session.options.hooks or {})
 
-    def test_an_automatic_compaction_is_blocked_and_ends_the_run(self) -> None:
+    def test_an_automatic_compaction_does_not_end_the_run(self) -> None:
         task = self._task()
 
         session = self._dispatch(
             task, [assistant_tool_use(), _PreCompact("auto"), assistant_text(_CODED), result_message()]
         )
 
-        [output] = session.hook_outputs
-        assert output.get("decision") == "block"
-        assert output.get("continue_") is False
-        assert session.interrupted
-        assert task.status == Task.Status.FAILED
-
-    def test_a_stopped_run_is_recorded_as_a_compaction_and_re_dispatched_fresh(self) -> None:
-        task = self._task()
-
-        self._dispatch(task, [assistant_tool_use(), _PreCompact("auto"), result_message()])
-
-        error = self._last_attempt(task).error
-        assert "compaction" in error
-        assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.RETRY
-
-    def test_work_finished_before_the_compaction_attempt_is_kept(self) -> None:
-        task = self._task()
-
-        self._dispatch(task, [assistant_tool_use(), assistant_text(_CODED), _PreCompact("auto"), result_message()])
-
+        assert session.hook_outputs == []
+        assert not session.interrupted
         assert task.status == Task.Status.COMPLETED
 
 
@@ -316,10 +298,9 @@ class TestAFullContextWindowKeepsFinishedWork(_Dispatch):
 class TestARetryNeverResumesAConversationThatRanOut(_Dispatch):
     """A requeued dispatch continues a conversation that can still take a turn, and never one that ran out.
 
-    A blocked compaction and a full context window both end a run whose history no longer fits, so
-    resuming it re-pays that history straight back into the same wall. Every failing run below records
-    the same session, and the compaction script differs from the ordinary-failure one by a single
-    scripted step, so what separates a fresh retry from a resumed one is only the conversation running out.
+    A full context window ends a run whose history no longer fits, so resuming it re-pays that history
+    straight back into the same wall. Every failing run below records the same session, so what separates
+    a fresh retry from a resumed one is only the conversation running out.
     """
 
     def _retry_resume(self, script: list[object]) -> str | None:
@@ -328,9 +309,6 @@ class TestARetryNeverResumesAConversationThatRanOut(_Dispatch):
         assert requeue_transient_failed() == 1, "the fixture must reach the sweep's reopen branch"
         task.refresh_from_db()
         return self._dispatch(task, [assistant_tool_use(), assistant_text(_CODED), result_message()]).options.resume
-
-    def test_a_run_stopped_by_a_blocked_compaction_is_re_dispatched_fresh(self) -> None:
-        assert self._retry_resume([assistant_tool_use(), _PreCompact("auto"), _errored()]) is None
 
     def test_a_run_that_filled_its_context_window_is_re_dispatched_fresh(self) -> None:
         assert self._retry_resume([assistant_tool_use(), _context_full()]) is None

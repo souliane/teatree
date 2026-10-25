@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from teatree.ci_oauth_switch import NoEligibleAccountError, Rejection, SwitchOutcome
+from teatree.ci_oauth_switch import CiAccountSwitchError, NoEligibleAccountError, Rejection, SwitchOutcome
 from teatree.cli import app
 
 SECRET_TOKEN = "sk-" + "ant-oat01-never-printed-anywhere"
@@ -85,6 +85,20 @@ class TestSwitchCommand:
         assert result.exit_code == 1
         assert SPENT in result.output
         assert HEALTHY in result.output
+
+    def test_failed_secret_write_exits_one_with_gh_error_on_stderr(self, stub_switcher) -> None:
+        stub_switcher.switch.side_effect = CiAccountSwitchError("gh secret set failed: permission denied")
+
+        with patch(
+            "teatree.cli.eval.ci_account.get_effective_settings",
+            return_value=SimpleNamespace(eval_ci_account_allowlist=[HEALTHY]),
+        ):
+            result = CliRunner().invoke(app, ["eval", "ci-account", "switch"])
+
+        assert result.exit_code == 1
+        assert result.stderr.strip() == "gh secret set failed: permission denied"
+        assert "Traceback" not in result.output
+        assert SECRET_TOKEN not in result.output
 
     def test_no_captured_output_ever_carries_a_token_value(self, stub_switcher) -> None:
         stub_switcher.switch.return_value = _outcome(changed=True, applied=True)

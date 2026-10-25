@@ -1,4 +1,4 @@
-"""An MCP-less Codex worker is reachable only through current-turn push."""
+"""Codex mailbox delivery through the App Server and worker-owned broker."""
 
 import asyncio
 import json
@@ -20,7 +20,7 @@ from teatree.agents.codex_shared_app_server import SharedCodexAppServer
 from teatree.agents.codex_turn_steering import CodexTurnSteering
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness
 from teatree.agents.live_binding import bound_task_mailbox
-from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
+from teatree.agents.live_control import ControlReceipt, LiveFence, LiveTask, RejectCode, SteerRejectedError
 from teatree.agents.live_delivery import InboxMessage, SendReceipt
 from teatree.agents.live_mailbox import LiveMailboxBroker, PushOnlyTask
 from teatree.agents.live_registry import LiveSessionRegistry
@@ -42,9 +42,41 @@ for line in sys.stdin:
     method, ident = request.get("method"), request.get("id")
     if ident is None:
         continue
+    if mode == "mailbox" and method is None:
+        if ident == 900:
+            peers = json.loads(request["result"]["contentItems"][0]["text"])
+            recipient = next(peer for peer in peers if peer["label"] == "recipient")
+            sys.stdout.write(json.dumps({"id": 901, "method": "item/tool/call", "params": {
+                "threadId": "thread-1", "turnId": "turn-1", "callId": "call-2", "namespace": None,
+                "tool": "agent_mailbox_send", "arguments": {
+                    "to": recipient["address"], "text": "nonce-from-codex", "key": "codex-1"
+                }
+            }}) + "\\n")
+        elif ident == 901:
+            receipt = json.loads(request["result"]["contentItems"][0]["text"])
+            sys.stdout.write(json.dumps({"method": "item/completed", "params": {
+                "threadId": "thread-1", "item": {"id": "item-2", "type": "agentMessage", "text": receipt["outcome"]}
+            }}) + "\\n")
+            sys.stdout.write(json.dumps({"method": "turn/completed", "params": {
+                "threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "items": []}
+            }}) + "\\n")
+        sys.stdout.flush()
+        continue
+    if mode == "wrong-thread" and method is None and ident == 900:
+        sys.stdout.write(json.dumps({"method": "turn/completed", "params": {
+            "threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "items": []}
+        }}) + "\\n")
+        sys.stdout.flush()
+        continue
+    if mode == "denied-phase" and method is None and ident == 900:
+        sys.stdout.write(json.dumps({"method": "turn/completed", "params": {
+            "threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "items": []}
+        }}) + "\\n")
+        sys.stdout.flush()
+        continue
     if method == "account/read":
         result = {"account": {"type": "chatgpt"}}
-    elif method == "thread/start":
+    elif method in ("thread/start", "thread/resume"):
         result = {"thread": {"id": "thread-1"}}
     elif method == "mcpServerStatus/list":
         result = {"data": [], "nextCursor": None}
@@ -64,6 +96,21 @@ for line in sys.stdin:
         }}) + "\\n")
         sys.stdout.write(json.dumps({"method": "turn/completed", "params": {
             "threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "items": []}
+        }}) + "\\n")
+    if method == "turn/start" and mode == "mailbox":
+        sys.stdout.write(json.dumps({"id": 900, "method": "item/tool/call", "params": {
+            "threadId": "thread-1", "turnId": "turn-1", "callId": "call-1", "namespace": None,
+            "tool": "agent_mailbox_peers", "arguments": {}
+        }}) + "\\n")
+    if method == "turn/start" and mode == "wrong-thread":
+        sys.stdout.write(json.dumps({"id": 900, "method": "item/tool/call", "params": {
+            "threadId": "another-thread", "turnId": "turn-1", "callId": "call-1", "namespace": None,
+            "tool": "agent_mailbox_peers", "arguments": {}
+        }}) + "\\n")
+    if method == "turn/start" and mode == "denied-phase":
+        sys.stdout.write(json.dumps({"id": 900, "method": "item/tool/call", "params": {
+            "threadId": "thread-1", "turnId": "turn-1", "callId": "call-1", "namespace": None,
+            "tool": "agent_mailbox_send", "arguments": {}
         }}) + "\\n")
     sys.stdout.flush()
 """
@@ -117,6 +164,128 @@ def _requests(log: Path, method: str) -> list[dict[str, Any]]:
     ]
 
 
+@pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
+def test_codex_dynamic_tools_send_a_peer_nonce_through_the_worker(tmp_path: Path, phase: str) -> None:
+    script, log = _fake_server(tmp_path)
+    task = LiveTask(pk=7, ticket=3, phase=phase, harness="codex_app_server", model="codex")
+    options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={})
+
+    async def run() -> tuple[list[object], list[InboxMessage]]:
+        with LiveMailboxBroker(runtime_dir=tmp_path) as broker, bound_task_mailbox(options, task, broker=broker):
+            recipient = broker.register(room="3", harness="claude_sdk", label="recipient")
+            recipient_client = MailboxClient(recipient.socket_path, recipient.token)
+            session = CodexAppServerSession(
+                CodexAppServerOptions.from_sdk_options(options),
+                resume=None,
+                code_home=tmp_path,
+                command=(sys.executable, str(script), str(log), "mailbox"),
+            )
+            await session.start()
+            try:
+                await session.query("send the nonce")
+                receiving = asyncio.create_task(recipient_client.wait(timeout_seconds=2))
+                messages = [message async for message in session.receive_response()]
+                return messages, (await receiving)["messages"]
+            finally:
+                await session.close()
+
+    messages, received = asyncio.run(run())
+    [start] = _requests(log, "thread/start")
+    assert {tool["name"] for tool in start["params"]["dynamicTools"]} == {
+        f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")
+    }
+    assert received[0]["text"] == "nonce-from-codex"
+    assert any("accepted_inbox_read" in str(message) for message in messages)
+
+
+def test_a_resumed_codex_thread_keeps_the_tool_catalog_it_was_created_with(tmp_path: Path) -> None:
+    script, log = _fake_server(tmp_path)
+    options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={}, resume="thread-1")
+    task = LiveTask(pk=7, ticket=3, phase="planning", harness="codex_app_server", model="codex")
+
+    async def run() -> None:
+        with (
+            LiveMailboxBroker(runtime_dir=tmp_path) as broker,
+            bound_task_mailbox(options, task, broker=broker) as peer,
+        ):
+            assert peer is not None
+            assert broker._by_token[peer.token].reads_inbox is False
+            sender = broker.register(room="3", harness="claude_sdk", label="sender")
+            receipt = await MailboxClient(sender.socket_path, sender.token).send(
+                peer.address, "nonce-resumed", "resumed-1", timeout_seconds=0.05
+            )
+            assert receipt["queued_in_inbox"] is False
+            session = CodexAppServerSession(
+                CodexAppServerOptions.from_sdk_options(options),
+                resume="thread-1",
+                code_home=tmp_path,
+                command=(sys.executable, str(script), str(log), "accept"),
+            )
+            await session.start()
+            await session.close()
+
+    asyncio.run(run())
+    [resumed] = _requests(log, "thread/resume")
+    assert "dynamicTools" not in resumed["params"]
+
+
+def test_codex_dynamic_tool_rejects_another_thread(tmp_path: Path) -> None:
+    script, log = _fake_server(tmp_path)
+    options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={})
+    task = LiveTask(pk=7, ticket=3, phase="planning", harness="codex_app_server", model="codex")
+
+    async def run() -> None:
+        with LiveMailboxBroker(runtime_dir=tmp_path) as broker, bound_task_mailbox(options, task, broker=broker):
+            session = CodexAppServerSession(
+                CodexAppServerOptions.from_sdk_options(options),
+                resume=None,
+                code_home=tmp_path,
+                command=(sys.executable, str(script), str(log), "wrong-thread"),
+            )
+            await session.start()
+            try:
+                await session.query("read peers")
+                _ = [message async for message in session.receive_response()]
+            finally:
+                await session.close()
+
+    asyncio.run(run())
+    replies = (json.loads(line) for line in log.read_text().splitlines())
+    [request] = [row for row in replies if row.get("id") == 900 and "method" not in row]
+    assert request["error"]["code"] == -32601
+
+
+def test_codex_phase_without_mailbox_write_grant_cannot_send(tmp_path: Path) -> None:
+    script, log = _fake_server(tmp_path)
+    options = ClaudeAgentOptions(cwd=str(tmp_path), mcp_servers={})
+    task = LiveTask(pk=7, ticket=3, phase="scoping", harness="codex_app_server", model="codex")
+
+    async def run() -> None:
+        with LiveMailboxBroker(runtime_dir=tmp_path) as broker, bound_task_mailbox(options, task, broker=broker):
+            session = CodexAppServerSession(
+                CodexAppServerOptions.from_sdk_options(options),
+                resume=None,
+                code_home=tmp_path,
+                command=(sys.executable, str(script), str(log), "denied-phase"),
+            )
+            await session.start()
+            try:
+                await session.query("send a peer message")
+                _ = [message async for message in session.receive_response()]
+            finally:
+                await session.close()
+
+    asyncio.run(run())
+    [start] = _requests(log, "thread/start")
+    assert {tool["name"] for tool in start["params"]["dynamicTools"]} == {
+        "agent_mailbox_self",
+        "agent_mailbox_peers",
+    }
+    replies = (json.loads(line) for line in log.read_text().splitlines())
+    [request] = [row for row in replies if row.get("id") == 900 and "method" not in row]
+    assert request["error"]["code"] == -32601
+
+
 def _exchange(tmp_path: Path, *, mode: str = "accept") -> tuple[SendReceipt, list[dict[str, Any]], list[InboxMessage]]:
     registry = LiveSessionRegistry()
     script, log = _fake_server(tmp_path)
@@ -159,7 +328,7 @@ def _exchange(tmp_path: Path, *, mode: str = "accept") -> tuple[SendReceipt, lis
     return receipt, _requests(log, "turn/steer"), inbox
 
 
-def test_a_codex_task_without_mcp_is_listed_push_only(tmp_path: Path) -> None:
+def test_a_codex_task_without_mcp_has_a_worker_handled_inbox(tmp_path: Path) -> None:
     options = ClaudeAgentOptions(mcp_servers={})
     task = LiveTask(pk=7, ticket=3, phase="coding", harness="codex_app_server", model="codex")
     with LiveMailboxBroker(runtime_dir=tmp_path) as broker, bound_task_mailbox(options, task, broker=broker) as peer:
@@ -168,17 +337,19 @@ def test_a_codex_task_without_mcp_is_listed_push_only(tmp_path: Path) -> None:
         participants = broker.identities()
         assert any(row["address"] == peer.address and row["harness"] == "codex_app_server" for row in participants)
         assert options.mcp_servers == {}
-        assert broker._by_token[peer.token].reads_inbox is False
+        assert broker._by_token[peer.token].reads_inbox is True
+        assert options.env is not None
+        assert options.env["T3_AGENT_MAILBOX_TOKEN"] == peer.token
         assert sender.address != peer.address
     assert options.mcp_servers == {}
 
 
 def test_claude_to_codex_send_is_admitted_through_broker_registry_and_codex_session(tmp_path: Path) -> None:
     receipt, steers, inbox = _exchange(tmp_path)
-    assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", False)
+    assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", True)
     assert len(steers) == 1
     assert "nonce-5417" in steers[0]["params"]["input"][0]["text"]
-    assert inbox == []
+    assert [row["text"] for row in inbox] == ["nonce-5417"]
 
 
 @pytest.mark.parametrize(
@@ -239,25 +410,25 @@ def test_claude_to_shared_codex_runs_through_the_real_drive_and_broker(
             receipt, refused = asyncio.run(run(broker))
     finally:
         manager.close()
-    assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", False)
+    assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", True)
     assert len(refused) >= min_refusals
     steers = _requests(log, "turn/steer")
     assert len(steers) == 1
     assert "nonce-5417" in steers[0]["params"]["input"][0]["text"]
 
 
-def test_unknown_delivery_to_a_push_only_peer_stays_the_answer_to_a_same_key_retry(tmp_path: Path) -> None:
+def test_unknown_delivery_to_a_codex_peer_stays_the_answer_to_a_same_key_retry(tmp_path: Path) -> None:
     receipt, steers, inbox = _exchange(tmp_path, mode="silent")
-    assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("unknown_delivery", False)
+    assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("unknown_delivery", True)
     assert len(steers) == 1
-    assert inbox == []
+    assert [row["text"] for row in inbox] == ["nonce-5417"]
 
 
 def test_the_delivery_scenario_fails_when_steering_or_routing_is_disabled(tmp_path: Path) -> None:
     receipt, steers, inbox = _exchange(tmp_path, mode="no-steer")
-    assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == ("rejected", "not_steerable", False)
+    assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == ("rejected", "not_steerable", True)
     assert steers == []
-    assert inbox == []
+    assert [row["text"] for row in inbox] == ["nonce-5417"]
 
     options = ClaudeAgentOptions(mcp_servers={})
     unbound_claude = LiveTask(pk=8, ticket=3, phase="coding", harness="claude_sdk", model="test")
@@ -288,6 +459,43 @@ def test_a_push_only_peer_never_claims_an_inbox_copy() -> None:
             inbox = list(broker._by_token[recipient.token].inbox)
         assert receipt["queued_in_inbox"] is False
         assert inbox == []
+
+
+def test_a_push_only_timeout_returns_its_settled_rejection_on_same_key_retry(tmp_path: Path) -> None:
+    class RejectedPushRegistry:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def push(
+            self, task_pk: int, framed: str, *, command_id: str, wait: float, fence: LiveFence
+        ) -> ControlReceipt:
+            self.calls += 1
+            return ControlReceipt.rejected(command_id, task_pk, RejectCode.NOT_ACCEPTED_IN_TIME)
+
+    registry = RejectedPushRegistry()
+    task = LiveTask(pk=7, ticket=3, phase="coding", harness="codex_app_server", model="codex")
+    with LiveMailboxBroker(runtime_dir=tmp_path, registry=lambda: registry) as broker:
+        recipient = broker.register(room="3", harness="codex_app_server", label="recipient", task=PushOnlyTask(task))
+        sender = broker.register(room="3", harness="claude_sdk", label="sender")
+        client = MailboxClient(sender.socket_path, sender.token)
+
+        async def exchange() -> tuple[SendReceipt, SendReceipt, float]:
+            first = await client.send(recipient.address, "nonce-5417", "once", timeout_seconds=0.05)
+            start = time.monotonic()
+            retried = await client.send(recipient.address, "nonce-5417", "once", timeout_seconds=1)
+            return first, retried, time.monotonic() - start
+
+        first, retried, elapsed = asyncio.run(exchange())
+        assert list(broker._by_token[recipient.token].inbox) == []
+
+    assert first == retried
+    assert (first["outcome"], first["code"], first["queued_in_inbox"]) == (
+        "rejected",
+        "not_accepted_in_time",
+        False,
+    )
+    assert registry.calls == 1
+    assert elapsed < 0.5
 
 
 def test_a_push_queued_for_an_old_participant_is_stale_in_the_new_attempt(tmp_path: Path) -> None:

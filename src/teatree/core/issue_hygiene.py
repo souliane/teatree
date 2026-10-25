@@ -9,8 +9,8 @@ goes.
 Five rules, each enforced here rather than in an agent-authored skill:
 
 1.  **Dedupe before create.** :func:`create_or_extend` refuses to file until every
-    OPEN ticket in the repo has been judged. A fitting ticket is extended; rejected
-    candidates stay in the internal log.
+    OPEN ticket in the repo has been judged. A fitting ticket is extended; each
+    completed outcome keeps its live candidate judgments in a private audit row.
 2.  **No requirement comments.** :func:`record_issue_note` takes a closed
     :class:`NotePurpose`. The four normative purposes append a dated description
     section; only ``status`` and ``evidence`` remain comments. There is no untyped
@@ -53,6 +53,7 @@ from enum import StrEnum
 from typing import Literal
 
 from teatree.core.backend_protocols import CodeHostBackend, IssueResolutionSpec
+from teatree.core.issue_writes.issue_judgment_audit import record_issue_judgment
 from teatree.core.issue_writes.section_removal import DescriptionRemoval
 from teatree.core.issue_writes.section_removal import remove_description_section as _remove_description_section
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
@@ -64,7 +65,6 @@ logger = logging.getLogger(__name__)
 
 MAX_APPEND_ATTEMPTS = 4
 _MARKER_PREFIX = "<!-- t3-hygiene:"
-_DEDUPE_HEADING = "Dedupe check"
 
 
 class NotePurpose(StrEnum):
@@ -169,7 +169,8 @@ class CreateDecision:
     """One judgment about one open candidate.
 
     ``fits`` marks the candidate the request should be folded into; otherwise
-    *reason* must say why it was rejected; it stays in the internal audit log.
+    *reason* must say why it was rejected, and that reason is written into the
+    private audit row so the judgment remains inspectable without publishing it.
     """
 
     candidate_url: str
@@ -397,7 +398,8 @@ def create_or_extend(
 
     *decisions* must cover every currently-open ticket: one marked ``fits`` folds
     the request into that ticket's description instead of filing; otherwise every
-    candidate needs a rejection *reason*, kept in the internal log.
+    candidate needs a rejection *reason*, and those reasons are stored privately
+    so the dedupe is auditable without adding them to the new ticket.
 
     *snapshot_urls*, when given, is the backlog the decisions were made against.
     A ticket filed since then makes the judgment set incomplete, so the outcome is
@@ -437,7 +439,7 @@ def create_or_extend_by_marker(
         CreateDecision(
             candidate_url=url,
             fits=marker in _description_of(issue),
-            reason="" if marker in _description_of(issue) else f"does not carry the marker {marker}",
+            reason=f"marker {marker} {'found' if marker in _description_of(issue) else 'missing'}",
         )
         for url, issue in live.items()
     ]
@@ -468,16 +470,18 @@ def _commit(
         msg = f"refusing to file on {draft.repo}: {len(unjudged)} open ticket(s) unjudged — {', '.join(unjudged)}"
         raise ValueError(msg)
 
-    fitting = [decision for decision in decisions if decision.fits]
+    fitting = [decision for decision in decisions if decision.fits and decision.candidate_url in live]
     if fitting:
-        return _extend(host=host, target=fitting[0].candidate_url, draft=draft, sweep_run_id=sweep_run_id)
+        outcome = _extend(host=host, target=fitting[0].candidate_url, draft=draft, sweep_run_id=sweep_run_id)
+    else:
+        unexplained = [d.candidate_url for d in decisions if d.candidate_url in live and not d.reason.strip()]
+        if unexplained:
+            msg = f"refusing to file on {draft.repo}: no rejection reason for {', '.join(sorted(unexplained))}"
+            raise ValueError(msg)
+        outcome = _create(host=host, draft=draft, sweep_run_id=sweep_run_id)
 
-    unexplained = [d.candidate_url for d in decisions if d.candidate_url in live and not d.reason.strip()]
-    if unexplained:
-        msg = f"refusing to file on {draft.repo}: no rejection reason for {', '.join(sorted(unexplained))}"
-        raise ValueError(msg)
-
-    return _create(host=host, draft=draft, decisions=decisions, sweep_run_id=sweep_run_id)
+    record_issue_judgment(draft=draft, outcome=outcome, decisions=decisions, live_urls=live)
+    return outcome
 
 
 def _extend(*, host: CodeHostBackend, target: str, draft: IssueDraft, sweep_run_id: str) -> CreateOutcome:
@@ -499,15 +503,12 @@ def _extend(*, host: CodeHostBackend, target: str, draft: IssueDraft, sweep_run_
     return CreateOutcome(kind="extended_existing", issue_url=target)
 
 
-def _create(
-    *, host: CodeHostBackend, draft: IssueDraft, decisions: Sequence[CreateDecision], sweep_run_id: str
-) -> CreateOutcome:
-    """Scrub all published fields, including labels a forge may create."""
+def _create(*, host: CodeHostBackend, draft: IssueDraft, sweep_run_id: str) -> CreateOutcome:
+    """File the new ticket with the caller's scrubbed body and labels."""
     repo, action = draft.repo, draft.action
     clean_title = _scrub(draft.title, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_body = _scrub(draft.body, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_labels = [_scrub(label, target=repo, repo=repo, action=action, forge=draft.forge) for label in draft.labels]
-    logger.info("issue-hygiene: dedupe for %s: %s", repo, _dedupe_audit(decisions))
     if draft.merge_request_to_resolve_discussions_of is not None or draft.discussion_to_resolve:
         created = host.create_issue_resolving_threads(
             IssueResolutionSpec(
@@ -530,14 +531,6 @@ def _create(
     issue_url = _issue_url_of(raw)
     _record_sweep_change(sweep_run_id, issue_url)
     return CreateOutcome(kind="created_new", issue_url=issue_url)
-
-
-def _dedupe_audit(decisions: Sequence[CreateDecision]) -> str:
-    """The searched-and-rejected record for the internal log."""
-    if not decisions:
-        return f"## {_DEDUPE_HEADING} ({_today()})\n\nNo open candidates existed on this repo."
-    lines = [f"- {d.candidate_url} — {d.reason.strip()}" for d in decisions if not d.fits]
-    return f"## {_DEDUPE_HEADING} ({_today()})\n\nRejected candidates:\n" + "\n".join(lines)
 
 
 def _raise_on_transport_error(raw: RawAPIDict) -> RawAPIDict:
