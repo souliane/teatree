@@ -27,6 +27,7 @@ from teatree.core.models.usage_window_state import (
     LIMIT_PARKED_PREFIX,
     OPERATOR_PAUSED_PREFIX,
     PARK_ATTEMPT_RETENTION_DAYS,
+    REVIEW_HELD_PREFIX,
 )
 from teatree.core.models.worktree_occupancy import task_holder_id
 
@@ -43,6 +44,11 @@ class WaitCause(StrEnum):
 
 
 WAIT_CAUSES = tuple(WaitCause)
+_PARK_CAUSES = {
+    OPERATOR_PAUSED_PREFIX: WaitCause.HUMAN,
+    LIMIT_PARKED_PREFIX: WaitCause.QUOTA,
+    REVIEW_HELD_PREFIX: WaitCause.REVIEW,
+}
 WAIT_LABELS = {
     WaitCause.FREE_SEAT: "Waiting for a free seat",
     WaitCause.NOT_ADMITTED: "Not admitted, cause not recorded",
@@ -320,10 +326,6 @@ def _task_wait_tags(
     task: Task, inputs: _MergeInputs, merged_at: datetime
 ) -> tuple[list[_Tag], list[tuple[datetime, datetime]]]:
     tags: list[_Tag] = []
-    if task.created_at and task.admitted_at is not None:
-        tags.append((task.created_at, task.admitted_at, WaitCause.FREE_SEAT))
-    elif task.created_at and task.status not in Task.Status.terminal():
-        tags.append((task.created_at, merged_at, WaitCause.NOT_ADMITTED))
     attempts = inputs.attempts.get(task.pk, ())
     parks = sorted((attempt for attempt in attempts if attempt.parked), key=attrgetter("started_at"))
     terminal_at = (
@@ -347,17 +349,27 @@ def _task_wait_tags(
         )
         if end <= park.started_at:
             continue
-        if park.error.startswith(OPERATOR_PAUSED_PREFIX):
-            cause = WaitCause.HUMAN
-        elif park.error.startswith(LIMIT_PARKED_PREFIX):
-            cause = WaitCause.QUOTA
-        else:
-            cause = WaitCause.CHECKOUT_FENCE
+        cause = next(
+            (cause for prefix, cause in _PARK_CAUSES.items() if park.error.startswith(prefix)),
+            WaitCause.CHECKOUT_FENCE,
+        )
         if cause == WaitCause.CHECKOUT_FENCE and park.holder in sibling_holders:
             cause = WaitCause.SIBLING_TASK
         tags.append((park.started_at, end, cause))
         windows.append((max(park.started_at, park.ended_at) if park.billed and park.ended_at else park.started_at, end))
+    if (seat := _seat_wait(task, merged_at)) is not None:
+        # admitted_at is re-stamped on every admission, so the seat wait would swallow earlier review holds.
+        holds = [(lower, upper) for lower, upper, cause in tags if cause == WaitCause.REVIEW]
+        tags.extend((lower, upper, seat[2]) for lower, upper in subtract_intervals(((seat[0], seat[1]),), holds))
     return tags, windows
+
+
+def _seat_wait(task: Task, merged_at: datetime) -> _Tag | None:
+    if task.created_at and task.admitted_at is not None:
+        return task.created_at, task.admitted_at, WaitCause.FREE_SEAT
+    if task.created_at and task.status not in Task.Status.terminal():
+        return task.created_at, merged_at, WaitCause.NOT_ADMITTED
+    return None
 
 
 def _readmission_obscures_work(inputs: _MergeInputs, merged_at: datetime, start: datetime) -> bool:

@@ -68,9 +68,17 @@ inventory, provenance refresh, collision warnings, and removal behavior.
 
 Headless deployments use `t3 setup --strict-agent-skills`. Strict setup removes
 its previous readiness marker first and exits non-zero unless declared skills,
-the inventory receipt, and both portable-plugin registrations converge. A normal
-interactive `t3 setup` keeps its best-effort behavior. `--strict-agent-skills`
-cannot be combined with `--skip-plugin`.
+the inventory receipt, and the plugin registration of every credentialed agent
+tool converge. Claude counts as credentialed when `ANTHROPIC_API_KEY` or
+`CLAUDE_CODE_OAUTH_TOKEN` is set, `~/.claude/.credentials.json` exists, or a
+non-empty `anthropic_oauth_pass_paths` or `anthropic_api_key_pass_paths` setting
+exists. Codex counts as credentialed when an `auth.json` exists in `CODEX_HOME`
+or the private `T3_CODEX_HOME`, or the `teatree/codex/auth-json-b64` pass entry
+is listed. A source that cannot be read counts as present. A failed plugin of a
+tool without credentials prints a `WARN` and does not fail setup; when no tool is
+credentialed, both plugins must register. A normal interactive `t3 setup` keeps
+its best-effort behavior. `--strict-agent-skills` cannot be combined with
+`--skip-plugin`.
 
 ### Work locally on an overlay
 

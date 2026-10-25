@@ -152,7 +152,7 @@ class TestBoundTicketThread(TestCase):
             answering.ticket,
             {"existing_issue_url": "https://github.com/souliane/teatree/issues/7000"},
             host=Mock(),
-            repo="souliane/teatree",
+            repo_for=Mock(side_effect=AssertionError("existing issue must not choose a filing repo")),
         )
         assert filed is not None
         work_ticket = Ticket.objects.get(issue_url=filed.url)
