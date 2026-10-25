@@ -36,11 +36,13 @@ Other invariants mirror the family:
     ``Session.started_at`` is the "last run" timestamp.
 """
 
+import logging
 from dataclasses import dataclass
 
 from django.db import transaction
 from django.utils import timezone
 
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE
 from teatree.core.models.consolidated_memory import ConsolidatedMemory
 from teatree.core.models.dream_gap_ledger import pending_entries, umbrella_ticket
@@ -49,6 +51,8 @@ from teatree.core.models.dream_gap_types import DreamGapEntry
 from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
+
+logger = logging.getLogger(__name__)
 
 #: The default posture every queued sweep carries, ask-gate or not: group hard, discard
 #: nothing. The substrings are load-bearing — they are the channel the dispatched skill
@@ -151,6 +155,9 @@ class BacklogSweepScanner:
         return pending_entries(umbrella) if umbrella is not None else []
 
     def _queue(self, cadence: PhaseCadence, trigger: str, pending: list[DreamGapEntry]) -> list[ScanSignal]:
+        if reason := open_pr_start_cap_hold_reason():
+            logger.warning("backlog sweep is claiming nothing new: %s", reason)
+            return []
         least_recent = sorted(enumerate(pending), key=lambda pair: (pair[1].get("offered_at") or "", pair[0]))
         selected_keys = {entry["gap_key"] for _, entry in least_recent[:SWEEP_GAP_LIMIT] if entry.get("gap_key")}
         window = [entry for entry in pending if entry.get("gap_key") in selected_keys]

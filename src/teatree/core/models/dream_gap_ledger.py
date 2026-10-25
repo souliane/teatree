@@ -51,11 +51,17 @@ def pending_entries(ticket: Ticket) -> list[DreamGapEntry]:
     return [entry for entry in (ticket.extra or {}).get(PENDING_KEY) or [] if isinstance(entry, dict)]
 
 
-def queue_pending(ticket: Ticket, entries: list[DreamGapEntry]) -> None:
-    queued = {entry.get("gap_key") for entry in pending_entries(ticket)}
-    fresh = [entry for entry in entries if entry.get("gap_key") not in queued]
-    if fresh:
-        ticket.merge_extra(append_to_lists={PENDING_KEY: list(fresh)})
+def queue_pending(ticket: Ticket, entries: list[DreamGapEntry], *, first: bool = False) -> None:
+    with transaction.atomic():
+        locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
+        pending = pending_entries(locked)
+        queued = {entry.get("gap_key") for entry in pending}
+        fresh = [entry for entry in entries if entry.get("gap_key") not in queued]
+        if fresh:
+            if first:
+                locked.merge_extra(set_keys={PENDING_KEY: [*fresh, *pending]})
+            else:
+                locked.merge_extra(append_to_lists={PENDING_KEY: list(fresh)})
 
 
 def take_pending(ticket: Ticket, gap_keys: set[str]) -> list[DreamGapEntry]:
@@ -139,7 +145,7 @@ def return_gap(host: Ticket, gap_key: str, reason: str, *, dry_run: bool = False
             returned = _returned_entry(entry, f"Host {host.pk} declined: {reason}")
             returned["declined_hosts"] = declined
             if not dry_run:
-                queue_pending(umbrella, [returned])
+                queue_pending(umbrella, [returned], first=True)
                 umbrella.refresh_from_db(fields=["extra"])
                 if gap_key not in {item.get("gap_key") for item in pending_entries(umbrella)}:
                     msg = f"gap {gap_key!r} did not return to the umbrella"
@@ -239,7 +245,7 @@ def return_member_gaps(
         if dry_run:
             return keys
         returned = [_returned_entry(entry, f"Returned from ticket {member.pk}") for entry in entries]
-        queue_pending(umbrella, returned)
+        queue_pending(umbrella, returned, first=True)
         umbrella.refresh_from_db(fields=["extra"])
         if not set(keys) <= {entry.get("gap_key") for entry in pending_entries(umbrella)}:
             _refuse_return(member, "gaps were not recorded on the umbrella")

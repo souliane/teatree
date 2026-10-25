@@ -60,6 +60,31 @@ from tests._send_gate import allow_forge_repos
 
 
 class TestStrandedRelease(TestCase):
+    def test_queued_batch_nudges_once_after_stranded_release(self) -> None:
+        events: list[str] = []
+        outcome = BatchOutcome(queued=True, umbrella_url="https://github.com/o/r/issues/249", gap_count=1)
+
+        def release(*, umbrella_url: str) -> StrandedReleaseReport:
+            events.append("release")
+            return StrandedReleaseReport(released_hosts=1, returned_gaps=1, held_hosts=0, held_reasons=())
+
+        def nudge() -> bool:
+            events.append("nudge")
+            return True
+
+        with (
+            patch("teatree.core.management.commands.dream.dream_umbrella_url", return_value=outcome.umbrella_url),
+            patch(f"{_COMMAND}._teatree_backlog_host", return_value=(None, "")),
+            patch("teatree.loops.dream.batch_promote.promote_batch", return_value=outcome),
+            patch("teatree.core.management.commands.dream.release_stranded_hosts", side_effect=release),
+            patch("teatree.loops.backlog_sweep.loop.nudge_for_dream_gaps", side_effect=nudge),
+            patch("teatree.core.management.commands.dream.record_funnel"),
+        ):
+            summary = Command()._promote_batch(batch=PromotionBatch(), dry_run=False)
+
+        assert events == ["release", "nudge"]
+        assert "queued 1 gap(s)" in summary
+
     def test_returned_gaps_nudge_the_sweep_after_release(self) -> None:
         events: list[str] = []
         outcome = BatchOutcome(queued=False, umbrella_url="https://github.com/o/r/issues/249", gap_count=0)
@@ -88,7 +113,7 @@ class TestStrandedRelease(TestCase):
             summary = Command()._promote_batch(batch=PromotionBatch(), dry_run=False)
 
         assert events == ["release", "nudge"]
-        assert "released 1 stranded host(s)" in summary
+        assert "returned 2 gap(s) from 1 stranded host(s)" in summary
         assert "held 2 host(s): 12 live worktree, 13 pull request row" in summary
 
     def test_daily_funnel_records_real_pass_and_skips_dry_run(self) -> None:
@@ -137,7 +162,7 @@ class TestStrandedRelease(TestCase):
         host.refresh_from_db()
         assert host.state == Ticket.State.IGNORED
         assert "branch gone absent locally, in tracking, and on origin" in host.extra["dream_gap_released"]["reason"]
-        assert "released 1 stranded host(s)" in summary
+        assert "returned 1 gap(s) from 1 stranded host(s), held 0 host(s)" in summary
         assert "held 0 host(s)" in summary
 
 

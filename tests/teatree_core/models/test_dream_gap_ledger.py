@@ -77,6 +77,7 @@ class TestGapDisposition(TestCase):
     def test_misfit_removes_the_old_offer_stamp_and_delivered_claim(self) -> None:
         umbrella_url = "https://github.com/o/r/issues/249"
         umbrella = Ticket.objects.create(overlay="test", issue_url=umbrella_url)
+        queue_pending(umbrella, [{"gap_key": "never-offered", "cluster_key": "never-offered"}])
         host = _host("a")
         host.merge_extra(
             set_keys={
@@ -91,6 +92,7 @@ class TestGapDisposition(TestCase):
         umbrella.refresh_from_db()
         host.refresh_from_db()
         assert "offered_at" not in pending_entries(umbrella)[0]
+        assert [entry["gap_key"] for entry in pending_entries(umbrella)] == ["a", "never-offered"]
         assert host.extra["dream_gap_claimed_delivered"] == []
 
     def test_second_distinct_decline_requeues_before_retaining_on_third(self) -> None:

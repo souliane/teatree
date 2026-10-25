@@ -195,7 +195,9 @@ class GhMergeRpc:
         return out.strip() if rc == 0 else HEAD_SHA_UNREADABLE
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
-        rc, out, _ = self._run(["pr", "view", str(pr_id), "--repo", slug, "--json", "state,mergeCommit,mergeable"])
+        rc, out, _ = self._run(
+            ["pr", "view", str(pr_id), "--repo", slug, "--json", "state,mergeCommit,mergeable,mergedBy,mergedAt"]
+        )
         if rc != 0 or not out.strip():
             return PrMergeState(state="", merge_commit_oid="")
         try:
@@ -207,7 +209,15 @@ class GhMergeRpc:
         state = str(data.get("state") or "")
         merge_commit = data.get("mergeCommit")
         oid = str(merge_commit.get("oid") or "") if isinstance(merge_commit, dict) else ""
-        return PrMergeState(state=state, merge_commit_oid=oid, conflict=_gh_conflict_state(data))
+        merged_by = data.get("mergedBy")
+        login = str(merged_by.get("login") or "") if isinstance(merged_by, dict) else ""
+        return PrMergeState(
+            state=state,
+            merge_commit_oid=oid,
+            conflict=_gh_conflict_state(data),
+            merged_by=login,
+            merged_at=str(data.get("mergedAt") or ""),
+        )
 
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
         """Tri-state draft flag — ``UNKNOWN`` on a non-zero rc or unrecognised payload.

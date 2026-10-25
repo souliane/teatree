@@ -2,11 +2,32 @@
 
 from django.test import TestCase
 
-from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoopExperiment, ProposalSpec, Task, Ticket
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
+from teatree.core.models import (
+    DeferredQuestion,
+    FactoryScoreSnapshot,
+    OuterLoopExperiment,
+    ProposalSpec,
+    PullRequest,
+    Task,
+    Ticket,
+)
 from teatree.loops.outer_loop.implement import schedule_experiment_fix
 
 
 class TestScheduleExperimentFix(TestCase):
+    def test_open_pr_cap_holds_new_experiment_ticket(self) -> None:
+        experiment = self._admitted()
+        for index in range(OPEN_PR_START_CAP):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 900}",
+            )
+        assert schedule_experiment_fix(experiment) is None
+        experiment.refresh_from_db()
+        assert experiment.state == OuterLoopExperiment.State.ADMITTED
+        assert experiment.ticket_id is None
+
     def _admitted(self) -> OuterLoopExperiment:
         exp = _make_experiment(
             hypothesis="Improve the review gate.",

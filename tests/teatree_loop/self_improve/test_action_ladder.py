@@ -11,8 +11,9 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core import notify as notify_module
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
 from teatree.core.management.commands.loop_self_improve import _deliver_owner_alert
-from teatree.core.models import BotPing, DeferredQuestion, SelfImproveFiring, Task, Ticket
+from teatree.core.models import BotPing, DeferredQuestion, PullRequest, SelfImproveFiring, Task, Ticket
 from teatree.core.notify_types import DELIVERED, NotifyReason, blocked
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
 from teatree.core.tasks import execute_provision
@@ -90,6 +91,38 @@ class ActionLadderStructuralTests(TestCase):
 
 class ActionLadderBehaviourTests(TestCase):
     """Action-ladder run behaviour (rung resolution, dedup, Slack cap)."""
+
+    def test_open_pr_cap_defers_new_ticket_and_retries_when_one_closes(self) -> None:
+        urls = [
+            f"https://github.com/example-org/example-repo/pull/{index + 1300}" for index in range(OPEN_PR_START_CAP)
+        ]
+        for url in urls:
+            PullRequest.objects.record_opened(ticket=Ticket.objects.create(), url=url)
+        report = _report(requested_rung=ActionRung.TICKET)
+        with self.assertLogs("teatree.loop.self_improve.actions", level="WARNING") as logs:
+            assert run_action_ladder(report) is None
+        assert all(url in "\n".join(logs.output) for url in urls)
+        assert SelfImproveFiring.objects.count() == 0
+        assert Ticket.objects.count() == OPEN_PR_START_CAP
+        pr = PullRequest.objects.get(url=urls[0])
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
+        assert run_action_ladder(report) is not None
+        assert Ticket.objects.count() == OPEN_PR_START_CAP + 1
+
+    def test_open_pr_cap_keeps_an_existing_repair_ticket_moving(self) -> None:
+        first = run_action_ladder(_report(requested_rung=ActionRung.TICKET))
+        assert first is not None
+        ticket_id = first.firing.ticket_id
+        for index in range(OPEN_PR_START_CAP):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 1400}",
+            )
+        continued = run_action_ladder(_report(requested_rung=ActionRung.TICKET, state_hash_value="h2"))
+        assert continued is not None
+        assert continued.firing.ticket_id == ticket_id
+        assert Ticket.objects.count() == OPEN_PR_START_CAP + 1
 
     def test_first_fire_records_statusline_rung(self) -> None:
         result = run_action_ladder(_report())
