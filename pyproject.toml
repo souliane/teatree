@@ -138,9 +138,8 @@ dependencies = [
   "pydantic-settings>=2.16",
   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
-  # EVERY ``t3`` invocation, which in turn makes the §17.6 gate-15
-  # AI-signature PreToolUse hook fail CLOSED (a ``t3`` non-zero exit reads as
-  # a finding) and locks out commits. Same class as the #122 ``coverage``
+  # EVERY ``t3`` invocation, including the app-dependent MR-metadata validator.
+  # Same class as the #122 ``coverage``
   # runtime-dep fix; declared here so the installed tool env always has it.
   "pyyaml>=6",
   "tomlkit>=0.13",

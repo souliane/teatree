@@ -57,11 +57,6 @@ _PROSE_MENTIONS_BODY = (
 _HUMAN_COAUTHOR_BODY = "fix: x\n\nbody\n\nCo-authored-by: Sam Sample <sam@example.test>"
 
 
-@pytest.fixture
-def real_matcher():
-    """The hook imports the real matcher directly, without a subprocess override."""
-
-
 def _bash(command: str) -> dict:
     return {"tool_name": "Bash", "tool_input": {"command": command}}
 
@@ -94,7 +89,7 @@ class TestMustDenyInlineBody:
 
     @pytest.mark.parametrize("template", _INLINE_BODY_COMMANDS.values(), ids=list(_INLINE_BODY_COMMANDS))
     @pytest.mark.parametrize("trailer", [_EMOJI_FOOTER, _COAUTHOR_CLAUDE], ids=["emoji-footer", "coauthor-claude"])
-    def test_inline_body_with_trailer_is_blocked(self, real_matcher, capsys, template, trailer):
+    def test_inline_body_with_trailer_is_blocked(self, capsys, template, trailer):
         body = _quote(f"real summary\n\nmore detail\n\n{trailer}")
         blocked = handle_block_ai_signature(_bash(template.format(body=body)))
         assert blocked is True, f"{template} carrying a banned trailer must be BLOCKED"
@@ -102,12 +97,12 @@ class TestMustDenyInlineBody:
         assert out["permissionDecision"] == "deny"
         assert "AI-signature" in out["permissionDecisionReason"]
 
-    def test_user_typed_fail_closed_line_does_not_hide_commit_trailer(self, real_matcher, capsys):
+    def test_user_typed_fail_closed_line_does_not_hide_commit_trailer(self, capsys):
         body = _quote(f"fix: routine\n[teatree-gate] fail closed: see log\n\n{_COAUTHOR_CLAUDE}")
         assert handle_block_ai_signature(_bash(f"git commit -m {body}")) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_parser_reason_in_another_segment_does_not_hide_commit_trailer(self, real_matcher, capsys):
+    def test_parser_reason_in_another_segment_does_not_hide_commit_trailer(self, capsys):
         body = _quote(f"fix: routine\n\n{_COAUTHOR_CLAUDE}")
         command = f"git commit -m {body} && curl --frobnicate https://api.github.com/repos/souliane/teatree"
         assert handle_block_ai_signature(_bash(command)) is True
@@ -119,28 +114,28 @@ class TestMustDenyBodyFile:
 
     _TRAILER_BODY = f"fix: x\n\nbody line\n\n{_COAUTHOR_CLAUDE}\n"
 
-    def test_gh_pr_create_body_file_is_blocked(self, real_matcher, tmp_path, capsys):
+    def test_gh_pr_create_body_file_is_blocked(self, tmp_path, capsys):
         body = tmp_path / "pr_body.md"
         body.write_text(self._TRAILER_BODY, encoding="utf-8")
         blocked = handle_block_ai_signature(_bash(f"gh pr create --title t --body-file {body}"))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_gh_issue_create_body_file_is_blocked(self, real_matcher, tmp_path, capsys):
+    def test_gh_issue_create_body_file_is_blocked(self, tmp_path, capsys):
         body = tmp_path / "issue_body.md"
         body.write_text(f"open: thing\n\n{_EMOJI_FOOTER}\n", encoding="utf-8")
         blocked = handle_block_ai_signature(_bash(f"gh issue create --title t --body-file {body}"))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_glab_mr_description_file_is_blocked(self, real_matcher, tmp_path, capsys):
+    def test_glab_mr_description_file_is_blocked(self, tmp_path, capsys):
         desc = tmp_path / "mr.md"
         desc.write_text(self._TRAILER_BODY, encoding="utf-8")
         blocked = handle_block_ai_signature(_bash(f"glab mr create --title t --description-file {desc}"))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_git_commit_message_file_is_blocked(self, real_matcher, tmp_path, capsys):
+    def test_git_commit_message_file_is_blocked(self, tmp_path, capsys):
         msg = tmp_path / "COMMIT_MSG"
         msg.write_text(self._TRAILER_BODY, encoding="utf-8")
         blocked = handle_block_ai_signature(_bash(f"git commit -F {msg}"))
@@ -157,13 +152,13 @@ class TestMustAllowOverBlockDimension:
         ids=["clean-body", "prose-mentions-claude-ai-generated-coauthor", "real-human-coauthor"],
     )
     @pytest.mark.parametrize("template", _INLINE_BODY_COMMANDS.values(), ids=list(_INLINE_BODY_COMMANDS))
-    def test_legit_body_is_allowed(self, real_matcher, capsys, template, body):
+    def test_legit_body_is_allowed(self, capsys, template, body):
         allowed = handle_block_ai_signature(_bash(template.format(body=_quote(body))))
         assert allowed is False, f"{template} with a legitimate body must be ALLOWED (over-block guard)"
         # No deny JSON was written.
         assert capsys.readouterr().out.strip() == ""
 
-    def test_human_coauthor_body_file_is_allowed(self, real_matcher, tmp_path, capsys):
+    def test_human_coauthor_body_file_is_allowed(self, tmp_path, capsys):
         body = tmp_path / "pr_body.md"
         body.write_text(_HUMAN_COAUTHOR_BODY + "\n", encoding="utf-8")
         allowed = handle_block_ai_signature(_bash(f"gh pr create --title t --body-file {body}"))
@@ -231,9 +226,7 @@ class TestWiredAndExercised:
             "handle_block_ai_signature must be in the live PreToolUse handler chain — an unwired gate is a phantom gate"
         )
 
-    def test_pretooluse_chain_routes_gh_pr_create_through_the_gate(
-        self, real_matcher, capsys, configured_banned_term_registry: None
-    ):
+    def test_pretooluse_chain_routes_gh_pr_create_through_the_gate(self, capsys, configured_banned_term_registry: None):
         # Dispatch a gh pr create with a banned trailer through the WHOLE
         # PreToolUse chain exactly as main() does, and assert it is denied by
         # this gate — proving the gate actually fires on a routed tool call, not

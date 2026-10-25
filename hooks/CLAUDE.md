@@ -2,6 +2,8 @@
 
 See the root [`CLAUDE.md`](../CLAUDE.md) for the code-quality bar. This file adds only what is specific to `hooks/`.
 
+Stdlib-only checks run in the hook process; checks that need the teatree app still shell out. The `t3 tool ai-sig-scan` CLI remains for manual checks.
+
 The cache-wait PreToolUse advisory applies to interactive main-agent Bash calls with at least 50,000 conversation tokens. It recognizes declared long foreground waits, emits at most one JSON payload for a call, and never denies. A blocking orchestrator gate still takes precedence.
 
 ## Default-allow — a gate refuses four things, and nothing else

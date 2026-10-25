@@ -131,8 +131,8 @@ def test_trailer_email_still_blocks_when_t3_is_unavailable(
         "cwd": str(tmp_path),
     }
 
-    assert handle_banned_terms_pretool(data) or handle_block_ai_signature(data)
-    assert "permissionDecision" in capsys.readouterr().out
+    assert handle_block_ai_signature(data)
+    assert "AI-signature" in capsys.readouterr().out
 
 
 @pytest.mark.usefixtures("in_process_banned_terms_scanner")

@@ -70,6 +70,7 @@ def handle_block_ai_signature(data: dict) -> bool:
     """Refuse a forge-post body or commit message carrying an AI-signature trailer."""
     from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 — call-time back-import
 
+    payload: str | None = None
     try:
         with _teatree_src_on_path():
             from teatree.hooks import ai_signature_gate, ai_signature_scan  # noqa: PLC0415 — cold-hook import
@@ -83,12 +84,12 @@ def handle_block_ai_signature(data: dict) -> bool:
             message = ai_signature_gate.format_block_message(ai_signature_scan.summary(findings))
     except Exception as exc:  # noqa: BLE001 — an unscanned publish must fail closed
         cause = f"{type(exc).__name__}: {exc}"
-        if not _could_publish_a_body(data):
+        if payload is None and not _could_publish_a_body(data):
             sys.stderr.write(f"[teatree] NOTE: AI-signature gate failed open ({cause}); this call publishes nothing.\n")
             return False
         return emit_pretooluse_deny(
-            "BLOCKED: AI-signature scanner error — the PR body / commit message could not be confirmed "
-            f"signature-free. This is a scanner error, not a detected trailer. {cause}",
+            "BLOCKED: AI-signature scanner error — the scan could not run, so the publish body could not be "
+            f"confirmed signature-free. This is a scanner error, not a detected trailer. {cause}",
             gate_id="ai_signature",
         )
     return emit_pretooluse_deny(message, gate_id="ai_signature")
