@@ -476,6 +476,36 @@ class DeleteSourceMemoryFilesTestCase(TestCase):
             row.refresh_from_db()
             assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
 
+    def test_routed_fix_does_not_delete_absorbed_rows_extra_lesson(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "project" / "memory"
+            memory_dir.mkdir(parents=True)
+            routed_file = memory_dir / "routed.md"
+            extra_file = memory_dir / "extra.md"
+            routed_file.write_text("routed lesson")
+            extra_file.write_text("extra lesson")
+            routed = _row(source_files=[str(routed_file)])
+            routed.classify_core_gap()
+            routed.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+            new = ConsolidatedMemory.record_cluster(
+                cluster_key="k2",
+                rule="Keep the extra lesson.",
+                source_files=[str(routed_file), str(extra_file)],
+                member_count=2,
+                max_member_weight=90,
+                is_binding=False,
+                verified_citation="a cited mistake",
+            )
+            assert ConsolidatedMemory.objects.supersede_covered_by(new) == [new]
+
+            with patch("teatree.memory_audit.discover_memory_dirs", return_value=[memory_dir]):
+                retire_resolved_memories(MagicMock(spec=CodeHostBackend), is_resolved=lambda _row: True)
+
+            assert not routed_file.exists()
+            assert extra_file.exists()
+            new.refresh_from_db()
+            assert new.status == ConsolidatedMemory.Status.SUPERSEDED
+
     def test_retire_defers_the_row_when_the_file_cannot_be_confirmed_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory_dir = Path(tmp) / "project" / "memory"

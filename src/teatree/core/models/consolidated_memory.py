@@ -69,6 +69,8 @@ class ConsolidatedMemoryManager(models.Manager["ConsolidatedMemory"]):
         already routed keeps its disposition decision, and a BINDING row is never
         absorbed (Decision-3, the merge phase's rule for two binding near-duplicates).
         """
+        if row.status in ConsolidatedMemory.Status.terminal():
+            return []
         live = (
             self.exclude(pk=row.pk)
             .filter(overlay=row.overlay, is_binding=False, disposition=ConsolidatedMemory.Disposition.UNTRIAGED)
@@ -77,11 +79,28 @@ class ConsolidatedMemoryManager(models.Manager["ConsolidatedMemory"]):
         covered = [other for other in live if other.member_paths and other.member_paths < row.member_paths]
         for other in covered:
             other.supersede(row)
+        if row.disposition == ConsolidatedMemory.Disposition.UNTRIAGED and not row.is_binding:
+            routed = self.filter(
+                overlay=row.overlay,
+                is_binding=False,
+                disposition__in=(
+                    ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
+                    ConsolidatedMemory.Disposition.TICKETED,
+                ),
+                created_at__lt=row.created_at,
+            ).exclude(status__in=ConsolidatedMemory.Status.terminal())
+            members = row.member_paths
+            for older in routed.order_by("created_at", "pk"):
+                if members and (members < older.member_paths or older.member_paths < members):
+                    row.supersede(older)
+                    return [*covered, row]
         return covered
 
     def untriaged(self) -> "models.QuerySet[ConsolidatedMemory]":
         """Rows the Pass-2 promote pass has not yet classified (the queue to drain)."""
-        return self.filter(disposition=ConsolidatedMemory.Disposition.UNTRIAGED)
+        return self.filter(disposition=ConsolidatedMemory.Disposition.UNTRIAGED).exclude(
+            status=ConsolidatedMemory.Status.SUPERSEDED
+        )
 
     def needs_ticket(self) -> "models.QuerySet[ConsolidatedMemory]":
         """Core-gap rows classified but not yet promoted to a fix — the drain queue.
@@ -95,7 +114,7 @@ class ConsolidatedMemoryManager(models.Manager["ConsolidatedMemory"]):
         return self.filter(
             disposition=ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
             ticket_url="",
-        )
+        ).exclude(status=ConsolidatedMemory.Status.SUPERSEDED)
 
     def awaiting_ticket_close(self) -> "models.QuerySet[ConsolidatedMemory]":
         """TICKETED rows whose linked teatree ticket may now be closed → retirable."""
