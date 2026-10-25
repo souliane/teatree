@@ -392,6 +392,32 @@ def test_same_family_connection_reads_held_file_in_selected_mode(tmp_path: Path,
         assert "PRAGMA foreign_keys=ON" in commands
 
 
+def test_rollback_connection_selects_truncate_on_every_open(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite3"
+    with closing(sqlite3.connect(db)) as source:
+        source.execute("CREATE TABLE note(body TEXT)")
+        source.commit()
+
+    script = _boundary_script(
+        "import sqlite3\n"
+        "for _ in range(2):\n"
+        "    cursor=connection.cursor()\n"
+        "    print(cursor.execute('PRAGMA journal_mode').fetchone()[0])\n"
+        "    connection.close()\n"
+        "    raw=sqlite3.connect(os.environ['DB'])\n"
+        "    print(raw.execute('PRAGMA journal_mode').fetchone()[0])\n"
+        "    raw.close()\n"
+    )
+    env = {**_control_child_env(db), "T3_CONTROL_DB_JOURNAL_MODE": "truncate"}
+    child = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=False, timeout=30
+    )
+
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip().splitlines() == ["truncate", "delete", "truncate", "delete"]
+    assert db.read_bytes()[18] == 1
+
+
 def test_mismatched_header_waits_for_wal_writer_then_converts_file(tmp_path: Path) -> None:
     db = tmp_path / "db.sqlite3"
     writer = sqlite3.connect(db)
