@@ -14,21 +14,25 @@ keys survive.
 from typing import NoReturn, cast
 
 from django.db import transaction
+from django.utils import timezone
 
 from teatree.config import get_effective_settings
 from teatree.core.models.consolidated_memory import ConsolidatedMemory
+from teatree.core.models.dream_gap_types import DreamGapEntry
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
-from teatree.core.models.types import DreamGapEntry
 
 PENDING_KEY = "dream_gap_pending"
 BATCH_KEY = "dream_gap_batch"
 DISPOSITIONS_KEY = "dream_gap_dispositions"
 CLAIMED_DELIVERED_KEY = "dream_gap_claimed_delivered"
+RELEASED_KEY = "dream_gap_released"
 
 ADDRESS = "address"
 REJECT = "reject"
+MISFIT = "misfit"
+MAX_HOST_DECLINES = 2
 
 
 class DreamGapLedgerError(ValueError):
@@ -47,11 +51,17 @@ def pending_entries(ticket: Ticket) -> list[DreamGapEntry]:
     return [entry for entry in (ticket.extra or {}).get(PENDING_KEY) or [] if isinstance(entry, dict)]
 
 
-def queue_pending(ticket: Ticket, entries: list[DreamGapEntry]) -> None:
-    queued = {entry.get("gap_key") for entry in pending_entries(ticket)}
-    fresh = [entry for entry in entries if entry.get("gap_key") not in queued]
-    if fresh:
-        ticket.merge_extra(append_to_lists={PENDING_KEY: list(fresh)})
+def queue_pending(ticket: Ticket, entries: list[DreamGapEntry], *, first: bool = False) -> None:
+    with transaction.atomic():
+        locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
+        pending = pending_entries(locked)
+        queued = {entry.get("gap_key") for entry in pending}
+        fresh = [entry for entry in entries if entry.get("gap_key") not in queued]
+        if fresh:
+            if first:
+                locked.merge_extra(set_keys={PENDING_KEY: [*fresh, *pending]})
+            else:
+                locked.merge_extra(append_to_lists={PENDING_KEY: list(fresh)})
 
 
 def take_pending(ticket: Ticket, gap_keys: set[str]) -> list[DreamGapEntry]:
@@ -65,8 +75,10 @@ def take_pending(ticket: Ticket, gap_keys: set[str]) -> list[DreamGapEntry]:
     return taken
 
 
-def batch_entries(ticket: Ticket) -> list[dict[str, str]]:
-    return [entry for entry in (ticket.extra or {}).get(BATCH_KEY) or [] if isinstance(entry, dict)]
+def batch_entries(ticket: Ticket) -> list[DreamGapEntry]:
+    return [
+        cast("DreamGapEntry", entry) for entry in (ticket.extra or {}).get(BATCH_KEY) or [] if isinstance(entry, dict)
+    ]
 
 
 def undispositioned_gap_keys(ticket: Ticket) -> list[str]:
@@ -74,20 +86,25 @@ def undispositioned_gap_keys(ticket: Ticket) -> list[str]:
     return [entry["gap_key"] for entry in batch_entries(ticket) if entry.get("gap_key") not in dispositions]
 
 
-def record_gap_disposition(ticket: Ticket, gap_key: str, *, citation: str = "", rejection: str = "") -> str:
+def record_gap_disposition(
+    ticket: Ticket, gap_key: str, *, citation: str = "", rejection: str = "", misfit: str = ""
+) -> str:
     """Record *gap_key*'s ADDRESS (verified by *citation*) or REJECT (*rejection*) on its host; return which.
 
     An address advances the gap's CANDIDATE memory row to VERIFIED and joins the delivered
     subset the batch reconcile checks off on merge.
     """
-    cited, rejected = citation.strip(), rejection.strip()
-    if bool(cited) == bool(rejected):
-        msg = "a disposition needs exactly one of a citation (address) or a rejection reason (reject)"
+    cited, rejected, misplaced = citation.strip(), rejection.strip(), misfit.strip()
+    if sum(bool(value) for value in (cited, rejected, misplaced)) != 1:
+        msg = "a disposition needs exactly one of a citation, rejection reason or misfit reason"
         raise DreamGapLedgerError(msg)
     entry = next((entry for entry in batch_entries(ticket) if entry.get("gap_key") == gap_key), None)
     if entry is None:
         msg = f"gap {gap_key!r} is not folded into ticket {ticket.pk}"
         raise DreamGapLedgerError(msg)
+    if misplaced:
+        return_gap(ticket, gap_key, misplaced)
+        return MISFIT
     if rejected:
         ticket.merge_extra(
             merge_into_dicts={DISPOSITIONS_KEY: {gap_key: {"disposition": REJECT, "evidence": rejected}}}
@@ -104,17 +121,69 @@ def record_gap_disposition(ticket: Ticket, gap_key: str, *, citation: str = "", 
     return ADDRESS
 
 
+def return_gap(host: Ticket, gap_key: str, reason: str, *, dry_run: bool = False) -> None:
+    with transaction.atomic():
+        host = Ticket.objects.select_for_update().get(pk=host.pk)
+        batch = batch_entries(host)
+        entry = next((item for item in batch if item.get("gap_key") == gap_key), None)
+        if entry is None or gap_key in (host.extra or {}).get(DISPOSITIONS_KEY, {}):
+            msg = f"gap {gap_key!r} is missing or already dispositioned on ticket {host.pk}"
+            raise DreamGapLedgerError(msg)
+        umbrella = Ticket.objects.select_for_update().filter(issue_url=dream_umbrella_url()).first()
+        if umbrella is None:
+            msg = "dream umbrella ticket is unavailable"
+            raise DreamGapLedgerError(msg)
+        declined = [*dict.fromkeys([*(entry.get("declined_hosts") or []), host.pk])]
+        if len(declined) > MAX_HOST_DECLINES:
+            row = ConsolidatedMemory.objects.filter(cluster_key=entry.get("cluster_key") or gap_key).first()
+            if row is None:
+                msg = f"gap {gap_key!r} has no memory row to retain"
+                raise DreamGapLedgerError(msg)
+            if not dry_run:
+                row.classify_user_specific()
+        else:
+            returned = _returned_entry(entry, f"Host {host.pk} declined: {reason}")
+            returned["declined_hosts"] = declined
+            if not dry_run:
+                queue_pending(umbrella, [returned], first=True)
+                umbrella.refresh_from_db(fields=["extra"])
+                if gap_key not in {item.get("gap_key") for item in pending_entries(umbrella)}:
+                    msg = f"gap {gap_key!r} did not return to the umbrella"
+                    raise DreamGapLedgerError(msg)
+        if dry_run:
+            return
+        claimed = (host.extra or {}).get(CLAIMED_DELIVERED_KEY) or []
+        host.merge_extra(
+            set_keys={
+                BATCH_KEY: [item for item in batch if item.get("gap_key") != gap_key],
+                CLAIMED_DELIVERED_KEY: [key for key in claimed if key != gap_key],
+            }
+        )
+
+
+def _returned_entry(entry: DreamGapEntry, note: str) -> DreamGapEntry:
+    returned = cast("DreamGapEntry", {key: value for key, value in entry.items() if key != "offered_at"})
+    returned["detail"] = "\n".join(filter(None, [entry.get("detail"), note]))
+    return returned
+
+
 def _refuse_return(member: Ticket, reason: str) -> NoReturn:
     message = f"ticket {member.pk} {reason}"
     raise DreamGapLedgerError(message)
 
 
-def _return_batch(member: Ticket) -> tuple[str, list[str], list[dict[str, str]]]:
+def _return_batch(member: Ticket) -> tuple[str, list[str], list[DreamGapEntry]]:
     base, sep, fragment = member.issue_url.partition("#")
     fragment_key, equals, fragment_value = fragment.partition("=")
     entries = batch_entries(member)
     keys = [entry.get("gap_key", "") for entry in entries]
-    if base != dream_umbrella_url() or not sep or not fragment_key or not equals or not fragment_value:
+    if (
+        base != dream_umbrella_url()
+        or not sep
+        or fragment_key not in {"dream-gap", "dream-batch"}
+        or not equals
+        or not fragment_value
+    ):
         _refuse_return(member, "is not anchored on a dream-gap member")
     if not keys or any(not key for key in keys):
         _refuse_return(member, "has an incomplete gap batch")
@@ -124,6 +193,15 @@ def _return_batch(member: Ticket) -> tuple[str, list[str], list[dict[str, str]]]
 
 
 def _require_returnable(member: Ticket, keys: list[str], *, advanced: bool) -> None:
+    if member.state in {
+        Ticket.State.PR_OPENED,
+        Ticket.State.REVIEW_REQUESTED,
+        Ticket.State.MERGED,
+        Ticket.State.RETRO_RECORDED,
+        Ticket.State.DELIVERED,
+        Ticket.State.REVIEW_DELIVERED,
+    }:
+        _refuse_return(member, "has opened a pull request")
     if member.state in Ticket.finished_states() or (member.state not in Ticket.EARLY_STATES and not advanced):
         _refuse_return(member, "needs --advanced or is already finished")
     if member.tasks.filter(status__in=Task.Status.active()).exists():
@@ -139,9 +217,22 @@ def _require_returnable(member: Ticket, keys: list[str], *, advanced: bool) -> N
         _refuse_return(member, "claims keys outside its gap batch")
 
 
-def return_member_gaps(member: Ticket, *, advanced: bool = False) -> list[str]:
+def return_member_gaps(
+    member: Ticket, *, advanced: bool = False, reason: str = "manual return", dry_run: bool = False
+) -> list[str]:
     with transaction.atomic():
         member = Ticket.objects.select_for_update().get(pk=member.pk)
+        released = (member.extra or {}).get(RELEASED_KEY)
+        if isinstance(released, dict):
+            keys = [entry.get("gap_key", "") for entry in released.get("batch") or [] if isinstance(entry, dict)]
+            umbrella = Ticket.objects.select_for_update().filter(issue_url=dream_umbrella_url()).first()
+            if (
+                member.state == Ticket.State.IGNORED
+                and umbrella is not None
+                and set(keys) <= {entry.get("gap_key") for entry in pending_entries(umbrella)}
+            ):
+                return keys
+            _refuse_return(member, "has a release stamp but its gaps are not pending")
         base, keys, entries = _return_batch(member)
         umbrella = Ticket.objects.select_for_update().filter(issue_url=base).first()
         if umbrella is None:
@@ -151,21 +242,26 @@ def return_member_gaps(member: Ticket, *, advanced: bool = False) -> list[str]:
                 return keys
             _refuse_return(member, "is ignored but its gaps are not pending")
         _require_returnable(member, keys, advanced=advanced)
-        returned = [
-            cast(
-                "DreamGapEntry",
-                {
-                    **entry,
-                    "detail": "\n".join(filter(None, [entry.get("detail"), f"Returned from ticket {member.pk}"])),
-                },
-            )
-            for entry in entries
-        ]
-        queue_pending(umbrella, returned)
+        if dry_run:
+            return keys
+        returned = [_returned_entry(entry, f"Returned from ticket {member.pk}") for entry in entries]
+        queue_pending(umbrella, returned, first=True)
         umbrella.refresh_from_db(fields=["extra"])
         if not set(keys) <= {entry.get("gap_key") for entry in pending_entries(umbrella)}:
             _refuse_return(member, "gaps were not recorded on the umbrella")
-        member.merge_extra(set_keys={CLAIMED_DELIVERED_KEY: []})
+        claimed = [str(key) for key in (member.extra or {}).get(CLAIMED_DELIVERED_KEY) or []]
+        member.merge_extra(
+            set_keys={
+                BATCH_KEY: [],
+                CLAIMED_DELIVERED_KEY: [],
+                RELEASED_KEY: {
+                    "at": timezone.now().isoformat(),
+                    "reason": reason,
+                    "batch": entries,
+                    "claimed_delivered": claimed,
+                },
+            }
+        )
         member.ignore()
         member.save()
         return keys

@@ -88,6 +88,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "fold link, a retired owner, a stranded memory row, or (with --ticket) an undispositioned gap",
     ),
     Capability(
+        "teatree dream funnel",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits daily gap counts and recurring question class status; unknown classes exit 1",
+    ),
+    Capability(
         "teatree worktree adopt",
         json_output=True,
         exit_codes=("0", "1"),
