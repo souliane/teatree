@@ -91,6 +91,15 @@ class _ModeHarnessSettings:
         AgentHarness.CLAUDE_SDK,
         spec=SettingSpec(help="which agent CLI teatree drives (claude, codex, ...)", parse=parse_harness_name),
     )
+    agent_advisor_model: str = setting(
+        "",
+        spec=SettingSpec(
+            help="advisor model for headless Claude CLI child spawns",
+            parse=_parse_strict_str,
+            category=Category.PERSONAL,
+            box_global=True,
+        ),
+    )
     # Layer 2 of the two-layer harness config model (#2887): the provider/
     # credential an agent run authenticates with, CONSTRAINED by Layer 1
     # (``AgentHarnessProvider.valid_for(agent_harness)`` — see the enum

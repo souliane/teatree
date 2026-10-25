@@ -349,7 +349,7 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
 
     Query: ``TaskAttempt`` rows with ``outcome=SUCCESS`` and ``started_at`` within
     24h, grouped by ``task_id``, excluding a
-    :data:`~teatree.agents.runner_interruption.NOOP_OVER_COMPLETED_MARKER` recovery
+    :data:`~teatree.core.models.task_attempt.NOOP_OVER_COMPLETED_MARKER` recovery
     attempt. That marker is stamped when a rival's interrupted run finds its row
     already COMPLETED (#4100/#4834) — proof the claim CAS held (only one run's
     result landed), not a second success; counting it toward "this task ran twice"
@@ -360,10 +360,10 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
     """
     check_id = "duplicate_execution_count"
     try:
-        from teatree.agents.runner_interruption import (  # noqa: PLC0415 — deferred: agents import at call time
+        from teatree.core.models import (  # noqa: PLC0415 — ORM import needs the app registry
             NOOP_OVER_COMPLETED_MARKER,
+            TaskAttempt,
         )
-        from teatree.core.models import TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
 
         cutoff = _now(now) - _DAY
         successes_by_task: dict[int, int] = {}

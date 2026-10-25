@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,10 +15,13 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from typer.testing import CliRunner
 
+from teatree.agents.live_delivery import MAILBOX_AUTH_ENV
+from teatree.agents.live_mailbox_client import MailboxClient, MailboxError, NoLiveWorkerError
 from teatree.cli.mcp import serve
 from teatree.core.mcp_registration import serve_flags_for_phase
 from teatree.mcp import services_notion
 from teatree.mcp.server import build_server
+from tests.teatree_mcp._call_tool_result import structured
 
 runner = CliRunner()
 
@@ -26,6 +30,30 @@ _app.command()(serve)
 
 
 class TestServeCommand:
+    def test_attended_server_passes_mailbox_identity_without_exporting_its_token(self) -> None:
+        seen: list[tuple[dict[str, object], bool]] = []
+
+        def build(**kwargs: object) -> object:
+            seen.append((kwargs, MAILBOX_AUTH_ENV in os.environ))
+            return type("Server", (), {"run": lambda self, transport: None})()
+
+        with (
+            patch.dict(os.environ),
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.agents.live_mailbox_client.InteractiveMailboxLease.connect") as connect,
+            patch("teatree.mcp.server.build_server", side_effect=build),
+        ):
+            os.environ.pop(MAILBOX_AUTH_ENV, None)
+            connect.return_value.socket_path = Path("/tmp/worker.sock")
+            connect.return_value.token = "test-token"
+            connect.return_value.mcp_env.return_value = {MAILBOX_AUTH_ENV: "test-token"}
+            result = runner.invoke(_app, ["--interactive"])
+
+        assert result.exit_code == 0
+        assert len(seen) == 1
+        assert not seen[0][1]
+        assert seen[0][0]["mailbox_client"].token == "test-token"
+
     def test_the_notion_write_seam_is_registered_before_the_server_is_built(self) -> None:
         factories = []
         original = services_notion._factory_registry.factory
@@ -57,6 +85,51 @@ class TestServeCommand:
         build_mock.assert_called_once_with(read_only=False, allowed_writes=frozenset())
         build_mock.return_value.run.assert_called_once_with("stdio")
 
+    def test_attended_server_keeps_other_tools_when_no_worker_is_online(self, caplog: pytest.LogCaptureFixture) -> None:
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch(
+                "teatree.agents.live_mailbox_client.InteractiveMailboxLease.connect",
+                side_effect=NoLiveWorkerError("offline"),
+            ),
+            patch("teatree.mcp.server.build_server") as build_mock,
+        ):
+            result = runner.invoke(_app, ["--interactive"])
+
+        assert result.exit_code == 0
+        assert "Attended mailbox unavailable: offline" in caplog.text
+        build_mock.assert_called_once_with(read_only=False, allowed_writes=frozenset())
+        build_mock.return_value.run.assert_called_once_with("stdio")
+
+    def test_attended_server_reports_a_denied_join(self) -> None:
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch(
+                "teatree.agents.live_mailbox_client.InteractiveMailboxLease.connect",
+                side_effect=MailboxError("permission_denied"),
+            ),
+            patch("teatree.mcp.server.build_server") as build_mock,
+        ):
+            result = runner.invoke(_app, ["--interactive"])
+
+        assert result.exit_code == 1
+        build_mock.assert_not_called()
+
+    def test_the_interactive_flag_reaches_the_delegation(self) -> None:
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.cli.mcp.delegate_to_owning_domain") as delegate_mock,
+            patch(
+                "teatree.agents.live_mailbox_client.InteractiveMailboxLease.connect",
+                side_effect=NoLiveWorkerError("offline"),
+            ),
+            patch("teatree.mcp.server.build_server"),
+        ):
+            result = runner.invoke(_app, ["--interactive"])
+
+        assert result.exit_code == 0
+        delegate_mock.assert_called_once_with(["--interactive"])
+
     def test_the_read_only_flag_reaches_the_server_and_the_delegation(self) -> None:
         with (
             patch("teatree.cli.mcp.ensure_django"),
@@ -86,6 +159,16 @@ class TestServeCommand:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_ROOT = _REPO_ROOT / "src"
 _SERVE_DRIVER = "from teatree.cli.mcp import serve; serve()"
+_WORKER_SCRIPT = (
+    "import json,sys\n"
+    "from pathlib import Path\n"
+    "from teatree.agents.live_mailbox import LiveMailboxBroker\n"
+    "with LiveMailboxBroker(runtime_dir=Path(sys.argv[1])) as broker:\n"
+    " identity=broker.register(room='ticket-1',harness='claude_sdk',label='worker-agent')\n"
+    " print(json.dumps({'socket':str(identity.socket_path),'address':identity.address,"
+    "'token':identity.token}),flush=True)\n"
+    " sys.stdin.readline()\n"
+)
 
 
 def _clean_env(data_home: Path) -> dict[str, str]:
@@ -148,3 +231,55 @@ class TestServeSubprocessSmoke:
             "tasks": {"pending": 0, "claimed": 0, "completed": 0, "failed": 0},
             "dead_letter": 0,
         }
+
+    def test_attended_stdio_child_joins_worker_and_exchanges_a_nonce(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="t3m-", dir="/tmp") as root:
+            directory = Path(root)
+            env = _clean_env(directory / "xdg")
+            env["T3_CONTROL_DB_DIR"] = str(directory / "control")
+            env["T3_MCP_DELEGATED"] = "1"
+            _migrate(env)
+            worker = subprocess.Popen(
+                [sys.executable, "-c", _WORKER_SCRIPT, str(directory / "control" / "live"), "t3", "worker"],
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                assert worker.stdout is not None
+                peer = json.loads(worker.stdout.readline())
+
+                async def round_trip() -> None:
+                    driver = "from teatree.cli.mcp import serve; serve(interactive=True)"
+                    params = StdioServerParameters(
+                        command=sys.executable, args=["-c", driver], env=env, cwd=str(_REPO_ROOT)
+                    )
+                    agent = MailboxClient(Path(peer["socket"]), peer["token"])
+                    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+                        await session.initialize()
+                        tools = await session.list_tools()
+                        names = {tool.name for tool in tools.tools}
+                        assert {f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")} <= names
+                        own = structured(await session.call_tool("agent_mailbox_self", {}))
+                        outbound = asyncio.create_task(
+                            session.call_tool(
+                                "agent_mailbox_send",
+                                {"to": peer["address"], "text": "nonce-attended", "key": "attended-1"},
+                            )
+                        )
+                        received = await agent.wait(timeout_seconds=2)
+                        assert received["messages"][0]["text"] == "nonce-attended"
+                        assert structured(await outbound)["outcome"] == "accepted_inbox_read"
+                        inbound = asyncio.create_task(agent.send(own["address"], "nonce-worker", "worker-1"))
+                        reply = structured(await session.call_tool("agent_mailbox_wait", {"timeout_seconds": 2}))
+                        assert reply["messages"][0]["text"] == "nonce-worker"
+                        assert (await inbound)["outcome"] == "accepted_inbox_read"
+
+                asyncio.run(round_trip())
+            finally:
+                assert worker.stdin is not None
+                worker.stdin.write("\n")
+                worker.stdin.flush()
+                worker.communicate(timeout=10)

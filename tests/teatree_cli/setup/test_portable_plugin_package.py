@@ -44,7 +44,7 @@ def test_claude_and_codex_wrappers_share_identity() -> None:
 def test_both_runtime_wrappers_share_one_mcp_definition() -> None:
     mcp = _json(_REPO_ROOT / ".mcp.json")
 
-    assert mcp["mcpServers"] == {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}
+    assert mcp["mcpServers"] == {"teatree": {"command": "t3", "args": ["mcp", "serve", "--interactive"]}}
 
 
 def test_experimental_codex_hook_plan_contains_only_supported_events() -> None:
