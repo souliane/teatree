@@ -6,17 +6,56 @@ All functions here are implementation details — callers import from
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from django.db import models
+from django.db.models import F, OuterRef, Q, Subquery
 
 from teatree.core.checking_types import CheckItem
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeAudit
+from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+
+
+def _recent_failed_tasks(now: datetime, task_scope: Q) -> dict[int, str]:
+    latest_task_id = Task.objects.filter(ticket_id=OuterRef("task__ticket_id")).order_by("-pk").values("pk")[:1]
+    recent_failed: dict[int, str] = {}
+    for ticket_id, failure_kind in (
+        TaskAttempt.objects.filter(task__status=Task.Status.FAILED, ended_at__gte=now - timedelta(days=7))
+        .filter(task_scope)
+        .annotate(_latest_task_id=Subquery(latest_task_id))
+        .filter(task_id=F("_latest_task_id"))
+        .order_by("task_id", "-ended_at", "-pk")
+        .values_list("task__ticket_id", "failure_kind")
+    ):
+        recent_failed.setdefault(ticket_id, str(failure_kind))
+    return recent_failed
+
+
+def _merge_safe_prs(prs: list[PullRequest]) -> set[tuple[str, int]]:
+    heads: dict[tuple[str, int], str] = {}
+    holds: set[tuple[str, int]] = set()
+    passes: set[tuple[str, int]] = set()
+    for slug, pr_id, reviewed_sha, verdict in (
+        ReviewVerdict.objects.filter(pr_id__in=[int(pr.iid) for pr in prs if pr.iid.isdigit()])
+        .order_by("-recorded_at", "-pk")
+        .values_list("slug", "pr_id", "reviewed_sha", "verdict")
+    ):
+        key = slug.casefold(), pr_id
+        head = reviewed_sha.strip().lower()
+        if heads.setdefault(key, head) != head:
+            continue
+        if verdict == ReviewVerdict.Verdict.MERGE_SAFE:
+            passes.add(key)
+        else:
+            holds.add(key)
+    return passes - holds
 
 
 @dataclass(frozen=True, slots=True)

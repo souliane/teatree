@@ -339,7 +339,7 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
-        remaining=gather_remaining(now=now, overlay_names=[overlay_name], tag_overlays=False),
+        remaining=gather_remaining(now=now, overlay_names=[overlay_name] if overlay_name else None, tag_overlays=False),
     )
 
 

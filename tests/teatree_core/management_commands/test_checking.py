@@ -23,6 +23,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 import teatree.core.overlay_loader as overlay_loader_mod
+from teatree.core.checking import gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, DeferredQuestion, Session, Task, TaskAttempt
@@ -305,8 +306,91 @@ class TestCheckingRemaining:
         assert "Remaining" in payload["terse"]
 
     def test_empty_remaining_has_no_current_work_basis(self, checkpoint_file: Path) -> None:
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        with patch("teatree.core.checking_remaining.StepHistory.measure") as measure:
+            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        measure.assert_not_called()
         assert payload["remaining"]["eta"]["basis"] == "no current work in scope"
+
+    def test_dormant_only_scope_keeps_its_json_count(self, checkpoint_file: Path) -> None:
+        Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/604", state=Ticket.State.CODED
+        )
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        assert payload["remaining"]["holds"]["dormant"] == 1
+        assert payload["remaining"]["items"] == []
+
+    def test_blank_overlay_name_scopes_remaining_like_other_groups(self) -> None:
+        self._open_pr()
+        now = timezone.now()
+        report = gather_checking_report(since=now - timedelta(hours=1), now=now)
+        assert report.remaining.total == 3
+
+    def test_finished_ticket_with_live_pr_is_excluded(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.DELIVERED)
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        assert payload["remaining"]["total"] == 0
+
+    def test_no_history_omits_empty_legend_rows_and_formats_queue(self, checkpoint_file: Path) -> None:
+        self._open_pr()
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        detail = " ".join(row["detail"] for row in payload["remaining"]["items"][:2])
+        assert "None\u2013None" not in detail
+        assert "n=0" not in detail
+        assert "claimed {" not in detail
+        assert "seats {" not in detail
+
+    def test_multiple_prs_count_one_tickets_unknown_eta(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://github.com/acme/widgets/pull/602",
+            repo="acme/widgets",
+            iid="602",
+        )
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        assert payload["remaining"]["total"] == 4
+        assert payload["remaining"]["eta"]["unknown"] == 1
+
+    def test_one_unknown_pr_keeps_its_ticket_unknown(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://github.com/acme/widgets/pull/602",
+            repo="acme/widgets",
+            iid="602",
+        )
+        ReviewVerdict.objects.create(
+            ticket=ticket,
+            pr_id=601,
+            slug="acme/widgets",
+            reviewed_sha=_SHA,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="reviewer",
+            blast_class=MergeClear.BlastClass.LOGIC,
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+        )
+        ended = timezone.now() - timedelta(minutes=1)
+        for index in range(5):
+            sample_ticket = Ticket.objects.create(
+                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{610 + index}"
+            )
+            sample = Task.objects.create(
+                ticket=sample_ticket,
+                session=Session.objects.create(ticket=sample_ticket),
+                phase="coding",
+                status=Task.Status.COMPLETED,
+            )
+            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=10))
+            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
+        widths = MagicMock(expensive=1, review=0, retiring=1)
+        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
+            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        assert payload["remaining"]["eta"]["unknown"] == 1
+        assert payload["remaining"]["eta"]["known"] == 0
+        assert payload["remaining"]["eta"]["median_minutes"] is None
 
     def test_pr_scope_uses_owning_ticket_when_legacy_overlay_is_blank(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
@@ -457,6 +541,40 @@ class TestCheckingRemaining:
         assert item["eta"]["median_minutes"] is None
         assert "no seats for expensive lane" in item["detail"]
 
+    def test_queue_position_and_seat_wait_follow_admission_priority(self, checkpoint_file: Path) -> None:
+        now = timezone.now()
+        older = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/851", state=Ticket.State.NOT_STARTED
+        )
+        old_task = Task.objects.create(ticket=older, session=Session.objects.create(ticket=older), phase="planning")
+        Task.objects.filter(pk=old_task.pk).update(created_at=now - timedelta(hours=2))
+        started = self._open_pr()
+        pr_task = Task.objects.create(ticket=started, session=Session.objects.create(ticket=started), phase="coding")
+        Task.objects.filter(pk=pr_task.pk).update(created_at=now - timedelta(hours=1))
+        for index in range(5):
+            ticket = Ticket.objects.create(
+                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{852 + index}"
+            )
+            sample = Task.objects.create(
+                ticket=ticket,
+                session=Session.objects.create(ticket=ticket),
+                phase="coding",
+                status=Task.Status.COMPLETED,
+            )
+            ended = now - timedelta(minutes=1)
+            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=10))
+            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
+        widths = MagicMock(expensive=1, review=1, retiring=1)
+        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
+            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+            Task.objects.filter(pk=old_task.pk).update(status=Task.Status.COMPLETED)
+            without_old = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        items = {row["label"]: row for row in payload["remaining"]["items"]}
+        pr_without_old = next(row for row in without_old["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert "queued, 0 ahead" in items["acme/widgets#601"]["detail"]
+        assert "queued, 1 ahead" in items["#851"]["detail"]
+        assert items["acme/widgets#601"]["eta"]["median_minutes"] == pr_without_old["eta"]["median_minutes"]
+
     def test_merge_ready_pr_does_not_wait_for_headless_coding_seats(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
         ReviewVerdict.objects.create(
@@ -570,13 +688,27 @@ class TestCheckingRemaining:
         Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=45))
         payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
         item = payload["remaining"]["items"][2]
-        assert item["eta"]["median_minutes"] == pytest.approx(165)
-        assert item["eta"]["p80_minutes"] == pytest.approx(207)
-        assert "merge: default: slowest measured step (reviewing)" in item["detail"]
+        assert item["eta"]["median_minutes"] is None
+        assert "only 3 surviving" in item["detail"]
         Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=71))
         overdue = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
         assert overdue["remaining"]["eta"]["unknown"] == 1
         assert "running longer than all 5" in overdue["remaining"]["items"][2]["detail"]
+
+    def test_claimed_shipping_step_uses_shipping_label(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="shipping",
+            status=Task.Status.CLAIMED,
+            lease_expires_at=timezone.now() + timedelta(hours=1),
+        )
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert item["steps"][0] == "shipping"
+        assert "now: shipping (running)" in item["detail"]
+        assert any(row["step"] == "shipping" for row in payload["remaining"]["durations"])
 
     def test_running_default_reselects_slowest_surviving_sources(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
@@ -670,6 +802,7 @@ class TestCheckingRemaining:
         assert remaining["eta"]["known"] == 0
         assert remaining["eta"]["unknown"] == 0
         assert remaining["eta"]["basis"] == "all current work is held"
+        assert "1 blocked" in remaining["items"][0]["detail"]
         assert "#863" not in [item["label"] for item in remaining["items"]]
         details = " ".join(item["detail"] for item in remaining["items"])
         assert "waiting on you" in details

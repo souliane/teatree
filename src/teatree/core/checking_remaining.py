@@ -2,22 +2,23 @@
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import cast
 
-from teatree.core._checking_gather import ticket_url
+from django.db.models import Q
+
+from teatree.core._checking_gather import _merge_safe_prs, _recent_failed_tasks, ticket_url
+from teatree.core.admission_priority import ADMISSION_ORDER, admission_priority_annotations
 from teatree.core.agent_admission import headless_lane_widths
 from teatree.core.checking_types import CheckGroup, CheckGroupDict, CheckItem, CheckItemDict
 from teatree.core.cycle_time.eta import format_minutes, queue_waves, remaining_given_elapsed
-from teatree.core.cycle_time.step_history import StepHistory
+from teatree.core.cycle_time.step_history import MIN_SAMPLES, StepEstimate, StepHistory
 from teatree.core.lifecycle_pipeline import PIPELINE, TicketSnapshot, resolve_plan
 from teatree.core.modelkit.phases import REVIEW_PHASES, CheapClass, normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pull_request import PullRequest
-from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.task import Task
-from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 
 STEP_PHASE = {
@@ -27,7 +28,6 @@ STEP_PHASE = {
 }
 POST_PR = ("independent review", "merge", "deploy")
 PHASE_LABEL = {"reviewing": "factory review", "coding": "coding"}
-HELD_BASES = frozenset({"halted", "blocked", "waiting on you"})
 NO_WORK_BASIS = "no current work in scope"
 
 
@@ -50,6 +50,8 @@ class RemainingItem(CheckItem):
     steps: tuple[str, ...] = ()
     eta: dict = field(default_factory=dict)
     duration_phases: tuple[str, ...] = ()
+    ticket_id: int | None = None
+    hold: str = ""
 
     def to_dict(self) -> RemainingItemDict:
         return cast(
@@ -77,7 +79,7 @@ class RemainingGroup(CheckGroup):
         )
 
 
-def empty_remaining() -> RemainingGroup:
+def empty_remaining(*, dormant: int = 0) -> RemainingGroup:
     return RemainingGroup(
         title="Remaining",
         eta={
@@ -88,7 +90,7 @@ def empty_remaining() -> RemainingGroup:
             "basis": NO_WORK_BASIS,
         },
         queue={"claimed": {}, "pending": {}, "oldest_pending_minutes": None, "oldest_pending_phase": None, "seats": {}},
-        holds={"halted": 0, "blocked": 0, "owner": 0, "dormant": 0},
+        holds={"halted": 0, "blocked": 0, "owner": 0, "dormant": dormant},
     )
 
 
@@ -103,6 +105,8 @@ def remaining_steps(state: str, active_phase: str, *, has_pr: bool, merge_safe: 
             before = ("testing", "factory review")
         elif phase in REVIEW_PHASES:
             before = ("factory review",)
+        elif phase == "shipping":
+            before = ("shipping",)
         elif merge_safe:
             before = ()
             return ("merge", "deploy")
@@ -129,6 +133,16 @@ def _lane(phase: str) -> str:
     return cheap.value if cheap is not None else "expensive"
 
 
+def _running_measured(estimate: StepEstimate, elapsed: float) -> tuple[tuple[float, float] | None, str]:
+    remaining = remaining_given_elapsed(estimate.samples, elapsed)
+    if remaining is None:
+        return None, f"running longer than all {estimate.n} {estimate.window} samples"
+    survivors = sum(sample > elapsed for sample in estimate.samples)
+    if survivors < MIN_SAMPLES:
+        return None, f"only {survivors} surviving {estimate.window} samples (need {MIN_SAMPLES})"
+    return remaining, ""
+
+
 @dataclass(frozen=True, slots=True)
 class QueueState:
     now: datetime
@@ -139,6 +153,13 @@ class QueueState:
     seats: dict[str, int]
     oldest: datetime | None
     oldest_phase: str | None
+
+    def ahead(self, task: Task | None, phase: str) -> int:
+        lane = _lane(phase)
+        lane_tasks = [row for row in self.pending if _lane(row.phase) == lane]
+        if task is None:
+            return len(lane_tasks)
+        return next((index for index, row in enumerate(lane_tasks) if row.pk == task.pk), len(lane_tasks))
 
     @classmethod
     def from_tasks(cls, tasks: list[Task], waiting: list[Task], now: datetime) -> "QueueState":
@@ -201,9 +222,8 @@ def _eta_for_item(
         ):
             elapsed = max(0.0, (queue.now - task.admitted_at).total_seconds() / 60)
             if estimate.basis == "measured":
-                remaining = remaining_given_elapsed(estimate.samples, elapsed)
+                remaining, reason = _running_measured(estimate, elapsed)
                 if remaining is None:
-                    reason = f"running longer than all {estimate.n} {estimate.window} samples"
                     return {"median_minutes": None, "p80_minutes": None, "basis": reason}, f"ETA unknown ({reason})"
                 median += remaining[0]
                 p80 += remaining[1]
@@ -220,15 +240,7 @@ def _eta_for_item(
                 defaults.add(f"{phase}: {estimate.basis}")
             if index == 0 and step not in {"merge", "deploy"}:
                 lane = _lane(phase)
-                ahead = sum(
-                    _lane(row.phase) == lane
-                    and (
-                        task is None
-                        or (cast("datetime", row.created_at), row.pk) < (cast("datetime", task.created_at), task.pk)
-                    )
-                    for row in queue.pending
-                    if row.pk != (task.pk if task else None)
-                )
+                ahead = queue.ahead(task, phase)
                 waves = queue_waves(ahead=ahead, occupied=queue.occupied[lane], seats=queue.seats[lane])
                 if waves is None:
                     reason = f"no seats for {lane} lane"
@@ -254,103 +266,86 @@ class RemainingSnapshot:
     prs: list[PullRequest]
     active: list[Task]
     owner_questions: list[DeferredQuestion]
+    owner_task_ids: set[int]
     recent_failed: dict[int, str]
     open_author: list[Ticket]
+    dormant: int
     verdicts: set[tuple[str, int]]
     queue: QueueState
-    history: StepHistory
 
     @classmethod
-    def load(cls, *, now: datetime, overlay_names: list[str], tag_overlays: bool) -> "RemainingSnapshot":
+    def load(cls, *, now: datetime, overlay_names: list[str] | None, tag_overlays: bool) -> "RemainingSnapshot":
+        task_scope = Q(ticket__overlay__in=overlay_names) if overlay_names is not None else Q()
+        ticket_scope = Q(overlay__in=overlay_names) if overlay_names is not None else Q()
+        question_scope = Q(parked_task__ticket__overlay__in=overlay_names) if overlay_names is not None else Q()
         prs = list(
             PullRequest.objects.live()
-            .filter(ticket__overlay__in=overlay_names)
+            .filter(task_scope)
+            .exclude(ticket__state__in=[Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED])
             .select_related("ticket")
             .order_by("-pk")
         )
         active = list(
-            Task.objects.filter(status__in=Task.Status.active(), ticket__overlay__in=overlay_names)
+            Task.objects.filter(status__in=Task.Status.active())
+            .filter(task_scope)
             .select_related("ticket")
             .order_by("created_at", "pk")
         )
         owner_questions = list(
             DeferredQuestion.owner_pending()
             .filter(
-                parked_task__ticket__overlay__in=overlay_names,
+                question_scope,
                 parked_task__ticket__role=Ticket.Role.AUTHOR,
                 parked_task__status=Task.Status.PENDING,
             )
             .select_related("parked_task")
         )
-        latest_tasks: dict[int, tuple[int, str]] = {}
-        for task_id, ticket_id, status in (
-            Task.objects.filter(ticket__overlay__in=overlay_names)
-            .order_by("ticket_id", "-pk")
-            .values_list("pk", "ticket_id", "status")
-        ):
-            latest_tasks.setdefault(ticket_id, (task_id, status))
-        failed_ids = [task_id for task_id, status in latest_tasks.values() if status == Task.Status.FAILED]
-        recent_failed: dict[int, str] = {}
-        seen_attempts: set[int] = set()
-        for task_id, ticket_id, ended, failure_kind in (
-            TaskAttempt.objects.filter(task_id__in=failed_ids)
-            .order_by("task_id", "-ended_at", "-pk")
-            .values_list("task_id", "task__ticket_id", "ended_at", "failure_kind")
-        ):
-            if task_id in seen_attempts:
-                continue
-            seen_attempts.add(task_id)
-            if ended and ended >= now - timedelta(days=7):
-                recent_failed[ticket_id] = str(failure_kind)
-        open_author = list(
-            Ticket.objects.filter(overlay__in=overlay_names, role=Ticket.Role.AUTHOR)
-            .exclude(state__in=[Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED])
-            .order_by("-pk")
+        recent_failed = _recent_failed_tasks(
+            now, Q(task__ticket__overlay__in=overlay_names) if overlay_names is not None else Q()
         )
-        heads: dict[tuple[str, int], str] = {}
-        holds: set[tuple[str, int]] = set()
-        passes: set[tuple[str, int]] = set()
-        for slug, pr_id, reviewed_sha, verdict in (
-            ReviewVerdict.objects.filter(pr_id__in=[int(pr.iid) for pr in prs if pr.iid.isdigit()])
-            .order_by("-recorded_at", "-pk")
-            .values_list("slug", "pr_id", "reviewed_sha", "verdict")
-        ):
-            key = slug.casefold(), pr_id
-            head = reviewed_sha.strip().lower()
-            if heads.setdefault(key, head) != head:
-                continue
-            if verdict == ReviewVerdict.Verdict.MERGE_SAFE:
-                passes.add(key)
-            else:
-                holds.add(key)
-        verdicts = passes - holds
+        relevant_ids = (
+            {pr.ticket_id for pr in prs}
+            | {task.ticket_id for task in active}
+            | {question.parked_task.ticket_id for question in owner_questions if question.parked_task is not None}
+            | recent_failed.keys()
+        )
+        open_tickets = Ticket.objects.filter(ticket_scope, role=Ticket.Role.AUTHOR).exclude(
+            state__in=[Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED]
+        )
+        open_author = list(open_tickets.filter(pk__in=relevant_ids).order_by("-pk"))
+        dormant = open_tickets.exclude(pk__in=relevant_ids).exclude(state__in=Ticket.finished_states()).count()
         return cls(
             now=now,
             tag_overlays=tag_overlays,
             prs=prs,
             active=active,
             owner_questions=owner_questions,
+            owner_task_ids={row.parked_task_id for row in owner_questions if row.parked_task_id is not None},
             recent_failed=recent_failed,
             open_author=open_author,
-            verdicts=verdicts,
+            dormant=dormant,
+            verdicts=_merge_safe_prs(prs),
             queue=QueueState.from_tasks(
                 list(Task.objects.filter(status__in=Task.Status.active())),
-                list(Task.objects.waiting_for_admission()),
+                list(
+                    Task.objects.waiting_for_admission()
+                    .annotate(**admission_priority_annotations())
+                    .order_by(*ADMISSION_ORDER)
+                ),
                 now,
             ),
-            history=StepHistory.measure(now),
         )
 
 
 def _work_item(
     snapshot: RemainingSnapshot,
+    history: StepHistory,
     ticket: Ticket,
     pr: PullRequest | None,
     tasks: list[Task],
-    owner_task_ids: set[int],
 ) -> RemainingItem:
     task = next((row for row in tasks if row.status == Task.Status.CLAIMED), tasks[0] if tasks else None)
-    hold, status = _hold_for_item(snapshot, ticket, tasks, owner_task_ids)
+    hold, status = _hold_for_item(snapshot, ticket, tasks)
     merge_safe = bool(pr and pr.iid.isdigit() and (pr.repo.casefold(), int(pr.iid)) in snapshot.verdicts)
     steps = remaining_steps(ticket.state, task.phase if task else "", has_pr=pr is not None, merge_safe=merge_safe)
     duration_phases = tuple(
@@ -364,19 +359,13 @@ def _work_item(
         eta_text = f"ETA unknown ({hold})"
     else:
         eta, eta_text = _eta_for_item(
-            steps=steps, duration_phases=duration_phases, task=task, history=snapshot.history, queue=snapshot.queue
+            steps=steps, duration_phases=duration_phases, task=task, history=history, queue=snapshot.queue
         )
     overlay_tag = f" [{ticket.overlay}]" if snapshot.tag_overlays else ""
     if task and task.status == Task.Status.CLAIMED:
         current = f"{steps[0]} (running)"
     elif task:
-        lane = _lane(task.phase)
-        ahead = sum(
-            _lane(row.phase) == lane
-            and (cast("datetime", row.created_at), row.pk) < (cast("datetime", task.created_at), task.pk)
-            for row in snapshot.queue.pending
-            if row.pk != task.pk
-        )
+        ahead = snapshot.queue.ahead(task, task.phase)
         current = f"{steps[0]} (queued, {ahead} ahead)"
     else:
         current = steps[0]
@@ -391,13 +380,13 @@ def _work_item(
         steps=steps,
         eta=eta,
         duration_phases=duration_phases,
+        ticket_id=ticket.pk,
+        hold=hold,
     )
 
 
-def _hold_for_item(
-    snapshot: RemainingSnapshot, ticket: Ticket, tasks: list[Task], owner_task_ids: set[int]
-) -> tuple[str, str]:
-    if tasks and all(row.pk in owner_task_ids for row in tasks):
+def _hold_for_item(snapshot: RemainingSnapshot, ticket: Ticket, tasks: list[Task]) -> tuple[str, str]:
+    if tasks and all(row.pk in snapshot.owner_task_ids for row in tasks):
         return "waiting on you", "waiting on you · "
     if tasks and all(row.not_before and row.not_before > snapshot.now for row in tasks):
         until = min(row.not_before for row in tasks if row.not_before is not None)
@@ -423,15 +412,19 @@ def _duration_dict(history: StepHistory, step: str) -> dict:
     }
 
 
-def _summarize(snapshot: RemainingSnapshot, items: list[RemainingItem], dormant: int) -> RemainingGroup:
-    known = [item.eta for item in items if item.eta["median_minutes"] is not None]
-    unknown = sum(item.eta["median_minutes"] is None and item.eta["basis"] not in HELD_BASES for item in items)
-    held = Counter(item.eta["basis"] for item in items if item.eta["basis"] in HELD_BASES)
-    unknown_bases = {
-        item.eta["basis"]
-        for item in items
-        if item.eta["median_minutes"] is None and item.eta["basis"] not in HELD_BASES
-    }
+def _eta_totals(items: list[RemainingItem]) -> tuple[dict, Counter[str]]:
+    by_ticket: dict[int | None, list[RemainingItem]] = defaultdict(list)
+    for item in items:
+        by_ticket[item.ticket_id].append(item)
+    known_groups = [
+        group for group in by_ticket.values() if all(item.eta["median_minutes"] is not None for item in group)
+    ]
+    known = [item.eta for group in known_groups for item in group]
+    unknown = sum(
+        any(item.eta["median_minutes"] is None and not item.hold for item in group) for group in by_ticket.values()
+    )
+    held = Counter(group[0].hold for group in by_ticket.values() if group[0].hold)
+    unknown_bases = {item.eta["basis"] for item in items if item.eta["median_minutes"] is None and not item.hold}
     if unknown_bases:
         basis = "; ".join(sorted(unknown_bases))
     elif known:
@@ -443,10 +436,19 @@ def _summarize(snapshot: RemainingSnapshot, items: list[RemainingItem], dormant:
     eta_total = {
         "median_minutes": median_total,
         "p80_minutes": p80_total,
-        "known": len(known),
+        "known": len(known_groups),
         "unknown": unknown,
         "basis": basis,
     }
+    return eta_total, held
+
+
+def _summarize(snapshot: RemainingSnapshot, history: StepHistory, items: list[RemainingItem]) -> RemainingGroup:
+    eta_total, held = _eta_totals(items)
+    median_total = eta_total["median_minutes"]
+    p80_total = eta_total["p80_minutes"]
+    basis = eta_total["basis"]
+    unknown = eta_total["unknown"]
     total_text = (
         f"ETA {format_minutes(median_total)}\u2013{format_minutes(p80_total)}"
         if median_total is not None and p80_total is not None
@@ -454,13 +456,13 @@ def _summarize(snapshot: RemainingSnapshot, items: list[RemainingItem], dormant:
     )
     owner_count = held["waiting on you"]
     durations = [
-        _duration_dict(snapshot.history, step)
-        for step in sorted({phase for item in items for phase in item.duration_phases})
+        _duration_dict(history, step) for step in sorted({phase for item in items for phase in item.duration_phases})
     ]
     legend = "; ".join(
         f"{row['step']} {row['median_minutes']}\u2013{row['p80_minutes']}m n={row['n']} {row['window']} "
         f"{row['source']} ({row['basis']})"
         for row in durations
+        if row["n"]
     )
     summary = RemainingItem(
         label="Total",
@@ -468,7 +470,8 @@ def _summarize(snapshot: RemainingSnapshot, items: list[RemainingItem], dormant:
         kind="summary",
         detail=(
             f"{total_text} · {len(items)} items, {unknown} unknown, {held['halted']} halted, "
-            f"{owner_count} waiting on you, {dormant} dormant" + (f" · basis: {legend}" if legend else "")
+            f"{held['blocked']} blocked, {owner_count} waiting on you, {snapshot.dormant} dormant"
+            + (f" · basis: {legend}" if legend else "")
         ),
     )
     queue = snapshot.queue.to_dict()
@@ -477,10 +480,10 @@ def _summarize(snapshot: RemainingSnapshot, items: list[RemainingItem], dormant:
         url="",
         kind="queue",
         detail=(
-            f"claimed {queue['claimed']}; pending {queue['pending']}; oldest "
+            f"claimed {_format_counts(queue['claimed'])}; pending {_format_counts(queue['pending'])}; oldest "
             f"{format_minutes(queue['oldest_pending_minutes']) if snapshot.queue.oldest else 'none'} "
             f"{queue['oldest_pending_phase'] or ''}; "
-            f"seats {queue['seats']}"
+            f"seats {_format_counts(queue['seats'])}"
         ),
     )
     return RemainingGroup(
@@ -490,11 +493,15 @@ def _summarize(snapshot: RemainingSnapshot, items: list[RemainingItem], dormant:
         eta=eta_total,
         queue=queue,
         durations=durations,
-        holds={"halted": held["halted"], "blocked": held["blocked"], "owner": owner_count, "dormant": dormant},
+        holds={"halted": held["halted"], "blocked": held["blocked"], "owner": owner_count, "dormant": snapshot.dormant},
     )
 
 
-def gather_remaining(*, now: datetime, overlay_names: list[str], tag_overlays: bool) -> RemainingGroup:
+def _format_counts(counts: dict[str, int]) -> str:
+    return ", ".join(f"{name} {count}" for name, count in sorted(counts.items())) or "none"
+
+
+def gather_remaining(*, now: datetime, overlay_names: list[str] | None, tag_overlays: bool) -> RemainingGroup:
     snapshot = RemainingSnapshot.load(now=now, overlay_names=overlay_names, tag_overlays=tag_overlays)
     active_by_ticket: dict[int, list[Task]] = defaultdict(list)
     for task in snapshot.active:
@@ -504,7 +511,6 @@ def gather_remaining(*, now: datetime, overlay_names: list[str], tag_overlays: b
         for question in snapshot.owner_questions
         if (parked_task := question.parked_task) is not None
     }
-    owner_task_ids = {row.parked_task_id for row in snapshot.owner_questions if row.parked_task_id is not None}
     pr_ticket_ids = {pr.ticket_id for pr in snapshot.prs}
     relevant = pr_ticket_ids | active_by_ticket.keys() | owner_ticket_ids | snapshot.recent_failed.keys()
     work: list[tuple[Ticket, PullRequest | None]] = [
@@ -513,13 +519,11 @@ def gather_remaining(*, now: datetime, overlay_names: list[str], tag_overlays: b
     work.extend(
         (ticket, None) for ticket in snapshot.open_author if ticket.pk in relevant and ticket.pk not in pr_ticket_ids
     )
-    dormant = sum(
-        ticket.pk not in relevant and ticket.state not in Ticket.finished_states() for ticket in snapshot.open_author
-    )
     if not work and not snapshot.active and not snapshot.owner_questions:
-        return empty_remaining()
+        return empty_remaining(dormant=snapshot.dormant)
+    history = StepHistory.measure(now) if work else StepHistory(now=now, spans={})
     items = sorted(
-        (_work_item(snapshot, ticket, pr, active_by_ticket.get(ticket.pk, []), owner_task_ids) for ticket, pr in work),
-        key=lambda item: 2 if item.eta["basis"] in HELD_BASES else int(item.kind != "pr"),
+        (_work_item(snapshot, history, ticket, pr, active_by_ticket.get(ticket.pk, [])) for ticket, pr in work),
+        key=lambda item: 2 if item.hold else int(item.kind != "pr"),
     )
-    return _summarize(snapshot, items, dormant)
+    return _summarize(snapshot, history, items)
