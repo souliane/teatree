@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, cast
 from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.live_control import LiveTask
-from teatree.agents.live_delivery import MailboxIdentity
+from teatree.agents.live_delivery import MAILBOX_PHASE_ENV, MailboxIdentity
 from teatree.agents.live_mailbox import LiveMailboxBroker, PushOnlyTask, shared_broker
-from teatree.core.modelkit.phase_tools import tools_for_phase
+from teatree.core.modelkit.phase_tools import MCP_WRITE, mcp_write_tools_for_phase, tools_for_phase
 from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 if TYPE_CHECKING:
@@ -59,8 +59,15 @@ def bound_task_mailbox(
                 room=str(task.ticket),
                 harness=task.harness,
                 label=label,
-                task=task if teatree_stdio is not None or task.harness == "pydantic_ai" else PushOnlyTask(task),
-                can_receive=task.harness != "pydantic_ai" or bool(task.phase and tools_for_phase(task.phase)),
+                task=PushOnlyTask(task) if task.harness == "codex_app_server" and options.resume else task,
+                can_receive=task.harness not in {"pydantic_ai", "codex_app_server"}
+                or bool(
+                    task.phase
+                    and (
+                        MCP_WRITE in tools_for_phase(task.phase)
+                        or "agent_mailbox_inbox" in mcp_write_tools_for_phase(task.phase)
+                    )
+                ),
             )
         except Exception:
             logger.warning("live mailbox unavailable for %s; dispatching without one", label, exc_info=True)
@@ -69,8 +76,10 @@ def bound_task_mailbox(
                 "dict[str, McpServerConfig]",
                 {**servers, "teatree": {**teatree_stdio, "env": {**child_env, **identity.mcp_env()}}},
             )
-        elif identity is not None and task.harness == "pydantic_ai":
+        elif identity is not None and task.harness in {"pydantic_ai", "codex_app_server"}:
             options.env = {**(original_env or {}), **identity.mcp_env()}
+            if task.harness == "codex_app_server":
+                options.env[MAILBOX_PHASE_ENV] = task.phase
         yield identity
     finally:
         options.mcp_servers = original

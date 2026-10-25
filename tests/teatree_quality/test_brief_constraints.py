@@ -32,6 +32,26 @@ def test_do_not_forget_is_not_a_negative_setting_constraint() -> None:
     assert extract_constraints("Do not forget to update the settings docs.") == ()
 
 
+def test_cli_settings_flag_is_not_a_ban_on_new_settings() -> None:
+    brief = 'Use the advisor key without spawning: `--settings {"advisorModel": "<id>"}`.'
+
+    assert extract_constraints(brief) == ()
+    assert {item.kind for item in extract_constraints("Do not add a setting.")} == {"no_setting"}
+
+
+def test_hyphenated_setting_names_remain_constraints() -> None:
+    for name in ("user-setting", "per-overlay-settings", "box-global-setting"):
+        assert {item.kind for item in extract_constraints(f"Do not add a {name}.")} == {"no_setting"}
+
+
+def test_settings_flag_prefix_keeps_a_hyphenated_name_as_a_constraint() -> None:
+    assert {item.kind for item in extract_constraints("Do not add --settings-file.")} == {"no_setting"}
+
+
+def test_settings_flag_suffix_keeps_a_prefixed_name_as_a_constraint() -> None:
+    assert {item.kind for item in extract_constraints("Do not add foo--settings.")} == {"no_setting"}
+
+
 def test_an_import_is_not_a_new_public_definition() -> None:
     path = "src/teatree/core/example.py"
     changes = ChangedSet((ChangeEntry("M", path),), "origin/main")

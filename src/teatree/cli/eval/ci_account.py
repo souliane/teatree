@@ -102,7 +102,7 @@ def switch(
     """Point CI's OAuth secret at the healthiest account; exit 1 when none can serve a run."""
     ensure_django()
 
-    from teatree.ci_oauth_switch import NoEligibleAccountError  # noqa: PLC0415 — deferred: needs Django
+    from teatree.ci_oauth_switch import CiAccountSwitchError  # noqa: PLC0415 — deferred: needs Django
 
     run_start = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=starting_in)
     try:
@@ -112,7 +112,7 @@ def switch(
             allowlist=get_effective_settings().eval_ci_account_allowlist,
             dry_run=dry_run,
         )
-    except NoEligibleAccountError as error:
+    except CiAccountSwitchError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=1) from error
 

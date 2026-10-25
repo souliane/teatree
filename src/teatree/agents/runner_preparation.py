@@ -34,6 +34,7 @@ from teatree.agents.skill_assurance import (
     SkillDelivery,
     assess_skill_dispatch,
     recover_truncated_inline_skills,
+    skill_application_line,
 )
 from teatree.agents.skill_injection import _read_only_skill_text
 from teatree.agents.stage_skill_prompt import stage_skills_present
@@ -160,6 +161,8 @@ def prepare_run(
         system_context = read_only_system_context(system_context)
         if continued_skills:
             prompt = prompt.replace(continued_skills, read_only_system_context(continued_skills, max_bytes=None), 1)
+    if assurance["requested"]:
+        prompt = f"{prompt}\n\n{skill_application_line(assurance['requested'])}"
     guard = CompactionGuard()
     options = _build_options(
         task,
