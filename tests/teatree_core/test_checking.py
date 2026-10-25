@@ -508,6 +508,15 @@ class TestTerseFormatting(CheckingTestBase):
         assert terse.startswith("Nothing since ")
         assert "\n" not in terse
 
+    def test_internal_escalations_alone_are_not_reported_as_nothing(self) -> None:
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        terse = report.to_terse(overlay_name=self.OVERLAY)
+
+        assert not terse.startswith("Nothing since ")
+        assert terse.splitlines()[-1] == "1 internal escalations: factory work, not questions"
+
     def test_empty_group_is_omitted(self) -> None:
         ticket = self._ticket()
         self._merge(ticket, pr_id=7, slug="acme/widgets", hours_ago=2)
@@ -740,6 +749,17 @@ class TestAllOverlaysAggregation(CheckingTestBase):
 
         assert terse.startswith("Nothing since ")
         assert "\n" not in terse
+
+    def test_internal_escalations_alone_are_not_reported_as_nothing_across_overlays(self) -> None:
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+        overlay_windows = {self.OVERLAY: (self.since, self.now), self.OVERLAY_B: (self.since, self.now)}
+        overlay_configs = {self.OVERLAY: ("github", []), self.OVERLAY_B: ("github", [])}
+
+        report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
+
+        terse = report.to_terse()
+        assert not terse.startswith("Nothing since ")
+        assert terse.splitlines()[-1] == "1 internal escalations: factory work, not questions"
 
     def test_deferred_questions_not_duplicated_in_multi_overlay(self) -> None:
         DeferredQuestion.record("Should I proceed?", **OWNER_DECISION)
