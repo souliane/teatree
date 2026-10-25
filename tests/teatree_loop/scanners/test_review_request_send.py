@@ -355,19 +355,47 @@ class TestOnlyACurrentColdReviewReleasesTheRequest(_SenderCase):
         assert _mr_state_questions() == []
 
 
-class TestARefusalTheOwnerCanFixReachesTheOwner(_SenderCase):
-    def test_no_resolvable_ticket_asks_once_and_posts_nothing(self) -> None:
+class TestAMergeRequestNoTicketOwnsIsSentWithoutOne(_SenderCase):
+    """A hook-opened pull request has no ledger row; the owner still gets it reviewed (#5506)."""
+
+    def setUp(self) -> None:
+        super().setUp()
         ReviewVerdict.record(pr_id=7, slug=_SLUG, reviewed_sha=_HEAD, verdict="merge_safe", reviewer_identity="cold")
+
+    def test_it_is_sent_once_and_the_owner_is_not_asked(self) -> None:
+        with _world(self.slack, self.forge):
+            signals = _followup_pass(self.forge, self.slack)
+
+        assert [(channel, _URL in text) for channel, text, _ts in self.slack.posts] == [(_CHANNEL, True)]
+        assert _kinds(signals) == ["review_request.sent"]
+        assert ReviewRequestPost.objects.filter(mr_url=_URL).exists()
+        assert _mr_state_questions() == []
+
+    def test_a_refusal_of_the_command_asks_once_per_head_and_names_its_reason(self) -> None:
+        self.forge.author = "mallory"
 
         with _world(self.slack, self.forge):
             first = _followup_pass(self.forge, self.slack)
             _followup_pass(self.forge, self.slack)
 
         assert self.slack.posts == []
+        assert _verdicts(first) == [("review_request.send_refused", "foreign_author")]
         assert _mr_state_questions() == [_ASKED_AT_HEAD]
-        assert _kinds(first) == ["review_request.send_refused"]
-        assert first[0].payload["reason"] == "no_ticket"
 
+    def test_the_poster_gets_no_ticket_id_for_it_and_the_ticket_pk_for_an_owned_one(self) -> None:
+        self.forge.my_prs = [_mr(7), _mr(8)]
+        ReviewVerdict.record(pr_id=8, slug=_SLUG, reviewed_sha=_HEAD, verdict="merge_safe", reviewer_identity="cold")
+        owner = _ready_ticket(iid=8)
+        poster = _AnsweringPoster({"action": "post", "permalink": ""})
+
+        with _world(self.slack, self.forge):
+            signals = self._scanner(poster).scan()
+
+        assert _kinds(signals) == ["review_request.sent", "review_request.sent"]
+        assert poster.ticket_ids == {_mr(7)["web_url"]: "", _mr(8)["web_url"]: str(owner.pk)}
+
+
+class TestARefusalTheOwnerCanFixReachesTheOwner(_SenderCase):
     def test_a_missing_anti_vacuity_attestation_is_a_refusal_the_owner_sees(self) -> None:
         _ready_ticket(attested=False)
 
@@ -518,9 +546,11 @@ class TestAnOutcomeTheSenderCannotRetryReachesTheOwner(_SenderCase):
 @dataclass
 class _AnsweringPoster:
     verdict: RawAPIDict
+    ticket_ids: dict[str, str] = field(default_factory=dict)
 
     def post(self, *, mr_url: str, title: str, ticket_id: str, head_sha: str) -> RawAPIDict:
-        _ = (mr_url, title, ticket_id, head_sha)
+        _ = (title, head_sha)
+        self.ticket_ids[mr_url] = ticket_id
         return self.verdict
 
 

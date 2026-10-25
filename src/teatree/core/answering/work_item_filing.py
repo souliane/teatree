@@ -19,7 +19,7 @@ whole change is about — only an explicit ``no_work_reason`` returns ``None``.
 """
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -93,6 +93,13 @@ class NoFilingRepoError(WorkItemFilingError):
         super().__init__(f"overlay {overlay or '(default)'} declares no repos, so there is nowhere to file")
 
 
+class UnresolvableFilingRepoError(WorkItemFilingError):
+    """The overlay's ``choose_filing_repo`` hook raised, or named a repo outside the candidates."""
+
+    def __init__(self, overlay: str, reason: str) -> None:
+        super().__init__(f"overlay {overlay or '(default)'} could not choose a repo to file in: {reason}")
+
+
 class UntrackableIssueError(WorkItemFilingError):
     """The forge accepted the issue but returned no URL to track it by."""
 
@@ -121,7 +128,7 @@ def file_work_item(
     envelope: Mapping[str, object],
     *,
     host: "CodeHostBackend",
-    repo: str,
+    repo_for: Callable[[str, str], str],
 ) -> FiledWorkItem | None:
     """File (or attach to) the forge issue *envelope* names; ``None`` only for declared no-work."""
     if envelope.get("no_work_reason"):
@@ -134,24 +141,36 @@ def file_work_item(
         return _attach(ticket, _validated_forge_url(existing))
     if not str(envelope.get("title") or "").strip():
         raise EmptyWorkItemError
-    return _file_new(ticket, envelope, host=host, repo=repo)
+    return _file_new(ticket, envelope, host=host, repo_for=repo_for)
 
 
-def filing_repo(overlay: str) -> str:
-    """The repo slug this overlay files owner requests into — its first owned repo.
+def filing_repo(overlay: str, title: str, body: str) -> str:
+    """The repo slug this overlay files the item in — its metadata hook's pick among its owned repos.
 
     Raises rather than guessing: filing into a repo nobody declared would put the
     owner's request somewhere neither they nor intake is looking.
     """
-    slugs = owned_repo_slugs(get_overlay(overlay or None))
-    if not slugs:
+    resolved = get_overlay(overlay or None)
+    candidates = owned_repo_slugs(resolved)
+    if not candidates:
         raise NoFilingRepoError(overlay)
-    return slugs[0]
+    try:
+        chosen = resolved.metadata.choose_filing_repo(title=title, body=body, candidates=candidates)
+    except WorkItemFilingError:
+        raise
+    except Exception as exc:  # an overlay-supplied hook fails any way it likes, and any escape takes the reply with it
+        raise UnresolvableFilingRepoError(overlay, repr(exc)) from exc
+    if chosen not in candidates:
+        raise UnresolvableFilingRepoError(overlay, f"{chosen!r} is not one of {', '.join(candidates)}")
+    return chosen
 
 
-def _file_new(ticket: Ticket, envelope: Mapping[str, object], *, host: "CodeHostBackend", repo: str) -> FiledWorkItem:
+def _file_new(
+    ticket: Ticket, envelope: Mapping[str, object], *, host: "CodeHostBackend", repo_for: Callable[[str, str], str]
+) -> FiledWorkItem:
     title = str(envelope.get("title") or "").strip()
     body = str(envelope.get("body") or "").strip()
+    repo = repo_for(title, body)
     fingerprint = _fingerprint(ticket)
     already = _existing_by_fingerprint(host, repo=repo, fingerprint=fingerprint)
     if already:
@@ -274,6 +293,7 @@ __all__ = [
     "ForgeRefusedError",
     "NoCodeHostError",
     "NoFilingRepoError",
+    "UnresolvableFilingRepoError",
     "UnresolvableIssueRefError",
     "UntrackableIssueError",
     "WorkItemFilingError",

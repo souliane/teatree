@@ -476,8 +476,6 @@ def test_codex_process_env_is_private_and_drops_ambient_credentials(tmp_path: Pa
         "GIT_AUTHOR_EMAIL": "factory@example.invalid",
         "GIT_COMMITTER_NAME": "Factory Agent",
         "GIT_COMMITTER_EMAIL": "factory@example.invalid",
-        "T3_CONFIG_DB": "/control/db.sqlite3",
-        "T3_CONTROL_DB_DIR": "/control",
         "T3_REPO": "/src/teatree",
         "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
         "T3_DISPATCHED_AGENT": "1",

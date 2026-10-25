@@ -155,7 +155,7 @@ class TestBoundTicketThread(TestCase):
             answering.ticket,
             {"existing_issue_url": "https://github.com/souliane/teatree/issues/7000"},
             host=Mock(),
-            repo="souliane/teatree",
+            repo_for=Mock(side_effect=AssertionError("existing issue must not choose a filing repo")),
         )
         assert filed is not None
         work_ticket = Ticket.objects.get(issue_url=filed.url)
@@ -1130,6 +1130,59 @@ class TestBoundTicketThread(TestCase):
         row.refresh_from_db()
         assert row.loop_replied_at is not None
         assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+
+    def test_a_choice_receipt_that_never_lands_leaves_the_message_retryable(self) -> None:
+        first = self._bound_task()
+        second = Task.objects.create(
+            ticket=first.ticket, session=first.session, phase=first.phase, status=Task.Status.PENDING
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": first.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+            {"task": second.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+        ]
+
+        post = "teatree.loop.slack_answer.session_routing._post_live_reply"
+        for name, failure in (
+            ("unconfirmed", patch(post, return_value=False)),
+            ("raises", patch(post, side_effect=RuntimeError("slack 503"))),
+        ):
+            with (
+                self.subTest(name),
+                patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client),
+                failure,
+            ):
+                run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+            row.refresh_from_db()
+            assert row.loop_replied_at is None
+
+    def test_a_replayed_receipt_that_never_lands_leaves_the_message_retryable(self) -> None:
+        parked = self._bound_task()
+        SessionCommand.objects.create(
+            command_id=slack_command_id("", "C1", "101.0"),
+            ticket=parked.ticket,
+            task=parked,
+            text="Use the new API",
+            outcome="queued_followup",
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        post = "teatree.loop.slack_answer.session_routing._post_live_reply"
+        for name, failure in (
+            ("unconfirmed", patch(post, return_value=False)),
+            ("raises", patch(post, side_effect=RuntimeError("slack 503"))),
+        ):
+            with self.subTest(name), failure:
+                run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+            row.refresh_from_db()
+            assert row.loop_replied_at is None
 
     def test_question_answer_crash_before_receipt_reports_uncertainty(self) -> None:
         parked = self._bound_task()
