@@ -16,9 +16,8 @@ The Slack Socket Mode receiver only drops ``subtype=bot_message`` events;
 the bot's own outbound posts from ``chat.postMessage`` arrive as plain
 ``message`` events whose ``user`` matches the bot's posted-as user id and
 whose ``bot_id`` matches the bot's bot id. Without a self-filter the bot
-ends up "answering" its own outbound DMs (#1346). Both filters are applied inside
-:meth:`SlackDmRecorder.record_events` so rows that fail either one never
-reach the DB and the consumer benefits for free.
+ends up "answering" its own outbound DMs (#1346). The recorder applies this
+identity filter and its scoped app-post check before a row reaches the DB.
 
 **Fail-closed (identity filter only).** When the bot's own identity cannot
 be resolved (``auth.test`` returned ``ok:false``, no bot token configured,
@@ -31,8 +30,8 @@ row that turn — better silent for one tick than spam-spawning
 **On-behalf filter (#1941, structural).** An automated on-behalf post
 sent with the human's OWN Slack token carries the human's own ``user``
 id — not the bot's — so :func:`filter_self_messages` never catches it.
-:func:`drop_on_behalf_messages` drops it on the ``api_app_id`` field Slack
-stamps on every app-posted message, regardless of identity resolution.
+The recorder checks ``api_app_id`` and admits only owner-authored replies
+in recorded owner-card threads; other app posts remain filtered.
 """
 
 from teatree.backends.slack.self_identity import (
