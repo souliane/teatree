@@ -473,6 +473,17 @@ class PrBoardFreshObservationTestCase(TestCase):
             "Obtain independent review and merge authorization",
         )
 
+    def test_uncleared_pr_behind_main_is_the_factorys_branch_update_not_the_owners(self) -> None:
+        pr = PullRequestFactory(ticket=TicketFactory())
+        card = self._card(
+            pr, _observed_entry(pr, reason="no_clear_for_head", next_task="Update PR branch against main")
+        )
+        assert (card.group, card.next_actor, card.next_action) == (
+            "Blocked",
+            "Factory",
+            "Update PR branch against main",
+        )
+
     def test_approved_green_draft_is_not_ready(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory())
         card = self._card(pr, _observed_entry(pr, draft=True))

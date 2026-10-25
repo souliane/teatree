@@ -151,14 +151,6 @@ def _blocked_reason(facts: PrActionFacts) -> str:
     return ""
 
 
-def _authorization_action(entry: "PrInventoryEntry") -> PrNextAction:
-    if entry.reason in _OWNER_REASONS:
-        return PrNextAction("Needs you", "You", entry.next_task)
-    if entry.next_task == UPDATE_BRANCH:
-        return PrNextAction("Blocked", "Factory", entry.next_task)
-    return PrNextAction("Waiting on colleagues", "Reviewer", entry.next_task)
-
-
 def _owner_waiting(facts: PrActionFacts) -> PrNextAction | None:
     return PrNextAction("Needs you", "You", facts.question) if facts.question else None
 
@@ -200,9 +192,11 @@ def _ready(facts: PrActionFacts) -> PrNextAction | None:
 
 
 def _authorization(facts: PrActionFacts) -> PrNextAction | None:
-    if facts.entry is None or facts.entry.reason not in _OWNER_REASONS | _AUTHORIZATION_REASONS:
+    if facts.entry is None or facts.entry.reason not in _OWNER_REASONS:
         return None
-    return _authorization_action(facts.entry)
+    if facts.entry.next_task == UPDATE_BRANCH:
+        return PrNextAction("Blocked", "Factory", UPDATE_BRANCH)
+    return PrNextAction("Needs you", "You", facts.entry.next_task)
 
 
 def _awaiting_review(facts: PrActionFacts) -> PrNextAction | None:
