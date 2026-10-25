@@ -104,7 +104,8 @@ def test_shell_child_selects_mode_from_its_database_path(
         timeout=30,
     )
     assert child.returncode == 0, child.stderr
-    assert child.stdout.strip().splitlines()[-1] == f"{expected} {header}"
+    active_mode = "delete" if header == 1 else expected
+    assert child.stdout.strip().splitlines()[-1] == f"{active_mode} {header}"
 
 
 def test_checkout_connection_preserves_existing_journal_until_rollout_override(tmp_path: Path) -> None:
@@ -357,7 +358,41 @@ def test_child_process_fails_closed_on_unsafe_control_db(tmp_path: Path, case: s
     assert (db if db.is_absolute() else tmp_path / db).read_bytes()[18] == 1
 
 
-def test_truncate_opener_waits_for_wal_writer_then_converts_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("selected", "header"), [("truncate", 1), ("wal", 2)])
+def test_same_family_connection_reads_held_file_without_journal_setter(
+    tmp_path: Path, selected: str, header: int
+) -> None:
+    db = tmp_path / "db.sqlite3"
+    with closing(sqlite3.connect(db)) as holder:
+        if selected == "wal":
+            assert holder.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        holder.execute("CREATE TABLE note(body TEXT)")
+        holder.execute("INSERT INTO note VALUES ('committed')")
+        holder.commit()
+        holder.execute("BEGIN")
+        assert holder.execute("SELECT body FROM note").fetchone() == ("committed",)
+        env = {**_control_child_env(db), "T3_CONTROL_DB_JOURNAL_MODE": selected}
+        script = _boundary_script(
+            "connection.settings_dict['OPTIONS']['timeout']=0.2\n"
+            "cursor=connection.cursor()\n"
+            "print(cursor.execute('SELECT body FROM note').fetchone()[0])\n"
+            "connection.close()\n"
+        )
+        child = subprocess.run(
+            [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=False, timeout=30
+        )
+        assert child.returncode == 0, child.stderr
+        assert child.stdout.strip() == "committed"
+        assert db.read_bytes()[18] == header
+        with patch("teatree.db.write_domain.read_mount_entries", return_value=(MountEntry(Path("/"), "ext4"),)):
+            commands = ControlDbJournal(db, env, containerized=True).init_commands(
+                ["PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON"]
+            )
+        assert all("journal_mode" not in command for command in commands)
+        assert "PRAGMA foreign_keys=ON" in commands
+
+
+def test_mismatched_header_waits_for_wal_writer_then_converts_file(tmp_path: Path) -> None:
     db = tmp_path / "db.sqlite3"
     writer = sqlite3.connect(db)
     try:
@@ -407,6 +442,12 @@ def test_truncate_opener_waits_for_wal_writer_then_converts_file(tmp_path: Path)
     )
     assert converted.returncode == 0, converted.stderr
     assert converted.stdout.strip() == "truncate"
+    assert db.read_bytes()[18] == 1
+    converted = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=False, timeout=30
+    )
+    assert converted.returncode == 0, converted.stderr
+    assert converted.stdout.strip() == "delete"
     assert db.read_bytes()[18] == 1
 
 

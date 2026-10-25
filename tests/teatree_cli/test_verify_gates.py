@@ -32,6 +32,7 @@ from teatree.cli.verify_gates import (
     _prek_config,
     _resource_refusal,
 )
+from teatree.paths import ControlDb
 from teatree.quality.changed_set import ChangedSet, ChangeEntry
 from tests._git_repo import make_git_repo, run_git
 
@@ -182,6 +183,31 @@ class TestVerifyGatesRunsBothStages:
         assert result.exit_code == 1
         assert "memory: 900 MiB available below 2048 MiB floor" in result.output
         run.assert_not_called()
+
+    def test_stage_children_resolve_a_private_control_database(
+        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live = tmp_path / "live-control"
+        monkeypatch.setenv("T3_CONTROL_DB_DIR", str(live))
+        monkeypatch.setenv("T3_CONFIG_DB", str(live / "db.sqlite3"))
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{live / 'db.sqlite3'}")
+        monkeypatch.setenv("XDG_DATA_HOME", str(live))
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 0, _text(result)
+        assert len(run.call_args_list) >= 2
+        for call in run.call_args_list:
+            env = call.kwargs["env"]
+            private_root = Path(env["XDG_DATA_HOME"])
+            assert private_root != live
+            assert Path(env["T3_CONTROL_DB_DIR"]).is_relative_to(private_root)
+            assert "T3_CONFIG_DB" not in env
+            assert "DATABASE_URL" not in env
+            assert ControlDb(env, home=tmp_path).for_repo(worktree).path.is_relative_to(private_root)
 
     def test_invokes_push_stage_hooks_not_just_commit(self) -> None:
         with (

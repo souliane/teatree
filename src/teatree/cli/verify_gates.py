@@ -34,10 +34,12 @@ a clean main clone on its default branch is refused, and a green run names the
 CI jobs no local hook covers so exit 0 cannot be read as "CI will be green".
 """
 
+import os
 import shutil
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import typer
 import yaml
@@ -273,13 +275,13 @@ def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[t
     return [*stages, ("manual (CI-job hooks)", manual)]
 
 
-def _run_stages(stages: list[tuple[str, list[str]]], repo: Path) -> tuple[list[str], list[str]]:
+def _run_stages(stages: list[tuple[str, list[str]]], repo: Path, env: dict[str, str]) -> tuple[list[str], list[str]]:
     failed: list[str] = []
     incomplete: list[str] = []
     for label, cmd in stages:
         typer.echo(f"== verify-gates: {label} ==", err=True)
         # ``check=False`` inherits stdio and lets us collect both stage results.
-        result = run_streamed(cmd, check=False, cwd=repo)
+        result = run_streamed(cmd, check=False, cwd=repo, env=env)
         if result in {124, 137}:
             incomplete.append(label)
         elif result != 0:
@@ -360,7 +362,13 @@ def verify_gates(
     scope_args, scope_reason = _scope_args(repo)
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
     stages = _stage_commands(scope_args, repo, tree.toplevel)
-    failed, incomplete = _run_stages(stages, repo)
+    with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
+        env = os.environ.copy()
+        env.pop("T3_CONFIG_DB", None)
+        env.pop("DATABASE_URL", None)
+        env["XDG_DATA_HOME"] = private_root
+        env["T3_CONTROL_DB_DIR"] = str(Path(private_root) / "control-db")
+        failed, incomplete = _run_stages(stages, repo, env)
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):

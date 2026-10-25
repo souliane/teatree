@@ -102,19 +102,27 @@ class ControlDbJournal:
     def reason(self) -> str:
         return self.selection[1]
 
+    def _existing_file_mode(self) -> str | None:
+        try:
+            return sqlite_file_journal_mode(self.db_path)
+        except FileNotFoundError:
+            return None
+
     def init_commands(self, existing: Sequence[str]) -> list[str]:
         mode = self.mode
         selected = f"PRAGMA journal_mode={mode.upper()}"
+        pending_setter = self._existing_file_mode() != mode
         commands: list[str] = []
         for command in existing:
             if not command.strip():
                 continue
             if _JOURNAL_COMMAND.match(command):
-                if selected not in commands:
+                if pending_setter:
                     commands.append(selected)
+                    pending_setter = False
             else:
                 commands.append(command)
-        if selected not in commands:
+        if pending_setter:
             commands.insert(0, selected)
         if mode == "wal":
             for command in ("PRAGMA synchronous=NORMAL", f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT}"):

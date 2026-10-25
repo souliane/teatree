@@ -94,9 +94,10 @@ def test_router_keeps_worker_hook_paths_without_inheriting_other_credentials() -
         "TEATREE_TERM_REGISTRY": "test-registry",
     }
 
-    env = router_process_env({}, ambient={"PATH": "/usr/bin", **hook_env, **_SECRETS})
+    env = router_process_env({}, ambient={"PATH": "/usr/bin", **hook_env, "T3_CONTROL_DB_DIR": "/control", **_SECRETS})
 
     assert {key: env[key] for key in hook_env} == hook_env
+    assert "T3_CONTROL_DB_DIR" not in env
     assert not _SECRETS.keys() & env.keys()
 
 

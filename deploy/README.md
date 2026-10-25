@@ -270,9 +270,13 @@ database or a deployed install. All other database paths also select TRUNCATE.
 rollback mode for the control DB;
 `wal` asserts that WAL is eligible and fails at connection setup if it is not.
 Values are case-insensitive and may have surrounding whitespace; other values
-fail at connection setup. The file's mode can change only when a connection
-opens, and a TRUNCATE opener fails with `database is locked` while another
-process holds a WAL connection open.
+fail at connection setup. A writable connection reads the SQLite file header
+and runs the journal-mode setter only for a new file or a WAL-versus-rollback
+header mismatch. A same-family connection can read committed rows while another
+process holds the file. The rollback header cannot distinguish DELETE from
+TRUNCATE, so a later connection may report DELETE after a TRUNCATE conversion.
+A genuine mode conversion can still fail with `database is locked` while another
+process holds the file.
 
 An unshipped checkout has a `.git` entry and a root different from
 `TEATREE_CLONE_DIR`, or no deployed clone marker. Without an override it
@@ -284,11 +288,10 @@ directory can change an existing rollback file to WAL when the storage is
 eligible. A tree without `.git`, or a tree whose root equals `TEATREE_CLONE_DIR`,
 uses normal selection.
 
-On the first deploy, drain the worker and stop every database-using service
-before the new code opens the control DB. A mode change while an old process
-holds a connection can make new connections fail with `database is locked`.
-Start the new services only after the old processes have exited, then confirm
-the journal mode with `t3 doctor`.
+For a WAL-versus-rollback conversion, drain the worker, stop every database-using
+service including the watchdog, and verify that all old processes have exited.
+Convert with one process before starting the new admin and then the remaining
+services; confirm the header and connection behaviour with `t3 doctor`.
 
 To return to TRUNCATE or roll back to an image from before this change, set
 `T3_CONTROL_DB_JOURNAL_MODE=truncate` in `deploy/teatree.env`, stop every service
