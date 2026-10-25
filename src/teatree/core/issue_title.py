@@ -13,9 +13,14 @@ from teatree.core.backend_registry import get_backend_provider
 from teatree.core.forge_url import is_forge_url
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.types import RawAPIDict
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
+
+
+class MergeRequestTitleUnreadableError(LookupError):
+    """The forge answered no title for a ticket's pull/merge-request URL."""
 
 
 def read_issue_title(issue: RawAPIDict) -> str:
@@ -25,11 +30,14 @@ def read_issue_title(issue: RawAPIDict) -> str:
 
 
 def fetch_issue_title(ticket: "Ticket") -> str:
-    """Fetch *ticket*'s forge issue title, or ``""`` for a non-forge sentinel.
+    """Fetch *ticket*'s forge title, or ``""`` for a non-forge sentinel.
 
-    Raises whatever the forge read raises (404, CLI failure, resolution error)
-    so each caller decides how to degrade — the signal hook logs and drops it,
-    the backfill sweep skips that one ticket and continues.
+    A pull/merge-request URL is titled by the request itself; any other forge URL by its issue.
+
+    Raises whatever the forge read raises (404, CLI failure, resolution error), and
+    :class:`MergeRequestTitleUnreadableError` when a request answers no title, so each
+    caller decides how to degrade — the signal hook logs and drops it, the backfill
+    sweep skips that one ticket and continues.
     """
     if not is_forge_url(ticket.issue_url):
         return ""
@@ -37,4 +45,10 @@ def fetch_issue_title(ticket: "Ticket") -> str:
     host = get_backend_provider().get_code_host_for_url(overlay, ticket.issue_url)
     if host is None:
         return ""
-    return read_issue_title(host.get_issue(ticket.issue_url))
+    ref = pr_ref_from_url(ticket.issue_url)
+    if ref is None:
+        return read_issue_title(host.get_issue(ticket.issue_url))
+    message = host.fetch_pr_message(slug=ref.slug, pr_id=ref.pr_id)
+    if message is None:
+        raise MergeRequestTitleUnreadableError(ticket.issue_url)
+    return message.title
