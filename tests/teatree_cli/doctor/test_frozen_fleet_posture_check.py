@@ -136,11 +136,11 @@ class FrozenFleetPostureWiringTest(django.test.TestCase):
             mock.patch.object(self_heal, "_check_runtime_clone_on_default_branch", return_value=True),
         ):
             assert self_heal.run_self_heal_checks() is True
-            with (
-                mock.patch.object(self_heal, "check_frozen_fleet_under_kill_switch", return_value=False),
-                redirect_stdout(io.StringIO()),
-            ):
-                assert self_heal.run_self_heal_checks() is False
+        with (
+            mock.patch.object(self_heal, "check_frozen_fleet_under_kill_switch", return_value=False),
+            redirect_stdout(io.StringIO()),
+        ):
+            assert self_heal.run_self_heal_checks() is False
         assert self_heal.check_frozen_fleet_under_kill_switch is (
             self_heal_frozen_fleet.check_frozen_fleet_under_kill_switch
         )
