@@ -10,10 +10,11 @@ from django.db.models import Q
 from teatree.core._checking_gather import _merge_safe_prs, _recent_failed_tasks, ticket_url
 from teatree.core.admission_priority import ADMISSION_ORDER, admission_priority_annotations
 from teatree.core.agent_admission import headless_lane_widths
-from teatree.core.checking_types import CheckGroup, CheckGroupDict, CheckItem, CheckItemDict
+from teatree.core.checking_types import DEFAULT_CAP, CheckGroup, CheckGroupDict, CheckItem, CheckItemDict
 from teatree.core.cycle_time.eta import format_minutes, queue_waves, remaining_given_elapsed
-from teatree.core.cycle_time.step_history import MIN_SAMPLES, StepEstimate, StepHistory
+from teatree.core.cycle_time.step_history import StepEstimate, StepHistory
 from teatree.core.lifecycle_pipeline import PIPELINE, TicketSnapshot, resolve_plan
+from teatree.core.managers import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.modelkit.phases import REVIEW_PHASES, CheapClass, normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -140,10 +141,19 @@ def _running_measured(estimate: StepEstimate, elapsed: float) -> tuple[tuple[flo
     remaining = remaining_given_elapsed(estimate.samples, elapsed)
     if remaining is None:
         return None, f"running longer than all {estimate.n} {estimate.window} samples"
-    survivors = sum(sample > elapsed for sample in estimate.samples)
-    if survivors < MIN_SAMPLES:
-        return None, f"only {survivors} surviving {estimate.window} samples (need {MIN_SAMPLES})"
     return remaining, ""
+
+
+def _duration_phase(step: str, task: Task | None, index: int) -> str:
+    basis = STEP_PHASE.get(step, step)
+    if index or task is None:
+        return basis
+    phase = normalize_phase(task.phase)
+    if step in {"rework", "coding"} and phase in {"coding", "debugging"}:
+        return phase
+    if step == "factory review" and phase in REVIEW_PHASES:
+        return phase
+    return phase if step == PHASE_LABEL.get(phase, phase) else basis
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,11 +167,22 @@ class QueueState:
     oldest: datetime | None
     oldest_phase: str | None
 
+    def has_seat(self, task: Task | None) -> bool:
+        return bool(
+            task
+            and task.status == Task.Status.PENDING
+            and task.admitted_at
+            and task.admitted_at > self.now - ADMITTED_INFLIGHT_WINDOW
+            and (task.not_before is None or task.not_before <= self.now)
+        )
+
     def ahead(self, task: Task | None, phase: str) -> int:
         lane = _lane(phase)
         lane_tasks = [row for row in self.pending if _lane(row.phase) == lane]
         if task is None:
             return len(lane_tasks)
+        if self.has_seat(task):
+            return 0
         return next((index for index, row in enumerate(lane_tasks) if row.pk == task.pk), len(lane_tasks))
 
     @classmethod
@@ -241,9 +262,10 @@ def _eta_for_item(
         else:
             if estimate.basis != "measured":
                 defaults.add(f"{phase}: {estimate.basis}")
-            if index == 0 and step not in {"merge", "deploy"}:
-                lane = _lane(phase)
-                ahead = queue.ahead(task, phase)
+            if index == 0 and step not in {"merge", "deploy"} and not queue.has_seat(task):
+                queue_phase = task.phase if task is not None else phase
+                lane = _lane(queue_phase)
+                ahead = queue.ahead(task, queue_phase)
                 waves = queue_waves(ahead=ahead, occupied=queue.occupied[lane], seats=queue.seats[lane])
                 if waves is None:
                     reason = f"no seats for {lane} lane"
@@ -351,12 +373,7 @@ def _work_item(
     hold, status = _hold_for_item(snapshot, ticket, tasks)
     merge_safe = bool(pr and pr.iid.isdigit() and (pr.repo.casefold(), int(pr.iid)) in snapshot.verdicts)
     steps = remaining_steps(ticket.state, task.phase if task else "", has_pr=pr is not None, merge_safe=merge_safe)
-    duration_phases = tuple(
-        normalize_phase(task.phase)
-        if index == 0 and task is not None and step not in {"merge", "deploy"}
-        else STEP_PHASE.get(step, step)
-        for index, step in enumerate(steps)
-    )
+    duration_phases = tuple(_duration_phase(step, task, index) for index, step in enumerate(steps))
     if hold:
         eta = {"median_minutes": None, "p80_minutes": None, "basis": hold}
         eta_text = f"ETA unknown ({hold})"
@@ -491,7 +508,7 @@ def _summarize(snapshot: RemainingSnapshot, history: StepHistory, items: list[Re
     )
     return RemainingGroup(
         title="Remaining",
-        items=[summary, queue_item, *items],
+        items=[summary, queue_item, *items[: DEFAULT_CAP - 2]],
         total=len(items) + 2,
         eta=eta_total,
         queue=queue,
