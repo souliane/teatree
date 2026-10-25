@@ -26,10 +26,6 @@ class ConstraintViolation:
 
 
 _NEGATIVE = re.compile(r"\b(?:no|do\s+not|don't|must\s+not|without)\b([^.;\n]{0,120})", re.IGNORECASE)
-_OBSERVED_ABSENCE = re.compile(r"\b(?:finds|found|shows|showed|reports|reported)\s+$", re.IGNORECASE)
-_FOLLOWING_DIRECTIVE = re.compile(
-    r"\b(?:so|but|therefore)\s+(?P<negative>do\s+not|don't|must\s+not|without|no)\b", re.IGNORECASE
-)
 _EXAMPLE_GROUP = re.compile(r"\b(?:closed\s+grammar|for\s+example|e\.g\.|such\s+as)\s*\([^()\n]*\)", re.IGNORECASE)
 _PATH = r"([\w./-]+\.(?:py|md|toml|yaml|yml|json|cfg|ini))"
 _KEEP = re.compile(rf"\b(?:keep|leave)\s+{_PATH}\s+unchanged\b", re.IGNORECASE)
@@ -41,15 +37,7 @@ def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
     text = _EXAMPLE_GROUP.sub("", text)
     found: dict[tuple[ConstraintKind, str], BriefConstraint] = {}
     for match in _NEGATIVE.finditer(text):
-        scope = match.group(1)
-        source = match.group(0).strip()
-        if match.group(0).lower().startswith("no") and _OBSERVED_ABSENCE.search(text[: match.start()]):
-            directive = _FOLLOWING_DIRECTIVE.search(scope)
-            if directive is None:
-                continue
-            source = scope[directive.start("negative") :].strip()
-            scope = scope[directive.end("negative") :]
-        scope = scope.lower()
+        scope = match.group(1).lower()
         if scope.lstrip().startswith("forget to "):
             continue
         scope = re.sub(r"(?<![\w-])--settings(?=\s|=|$)", "", scope)
@@ -59,7 +47,7 @@ def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
             ("no_public_name", r"\bpublic\s+(?:names?|api|symbols?)\b"),
         ):
             if re.search(pattern, scope):
-                found[kind, ""] = BriefConstraint(kind, "", source)
+                found[kind, ""] = BriefConstraint(kind, "", match.group(0).strip())
     for pattern in (_KEEP, _STAYS, _DO_NOT_TOUCH):
         for match in pattern.finditer(text):
             target = match.group(1).removeprefix("./")

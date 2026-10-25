@@ -32,22 +32,6 @@ def test_do_not_forget_is_not_a_negative_setting_constraint() -> None:
     assert extract_constraints("Do not forget to update the settings docs.") == ()
 
 
-def test_search_result_absence_is_not_a_plan_constraint() -> None:
-    brief = "git grep finds no intake-repo setting anywhere in src/. Do not add a migration."
-    assert {item.kind for item in extract_constraints(brief)} == {"no_migration"}
-    assert {item.kind for item in extract_constraints(brief + " Do not add a setting.")} == {
-        "no_migration",
-        "no_setting",
-    }
-
-
-def test_observed_absence_keeps_a_directive_in_the_same_clause() -> None:
-    brief = "git grep finds no intake-repo setting anywhere in src/, so do not add a migration."
-    assert {item.kind for item in extract_constraints(brief)} == {"no_migration"}
-    assert extract_constraints("git grep finds no intake-repo setting anywhere in src/.") == ()
-    assert extract_constraints("git grep finds no setting, so do not forget to add a migration.") == ()
-
-
 def test_cli_settings_flag_is_not_a_ban_on_new_settings() -> None:
     brief = 'Use the advisor key without spawning: `--settings {"advisorModel": "<id>"}`.'
 

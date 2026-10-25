@@ -5,7 +5,9 @@ The intake scanner uses this scope by default; external outcomes always use it.
 
 from unittest.mock import MagicMock
 
-from teatree.core.overlay_repos import owned_repo_slugs
+import pytest
+
+from teatree.core.overlay_repos import intake_repo_slugs, owned_repo_slugs
 
 
 def _overlay(*, merge_candidates: list[str], followup: list[str]) -> MagicMock:
@@ -36,3 +38,42 @@ class TestOwnedRepoSlugs:
 
     def test_no_overlay_yields_nothing(self) -> None:
         assert owned_repo_slugs(None) == ()
+
+
+class TestIntakeRepoSlugs:
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            ("o/app", "o/app"),
+            ("group/sub/repo", "group/sub/repo"),
+            ("o/my.repo", "o/my.repo"),
+            ("o/my_repo", "o/my_repo"),
+            ("o/123", "o/123"),
+            ("O/App12", "O/App12"),
+        ],
+    )
+    def test_accepts_repo_slug_shapes(self, configured: str, expected: str) -> None:
+        assert intake_repo_slugs(None, [configured]) == (expected,)
+
+    @pytest.mark.parametrize("configured", ["o/a b", "o//x", "o/", "o/app?x=1", "o/*", ""])
+    def test_rejects_malformed_repo_slug_shapes(self, configured: str, caplog: pytest.LogCaptureFixture) -> None:
+        overlay = _overlay(merge_candidates=["o/owned"], followup=[])
+
+        assert intake_repo_slugs(overlay, [configured]) == ("o/owned",)
+        assert repr(configured) in caplog.text
+
+    def test_malformed_entry_does_not_widen_a_valid_scope(self, caplog: pytest.LogCaptureFixture) -> None:
+        overlay = _overlay(merge_candidates=["o/owned"], followup=[])
+
+        assert intake_repo_slugs(overlay, ["o/app", "typo"]) == ("o/app",)
+        assert "'typo'" in caplog.text
+
+    def test_all_malformed_entries_use_owned_scope(self, caplog: pytest.LogCaptureFixture) -> None:
+        overlay = _overlay(merge_candidates=["o/owned"], followup=[])
+
+        assert intake_repo_slugs(overlay, ["typo", "o/*"]) == ("o/owned",)
+        assert "'typo'" in caplog.text
+        assert "'o/*'" in caplog.text
+
+    def test_case_variants_are_one_repo(self) -> None:
+        assert intake_repo_slugs(None, ["O/App", "o/app"]) == ("O/App",)

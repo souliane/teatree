@@ -188,7 +188,11 @@ class _IssueImplementerLoopSettings:
     issue_intake_repos: list[str] = setting(
         default_factory=list,
         spec=SettingSpec(
-            help="owner/repo slugs eligible for issue intake; empty uses all overlay repos", parse=_parse_str_list
+            help=(
+                "Repo slugs replacing the overlay-owned intake scope; undeclared repos allowed; "
+                "branch-like prefixes rejected; empty or all-invalid uses owned repos"
+            ),
+            parse=_parse_str_list,
         ),
     )
 

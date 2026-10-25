@@ -150,15 +150,16 @@ class IssueIntakeGateTests(TestCase):
         assert scanner.repo_slugs == ("o/app-e2e", "o/app")
         assert "issue_intake_repos" in "\n".join(logs.output)
 
-    def test_one_malformed_entry_falls_back_instead_of_partially_narrowing(self) -> None:
+    def test_one_malformed_entry_keeps_the_valid_narrow_scope(self) -> None:
         overlay = _overlay_with_repos(followup=["o/app"], merge_candidates=["o/app-e2e"])
         with (
             patch(_PATCH_TARGET, return_value=_enabled(issue_intake_repos=["o/app", "repo:app"])),
-            self.assertLogs("teatree.core.overlay_repos", level="WARNING"),
+            self.assertLogs("teatree.core.overlay_repos", level="WARNING") as logs,
         ):
             scanner = _issue_intake_scanner_for(_backend(overlay=overlay))
         assert isinstance(scanner, IssueIntakeScanner)
-        assert scanner.repo_slugs == ("o/app-e2e", "o/app")
+        assert scanner.repo_slugs == ("o/app",)
+        assert "'repo:app'" in "\n".join(logs.output)
 
     def test_only_the_configured_overlay_narrows_its_intake_scope(self) -> None:
         ConfigSetting.objects.set_value("issue_intake_repos", ["o/app"], scope="acme")
