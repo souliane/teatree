@@ -34,7 +34,7 @@ class _DriftedBranchFixture(_ReaperFixture):
     def _land_on_main(self, filename: str, body: str) -> None:
         (self.repo_main / filename).write_text(body, encoding="utf-8")
         _run_git("add", "-A", cwd=self.repo_main)
-        _run_git("commit", "-q", "-m", f"feat: land {filename}", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", f"squash: land {filename}", cwd=self.repo_main)
         _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
         _run_git("fetch", "-q", "origin", cwd=self.repo_main)
 

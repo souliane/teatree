@@ -40,6 +40,7 @@ from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, cl
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
+from teatree.core.cleanup.removal_proof import RemovalRefusedError, removal_refusal
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Ticket, Worktree
@@ -281,10 +282,8 @@ def _unpushed_commit_reasons(
     # edited again defeats every patch-id/tree instrument, while the forge's
     # merge record at the exact tip still proves it landed. Fails CLOSED.
     #
-    # Its git-local rungs are ANDed with present-tense presence (#4719): this
-    # analysis IS the data-loss gate — its caller force-wipes past every guard in
-    # ``cleanup_worktree`` — and those rungs read a patch's PRIOR appearance, which
-    # a later commit over the same region does not erase.
+    # Its git-local rungs are ANDed with present-tense presence (#4719):
+    # a later commit over the same region does not erase a patch's prior appearance.
     if branch is not None:
         landed = verdict if verdict is not None else branch_redundancy(content_repo, branch, default_target)
         if landed.redundant and branch_landed_for_teardown(content_repo, branch, default_target):
@@ -426,9 +425,9 @@ def _dead_checkout_outcome(
 
     The done/redundancy gates below cannot reach a dir git will not open, so this
     branch decides instead, on the proof :func:`classify_broken_checkout` gathered
-    from the source clone. ``force=True`` is warranted for the same reason it is in
-    :func:`_wipe_proven_redundant`: that proof IS the data-loss gate, and the guards
-    it bypasses are exactly the ones that can only fail closed here. The dir itself
+    from the source clone. ``force=True`` with ``discard_unshipped_work`` is warranted
+    because that proof IS the data-loss gate, and the guards and checkout proof it
+    bypasses can only fail closed on a dir git will not open. The dir itself
     SURVIVES: nothing in ``clean-all`` removes a checkout directory under a worktree
     root any more, because no evidence one execution context can gather proves a
     checkout dead everywhere (#3912). Disposing of its files is an explicit operator
@@ -442,7 +441,7 @@ def _dead_checkout_outcome(
         )
     if dry_run:
         return ReapOutcome("would-wipe", f"WOULD RELEASE '{worktree.branch}': {verdict.reason}")
-    result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
+    result = cleanup_worktree(worktree, force=True, strict_hygiene=False, discard_unshipped_work=True)
     return ReapOutcome("wiped", f"Released dead checkout '{worktree.branch}': {result.label}", errors=result.errors)
 
 
@@ -462,15 +461,10 @@ def _wipe_proven_redundant(
     """Wipe a proven-redundant worktree, re-checking the TOCTOU bracket before the force-wipe.
 
     The redundancy analysis proved the state captured at ``fingerprint_at_analysis``
-    is fully upstream, but ``cleanup_worktree(force=True)`` bypasses every data-loss
-    guard. A commit OR an uncommitted edit landing between the analysis and the wipe
-    would be destroyed unexamined — so the fingerprint is re-read here and the wipe
-    refused (KEEP) if it moved, leaving the worktree for the next sweep to re-analyse.
+    is fully upstream. A commit or edit landing between analysis and removal could
+    change that verdict, so the fingerprint is re-read before cleanup. The shared
+    removal proof then checks the checkout again inside cleanup.
     """
-    if dry_run:
-        return ReapOutcome(
-            "would-wipe", f"WOULD WIPE '{worktree.branch}': done ({signal.source}), all changes proven redundant"
-        )
     fingerprint_before_wipe = _wipe_fingerprint(worktree, workspace=probes.workspace, probes=probes)
     if fingerprint_before_wipe != fingerprint_at_analysis:
         return ReapOutcome(
@@ -480,7 +474,26 @@ def _wipe_proven_redundant(
             "— re-run cleanup to re-analyse",
             emit=_build_emit_record(worktree, workspace=probes.workspace, liveness="", probes=probes),
         )
-    result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
+    checkout = Path(resolve_worktree_path(probes.workspace, worktree))
+    clone = resolve_clone_path(probes.workspace, worktree) or probes.workspace / worktree.repo_path
+    if dry_run and (refusal := removal_refusal(checkout, clone=Path(clone), row=worktree, sweep=True)):
+        return ReapOutcome(
+            "kept",
+            f"KEPT '{worktree.branch}': done ({signal.source}) but {refusal}",
+            emit=_build_emit_record(worktree, workspace=probes.workspace, liveness="", probes=probes),
+        )
+    if dry_run:
+        return ReapOutcome(
+            "would-wipe", f"WOULD WIPE '{worktree.branch}': done ({signal.source}), all changes proven redundant"
+        )
+    try:
+        result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
+    except RemovalRefusedError as exc:
+        return ReapOutcome(
+            "kept",
+            f"KEPT '{worktree.branch}': {exc}",
+            emit=_build_emit_record(worktree, workspace=probes.workspace, liveness="", probes=probes),
+        )
     return ReapOutcome("wiped", f"Wiped '{worktree.branch}' ({signal.source}): {result.label}", errors=result.errors)
 
 
