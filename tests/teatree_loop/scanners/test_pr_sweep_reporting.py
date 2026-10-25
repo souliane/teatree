@@ -128,6 +128,26 @@ class ForgeApprovalsTestCase(TestCase):
             (pr,) = GhPrApiClient().list_open_prs(slug="souliane/teatree")
         assert inventory_entry(pr, None).threads == "unknown"
 
+    def test_paginated_threads_do_not_claim_a_complete_count(self) -> None:
+        raw = {"number": 7, "headRefOid": "a" * 40, "url": "https://github.com/souliane/teatree/pull/7"}
+        threads = {
+            "data": {
+                "repository": {
+                    "p7": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": True},
+                            "nodes": [{"isResolved": False}],
+                        }
+                    }
+                }
+            }
+        }
+        with patch.object(
+            GhPrApiClient, "_run_gh", side_effect=[(0, json.dumps([raw]), ""), (0, json.dumps(threads), "")]
+        ):
+            (pr,) = GhPrApiClient().list_open_prs(slug="souliane/teatree")
+        assert inventory_entry(pr, None).threads == "unknown"
+
     def test_github_thread_read_batches_twenty_six_prs(self) -> None:
         raw = [
             {"number": number, "headRefOid": "a" * 40, "url": f"https://github.com/souliane/teatree/pull/{number}"}
@@ -178,7 +198,12 @@ class ForgeApprovalsTestCase(TestCase):
         assert self._listed_github_pr([]).approval_count == 0
 
     def test_github_review_decision_is_listed_and_mapped(self) -> None:
-        decisions = {"APPROVED": "approved", "REVIEW_REQUIRED": "awaiting approval", "": "unknown"}
+        decisions = {
+            "APPROVED": "approved",
+            "REVIEW_REQUIRED": "awaiting approval",
+            "CHANGES_REQUESTED": "awaiting approval",
+            "": "unknown",
+        }
         for decision, expected in decisions.items():
             with self.subTest(decision=decision):
                 raw = {"number": 7, "headRefOid": "a" * 40, "url": "u", "reviewDecision": decision}
@@ -201,6 +226,17 @@ class ForgeApprovalsTestCase(TestCase):
 
 
 class PrSweepInventoryTestCase(TestCase):
+    def test_merged_pr_is_absent_from_the_open_inventory(self) -> None:
+        pr = _pr(42, created_at="2026-10-01T10:00:00Z")
+        api = Mock()
+        api.list_open_prs.return_value = [pr]
+        writer = Mock()
+        scanner = PrSweepScanner(repos=(pr.slug,), api=api, keystone=Mock(), notifier=Mock(), inventory_writer=writer)
+        merged = MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="merged", merged=True, url=pr.url)
+        with patch.object(PrSweepScanner, "_evaluate", return_value=merged):
+            scanner.scan()
+        assert writer.call_args.args[1] == []
+
     def test_partial_repo_failure_revokes_previous_ready_snapshot(self) -> None:
         pr = PullRequestFactory(ticket=TicketFactory(), state=PullRequest.State.APPROVED)
         entry = PrInventoryEntry(
@@ -442,6 +478,38 @@ class MyPrsInventoryTestCase(TestCase):
         host.get_mr_approvals.assert_called_once_with(repo="souliane/teatree", pr_iid=1)
         assert (entry.ci, entry.approvals, entry.threads) == ("green", "approved", "2 unresolved")
         assert entry.approvals_display == "1/1 (approved)"
+
+    def test_negative_forge_approval_counts_are_unknown(self) -> None:
+        host = self._host()
+        host.get_mr_approvals.return_value = {
+            "approvals_left": 1,
+            "count": -1,
+            "required": -2,
+            "unresolved_resolvable": 0,
+        }
+        writer = Mock()
+
+        MyPrsScanner(host=host, overlay_name="teatree", inventory_writer=writer).scan()
+
+        (entry,) = writer.call_args.args[1]
+        assert entry.approvals_display == "awaiting approval"
+
+    def test_signal_without_url_revokes_the_verified_inventory(self) -> None:
+        host = self._host(status="failed")
+        host.list_my_prs.return_value[0]["web_url"] = ""
+        writer = Mock()
+        invalidator = Mock()
+
+        signals = MyPrsScanner(
+            host=host,
+            overlay_name="teatree",
+            inventory_writer=writer,
+            inventory_invalidator=invalidator,
+        ).scan()
+
+        assert len(signals) == 1
+        writer.assert_not_called()
+        invalidator.assert_called_once()
 
     def test_skipped_pipeline_is_settled_and_reads_approvals(self) -> None:
         host = self._host(status="skipped")

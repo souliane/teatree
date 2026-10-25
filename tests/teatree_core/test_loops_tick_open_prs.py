@@ -192,13 +192,73 @@ class TestTickRepairsStalledPrs(django.test.TestCase):
             defaults={"enabled": True, "delay_seconds": 60, "script": f"src/teatree/loops/{_LOOP}/loop.py"},
         )
 
-    def _stalled(self, *, state: str = Ticket.State.WORK_STARTED, planned: bool = True) -> PrInventoryEntry:
-        entry = _blocked_entry(11)
+    def _stalled(
+        self, *, state: str = Ticket.State.WORK_STARTED, planned: bool = True, number: int = 11
+    ) -> PrInventoryEntry:
+        entry = _blocked_entry(number)
         ticket = TicketFactory(state=state)
         PullRequestFactory(ticket=ticket, url=entry.url, repo=entry.repo, iid=entry.iid)
         if planned:
             PlanArtifact.objects.create(ticket=ticket, plan_text="plan", recorded_by="planner", base_sha="a" * 40)
         return entry
+
+    def _repair_row(self, entry: PrInventoryEntry, *, cause: str = "Fix failing CI", decision: str = "") -> OpenPrRow:
+        return OpenPrRow(
+            ref=f"{entry.repo}!{entry.iid}",
+            url=entry.url,
+            age="2 d",
+            next_task=cause,
+            started=True,
+            stall=cause,
+            head_sha=entry.head_sha,
+            decision=decision,
+        )
+
+    def test_repair_ledger_distinguishes_ci_conflict_and_review_findings(self) -> None:
+        for number, cause, decision, expected in (
+            (11, "Fix failing CI", "", RedMrFixAttempt.Kind.CI_RED),
+            (12, "Resolve merge conflict", "flag_conflict", RedMrFixAttempt.Kind.MERGE_CONFLICT),
+            (13, "Address requested changes", "", RedMrFixAttempt.Kind.REVIEW_FINDINGS),
+        ):
+            entry = self._stalled(state=Ticket.State.PR_OPENED, number=number)
+            row = self._repair_row(entry, cause=cause, decision=decision)
+            assert repair_stalled_prs([row])[0].action.startswith("queued TODO-")
+            assert RedMrFixAttempt.objects.get(pr_url=row.url).kind == expected
+
+    def test_unknown_head_is_recorded_without_claiming_a_repair(self) -> None:
+        entry = self._stalled(state=Ticket.State.PR_OPENED)
+        row = replace(self._repair_row(entry), head_sha="")
+
+        result = repair_stalled_prs([row])[0]
+
+        assert result.action == "unresolved: head SHA is unknown"
+        assert Task.objects.count() == 0
+        assert not RedMrFixAttempt.objects.filter(pr_url=row.url).exists()
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"pr-stall:{row.url}:{row.stall}").count() == 1
+
+    def test_no_plan_decision_is_recorded_without_claiming_a_repair(self) -> None:
+        entry = self._stalled(state=Ticket.State.PR_OPENED, planned=False)
+        row = self._repair_row(entry)
+
+        result = repair_stalled_prs([row])[0]
+
+        assert result.action == "unresolved: no plan decision is available for corrective work"
+        assert Task.objects.count() == 0
+        assert not RedMrFixAttempt.objects.filter(pr_url=row.url).exists()
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"pr-stall:{row.url}:{row.stall}").count() == 1
+
+    def test_unresolved_question_is_deduped_per_pr_and_cause(self) -> None:
+        entry = self._stalled(state=Ticket.State.PR_OPENED, planned=False)
+        ci = self._repair_row(entry)
+        conflict = self._repair_row(entry, cause="Resolve merge conflict", decision="flag_conflict")
+
+        repair_stalled_prs([ci, ci, conflict])
+
+        assert set(DeferredQuestion.objects.values_list("dedupe_marker", flat=True)) == {
+            f"pr-stall:{ci.url}:{ci.stall}",
+            f"pr-stall:{conflict.url}:{conflict.stall}",
+        }
+        assert DeferredQuestion.objects.count() == 2
 
     def test_two_ticks_on_the_same_stall_queue_one_repair_task(self) -> None:
         entry = self._stalled()

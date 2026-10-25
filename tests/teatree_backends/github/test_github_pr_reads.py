@@ -176,6 +176,18 @@ class TestApprovalState:
         assert (state["count"], state["required"], state["approvals_left"]) == (1, 2, 1)
         rules.assert_called_once_with("repos/o/r/rules/branches/main", token="t")
 
+    def test_strictest_matching_branch_rule_sets_the_approval_requirement(self) -> None:
+        with patch.object(
+            pr_reads,
+            "_gh_api_get",
+            return_value=[
+                {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
+                {"type": "pull_request", "parameters": {"required_approving_review_count": 3}},
+            ],
+        ):
+            required = pr_reads._required_approval_count(repo="o/r", base_ref="main", token="t")
+        assert required == 3
+
     def test_unreadable_threads_fail_closed(self) -> None:
         with self._route(decision=json.dumps({"reviewDecision": "APPROVED"}), threads="not json"):
             state = pr_reads.approval_state(repo="o/r", pr_iid=9, token="t")

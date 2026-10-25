@@ -40,6 +40,14 @@ class PrBoardTestCase(TestCase):
         assert card.next_actor == "You"
         assert card.next_action == "Approve the public post?"
 
+    def test_card_links_its_repo_ref_and_observed_title(self) -> None:
+        pr = PullRequestFactory(repo="example/widget", iid=41, url="https://github.com/example/widget/pull/41")
+        entry = _observed_entry(pr, title="Head fixes the retry")
+        snapshot = PrInventorySnapshot(overlay=pr.overlay, observed_at=timezone.now(), entries=(entry,))
+        with patch("teatree.dash.pr_board.read_inventory", return_value=(snapshot,)):
+            card = next(card for group in build_pr_board().groups for card in group.cards)
+        assert (card.ref, card.title, card.link_url) == ("example/widget!41", "Head fixes the retry", pr.url)
+
     def test_parked_task_owner_question_appears_on_its_pr(self) -> None:
         ticket = TicketFactory()
         pr = PullRequestFactory(ticket=ticket)

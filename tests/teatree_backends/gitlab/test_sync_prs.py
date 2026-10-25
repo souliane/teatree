@@ -66,6 +66,37 @@ class MrTitleCardTestCase(TestCase):
         upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")
         ticket.refresh_from_db()
         assert ticket.short_description == "Better MR title"
+        assert ticket.extra["mr_title_generated"] == "Better MR title"
+
+        for title in ("Third MR title", "Fourth MR title"):
+            raw["title"] = title
+            upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")
+            ticket.refresh_from_db()
+            assert ticket.short_description == title
+            assert ticket.extra["mr_title_generated"] == title
+
+    def test_linked_issue_keeps_its_issue_title(self) -> None:
+        issue_url = "https://gitlab.example/org/repo/-/issues/15"
+        raw = {
+            "web_url": "https://gitlab.example/org/repo/-/merge_requests/95",
+            "iid": 95,
+            "title": "Merge request wording",
+            "description": f"Closes {issue_url}",
+            "draft": True,
+        }
+        context = _PRContext(raw=raw, repo_short="repo", client=GitLabWire({}), project=None)
+        upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")
+        ticket = Ticket.objects.get(issue_url=issue_url)
+        assert ticket.short_description != raw["title"]
+        assert "mr_title_generated" not in ticket.extra
+
+        ticket.short_description = "Issue-derived title"
+        ticket.save(update_fields=["short_description"])
+        raw["title"] = "Retitled merge request"
+        upsert_ticket_from_pr(context, SyncResult(), overlay_name="test")
+        ticket.refresh_from_db()
+        assert ticket.short_description == "Issue-derived title"
+        assert "mr_title_generated" not in ticket.extra
 
     def test_long_generated_title_tracks_retitle_after_truncation(self) -> None:
         raw = {

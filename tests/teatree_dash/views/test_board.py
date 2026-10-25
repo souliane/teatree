@@ -384,6 +384,14 @@ class BoardPageTestCase(TestCase):
         toggled = self.client.get(reverse("dash:board_columns"), {"ignored": "1"})
         assert f'data-ticket="{ignored.pk}"' in toggled.content.decode()
 
+    def test_focus_reveals_a_hidden_ticket_without_the_toggle(self) -> None:
+        ignored = TicketFactory(state=State.IGNORED, short_description="hidden ticket")
+
+        body = self.client.get(reverse("dash:board_columns"), {"focus": ignored.pk}).content.decode()
+
+        assert f'data-ticket="{ignored.pk}"' in body
+        assert 'data-state="ignored"' in body
+
     def test_ignored_toggle_keeps_every_spelling_bookmarks_already_use(self) -> None:
         ignored = TicketFactory(state=State.IGNORED, short_description="abandoned one")
         for spelling in ("1", "true", "on"):
