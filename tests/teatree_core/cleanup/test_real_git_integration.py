@@ -17,6 +17,7 @@ from django.test import TestCase
 
 from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.cleanup.unshipped_work import bundle_path
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.runners.worktree_teardown import WorktreeTeardownRunner
 from tests.teatree_core.cleanup._shared import _GIT, _RM, _clean_env, _run_git
@@ -145,6 +146,26 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
 
         assert forced.ok
         assert not self.wt_path.exists()
+
+    def test_unforced_runner_keeps_pushed_checkout_with_open_merge_request(self) -> None:
+        wt = self._make_worktree(with_extras=True)
+        _run_git("push", "-q", "origin", self.branch, cwd=self.wt_path)
+
+        with (
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch(
+                "teatree.core.cleanup.removal_proof.find_open_pr_for_branch",
+                return_value=PrProbe.found("https://forge.example/pull/7"),
+            ),
+        ):
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+            result = WorktreeTeardownRunner(wt).run()
+
+        assert not result.ok
+        assert "open merge request" in result.detail
+        assert self.wt_path.is_dir()
+        assert Worktree.objects.filter(pk=wt.pk).exists()
 
     def test_removes_worktree_when_extras_missing_path(self) -> None:
         """#460 — without ``worktree_path`` in extras the dir + registry entry must still be removed."""
