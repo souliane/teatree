@@ -30,7 +30,6 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
-from django.db.models import Max
 from django.utils import timezone
 
 from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha
@@ -70,7 +69,7 @@ class RubricError(ValueError):
 
 
 def criterion_text_hash(text: str) -> str:
-    return sha256(text.strip().encode("utf-8")).hexdigest()[:12]
+    return sha256(text.strip().encode("utf-8")).hexdigest()[:32]
 
 
 class RubricManager(models.Manager["Rubric"]):
@@ -178,9 +177,11 @@ class Rubric(models.Model):
             rubric, _ = cls.objects.get_or_create(ticket=ticket)
             existing = set(rubric.criteria.values_list("text", flat=True))
             extra = Ticket.objects.get(pk=ticket.pk).extra or {}
-            waived = {entry.get("text_hash") for entry in extra.get("rubric_waivers", []) if isinstance(entry, dict)}
-            last = rubric.criteria.aggregate(last=Max("ordinal"))["last"]
-            ordinal = last + 1 if last is not None else 0
+            waivers = [entry for entry in extra.get("rubric_waivers", []) if isinstance(entry, dict)]
+            waived = {entry.get("text_hash") for entry in waivers}
+            spent = [*rubric.criteria.values_list("ordinal", flat=True)]
+            spent += [entry["ordinal"] for entry in waivers if isinstance(entry.get("ordinal"), int)]
+            ordinal = max(spent, default=-1) + 1
             for text in cleaned:
                 if text in existing or criterion_text_hash(text) in waived:
                     continue

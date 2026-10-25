@@ -386,3 +386,40 @@ class TestRubricWaiveCommand(TestCase):
                 "out of scope",
             )
         assert exc.value.code == 1
+
+    def test_blank_waived_by_exits_nonzero_and_changes_nothing(self) -> None:
+        ticket = _ticket()
+        call_command("ticket", "rubric-set", str(ticket.pk), "--criteria-json", json.dumps(["AC1", "AC2"]))
+        rubric = ticket.rubrics.get()
+        with pytest.raises(SystemExit) as exc:
+            call_command(
+                "ticket",
+                "rubric-waive",
+                str(ticket.pk),
+                "--text-hash",
+                rubric.criteria.get(ordinal=0).text_hash,
+                "--waived-by",
+                "",
+                "--reason",
+                "out of scope",
+            )
+        assert exc.value.code == 1
+        ticket.refresh_from_db()
+        assert rubric.criteria.count() == 2
+        assert not ticket.extra.get("rubric_waivers")
+
+    def test_ticket_without_a_rubric_exits_nonzero(self) -> None:
+        ticket = _ticket()
+        with pytest.raises(SystemExit) as exc:
+            call_command(
+                "ticket",
+                "rubric-waive",
+                str(ticket.pk),
+                "--text-hash",
+                "0" * 32,
+                "--waived-by",
+                "owner",
+                "--reason",
+                "out of scope",
+            )
+        assert exc.value.code == 1

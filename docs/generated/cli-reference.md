@@ -13685,14 +13685,17 @@ Usage: t3 teatree ticket rubric-set [OPTIONS] TICKET_ID
 ```
 Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
 
+ Waive one rubric criterion by its text hash; an owner identity and a reason
+ are required.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --text-hash        TEXT  Hash shown beside the criterion. [required]      │
-│ *  --waived-by        TEXT  Owner identity recording the waiver. [required]  │
-│ *  --reason           TEXT  Why this criterion is waived. [required]         │
-│    --help                   Show this message and exit.                      │
+│ --text-hash        TEXT  Hash shown beside the criterion.                    │
+│ --waived-by        TEXT  Owner identity recording the waiver.                │
+│ --reason           TEXT  Why this criterion is waived.                       │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -9,7 +9,7 @@ from teatree.core.models.ticket import Ticket
 def waive_criterion(ticket: Ticket, *, text_hash: str, waived_by: str, reason: str) -> dict[str, str]:
     identity = waived_by.strip()
     if not identity or is_non_reviewer_role(identity):
-        msg = "an owner identity is required; an agent cannot waive a criterion"
+        msg = "an owner identity is required; the maker, coding-agent and loop role identities cannot waive a criterion"
         raise RubricError(msg)
     if not reason.strip():
         msg = "a non-empty waiver reason is required"
@@ -33,6 +33,7 @@ def waive_criterion(ticket: Ticket, *, text_hash: str, waived_by: str, reason: s
         waiver = {
             "text_hash": criterion.text_hash,
             "text": criterion.text,
+            "ordinal": criterion.ordinal,
             "waived_by": identity,
             "waived_at": timezone.now().isoformat(),
             "reason": reason.strip(),

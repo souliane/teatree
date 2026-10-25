@@ -129,10 +129,11 @@ class RubricCommands(TyperCommand):
         self,
         ticket_id: int,
         *,
-        text_hash: Annotated[str, typer.Option("--text-hash", help="Hash shown beside the criterion.")],
-        waived_by: Annotated[str, typer.Option("--waived-by", help="Owner identity recording the waiver.")],
-        reason: Annotated[str, typer.Option("--reason", help="Why this criterion is waived.")],
+        text_hash: Annotated[str, typer.Option("--text-hash", help="Hash shown beside the criterion.")] = "",
+        waived_by: Annotated[str, typer.Option("--waived-by", help="Owner identity recording the waiver.")] = "",
+        reason: Annotated[str, typer.Option("--reason", help="Why this criterion is waived.")] = "",
     ) -> None:
+        """Waive one rubric criterion by its text hash; an owner identity and a reason are required."""
         ticket = self._resolve_rubric_ticket(ticket_id)
         try:
             waiver = waive_criterion(ticket, text_hash=text_hash, waived_by=waived_by, reason=reason)

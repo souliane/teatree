@@ -35,7 +35,10 @@ class TestRubricPopulation(TestCase):
         assert rubric.criteria.get(text="a new positive criterion").ordinal == 3
 
     def test_text_hash_uses_stripped_text(self) -> None:
-        assert criterion_text_hash(" AC1 ") == "77ad7e0416da"
+        assert criterion_text_hash(" AC1 ") == "77ad7e0416dad8c0167db82d4292995a"
+
+    def test_text_hash_tells_apart_texts_whose_twelve_digit_prefixes_collide(self) -> None:
+        assert criterion_text_hash("AC e72c4eaddc6b") != criterion_text_hash("AC e600436a6312")
 
     def test_populate_creates_pending_criteria(self) -> None:
         rubric = Rubric.populate(_ticket(), ["AC1", "AC2", "AC3"])

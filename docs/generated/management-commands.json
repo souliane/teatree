@@ -1351,7 +1351,7 @@
           "name": "plan-reaffirm"
         },
         {
-          "help": "",
+          "help": "Waive one rubric criterion by its text hash; an owner identity and a reason are required",
           "name": "rubric-waive"
         },
         {
