@@ -1,14 +1,11 @@
 """Capture what a checkout holds that exists nowhere else, before anything may reap it.
 
-Every reaping pass already decides correctly whether to KEEP a checkout holding
-work — and a kept checkout is indistinguishable from a busy one, so the work sits
-unobserved until a person notices. This module is the observation: it snapshots
-the staged/unstaged/untracked delta and the commits on no remote into the salvage
+The snapshot reads staged, unstaged, untracked, and ignored files plus commits
+absent from live remote heads. It writes those observations into the salvage
 bundle shape (``<name>.uncommitted.patch`` / ``.commits.patch`` / ``.files`` /
 ``.meta``) and writes a durable :class:`UnshippedWorkRecord`.
 
-It is purely additive — it reads the checkout and writes elsewhere, so no
-disposition changes and no #706/#835 guard is loosened.
+The probe is read-only; removal paths consume its result through one shared proof.
 
 ``git diff`` compares the working tree to the INDEX, so a checkout whose whole
 delta is STAGED reports zero bytes while holding real work. Every probe here is
@@ -25,11 +22,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
+from teatree.core.cleanup.ignored_files import ignored_unregenerable
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models import UnshippedWorkRecord
 from teatree.core.worktree.checkout_liveness import wrong_venue_reason
 from teatree.paths import get_data_dir, isolated_slug
 from teatree.utils import git
+from teatree.utils.git_sync import remote_head_shas
 from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
@@ -58,6 +57,9 @@ class UnshippedWork:
     unpushed_commits: list[str] = field(default_factory=list)
     commits_patch: str = ""
     unreadable: str = ""
+    ignored_paths: list[str] = field(default_factory=list)
+    remote_unverified: bool = False
+    live_refs: tuple[str, ...] = ()
 
     @property
     def exists(self) -> bool:
@@ -97,7 +99,7 @@ def _commits_patch(checkout: Path, commits: list[str]) -> str:
     )
 
 
-def _uncommitted_patch(checkout: Path) -> str:
+def _uncommitted_patch(checkout: Path, ignored_paths: list[str]) -> str:
     """The staged + unstaged + untracked delta, as a patch ``git apply`` restores.
 
     Untracked content is IN scope: the bundle is the last copy of the work, and a
@@ -107,12 +109,40 @@ def _uncommitted_patch(checkout: Path) -> str:
     rather than report the whole checkout unreadable.
     """
     try:
-        return git.full_worktree_diff(str(checkout), _INDEX_AWARE_BASE)
+        return git.full_worktree_diff(str(checkout), _INDEX_AWARE_BASE, also=ignored_paths)
     except CommandFailedError:
+        if ignored_paths:
+            raise
         return git.run_strict_verbatim(
             repo=str(checkout),
             args=["diff", _INDEX_AWARE_BASE, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
         )
+
+
+def _live_unpushed_commits(checkout: Path, local: list[str]) -> tuple[list[str], bool, tuple[str, ...]]:
+    output = git.run_strict(
+        repo=str(checkout), args=["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]
+    )
+    refs: dict[str, list[tuple[str, str, str]]] = {}
+    for line in output.splitlines():
+        ref, sha = line.split(" ", 1)
+        if ref.startswith("refs/remotes/") and "/" in ref[len("refs/remotes/") :]:
+            remote, branch = ref[len("refs/remotes/") :].split("/", 1)
+            if branch != "HEAD":
+                refs.setdefault(remote, []).append((branch, ref, sha))
+    live: list[str] = []
+    answered = False
+    for remote, entries in refs.items():
+        try:
+            present = remote_head_shas(str(checkout), (branch for branch, _, _ in entries), remote=remote)
+        except git.RemoteReadError:
+            continue
+        answered = True
+        live.extend(ref for branch, ref, sha in entries if present.get(branch) == sha)
+    if not answered:
+        return local, True, ()
+    output = git.run_strict(repo=str(checkout), args=["log", "HEAD", "--not", *live, "--oneline"])
+    return [line for line in output.splitlines() if line.strip()], False, tuple(live)
 
 
 def probe_unshipped_work(checkout: Path) -> UnshippedWork:
@@ -139,17 +169,22 @@ def probe_unshipped_work(checkout: Path) -> UnshippedWork:
     if not git.check(repo=str(checkout), args=["rev-parse", "--verify", "--quiet", _INDEX_AWARE_BASE]):
         return UnshippedWork(unreadable=f"{checkout}: no resolvable HEAD to diff against")
     try:
-        dirty_paths = _porcelain_paths(checkout)
-        uncommitted_patch = _uncommitted_patch(checkout)
-        unpushed_commits = git.commits_absent_from_all_remotes(str(checkout), _INDEX_AWARE_BASE)
+        ignored_paths = ignored_unregenerable(checkout)
+        dirty_paths = sorted(set(_porcelain_paths(checkout)) | set(ignored_paths))
+        uncommitted_patch = _uncommitted_patch(checkout, ignored_paths)
+        local_unpushed = git.commits_absent_from_all_remotes(str(checkout), _INDEX_AWARE_BASE)
+        unpushed_commits, remote_unverified, live_refs = _live_unpushed_commits(checkout, local_unpushed)
         commits_patch = _commits_patch(checkout, unpushed_commits)
-    except CommandFailedError as exc:
+    except (CommandFailedError, OSError) as exc:
         return UnshippedWork(unreadable=f"{checkout}: could not read unshipped work ({exc})")
     return UnshippedWork(
         dirty_paths=dirty_paths,
         uncommitted_patch=uncommitted_patch,
         unpushed_commits=unpushed_commits,
         commits_patch=commits_patch,
+        ignored_paths=ignored_paths,
+        remote_unverified=remote_unverified,
+        live_refs=live_refs,
     )
 
 

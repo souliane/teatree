@@ -48,12 +48,12 @@ class _CheckoutFixture(TestCase):
 
 
 class TestDisposalNeedsPositiveProof(_CheckoutFixture):
-    def test_a_directory_that_never_claimed_to_be_a_checkout_is_disposable(self) -> None:
+    def test_nonempty_directory_without_git_is_kept(self) -> None:
         partial = self.tmp / "checkouts" / "died-mid-add"
         partial.mkdir(parents=True)
         (partial / "half-written.txt").write_text("x\n", encoding="utf-8")
 
-        assert disposal_refusal(partial, clone=self.clone) == ""
+        assert "half-written.txt" in disposal_refusal(partial, clone=self.clone)
 
     def test_a_path_that_is_not_there_is_disposable(self) -> None:
         assert disposal_refusal(self.tmp / "nothing-here", clone=self.clone) == ""

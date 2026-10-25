@@ -82,6 +82,31 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
         assert not self.wt_path.exists()
         assert str(self.wt_path) not in self._registered_worktrees()
 
+    def test_force_keeps_ignored_file_and_worktree(self) -> None:
+        wt = self._make_worktree(with_extras=True)
+        (self.wt_path / ".gitignore").write_text("notes.local\n", encoding="utf-8")
+        _run_git("add", ".gitignore", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "ignore notes", cwd=self.wt_path)
+        (self.wt_path / "notes.local").write_text("keep\n", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match=r"notes\.local"):
+            self._cleanup(wt)
+
+        assert (self.wt_path / "notes.local").read_text() == "keep\n"
+        assert str(self.wt_path) in self._registered_worktrees()
+
+    def test_force_keeps_commit_that_no_remote_holds(self) -> None:
+        wt = self._make_worktree(with_extras=True)
+        (self.wt_path / "feature.py").write_text("value = 1\n", encoding="utf-8")
+        _run_git("add", "feature.py", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "local feature", cwd=self.wt_path)
+
+        with pytest.raises(RuntimeError, match=r"commit.*no live remote"):
+            self._cleanup(wt)
+
+        assert self.wt_path.is_dir()
+        assert str(self.wt_path) in self._registered_worktrees()
+
     def test_removes_worktree_when_extras_missing_path(self) -> None:
         """#460 — without ``worktree_path`` in extras the dir + registry entry must still be removed."""
         wt = self._make_worktree(with_extras=False)
@@ -152,8 +177,8 @@ class TestCleanupWorktreeNamespacedClone(TestCase):
         assert result.errors == []
 
 
-class TestCleanupCapturesUnshippedWorkBeforeDestroying(TestCase):
-    """A forced teardown hard-deletes; the capture is what survives it."""
+class TestCleanupCapturesUnshippedWorkBeforeRefusing(TestCase):
+    """Forced teardown records unshipped work and keeps its checkout."""
 
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
@@ -194,13 +219,14 @@ class TestCleanupCapturesUnshippedWorkBeforeDestroying(TestCase):
             mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             cleanup_worktree(wt, force=True)
 
-    def test_staged_only_worktree_is_captured_before_the_force_delete(self) -> None:
+    def test_staged_only_worktree_is_captured_before_force_refusal(self) -> None:
         (self.wt_path / "tracked.py").write_text("value = 2\n", encoding="utf-8")
         _run_git("add", "tracked.py", cwd=self.wt_path)
 
-        self._cleanup_forced()
+        with pytest.raises(RuntimeError, match=r"tracked\.py"):
+            self._cleanup_forced()
 
-        assert not self.wt_path.exists(), "force teardown must still destroy the checkout"
+        assert self.wt_path.exists()
         record = UnshippedWorkRecord.objects.get(checkout_path=str(self.wt_path))
         assert record.branch == self.branch
         assert record.dirty_paths == ["tracked.py"]
@@ -212,18 +238,21 @@ class TestCleanupCapturesUnshippedWorkBeforeDestroying(TestCase):
 
         assert not UnshippedWorkRecord.objects.exists()
 
-    def test_teardown_survives_a_control_db_the_capture_cannot_write(self) -> None:
+    def test_capture_db_failure_still_refuses_unshipped_work(self) -> None:
         (self.wt_path / "tracked.py").write_text("value = 2\n", encoding="utf-8")
         _run_git("add", "tracked.py", cwd=self.wt_path)
 
-        with patch.object(
-            UnshippedWorkRecord.objects,
-            "update_or_create",
-            side_effect=OperationalError("no such table: teatree_unshippedworkrecord"),
+        with (
+            patch.object(
+                UnshippedWorkRecord.objects,
+                "update_or_create",
+                side_effect=OperationalError("no such table: teatree_unshippedworkrecord"),
+            ),
+            pytest.raises(RuntimeError, match=r"tracked\.py"),
         ):
             self._cleanup_forced()
 
-        assert not self.wt_path.exists(), "a capture that cannot record must never wedge the teardown"
+        assert self.wt_path.exists()
 
 
 _PREK_HOOK = """#!/bin/sh

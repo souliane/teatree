@@ -35,7 +35,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
-from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
+from teatree.core.cleanup.ignored_files import ORCHESTRATION_DEBRIS_PREFIXES as _ORCHESTRATION_DEBRIS_PREFIXES
+from teatree.core.cleanup.ignored_files import ignored_unregenerable, is_orchestration_debris
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -47,21 +48,8 @@ if TYPE_CHECKING:
 # known-ephemeral orchestration scratch. Anything unrecognised is REAL work —
 # and `.claude/` itself is NEVER debris (product repos track real skills and
 # settings there); only its `worktrees/` run scratch is.
-ORCHESTRATION_DEBRIS_PREFIXES = (
-    CACHE_FILENAME,
-    f"{CACHE_DIRNAME}/",
-    ".claude/worktrees/",
-    ".secfix/",
-    ".fix-bug/",
-    ".worker-status/",
-    ".claude-prompt",
-    ".commit-message.txt",
-)
 _PREVIEW_LIMIT = 3
-
-
-def is_orchestration_debris(path: str) -> bool:
-    return path.startswith(ORCHESTRATION_DEBRIS_PREFIXES)
+ORCHESTRATION_DEBRIS_PREFIXES = _ORCHESTRATION_DEBRIS_PREFIXES
 
 
 def _porcelain_path(line: str) -> str:
@@ -78,6 +66,21 @@ def _porcelain_path(line: str) -> str:
         return line.split(maxsplit=1)[1].strip()
     except IndexError:
         return ""
+
+
+def _worktree_clean(wt_path: str) -> bool:
+    """Whether status and HEAD diff both prove no non-regenerable uncommitted work."""
+    if not Path(wt_path).is_dir():
+        return False
+    try:
+        # ``-uall`` keeps real work distinct from debris inside an untracked dir.
+        porcelain = git.run_strict(repo=wt_path, args=["status", "--porcelain", "--untracked-files=all"])
+        diff_head = git.run_strict(repo=wt_path, args=["diff", "HEAD", "--name-only"])
+    except CommandFailedError:
+        return False
+    entries = [_porcelain_path(line) for line in porcelain.splitlines()]
+    entries.extend(line.strip() for line in diff_head.splitlines())
+    return all(not entry or is_orchestration_debris(entry) for entry in entries)
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,10 +136,12 @@ def working_tree_dirt(wt_path: str, target: "_EffectiveTarget") -> WorkingTreeDi
         # authored skill, and undecidable must read REAL.
         porcelain = git.run_strict(repo=wt_path, args=["status", "--porcelain", "--untracked-files=all"])
         diff_head = git.run_strict(repo=wt_path, args=["diff", "HEAD", "--name-only"])
+        ignored = ignored_unregenerable(Path(wt_path))
     except CommandFailedError as exc:
         return WorkingTreeDirt(reasons=(f"could not read working-tree status ({exc}) — keeping",), proven=False)
     candidates = [_porcelain_path(line) for line in porcelain.splitlines()]
     candidates.extend(line.strip() for line in diff_head.splitlines())
+    candidates.extend(ignored)
     dirty = [path for path in dict.fromkeys(candidates) if path and not is_orchestration_debris(path)]
     return _dirt_verdict(dirty)
 
@@ -161,6 +166,7 @@ def _dangling_head_dirt(wt_path: str, target: "_EffectiveTarget") -> WorkingTree
     try:
         changed = git.run_strict(repo=wt_path, args=["diff", "--name-only", sha])
         untracked = git.run_strict(repo=wt_path, args=["ls-files", "--others", "--exclude-standard"])
+        ignored = ignored_unregenerable(Path(wt_path))
     except CommandFailedError as exc:
         return WorkingTreeDirt(
             reasons=(f"could not diff working tree against recovered HEAD ({exc}) — keeping",), proven=False
@@ -170,6 +176,7 @@ def _dangling_head_dirt(wt_path: str, target: "_EffectiveTarget") -> WorkingTree
         for raw in (*changed.splitlines(), *untracked.splitlines())
         if (stripped := raw.strip()) and not is_orchestration_debris(stripped)
     ]
+    dirty.extend(ignored)
     return _dirt_verdict(dirty)
 
 

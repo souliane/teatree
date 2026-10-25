@@ -12,8 +12,7 @@ taking a running agent's unstaged work with it.
 
 Disposal therefore needs POSITIVE proof, of which there are exactly two kinds:
 
-* the directory carries no ``.git`` entry of its own, so it never claimed to be a
-    checkout — the one thing a single context can establish about a directory alone; or
+* an empty directory carries no ``.git`` entry of its own, so removing it loses no files; or
 * the clone this context is acting FOR vouches for it, by the admin entry NAME that
     survives a change of context (:func:`admin_entry_for`).
 
@@ -28,6 +27,7 @@ a checkout this clone DOES vouch for from being torn down out from under a live 
 
 from pathlib import Path
 
+from teatree.core.cleanup.removal_proof import removal_refusal
 from teatree.core.models import Worktree
 from teatree.core.worktree.checkout_liveness import admin_entry_for, claims_to_be_a_checkout, context_scoped_pointer
 from teatree.core.worktree.worktree_paths import paths_match
@@ -52,8 +52,12 @@ def disposal_refusal(path: Path, *, clone: Path, requesting_ticket_id: int | Non
             f"{path} is held by ticket {occupant}, which has a live session or an active task. "
             f"Refusing to remove or re-create a checkout with a live writer."
         )
-    if not claims_to_be_a_checkout(path) or admin_entry_for(path, clone) is not None:
+    if not claims_to_be_a_checkout(path):
+        if entry := next(path.iterdir(), None):
+            return f"{path} is nonempty without a git checkout; keeping {entry.name}"
         return ""
+    if admin_entry_for(path, clone) is not None:
+        return removal_refusal(path, clone=clone)
     return _unproven_refusal(path, clone)
 
 

@@ -411,7 +411,7 @@ class TestRepairSplitWorkspace(TestCase):
         assert prior.artifact_prefix == prefix
         assert bundle_path(prefix, UNCOMMITTED_SUFFIX).is_file()
 
-    def test_repairs_a_split_unfinished_ticket_preserving_unpushed_and_uncommitted_work(self) -> None:
+    def test_keeps_a_split_checkout_with_commit_on_no_remote(self) -> None:
         backend_clone = self._clone("backend")
         frontend_clone = self._clone("frontend")
 
@@ -444,23 +444,41 @@ class TestRepairSplitWorkspace(TestCase):
         )
         assert len(ticket_workspace_dirs(ticket)) == 2, "fixture must start genuinely split"
 
-        with patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace):
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_remove") as remove,
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_add") as add,
+        ):
             outcome = repair_split_workspace(ticket)
 
-        assert outcome.ok, outcome.render()
-        assert outcome.moved == ["frontend"]
-        assert outcome.kept == ["backend"]
-        assert len(ticket_workspace_dirs(ticket)) == 1, "the split must be actually repaired"
+        assert not outcome.ok
+        assert "no live remote ref" in outcome.render()
+        assert str(frontend) in outcome.render()
+        assert (frontend / "feature.py").read_text(encoding="utf-8") == "unpushed = True\n"
+        assert (frontend / "wip.py").read_text(encoding="utf-8") == "uncommitted = True\n"
+        remove.assert_not_called()
+        add.assert_not_called()
 
-        moved_row = Worktree.objects.get(ticket=ticket, repo_path="frontend")
-        new_path = Path(moved_row.extra["worktree_path"])
-        assert new_path.parent == canonical, "frontend must have moved INTO the canonical dir"
-        assert (new_path / "feature.py").read_text(encoding="utf-8") == "unpushed = True\n", "unpushed commit lost"
-        assert (new_path / "wip.py").read_text(encoding="utf-8") == "uncommitted = True\n", "uncommitted work lost"
-        assert git.current_branch(str(new_path)) == _BRANCH
-        assert not frontend.exists(), "the old foreign-root checkout must be gone, not duplicated"
-        assert not UnshippedWorkRecord.objects.filter(checkout_path=str(frontend)).exists()
-        assert list((self.tmp / "artifacts").iterdir()) == []
+    def test_keeps_ignored_file_before_split_move(self) -> None:
+        ticket, _, frontend = self._split_ticket(dirty=False)
+        (frontend / ".gitignore").write_text("notes.local\n", encoding="utf-8")
+        git.run_strict(repo=str(frontend), args=["add", ".gitignore"])
+        git.run_strict(repo=str(frontend), args=["commit", "-q", "-m", "ignore notes"])
+        git.run_strict(repo=str(frontend), args=["push", "-q", "origin", _BRANCH])
+        (frontend / "notes.local").write_text("retain\n", encoding="utf-8")
+
+        with (
+            patch("teatree.core.worktree.ticket_workspace_repair.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_remove") as remove,
+            patch("teatree.core.worktree.ticket_workspace_repair.git.worktree_add") as add,
+        ):
+            outcome = repair_split_workspace(ticket)
+
+        assert not outcome.ok
+        assert "notes.local" in outcome.render()
+        assert (frontend / "notes.local").read_text(encoding="utf-8") == "retain\n"
+        remove.assert_not_called()
+        add.assert_not_called()
 
     def test_a_ticket_with_one_workspace_dir_is_a_no_op(self) -> None:
         backend_clone = self._clone("backend")

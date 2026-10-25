@@ -40,6 +40,7 @@ from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, cl
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
+from teatree.core.cleanup.removal_proof import RemovalRefusedError, removal_refusal
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Ticket, Worktree
@@ -282,8 +283,8 @@ def _unpushed_commit_reasons(
     # merge record at the exact tip still proves it landed. Fails CLOSED.
     #
     # Its git-local rungs are ANDed with present-tense presence (#4719): this
-    # analysis IS the data-loss gate — its caller force-wipes past every guard in
-    # ``cleanup_worktree`` — and those rungs read a patch's PRIOR appearance, which
+    # The caller still uses force for legacy guards; the shared proof runs afterward.
+    # These rungs read a patch's PRIOR appearance, which
     # a later commit over the same region does not erase.
     if branch is not None:
         landed = verdict if verdict is not None else branch_redundancy(content_repo, branch, default_target)
@@ -410,6 +411,13 @@ def reap_done_worktree(
             emit=_build_emit_record(worktree, workspace=workspace, liveness="", probes=probes),
         )
 
+    if refusal := removal_refusal(Path(wt_path), clone=Path(repo_main), row=worktree, sweep=True):
+        return ReapOutcome(
+            "kept",
+            f"KEPT '{worktree.branch}': done ({signal.source}) but {refusal}",
+            emit=_build_emit_record(worktree, workspace=workspace, liveness="", probes=probes),
+        )
+
     return _wipe_proven_redundant(
         worktree, signal=signal, fingerprint_at_analysis=fingerprint_at_analysis, dry_run=dry_run, probes=probes
     )
@@ -442,7 +450,14 @@ def _dead_checkout_outcome(
         )
     if dry_run:
         return ReapOutcome("would-wipe", f"WOULD RELEASE '{worktree.branch}': {verdict.reason}")
-    result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
+    try:
+        result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
+    except RemovalRefusedError as exc:
+        return ReapOutcome(
+            "kept",
+            f"KEPT '{worktree.branch}': {exc}",
+            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
+        )
     return ReapOutcome("wiped", f"Released dead checkout '{worktree.branch}': {result.label}", errors=result.errors)
 
 
@@ -462,10 +477,9 @@ def _wipe_proven_redundant(
     """Wipe a proven-redundant worktree, re-checking the TOCTOU bracket before the force-wipe.
 
     The redundancy analysis proved the state captured at ``fingerprint_at_analysis``
-    is fully upstream, but ``cleanup_worktree(force=True)`` bypasses every data-loss
-    guard. A commit OR an uncommitted edit landing between the analysis and the wipe
-    would be destroyed unexamined — so the fingerprint is re-read here and the wipe
-    refused (KEEP) if it moved, leaving the worktree for the next sweep to re-analyse.
+    is fully upstream. A commit or edit landing between analysis and removal could
+    change that verdict, so the fingerprint is re-read before cleanup. The shared
+    removal proof then checks the checkout again inside cleanup.
     """
     if dry_run:
         return ReapOutcome(
@@ -480,7 +494,14 @@ def _wipe_proven_redundant(
             "— re-run cleanup to re-analyse",
             emit=_build_emit_record(worktree, workspace=probes.workspace, liveness="", probes=probes),
         )
-    result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
+    try:
+        result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
+    except RemovalRefusedError as exc:
+        return ReapOutcome(
+            "kept",
+            f"KEPT '{worktree.branch}': {exc}",
+            emit=_build_emit_record(worktree, workspace=probes.workspace, liveness="", probes=probes),
+        )
     return ReapOutcome("wiped", f"Wiped '{worktree.branch}' ({signal.source}): {result.label}", errors=result.errors)
 
 

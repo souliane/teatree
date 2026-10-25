@@ -30,6 +30,7 @@ from teatree.core.cleanup.unshipped_work import (
     write_salvage_bundle,
 )
 from teatree.core.models import UnshippedWorkRecord
+from teatree.utils.git_sync import RemoteReadError
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
@@ -75,6 +76,48 @@ class _CheckoutFixture(TestCase):
 
 
 class TestProbeSeesTheIndex(_CheckoutFixture):
+    def test_ignored_file_is_listed_and_captured(self) -> None:
+        (self.checkout / ".gitignore").write_text("notes.local\n", encoding="utf-8")
+        _run_git("add", ".gitignore", cwd=self.checkout)
+        _run_git("commit", "-q", "-m", "ignore notes", cwd=self.checkout)
+        (self.checkout / "notes.local").write_text("keep this\n", encoding="utf-8")
+        assert _git_out("status", "--porcelain", cwd=self.checkout) == ""
+
+        work = probe_unshipped_work(self.checkout)
+
+        assert "notes.local" in work.dirty_paths
+        assert "keep this" in work.uncommitted_patch
+
+    def test_unreadable_ignored_content_never_claims_a_complete_capture(self) -> None:
+        (self.checkout / ".git" / "info" / "exclude").write_text("notes.local\n", encoding="utf-8")
+        (self.checkout / "notes.local").write_text("retain\n", encoding="utf-8")
+
+        with patch(
+            "teatree.core.cleanup.unshipped_work.git.full_worktree_diff",
+            side_effect=CommandFailedError(["git", "add", "-N"], 128, "", "index refused"),
+        ):
+            work = probe_unshipped_work(self.checkout)
+
+        assert work.unreadable
+        assert not work.uncommitted_patch
+
+    def test_deleted_remote_branch_is_not_evidence_of_a_pushed_tip(self) -> None:
+        sha = self._commit_locally("once-pushed")
+        _run_git("push", "-q", "origin", "feat", cwd=self.checkout)
+        _run_git("update-ref", "-d", "refs/heads/feat", cwd=self.origin)
+        assert _git_out("rev-parse", "refs/remotes/origin/feat", cwd=self.checkout).strip() == sha
+
+        work = probe_unshipped_work(self.checkout)
+
+        assert any(commit.startswith(sha[:7]) for commit in work.unpushed_commits)
+
+    def test_unreachable_remote_preserves_the_local_result_and_marks_it_unverified(self) -> None:
+        with patch("teatree.core.cleanup.unshipped_work.remote_head_shas", side_effect=RemoteReadError("offline")):
+            work = probe_unshipped_work(self.checkout)
+
+        assert work.unpushed_commits == []
+        assert work.remote_unverified
+
     def test_staged_only_checkout_is_dirty_with_the_staged_hunk_in_the_patch(self) -> None:
         self._stage_only()
         assert _git_out("diff", cwd=self.checkout) == "", "fixture invalid: bare `git diff` must be blind here"

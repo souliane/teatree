@@ -25,10 +25,11 @@ from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_li
 from teatree.core.cleanup.cleanup_dirt_guard import guard_or_warn_dirty_worktree
 from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
 from teatree.core.cleanup.cleanup_result import CleanupResult
+from teatree.core.cleanup.removal_proof import RemovalRefusedError, removal_refusal
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
-from teatree.core.worktree._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps
+from teatree.core.worktree._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps, shared_resources
 from teatree.core.worktree.branch_classification import (
     _branch_pr_is_merged,
     _branch_tree_matches_squash,
@@ -373,7 +374,7 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
     msg = (
         f"{worktree.repo_path} ({target.label}): "
         f"refused teardown — {len(unpushed)} commit(s) on NO remote (data loss): "
-        f"{shas}. Push the branch or pass force=True to discard."
+        f"{shas}. Push the branch before retrying."
     )
     raise RuntimeError(msg)
 
@@ -394,8 +395,8 @@ def _run_data_loss_guards(
     worktree is left with its per-worktree Postgres volume and overlay resources
     already gone — a partially-destroyed worktree the operator asked to keep.
 
-    ``force`` bypasses every guard (the proven-redundant reaper / explicit
-    abandon). A missing source repo skips the guards — there is no repo to run
+    ``force`` bypasses these legacy guards, but not the shared removal proof.
+    A missing source repo skips the guards — there is no repo to run
     the origin-relative probe in and nothing to remove.
 
     ``target`` is the git-resolved effective target, computed ONCE by
@@ -534,8 +535,8 @@ def cleanup_worktree(
     routes ``result.errors`` to its visible channel (``SyncResult.errors`` for
     sync backends, runner detail for runners).
 
-    Several guards protect against losing work; all are bypassed by an explicit
-    ``force=True``.
+    ``force=True`` bypasses legacy liveness and hygiene checks, while the shared
+    shipped-work proof still protects the checkout, including explicit abandon.
 
     Data-loss guard (#706, always on): raises ``RuntimeError`` when the branch
     has commits on NO remote ref — removing the worktree would destroy them
@@ -556,12 +557,8 @@ def cleanup_worktree(
     warns-and-proceeds; ``force=True`` (the proven-redundant reaper / explicit
     abandon) overrides it.
 
-    There is NO recovery snapshot: ``force=True`` hard-deletes. It is reached only
-    from a deliberate destroy — the done-worktree reaper after the
-    analyze-before-wipe step PROVED every change redundant, or the interactive
-    abandon path after a human chose to discard. Potentially-needed work is KEPT by
-    those callers, never force-destroyed. Pass ``force=True`` only from such
-    trusted callers (the proven reaper, an explicit operator override, tests).
+    The unshipped-work capture precedes the refusal, preserving an observation
+    even when the checkout remains in place.
 
     Liveness guard (``respect_liveness``, default on, #291/#2243): OPPORTUNISTIC
     reapers KEEP a worktree under live work (raising :class:`WorktreeBusyError`),
@@ -591,6 +588,10 @@ def cleanup_worktree(
     capture_unshipped_work(Path(wt_path), branch=worktree.branch, overlay=worktree.overlay)
     guard_or_warn_dirty_worktree(worktree, wt_path, target, keep_if_dirty=keep_if_dirty, force=force)
     _run_data_loss_guards(repo_main, worktree, target, force=force, strict_hygiene=strict_hygiene)
+    if refusal := removal_refusal(Path(wt_path), clone=repo_main, row=worktree):
+        raise RemovalRefusedError(refusal)
+
+    compose_shared, db_shared, pass_shared = shared_resources(worktree)
 
     # Stop the docker compose project so containers don't leak when this path is
     # reached outside the WorktreeTeardownRunner (#1306) — the FSM teardown,
@@ -600,7 +601,8 @@ def cleanup_worktree(
     # no containers is a no-op.
     from teatree.core.runners.worktree_start import docker_compose_down  # noqa: PLC0415 — deferred: call-time import
 
-    docker_compose_down(compose_project(worktree), remove_volumes=True)
+    if not compose_shared:
+        docker_compose_down(compose_project(worktree), remove_volumes=True)
 
     step_errors: list[str] = []
     run_overlay_cleanup_steps(overlay, worktree, step_errors)
@@ -609,11 +611,13 @@ def cleanup_worktree(
     # A live `t3 browser` keeper exits once its session directory is gone.
     shutil.rmtree(PathHelpers.browser_session_dir(Path(wt_path)), ignore_errors=True)
 
-    _drop_worktree_db(overlay, worktree, step_errors)
-    _remove_overlay_pass_entry(overlay, worktree, step_errors)
+    if not db_shared:
+        _drop_worktree_db(overlay, worktree, step_errors)
+    if not (pass_shared or db_shared or compose_shared):
+        _remove_overlay_pass_entry(overlay, worktree, step_errors)
 
     label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
-    if overlay is not None:
+    if overlay is not None and not (compose_shared or db_shared):
         label += reap_external_resources(overlay, worktree, step_errors)
 
     worktree.delete()

@@ -24,6 +24,7 @@ from pathlib import Path
 from teatree.config import worktree_root
 from teatree.config.checkout_roots import checkout_roots
 from teatree.config.settings import OverlayEntry
+from teatree.core.cleanup.removal_proof import removal_refusal
 from teatree.core.cleanup.unshipped_work import (
     ARTIFACT_NAMESPACE,
     COMMITS_SUFFIX,
@@ -206,8 +207,9 @@ def _move_one(worktree: Worktree, canonical: Path) -> str | None:
         return clone
 
     work = probe_unshipped_work(old_path)
-    if work.unreadable:
-        return f"{worktree.repo_path}: {old_path} is unreadable ({work.unreadable}) — refusing to touch it"
+    refusal = work.unreadable or removal_refusal(old_path, clone=clone, row=worktree, allow_changes=True)
+    if refusal:
+        return f"{worktree.repo_path}: {old_path} is unproven ({refusal}) — refusing to touch it"
 
     new_path = canonical / Path(worktree.repo_path).name
     if new_path.exists():
