@@ -75,6 +75,7 @@ AGENT_BY_KIND: dict[str, str] = {
 }
 
 STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
+    "merge.unaudited": "action_needed",
     "owner_action.result": "in_flight",
     "review_nag.mention_held": "action_needed",
     # The MR-triage surveyor names what an open MR needs next. Every verdict it
