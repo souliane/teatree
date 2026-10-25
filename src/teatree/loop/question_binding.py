@@ -13,7 +13,9 @@ The ladder, strongest evidence first:
 (a) an explicit ``#<id>`` prefix — the format the backlog digest already
 instructs the owner to reply in, and which until now nothing parsed — naming a
 question mirrored on the reply's own DM;
-(b) the reply's ``thread_ts`` — cards whose own mirror ts belongs to that thread;
+(b) the reply's ``thread_ts`` — the pending card whose own mirror ts belongs to that thread; two
+pending cards bind NOTHING and the owner is asked to choose with ``#<id>``, and a card thread with no
+pending card (closed, tap-only, or a ``#<id>`` that is not waiting) gets a note instead of a silent drop;
 (c) a top-level reply when exactly ONE live question is mirrored on the channel.
 
 More than one candidate and no thread or id binds NOTHING. The newest-pending-
@@ -34,6 +36,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -77,9 +80,16 @@ class AmbiguousCards:
     question_ids: tuple[int, ...]
 
 
+class CardThreadStop(StrEnum):
+    TAPS_ONLY = "the card takes taps only"
+    CLOSED = "no pending card in this thread"
+    NOT_WAITING = "the named question is not waiting"
+
+
 @dataclass(frozen=True, slots=True)
 class UnmatchedCardThread:
-    reason: str
+    reason: CardThreadStop
+    question_id: int | None = None
 
 
 def configured_owner_id(backend: object) -> str:
@@ -107,6 +117,10 @@ def bind_reply(
         question_id, body = addressed
         question = _pending_by_id(question_id, channel=reply.channel)
         key = "id"
+        if question is None and _cards_in_thread(reply, backend=backend)[0]:
+            stop = UnmatchedCardThread(CardThreadStop.NOT_WAITING, question_id)
+            _log_reply(reply, f"ignored: {stop.reason}")
+            return stop
     else:
         inferred = _inferred_cards(reply, backend=backend, body=body, reader=reader)
         if isinstance(inferred, AmbiguousCards):
@@ -126,7 +140,7 @@ def _bind_found(
     reply: PendingChatInjection, *, question: DeferredQuestion, body: str, reader: InboundReader, key: str
 ) -> BoundAnswer | None:
     if is_action_question(question):
-        _log_reply(reply, "ignored: the card takes taps only")
+        _log_reply(reply, f"ignored: {CardThreadStop.TAPS_ONLY}")
         return None
     answer = resolve_answer(body, question, reader=reader)
     if answer is None:
@@ -329,34 +343,34 @@ def _inferred_cards(
     return _thread_cards(reply, backend=backend, body=body, reader=reader)
 
 
-def _thread_cards(
-    reply: PendingChatInjection, *, backend: "MessagingBackend", body: str, reader: InboundReader
-) -> tuple[DeferredQuestion | None, str] | AmbiguousCards | UnmatchedCardThread:
+def _cards_in_thread(reply: PendingChatInjection, *, backend: "MessagingBackend") -> tuple[list[DeferredQuestion], str]:
+    """Every card, pending or closed, whose own ts belongs to the reply's thread, and the key that matched."""
     posted = list(
         DeferredQuestion.posted_since(channel=reply.channel, root_ts=reply.thread_ts, before_ts=reply.slack_ts)
     )
-    if not posted:
-        return None, ""
     if len(posted) == 1 and posted[0].slack_ts == reply.thread_ts:
-        matched = posted
-        key = "root"
-    else:
-        messages = backend.fetch_thread_replies(channel=reply.channel, thread_ts=reply.thread_ts)
-        members = {reply.thread_ts, *(str(message.get("ts", "")) for message in messages)}
-        matched = [card for card in posted if card.slack_ts in members]
-        key = "thread-member"
+        return posted, "root"
+    if not posted:
+        return [], ""
+    messages = backend.fetch_thread_replies(channel=reply.channel, thread_ts=reply.thread_ts)
+    members = {reply.thread_ts, *(str(message.get("ts", "")) for message in messages)}
+    return [card for card in posted if card.slack_ts in members], "thread-member"
+
+
+def _thread_cards(
+    reply: PendingChatInjection, *, backend: "MessagingBackend", body: str, reader: InboundReader
+) -> tuple[DeferredQuestion | None, str] | AmbiguousCards | UnmatchedCardThread:
+    matched, key = _cards_in_thread(reply, backend=backend)
     pending = [card for card in matched if card.is_pending and not is_action_question(card)]
     if len(pending) > 1:
-        if body.strip().casefold() in {"pause", "resume"} or resolve_answer(body, pending[0], reader=reader) is None:
+        if resolve_answer(body, pending[0], reader=reader) is None:
             return None, ""
         return AmbiguousCards(tuple(card.pk for card in pending))
     if pending:
         return pending[0], key
     if matched:
-        reason = (
-            "the card takes taps only" if any(card.is_pending for card in matched) else "no pending card in this thread"
-        )
-        return UnmatchedCardThread(reason)
+        taps_only = any(card.is_pending for card in matched)
+        return UnmatchedCardThread(CardThreadStop.TAPS_ONLY if taps_only else CardThreadStop.CLOSED)
     return None, ""
 
 
@@ -382,7 +396,10 @@ def _live_options(question: DeferredQuestion) -> list[dict] | None:
 
 
 __all__ = [
+    "AmbiguousCards",
     "BoundAnswer",
+    "CardThreadStop",
+    "UnmatchedCardThread",
     "answer_from_click",
     "apply_bound_answer",
     "bind_reply",

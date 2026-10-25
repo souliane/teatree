@@ -344,7 +344,7 @@ class DeferredQuestion(models.Model):
 
         Recency is a heuristic, not identity: with a deep mirrored backlog the
         newest row is reliably NOT the one an unaddressed reply answers. Reply
-        binding therefore goes through :meth:`for_thread` /
+        binding therefore goes through :meth:`posted_since` /
         :meth:`sole_for_reply`; this stays the cursor for the capture path.
 
         Recency, not ``generation``, orders the candidates: the cursor

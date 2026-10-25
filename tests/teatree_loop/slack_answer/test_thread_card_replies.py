@@ -4,7 +4,9 @@ from dataclasses import dataclass, field, replace
 
 from django.test import TestCase
 
-from teatree.core.modelkit.question_card import CardOption
+from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker
+from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion, PendingChatInjection
 from teatree.core.question_heal import live_owner_questions
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
@@ -40,11 +42,53 @@ class Backend(ThreadBackend):
 
 def _reader(text: str) -> InboundReading:
     return InboundReading(
-        intent=InboundIntent.INSTRUCTION,
+        intent=InboundIntent.QUESTION if "?" in text else InboundIntent.INSTRUCTION,
         answerable=False,
         work_summary=text,
         source=ReadingSource.HEURISTIC,
     )
+
+
+def _action_card(ts: str) -> DeferredQuestion:
+    action = ActionRequest(kind=OwnerActionKind.ATTEST, target="99999", binding="digest")
+    card = QuestionCard(
+        decision=OwnerDecision.IRREVERSIBLE,
+        checked=("The checkout changed.",),
+        blocker="Only the owner may accept this state.",
+        why="The factory stopped before writing.",
+        options=(CardOption("Accept", "I record this state.", recommended=True), CardOption("Decline", "It stays.")),
+        action=action,
+    )
+    row = DeferredQuestion.record("Accept this checkout?", dedupe_marker=action_marker(action), card=card)
+    assert row.mark_mirrored(channel=CHANNEL, slack_ts=ts)
+    return row
+
+
+def _bot_reminder(ts: str, root: str) -> RawAPIDict:
+    return {
+        "ts": ts,
+        "thread_ts": root,
+        "user": "UBOT",
+        "bot_id": "B_BOT_SELF",
+        "channel": CHANNEL,
+        "text": "Still waiting for your answer.",
+    }
+
+
+def _api_owner_reply(ts: str, root: str, text: str = "approve") -> RawAPIDict:
+    return {
+        "type": "message",
+        "channel_type": "im",
+        "ts": ts,
+        "thread_ts": root,
+        "user": OWNER_SLACK_ID,
+        "channel": CHANNEL,
+        "text": text,
+        "team": "T1",
+        "app_id": "A_OWNER_SCRIPT",
+        "parent_user_id": "UBOT",
+        "blocks": [{"type": "rich_text", "elements": []}],
+    }
 
 
 def _card(ts: str) -> DeferredQuestion:
@@ -85,28 +129,27 @@ class TestThreadCardReplies(TestCase):
         assert report.answered_question == 1
         assert backend.reads == ["200.1"]
 
-    def test_root_card_with_bot_reminders_replays_raw_owner_reply(self) -> None:
+    def test_api_posted_owner_reply_binds_a_root_card_that_holds_bot_reminders(self) -> None:
         decoy = _card("250.1")
         card = _card("300.1")
         backend = Backend(user_id=OWNER_SLACK_ID)
-        backend.thread_replies["300.1"] = [
-            {"ts": "300.1"},
-            {"ts": "300.2", "user": "UBOT"},
-            {"ts": "300.3", "user": "UBOT"},
-        ]
-        reply = _event(backend, ts="300.4", root="300.1")
-        assert reply is not None, "recorder dropped the raw reply"
+        reminders = [_bot_reminder("300.2", "300.1"), _bot_reminder("300.3", "300.1")]
+        backend.thread_replies["300.1"] = [{"ts": "300.1"}, *reminders]
 
-        _cycle(backend)
+        recorded = SlackDmRecorder(backend=backend).record_events([*reminders, _api_owner_reply("300.4", "300.1")])
 
-        card.refresh_from_db()
-        decoy.refresh_from_db()
-        reply.refresh_from_db()
-        assert card.resolved_via == DeferredQuestion.ResolvedVia.SLACK
-        assert reply.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
-        assert card.answer_text == "Approve", "the bound answer did not use the card's option label"
+        assert recorded == 1, "the recorder kept something other than the owner's reply"
+        with self.assertLogs("teatree.loop.question_binding", level="INFO") as logs:
+            report = _cycle(backend)
+            card.refresh_from_db()
+            decoy.refresh_from_db()
+            assert card.resolved_via == DeferredQuestion.ResolvedVia.SLACK
+            assert card.answer_text == "Approve", "the bound answer did not use the card's option label"
         assert decoy.is_pending
+        assert report.answered_question == 1
+        assert live_owner_questions() == [decoy], "the answered card still holds a reminder slot"
         assert backend.reads == []
+        assert any("bound question" in line and "key=root" in line for line in logs.output)
 
     def test_two_cards_in_one_thread_get_visible_choice_then_id_answer(self) -> None:
         first = _card("400.2")
@@ -171,6 +214,7 @@ class TestThreadCardReplies(TestCase):
         messages = " ".join(logs.output)
         assert "key=root" in messages
         assert "key=thread-member" in messages
+        assert len(logs.output) == 2, "each reply is logged once with its decision"
 
     def test_closed_card_thread_gets_visible_note_without_binding_decoy(self) -> None:
         closed = _card("500.1")
@@ -238,22 +282,69 @@ class TestThreadCardReplies(TestCase):
         assert card.is_pending
         assert "author is not the owner" in " ".join(logs.output)
 
-    def test_api_app_post_stays_filtered(self) -> None:
+    def test_api_app_post_stays_filtered_and_leaves_the_card_pending(self) -> None:
+        card = _card("800.1")
         backend = Backend(user_id=OWNER_SLACK_ID)
+        raw = {**_api_owner_reply("800.2", "800.1"), "api_app_id": "A_APP"}
         with self.assertLogs("teatree.loop.scanners.slack_dm_recorder", level="INFO") as logs:
-            recorded = SlackDmRecorder(backend=backend).record_events(
-                [
-                    {
-                        "ts": "800.2",
-                        "thread_ts": "800.1",
-                        "user": OWNER_SLACK_ID,
-                        "channel": CHANNEL,
-                        "text": "approve",
-                        "api_app_id": "A_APP",
-                    }
-                ]
-            )
+            recorded = SlackDmRecorder(backend=backend).record_events([raw])
 
+        report = _cycle(backend)
+
+        card.refresh_from_db()
         assert recorded == 0
+        assert report.processed == 0
+        assert card.is_pending
         assert not PendingChatInjection.objects.filter(slack_ts="800.2").exists()
         assert "posted through an app token" in " ".join(logs.output)
+
+    def test_tap_only_card_thread_gets_a_note_and_stays_pending(self) -> None:
+        card = _action_card("850.1")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["850.2"] = {"ts": "850.2", "thread_ts": "850.1"}
+        reply = _event(backend, ts="850.2", root="850.1", text="Accept")
+        assert reply is not None
+
+        _cycle(backend)
+
+        card.refresh_from_db()
+        reply.refresh_from_db()
+        assert card.is_pending
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert any(ts == "850.2" and "tap" in text.lower() for _, ts, text in backend.replies)
+
+    def test_reply_naming_a_closed_card_gets_a_note_and_binds_no_other_card(self) -> None:
+        pending = _card("700.1")
+        closed = _card("700.2")
+        closed.apply_answer("Decline", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.message_meta["700.3"] = {"ts": "700.3", "thread_ts": "700.1"}
+        backend.thread_replies["700.1"] = [{"ts": "700.1"}, {"ts": "700.2", "thread_ts": "700.1"}]
+        reply = _event(backend, ts="700.3", root="700.1", text=f"#{closed.pk} approve")
+        assert reply is not None
+
+        _cycle(backend)
+
+        pending.refresh_from_db()
+        reply.refresh_from_db()
+        assert pending.is_pending
+        assert reply.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert any(f"#{closed.pk}" in text and "no longer" in text.lower() for _, _, text in backend.replies)
+
+    def test_question_text_with_two_pending_cards_is_left_to_the_ordinary_route(self) -> None:
+        first = _card("750.2")
+        second = _card("750.3")
+        backend = Backend(user_id=OWNER_SLACK_ID)
+        backend.thread_replies["750.1"] = [{"ts": "750.1"}, {"ts": "750.2"}, {"ts": "750.3"}]
+        reply = _event(backend, ts="750.4", root="750.1", text="What does each option change?")
+        assert reply is not None
+
+        _cycle(backend)
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        reply.refresh_from_db()
+        assert first.is_pending
+        assert second.is_pending
+        assert reply.answer_kind != PendingChatInjection.AnswerKind.ACK
+        assert not any("Start your reply" in text for _, _, text in backend.replies)
