@@ -6,7 +6,7 @@ import shutil
 import sqlite3
 import subprocess
 import tomllib
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import pytest
@@ -717,7 +717,10 @@ def test_fm1_term_in_actual_body_still_blocks_on_public_repo(
 
 
 def test_fm2_useratalias_ssh_remote_own_private_repo_does_not_block(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    ssh_alias_resolver: Callable[[str, str], None],
 ) -> None:
     # FM2 (#1415) LIVE: a clone whose ``origin`` uses a per-account dotless SSH
     # config alias (``git@gh-acct:owner-org/private-product``) is the user's OWN
@@ -728,6 +731,7 @@ def test_fm2_useratalias_ssh_remote_own_private_repo_does_not_block(
     _write_home_config(home, _FM_PRIVATE_CONFIG, monkeypatch, tmp_path)
     (home / ".ssh").mkdir(exist_ok=True)
     (home / ".ssh" / "config").write_text("Host gh-acct\n  HostName github.com\n")
+    ssh_alias_resolver("gh-acct", "github.com")
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
     monkeypatch.delenv("GH_REPO", raising=False)
 

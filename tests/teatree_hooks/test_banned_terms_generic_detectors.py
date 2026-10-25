@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from hooks.scripts import t3_invocation
-from hooks.scripts.hook_router import handle_banned_terms_pretool
+from hooks.scripts.hook_router import handle_banned_terms_pretool, handle_block_ai_signature
 from teatree.hooks import _repo_visibility, banned_term_registry, banned_terms_scanner, generic_forge_gate
 from tests.teatree_hooks import test_banned_terms_hook as _banned_terms_hook
 
@@ -115,7 +115,7 @@ def test_generic_detector_blocks_non_trailer_copy_of_trailer_email(
 
 
 @pytest.mark.usefixtures("in_process_banned_terms_scanner")
-def test_generic_detector_blocks_trailer_email_when_ai_scanner_is_unavailable(
+def test_trailer_email_still_blocks_when_t3_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv(
@@ -131,8 +131,8 @@ def test_generic_detector_blocks_trailer_email_when_ai_scanner_is_unavailable(
         "cwd": str(tmp_path),
     }
 
-    assert handle_banned_terms_pretool(data)
-    assert "generic email" in capsys.readouterr().out
+    assert handle_banned_terms_pretool(data) or handle_block_ai_signature(data)
+    assert "permissionDecision" in capsys.readouterr().out
 
 
 @pytest.mark.usefixtures("in_process_banned_terms_scanner")

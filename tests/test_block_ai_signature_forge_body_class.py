@@ -16,11 +16,9 @@ fix: the gate now reuses the SAME canonical command parser
 (``teatree.hooks._command_parser``) as the #1213/#1415/#1530 sibling gates, so
 it fires for the whole forge-post command CLASS.
 
-These tests exercise the gate END-TO-END through the REAL matcher
-(``scripts/ai_signature_scan.py``) — no mocked subprocess — by pointing
-``_ai_sig_scan_argv`` at the real script with the current interpreter. That
-proves the command-parse → body-extract → real-match → deny pipeline as a
-whole, not just an isolated stub.
+These tests exercise the gate end to end through the real in-process
+``teatree.hooks.ai_signature_scan`` matcher. They prove the command-parse →
+body-extract → real-match → deny pipeline without a scanner subprocess.
 
 Two symmetric dimensions, as the gate-review rule requires. The must-DENY side:
 every forge-post command shape carrying a banned trailer is BLOCKED, via
@@ -36,17 +34,13 @@ set the gate covers.
 """
 
 import json
-import sys
-from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
-import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _HANDLERS, _extract_ai_sig_payload, handle_block_ai_signature
+from hooks.scripts.ai_signature_guard import extract_ai_sig_payload, handle_block_ai_signature
+from hooks.scripts.hook_router import _HANDLERS
 from teatree.hooks.ai_signature_scan import scan_text
-
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ai_signature_scan.py"
 
 # Banned trailers — the exact shapes that leaked. The robot emoji is U+1F916.
 _EMOJI_FOOTER = "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)"
@@ -64,15 +58,8 @@ _HUMAN_COAUTHOR_BODY = "fix: x\n\nbody\n\nCo-authored-by: Sam Sample <sam@exampl
 
 
 @pytest.fixture
-def real_matcher(monkeypatch):
-    """Point the gate at the REAL ai-signature matcher with this interpreter.
-
-    Replaces the ``t3 tool ai-sig-scan -`` argv (which needs the installed t3
-    binary) with ``<python> scripts/ai_signature_scan.py -`` so the gate shells
-    the genuine matcher. This exercises the full command-parse → body-extract →
-    match → deny pipeline without mocking the scan.
-    """
-    monkeypatch.setattr(router, "_ai_sig_scan_argv", lambda: [sys.executable, str(_SCRIPT), "-"])
+def real_matcher():
+    """The hook imports the real matcher directly, without a subprocess override."""
 
 
 def _bash(command: str) -> dict:
@@ -305,12 +292,12 @@ class TestClosedCommandSetMetaTest:
 
     @pytest.mark.parametrize("command", _COVERED)
     def test_covered_command_is_a_body_surface(self, command):
-        assert _extract_ai_sig_payload(_bash(command)) is not None, (
+        assert extract_ai_sig_payload(_bash(command)) is not None, (
             f"{command!r} is a forge-post body surface the gate must scan"
         )
 
     @pytest.mark.parametrize("command", _NOT_COVERED)
     def test_uncovered_command_is_not_a_body_surface(self, command):
-        assert _extract_ai_sig_payload(_bash(command)) is None, (
+        assert extract_ai_sig_payload(_bash(command)) is None, (
             f"{command!r} is a read / non-forge command the gate must NOT claim as a body surface"
         )

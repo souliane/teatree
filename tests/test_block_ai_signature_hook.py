@@ -1,344 +1,130 @@
-"""Tests for the block-ai-signature PreToolUse hook (#836 §17.6 gate 15).
-
-The "No AI Signature on Posts Made on the User's Behalf" rule lived only
-as prose in /t3:rules and was UNENFORCED at the PR-body / commit-message
-layer — PR #831 leaked the ``Generated with [Claude Code]`` trailer,
-caught only by cold review. This gate intercepts ``gh pr create`` /
-``glab mr create`` / ``git commit`` / the MR-MCP tools and refuses the
-mutation when the body or message carries a banned trailer. It runs at
-the same pre-merge layer as the draft-lock and structured-question gates.
-"""
+# test-path: cross-cutting — exercises hooks/scripts/ai_signature_guard.py and teatree.hooks.ai_signature_scan.
+"""AI-signature PreToolUse behavior through the real parser and matcher."""
 
 import json
 import subprocess
-import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-import hooks.scripts.hook_router as router
-from hooks.scripts import hook_budget, t3_invocation
-from hooks.scripts.hook_router import _extract_ai_sig_payload, handle_block_ai_signature
+from hooks.scripts import t3_invocation
+from hooks.scripts.ai_signature_guard import extract_ai_sig_payload, handle_block_ai_signature
+from teatree.hooks import ai_signature_gate, ai_signature_scan
 
 
-def _gh_pr_create(body: str) -> dict:
-    return {"tool_name": "Bash", "tool_input": {"command": f"gh pr create --title 't' --body '{body}'"}}
+def _bash(command: str) -> dict:
+    return {"tool_name": "Bash", "tool_input": {"command": command}}
 
 
-_FINDING_STDOUT = "AI-signature scan: 1 banned trailer(s)\n  line 3: co-authored-by-model: Co-Authored-By: Claude"
-_CLEAN_STDOUT = "AI-signature scan: clean (0 findings)"
+def _pr(body: str) -> dict:
+    return _bash(f"gh pr create --title t --body '{body}'")
 
 
-class TestTheScanFitsTheHookBudget:
-    def test_the_scan_is_capped_by_what_the_hook_has_left(self, monkeypatch, hook_clock):
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        hook_clock.now = 25.0
-        clean = subprocess.CompletedProcess(args=[], returncode=0, stdout=_CLEAN_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=clean) as run:
-            assert handle_block_ai_signature(_gh_pr_create("body")) is False
-        assert run.call_args.kwargs["timeout"] == pytest.approx(4.0)
-
-    def test_no_scan_starts_once_the_hook_budget_is_spent(self, monkeypatch, capsys):
-        # Only ``t3`` resolves: a ``docker`` hit would start the process-cached mount probe on a cold worker.
-        monkeypatch.setattr(router.shutil, "which", lambda name: "/usr/local/bin/t3" if name == "t3" else None)
-        monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - float(hook_budget.HOOK_CEILING_S))
-        with patch.object(subprocess, "run") as run:
-            assert handle_block_ai_signature(_gh_pr_create("body")) is False
-        assert run.call_count == 0
-        assert "no time left in the hook budget" in capsys.readouterr().err
+def _reason(capsys: pytest.CaptureFixture[str]) -> str:
+    return json.loads(capsys.readouterr().out)["permissionDecisionReason"]
 
 
-class TestBlocksBannedTrailer:
-    def test_blocks_gh_pr_create_with_generated_with_footer(self, monkeypatch, capsys):
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=rejected) as run:
-            blocked = handle_block_ai_signature(_gh_pr_create("body\n\nGenerated with [Claude Code]"))
-        assert blocked is True
-        out = json.loads(capsys.readouterr().out)
-        assert out["permissionDecision"] == "deny"
-        reason = out["permissionDecisionReason"]
-        assert "AI-signature" in reason
-        assert "banned trailer in the PR body or commit message" in reason
-        assert "scanner error" not in reason
-        # The body text was piped to `t3 tool ai-sig-scan -` on stdin.
-        assert run.call_args[0][0][:3] == ["/usr/local/bin/t3", "tool", "ai-sig-scan"]
-        assert "Generated with" in run.call_args[1]["input"]
-
-    def test_blocks_git_commit_with_co_authored_by_model(self, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "git commit -m 'fix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>'"},
-        }
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=rejected) as run:
-            blocked = handle_block_ai_signature(data)
-        assert blocked is True
-        assert "Co-Authored-By" in run.call_args[1]["input"]
-
-    def test_blocks_mr_mcp_tool_body(self, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        data = {
+@pytest.mark.parametrize(
+    "event",
+    [
+        _pr("body\n\nGenerated with [Claude Code]"),
+        _bash("git commit -m 'fix: x\n\nCo-Authored-By: Claude <noreply@example.invalid>'"),
+        {
             "tool_name": "mcp__github__create_pull_request",
             "tool_input": {"title": "t", "body": "desc\n\n\U0001f916 Generated with [Claude Code]"},
-        }
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=rejected):
-            assert handle_block_ai_signature(data) is True
+        },
+    ],
+    ids=["pr", "commit", "mcp"],
+)
+def test_real_trailer_blocks_without_t3_or_subprocess(event: dict, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(t3_invocation, "t3_argv", lambda *_args: None)
+    with patch.object(subprocess, "run", side_effect=AssertionError("scanner spawned a subprocess")):
+        assert handle_block_ai_signature(event) is True
+    assert "banned trailer" in _reason(capsys)
 
 
-class TestFileBasedMessageIsScanned:
-    """Cold-review finding 2 — file-based message bypass.
-
-    The standard multi-line file path — ``git commit -F``, ``gh pr
-    create --body-file``, ``glab mr create --description <file>``,
-    ``git commit -C`` — must be read and scanned. This is exactly
-    #831's shape (a banned trailer in a multi-line body file); leaving
-    it unscanned defeats the gate's stated guarantee.
-    """
-
-    _TRAILER = "fix: x\n\nbody\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n"
-
-    def test_git_commit_minus_f_file_is_read_and_blocked(self, monkeypatch, tmp_path, capsys):
-        msg = tmp_path / "COMMIT_MSG"
-        msg.write_text(self._TRAILER, encoding="utf-8")
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F {msg}"}}
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=rejected) as run:
-            blocked = handle_block_ai_signature(data)
-        assert blocked is True
-        assert "Co-Authored-By" in run.call_args[1]["input"]
-
-    def test_gh_pr_create_body_file_is_read_and_blocked(self, monkeypatch, tmp_path):
-        body = tmp_path / "pr_body.md"
-        body.write_text(self._TRAILER, encoding="utf-8")
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        data = {"tool_name": "Bash", "tool_input": {"command": f"gh pr create --title t --body-file {body}"}}
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=rejected) as run:
-            assert handle_block_ai_signature(data) is True
-        assert "Co-Authored-By" in run.call_args[1]["input"]
-
-    def test_glab_mr_description_file_is_read(self, tmp_path):
-        # glab's FILE flag is ``--description-file`` (``--description`` takes an
-        # inline string, not a path). The shared canonical parser reads the
-        # ``--description-file`` body file; the previous hand-rolled regex
-        # mistakenly treated ``--description <path>`` as a file too.
-        desc = tmp_path / "mr.md"
-        desc.write_text(self._TRAILER, encoding="utf-8")
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": f"glab mr create --title t --description-file {desc}"},
-        }
-        payload = _extract_ai_sig_payload(data)
-        assert payload is not None
-        assert "Co-Authored-By" in payload
-
-    def test_git_commit_minus_c_reuse_ref_is_not_a_body_surface(self, tmp_path):
-        # ``git commit -C <commit>`` REUSES the message of an existing commit
-        # OBJECT (by ref/SHA) — it does NOT read a file path, so there is no
-        # hook-readable body to scan and the command is not a body surface. The
-        # previous hand-rolled ``-[FC]`` regex misread ``-C`` as a file path; the
-        # canonical parser correctly scopes file resolution to ``-F``.
-        data = {"tool_name": "Bash", "tool_input": {"command": "git commit -C HEAD~1"}}
-        assert _extract_ai_sig_payload(data) is None
-
-    def test_git_commit_glued_minus_f_no_separator_is_blocked(self, monkeypatch, tmp_path):
-        """Glued ``git commit -F<path>`` (no separator) must be scanned.
-
-        #862 cold-review residual: ``-F<path>`` with no space or ``=`` is
-        valid git getopt; the space/``=``-only matcher let a glued short
-        flag carrying a banned trailer slip past — this closes that hole.
-        """
-        msg = tmp_path / "GLUED_MSG"
-        msg.write_text(self._TRAILER, encoding="utf-8")
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F{msg}"}}
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=rejected) as run:
-            blocked = handle_block_ai_signature(data)
-        assert blocked is True
-        assert "Co-Authored-By" in run.call_args[1]["input"]
-
-    def test_git_commit_glued_minus_c_no_separator_is_not_a_body_surface(self, tmp_path):
-        # Glued ``git commit -CHEAD~1`` is the same reuse-by-ref semantics as the
-        # spaced form (see ``test_git_commit_minus_c_reuse_ref_is_not_a_body_surface``).
-        data = {"tool_name": "Bash", "tool_input": {"command": "git commit -CHEAD~1"}}
-        assert _extract_ai_sig_payload(data) is None
-
-    def test_existing_space_and_equals_short_forms_still_blocked(self, tmp_path):
-        """Glued-form fix must not regress ``-F path`` / ``-F=path``."""
-        msg = tmp_path / "msg"
-        msg.write_text(self._TRAILER, encoding="utf-8")
-        for cmd in (f"git commit -F {msg}", f"git commit -F={msg}"):
-            data = {"tool_name": "Bash", "tool_input": {"command": cmd}}
-            payload = _extract_ai_sig_payload(data)
-            assert payload is not None, cmd
-            assert "Co-Authored-By" in payload, cmd
-
-    def test_clean_glued_minus_f_is_allowed(self, monkeypatch, tmp_path):
-        body = tmp_path / "clean_glued.md"
-        body.write_text("fix: real change\n\nClean.\n\nRelates-to #836\n", encoding="utf-8")
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F{body}"}}
-        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
-        with patch.object(subprocess, "run", return_value=ok):
-            assert handle_block_ai_signature(data) is False
-
-    def test_clean_body_file_is_allowed(self, monkeypatch, tmp_path):
-        body = tmp_path / "clean.md"
-        body.write_text("fix: real change\n\nA clean description.\n\nRelates-to #836\n", encoding="utf-8")
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F {body}"}}
-        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
-        with patch.object(subprocess, "run", return_value=ok):
-            assert handle_block_ai_signature(data) is False
-
-    def test_nonexistent_message_file_fails_open_no_crash(self):
-        data = {"tool_name": "Bash", "tool_input": {"command": "git commit -F /no/such/file"}}
-        # File-missing → fail open (None), never raise.
-        assert _extract_ai_sig_payload(data) is None
-
-    def test_binary_message_file_fails_open_no_crash(self, tmp_path):
-        binf = tmp_path / "binary.bin"
-        binf.write_bytes(b"\x00\xff\xfe binary \x00 not text")
-        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F {binf}"}}
-        # Undecodable file → fail open (None), never raise.
-        assert _extract_ai_sig_payload(data) is None
+@pytest.mark.parametrize("flag", ["-F ", "-F", "-F="])
+def test_git_message_file_forms_block(flag: str, tmp_path: Path, capsys) -> None:
+    message = tmp_path / "message.txt"
+    message.write_text("fix: x\n\nCo-Authored-By: Claude <noreply@example.invalid>\n", encoding="utf-8")
+    assert handle_block_ai_signature(_bash(f"git commit {flag}{message}")) is True
+    assert "banned trailer" in _reason(capsys)
 
 
-class TestScannerErrorIsDistinguishedFromFinding:
-    """#1884 — a scanner crash must NOT masquerade as a banned-trailer finding.
-
-    The scanner (``scripts/ai_signature_scan.py``) exits 1 BOTH on a real
-    finding AND on a crash (a missing/unreadable file argument → typer
-    traceback → exit 1, no ``AI-signature scan:`` summary on stdout). The old
-    gate did ``if returncode != 0: deny('…banned trailer…')`` — so a crash
-    produced a false DENY carrying the LYING "banned trailer found" message.
-
-    This is a SECURITY gate (it prevents publishing AI signatures under the
-    user's identity). The safe posture on a scanner error is FAIL CLOSED with
-    a clear "scanner error, not a finding" message — block, but report the
-    real reason; never silently allow an unscanned publish, never claim a
-    finding that did not happen. (Contrast the sibling coverage gate, which
-    correctly fails OPEN — a broken env must not block a merge there.)
-    """
-
-    _CRASH_STDERR = "Traceback (most recent call last):\n  FileNotFoundError: [Errno 2] No such file"
-
-    def test_scanner_crash_fails_closed_with_scanner_error_not_finding_message(self, monkeypatch, capsys):
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        crashed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=self._CRASH_STDERR)
-        with patch.object(subprocess, "run", return_value=crashed):
-            blocked = handle_block_ai_signature(_gh_pr_create("a clean description\n\nRelates-to #836"))
-        assert blocked is True
-        out = json.loads(capsys.readouterr().out)
-        assert out["permissionDecision"] == "deny"
-        reason = out["permissionDecisionReason"]
-        assert "scanner error" in reason.lower()
-        # The crash must NOT be reported as a real finding.
-        assert "banned trailer in the PR body or commit message" not in reason
-
-    def test_scanner_nonzero_without_summary_fails_closed(self, monkeypatch, capsys):
-        # exit 2 (typer/argparse usage error) with no well-formed summary is a
-        # tool error, not a finding — fail closed, clear message.
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        errored = subprocess.CompletedProcess(args=[], returncode=2, stdout="Usage: …", stderr="error: bad")
-        with patch.object(subprocess, "run", return_value=errored):
-            blocked = handle_block_ai_signature(_gh_pr_create("a clean description"))
-        assert blocked is True
-        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
-        assert "scanner error" in reason.lower()
-        assert "banned trailer in the PR body or commit message" not in reason
-
-    def test_a_launcher_that_cannot_run_here_stays_closed_and_names_the_venue(self, monkeypatch, capsys):
-        """Exit 69 is ``deploy/t3`` refusing the venue — no scan ran, so no scanner error either."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        refused = subprocess.CompletedProcess(
-            args=[],
-            returncode=t3_invocation.VENUE_UNAVAILABLE_EXIT,
-            stdout="",
-            stderr="deploy/t3: refusing to run — this checkout is not visible inside the container.\n",
-        )
-        with (
-            patch.object(subprocess, "run", return_value=refused),
-            patch.object(t3_invocation, "unreachable_reason", return_value=None),
-        ):
-            assert handle_block_ai_signature(_gh_pr_create("a clean description")) is True
-        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
-        assert "venue fault" in reason
-        assert "this checkout is not visible inside the container" in reason
-        assert "AI-signature scanner error" not in reason
-        assert "banned trailer in the PR body or commit message" not in reason
-
-    def test_a_t3_that_could_not_exec_fails_open(self, monkeypatch):
-        """The managed `t3` is a bash launcher; a target it cannot exec blocks EVERY commit.
-
-        bash reports that as exit 126 with `exec: … cannot execute` and none of the
-        scanner's own output — a process that never started, so it scanned nothing and
-        there is no verdict to withhold. Reading it as a scanner error refused every
-        commit on the box, including the ones that would have repaired the launcher.
-        """
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        unexecutable = subprocess.CompletedProcess(
-            args=[],
-            returncode=126,
-            stdout="",
-            stderr="/home/u/.local/bin/t3: line 4: exec: /gone/deploy/t3: cannot execute: required file not found",
-        )
-        with patch.object(subprocess, "run", return_value=unexecutable):
-            assert handle_block_ai_signature(_gh_pr_create("a clean description")) is False
-
-    def test_a_t3_that_is_not_found_by_the_shell_fails_open(self, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        missing = subprocess.CompletedProcess(args=[], returncode=127, stdout="", stderr="t3: command not found")
-        with patch.object(subprocess, "run", return_value=missing):
-            assert handle_block_ai_signature(_gh_pr_create("a clean description")) is False
-
-    def test_a_scanner_that_ran_and_errored_still_fails_closed(self, monkeypatch, capsys):
-        """The could-not-exec codes are the ONLY structural widening — 1 and 2 still block."""
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        errored = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="exec format error while reading the body"
-        )
-        with patch.object(subprocess, "run", return_value=errored):
-            assert handle_block_ai_signature(_gh_pr_create("a clean description")) is True
-        assert "scanner error" in json.loads(capsys.readouterr().out)["permissionDecisionReason"].lower()
-
-    def test_real_finding_still_denies_with_finding_message(self, monkeypatch, capsys):
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=rejected):
-            blocked = handle_block_ai_signature(_gh_pr_create("body\n\nGenerated with [Claude Code]"))
-        assert blocked is True
-        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
-        assert "banned trailer in the PR body or commit message" in reason
-        assert "scanner error" not in reason.lower()
-
-    def test_clean_scan_allows(self, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout=_CLEAN_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=ok):
-            assert handle_block_ai_signature(_gh_pr_create("a clean description\n\nRelates-to #836")) is False
+@pytest.mark.parametrize("command", ["gh pr create --body-file {file}", "glab mr create --description-file {file}"])
+def test_forge_body_file_forms_block(command: str, tmp_path: Path, capsys) -> None:
+    body = tmp_path / "body.md"
+    body.write_text("body\n\nGenerated with [Claude Code]\n", encoding="utf-8")
+    assert handle_block_ai_signature(_bash(command.format(file=body))) is True
+    assert "banned trailer" in _reason(capsys)
 
 
-class TestAllowsCleanCases:
-    def test_allows_clean_pr_body(self, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout=_CLEAN_STDOUT, stderr="")
-        with patch.object(subprocess, "run", return_value=ok):
-            assert handle_block_ai_signature(_gh_pr_create("a clean description\n\nRelates-to #836")) is False
+def test_scanner_failure_refuses_with_cause(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    def broken_scanner(_body: str) -> list[tuple[int, str, str]]:
+        message = "broken matcher"
+        raise ValueError(message)
 
-    def test_noop_when_not_a_pr_or_commit_command(self, monkeypatch):
-        assert handle_block_ai_signature({"tool_name": "Bash", "tool_input": {"command": "ls -la"}}) is False
+    monkeypatch.setattr(ai_signature_scan, "scan_text", broken_scanner)
+    assert handle_block_ai_signature(_pr("clean body")) is True
+    reason = _reason(capsys)
+    assert "scanner error" in reason.lower()
+    assert "broken matcher" in reason
+    assert "banned trailer in the PR body" not in reason
 
-    def test_noop_when_git_commit_has_no_inline_message(self, monkeypatch):
-        # `git commit` opening an editor (no -m) has no payload to scan here.
-        data = {"tool_name": "Bash", "tool_input": {"command": "git commit"}}
-        assert handle_block_ai_signature(data) is False
 
-    def test_fail_open_when_t3_not_on_path(self, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", lambda _: None)
-        assert handle_block_ai_signature(_gh_pr_create("body\n\nGenerated with [Claude Code]")) is False
+def _parser_crash(_command: str, _cwd: Path | None = None) -> str | None:
+    message = "parser crash"
+    raise ValueError(message)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["ls -la", "git status"],
+)
+def test_internal_error_on_a_call_that_publishes_nothing_fails_open(
+    command: str, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setattr(ai_signature_gate, "extract_forge_post_body", _parser_crash)
+    assert handle_block_ai_signature(_bash(command)) is False
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "parser crash" in captured.err
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["gh pr create --title t --body x", "glab mr note 1 -m x", "git commit -m 'fix: x'"],
+    ids=["gh", "glab", "commit"],
+)
+def test_internal_error_on_a_publish_fails_closed_naming_the_cause(
+    command: str, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setattr(ai_signature_gate, "extract_forge_post_body", _parser_crash)
+    assert handle_block_ai_signature(_bash(command)) is True
+    reason = _reason(capsys)
+    assert "scanner error" in reason.lower()
+    assert "parser crash" in reason
+
+
+def test_clean_body_allows_without_t3_or_subprocess(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(t3_invocation, "t3_argv", lambda *_args: None)
+    with patch.object(subprocess, "run", side_effect=AssertionError("scanner spawned a subprocess")):
+        assert handle_block_ai_signature(_pr("a clean description\n\nRelates-to #836")) is False
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git commit -C HEAD~1", "git commit -CHEAD~1", "git commit", "ls -la"],
+)
+def test_non_body_command_has_no_payload(command: str) -> None:
+    assert extract_ai_sig_payload(_bash(command)) is None
+
+
+@pytest.mark.parametrize("contents", [None, b"\x00\xff\xfe binary \x00"])
+def test_missing_or_binary_message_file_has_no_payload(contents: bytes | None, tmp_path: Path) -> None:
+    message = tmp_path / "message.txt"
+    if contents is not None:
+        message.write_bytes(contents)
+    assert extract_ai_sig_payload(_bash(f"git commit -F {message}")) is None
