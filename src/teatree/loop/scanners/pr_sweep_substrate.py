@@ -14,7 +14,7 @@ from teatree.core.backend_protocols import changed_paths_unavailable
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
 from teatree.core.models.merge_clear import diff_paths_are_substrate
-from teatree.core.owner_waits import ask_owner_to_read
+from teatree.core.review.owner_waits import ask_owner_to_read
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 from teatree.utils.pr_ref import PrRef
 

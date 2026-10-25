@@ -65,14 +65,16 @@ def _stamp(when: datetime) -> str:
     return local.strftime("%H:%M")
 
 
-def _render_groups_tables(groups: list[CheckGroup], *, header: str, stamp: str, cap: int = DEFAULT_CAP) -> str:
+def _render_groups_tables(
+    groups: list[CheckGroup], *, header: str, stamp: str, internal_escalations: int = 0, cap: int = DEFAULT_CAP
+) -> str:
     """Render each non-empty group as a table under *header*.
 
     Empty report (every group at ``total == 0``) collapses to the single
     ``Nothing since <stamp>.`` line the terse view uses, so a no-change run
     stays one line. A capped group notes the pre-cap total in its title.
     """
-    if all(group.total == 0 for group in groups):
+    if all(group.total == 0 for group in groups) and not internal_escalations:
         return f"Nothing since {stamp}."
     buffer = io.StringIO()
     buffer.write(header + "\n")
@@ -86,10 +88,14 @@ def _render_groups_tables(groups: list[CheckGroup], *, header: str, stamp: str, 
             title=title,
             stream=buffer,
         )
+    if internal_escalations:
+        buffer.write(f"{internal_escalations} internal escalations: factory work, not questions\n")
     return buffer.getvalue()
 
 
-def _recap_table_dm(groups: list[CheckGroup], *, header: str, cap: int = DEFAULT_CAP) -> tuple[list[RawAPIDict], str]:
+def _recap_table_dm(
+    groups: list[CheckGroup], *, header: str, internal_escalations: int = 0, cap: int = DEFAULT_CAP
+) -> tuple[list[RawAPIDict], str]:
     """Render the non-empty recap groups as native ``table`` blocks + a fence.
 
     Each group becomes a titled :func:`render_table_message` — the native
@@ -106,29 +112,36 @@ def _recap_table_dm(groups: list[CheckGroup], *, header: str, cap: int = DEFAULT
         message = render_table_message(["Ref", "Title", "Detail"], rows, title=f"{group.title} ({group.total})")
         blocks.extend(message.blocks)
         fences.append(message.fence)
-    if not blocks:
+    if internal_escalations:
+        fences.append(f"{internal_escalations} internal escalations: factory work, not questions")
+    if not fences:
         return [], ""
     return blocks, f"{header}\n" + "\n".join(fences)
 
 
-def _recap_key(groups: list[CheckGroup], *, scope: str) -> str:
+def _recap_key(groups: list[CheckGroup], *, scope: str, internal_escalations: int = 0) -> str:
     """Content-hashed idempotency key so an unchanged recap never re-DMs."""
-    payload = "\n".join(f"{group.title}|{item.label}|{item.detail}" for group in groups for item in group.items)
+    payload = "\n".join(
+        f"{group.title}|{item.label}|{item.url}|{item.title}" for group in groups for item in group.items
+    )
+    payload += f"\ninternal_escalations:{internal_escalations}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     return f"checking_recap:{scope}:{digest}"
 
 
-def _maybe_notify_recap(groups: list[CheckGroup], *, header: str, scope: str, notify: bool) -> bool:
+def _maybe_notify_recap(
+    groups: list[CheckGroup], *, header: str, scope: str, notify: bool, internal_escalations: int = 0
+) -> bool:
     """Whether the recap DM landed — trivially true when there is nothing to send (#2966)."""
     if not notify:
         return True
-    blocks, fence = _recap_table_dm(groups, header=header)
-    if not blocks:
+    blocks, fence = _recap_table_dm(groups, header=header, internal_escalations=internal_escalations)
+    if not fence:
         return True
     return notify_user(
         fence,
         kind=NotifyKind.INFO,
-        idempotency_key=_recap_key(groups, scope=scope),
+        idempotency_key=_recap_key(groups, scope=scope, internal_escalations=internal_escalations),
         audience=NotifyAudience.OWNER_DELIVERY,
         blocks=blocks,
     )
@@ -196,7 +209,13 @@ class Command(MachineOutputCommand):
         groups = report.groups
         # The checkpoint consumes the window, so advancing it over an undelivered
         # recap loses those rows for good — deliver first, advance only on success.
-        delivered = _maybe_notify_recap(groups, header=header, scope=overlay_name or "global", notify=flags.notify)
+        delivered = _maybe_notify_recap(
+            groups,
+            header=header,
+            scope=overlay_name or "global",
+            notify=flags.notify,
+            internal_escalations=report.internal_escalations,
+        )
         if not delivered:
             self.stderr.write("  recap DM not delivered — the checking window is left unadvanced")
         if not flags.since and not flags.no_advance and delivered:
@@ -228,7 +247,13 @@ class Command(MachineOutputCommand):
         stamp = _stamp(report.earliest_since)
         header = f"Since {stamp} · all overlays"
         groups = report.groups
-        delivered = _maybe_notify_recap(groups, header=header, scope="all", notify=flags.notify)
+        delivered = _maybe_notify_recap(
+            groups,
+            header=header,
+            scope="all",
+            notify=flags.notify,
+            internal_escalations=report.internal_escalations,
+        )
         if not delivered:
             self.stderr.write("  recap DM not delivered — the checking window is left unadvanced")
         if not flags.since and not flags.no_advance and delivered:
@@ -253,7 +278,9 @@ class Command(MachineOutputCommand):
             json_output=flags.json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=_render_groups_tables(groups, header=header, stamp=stamp),
+            human=_render_groups_tables(
+                groups, header=header, stamp=stamp, internal_escalations=payload["internal_escalations"]
+            ),
         )
         return payload
 

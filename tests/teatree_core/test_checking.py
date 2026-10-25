@@ -571,7 +571,7 @@ class TestJsonShape(CheckingTestBase):
         payload = report.to_dict()
         encoded = json.dumps(payload)  # must not raise
         decoded = json.loads(encoded)
-        assert set(decoded) == {"since", "merged", "in_flight", "needs_you", "metered", "terse"}
+        assert set(decoded) == {"since", "merged", "in_flight", "needs_you", "metered", "internal_escalations", "terse"}
         assert decoded["merged"]["total"] == 1
         assert decoded["merged"]["items"][0]["label"] == "acme/widgets#7"
 

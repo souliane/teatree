@@ -28,7 +28,7 @@ def test_card_subject_round_trips_through_evidence() -> None:
         checked=("The change is ready for review.",),
         blocker="The merge waits for the owner.",
         why="The owner needs to read the change before it merges.",
-        subject="https://github.com/example/repo/pull/12",
+        subject="https://code.acme.test/repo/pull/12",
     )
 
     assert card.to_evidence()["subject"] == card.subject

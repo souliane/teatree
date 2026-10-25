@@ -46,7 +46,7 @@ t3 directive capture "<verbatim directive text>" [--scope <overlay>]
 
 - Interpretation runs headless on the directive loop — you do not drive it.
 - A **ratify question arrives as a Slack DM** (or read it with the
-  `mcp__teatree__question_list` MCP tool — the pending backlog as JSON; fall back to `t3 teatree questions list` / `/t3:checking`); answer it to approve.
+  `mcp__teatree__question_list` MCP tool — pending owner cards as JSON, oldest first and pageable with `offset`; fall back to `t3 teatree questions list` / `/t3:checking`); answer it to approve.
 - Only the owner ratifies: a Slack DM reply, or `t3 teatree questions answer <id> approve` from the owner's terminal or interactive session. An answer through the `mcp__teatree__question_answer` tool, or from a headless agent, is recorded as agent-given and re-asked.
 - Nothing implements before that approval — `Directive.admit` is structurally
   human-gated (it raises without an answered ratify question an owner channel gave).

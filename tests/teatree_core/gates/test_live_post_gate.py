@@ -29,10 +29,12 @@ import pytest
 from django.test import TestCase
 
 from teatree.cli.review.default_draft import publish_live_post
+from teatree.cli.review.on_behalf import publish_or_blocked
 from teatree.core.gates.live_post_gate import APPROVE_LIVE_POST_USAGE, UNGATED_ALTERNATIVES, LivePostBlockedError
 from teatree.core.modelkit.question_card import QuestionCard, plain_text
-from teatree.core.models import DeferredQuestion, LivePostApproval
+from teatree.core.models import DeferredQuestion, LivePostApproval, OnBehalfApproval
 from teatree.core.models.live_post_approval import canonical_mr_scope
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
 _MR = "acme-internal/widget!42"
 
@@ -95,6 +97,33 @@ class TestGateBehaviourNotJustWording(TestCase):
         assert code == 1
         assert "live post blocked (#1207)" in message
         assert calls == [], "unauthorised: the publish body must never run"
+
+    def test_on_behalf_rollback_keeps_the_refused_post_card(self) -> None:
+        seed_forbidding_posture()
+        OnBehalfApproval.record(_MR, "post_comment", "owner")
+
+        message, code = publish_or_blocked(
+            "acme-internal/widget",
+            42,
+            "post_comment",
+            lambda: publish_live_post(repo="acme-internal/widget", mr=42, publish=lambda: ("OK", 0)),
+        )
+
+        assert code == 1
+        assert "live post blocked" in message
+        assert DeferredQuestion.owner_pending().count() == 1
+        assert OnBehalfApproval.objects.filter(target=_MR, consumed_at__isnull=True).exists()
+
+    def test_unreadable_review_url_with_underscore_still_records_a_card(self) -> None:
+        with patch("teatree.cli.review.forge_target.resolve_base_url", side_effect=RuntimeError("unavailable")):
+            _message, code = publish_live_post(repo="acme_internal/widget", mr=42, publish=lambda: ("OK", 0))
+
+        assert code == 1
+        row = DeferredQuestion.owner_pending().get()
+        card = QuestionCard.from_row(row.evidence, row.options_json)
+        assert card is not None
+        assert card.subject == ""
+        assert "this review" in plain_text(card.view(row.question))
 
     def test_refused_live_post_asks_once_and_approval_settles_the_question(self) -> None:
         for _ in range(2):

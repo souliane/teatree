@@ -5,7 +5,7 @@ from django.test import TestCase
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import QuestionCard, plain_text
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.owner_waits import ask_owner_to_approve_post, ask_owner_to_read, settle_live_post_wait
+from teatree.core.review.owner_waits import ask_owner_to_approve_post, ask_owner_to_read, settle_live_post_wait
 
 PR_URL = "https://github.com/example/repo/pull/12"
 

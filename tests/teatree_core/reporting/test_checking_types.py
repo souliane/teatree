@@ -1,6 +1,6 @@
 """Public report item serialization and rendering."""
 
-from teatree.core.checking_types import CheckGroup, CheckItem, OwnerWaitItem
+from teatree.core.reporting.checking_types import CheckGroup, CheckItem, OwnerWaitItem
 
 
 def test_owner_wait_metadata_survives_group_serialization_without_changing_other_items() -> None:

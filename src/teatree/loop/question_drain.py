@@ -15,8 +15,9 @@ The sweep runs in two stages, and the split is the whole design:
     row uses ``Ticket._SETTLED_STATES``, the same population ``transient_requeue`` stops
     retrying, so PR_OPENED ends it; an owner row drains only on
     :func:`~teatree.core.models.question_subject.finished_subject_reason`, because a
-    PR_OPENED review is still the owner's to decide. Two later resolvers read facts the FSM
-    state cannot carry — a subject whose pull requests have all settled, and a parked
+    PR_OPENED review is still the owner's to decide. Three later resolvers read facts the FSM
+    state cannot carry — a subject whose pull requests have all settled, a held PR card
+    whose recorded PR has settled, and a parked
     lane that has since re-run to completion — and both are POSITIVE-ONLY: short of
     proof they answer nothing at all, so they add drains without ever suppressing one.
     The :data:`~teatree.core.question_heal.HEAL_CHECKS` resolvers are positive-only too:
@@ -51,8 +52,8 @@ from django.utils import timezone
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.question_subject import finished_subject_reason
-from teatree.core.owner_waits import canonical_wait_subject
 from teatree.core.question_heal import HEAL_CHECKS
+from teatree.core.review.owner_waits import canonical_wait_subject
 from teatree.loop.question_subjects import SubjectIndex
 
 #: The pull-request states that are DONE either way — the same partition
@@ -251,6 +252,7 @@ def _settled_pr_subjects(questions: Sequence[DeferredQuestion]) -> dict[str, str
         for question in questions
         if isinstance((subject := question.evidence.get("subject")), str) and subject
     }
+    subjects.discard("")
     if not subjects:
         return {}
     iterator = iter(subjects)

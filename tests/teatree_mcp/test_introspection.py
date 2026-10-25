@@ -32,6 +32,17 @@ class TestQuestionList(TestCase):
         assert answered.pk not in ids
         assert next(row for row in rows if row["id"] == older.pk)["question"] == "First?"
 
+    def test_later_owner_cards_are_pageable_with_decision_fields(self) -> None:
+        rows = [DeferredQuestion.record(f"Decision {i}?", **OWNER_DECISION) for i in range(52)]
+
+        first = question_list()
+        later = question_list(offset=50)
+
+        assert len(first) == 50
+        assert [row["id"] for row in later] == [row.pk for row in rows[50:]]
+        assert later[0]["decision"] == "product_scope"
+        assert later[0]["owner_only"] is False
+
 
 class TestConfigSettingGet(TestCase):
     def test_an_invalid_other_row_does_not_break_single_key_diagnostics(self) -> None:

@@ -24,7 +24,8 @@ from django.utils import timezone
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import BotPing, Session, Task, TaskAttempt
+from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.models import BotPing, Session, Task, TaskAttempt, WaitingItem
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
@@ -204,6 +205,16 @@ class TestCheckingShow:
         assert payload["internal_escalations"] == 1
         assert payload["terse"].splitlines()[-1] == "1 internal escalations: factory work, not questions"
 
+    def test_owner_only_question_does_not_offer_agent_dismissal(self, checkpoint_file: Path) -> None:
+        DeferredQuestion.record("May I publish this?", card=owner_card(OwnerDecision.PUBLIC_POST))
+
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--json", "--no-advance"))
+
+        item = payload["needs_you"]["items"][0]
+        assert item["owner_only"] is True
+        assert "questions dismiss" not in item["detail"]
+        assert "Slack" in item["detail"]
+
     def test_overlay_scoping_excludes_other_overlay(
         self, checkpoint_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -318,6 +329,16 @@ class TestCheckingNotify:
         assert "```" in row.text
         assert "acme/widgets#7" in row.text
 
+    def test_internal_only_report_is_visible_in_human_view_and_recap(self, checkpoint_file: Path) -> None:
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+
+        out = _call("checking", "show", "--this-overlay", "--notify", "--no-advance")
+
+        assert "1 internal escalations" in out
+        assert "Nothing since" not in out
+        row = BotPing.objects.get(idempotency_key__startswith="checking_recap:acme:")
+        assert "1 internal escalations" in row.text
+
     def test_a_metered_attempt_reaches_the_table_and_the_recap(self, checkpoint_file: Path) -> None:
         ticket = Ticket.objects.create(
             overlay="acme",
@@ -370,6 +391,15 @@ class TestCheckingNotify:
             _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
             _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
         backend.post_message.assert_not_called()
+        assert BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:").count() == 1
+
+    def test_wait_age_does_not_reissue_unchanged_recap(self, checkpoint_file: Path) -> None:
+        wait = WaitingItem.objects.add("Read the pending review")
+        _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+        WaitingItem.objects.filter(pk=wait.pk).update(created_at=timezone.now() - timedelta(days=2))
+
+        _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+
         assert BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:").count() == 1
 
 

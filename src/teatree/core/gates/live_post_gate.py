@@ -75,6 +75,21 @@ class LivePostBlockedError(RuntimeError):
         )
 
 
+def record_live_post_wait(*, mr_url: str, review_url_supplier: Callable[[], str] | None = None) -> None:
+    from teatree.core.review.owner_waits import ask_owner_to_approve_post  # noqa: PLC0415 — ORM registry
+
+    review_url = ""
+    if review_url_supplier is not None:
+        try:
+            review_url = review_url_supplier()
+        except Exception:
+            logger.exception("live post gate could not read the review URL for %s", mr_url)
+    try:
+        ask_owner_to_approve_post(mr_url, review_url=review_url)
+    except Exception:
+        logger.exception("live post gate failed to record an owner card for %s", mr_url)
+
+
 def require_live_post_approval(*, mr_url: str, review_url_supplier: Callable[[], str] | None = None) -> None:
     """Gate one ``--live`` post-comment against the Slack-recorded approval.
 
@@ -85,23 +100,11 @@ def require_live_post_approval(*, mr_url: str, review_url_supplier: Callable[[],
     drop, never an unattended live publish.
     """
     from teatree.core.models.live_post_approval import LivePostApproval  # noqa: PLC0415 — deferred: ORM/app-registry
-    from teatree.core.owner_waits import (  # noqa: PLC0415 — ORM registry
-        ask_owner_to_approve_post,
-        settle_live_post_wait,
-    )
+    from teatree.core.review.owner_waits import settle_live_post_wait  # noqa: PLC0415 — ORM registry
 
     consumed = LivePostApproval.consume(mr_url=mr_url)
     if consumed is None:
-        review_url = ""
-        if review_url_supplier is not None:
-            try:
-                review_url = review_url_supplier()
-            except Exception:
-                logger.exception("live post gate could not read the review URL for %s", mr_url)
-        try:
-            ask_owner_to_approve_post(mr_url, review_url=review_url)
-        except Exception:
-            logger.exception("live post gate failed to record an owner card for %s", mr_url)
+        record_live_post_wait(mr_url=mr_url, review_url_supplier=review_url_supplier)
         raise LivePostBlockedError(mr_url)
     try:
         settle_live_post_wait(mr_url)

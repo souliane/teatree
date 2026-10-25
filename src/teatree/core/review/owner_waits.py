@@ -50,9 +50,6 @@ def ask_owner_to_read(pr_url: str, title: str, head_sha: str) -> DeferredQuestio
         return None
     question = "What do you want to do with this pull request after reviewing it?"
     card = _held_card(subject, title)
-    if problems := card.problems(question):
-        logger.error("held PR card refused: %s", "; ".join(problems))
-        return None
     prefix = f"owner-wait:held-pr:{_subject_key(subject)}:"
     marker = f"{prefix}{head_sha.strip()[:20]}"
     try:
@@ -70,7 +67,9 @@ def _post_card(subject: str) -> QuestionCard:
     return QuestionCard(
         decision=OwnerDecision.PUBLIC_POST,
         checked=(
-            f"A live review comment was requested for {subject}.",
+            f"A live review comment was requested for {subject}."
+            if subject
+            else "A live review comment was requested.",
             "The comment text is not included in this notice.",
         ),
         blocker="A colleague-visible post needs your approval.",
@@ -90,12 +89,9 @@ def ask_owner_to_approve_post(mr_url: str, *, review_url: str = "") -> DeferredQ
     if not scope:
         logger.error("live post card lacks a review subject")
         return None
-    subject = canonical_wait_subject(review_url or mr_url)
+    subject = canonical_wait_subject(review_url or mr_url) if "://" in (review_url or mr_url) else ""
     question = "Will you send a separate approval message before a live review comment?"
     card = _post_card(subject)
-    if problems := card.problems(question):
-        logger.error("live post card refused: %s", "; ".join(problems))
-        return None
     prefix = f"owner-wait:post:{_subject_key(scope)}:"
     resolved = (
         DeferredQuestion.objects.filter(dedupe_marker__startswith=prefix)

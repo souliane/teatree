@@ -9,12 +9,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from teatree.core.checking_types import OwnerWaitItem
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.reporting.checking_types import OwnerWaitItem
 from teatree.core.waiting import WaitingKind, gather_waiting
 
 if TYPE_CHECKING:
@@ -251,7 +251,12 @@ def owner_wait_items(*, overlay_slug: str, overlay: str = "") -> list[OwnerWaitI
         question = wait.kind == WaitingKind.QUESTION
         label = f"Q{wait.row_id}: {wait.ref}" if question else wait.ref
         detail = (
-            f"answer in its Slack thread, or t3 {overlay_slug} questions dismiss {wait.row_id} --reason '<evidence>'"
+            "awaiting your Slack reply"
+            if question and wait.owner_only
+            else (
+                f"answer in its Slack thread, or t3 {overlay_slug} questions dismiss {wait.row_id}"
+                " --reason '<evidence>'"
+            )
             if question
             else f"waiting {max(0, wait.age.days)}d"
         )

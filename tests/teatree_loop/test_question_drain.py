@@ -13,6 +13,7 @@ The over-resolve guard is pinned throughout: a live or undeterminable subject is
 """
 
 import tempfile
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -23,11 +24,12 @@ from django.utils import timezone
 
 from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
-from teatree.core.owner_waits import ask_owner_to_read
 from teatree.core.provision.failure_question import record_provision_failure_question
+from teatree.core.review.owner_waits import ask_owner_to_read
 from teatree.loop.question_drain import (
     DrainReport,
     Verdict,
+    _settled_pr_subjects,
     drain_pending_questions,
     question_reachability,
     sweep_owner_questions,
@@ -35,7 +37,7 @@ from teatree.loop.question_drain import (
 from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from tests._git_repo import make_git_repo
-from tests._owner_channel import OWNER_DECISION
+from tests._owner_channel import OWNER_DECISION, owner_card
 
 
 def _ticket(state: str = Ticket.State.WORK_STARTED) -> Ticket:
@@ -428,6 +430,15 @@ class TestSettledPullRequestsDrain(TestCase):
 
 
 class TestHeldPrSubjectDrain(TestCase):
+    def test_blank_subject_skips_the_pull_request_query(self) -> None:
+        question = DeferredQuestion.record("Review it?", card=replace(owner_card(), subject="   "))
+
+        with CaptureQueriesContext(connection) as queries:
+            settled = _settled_pr_subjects([question])
+
+        assert settled == {}
+        assert len(queries) == 0
+
     def test_only_a_recorded_settled_pr_closes_its_owner_card(self) -> None:
         url = "https://github.com/acme/repo/pull/12"
         question = ask_owner_to_read(url, "A reviewed change", "a" * 40)

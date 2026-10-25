@@ -37,7 +37,6 @@ from typing import TypedDict
 
 from django.db.models import Count, Max, Sum
 
-from teatree.core import checking_types
 from teatree.core._checking_gather import (
     _MergedScope,
     internal_escalation_count,
@@ -47,10 +46,11 @@ from teatree.core._checking_gather import (
     owner_wait_items,
     ticket_url,
 )
-from teatree.core.checking_types import DEFAULT_CAP, CheckGroup, CheckGroupDict, CheckItem
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.reporting import checking_types
+from teatree.core.reporting.checking_types import DEFAULT_CAP, CheckGroup, CheckGroupDict, CheckItem
 
 CheckItemDict = checking_types.CheckItemDict
 

@@ -26,7 +26,9 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.cli.review.forge_target import owning_overlay_name
+from teatree.cli.review.audit import gitlab_mr_url
+from teatree.cli.review.forge_target import owning_overlay_name, resolve_base_url
+from teatree.core.gates.live_post_gate import LivePostBlockedError, record_live_post_wait
 from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:
@@ -238,7 +240,15 @@ def publish_or_blocked(
     *own_mr* carries the caller's PROVED owner-authorship through to the
     verdict; unset, the gate resolves exactly as before.
     """
-    return _surface(lambda: publish_on_behalf(repo, mr, action, _raising_on_failure(body), own_mr=own_mr))
+    result = _surface(lambda: publish_on_behalf(repo, mr, action, _raising_on_failure(body), own_mr=own_mr))
+    if action == "post_comment" and result[1]:
+        mr_ref = f"{repo}!{mr}"
+        if result[0] == str(LivePostBlockedError(mr_ref)):
+            record_live_post_wait(
+                mr_url=mr_ref,
+                review_url_supplier=lambda: gitlab_mr_url(resolve_base_url(repo), repo, mr),
+            )
+    return result
 
 
 def publish_or_blocked_issue(
