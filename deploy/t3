@@ -32,6 +32,17 @@ if [ "${1:-}" = mcp ] && [ "${2:-}" = serve ] && [ -z "${TEATREE_MCP_PROXY_CHILD
     echo "deploy/t3: WARN no python3 >= 3.9 (or no MCP stdio proxy file) on this host, so this MCP server will not survive a container restart; reconnect it from the /mcp menu after one" >&2
 fi
 
+# `compose exec -T` hides this terminal from the container, so the container's own tty check
+# cannot refuse a credential print; the host decides here, before anything is dispatched.
+refuse_secrets_get_on_terminal() {
+    [ -t 1 ] || return 0
+    if [ "${2:-}" = secrets ] && [ "${3:-}" = get ]; then
+        echo "deploy/t3: refusing 'secrets get' on a terminal; capture it: VAR=\"\$(t3 <overlay> secrets get NAME)\"" >&2
+        exit 3
+    fi
+}
+refuse_secrets_get_on_terminal "$@"
+
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 HOST_IDENTITY_FILE="$SCRIPT_DIR/docker-compose.host-identity.yml"
 SERVICE="${TEATREE_DOCKER_CLI_SERVICE:-teatree-worker}"
@@ -149,6 +160,7 @@ export TEATREE_HOST_OS
 CREDENTIAL_MOUNT_SOURCES=(
     "$TEATREE_HOST_HOME/.password-store"
     "$TEATREE_HOST_HOME/.gnupg"
+    "$TEATREE_HOST_HOME/.config/teatree-master-key"
 )
 DATA_MOUNT_SOURCES=(
     "$TEATREE_HOST_HOME/.local/share/teatree"
@@ -627,42 +639,30 @@ warn_source_mount_drift
 # credential helper has no token to answer with: it answers nothing, and git stops at
 # `could not read Username`, which names the missing credential. The host side below
 # forwards a token only when the operator exported one or explicitly named a bootstrap
-# pass entry. Otherwise the command receives no host token and the owning overlay's DB
+# credential entry. Otherwise the command receives no host token and the owning overlay's DB
 # route remains authoritative. An already-set value always wins.
 #
-# THE READ IS BOUNDED AND LOUD. `pass show` shells out to gpg, which blocks with no
-# deadline of its own on a keybox lock it cannot judge stale: the unbounded read this
-# replaces left 322 orphaned `pass`/`gpg` pairs alive for ten hours and then exported an
-# EMPTY token as if the credential were merely absent. `timeout` bounds it, and a
-# store that fails to ANSWER refuses outright rather than continuing with that empty
-# value — matching the host-side `refuse_wedged_secret_store` below.
-#
-# THE READ IS BOUNDED AND LOUD. `pass show` shells out to gpg, which blocks with no
-# deadline of its own on a keybox lock it cannot judge stale: the unbounded read this
-# replaces left 322 orphaned `pass`/`gpg` pairs alive for ten hours and then exported an
-# EMPTY token as if the credential were merely absent. `timeout` bounds it, and a
-# store that fails to ANSWER refuses outright rather than continuing with that empty
-# value — matching the host-side `refuse_wedged_secret_store` below.
-#
-# NO STORE IS NOT A BROKEN STORE, and the read below must keep the two apart. `pass`
-# ABSENT — no binary at all — is CI and the operator laptop that never set one up, and
-# it reports 127, which is `> 1` and so was read as a wedge that stopped the CLI on
-# every such venue. Only a store that is PRESENT and then fails to answer (the deadline,
-# or gpg's own rc 2) is the wedge this refusal exists for. `command -v pass` is the same
-# guard `host_gitlab_token_from_pass` already carries; 127 covers the second absence,
-# `timeout` itself, which the deploy image always ships but a host evaluating this
-# prologue need not — no bounded read is possible there, and an unbounded one is the
-# hang this whole block replaced.
+# A pass-mode keybox lock can stall without a deadline; the selected reader is
+# bounded here, and only exit 1 means a confirmed absent entry.
 #
 # Single-quoted, and passed as the `sh -c` PROGRAM so the HOST shell never expands
 # it: `$0` is the label, `$@` the command to run.
-CONTAINER_CREDENTIAL_PROLOGUE='if [ -z "${GITLAB_TOKEN:-}" ] && [ -z "${TEATREE_SKIP_CREDENTIAL_READ:-}" ] && [ -n "${TEATREE_GITLAB_TOKEN_PASS_PATH:-}" ] && command -v pass >/dev/null 2>&1; then
+CONTAINER_CREDENTIAL_PROLOGUE='if [ -z "${GITLAB_TOKEN:-}" ] && [ -z "${TEATREE_SKIP_CREDENTIAL_READ:-}" ] && [ -n "${TEATREE_GITLAB_TOKEN_PASS_PATH:-}" ]; then
     pass_path="${TEATREE_GITLAB_TOKEN_PASS_PATH:-}"
     deadline="${TEATREE_SECRET_READ_DEADLINE_SECONDS:-20}"
+    reader="${T3_SECRET_READER:-/usr/local/bin/secret-read.sh}"
+    if [ ! -x "$reader" ]; then
+        reader="${TEATREE_DEPLOY_CHECKOUT:-}/deploy/secret-read.sh"
+    fi
+    if [ ! -x "$reader" ]; then
+        echo "t3(container): credential reader is unavailable" >&2
+        exit 69
+    fi
     rc=0
-    token_out="$(timeout "$deadline" pass show "$pass_path" 2>/dev/null)" || rc=$?
-    if [ "$rc" -eq 127 ]; then
-        rc=1
+    token_out="$(timeout "$deadline" "$reader" get "$pass_path" 2>/dev/null)" || rc=$?
+    if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then
+        echo "t3(container): bounded credential read could not start (rc=$rc); refusing" >&2
+        exit 69
     fi
     if [ "$rc" -eq 124 ] || [ "$rc" -gt 1 ]; then
         echo "t3(container): the credential store did not answer for $pass_path within ${deadline}s (rc=$rc)." >&2
@@ -696,6 +696,7 @@ exec "$@"'
 # the list without editing this script.
 FORWARD_ENV_NAMES=(
     T3_OVERLAY_NAME
+    T3_SECRET_STORE
     TEATREE_INVOCATION_CWD
     PYTEST_XDIST_AUTO_NUM_WORKERS
     GITLAB_TOKEN
@@ -828,14 +829,11 @@ set +x
 # 1 = the entry is genuinely absent, 2 = the store is WEDGED. Only the caller, running
 # in the parent shell, may act on 2 — see `refuse_wedged_secret_store`.
 #
-# No pipeline: `pass show … | head -n1` reports HEAD's status, and with `pipefail` an
-# early close raises SIGPIPE on `pass`, so the read's own rc was unreadable either way.
-# The first line is taken with a parameter expansion instead.
+# The selected reader returns one line and its own status; no pipeline masks that status.
 host_gitlab_token_from_pass() {
     local value rc=0 pass_path="${TEATREE_GITLAB_TOKEN_PASS_PATH:-}"
     [ -n "$pass_path" ] || return 1
-    command -v pass >/dev/null 2>&1 || return 1
-    value="$(run_with_deadline "$SECRET_READ_DEADLINE_SECONDS" pass show "$pass_path" 2>/dev/null)" || rc=$?
+    value="$(run_with_deadline "$SECRET_READ_DEADLINE_SECONDS" "$SCRIPT_DIR/secret-read.sh" host-get "$pass_path" 2>/dev/null)" || rc=$?
     if [ "$rc" -eq "$DEADLINE_TIMEOUT_RC" ] || [ "$rc" -gt 1 ]; then
         return 2
     fi
@@ -1149,8 +1147,8 @@ if [ "${1:-}" = setup ]; then
 fi
 
 # A running service is the cheapest, most consistent runtime — exec into it. `-T`
-# is added when stdin is not a TTY (a script/pipe) so compose does not fail trying
-# to allocate one; an interactive shell keeps the TTY for prompts/pagers.
+# is added when either stream is not a TTY, so captured stdout stays a pipe
+# inside the container; an interactive shell keeps the TTY for prompts/pagers.
 if [ -n "$DISPATCH_ROUTE" ]; then
     announce_route "$DISPATCH_ROUTE"
     if wants_host_browser "$@"; then
@@ -1166,7 +1164,7 @@ if [ -n "$DISPATCH_ROUTE" ]; then
     # process image via a real command lookup and cannot resolve a function
     # (`exec: compose: not found`), so the final hop inlines `docker compose`
     # directly instead of calling through the function.
-    if [ -t 0 ]; then
+    if [ -t 0 ] && [ -t 1 ]; then
         exec docker compose "${COMPOSE_ARGS[@]}" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$DISPATCH_ROUTE" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"
     fi
     exec docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$DISPATCH_ROUTE" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"

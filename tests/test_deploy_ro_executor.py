@@ -25,7 +25,7 @@ _COMPOSE = _DEPLOY / "docker-compose.yml"
 _DOCKERFILE = _DEPLOY / "Dockerfile"
 _SERVICE = EXECUTOR_SERVICE
 _NOBODY = "65534:65534"
-_WORKER_DIGEST_AT_BASE = "b10b4113dadb7b3d3c01daaca1e22ae00adcb25c16afbfa2aff78424d685d548"
+_WORKER_DIGEST_AT_BASE = "a179ae11b74e9e849ebaab82a13f4722fea0f6d96405f4f608e53befb4403053"
 
 
 class _Volume(TypedDict):

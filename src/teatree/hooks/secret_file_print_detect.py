@@ -7,7 +7,7 @@ registry refuse the SAME set. A command is a secret print when it would route a
 credential/key/``.env`` file or a pass store to stdout:
 
 * cat/head/tail of a known secret-bearing path;
-* ``pass show …`` whose stdout is neither captured nor redirected;
+* ``pass show …`` or ``t3 … secrets get …`` whose stdout is neither captured nor redirected;
 * echo/printf of a pasted token literal (``glpat-``/``ghp_``/``xoxb-``/``sk-`` …).
 
 Allowed (must NOT false-positive): a variable capture (``VAR=$(…)``), a file
@@ -25,6 +25,7 @@ was never seen.
 """
 
 import re
+from pathlib import PurePath
 
 from teatree.hooks._shell_lexer import TokenKind, tokenize
 
@@ -55,6 +56,8 @@ _TOKEN_LITERAL_RE = re.compile(r"""(?:^|\s)(?:glpat[-_]|ghp_|gho_|xoxb-|xoxp-|sk
 # Verbs that route their file operand(s) to stdout, and the pass-store reader.
 _PRINT_VERBS = frozenset({"cat", "head", "tail"})
 _ECHO_VERBS = frozenset({"echo", "printf"})
+_SECRET_SUBSTITUTION_RE = re.compile(r"\$\(\s*(?:\S*/)?t3\s+\S+\s+secrets\s+get\s+|\$\(\s*pass\s+show\s+")
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 
 # A downstream pipe stage PROVEN to destroy its stdin rather than re-emit it, so
 # the secret cannot reach the transcript through it. An unrecognised stage is
@@ -68,6 +71,8 @@ _CONSUMING_SINKS = frozenset(
 # A producer stage needs at least the verb plus one operand (the token literal
 # for echo/printf, ``show`` for pass) before it can emit a secret.
 _VERB_PLUS_OPERAND = 2
+_T3_COMMAND_WORDS = 4
+_T3_GET_WITH_NAME_WORDS = 5
 
 # Statement separators — a ``|`` stays WITHIN one statement (it connects the
 # producer's stdout to the next stage); these END the statement.
@@ -79,7 +84,8 @@ _STDOUT_LEAK_DENY_REASON = (
     "BLOCKED: this command would print a secret-bearing file or credential token "
     "to the transcript. Reading a secret into the transcript is irrecoverable — "
     "rotation is the only remedy. Instead, extract the value into a shell variable "
-    "(`TOKEN=$(pass show …)`) and use it via env/header without printing it. "
+    '(`TOKEN=$(pass show …)` or `TOKEN="$(t3 <overlay> secrets get …)"`) '
+    "and use it via env/header without printing it. "
     "Do NOT implement 'mask-then-print' — a masking regex is one edge case away "
     "from leaking. The gate's job is to keep the value off stdout entirely."
 )
@@ -129,12 +135,32 @@ def _stage_reads_secret(words: list[str]) -> bool:
     """Whether the producer stage would emit a secret to its stdout."""
     if not words:
         return False
+    while words and _ENV_ASSIGNMENT_RE.fullmatch(words[0]):
+        words = words[1:]
+    if not words:
+        return False
     verb = words[0]
     if verb in _PRINT_VERBS:
         return bool(_SECRET_PATHS_RE.search(" ".join(words)))
     if verb in _ECHO_VERBS:
-        return len(words) >= _VERB_PLUS_OPERAND and bool(_TOKEN_LITERAL_RE.search(" ".join(words[1:])))
-    return verb == "pass" and len(words) >= _VERB_PLUS_OPERAND and words[1] == "show"
+        operands = " ".join(words[1:])
+        return len(words) >= _VERB_PLUS_OPERAND and bool(
+            _TOKEN_LITERAL_RE.search(operands) or _SECRET_SUBSTITUTION_RE.search(operands)
+        )
+    if verb == "pass":
+        return len(words) >= _VERB_PLUS_OPERAND and words[1] == "show"
+    return _t3_stage_reads_secret(words)
+
+
+def _t3_stage_reads_secret(words: list[str]) -> bool:
+    if PurePath(words[0]).name != "t3" or len(words) < _T3_COMMAND_WORDS or words[2] != "secrets":
+        return False
+    if words[3] == "get":
+        return len(words) >= _T3_GET_WITH_NAME_WORDS
+    if words[3] == "exec" and "--" in words:
+        separator = words.index("--")
+        return "--env" in words[4:separator] and words[separator + 1 : separator + 2] in (["env"], ["printenv"])
+    return False
 
 
 def _statement_prints_secret(stages: list[list[str]]) -> bool:

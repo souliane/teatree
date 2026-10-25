@@ -12,9 +12,12 @@ from teatree.cli.slack.config_token import (
     ConfigTokenStore,
     RotationOutcome,
     SlackConfigTokenPersistError,
+    SlackConfigTokenStoreUnwritableError,
     ensure_fresh_config_token,
 )
 from teatree.cli.slack.manifest import SlackManifestError
+from teatree.utils.secrets import SecretStoreError, use_store
+from tests.secret_memory_store import MemoryStore
 
 _NOW = dt.datetime(2026, 7, 28, 12, 0, tzinfo=dt.UTC)
 _STORE = ConfigTokenStore()
@@ -279,3 +282,46 @@ class TestRefusesToRotateWhenTheStoreCannotPersist:
 
         assert report.outcome is RotationOutcome.ROTATED
         assert set(store.values) == {_STORE.access_key, _STORE.refresh_key, _STORE.issued_at_key}
+
+
+class _RaisingWriteStore(MemoryStore):
+    def write(self, key: str, value: str) -> bool:
+        message = "database is locked"
+        raise SecretStoreError(message)
+
+
+class _RaisingWriteAndRemoveStore(_RaisingWriteStore):
+    def remove(self, key: str) -> bool:
+        message = "database is read-only"
+        raise SecretStoreError(message)
+
+
+class _RaisingRemoveStore(MemoryStore):
+    def remove(self, key: str) -> bool:
+        message = "database is read-only"
+        raise SecretStoreError(message)
+
+
+class TestARaisingStoreKeepsTheDomainErrors:
+    def test_cleanup_only_failure_is_a_writability_refusal(self) -> None:
+        with use_store(_RaisingRemoveStore()), pytest.raises(SlackConfigTokenStoreUnwritableError) as raised:
+            _STORE.assert_writable()
+        assert "cleanup failed" in str(raised.value)
+
+    def test_cleanup_failure_does_not_replace_the_writability_refusal(self) -> None:
+        with use_store(_RaisingWriteAndRemoveStore()), pytest.raises(SlackConfigTokenStoreUnwritableError) as raised:
+            _STORE.assert_writable()
+        assert "NOTHING WAS SPENT" in str(raised.value)
+        assert isinstance(raised.value.__cause__, SecretStoreError)
+
+    def test_persist_keeps_the_remint_guidance_and_chains_the_cause(self) -> None:
+        with use_store(_RaisingWriteStore()), pytest.raises(SlackConfigTokenPersistError) as raised:
+            _STORE.persist(access="xoxe.xoxp-NEW", refresh="xoxe-NEWR", issued_at=_NOW)
+        assert "https://api.slack.com/apps" in str(raised.value)
+        assert isinstance(raised.value.__cause__, SecretStoreError)
+
+    def test_assert_writable_refuses_with_the_unwritable_error(self) -> None:
+        with use_store(_RaisingWriteStore()), pytest.raises(SlackConfigTokenStoreUnwritableError) as raised:
+            _STORE.assert_writable()
+        assert "NOTHING WAS SPENT" in str(raised.value)
+        assert isinstance(raised.value.__cause__, SecretStoreError)

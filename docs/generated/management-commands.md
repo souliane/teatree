@@ -545,7 +545,12 @@ Signal *pid* only if it maps to a dead target AND is confirmed non-live.
 | --- | --- |
 | `status` | Report key health without disclosing stored values |
 | `ls` | List sealed row names without decrypting values |
-| `import-pass` | Classify password-store names without copying their values |
+| `rm` | Remove NAME from the sealed store |
+| `verify` | Print ok\|absent\|unreadable for every referenced entry in the sealed store; never a value |
+| `get` | Print the first line of NAME from the active store; exit 1 absent, 2 unreadable, 3 on a terminal |
+| `import-pass` | Classify password-store names; with --apply copy them into sealed rows and print names and statuses only |
+| `set` | Seal a value read from stdin (or a hidden prompt) under NAME in the sealed store |
+| `exec` | Run COMMAND with each --env VAR=<entry> value in the child's environment only |
 
 ## `seed_loops`
 

@@ -337,6 +337,8 @@ def _run_prologue(
         timeout=120,
         env={
             "PATH": str(stub_dir),
+            "T3_SECRET_STORE": "pass",
+            "T3_SECRET_READER": str(DEPLOY / "secret-read.sh"),
             "TEATREE_GNUPG_RUNTIME_DIR": str(tmp_path / "run"),
             "TEATREE_GITLAB_TOKEN_PASS_PATH": "gitlab/pat",
             **(env or {}),
@@ -361,11 +363,7 @@ def test_a_store_that_answers_still_exports_what_it_read(tmp_path: Path) -> None
 
 
 def test_no_store_at_all_is_not_a_wedge(tmp_path: Path) -> None:
-    """No `pass` binary is CI and the laptop that never set one up, not a fault.
-
-    The read reports 127 there, which is `> 1` — so without the `command -v pass` guard
-    the wedge refusal fired on every storeless venue and took the whole CLI with it.
-    """
+    """A missing `pass` binary makes the selected reader report confirmed absence."""
     _assert_dispatched(_run_prologue(tmp_path, None), "")
 
 
@@ -374,14 +372,11 @@ def test_a_missing_entry_is_not_a_wedge(tmp_path: Path) -> None:
     _assert_dispatched(_run_prologue(tmp_path, _MISSING_ENTRY_PASS), "")
 
 
-def test_no_bounding_tool_is_an_absence_too(tmp_path: Path) -> None:
-    """`timeout` is GNU coreutils: always in the deploy image, not on every host.
-
-    Its absence reports the same 127, and calling that a wedge would refuse a venue
-    where nothing is wedged. No bounded read is possible, so nothing is read — an
-    unbounded one is the unmessaged hang this whole block replaced.
-    """
-    _assert_dispatched(_run_prologue(tmp_path, _ANSWERING_PASS, bounded=False), "")
+def test_no_bounding_tool_refuses_dispatch(tmp_path: Path) -> None:
+    proc = _run_prologue(tmp_path, _ANSWERING_PASS, bounded=False)
+    assert proc.returncode != 0
+    assert "could not start" in proc.stderr
+    assert DISPATCH_MARKER not in proc.stdout
 
 
 @pytest.mark.skipif(not _HAS_TIMEOUT, reason="the wedge is only observable where the read can be bounded")

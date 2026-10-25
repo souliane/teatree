@@ -11,9 +11,12 @@ from teatree.utils.secrets import SecretStore, SecretStoreError
 
 
 class DbStore(SecretStore):
+    label = "the sealed secret store"
+
     def __init__(self, source: KeyFileSource | None = None) -> None:
         self.source = source or master_key_source()
 
+    @override
     def read(self, key: str) -> str | None:
         try:
             row = SealedSecret.objects.filter(name=key).first()
@@ -24,18 +27,29 @@ class DbStore(SecretStore):
             raise SecretStoreError(message) from exc
         return row.reveal(self.source.load()) if row is not None else None
 
+    @override
     def write(self, key: str, value: str) -> bool:
         validate_pass_key_entry(key)
         try:
-            has_rows = SealedSecret.objects.exists()
+            stored_ids = set(SealedSecret.objects.key_census())
         except OperationalError as exc:
             if SealedSecret.objects.table_missing():
                 message = f"sealed secret write requires migration {SEALED_MIGRATION} on the canonical database"
                 raise SecretStoreError(message) from exc
             message = f"sealed secret {key!r} could not be written"
             raise SecretStoreError(message) from exc
-        active = self.source.load() if has_rows else self.source.create()
-        SealedSecret.objects.store(key, value, active)
+        active = self.source.load() if stored_ids else self.source.create()
+        if stored_ids and stored_ids != {active.key_id}:
+            message = (
+                f"refusing to write sealed secret {key!r}: stored rows are sealed under key_id "
+                f"{', '.join(sorted(stored_ids))} but the active key is {active.key_id}"
+            )
+            raise SecretStoreError(message)
+        try:
+            SealedSecret.objects.store(key, value, active)
+        except OperationalError as exc:
+            message = f"sealed secret {key!r} could not be written"
+            raise SecretStoreError(message) from exc
         return True
 
     @override
@@ -57,3 +71,7 @@ class DbStore(SecretStore):
                 return frozenset()
             message = f"sealed secret names under {prefix!r} could not be read"
             raise SecretStoreError(message) from exc
+
+    @override
+    def remedy(self, key: str) -> str:
+        return f"`t3 teatree secrets set {key}`"

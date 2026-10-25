@@ -24,7 +24,7 @@ set -euo pipefail
 # that predates the contract runs its OWN baked entrypoint instead, which matches it,
 # until the next build — never a new script on an old image. Bump both this number and
 # the Dockerfile's /usr/local/share/teatree/entrypoint-contract together.
-ENTRYPOINT_IMAGE_CONTRACT=2
+ENTRYPOINT_IMAGE_CONTRACT=3
 BAKED_ENTRYPOINT="${TEATREE_BAKED_ENTRYPOINT:-/usr/local/bin/entrypoint.sh}"
 image_contract() {
     local baked
@@ -303,15 +303,20 @@ if [ "$ROLE" = webhook-listener ]; then
         --bind "127.0.0.1:${TEATREE_WEBHOOK_PORT:-8001}" teatree.webhook_wsgi:application
 fi
 
-# Source a runtime secret from the box pass store when its env var is unset,
+# Source a runtime secret from the selected store when its env var is unset,
 # keeping the plaintext out of teatree.env and off argv/logs (#3454). An env
 # value always wins (eval/CI paths and a deliberate literal override); the pass
-# store is the fallback that lets a rotated secret be picked up at boot without
-# updating teatree.env. `pass show` writes only to the captured stdout here.
+# selected store is the fallback that lets a rotated secret be picked up at boot without
+# updating teatree.env. The selected reader writes only to captured stdout here.
 source_secret_from_pass() {
-    local var="$1" path="$2" value
+    local var="$1" path="$2" value rc
     [ -n "${!var:-}" ] && return 0
-    value="$(pass show "$path" 2>/dev/null | head -n1)" || return 0
+    value="$("${T3_SECRET_READER:-${SCRIPT_DIR:-}/secret-read.sh}" get "$path" 2>/dev/null)" || {
+        rc=$?
+        [ "$rc" -eq 1 ] && return 0
+        echo "entrypoint: credential store is unreadable for $path (rc=$rc)" >&2
+        return 2
+    }
     if [ -n "$value" ]; then
         export "$var"="$value"
     fi
@@ -409,18 +414,14 @@ retarget_clone_discovery
 # True when the box pass store holds at least one Anthropic account entry —
 # the option-b credential source (anthropic_oauth_pass_paths routing).
 pass_store_has_anthropic() {
-    pass ls anthropic >/dev/null 2>&1
+    "${T3_SECRET_READER:-$SCRIPT_DIR/secret-read.sh}" has-prefix anthropic/ >/dev/null 2>&1
 }
 
 # True when an anthropic/ entry actually DECRYPTS — `pass ls` only proves the
 # .gpg files exist, not that gpg can read them (the private key may be absent or
 # gpg-agent unable to start). Exit-code only; the plaintext never leaves gpg.
 anthropic_credential_decrypts() {
-    local store="${PASSWORD_STORE_DIR:-$HOME/.password-store}" entry
-    entry="$(find "$store/anthropic" -type f -name '*.gpg' 2>/dev/null | head -1)"
-    [ -n "$entry" ] || return 1
-    entry="${entry#"$store/"}"
-    pass show "${entry%.gpg}" >/dev/null 2>&1
+    "${T3_SECRET_READER:-$SCRIPT_DIR/secret-read.sh}" probe-prefix anthropic/ >/dev/null 2>&1
 }
 
 # Parse ``owner/repo`` from the https/ssh clone URL (empty when unparsable).

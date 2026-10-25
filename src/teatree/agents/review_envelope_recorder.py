@@ -471,7 +471,7 @@ def _refusal_marker(target: ReviewTarget) -> str:
     a hand-copied 64, and composed so the head survives the bound: the SLUG is what gives
     way when there is not room for everything.
     """
-    limit = DeferredQuestion._meta.get_field("dedupe_marker").max_length or 64  # noqa: SLF001 — Django's documented Model._meta API
+    limit = DeferredQuestion._meta.get_field("dedupe_marker").max_length or 64
     tail = f"#{target.pr_id}@{target.claim_head_sha.strip().lower()[:_REFUSAL_MARKER_HEAD_LEN]}"
     room = max(limit - len(_REFUSAL_MARKER_PREFIX) - len(tail), 0)
     return f"{_REFUSAL_MARKER_PREFIX}{target.slug.strip()[:room]}{tail}"
