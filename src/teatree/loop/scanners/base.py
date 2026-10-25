@@ -17,6 +17,7 @@ from teatree.types import ScannerError, ScannerErrorClass
 from teatree.utils.run import CompletedProcess
 
 __all__ = [
+    "PartialScanError",
     "ScanSignal",
     "Scanner",
     "ScannerError",
@@ -109,6 +110,14 @@ class ScanSignal:
     kind: str
     summary: str
     payload: SignalPayload = field(default_factory=dict)
+
+
+class PartialScanError(ScannerError):
+    """A scanner failure that still hands over the signals read before it failed."""
+
+    def __init__(self, *, scanner: str, detail: str, signals: list[ScanSignal]) -> None:
+        super().__init__(scanner=scanner, error_class=ScannerErrorClass.UNKNOWN, detail=detail)
+        self.signals = signals
 
 
 @runtime_checkable

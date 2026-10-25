@@ -95,6 +95,16 @@ class TestRealUncommittedReasons:
             reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert reasons == [f"could not read working-tree status ({boom}) — keeping"]
 
+    def test_unreadable_ignored_tree_fails_closed(self, tmp_path: Path) -> None:
+        wt_dir, target = _committed_worktree(tmp_path)
+        with patch(
+            "teatree.core.cleanup.working_tree_dirt.ignored_unregenerable", side_effect=PermissionError("denied")
+        ):
+            verdict = working_tree_dirt(str(wt_dir), target)
+
+        assert not verdict.proven
+        assert verdict.reasons
+
     def test_blank_porcelain_line_is_skipped(self, tmp_path: Path) -> None:
         wt_dir, target = _committed_worktree(tmp_path)
 
