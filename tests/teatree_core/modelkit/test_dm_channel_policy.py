@@ -94,6 +94,7 @@ def test_push_signals_membership_is_pinned_exactly() -> None:
                 "self-improve:ram-probe-inert",
                 "self-improve:disk-probe-inert",
                 "self-improve:outbound-unposted",
+                "unaudited-merge",
             }
         )
         == PUSH_SIGNALS

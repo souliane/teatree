@@ -167,6 +167,31 @@ class TestAttachProvedByTheForge(TestCase):
 
 
 class TestAttachRefusesWithoutProof(TestCase):
+    def test_host_cap_refuses_fourth_gap_before_forge_write(self) -> None:
+        umbrella, host, forge = _umbrella("g1", "g2", "g3", "g4"), _host(), _forge()
+        first = attach_dream_gaps(
+            host, [{"gap_key": key} for key in ("g1", "g2", "g3")], umbrella=umbrella, code_host=forge
+        )
+        writes = forge.update_issue.call_count
+
+        fourth = attach_dream_gaps(host, [{"gap_key": "g4"}], umbrella=umbrella, code_host=forge)
+
+        assert first.attached == ["g1", "g2", "g3"]
+        assert fourth.attached == []
+        assert "3" in fourth.refusal
+        assert forge.update_issue.call_count == writes
+
+    def test_declined_host_is_refused_before_forge_write(self) -> None:
+        umbrella, host, forge = _umbrella("g1"), _host(), _forge()
+        umbrella.extra["dream_gap_pending"][0]["declined_hosts"] = [host.pk]
+        umbrella.save(update_fields=["extra"])
+
+        outcome = attach_dream_gaps(host, [{"gap_key": "g1"}], umbrella=umbrella, code_host=forge)
+
+        assert outcome.attached == []
+        assert "declined" in outcome.refusal
+        forge.update_issue.assert_not_called()
+
     def test_a_fold_the_forge_did_not_keep_records_nothing(self) -> None:
         umbrella, host = _umbrella("g1"), _host()
 

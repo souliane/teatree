@@ -7015,6 +7015,8 @@ Usage: t3 dream [OPTIONS] COMMAND [ARGS]...
 │                  (cron entry).                                               │
 │ gap-coverage     Prove every dream gap has exactly one owner; exit 1 on an   │
 │                  orphan, duplicate, bad link or open gap.                    │
+│ funnel           Show the daily dream funnel and whether a recurring         │
+│                  question class has stopped.                                 │
 │ gap-disposition  Record a folded dream gap's ADDRESS (with its citation) or  │
 │                  reasoned REJECT on its host.                                │
 │ compliance       Inspect the instruction-compliance accountant (#2663) — the │
@@ -7069,6 +7071,21 @@ Usage: t3 dream gap-coverage [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 dream funnel`
+
+```
+Usage: t3 dream funnel [OPTIONS]
+
+ Show the daily dream funnel and whether a recurring question class has
+ stopped.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --class        TEXT  Inspect one recurring question class.                   │
+│ --json               Emit the daily funnel as JSON.                          │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 dream gap-disposition`
 
 ```
@@ -7085,6 +7102,7 @@ Usage: t3 dream gap-disposition [OPTIONS] TICKET GAP_KEY
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --citation        TEXT  ADDRESS: the evidence that verifies the gap.         │
 │ --reject          TEXT  REJECT: why the gap is not worth addressing.         │
+│ --misfit          TEXT  RETURN: why this host cannot address the gap.        │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -12701,6 +12719,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              referenced attachments.                         │
 │ rubric-set                   Restate a ticket's rubric from explicit JSON    │
 │                              criteria (#2241).                               │
+│ rubric-waive                 Record an owner's waiver of one rubric          │
+│                              criterion.                                      │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -13676,6 +13696,25 @@ Usage: t3 teatree ticket rubric-set [OPTIONS] TICKET_ID
 │ --criteria-json        TEXT  JSON array: '["AC1"]' or '[{"text": "AC1"}]'.   │
 │ --criteria-file        TEXT  Path to a JSON criteria-array file.             │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket rubric-waive`
+
+```
+Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
+
+ Waive one rubric criterion by its text hash; an owner identity and a reason
+ are required.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --text-hash        TEXT  Hash shown beside the criterion.                    │
+│ --waived-by        TEXT  Owner identity recording the waiver.                │
+│ --reason           TEXT  Why this criterion is waived.                       │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

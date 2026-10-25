@@ -23,9 +23,14 @@ from django.test import TestCase
 import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
 from teatree.cli.doctor.checks_worktree_health import _check_registered_worktrees_are_checkouts
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree.broken_checkout import BrokenCheckout, classify_broken_checkout, unresolved_checkout_reason
+from teatree.core.worktree.broken_checkout import (
+    BrokenCheckout,
+    classify_broken_checkout,
+    is_pure_ghost,
+    unresolved_checkout_reason,
+)
 from teatree.core.worktree.worktree_done import reap_done_worktree
-from teatree.utils import git
+from teatree.utils import git, git_branch
 from teatree.utils.run import CommandFailedError, run_checked
 
 # Backdated so the liveness guard's recent-commit signal never fires and masks
@@ -265,6 +270,18 @@ class FailClosedControlsTest(_BrokenWorktreeCase):
         assert verdict.state is BrokenCheckout.HOLDS_WORK
         assert "could not read" in verdict.reason
 
+    def test_a_ref_probe_failure_keeps_a_dead_checkout_row(self) -> None:
+        wt_path = self._worktree_on("ref-refusal")
+        row = self._register(wt_path, branch="ref-refusal")
+        _break_checkout(self.clone, wt_path)
+        refusal = mock.Mock(returncode=128, stdout="", stderr="fatal: bad object")
+
+        with mock.patch.object(git_branch, "run_with_status", return_value=refusal):
+            verdict = classify_broken_checkout(row, workspace=self.workspace)
+
+        assert verdict.state is BrokenCheckout.UNVERIFIABLE
+        assert "branch ref" in verdict.reason
+
     def test_an_unresolvable_clone_leaves_the_branch_unverifiable(self) -> None:
         wt_path = self._worktree_on("orphan", commit="feat: work")
         row = self._register(wt_path, branch="orphan", clone=self.tmp / "clone-is-gone")
@@ -293,6 +310,15 @@ class FailClosedControlsTest(_BrokenWorktreeCase):
         verdict = classify_broken_checkout(row, workspace=self.workspace)
 
         assert verdict.state is BrokenCheckout.LIVE_CHECKOUT
+
+    def test_an_unreadable_branch_ref_cannot_prove_a_row_is_a_pure_ghost(self) -> None:
+        row = self._register(self.workspace / "never-existed", branch="ghost")
+        refusal = mock.Mock(returncode=128, stdout="", stderr="fatal: bad object")
+
+        with mock.patch.object(git_branch, "run_with_status", return_value=refusal):
+            pure_ghost = is_pure_ghost(row, workspace=self.workspace)
+
+        assert pure_ghost is False
 
 
 class RowReaperDispositionTest(_BrokenWorktreeCase):

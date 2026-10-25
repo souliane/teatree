@@ -19,6 +19,7 @@ from django.db import OperationalError
 from teatree.core.cleanup.checkout_registry import raw_worktree_paths
 from teatree.core.cleanup.orphan_checkouts import db_tracked_worktree_paths, orphan_is_dirty
 from teatree.core.cleanup.unshipped_work import bundle_path
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from tests.teatree_core.cleanup._shared import _run_git
 from tests.teatree_core.orphan_fixture import OrphanWorktreeFixture
@@ -80,6 +81,26 @@ class TestReapsMergedOrphan(OrphanWorktreeFixture):
 
 
 class TestKeepsUnpushedOrphan(OrphanWorktreeFixture):
+    def test_ignored_file_is_kept_and_named(self) -> None:
+        wt_path = self._add_orphan("ignored-notes")
+        (self.repo_main / ".git" / "info" / "exclude").write_text("notes.local\n", encoding="utf-8")
+        (wt_path / "notes.local").write_text("retain\n", encoding="utf-8")
+
+        results = self._reap()
+
+        assert any("KEPT orphan" in line and "notes.local" in line for line in results)
+        assert (wt_path / "notes.local").read_text(encoding="utf-8") == "retain\n"
+
+    def test_open_merge_request_keeps_pushed_orphan(self) -> None:
+        wt_path = self._add_orphan("open-review")
+        _run_git("push", "-q", "origin", "open-review", cwd=wt_path)
+
+        with patch("teatree.core.cleanup.removal_proof.find_open_pr_for_branch", return_value=PrProbe.found("url")):
+            results = self._reap()
+
+        assert any("KEPT orphan" in line and "open merge request" in line for line in results)
+        assert wt_path.is_dir()
+
     def test_unpushed_orphan_is_kept_by_default(self) -> None:
         """The 183-accumulation case: unpushed unique work is KEPT (data-loss guard), never snapshot."""
         wt_path = self._add_orphan("unpushed-feat", files={"new.txt": "secret work"})

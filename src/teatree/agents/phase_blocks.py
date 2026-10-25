@@ -123,10 +123,13 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
         *(_ASSIGNED_IDENTITY_LINES if identity else ()),
         "",
-        "GRADE THE TICKET'S RUBRIC IN THE SAME ENVELOPE — you are its independent verifier (grader != maker):",
-        '  "rubric_grades": [{"ordinal": 0, "status": "pass"|"fail", "rationale": "<what proves it>"}, ...]',
-        "Grade EVERY criterion or the verdict records nothing. A PASS cites a test; a FAIL needs none,",
-        "is a finding, and no bypass overrides it. do NOT run `t3 <overlay> ticket rubric-grade` separately.",
+        "RUBRIC: grade here; independent verifier != maker:",
+        (
+            '  "rubric_grades": [{"ordinal": 0, "text_hash": "<hash from brief>", '
+            '"status": "pass"|"fail", "rationale": "<what proves it>"}, ...]'
+        ),
+        "Grade EVERY criterion or verdict records nothing. A PASS cites a test; a FAIL needs none.",
+        "FAIL is a finding; no bypass overrides it. do NOT run `ticket rubric-grade`.",
     )
 
 

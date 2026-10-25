@@ -77,6 +77,23 @@ class TestEnvelopeContractText(SimpleTestCase):
         for phase in ("coding", "reviewing", "testing", "planning", "shipping", "answering", "scanning_news"):
             assert check_evidence(envelope_example(phase), phase) == "", phase
 
+    def test_review_example_and_schema_include_criterion_text_hash(self) -> None:
+        example = envelope_example("reviewing")
+        assert "text_hash" in example["review_verdict"]["rubric_grades"][0]
+        properties = RESULT_JSON_SCHEMA["properties"]
+        assert isinstance(properties, dict)
+        review = properties["review_verdict"]
+        assert isinstance(review, dict)
+        review_properties = review["properties"]
+        assert isinstance(review_properties, dict)
+        grades = review_properties["rubric_grades"]
+        assert isinstance(grades, dict)
+        items = grades["items"]
+        assert isinstance(items, dict)
+        item_properties = items["properties"]
+        assert isinstance(item_properties, dict)
+        assert "text_hash" in item_properties
+
     def test_example_uses_only_schema_declared_keys(self) -> None:
         for phase in ("coding", "reviewing", "shipping"):
             assert set(envelope_example(phase)) <= set(allowed_keys()), phase

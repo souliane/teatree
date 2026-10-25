@@ -25,6 +25,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.config import UserSettings
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
+from teatree.core.models import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -162,6 +164,15 @@ def _seed_terminal_review(status: Task.Status, *, hours_ago: float, overlay: str
 
 
 class ArchitecturalReviewScannerTests(TestCase):
+    def test_open_pr_cap_holds_a_new_review(self) -> None:
+        for index in range(OPEN_PR_START_CAP):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 600}",
+            )
+        assert _scanner().scan() == []
+        assert _last_review_task() is None
+
     def test_no_overlay_name_queues_nothing(self) -> None:
         """Defensive: an empty overlay_name short-circuits to no-op.
 

@@ -411,7 +411,8 @@ non-empty queue triggers this sweep early. The queued task lists every pending g
 under `DREAM GAPS`. Group them exactly like tickets:
 
 - Fold each gap into the best EXISTING open host that covers its scope, using the
-  same host rules as above. Several unrelated small gaps may share one host.
+  same host rules as above. A host carries at most three undispositioned gaps and
+  never receives a gap it already declined.
 - A gap no host fits goes to the umbrella ticket itself. It never goes to a new row.
 
 The fold, its proof and the bookkeeping are one command. It needs no ask-gate,
@@ -437,12 +438,17 @@ t3 <overlay> ticket attach-gaps <host-ticket-id> --sweep-run-id <run> \
 
 Two legacy limits remain: retrying an incomplete historical two-gap fold written in reverse order can append a second section, and a complete legacy fold keeps its legacy marker. Both cases leave existing text intact.
 
-The host then settles each gap with one of two commands:
+The sweep offers at most 12 pending gaps each pass, rotating by the oldest offer
+time. The host then records one of three outcomes:
 
 ```bash
 t3 dream gap-disposition <host-ticket-id> <gap_key> --citation "<evidence>"   # address
 t3 dream gap-disposition <host-ticket-id> <gap_key> --reject "<why not>"      # reject
+t3 dream gap-disposition <host-ticket-id> <gap_key> --misfit "<why this host cannot address it>"  # return
 ```
+
+`--misfit` returns the gap to the umbrella without counting it as a rejection.
+After three distinct hosts decline it, the rule stays as memory for review.
 
 `t3 dream gap-coverage [--ticket <id>]` is the read-only proof. It exits
 non-zero when any of these holds:

@@ -26,6 +26,7 @@ DB-record path.
 
 from copy import copy
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
@@ -65,6 +66,10 @@ PHASE_CRITERIA: dict[str, str] = {
 
 class RubricError(ValueError):
     """A rubric population or grade was rejected at record time — the contract failed."""
+
+
+def criterion_text_hash(text: str) -> str:
+    return sha256(text.strip().encode("utf-8")).hexdigest()[:32]
 
 
 class RubricManager(models.Manager["Rubric"]):
@@ -171,9 +176,14 @@ class Rubric(models.Model):
         with transaction.atomic():
             rubric, _ = cls.objects.get_or_create(ticket=ticket)
             existing = set(rubric.criteria.values_list("text", flat=True))
-            ordinal = rubric.criteria.count()
+            extra = Ticket.objects.get(pk=ticket.pk).extra or {}
+            waivers = [entry for entry in extra.get("rubric_waivers", []) if isinstance(entry, dict)]
+            waived = {entry.get("text_hash") for entry in waivers}
+            spent = [*rubric.criteria.values_list("ordinal", flat=True)]
+            spent += [entry["ordinal"] for entry in waivers if isinstance(entry.get("ordinal"), int)]
+            ordinal = max(spent, default=-1) + 1
             for text in cleaned:
-                if text in existing:
+                if text in existing or criterion_text_hash(text) in waived:
                     continue
                 RubricCriterion.objects.create(rubric=rubric, ordinal=ordinal, text=text)
                 existing.add(text)
@@ -213,13 +223,15 @@ class Rubric(models.Model):
             if item.get("ordinal") is None or item.get("status") is None:
                 msg = f"each grade needs an ordinal and a status: {item!r}"
                 raise RubricError(msg)
-            grades.append(
-                RubricGrade(
-                    ordinal=_grade_ordinal(item["ordinal"]),
-                    status=str(item["status"]),
-                    rationale=str(item.get("rationale", "")),
-                )
+            grade = RubricGrade(
+                ordinal=_grade_ordinal(item["ordinal"]),
+                status=str(item["status"]),
+                rationale=str(item.get("rationale", "")),
             )
+            text_hash = str(item.get("text_hash") or "").strip().lower()
+            if text_hash:
+                grade["text_hash"] = text_hash
+            grades.append(grade)
         return grades
 
     def ungraded_ordinals(self, grades: "list[RubricGrade]") -> list[int]:
@@ -254,6 +266,12 @@ class Rubric(models.Model):
                 except RubricCriterion.DoesNotExist as exc:
                     msg = f"no criterion with ordinal {ordinal!r} on rubric {self.pk}"
                     raise RubricError(msg) from exc
+                claimed_hash = str(grade.get("text_hash") or "").strip().lower()
+                if claimed_hash and claimed_hash != criterion.text_hash:
+                    msg = (
+                        f"grade text_hash {claimed_hash} differs from stored criterion text_hash {criterion.text_hash}"
+                    )
+                    raise RubricError(msg)
                 criterion.record_grade(
                     status=str(grade["status"]),
                     grader_identity=grader_identity,
@@ -362,6 +380,10 @@ class RubricCriterion(models.Model):
 
     def __str__(self) -> str:
         return f"criterion<rubric={self.rubric_id} #{self.ordinal} {self.status}>"  # ty: ignore[unresolved-attribute]
+
+    @property
+    def text_hash(self) -> str:
+        return criterion_text_hash(self.text)
 
     def record_grade(self, *, status: str, grader_identity: str, reviewed_sha: str, rationale: str = "") -> None:
         """The single guarded factory for a criterion grade — validate, then stamp.
