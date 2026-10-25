@@ -145,6 +145,17 @@ def _cli_overlay_pin() -> Iterator[None]:
         yield
 
 
+def _invoke(*args: str) -> tuple[int, str]:
+    buf = io.StringIO()
+    code = 0
+    with contextlib.redirect_stdout(buf):
+        try:
+            call_command("review_request_post", "--mr-url", _MR_URL, "--approver", "souliane", *args)
+        except SystemExit as exc:
+            code = int(exc.code) if isinstance(exc.code, int) else 1
+    return code, buf.getvalue()
+
+
 def _run(*extra: str, supply_gate_evidence: bool = True) -> tuple[int, dict[str, object]]:
     """Call the command, capture exit code + the machine-legible dict it prints."""
     args = list(extra)
@@ -169,14 +180,7 @@ def _run(*extra: str, supply_gate_evidence: bool = True) -> tuple[int, dict[str,
                 verdict="merge_safe",
                 head_sha=_SHA,
             )
-    buf = io.StringIO()
-    code = 0
-    with contextlib.redirect_stdout(buf):
-        try:
-            call_command("review_request_post", "--mr-url", _MR_URL, "--approver", "souliane", *args)
-        except SystemExit as exc:
-            code = int(exc.code) if isinstance(exc.code, int) else 1
-    out = buf.getvalue()
+    code, out = _invoke(*args)
     # The dict line is the last JSON object printed.
     payload: dict[str, object] = {}
     for raw in out.splitlines():
@@ -481,10 +485,34 @@ class TestReviewRequestPostTicketScope(_DataDirMixin, TestCase):
         backend = _FakeBackend()
 
         with self._postable(backend):
-            code, payload = _run(supply_gate_evidence=False)
+            code, out = _invoke()
 
-        assert (code, payload["reason"]) == (2, "anti_vacuity_not_attested")
+        assert code == 2
+        assert "pass --head-sha" in out
+        assert '"reason": "anti_vacuity_not_attested"' in out
         assert backend.posts == []
+
+    def test_an_explicit_ticket_id_wins_over_the_ticket_that_owns_the_merge_request(self) -> None:
+        self._owning_ticket(state=Ticket.State.CODED, attested=False, reviewed=False)
+        explicit = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        self._approve()
+        backend = _FakeBackend()
+
+        with self._postable(backend):
+            code, payload = _run("--ticket-id", str(explicit.pk), "--title", "t")
+
+        assert (code, payload["action"]) == (0, "post"), payload
+        assert len(backend.posts) == 1
+
+    def test_a_whitespace_only_ticket_id_behaves_as_omitted(self) -> None:
+        self._approve()
+        backend = _FakeBackend()
+
+        with self._postable(backend):
+            code, payload = _run("--ticket-id", " ", "--title", "t", supply_gate_evidence=False)
+
+        assert (code, payload["action"]) == (0, "post"), payload
+        assert len(backend.posts) == 1
 
     def test_the_owning_ticket_must_be_reviewed_when_no_ticket_id_is_given(self) -> None:
         self._owning_ticket(state=Ticket.State.CODED, reviewed=False)

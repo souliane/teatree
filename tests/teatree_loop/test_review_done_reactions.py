@@ -68,6 +68,15 @@ class TestTheReactionFollowsTheAuthor(TestCase):
         assert self._emit(AuthorForge(author="ALICE")) == []
         self._assert_nothing_reacted()
 
+    def test_the_overlay_owning_the_merge_request_decides_who_the_operator_is(self) -> None:
+        ConfigSetting.objects.set_value("user_identity_aliases", ["bob"], scope="other-overlay")
+
+        with patch("teatree.loop.review_done_reactions.overlay_for_mr_url", return_value="other-overlay"):
+            assert self._emit(AuthorForge(author="bob")) == []
+        self._assert_nothing_reacted()
+
+        assert self._emit(AuthorForge(author="bob")) == ["eyes"]
+
     def test_an_author_nobody_can_read_gets_none(self) -> None:
         unreadable = {
             "the forge raised": AuthorForge(error=RuntimeError("forge down")),
