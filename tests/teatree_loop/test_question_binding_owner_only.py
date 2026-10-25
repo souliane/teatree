@@ -7,7 +7,7 @@ from django.test import TestCase
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.core.models import DmContext, PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.loop.question_binding import bind_reply, configured_owner_id
+from teatree.loop.question_binding import bind_reply
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from tests._owner_channel import OWNER_SLACK_ID
@@ -99,14 +99,14 @@ class TestOnlyTheOwnersReplyBinds(TestCase):
     def test_a_backend_with_no_owner_configured_binds_nothing(self) -> None:
         _question("Ship it?", slack_ts="100.0")
         reply = _reply("yes", author="")
-        assert bind_reply(reply, reader=_statement, owner_user_id=configured_owner_id(NoopMessagingBackend())) is None
+        assert bind_reply(reply, reader=_statement, backend=NoopMessagingBackend()) is None
 
     def test_the_owners_reply_binds_and_is_recorded_as_slack(self) -> None:
         question = _question("Ship it?", slack_ts="100.0")
         _reply(f"#{question.pk} yes", author=OWNER_SLACK_ID)
         backend = _scan(FakeMessaging())
         question.refresh_from_db()
-        assert question.answer_text == "yes"
+        assert question.answer_text == "Yes"
         assert question.resolved_via == DeferredQuestion.ResolvedVia.SLACK
         assert backend.react_calls != []
 

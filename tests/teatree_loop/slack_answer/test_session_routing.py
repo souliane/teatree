@@ -851,6 +851,33 @@ class TestBoundTicketThread(TestCase):
         client.steer.assert_not_called()
         assert backend.replies == []
 
+    def test_nested_question_card_in_ticket_thread_answers_parked_task(self) -> None:
+        parked = self._bound_task()
+        question = DeferredQuestion.record(
+            "Which API?", slack_ts="100.2", slack_channel="C1", parked_task=parked, task_session=parked.session
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        backend.thread_replies["100.0"] = [{"ts": "100.0"}, {"ts": "100.2", "thread_ts": "100.0"}]
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": parked.pk, "ticket": parked.ticket_id, "state": "busy", "steerable": True}
+        ]
+        client.steer.return_value = {"outcome": "accepted_current_turn", "code": None, "accepted_at": "now"}
+
+        with (
+            patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client),
+            patch.object(routing_mod, "apply_stop_answer") as stop_answer,
+        ):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        question.refresh_from_db()
+        assert report.steered == 1
+        assert question.answer_text == "Use the new API"
+        client.steer.assert_called_once()
+        assert stop_answer.call_args.args[0].pk == question.pk
+
     def test_question_card_answer_resolves_when_sibling_is_pending(self) -> None:
         parked = self._bound_task()
         Task.objects.create(ticket=parked.ticket, session=parked.session, phase="coding")

@@ -19,13 +19,20 @@ from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.models.usage_window_state import OPERATOR_PAUSED_PREFIX
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading
-from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply, configured_owner_id
+from teatree.loop.question_binding import (
+    AmbiguousCards,
+    BoundAnswer,
+    UnmatchedCardThread,
+    apply_bound_answer,
+    configured_owner_id,
+)
 from teatree.loop.slack_answer.control_verbs import control_verb
 from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
-    from teatree.loop.slack_answer.cycle import SlackAnswerReport, _Unit
+    from teatree.loop.slack_answer.coalescing import _Unit
+    from teatree.loop.slack_answer.cycle import SlackAnswerReport
 
 SLACK_STEER_WAIT_SECONDS = 10.0
 
@@ -242,6 +249,26 @@ def _choice_reply(
     )
 
 
+def _card_result_reply(
+    backend: "MessagingBackend",
+    unit: "_Unit",
+    report: "SlackAnswerReport",
+    result: AmbiguousCards | UnmatchedCardThread | BoundAnswer | None,
+) -> bool:
+    if isinstance(result, AmbiguousCards):
+        choices = " or ".join(f"#{question_id}" for question_id in result.question_ids)
+        message = f"Questions are waiting in this thread. Start your reply with {choices} to choose one."
+    elif isinstance(result, UnmatchedCardThread):
+        message = (
+            "This card needs a button tap. Please choose an option on the card."
+            if result.reason == "the card takes taps only"
+            else "This card is no longer waiting for an answer. Please reply to a current card."
+        )
+    else:
+        return False
+    return _post_bound_reply(backend, unit, report, message, kind=PendingChatInjection.AnswerKind.ACK)
+
+
 def _queue_pending_input(
     backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding, task: Task
 ) -> bool:
@@ -393,9 +420,9 @@ def _live_receipt(
     unit: "_Unit",
     report: "SlackAnswerReport",
     binding: ThreadBinding,
-    reader: InboundReader,
+    route: tuple[InboundReader, BoundAnswer | None],
 ) -> bool:
-    bound_answer = bind_reply(unit.lead, reader=reader, owner_user_id=configured_owner_id(backend), text=unit.text)
+    reader, bound_answer = route
     if _replay_bound_command(backend, unit, report, binding, bound_answer):
         return True
     verb = control_verb(unit.text)

@@ -78,6 +78,10 @@ class FakeMessaging:
         _ = (channel, ts)
         return "https://slack/permalink"
 
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        _ = (channel, thread_ts)
+        return []
+
 
 def _statement(text: str) -> InboundReading:
     """Read every body as a plain statement, so free text is applied verbatim."""

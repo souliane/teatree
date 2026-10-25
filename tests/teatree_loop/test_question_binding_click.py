@@ -167,6 +167,20 @@ class TestTheTapRoundTrip(TestCase):
 
         assert backend.update_message.call_args.kwargs["ts"] == _ROOT_TS
 
+    def test_a_tap_on_a_nested_card_updates_the_card_itself(self) -> None:
+        row, backend = _posted_card()
+        nested_ts = "1800000000.000500"
+        DeferredQuestion.objects.filter(pk=row.pk).update(slack_ts=nested_ts)
+        row.refresh_from_db()
+        payload = _tap(row)
+        payload["message"]["thread_ts"] = _ROOT_TS
+
+        assert answer_from_click(payload, backend=backend)
+
+        row.refresh_from_db()
+        assert row.answer_text == "Yes"
+        assert backend.update_message.call_args.kwargs["ts"] == nested_ts
+
     def test_a_tap_on_a_dismissed_question_says_it_no_longer_needs_an_answer(self) -> None:
         row, backend = _posted_card()
         row.mark_stale("the widgets shipped without asking")

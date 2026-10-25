@@ -32,7 +32,7 @@ from teatree.core.models import PendingChatInjection
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundReader, read_inbound
-from teatree.loop.question_binding import apply_bound_answer, bind_reply, configured_owner_id
+from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply
 from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
@@ -66,8 +66,8 @@ class AskUserQuestionReplyScanner:
         return []
 
     def _apply_one(self, reply: PendingChatInjection, egress: OnBehalfSlackEgress) -> None:
-        bound = bind_reply(reply, reader=self.reader or read_inbound, owner_user_id=configured_owner_id(self.backend))
-        if bound is None:
+        bound = bind_reply(reply, reader=self.reader or read_inbound, backend=self.backend)
+        if not isinstance(bound, BoundAnswer):
             return
         if not reply.mark_loop_replied(PendingChatInjection.AnswerKind.QUESTION_REPLY):
             return

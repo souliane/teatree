@@ -28,6 +28,7 @@ from teatree.loop.scanners.slack_self_filter import (
     OwnSlackIdentity,
     drop_on_behalf_messages,
     filter_self_messages,
+    is_on_behalf_posted,
     resolve_own_identity,
 )
 from teatree.types import RawAPIDict
@@ -72,6 +73,9 @@ class SlackDmRecorder:
         dms = filter_self_messages(events, self._identity())
         if dms is None:
             return 0
+        for event in dms:
+            if _event_thread_ts(event) and is_on_behalf_posted(event):
+                logger.info("Slack reply %s ignored: posted through an app token", _event_ts(event))
         return sum(1 for event in drop_on_behalf_messages(dms) if self._record_one(event))
 
     def _record_one(self, event: RawAPIDict) -> bool:
