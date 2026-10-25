@@ -26,7 +26,7 @@ from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
 from teatree.core.modelkit.gate_verdict import EvidenceUnavailableError, read_or_refuse
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import DeferredQuestion, Task, TaskAttempt, Worktree
+from teatree.core.models import AutoReviewDispatch, DeferredQuestion, Task, TaskAttempt, Worktree
 from teatree.core.models.checkout_custody import Custody
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree
 from teatree.core.models.usage_window_state import REVIEW_HELD_PREFIX
@@ -96,7 +96,7 @@ def _own_pr_ref(task: Task, phase: str) -> PrRef | None:
     ticket = task.ticket
     if normalize_phase(phase) not in ENVELOPE_VERDICT_PHASES or ticket.role != ticket.Role.AUTHOR:
         return None
-    if task.auto_review_dispatches.exists():  # ty: ignore[unresolved-attribute]
+    if AutoReviewDispatch.objects.filter(task=task).exists():
         return None
     return pr_ref_from_url(ticket.issue_url)
 

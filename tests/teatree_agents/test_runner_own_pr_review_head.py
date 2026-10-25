@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from django.utils import timezone
 
 from teatree.agents import own_pr_review_head as guard
@@ -25,6 +26,7 @@ from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREF
 from teatree.core.models import AutoReviewDispatch, DeferredQuestion, Session, Task, Ticket, Worktree
 from teatree.core.models.usage_window_state import REVIEW_HELD_PREFIX
 from teatree.core.worktree.checkout_state import checkout_state
+from teatree.utils.git_run import git_env_non_interactive
 from tests._git_repo import make_git_repo, run_git
 from tests.factories import TicketFactory, WorktreeFactory
 from tests.teatree_agents.test_runner_review_recordability_gate import _ReviewDispatchProbe
@@ -103,8 +105,8 @@ class _OwnPrReviewCase(_ReviewDispatchProbe):
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         self.repo = _PrRepo(root)
 
-    def own_ticket(self, *, extra: dict[str, object] | None = None) -> Ticket:
-        ticket = TicketFactory.create(role=Ticket.Role.AUTHOR, issue_url=_PR_URL, extra=extra or {})
+    def own_ticket(self, *, extra: dict[str, object] | None = None, issue_url: str = _PR_URL) -> Ticket:
+        ticket = TicketFactory.create(role=Ticket.Role.AUTHOR, issue_url=issue_url, extra=extra or {})
         WorktreeFactory(
             ticket=ticket, repo_path=_SLUG, branch=_BRANCH, extra={"worktree_path": str(self.repo.checkout)}
         )
@@ -181,6 +183,16 @@ class TestACleanCheckoutBehindTheForgeHeadIsAdvanced(_OwnPrReviewCase):
 
         worktree.refresh_from_db()
         assert worktree.get_extra()["attested_state"] == checkout_state(self.repo.checkout).digest
+        assert worktree.get_extra()["checkout_custody"]["anchor"] == checkout_state(self.repo.checkout).digest
+
+    def test_fetch_uses_a_noninteractive_environment_and_a_timeout(self) -> None:
+        head = self.repo.publish("b.txt")
+        with patch.object(guard, "run_with_status", wraps=guard.run_with_status) as run:
+            self.review(_Forge(head))
+
+        fetch = next(call for call in run.call_args_list if call.kwargs["args"][0] == "fetch")
+        assert fetch.kwargs["env"] == git_env_non_interactive()
+        assert fetch.kwargs["timeout"] == guard._FETCH_TIMEOUT_SECONDS
 
     def test_an_untrusted_checkout_is_not_made_trusted_by_the_advance(self) -> None:
         head = self.repo.publish("b.txt")
@@ -192,6 +204,17 @@ class TestACleanCheckoutBehindTheForgeHeadIsAdvanced(_OwnPrReviewCase):
 
 
 class TestAnEqualHeadDispatchesAtOnce(_OwnPrReviewCase):
+    def test_gitlab_opened_merge_request_dispatches(self) -> None:
+        ticket = self.own_ticket()
+        ticket.issue_url = f"https://gitlab.com/{_SLUG}/-/merge_requests/{_PR_ID}"
+        ticket.save(update_fields=["issue_url"])
+        self.repo.point_origin_at(_SLUG, host="gitlab.com")
+
+        self.review(_Forge(self.repo.base, state="OPENED"), ticket)
+
+        assert self.spawned
+        assert self.reviewed_sha(ticket) == self.repo.base
+
     def test_the_head_is_stamped_and_the_review_opens_without_reaching_the_remote(self) -> None:
         ticket = self.own_ticket()
         shutil.rmtree(self.repo.origin)
@@ -336,6 +359,61 @@ class TestAnUnsafeCheckoutIsHeldNotMoved(_OwnPrReviewCase):
         changed = self.review(_Forge(head), ticket)
         self.assert_held(changed, ticket, head=before, cause=HoldCause.UNCOMMITTED, questions=2)
 
+    def test_a_new_forge_head_asks_again_for_the_same_dirty_checkout(self) -> None:
+        head = self.repo.publish("b.txt")
+        (self.repo.checkout / "a.txt").write_text("edited")
+        ticket = self.own_ticket()
+
+        self.review(_Forge(head), ticket)
+        next_head = self.repo.publish("c.txt")
+        task = self.review(_Forge(next_head), ticket)
+
+        self.assert_held(task, ticket, head=self.repo.base, cause=HoldCause.UNCOMMITTED, questions=2)
+
+    def test_two_pull_requests_with_the_same_dirty_digest_have_separate_questions(self) -> None:
+        (self.repo.checkout / "a.txt").write_text("edited")
+        first = self.own_ticket()
+        second = self.own_ticket(issue_url=f"https://github.com/{_SLUG}/pull/{_PR_ID + 1}")
+
+        self.review(_Forge(self.repo.base), first)
+        task = self.review(_Forge(self.repo.base), second)
+
+        self.assert_held(task, second, head=self.repo.base, cause=HoldCause.UNCOMMITTED, questions=2)
+
+    def test_question_failure_rolls_back_the_attempt_and_park(self) -> None:
+        (self.repo.checkout / "a.txt").write_text("edited")
+        ticket = self.own_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        forge = _Forge(self.repo.base)
+        with (
+            patch.object(guard.CodeHostQuery, "for_ref", return_value=forge.query()),
+            patch.object(guard, "live_head_at", return_value=forge.head_read()),
+            patch.object(DeferredQuestion, "record", side_effect=RuntimeError("question write failed")),
+            pytest.raises(RuntimeError, match="question write failed"),
+        ):
+            guard.prepare_own_pr_review_head(task, phase="reviewing")
+
+        task.refresh_from_db()
+        assert task.not_before is None
+        assert task.attempts.count() == 0
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_git_comparison_error_holds_without_an_owner_question(self) -> None:
+        head = self.repo.publish("b.txt")
+        ticket = self.own_ticket()
+        real_run = guard.run_with_status
+
+        def comparison_error(*, repo: str, args: list[str], **kwargs: object) -> object:
+            if args[0] == "merge-base":
+                return SimpleNamespace(returncode=128)
+            return real_run(repo=repo, args=args, **kwargs)
+
+        with patch.object(guard, "run_with_status", side_effect=comparison_error):
+            task = self.review(_Forge(head), ticket)
+
+        self.assert_held(task, ticket, head=self.repo.base, cause=HoldCause.NOT_COMPARABLE, questions=0)
+        assert "git exited 128" in task.attempts.latest("pk").error
+
     def test_a_checkout_on_another_branch_is_held_without_a_question(self) -> None:
         head = self.repo.publish("b.txt")
         run_git(self.repo.checkout, "checkout", "-q", "-b", "other")
@@ -472,16 +550,19 @@ class TestOtherRoutesAreUntouched(_OwnPrReviewCase):
 
         self.for_ref.assert_not_called()
 
-    def test_a_merged_pull_request_keeps_the_recordability_refusal(self) -> None:
+    def test_a_settled_pull_request_keeps_the_recordability_refusal(self) -> None:
         head = self.repo.publish("b.txt")
+        for index, state in enumerate(("MERGED", "CLOSED", "LOCKED")):
+            with self.subTest(state=state):
+                ticket = self.own_ticket(issue_url=f"https://github.com/{_SLUG}/pull/{_PR_ID + index}")
+                task = self.review(_Forge(head, state=state), ticket)
 
-        task = self.review(_Forge(head, state="MERGED"))
-
-        assert self.spawned == []
-        assert task.status == Task.Status.FAILED
-        assert task.attempts.order_by("-pk").first().error.startswith(REVIEW_UNRECORDABLE_PREFIX)
-        assert self.repo.head() == self.repo.base
-        self.live_head.assert_not_called()
+                assert self.spawned == []
+                assert task.status == Task.Status.FAILED
+                assert task.attempts.order_by("-pk").first().error.startswith(REVIEW_UNRECORDABLE_PREFIX)
+                assert task.not_before is None
+                assert self.repo.head() == self.repo.base
+                self.live_head.assert_not_called()
 
     def test_another_phase_is_not_probed(self) -> None:
         forge, ticket = _Forge(self.repo.publish("b.txt")), self.own_ticket()
