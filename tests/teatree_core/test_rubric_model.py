@@ -35,8 +35,8 @@ class TestRubricPopulation(TestCase):
         assert rubric.criteria.get(text="a new positive criterion").ordinal == 3
 
     def test_text_hash_uses_stripped_text(self) -> None:
-        rubric = Rubric.populate(_ticket(), [" AC1 "])
-        assert rubric.criteria.get().text_hash == criterion_text_hash("AC1")
+        assert criterion_text_hash(" AC1 ") == criterion_text_hash("AC1")
+        assert len(criterion_text_hash("AC1")) == 12
 
     def test_populate_creates_pending_criteria(self) -> None:
         rubric = Rubric.populate(_ticket(), ["AC1", "AC2", "AC3"])
