@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from teatree import paths
 from teatree.utils import singleton as singleton_module
 from teatree.utils.singleton import (
     AlreadyRunningError,
@@ -49,7 +48,6 @@ def test_spawn_lock_uses_primary_task_database_even_with_a_config_override(
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(tmp_path / "control"))
     monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    monkeypatch.setattr(paths, "_TRUE_CANONICAL_DATA_DIR", home / ".local" / "share" / "teatree")
     assert worker_control_lock_path(primary=True) == tmp_path / "control" / "db.sqlite3.worker.pid"
 
 

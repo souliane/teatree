@@ -16,7 +16,6 @@ from unittest.mock import patch
 import pytest
 
 from hooks.scripts import worker_supervisor as supervisor
-from teatree import paths
 from teatree.utils import singleton
 
 
@@ -75,7 +74,6 @@ def test_database_lock_blocks_resurrection_under_another_home(monkeypatch: pytes
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(database.parent))
     monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    monkeypatch.setattr(paths, "_TRUE_CANONICAL_DATA_DIR", home / ".local" / "share" / "teatree")
     db_lock = database.with_name(f"{database.name}.worker.pid")
     with singleton.singleton(singleton.WORKER_SINGLETON, pid_path=db_lock):
         assert supervisor._flock_is_free() is False
@@ -91,7 +89,6 @@ def test_resurrection_from_worktree_probes_spawned_workers_primary_database(
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control))
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    monkeypatch.setattr(paths, "_TRUE_CANONICAL_DATA_DIR", home / ".local" / "share" / "teatree")
     monkeypatch.setattr(singleton, "DATA_DIR", tmp_path / "host-lock")
     primary_lock = control / "db.sqlite3.worker.pid"
     with singleton.singleton(singleton.WORKER_SINGLETON, pid_path=primary_lock):

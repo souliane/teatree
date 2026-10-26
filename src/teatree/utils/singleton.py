@@ -55,9 +55,11 @@ WORKER_SINGLETON = "worker"
 
 
 def worker_control_lock_path(*, primary: bool = False) -> Path:
-    database = (
-        canonical_db_in(ControlDb(env=os.environ).primary_data_dir(), env=os.environ) if primary else CANONICAL_DB
-    )
+    if primary:
+        home = Path.home()
+        database = canonical_db_in(ControlDb(env=os.environ, home=home).primary_data_dir(), env=os.environ, home=home)
+    else:
+        database = CANONICAL_DB
     database = database.resolve()
     return database.with_name(f"{database.name}.worker.pid")
 
