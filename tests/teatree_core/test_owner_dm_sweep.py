@@ -8,6 +8,7 @@ from django.utils import timezone
 from teatree.core.models import DeferredQuestion, PullRequest, Ticket
 from teatree.core.owner_dm_sweep import SweepSeams, run_sweep, subject_closed_locally
 from teatree.core.owner_threads import AUTO_RESOLVE_MAX_AGE, open_owner_threads
+from teatree.core.review.owner_waits import ask_owner_to_approve_post, ask_owner_to_read
 from teatree.url_classify import find_forge_urls
 from tests._owner_channel import OWNER_DECISION
 
@@ -133,6 +134,47 @@ class TestFragmentQualifiedSubject(TestCase):
 
 
 class TestDuplicateThreads(TestCase):
+    def test_distinct_held_pr_cards_keep_both_owner_threads(self) -> None:
+        first = ask_owner_to_read("https://github.com/example/repo/pull/1", "First", "a" * 40)
+        second = ask_owner_to_read("https://github.com/example/repo/pull/2", "Second", "b" * 40)
+        assert first is not None
+        assert second is not None
+        DeferredQuestion.objects.filter(pk=first.pk).update(slack_channel="D0OWNER", slack_ts="1779990001.000001")
+        DeferredQuestion.objects.filter(pk=second.pk).update(slack_channel="D0OWNER", slack_ts="1779990002.000001")
+
+        result = run_sweep()
+
+        assert result.resolved == 0
+        assert result.left_open == 2
+        assert DeferredQuestion.owner_pending().count() == 2
+
+    def test_distinct_live_post_cards_keep_both_owner_threads(self) -> None:
+        first = ask_owner_to_approve_post("https://github.com/example/repo/pull/1")
+        second = ask_owner_to_approve_post("https://github.com/example/repo/pull/2")
+        assert first is not None
+        assert second is not None
+        DeferredQuestion.objects.filter(pk=first.pk).update(slack_channel="D0OWNER", slack_ts="1779990001.000001")
+        DeferredQuestion.objects.filter(pk=second.pk).update(slack_channel="D0OWNER", slack_ts="1779990002.000001")
+
+        result = run_sweep()
+
+        assert result.resolved == 0
+        assert result.left_open == 2
+        assert DeferredQuestion.owner_pending().count() == 2
+
+    def test_distinct_short_live_post_refs_keep_both_owner_threads(self) -> None:
+        first = ask_owner_to_approve_post("example/repo!1")
+        second = ask_owner_to_approve_post("example/repo!2")
+        assert first is not None
+        assert second is not None
+        DeferredQuestion.objects.filter(pk=first.pk).update(slack_channel="D0OWNER", slack_ts="1779990001.000001")
+        DeferredQuestion.objects.filter(pk=second.pk).update(slack_channel="D0OWNER", slack_ts="1779990002.000001")
+
+        result = run_sweep()
+
+        assert result.resolved == 0
+        assert result.left_open == 2
+
     def test_the_newer_duplicate_is_retired_and_the_oldest_kept(self) -> None:
         oldest = _thread("Ship it?", age=timedelta(hours=3), ts="1779990001.000001")
         newer = _thread("  SHIP IT?  ", age=timedelta(minutes=5), ts="1779990002.000001")

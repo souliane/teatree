@@ -26,9 +26,9 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.cli.review.audit import gitlab_mr_url
+from teatree.cli.review.audit import ReviewArtifactNotVerifiedError, gitlab_mr_url
 from teatree.cli.review.forge_target import owning_overlay_name, resolve_base_url
-from teatree.core.gates.live_post_gate import LivePostBlockedError
+from teatree.core.gates.live_post_gate import LivePostBlockedResult
 from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:
@@ -243,7 +243,7 @@ def publish_or_blocked(
     result = _surface(lambda: publish_on_behalf(repo, mr, action, _raising_on_failure(body), own_mr=own_mr))
     if action == "post_comment" and result[1]:
         mr_ref = f"{repo}!{mr}"
-        if result[0] == str(LivePostBlockedError(mr_ref)):
+        if isinstance(result, LivePostBlockedResult):
             from teatree.core.review.owner_waits import (  # noqa: PLC0415 — deferred: needs the ORM app registry
                 record_live_post_wait,
             )
@@ -278,7 +278,6 @@ def _surface(run: Callable[[], tuple[str, int]]) -> tuple[str, int]:
     about the caller's report; it is what lets the gate roll the approval back while
     keeping the audit for the posts that already went out.
     """
-    from teatree.cli.review.audit import ReviewArtifactNotVerifiedError  # noqa: PLC0415 — lazy pre-django.setup import
     from teatree.core.on_behalf_gate_recorded import (  # noqa: PLC0415 — lazy pre-setup import
         OnBehalfPartialPublishError,
         OnBehalfPostBlockedError,

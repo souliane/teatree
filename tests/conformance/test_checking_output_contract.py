@@ -11,7 +11,7 @@ SKILL = Path(__file__).resolve().parents[2] / "skills/checking/SKILL.md"
     "terms",
     [
         ("record every wait already known", "held pull request", "gate refusal", "approval request"),
-        ("oldest first", "n left"),
+        ("join by age, oldest first", "n left"),
         ("complete non-row list", "caps its rows at five", "exclude its `question` entries"),
         ("re-read the facts", "dismiss with evidence", "earlier answer"),
         ("owner-kept decision", "spending money", "irreversible deletion", "credential use", "colleague-visible posts"),
@@ -21,5 +21,10 @@ SKILL = Path(__file__).resolve().parents[2] / "skills/checking/SKILL.md"
     ],
 )
 def test_walk_through_contract(terms: tuple[str, ...]) -> None:
-    text = SKILL.read_text().lower()
+    text = (
+        SKILL.read_text()
+        .lower()
+        .split("## walking the owner waits (no mode flip)", 1)[1]
+        .split("## the single command", 1)[0]
+    )
     assert all(term in text for term in terms)

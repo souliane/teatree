@@ -435,7 +435,7 @@ async def _task_list(
 async def _question_list(*, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
     """Pending owner questions — the backlog awaiting the user's answer.
 
-    The read counterpart to the ``question_answer`` write tool. Returns each
+    This owner-audience read does not list the internal rows that ``question_answer`` can settle. Returns each
     pending question's id, decision, owner-only flag, text, raw options,
     originating session, and Slack destination, oldest first. Page with ``offset``.
     """

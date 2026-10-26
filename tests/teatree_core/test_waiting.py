@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 
+from teatree.core._checking_gather import owner_wait_items
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
@@ -81,6 +82,10 @@ class TestGatherWaiting:
         assert [e.kind for e in entries] == [WaitingKind.REVIEW_REQUEST]
         assert entries[0].url == "https://github.com/o/r/pull/7"
 
+        [item] = owner_wait_items(overlay_slug="teatree")
+        assert item.label.startswith("[teatree] ")
+        assert item.detail == "waiting now"
+
     def test_approved_pr_without_clear_is_merge_authorization(self) -> None:
         ticket = Ticket.objects.create(overlay="teatree", issue_url="https://x/41")
         pr = PullRequest.objects.create(
@@ -92,6 +97,8 @@ class TestGatherWaiting:
         entries = gather_waiting("teatree")
         assert [e.kind for e in entries] == [WaitingKind.MERGE_AUTHORIZATION]
         assert entries[0].url == "https://github.com/o/r/pull/9"
+        [item] = owner_wait_items(overlay_slug="teatree")
+        assert item.label.startswith("[teatree] ")
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

@@ -5,12 +5,13 @@ import logging
 from collections.abc import Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard, safe_ticket_card_title
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
 from teatree.core.models.live_post_approval import canonical_mr_scope
 
 logger = logging.getLogger(__name__)
+_HELD_PR_MARKER_PREFIX = "owner-wait:held-pr:"
 
 
 def canonical_wait_subject(subject: str) -> str:
@@ -52,7 +53,7 @@ def ask_owner_to_read(pr_url: str, title: str, head_sha: str) -> DeferredQuestio
         return None
     question = "What do you want to do with this pull request after reviewing it?"
     card = _held_card(subject, title)
-    prefix = f"owner-wait:held-pr:{_subject_key(subject)}:"
+    prefix = f"{_HELD_PR_MARKER_PREFIX}{_subject_key(subject)}:"
     head_prefix = f"{prefix}{head[:16]}"
     latest = DeferredQuestion.objects.filter(dedupe_marker__startswith=head_prefix).order_by("-pk").first()
     marker = f"{prefix}{head[:20]}" if latest is None else latest.dedupe_marker
@@ -66,6 +67,14 @@ def ask_owner_to_read(pr_url: str, title: str, head_sha: str) -> DeferredQuestio
     for previous in DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=prefix).exclude(pk=row.pk):
         previous.mark_stale(f"the reviewed head changed for {subject}", resolver_id="held_pr_new_head")
     return row
+
+
+def owner_kept_wait(question: DeferredQuestion, card: QuestionCard | None) -> bool:
+    return (
+        card is None
+        or card.decision in OWNER_KEPT_DECISIONS
+        or question.dedupe_marker.startswith(_HELD_PR_MARKER_PREFIX)
+    )
 
 
 def _post_card(subject: str) -> QuestionCard:

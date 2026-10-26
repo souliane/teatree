@@ -27,6 +27,7 @@ top) so importing the gate helper from the CLI layer does not require
 
 import logging
 from collections.abc import Callable
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,11 @@ class LivePostBlockedError(RuntimeError):
             f"{APPROVE_LIVE_POST_USAGE}\n"
             f"{UNGATED_ALTERNATIVES}"
         )
+
+
+class LivePostBlockedResult(NamedTuple):
+    message: str
+    exit_code: int
 
 
 def require_live_post_approval(*, mr_url: str, review_url_supplier: Callable[[], str] | None = None) -> None:

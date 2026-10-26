@@ -65,6 +65,7 @@ def publish_live_post(
     from teatree.cli.review.forge_target import resolve_base_url  # noqa: PLC0415 — lazy refusal link
     from teatree.core.gates.live_post_gate import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         LivePostBlockedError,
+        LivePostBlockedResult,
         require_live_post_approval,
     )
 
@@ -76,7 +77,7 @@ def publish_live_post(
                     review_url_supplier=lambda: gitlab_mr_url(resolve_base_url(repo), repo, mr),
                 )
             except LivePostBlockedError as blocked:
-                return str(blocked), 1
+                return LivePostBlockedResult(str(blocked), 1)
         result = publish()
         if result[1]:
             transaction.set_rollback(True)

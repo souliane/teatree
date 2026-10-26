@@ -45,6 +45,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from django.db.models import Max, Q
 from django.utils import timezone
@@ -55,6 +56,7 @@ from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.question_heal import HEAL_CHECKS
 from teatree.core.review.owner_waits import canonical_wait_subject
 from teatree.loop.question_subjects import SubjectIndex
+from teatree.utils.url_slug import pr_ref_from_url
 
 #: The pull-request states that are DONE either way — the same partition
 #: ``PullRequestQuerySet.live()`` excludes. A merge succeeded and a close was given
@@ -255,17 +257,29 @@ def _settled_pr_subjects(questions: Sequence[DeferredQuestion]) -> dict[str, str
     subjects.discard("")
     if not subjects:
         return {}
-    iterator = iter(subjects)
-    selector = Q(url__istartswith=next(iterator))
-    for subject in iterator:
-        selector |= Q(url__istartswith=subject)
+    refs = {subject: pr_ref_from_url(subject.removesuffix("/files")) for subject in subjects}
+    clauses = [
+        Q(repo__iexact=ref.slug, iid=str(ref.pr_id)) if ref else Q(url__istartswith=subject)
+        for subject, ref in refs.items()
+    ]
+    selector = clauses[0]
+    for clause in clauses[1:]:
+        selector |= clause
     states: dict[str, list[str]] = {}
     urls: dict[str, str] = {}
     for pr in PullRequest.objects.filter(selector).only("url", "state"):
-        identity = canonical_wait_subject(pr.url)
-        if identity in subjects:
-            states.setdefault(identity, []).append(pr.state)
-            urls[identity] = pr.url
+        stored_ref = pr_ref_from_url(pr.url)
+        stored_host = (urlsplit(pr.url).hostname or "").removeprefix("www.").casefold()
+        for subject, ref in refs.items():
+            subject_host = (urlsplit(subject).hostname or "").removeprefix("www.").casefold()
+            matches = (
+                ref.same_pr(stored_ref) and subject_host == stored_host
+                if ref and stored_ref
+                else ref is None and canonical_wait_subject(pr.url) == subject
+            )
+            if matches:
+                states.setdefault(subject, []).append(pr.state)
+                urls[subject] = pr.url
     return {
         identity: f"pull request {urls[identity]} is {', '.join(sorted(set(pr_states)))}"
         for identity, pr_states in states.items()

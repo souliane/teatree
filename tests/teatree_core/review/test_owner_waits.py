@@ -6,11 +6,38 @@ from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import QuestionCard, plain_text
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.review.owner_waits import ask_owner_to_approve_post, ask_owner_to_read, settle_live_post_wait
+from teatree.core.waiting import gather_waiting
+from teatree.mcp.introspection import question_list
 
 PR_URL = "https://github.com/example/repo/pull/12"
 
 
 class TestOwnerWaitCards(TestCase):
+    def test_held_pr_wait_is_owner_kept(self) -> None:
+        row = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
+        assert row is not None
+
+        [waiting] = gather_waiting("")
+        [listed] = question_list()
+
+        assert waiting.owner_only is True
+        assert listed["owner_only"] is True
+
+    def test_answer_acknowledges_only_the_reviewed_head(self) -> None:
+        first = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
+        assert first is not None
+        DeferredQuestion.consume(first.pk, answer="Keep holding")
+
+        same_head = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
+        assert same_head is not None
+        assert same_head.pk == first.pk
+        assert DeferredQuestion.owner_pending().count() == 0
+
+        new_head = ask_owner_to_read(PR_URL, "A reviewed change", "b" * 40)
+        assert new_head is not None
+        assert new_head.pk != first.pk
+        assert DeferredQuestion.owner_pending().count() == 1
+
     def test_held_pr_card_is_idempotent_per_head_and_replaces_old_head(self) -> None:
         first = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
 

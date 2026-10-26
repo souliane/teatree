@@ -430,6 +430,35 @@ class TestSettledPullRequestsDrain(TestCase):
 
 
 class TestHeldPrSubjectDrain(TestCase):
+    def test_unparsed_subject_keeps_exact_recorded_url_behavior(self) -> None:
+        subject = "https://forge.example/reviews/7"
+        question = ask_owner_to_read(subject, "A reviewed change", "a" * 40)
+        assert question is not None
+        pr = PullRequest.objects.create(
+            ticket=_ticket(Ticket.State.SELF_REVIEWED), url=subject, repo="example/repo", iid="7"
+        )
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
+
+        assert sweep_owner_questions().drained == 1
+
+    def test_equivalent_review_url_retires_with_recorded_pr(self) -> None:
+        subject = "http://www.github.com/acme/repo/pull/12/files"
+        question = ask_owner_to_read(subject, "A reviewed change", "a" * 40)
+        assert question is not None
+        pr = PullRequest.objects.create(
+            ticket=_ticket(Ticket.State.SELF_REVIEWED),
+            url="https://github.com/acme/repo/pull/12",
+            repo="acme/repo",
+            iid="12",
+        )
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
+
+        assert sweep_owner_questions().drained == 1
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_DISMISSED
+
     def test_blank_subject_skips_the_pull_request_query(self) -> None:
         question = DeferredQuestion.record("Review it?", card=replace(owner_card(), subject="   "))
 
