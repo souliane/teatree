@@ -64,6 +64,11 @@ x-teatree-create-env: &teatree-create-env
 # shared root to point at.
 x-uv-project-python-root: &uv-project-python-root ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
 
+# The sealed-store master key, read from a host directory mounted read-only into exactly the
+# services that mount the password store. The key lives OUTSIDE `teatree_control_db`, so a
+# whole-volume backup or export never carries the key beside the rows it seals.
+x-teatree-master-key-source: &teatree-master-key-source file:/home/teatree/.config/teatree-master-key/master.key  # privacy-scan:allow — documented container home
+
 # Docker's default json-file driver never rotates (the worker log once grew to 516 MB):
 # 5 x 50m caps each service at 250 MB. A logging change applies on the next recreate.
 x-teatree-logging: &teatree-logging
@@ -249,6 +254,12 @@ x-teatree-common: &teatree-common
     - type: bind
       source: ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg
       target: /home/teatree/.gnupg
+    # The master key DIRECTORY, read-only: a directory, not the file, because dockerd turns a
+    # missing file source into a root-owned directory and a replaced file inode goes stale.
+    - type: bind
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/.config/teatree-master-key  # privacy-scan:allow — documented container home
+      target: /home/teatree/.config/teatree-master-key  # privacy-scan:allow — documented container home
+      read_only: true
     # Factory-owned agent homes. They are shared between init and runtime roles so
     # `t3 setup` is the sole skill/plugin reconciler, but never bind the operator's
     # Claude/Codex settings, skills, or credentials into the factory. Fresh volumes
@@ -350,6 +361,7 @@ services:
     environment:
       <<: *teatree-create-env
       TEATREE_ROLE: init
+      T3_MASTER_KEY_SOURCE: *teatree-master-key-source
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       # See the header: what a `docker exec` inherits, unlike the entrypoint's export.
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
@@ -384,6 +396,7 @@ services:
     environment:
       <<: *teatree-create-env
       TEATREE_ROLE: worker
+      T3_MASTER_KEY_SOURCE: *teatree-master-key-source
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       NOTION_TOKEN: ${NOTION_TOKEN:-}
@@ -472,6 +485,7 @@ services:
     environment:
       <<: *teatree-create-env
       TEATREE_ROLE: admin
+      T3_MASTER_KEY_SOURCE: *teatree-master-key-source
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       NOTION_TOKEN: ${NOTION_TOKEN:-}
@@ -524,6 +538,7 @@ services:
     environment:
       <<: *teatree-create-env
       TEATREE_ROLE: webhook-listener
+      T3_MASTER_KEY_SOURCE: *teatree-master-key-source
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       TEATREE_WEBHOOK_PORT: ${TEATREE_WEBHOOK_PORT:-8001}
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
@@ -531,6 +546,7 @@ services:
       - teatree_control_db:/var/lib/teatree/control-db
       - ${TEATREE_HOST_HOME:-/home/teatree}/.password-store:/home/teatree/.password-store  # privacy-scan:allow — the box's public, documented deploy home
       - ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg:/home/teatree/.gnupg  # privacy-scan:allow — the box's public, documented deploy home
+      - ${TEATREE_HOST_HOME:-/home/teatree}/.config/teatree-master-key:/home/teatree/.config/teatree-master-key:ro  # privacy-scan:allow — documented container home
       - type: bind
         source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh  # privacy-scan:allow — the box's public, documented deploy home
         target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh  # privacy-scan:allow — the box's public, documented deploy home
@@ -565,6 +581,7 @@ services:
     environment:
       <<: *teatree-create-env
       TEATREE_ROLE: slack-listener
+      T3_MASTER_KEY_SOURCE: *teatree-master-key-source
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       NOTION_TOKEN: ${NOTION_TOKEN:-}

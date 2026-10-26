@@ -51,8 +51,8 @@ def credential_of_setting(setting: str) -> str | None:
 
 
 def validate_pass_key_entry(value: object) -> str:
-    if not isinstance(value, str) or not value or any(char.isspace() for char in value):
-        msg = f"a pass entry name is a non-empty string with no whitespace, not {value!r}"
+    if not isinstance(value, str) or not value or any(char.isspace() or char == "\0" for char in value):
+        msg = f"a pass entry name is a non-empty string with no whitespace or NUL, not {value!r}"
         raise ValueError(msg)
     return value
 

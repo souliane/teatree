@@ -11,7 +11,9 @@ from teatree.utils.secrets import SecretStoreError
 def secret_key_signals() -> SignalCollection:
     try:
         health = SealedSecret.objects.key_health(master_key_source())
-    except (DatabaseError, SecretStoreError) as exc:
+    except DatabaseError:
+        return SignalCollection(unread=("secret_key_signals",))
+    except SecretStoreError as exc:
         return SignalCollection(
             (
                 HealthSignal(

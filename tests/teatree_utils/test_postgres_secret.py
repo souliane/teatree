@@ -17,6 +17,7 @@ from teatree.utils.postgres_secret import (
     remove_postgres_pass_entry,
     resolve_postgres_password,
 )
+from teatree.utils.secrets import SecretStoreError
 
 
 class TestPostgresPassKey:
@@ -79,6 +80,14 @@ class TestEnsurePostgresPassEntry:
             pytest.raises(PostgresPasswordUnavailableError, match="pass is not installed"),
         ):
             ensure_postgres_pass_entry("888", "secret")
+
+    def test_a_store_that_raises_is_reported_as_the_same_unavailable_error(self) -> None:
+        with (
+            patch.object(postgres_secret.secrets, "write_pass", side_effect=SecretStoreError("database is locked")),
+            pytest.raises(PostgresPasswordUnavailableError, match="pass is not installed") as raised,
+        ):
+            ensure_postgres_pass_entry("888", "secret")
+        assert isinstance(raised.value.__cause__, SecretStoreError)
 
     def test_rejects_empty_password(self) -> None:
         with pytest.raises(ValueError, match="non-empty"):

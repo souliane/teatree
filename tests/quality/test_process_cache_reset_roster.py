@@ -156,6 +156,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.overlay_loader:_discover_overlays": "reset_overlay_cache",
     "teatree.core.gates.pr_budget_forge:_forge_cache": "reset_forge_pr_budget_cache",
     "teatree.utils.throttled_log:_last_warned": "reset_throttle",
+    "teatree.utils.master_key:_WARNED_IN_VOLUME": "reset_master_key_volume_warnings",
     "teatree.utils.host_pressure:_missing_warned": "reset_missing_warning_memo",
     # Task pks this process is executing (#4164). Pk-keyed, so it is exactly the recycled-rowid
     # class above: a leaked entry makes a later test's fresh task read as still-executing and
