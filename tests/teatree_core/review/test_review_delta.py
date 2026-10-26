@@ -86,7 +86,7 @@ def test_full_review_fallbacks_name_the_reason(tmp_path: Path) -> None:
     head = _git(repo, "rev-parse", "HEAD")
 
     assert resolve_delta(repo, [], head, "main", "main").reason == "no prior verdict"
-    assert resolve_delta(repo, [prior], head, "main", "").reason == "prior review base is unknown"
+    assert resolve_delta(repo, [prior], head, "main", "").reason == "delta touches more than 50% of PR files"
     assert resolve_delta(repo, [prior], head, "main", "release").reason == "base changed since the prior review"
     large = resolve_delta(repo, [prior], head, "main", "main")
     assert large.case == "full"

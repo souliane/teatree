@@ -43,9 +43,7 @@ def _patch_files(patch: str) -> frozenset[str]:
 def _base_fallback(prior_heads: list[str], base_ref: str, recorded_base_ref: str) -> str:
     if not prior_heads:
         return "no prior verdict"
-    if not recorded_base_ref:
-        return "prior review base is unknown"
-    if base_ref != recorded_base_ref:
+    if recorded_base_ref and base_ref != recorded_base_ref:
         return "base changed since the prior review"
     return ""
 
