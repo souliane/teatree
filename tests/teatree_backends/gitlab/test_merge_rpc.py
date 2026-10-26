@@ -142,12 +142,14 @@ class TestFetchPrMergeState:
             slug=_SLUG, pr_id=_IID
         )
         assert state.merge_commit_oid == "squashed"
+        assert state.raw_merge_commit_oid == ""
 
     def test_both_merge_shas_remain_available_to_verify_recorded_evidence(self) -> None:
         state = _rpc(
             get={"state": "merged", "merge_commit_sha": "merged", "squash_commit_sha": "squashed"}
         ).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
         assert state.merge_commit_oid == "merged"
+        assert state.raw_merge_commit_oid == "merged"
         assert state.squash_commit_oid == "squashed"
 
     def test_merged_fast_forward_uses_mr_head_sha(self) -> None:
@@ -156,6 +158,7 @@ class TestFetchPrMergeState:
         ).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
         assert state.is_merged
         assert state.merge_commit_oid == _SHA
+        assert state.raw_merge_commit_oid == ""
 
     def test_open_mr_head_is_not_merge_evidence(self) -> None:
         state = _rpc(get={"state": "opened", "sha": _SHA}).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)

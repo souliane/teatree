@@ -16,6 +16,7 @@ class PrMergeState:
     merged_by: str = ""
     merged_at: str = ""
     squash_commit_oid: str = ""
+    raw_merge_commit_oid: str = ""
 
     @property
     def is_merged(self) -> bool:

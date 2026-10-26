@@ -218,6 +218,7 @@ class GhMergeRpc:
             conflict=_gh_conflict_state(data),
             merged_by=login,
             merged_at=str(data.get("mergedAt") or ""),
+            raw_merge_commit_oid=oid,
         )
 
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:

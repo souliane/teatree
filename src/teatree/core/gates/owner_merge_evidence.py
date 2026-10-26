@@ -31,7 +31,7 @@ def record_forge_merger(ticket: "Ticket") -> None:
         recorded_sha = str(recorded["merged_sha"]).casefold()
         sha_matches = any(
             sha.strip().casefold() == recorded_sha
-            for sha in (state.merge_commit_oid, state.squash_commit_oid)
+            for sha in (state.raw_merge_commit_oid, state.squash_commit_oid)
             if isinstance(sha, str)
         )
     except Exception:

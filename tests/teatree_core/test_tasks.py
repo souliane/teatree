@@ -655,7 +655,12 @@ class TestExecuteRetrospect(TestCase):
         assert "merged_by" not in ticket.extra["forge_merge_evidence"]
         assert DeferredQuestion.objects.filter(dedupe_marker__startswith=f"fsm-wedge:{ticket.pk}:retro:").exists()
 
-        with patch(read, return_value=PrMergeState(state="MERGED", merge_commit_oid="a" * 40, merged_by="alice")):
+        with patch(
+            read,
+            return_value=PrMergeState(
+                state="MERGED", merge_commit_oid="a" * 40, raw_merge_commit_oid="a" * 40, merged_by="alice"
+            ),
+        ):
             delivered = execute_retrospect.call(ticket.pk)
         ticket.refresh_from_db()
         assert delivered == {"ticket_id": ticket.pk, "ok": True, "detail": "retro-scheduled"}

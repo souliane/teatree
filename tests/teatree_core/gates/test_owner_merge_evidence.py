@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.backends.gitlab.merge_rpc import GitLabApiMergeRpc
 from teatree.core.backend_protocols import PrMergeState
 from teatree.core.gates.rubric_gate import (
     RubricNotSatisfiedError,
@@ -38,9 +39,37 @@ def _ticket(*, merger: str = "", sha: str = _SHA) -> Ticket:
 
 
 class TestRecordForgeMerger(TestCase):
+    def test_gitlab_head_sha_alone_cannot_record_owner_merger(self) -> None:
+        ConfigSetting.objects.set_value("user_identity_aliases", ["alice"])
+        cases = (
+            ({"merge_commit_sha": _SHA, "sha": "b" * 40}, True),
+            ({"squash_commit_sha": _SHA, "sha": "b" * 40}, True),
+            ({"sha": _SHA}, False),
+            ({"merge_commit_sha": "b" * 40, "squash_commit_sha": "c" * 40, "sha": _SHA}, False),
+        )
+        for fields, should_record in cases:
+            with self.subTest(fields=fields):
+                ticket = _ticket()
+                Rubric.populate(ticket, ["ungraded criterion"])
+                payload = {"state": "merged", "merge_user": {"username": "alice"}, **fields}
+                state = GitLabApiMergeRpc(
+                    SimpleNamespace(get_json=lambda _endpoint, payload=payload: payload)
+                ).fetch_pr_merge_state(slug="example/repo", pr_id=ticket.pk)
+                with patch(_PR_STATE, return_value=state):
+                    RetroPhaseMarker(ticket).run()
+                ticket.refresh_from_db()
+                assert (ticket.extra["forge_merge_evidence"].get("merged_by") == "alice") is should_record
+                if should_record:
+                    assert check_rubric_verified(ticket) is None
+                else:
+                    with pytest.raises(RubricNotVerifiedError, match="ungraded"):
+                        check_rubric_verified(ticket)
+
     def test_records_merger_only_for_the_recorded_merged_sha(self) -> None:
         ticket = _ticket()
-        state = PrMergeState(state="MERGED", merge_commit_oid=_SHA.upper(), merged_by=" Alice ")
+        state = PrMergeState(
+            state="MERGED", merge_commit_oid=_SHA.upper(), raw_merge_commit_oid=_SHA.upper(), merged_by=" Alice "
+        )
         with patch(_PR_STATE, return_value=state) as read:
             RetroPhaseMarker(ticket).run()
         read.assert_called_once_with()
@@ -56,7 +85,11 @@ class TestRecordForgeMerger(TestCase):
     def test_squash_sha_can_match_when_merge_sha_differs(self) -> None:
         ticket = _ticket()
         state = PrMergeState(
-            state="MERGED", merge_commit_oid="b" * 40, squash_commit_oid=_SHA.upper(), merged_by="alice"
+            state="MERGED",
+            merge_commit_oid="b" * 40,
+            raw_merge_commit_oid="b" * 40,
+            squash_commit_oid=_SHA.upper(),
+            merged_by="alice",
         )
         with patch(_PR_STATE, return_value=state):
             RetroPhaseMarker(ticket).run()
@@ -84,7 +117,12 @@ class TestRecordForgeMerger(TestCase):
             RetroPhaseMarker(ticket).run()
         ticket.refresh_from_db()
         assert "merged_by" not in ticket.extra["forge_merge_evidence"]
-        with patch(_PR_STATE, return_value=PrMergeState(state="MERGED", merge_commit_oid=_SHA, merged_by="alice")):
+        with patch(
+            _PR_STATE,
+            return_value=PrMergeState(
+                state="MERGED", merge_commit_oid=_SHA, raw_merge_commit_oid=_SHA, merged_by="alice"
+            ),
+        ):
             RetroPhaseMarker(ticket).run()
         ticket.refresh_from_db()
         assert ticket.extra["forge_merge_evidence"]["merged_by"] == "alice"

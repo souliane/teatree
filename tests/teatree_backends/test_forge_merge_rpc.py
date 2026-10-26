@@ -115,6 +115,7 @@ class TestGhConflictState:
         )
         state = GhMergeRpc(lambda _argv: (0, payload, "")).fetch_pr_merge_state(slug="o/r", pr_id=7)
         assert (state.merged_by, state.merged_at) == ("operator", "2026-10-25T12:00:00Z")
+        assert state.raw_merge_commit_oid == "a" * 40
 
     def test_the_merge_state_read_requests_actor_and_time(self) -> None:
         """Mutant: leave mergedBy/mergedAt out of the field list and gh never returns them."""
