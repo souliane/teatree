@@ -7,8 +7,10 @@ import pytest
 from teatree.config import Autonomy
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.review.pr_inventory import mark_inventory_unknown, write_inventory
 from teatree.loop.domain_ship_jobs import _ship_jobs_for_overlay
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.scanners import MyPrsScanner
 from teatree.loop.scanners.unaudited_merge import UnauditedMergeScanner
 
 
@@ -42,6 +44,14 @@ def _ship_jobs(backend: OverlayBackends, *, autonomy: Autonomy = Autonomy.FULL) 
 def _detectors(backend: OverlayBackends, *, autonomy: Autonomy = Autonomy.FULL) -> list[UnauditedMergeScanner]:
     return [
         job.scanner for job in _ship_jobs(backend, autonomy=autonomy) if isinstance(job.scanner, UnauditedMergeScanner)
+    ]
+
+
+def test_own_pr_scanner_writes_and_invalidates_the_inventory_the_board_reads() -> None:
+    """Mutant: drop either port and the tick stops feeding (or retracting) the directory the dash reads."""
+    scanners = [job.scanner for job in _ship_jobs(_backend(host_count=1)) if isinstance(job.scanner, MyPrsScanner)]
+    assert [(s.overlay_name, s.inventory_writer, s.inventory_invalidator) for s in scanners] == [
+        ("example", write_inventory, mark_inventory_unknown)
     ]
 
 
