@@ -17,13 +17,13 @@ from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.core.answering.work_item_filing import WorkItemFilingError
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.send_proxy import route_forge_write
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError
 from teatree.utils.url_slug import slack_conversation_anchor
-from tests._send_gate import allow_forge_repos
+from tests._send_gate import allow_github_repos
 
 pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 
@@ -51,6 +51,7 @@ class RecordingHost:
     created: list[dict] = field(default_factory=list)
     searched: list[str] = field(default_factory=list)
     refusal: Exception | None = None
+    forge: str = "github"
 
     def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> RawAPIDict:
         if self.refusal is not None:
@@ -92,7 +93,7 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        allow_forge_repos("souliane/teatree")
+        allow_github_repos("souliane/teatree")
         self.backend = RecordingBackend()
         self.host = RecordingHost()
         patches = (
@@ -108,6 +109,56 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         task = _answering_task()
         record_reactive_envelopes(task, result, phase="answering")
         return task
+
+    def test_the_request_uses_the_hosts_forge_when_the_overlay_names_none(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", [f"github:{_REPO_A}"])
+        with mock.patch(
+            "teatree.core.answering.work_item_filing.get_overlay",
+            return_value=SimpleNamespace(config=SimpleNamespace(code_host="")),
+        ):
+            self._record(
+                {
+                    "answer": {"text": "On it."},
+                    "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."},
+                }
+            )
+
+        assert len(self.host.created) == 1
+        assert self.host.created[0]["repo"] == _REPO_A
+        reply = self.backend.replies[0][2]
+        assert f"<https://github.com/{_REPO_A}/issues/7100|#7100>" in reply
+        assert "Could not file" not in reply
+
+    def test_an_unknown_host_forge_files_nothing_and_names_the_cause(self) -> None:
+        self.host.forge = ""
+        task = self._record(
+            {"answer": {"text": "On it."}, "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."}}
+        )
+
+        assert self.host.created == []
+        reply = self.backend.replies[0][2]
+        assert f"forge for {_REPO_A} could not be determined" in reply
+        assert "nothing was filed" in reply
+        assert "Tracking as" not in reply
+        assert list(Ticket.objects.values_list("pk", flat=True)) == [task.ticket_id]
+
+    def test_a_host_without_forge_keeps_the_reply_and_files_nothing(self) -> None:
+        host = mock.Mock(spec=["create_issue", "search_open_issues"])
+        host.search_open_issues.return_value = []
+        with mock.patch("teatree.core.backend_factory.code_host_from_overlay", return_value=host):
+            task = self._record(
+                {
+                    "answer": {"text": "On it."},
+                    "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."},
+                }
+            )
+
+        host.create_issue.assert_not_called()
+        assert list(Ticket.objects.values_list("pk", flat=True)) == [task.ticket_id]
+        reply = self.backend.replies[0][2]
+        assert "On it." in reply
+        assert f"forge for {_REPO_A} could not be determined" in reply
+        assert "Tracking as" not in reply
 
     def test_the_request_is_filed_as_a_real_issue(self) -> None:
         self._record(
@@ -221,7 +272,7 @@ class TestAnOverlayChoosesTheRepoAWorkItemIsFiledIn(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        allow_forge_repos(_REPO_A, _REPO_B)
+        allow_github_repos(_REPO_A, _REPO_B)
         self.backend = RecordingBackend()
         self.host = RecordingHost()
         self.metadata = _TwoRepoMetadata(_pick_by_slug)

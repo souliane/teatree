@@ -2,7 +2,17 @@
 
 from tests.placeholder_terms import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
 
-__all__ = ["TEST_TERM_REGISTRY", "TEST_TERM_REGISTRY_JSON", "allow_forge_repos", "allow_slack_channels"]
+__all__ = [
+    "TEST_TERM_REGISTRY",
+    "TEST_TERM_REGISTRY_JSON",
+    "allow_forge_repos",
+    "allow_github_repos",
+    "allow_slack_channels",
+]
+
+
+def allow_github_repos(*repos: str) -> None:
+    allow_forge_repos(*(f"github:{repo}" for repo in repos))
 
 
 def allow_forge_repos(*repos: str) -> None:
