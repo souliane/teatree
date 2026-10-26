@@ -9,8 +9,6 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash (present in the deploy image and CI)")
-
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 _BASH = shutil.which("bash") or "bash"
 FUNCTION = "refuse_secrets_get_on_terminal"

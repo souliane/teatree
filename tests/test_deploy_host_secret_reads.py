@@ -14,9 +14,8 @@ import pytest
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 SYSTEM_PATH = os.defpath.strip(os.pathsep)
 
-BASH = shutil.which("bash", path=SYSTEM_PATH)
+BASH = shutil.which("bash", path=SYSTEM_PATH) or "/bin/bash"
 
-pytestmark = pytest.mark.skipif(BASH is None, reason="needs a system bash")
 
 PASS_STUB = """#!/bin/sh
 printf '%s\\n' "$*" >>"$PASS_LOG"
