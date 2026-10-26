@@ -9,6 +9,7 @@ itself (not just the corpus orchestration) is observable, plus an anti-vacuity
 proof: breaking the underlying real function flips a predicate to ``False``.
 """
 
+import os
 from unittest.mock import patch
 
 import pytest
@@ -40,6 +41,11 @@ class TestNonDbPredicatesHoldOnRealCode(TestCase):
 
     def test_banned_terms_scanner_fails_closed_on_crash(self) -> None:
         assert predicates._check_banned_terms_scanner_fails_closed_on_crash() is True
+
+    def test_banned_terms_scanner_control_ignores_outer_registry(self) -> None:
+        registry = '{"leak": [], "prose_collider": ["acmecorp"]}'
+        with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": registry}):
+            assert predicates._check_banned_terms_scanner_fails_closed_on_crash() is True
 
     def test_forge_resolves_by_host_not_token(self) -> None:
         assert predicates._check_forge_resolves_by_host_not_token() is True
