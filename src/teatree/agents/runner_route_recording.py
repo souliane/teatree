@@ -145,6 +145,8 @@ def park_until(task: Task, not_before: datetime) -> None:
 
 
 def fallback_reason_for_outcome(outcome: HarnessOutcome, *, metered_transport: bool) -> str | None:
+    if outcome.driver_ended:
+        return None
     matched = limit_match(outcome.result_message, outcome.rate_limit_info, metered_transport=metered_transport)
     if matched is not None:
         return matched.as_reason()

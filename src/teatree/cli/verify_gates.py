@@ -39,7 +39,6 @@ import os
 import shutil
 import sqlite3
 import tomllib
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -312,31 +311,32 @@ def _stage_env(private_root: str) -> dict[str, str]:
     return env
 
 
-def _task_database(env: Mapping[str, str]) -> Path:
-    home = Path.home()
-    return canonical_db_in(ControlDb(env=env, home=home).primary_data_dir(), env=env, home=home)
-
-
-def _stage_control_database(env: dict[str, str]) -> None:
-    source = _task_database(os.environ)
+def _snapshot_control_db(repo: Path, env: dict[str, str]) -> None:
+    control = ControlDb(os.environ)
+    source = control.for_repo(repo).path
+    if not source.is_file() and not os.environ.get("T3_CONFIG_DB"):
+        source = canonical_db_in(control.primary_data_dir(), env=os.environ, home=Path.home())
     if not source.is_file():
-        return
-    target = _task_database(env)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    _sqlite_snapshot(source, target)
+        raise FileNotFoundError(source)
+
+    destination = ControlDb(env).for_repo(repo).path
+    if source.resolve() == destination.resolve():
+        reason = "source and destination are identical"
+        raise OSError(reason)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _sqlite_snapshot(source, destination)
 
 
-def _run_isolated_stages(stages: list[tuple[str, list[str]]], repo: Path) -> tuple[list[str], list[str]]:
+def _run_with_private_control_db(repo: Path, stages: list[tuple[str, list[str]]]) -> tuple[list[str], list[str]]:
     with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
-        stage_env = _stage_env(private_root)
+        env = _stage_env(private_root)
         try:
-            _stage_control_database(stage_env)
-        except (OSError, sqlite3.Error) as exc:
-            reason = f"control DB snapshot failed: {exc}"
-            _record(repo, "incomplete", reason)
-            typer.echo(f"verify-gates: INCOMPLETE — {reason}", err=True)
+            _snapshot_control_db(repo, env)
+        except (OSError, sqlite3.DatabaseError) as exc:
+            _record(repo, "incomplete", f"private control database unavailable: {exc}")
+            typer.echo(f"verify-gates: INCOMPLETE — private control database unavailable: {exc}", err=True)
             raise typer.Exit(code=1) from exc
-        return _run_stages(stages, repo, stage_env)
+        return _run_stages(stages, repo, env)
 
 
 def verify_gates(
@@ -412,7 +412,7 @@ def verify_gates(
     scope_args, scope_reason = _scope_args(repo)
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
     stages = _stage_commands(scope_args, repo, tree.toplevel)
-    failed, incomplete = _run_isolated_stages(stages, repo)
+    failed, incomplete = _run_with_private_control_db(repo, stages)
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):

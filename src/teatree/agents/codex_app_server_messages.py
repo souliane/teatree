@@ -247,6 +247,6 @@ class CodexEventTranslator:
             session_id=thread_id,
             total_cost_usd=None,
             usage=self._usage,
-            result=str(detail) if detail else "".join(self._text),
+            result=(str(detail) if detail else f"turn {status or 'unknown'}") if is_error else "".join(self._text),
             model_usage=model_usage,
         )
