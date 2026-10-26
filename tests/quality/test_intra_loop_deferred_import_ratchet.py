@@ -235,8 +235,7 @@ class TestLoopSelfImproveNode:
     """``teatree.loop.self_improve`` is a declared domain node (#2413 PR-3).
 
     The detector package depends on the ``scanners`` and ``statusline_render``
-    leaves, the owner quiet-hours check on the declared ``preset_resolution``
-    leaf, while the ticket rung uses the declared ``persistence_phase_task``
+    leaves, while the ticket rung uses the declared ``persistence_phase_task``
     leaf. These are the node's only intra-loop deps — ``self_improve`` never
     reaches the orchestration top, and no scanner/up-edge can sneak in.
     """
@@ -249,7 +248,6 @@ class TestLoopSelfImproveNode:
         loop_deps = {d for d in deps if in_package(d, "teatree.loop")}
         assert loop_deps == {
             "teatree.loop.persistence_phase_task",
-            "teatree.loop.preset_resolution",
             "teatree.loop.scanners",
             "teatree.loop.statusline_render",
         }
