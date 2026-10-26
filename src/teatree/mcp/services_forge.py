@@ -290,7 +290,7 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
             token = dedupe.get("snapshot_token") if dedupe else None
             if not isinstance(token, str) or not token:
                 msg = "snapshot_token from the first call is required before filing"
-                raise ValueError(msg)
+                raise ToolError(msg)
             draft = IssueDraft(
                 repo=repo,
                 title=title,
