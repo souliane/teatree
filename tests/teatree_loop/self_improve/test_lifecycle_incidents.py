@@ -342,7 +342,7 @@ class LifecycleIncidentTests(TestCase):
 
         assert "outbound_unanswered" in kinds
 
-    def test_growing_unposted_count_does_not_send_another_alert(self) -> None:
+    def test_growing_unposted_count_reuses_repair_without_immediate_alert(self) -> None:
         first = DeferredQuestion.record("First?", session_id="s", **OWNER_DECISION)
         DeferredQuestion.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=2))
         alerts: list[str] = []
@@ -357,9 +357,10 @@ class LifecycleIncidentTests(TestCase):
         result = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
 
         assert result.reports[0].payload["count"] == 2
-        assert len(alerts) == 1
+        assert alerts == []
+        assert Ticket.objects.filter(extra__source="self_improve").count() == 1
 
-    def test_new_unposted_gap_alerts_after_the_previous_gap_clears(self) -> None:
+    def test_new_unposted_gap_reuses_open_repair_without_immediate_alert(self) -> None:
         first = DeferredQuestion.record("First?", session_id="s", **OWNER_DECISION)
         DeferredQuestion.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=2))
         alerts: list[str] = []
@@ -375,7 +376,8 @@ class LifecycleIncidentTests(TestCase):
         DeferredQuestion.objects.filter(pk=second.pk).update(created_at=timezone.now() - timedelta(hours=2))
         run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
 
-        assert len(alerts) == 2
+        assert alerts == []
+        assert Ticket.objects.filter(extra__source="self_improve").count() == 1
 
     def test_stale_claim_with_no_heartbeat_is_an_incident(self) -> None:
         task = TaskFactory(status=Task.Status.CLAIMED)

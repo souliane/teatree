@@ -53,6 +53,10 @@ _LADDER_ORDER: tuple[str, ...] = (
 )
 
 
+class ForeignOverlayEvidenceError(ImproperlyConfigured):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class ActionResult:
     """The rung that ran, the firing row recorded, and any side-effect summary."""
@@ -180,7 +184,7 @@ def _repair_overlay_name(declared_name: str | None) -> str:
 def _require_ticket_owner(ticket: Ticket, overlay_name: str) -> None:
     if ticket.overlay != overlay_name:
         msg = f"Self-improve firing already belongs to overlay {ticket.overlay!r}, not {overlay_name!r}"
-        raise ImproperlyConfigured(msg)
+        raise ForeignOverlayEvidenceError(msg)
 
 
 def _record_ticket_followup(report: DetectorReport, *, overlay_name: str) -> SelfImproveFiring:
@@ -252,7 +256,7 @@ def run_action_ladder(
     source_overlay = report.payload.get("overlay_name")
     if source_overlay is not None and source_overlay != _repair_overlay_name(overlay_name):
         msg = f"Self-improve evidence belongs to overlay {source_overlay!r}, not {overlay_name!r}"
-        raise ImproperlyConfigured(msg)
+        raise ForeignOverlayEvidenceError(msg)
     existing = latest_firing(report.detector, report.dedup_key)
     resolved_overlay = None
     linked_ticket = existing.ticket if existing is not None else None

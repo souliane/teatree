@@ -21,7 +21,12 @@ from django.utils import timezone
 
 from teatree.core.telemetry.admission import record_factory_issue
 from teatree.loop.scanners.clear_stall_lookup import live_pr_state_reader
-from teatree.loop.self_improve.actions import ActionResult, OwnerAlertDelivery, run_action_ladder
+from teatree.loop.self_improve.actions import (
+    ActionResult,
+    ForeignOverlayEvidenceError,
+    OwnerAlertDelivery,
+    run_action_ladder,
+)
 from teatree.loop.self_improve.budget import (
     DEFAULT_SPAWN_CAP_WINDOW_SECONDS,
     BudgetVerdict,
@@ -223,6 +228,8 @@ def run_tier(
                 )
                 if result is not None:
                     actions.append(result)
+        except ForeignOverlayEvidenceError:
+            raise
         except Exception:
             logger.exception("self-improve detector %s raised", detector.name)
             degraded_scans.append((detector.name, "detector_raised"))
