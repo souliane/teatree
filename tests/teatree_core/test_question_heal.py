@@ -1,13 +1,17 @@
 """A question whose trigger has healed is withdrawn before anything surfaces it (#4904)."""
 
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
+from teatree.core.models.task_phase_disposition import phase_wedges_healed
+from teatree.core.models.transition import TicketTransition
 from teatree.core.provision.failure_question import provision_failure_marker, record_provision_failure_question
 from teatree.core.question_heal import live_owner_questions, record_withheld, withdraw_healed, withhold
 from teatree.loop.question_drain import drain_pending_questions
@@ -93,6 +97,54 @@ class TestLiveOwnerQuestions(TestCase):
 
 
 class TestPhaseWedgeHealed(TestCase):
+    def _moved_back_wedge(self) -> tuple[Ticket, Task, DeferredQuestion]:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+        attempt = TaskAttempt.objects.create(task=task)
+        TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(minutes=2))
+        TicketTransition.objects.create(
+            ticket=ticket,
+            from_state=Ticket.State.CODED,
+            to_state=Ticket.State.WORK_STARTED,
+        )
+        row = DeferredQuestion.record("Coding wedge", dedupe_marker=f"fsm-wedge:{ticket.pk}:coding:{task.pk}")
+        return ticket, task, row
+
+    def test_a_wedge_for_a_task_moved_back_over_is_withdrawn(self) -> None:
+        _ticket, _task, row = self._moved_back_wedge()
+
+        assert "moved back over" in phase_wedges_healed([row])[row.pk]
+        assert withdraw_healed([row]) == []
+        row.refresh_from_db()
+        assert not row.is_pending
+        assert DeferredQuestionAudit.objects.get(question=row, action="dismissed").resolver_id == ("phase_wedge_healed")
+
+    def test_a_wedge_moved_back_over_then_forward_names_the_retreat(self) -> None:
+        ticket, task, row = self._moved_back_wedge()
+        Task.objects.create(ticket=ticket, session=task.session, phase="planning")
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.CODED)
+
+        assert "moved back over" in phase_wedges_healed([row])[row.pk]
+
+    def test_a_refusal_row_stays_pending_after_a_retreat(self) -> None:
+        ticket, _task, _row = self._moved_back_wedge()
+        refusal = DeferredQuestion.record("Refusal wedge", dedupe_marker=f"fsm-wedge:{ticket.pk}:coding:rabcdef123456")
+
+        assert phase_wedges_healed([refusal]) == {}
+        assert withdraw_healed([refusal]) == [refusal]
+
+    def test_a_task_rerun_after_the_last_retreat_keeps_its_wedge(self) -> None:
+        _ticket, task, row = self._moved_back_wedge()
+        TaskAttempt.objects.create(task=task)
+
+        assert phase_wedges_healed([row]) == {}
+        assert withdraw_healed([row]) == [row]
+
     def _wedge(self, state: str) -> tuple[Ticket, Task, DeferredQuestion]:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=state)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
