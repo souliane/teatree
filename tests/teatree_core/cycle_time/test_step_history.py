@@ -51,7 +51,7 @@ class TestStepHistory(TestCase):
         assert estimate.median_minutes == 30
         assert estimate.p80_minutes == 42
         assert estimate.window == "24h"
-        assert history.remaining_default(5) == (25, 37, "default: slowest surviving step (coding)")
+        assert history.remaining_default(5) == (25, 37, "default: slowest surviving step (coding, 24h)")
         assert history.remaining_default(50) is None
 
     def test_sparse_default_uses_slowest_median_and_p80_independently(self) -> None:
@@ -97,6 +97,20 @@ class TestStepHistory(TestCase):
             },
         )
         assert history.remaining_measured("reviewing", 45) == (15.0, 15.0, "7d")
+
+    def test_running_default_widens_to_seven_day_survivors(self) -> None:
+        now = timezone.now()
+        history = StepHistory(
+            now=now,
+            spans={
+                "coding": [
+                    *((now - timedelta(hours=1), 30.0) for _ in range(5)),
+                    *((now - timedelta(days=2), 90.0) for _ in range(5)),
+                ]
+            },
+        )
+
+        assert history.remaining_default(45) == (45.0, 45.0, "default: slowest surviving step (coding, 7d)")
 
     def test_completed_task_uses_last_non_park_attempt_even_if_failed(self) -> None:
         for minutes in (50, 55, 60, 65, 70):

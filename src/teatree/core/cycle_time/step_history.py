@@ -169,17 +169,19 @@ class StepHistory:
     def remaining_default(self, elapsed_minutes: float) -> tuple[float, float, str] | None:
         survivors = [
             (key, conditional)
-            for key, values, _window in self._candidate_sources()
-            if (conditional := remaining_given_elapsed(values, elapsed_minutes)) is not None
+            for key in self.spans
+            if (conditional := self.remaining_measured(key, elapsed_minutes)) is not None
         ]
         if not survivors:
             return None
         median_choice = max(survivors, key=lambda row: (row[1][0], row[0]))
         p80_choice = max(survivors, key=lambda row: (row[1][1], row[0]))
         median_step, p80_step = median_choice[0], p80_choice[0]
+        median_source = f"{median_step}, {median_choice[1][2]}"
+        p80_source = f"{p80_step}, {p80_choice[1][2]}"
         basis = (
-            f"default: slowest surviving step ({median_step})"
-            if median_step == p80_step
-            else f"default: slowest surviving steps (median {median_step}; p80 {p80_step})"
+            f"default: slowest surviving step ({median_source})"
+            if median_source == p80_source
+            else f"default: slowest surviving steps (median {median_source}; p80 {p80_source})"
         )
         return median_choice[1][0], p80_choice[1][1], basis

@@ -511,7 +511,7 @@ def gather_remaining(
     pr_ticket_ids = {pr.ticket_id for pr in snapshot.prs}
     work: list[tuple[Ticket, PullRequest | None]] = [(pr.ticket, pr) for pr in snapshot.prs]
     work.extend((ticket, None) for ticket in snapshot.open_author if ticket.pk not in pr_ticket_ids)
-    if not work and not snapshot.active and not snapshot.owner_questions:
+    if not work and not snapshot.active and not snapshot.owner_questions and not snapshot.dormant:
         return empty_remaining(dormant=snapshot.dormant)
     history = StepHistory.measure(now) if work else StepHistory(now=now, spans={})
     items = sorted(

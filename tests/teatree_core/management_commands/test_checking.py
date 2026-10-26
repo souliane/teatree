@@ -290,13 +290,14 @@ class TestCheckingShow:
         labels = [item["label"] for item in json.loads(out)["merged"]["items"]]
         assert labels == ["souliane/teatree#50"]
 
-    def test_second_run_after_advance_reports_nothing(self, checkpoint_file: Path) -> None:
-        """Gather-then-advance: an immediate second run sees an empty window."""
+    def test_second_run_after_advance_keeps_live_remaining(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         first = _call("checking", "show", "--this-overlay")
         assert "Merged" in first
         second = _call("checking", "show", "--this-overlay").strip()
-        assert second.startswith("Nothing since ")
+        assert "Merged" not in second
+        assert "Remaining" in second
+        assert "1 dormant" in second
 
     def test_future_checkpoint_does_not_collapse_window_or_advance_backward(self, checkpoint_file: Path) -> None:
         """A skewed future marker must still report recent events, not collapse.
@@ -358,13 +359,14 @@ class TestCheckingRemaining:
         measure.assert_not_called()
         assert payload["remaining"]["eta"]["basis"] == "no current work in scope"
 
-    def test_dormant_only_scope_keeps_its_json_count(self, checkpoint_file: Path) -> None:
+    def test_dormant_only_scope_keeps_its_count_in_both_views(self, checkpoint_file: Path) -> None:
         Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/604", state=Ticket.State.CODED
         )
         payload = _show_json()
         assert payload["remaining"]["holds"]["dormant"] == 1
-        assert payload["remaining"]["items"] == []
+        assert [row["label"] for row in payload["remaining"]["items"]] == ["Total", "Queue"]
+        assert "1 dormant" in payload["terse"]
 
     def test_blank_overlay_name_scopes_remaining_like_other_groups(self) -> None:
         self._open_pr()
@@ -851,13 +853,28 @@ class TestCheckingRemaining:
         assert item["eta"]["median_minutes"] == pytest.approx(5018, abs=0.1)
         assert item["eta"]["p80_minutes"] == pytest.approx(7228.2, abs=0.1)
         assert "83h38m\u2013120h28m" in item["detail"]
-        assert "testing: default: slowest surviving steps (median coding; p80 debugging)" in item["detail"]
+        assert "testing: default: slowest surviving steps (median coding, 24h; p80 debugging, 24h)" in item["detail"]
 
         Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=9001))
         overdue = _show_json()
         overdue_item = next(row for row in overdue["remaining"]["items"] if row["label"] == "acme/widgets#601")
         assert overdue_item["eta"]["median_minutes"] is None
         assert overdue_item["eta"]["basis"] == "running longer than all measured fallback samples"
+
+    def test_running_default_uses_older_survivors_in_public_report(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        _completed_history("coding", (30,) * 5)
+        _completed_history("coding", (90,) * 5, ended_hours_ago=48)
+        running = _task(
+            ticket, "testing", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1)
+        )
+        Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=45))
+
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["eta"]["median_minutes"] is not None
+        assert "testing: default: slowest surviving step (coding, 7d)" in item["detail"]
+        assert item["detail"] in payload["terse"]
 
     def test_halts_blocks_and_owner_waits_are_excluded_from_eta(self, checkpoint_file: Path) -> None:
         for number, status in ((860, Task.Status.FAILED), (861, Task.Status.PENDING), (862, Task.Status.PENDING)):
@@ -919,15 +936,20 @@ class TestCheckingRemaining:
         assert [row["label"] for row in remaining["items"][2:]] == ["#1400"]
         assert remaining["holds"] == {"halted": 1, "blocked": 0, "owner": 0, "dormant": 1}
 
-    def test_attemptless_failed_task_older_than_a_week_is_only_dormant(self, checkpoint_file: Path) -> None:
+    def test_older_dormant_ticket_is_visible_in_json_and_human_report(self, checkpoint_file: Path) -> None:
         ticket = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/1505", state=Ticket.State.CODED
         )
         task = _task(ticket, "testing", status=Task.Status.FAILED)
         Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(days=9))
-        remaining = _show_json()["remaining"]
-        assert remaining["items"] == []
+        payload = _show_json()
+        remaining = payload["remaining"]
+        human = _call("checking", "show", "--this-overlay", "--no-advance")
+        assert [row["label"] for row in remaining["items"]] == ["Total", "Queue"]
         assert remaining["holds"] == {"halted": 0, "blocked": 0, "owner": 0, "dormant": 1}
+        assert "1 dormant" in payload["terse"]
+        assert "1 dormant" in human
+        assert "Nothing since" not in human
 
     def test_reviewer_only_queue_is_visible_in_json_and_human_views(self, checkpoint_file: Path) -> None:
         reviewer = Ticket.objects.create(

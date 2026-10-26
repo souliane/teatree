@@ -112,7 +112,7 @@ class RemainingItem(CheckItem):
     def to_dict(self) -> RemainingItemDict:
         return cast(
             "RemainingItemDict",
-            {**super().to_dict(), "kind": self.kind, "steps": list(self.steps), "eta": self.eta},
+            {**CheckItem.to_dict(self), "kind": self.kind, "steps": list(self.steps), "eta": self.eta},
         )
 
 
