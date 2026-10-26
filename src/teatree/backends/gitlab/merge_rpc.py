@@ -154,17 +154,23 @@ class GitLabApiMergeRpc:
         if mr is None:
             return PrMergeState(state="", merge_commit_oid="")
         state = str(mr.get("state") or "").upper()  # "merged" → "MERGED" (parity with GitHub)
-        oid = str(mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or "")
+        squash_oid = str(mr.get("squash_commit_sha") or "")
+        oid = str(mr.get("merge_commit_sha") or squash_oid)
         if state == "MERGED" and not oid:
             oid = str(mr.get("sha") or "")
-        merged_by = mr.get("merge_user") or mr.get("merged_by")
-        login = str(merged_by.get("username") or "") if isinstance(merged_by, dict) else ""
+        merge_user = mr.get("merge_user")
+        merged_by = mr.get("merged_by")
+        primary = merge_user.get("username") if isinstance(merge_user, dict) else None
+        fallback = merged_by.get("username") if isinstance(merged_by, dict) else None
+        login = primary if isinstance(primary, str) and primary.strip() else fallback
+        login = login if isinstance(login, str) else ""
         return PrMergeState(
             state=state,
             merge_commit_oid=oid,
             conflict=_conflict_state(mr),
             merged_by=login,
             merged_at=str(mr.get("merged_at") or ""),
+            squash_commit_oid=squash_oid,
         )
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:

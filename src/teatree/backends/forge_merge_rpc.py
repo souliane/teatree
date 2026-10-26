@@ -210,7 +210,8 @@ class GhMergeRpc:
         merge_commit = data.get("mergeCommit")
         oid = str(merge_commit.get("oid") or "") if isinstance(merge_commit, dict) else ""
         merged_by = data.get("mergedBy")
-        login = str(merged_by.get("login") or "") if isinstance(merged_by, dict) else ""
+        raw_login = merged_by.get("login") if isinstance(merged_by, dict) else None
+        login = raw_login if isinstance(raw_login, str) else ""
         return PrMergeState(
             state=state,
             merge_commit_oid=oid,

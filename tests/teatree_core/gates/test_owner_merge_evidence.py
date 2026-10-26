@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -13,7 +14,7 @@ from teatree.core.gates.rubric_gate import (
 from teatree.core.models import ConfigSetting, PullRequest, Rubric, Ticket
 from teatree.core.review.critic_rubric import completeness
 from teatree.core.runners import RetroPhaseMarker
-from tests.factories import MergeAuditFactory
+from tests.factories import MergeAuditFactory, merge_void
 
 _SHA = "a" * 40
 _PR_STATE = "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state"
@@ -52,6 +53,16 @@ class TestRecordForgeMerger(TestCase):
             "merged_by": "Alice",
         }
 
+    def test_squash_sha_can_match_when_merge_sha_differs(self) -> None:
+        ticket = _ticket()
+        state = PrMergeState(
+            state="MERGED", merge_commit_oid="b" * 40, squash_commit_oid=_SHA.upper(), merged_by="alice"
+        )
+        with patch(_PR_STATE, return_value=state):
+            RetroPhaseMarker(ticket).run()
+        ticket.refresh_from_db()
+        assert ticket.extra["forge_merge_evidence"]["merged_by"] == "alice"
+
     def test_open_mismatched_or_blank_merger_records_nothing(self) -> None:
         states = (
             PrMergeState(state="OPEN", merge_commit_oid=_SHA, merged_by="alice"),
@@ -78,13 +89,24 @@ class TestRecordForgeMerger(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["forge_merge_evidence"]["merged_by"] == "alice"
 
+    def test_malformed_merge_state_records_nothing(self) -> None:
+        ticket = _ticket()
+        malformed = SimpleNamespace(is_merged=True, merge_commit_oid=None, squash_commit_oid=None, merged_by="alice")
+        with patch(_PR_STATE, return_value=malformed):
+            RetroPhaseMarker(ticket).run()
+        ticket.refresh_from_db()
+        assert "merged_by" not in ticket.extra["forge_merge_evidence"]
+
     def test_audit_existing_merger_and_malformed_sha_skip_the_read(self) -> None:
         audited = _ticket()
         MergeAuditFactory(clear__ticket=audited)
         already_recorded = _ticket(merger="alice")
         malformed = _ticket(sha="invalid")
+        missing = Ticket.objects.create(overlay="test", state=Ticket.State.RETRO_RECORDED)
+        voided = _ticket()
+        merge_void(tickets=[voided], slug="example/repo", pr_id=voided.pk)
         with patch(_PR_STATE) as read:
-            for ticket in (audited, already_recorded, malformed):
+            for ticket in (audited, already_recorded, malformed, missing, voided):
                 RetroPhaseMarker(ticket).run()
         read.assert_not_called()
 
@@ -122,15 +144,19 @@ class TestOwnerMergeRubricWaiver(TestCase):
             check_rubric_satisfied(ticket, _SHA, transition="merge")
 
     def test_nonowner_empty_alias_audit_and_live_pr_still_block(self) -> None:
-        cases = ("nonowner", "empty_aliases", "audit", "live_pr")
+        cases = ("nonowner", "empty_aliases", "blank_alias", "audit", "live_pr", "voided")
         for case in cases:
             with self.subTest(case=case):
-                ticket = _ticket(merger="bob" if case == "nonowner" else "alice")
+                ticket = _ticket(merger="bob" if case == "nonowner" else " " if case == "blank_alias" else "alice")
                 Rubric.populate(ticket, ["ungraded criterion"])
                 if case == "empty_aliases":
                     ConfigSetting.objects.set_value("user_identity_aliases", [])
+                if case == "blank_alias":
+                    ConfigSetting.objects.set_value("user_identity_aliases", [" "])
                 if case == "audit":
                     MergeAuditFactory(clear__ticket=ticket)
+                if case == "voided":
+                    merge_void(tickets=[ticket], slug="example/repo", pr_id=ticket.pk)
                 if case == "live_pr":
                     sibling_id = ticket.pk + 10_000
                     PullRequest.objects.create(

@@ -15,6 +15,7 @@ class PrMergeState:
     conflict: MergeConflictState = MergeConflictState.UNKNOWN
     merged_by: str = ""
     merged_at: str = ""
+    squash_commit_oid: str = ""
 
     @property
     def is_merged(self) -> bool:

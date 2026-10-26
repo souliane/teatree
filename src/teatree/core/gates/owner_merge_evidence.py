@@ -26,13 +26,18 @@ def record_forge_merger(ticket: "Ticket") -> None:
         return
     try:
         state = CodeHostQuery.for_ref(ref).pr_merge_state()
-        sha = state.merge_commit_oid.strip()
         login = state.merged_by.strip() if isinstance(state.merged_by, str) else ""
         merged = state.is_merged
+        recorded_sha = str(recorded["merged_sha"]).casefold()
+        sha_matches = any(
+            sha.strip().casefold() == recorded_sha
+            for sha in (state.merge_commit_oid, state.squash_commit_oid)
+            if isinstance(sha, str)
+        )
     except Exception:
         logger.warning("Could not read forge merger for ticket %s", ticket.pk, exc_info=True)
         return
-    if not merged or sha.casefold() != str(recorded["merged_sha"]).casefold() or not login:
+    if not merged or not sha_matches or not login:
         return
     ticket.merge_extra(merge_into_dicts={"forge_merge_evidence": {"merged_by": login}})
 

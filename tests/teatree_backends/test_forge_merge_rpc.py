@@ -135,6 +135,12 @@ class TestGhConflictState:
         ).fetch_pr_merge_state(slug="o/r", pr_id=7)
         assert (state.merged_by, state.merged_at) == ("", "")
 
+    def test_non_string_actor_is_not_recorded_as_a_login(self) -> None:
+        state = GhMergeRpc(lambda _argv: (0, '{"state":"MERGED","mergedBy":{"login":42}}', "")).fetch_pr_merge_state(
+            slug="o/r", pr_id=7
+        )
+        assert state.merged_by == ""
+
 
 class TestFetchLiveHeadSha:
     """A failed read and a PR with no head are DIFFERENT facts (the twin of the GitLab case).
