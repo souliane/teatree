@@ -239,6 +239,12 @@ class TestPriorityDirective(TestCase):
         ]
         off = [
             "not urgent",
+            "not urgently",
+            "not hotfix",
+            "not asap",
+            "not top priority",
+            "no longer highest priority",
+            "isn't release blocker",
             "non-urgent",
             "no blocker",
             "never urgent",
@@ -295,6 +301,28 @@ class TestPriorityDirective(TestCase):
         assert ticket.expedited is True
         assert "zap" in [reaction[2] for reaction in backend.reactions]
         reader.assert_called_once()
+
+    def test_mixed_negated_cue_clears_priority_and_continues_routing(self) -> None:
+        ticket = _ticket()
+        ticket.expedited = True
+        ticket.save(update_fields=["expedited"])
+        backend = _backend()
+        reader = Mock(side_effect=_ack)
+        _row("not hotfix; please fix the flaky test", "2.000")
+
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=reader)
+
+        ticket.refresh_from_db()
+        assert ticket.expedited is False
+        assert "sleeping" in [reaction[2] for reaction in backend.reactions]
+        reader.assert_called_once()
+
+    def test_negated_cue_remains_clear_beside_soft_clear(self) -> None:
+        directive = parse_priority_directive("not urgent but can wait")
+
+        assert directive is not None
+        assert directive.enabled is False
+        assert directive.only is False
 
     def test_no_context_or_ineligible_ticket_preserves_routing(self) -> None:
         backend = RecordingBackend()

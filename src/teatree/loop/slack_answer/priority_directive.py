@@ -22,14 +22,10 @@ _LINK = re.compile(r"<[^>]+>")
 _URL = re.compile(r"https?://[^\s<>|)]+")
 _REPO_REF = re.compile(r"(?<![\w/])(?:[\w.-]+/)+[\w.-]+#\d+\b")
 _BARE_REF = re.compile(r"(?<![\w/])#(\d+)\b")
-_ON = re.compile(
-    r"\b(?:urgent(?:ly)?|hot-?fix|top priority|highest priority|release blocker|blocker)\b"
-    r"|\ba\.?s\.?a\.?p\.?(?=$|\W)",
-    re.IGNORECASE,
-)
+_CUE = r"(?:urgent(?:ly)?|hot-?fix|top priority|highest priority|release blocker|blocker|a\.?s\.?a\.?p\.?)"
+_ON = re.compile(rf"\b{_CUE}(?=$|\W)", re.IGNORECASE)
 _OFF = re.compile(
-    r"\b(?:not|never|non[- ]|no longer(?: an?| the)?|no)\s*-?\s*(?:urgent|a blocker|blocker)\b"
-    r"|\bisn['\u2019]t\s+(?:urgent|a blocker)\b",
+    rf"\b(?:not|never|non[- ]|no longer(?: an?| the)?|no|isn['\u2019]t)\s*-?\s*(?:a\s+)?{_CUE}(?=$|\W)",
     re.IGNORECASE,
 )
 _SOFT_OFF = re.compile(r"\b(?:later|no rush|can wait|low priority|deprioriti[sz]e)\b", re.IGNORECASE)
@@ -84,7 +80,7 @@ def parse_priority_directive(text: str) -> PriorityDirective | None:
     without_off = _OFF.sub(" ", body)
     on_spans = list(_ON.finditer(without_off))
     soft_spans = list(_SOFT_OFF.finditer(without_off))
-    mixed_polarity = bool(off_spans and (on_spans or soft_spans)) or bool(on_spans and soft_spans)
+    mixed_polarity = bool(on_spans and (off_spans or soft_spans))
     if _NEGATOR.search(_SOFT_OFF.sub(" ", without_off)) or mixed_polarity:
         return None
     if not off_spans and not on_spans and not soft_spans:
@@ -95,7 +91,7 @@ def parse_priority_directive(text: str) -> PriorityDirective | None:
     remainder = _REPO_REF.sub(" ", _BARE_REF.sub(" ", remainder))
     words = re.findall(r"[a-z]+|\d+", remainder.casefold())
     only = all(word in _WHOLE_FILLER for word in words)
-    if soft_spans and not only:
+    if soft_spans and not only and not off_spans:
         return None
     return PriorityDirective(enabled=bool(on_spans), only=only)
 
