@@ -145,13 +145,12 @@ class TestMergeVerdictHistory(TestCase):
         assert f"{'a' * 40} test_value: fail; first round" in history
         assert "other" not in history
 
-    def test_an_over_long_history_keeps_the_newest_verdicts(self) -> None:
+    def test_an_over_long_history_lists_every_verdict(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
         for round_number in range(40):
             _merge_verdict(ticket, head=f"{round_number:040x}", citation=f"round-{round_number:02d} " + "x" * 400)
 
         history = merge_verdict_history(ticket)
 
-        assert "round-39" in history
-        assert "round-00" not in history
-        assert len(history) < 8000
+        for round_number in range(40):
+            assert f"round-{round_number:02d}" in history
