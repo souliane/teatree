@@ -223,6 +223,8 @@ class TestFixRecordDirective(TestCase):
         assert '"fix_record"' in brief
         assert "only with merge_safe" in brief
         assert "repro record-red" not in brief
+        assert '"observed_red"' in brief
+        assert "observed_red is your own revert-to-RED proof" in brief
 
     def test_the_review_of_a_fix_pr_omits_failing_run_claims_when_switched_off(self) -> None:
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)

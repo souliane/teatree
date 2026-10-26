@@ -32,9 +32,9 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.gate_registry import get_resolver
 from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha
 from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, unrecognised_reviewer_message
+from teatree.core.models.rubric_phase_criteria import PHASE_CRITERIA, withheld_by_deployment
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.types import RubricGrade
 from teatree.quality.falsifiable_criteria import falsifiability_violation
@@ -43,22 +43,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from django.db.models import QuerySet
-
-
-_RED_PIN_OBSERVED = "a RED pin exists and was observed failing before the fix"
-_FAILS_WITHOUT_CHANGE = "changed behaviour is asserted by a test that fails without the change"
-
-#: The probe-first standard, one gradeable criterion per phase that has one.
-#: Each text names something that must be present, so a verifier can fail it.
-PHASE_CRITERIA: dict[str, str] = {
-    "planning": "the plan cites at least one measurement of the LIVE system, with its venue named",
-    "design": "each claim about existing behaviour names the consumer that was read, not prose inferred from it",
-    "investigation": "every empty result is paired with a control proving the probe would have found something",
-    "fix": _RED_PIN_OBSERVED,
-    "coding": _FAILS_WITHOUT_CHANGE,
-}
-
-FAILING_RUN_CRITERIA: frozenset[str] = frozenset({_RED_PIN_OBSERVED, _FAILS_WITHOUT_CHANGE})
 
 
 class RubricError(ValueError):
@@ -194,7 +178,7 @@ class Rubric(models.Model):
     def seed_phase_criterion(cls, ticket: Ticket, phase: str) -> "Rubric | None":
         """ADD *phase*'s standing criterion; ``None`` when it has none or the deployment withholds it."""
         text = PHASE_CRITERIA.get(phase)
-        if text is None or (text in FAILING_RUN_CRITERIA and not get_resolver("failing_run_required")(ticket)):
+        if text is None or withheld_by_deployment(ticket, text):
             return None
         return cls.add_criteria(ticket, [text])
 
