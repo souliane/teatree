@@ -209,11 +209,21 @@ class OnBehalfSlackEgress:
     def _record_post_drift(claim: "OutboundClaim", reason: str) -> None:
         claim.record_drift(reason)
         notify_user(
-            f"Slack accepted a post but verification failed: {reason}",
+            f"Slack post did not verify: {reason}",
             kind=NotifyKind.INFO,
             idempotency_key=f"outbound_drift:{claim.idempotency_key}",
             audience=NotifyAudience.OWNER_ESCALATION,
         )
+
+    def _send_claimed_post(self, claim: "OutboundClaim", *, channel: str, text: str, thread_ts: str) -> RawAPIDict:
+        try:
+            return self.post(channel=channel, text=text, thread_ts=thread_ts, target=channel, action="mcp_slack_post")
+        except (OnBehalfPostBlockedError, SendBlockedError):
+            claim.delete()
+            raise
+        except Exception as exc:
+            self._record_post_drift(claim, f"Slack post outcome uncertain after exception: {exc}")
+            raise
 
     def post_once(self, *, idempotency_key: str, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         if not idempotency_key.strip():
@@ -229,13 +239,7 @@ class OnBehalfSlackEgress:
                 msg = f"an earlier post under this idempotency_key did not verify: {claim.drift_reason or 'in flight'}"
                 raise RuntimeError(msg)
             return {"ok": True, "already_sent": True, "channel": claim.extra["channel"], "ts": claim.extra["ts"]}
-        try:
-            response = self.post(
-                channel=channel, text=text, thread_ts=thread_ts, target=channel, action="mcp_slack_post"
-            )
-        except BaseException:
-            claim.delete()
-            raise
+        response = self._send_claimed_post(claim, channel=channel, text=text, thread_ts=thread_ts)
         ts = str(response.get("ts") or "")
         if not response.get("ok"):
             claim.delete()

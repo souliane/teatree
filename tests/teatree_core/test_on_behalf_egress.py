@@ -339,6 +339,18 @@ class TestColleagueGate(TestCase):
         assert refused["error"] == "channel_not_found"
         assert not OutboundClaim.objects.filter(idempotency_key="slack-post:k2").exists()
 
+    def test_post_once_ambiguous_transport_error_retains_its_key(self) -> None:
+        OnBehalfApproval.record(target=_COLLEAGUE, action="mcp_slack_post", approver_id=_APPROVER)
+        fake = _RouteAwareFake()
+        egress = OnBehalfSlackEgress(fake)
+        with patch.object(fake, "post_routed", side_effect=TimeoutError("response lost")) as transport:
+            with pytest.raises(TimeoutError, match="response lost"):
+                egress.post_once(idempotency_key="ambiguous", channel=_COLLEAGUE, text="hi")
+            with pytest.raises(RuntimeError, match="did not verify"):
+                egress.post_once(idempotency_key="ambiguous", channel=_COLLEAGUE, text="hi")
+        assert transport.call_count == 1
+        assert OutboundClaim.objects.get(idempotency_key="slack-post:ambiguous").drift_detected is True
+
     def test_post_once_unverified_post_keeps_its_key_as_drift(self) -> None:
         OnBehalfApproval.record(target=_COLLEAGUE, action="mcp_slack_post", approver_id=_APPROVER)
         fake = _RouteAwareFake(routed_response={"ok": True, "ts": "9.9"}, message_text="")
