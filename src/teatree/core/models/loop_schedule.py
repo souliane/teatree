@@ -60,14 +60,14 @@ class ModeSchedule(models.Model):
 
 
 def active_schedule_name() -> str:
-    raw = ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING)
+    raw = ConfigSetting.objects.get_effective("active_loop_schedule")
     return raw.strip() if isinstance(raw, str) and raw.strip() else ""
 
 
 def schedule_by_name(name: str) -> ModeSchedule | None:
     schedule = ModeSchedule.objects.filter(name=name).first()
     if schedule is None:
-        logger.warning("active_loop_schedule names unknown schedule %r — failing open to base config", name)
+        logger.warning("%s names unknown schedule %r — failing open to base config", ACTIVE_SCHEDULE_SETTING, name)
     return schedule
 
 
