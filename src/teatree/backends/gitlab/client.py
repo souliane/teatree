@@ -537,39 +537,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return self._merge_rpc().fetch_pr_merge_state(slug=slug, pr_id=pr_id)
 
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
-        """Tri-state draft flag, read over the token-authenticated HTTP API.
-
-        Deliberately NOT on the ``glab`` merge-RPC transport its merge-path
-        siblings use: the review-request draft gate calls this from the headless
-        deploy image, which ships no ``glab`` binary, so every probe there raised
-        ``FileNotFoundError`` and the gate reported "not a draft" for every MR.
-        The HTTP client needs only ``GITLAB_TOKEN``, which that image already has.
-
-        ``draft`` is the GitLab draft flag.
-        An unresolvable project, a transport error, or a non-dict payload yields
-        ``UNKNOWN`` so no consumer mistakes an unanswered probe for a live MR.
-        """
-        try:
-            project = self._resolve_project(slug)
-            if project is None:
-                return DraftState.UNKNOWN
-            mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{pr_id}")
-        except Exception as exc:  # noqa: BLE001 — fail closed: an unread probe must never read as NOT_DRAFT.
-            warn_throttled(
-                logger,
-                f"gitlab-draft-probe:{slug}!{pr_id}",
-                "GitLab draft probe failed for %s!%s — reporting UNKNOWN: %s",
-                slug,
-                pr_id,
-                exc,
-            )
-            return DraftState.UNKNOWN
-        if not isinstance(mr, dict):
-            return DraftState.UNKNOWN
-        summary = cast("_GitLabMergeRequestSummary", mr)
-        if summary.get("draft"):
-            return DraftState.DRAFT
-        return DraftState.NOT_DRAFT
+        return _pr_reads.draft_state(self._client, self._resolve_project, slug=slug, pr_id=pr_id)
 
     def fetch_open_pr_url_for_branch(self, *, repo: str, branch: str) -> str | None:
         """The OPEN MR sourced from *branch*: the url, ``""`` for none, ``None`` for unknown."""

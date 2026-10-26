@@ -17,7 +17,7 @@ from urllib.parse import quote_plus, urlencode
 import httpx
 
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
-from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.backend_protocols import BackendResolutionError, DraftState
 from teatree.core.review.gitlab_head_pipeline import select_head_pipeline
 from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
@@ -161,6 +161,41 @@ def open_mr_url_for_branch(
             exc,
         )
         return None
+
+
+def draft_state(
+    client: GitLabAPI,
+    resolve_project: Callable[[str], ProjectInfo | None],
+    *,
+    slug: str,
+    pr_id: int,
+) -> DraftState:
+    """Tri-state draft flag, read over the token-authenticated HTTP API.
+
+    Deliberately NOT on the ``glab`` merge-RPC transport: the review-request draft gate
+    calls this from the headless deploy image, which ships no ``glab`` binary, so every
+    probe there raised ``FileNotFoundError`` and the gate reported "not a draft" for every
+    MR. An unresolvable project, a transport error, or a non-dict payload yields
+    ``UNKNOWN`` so no consumer mistakes an unanswered probe for a live MR.
+    """
+    try:
+        project = resolve_project(slug)
+        if project is None:
+            return DraftState.UNKNOWN
+        mr = client.get_json(f"projects/{project.project_id}/merge_requests/{pr_id}")
+    except Exception as exc:  # noqa: BLE001 — fail closed: an unread probe must never read as NOT_DRAFT.
+        warn_throttled(
+            logger,
+            f"gitlab-draft-probe:{slug}!{pr_id}",
+            "GitLab draft probe failed for %s!%s — reporting UNKNOWN: %s",
+            slug,
+            pr_id,
+            exc,
+        )
+        return DraftState.UNKNOWN
+    if not isinstance(mr, dict):
+        return DraftState.UNKNOWN
+    return DraftState.DRAFT if mr.get("draft") else DraftState.NOT_DRAFT
 
 
 def _first_open_mr_url(client: GitLabAPI, project: ProjectInfo, *, branch: str) -> str | None:
