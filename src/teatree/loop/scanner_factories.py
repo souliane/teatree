@@ -63,6 +63,7 @@ from teatree.loop.scanners import (
     TaskSweepScanner,
     TriageAssessorScanner,
 )
+from teatree.loop.scanners.head_lineage import GhLineageReader
 from teatree.loop.scanners.my_prs import CiEnricher
 from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
@@ -186,6 +187,8 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         # lets the sweep auto-merge a substrate PR that passes EVERY gate and DM the
         # owner "informed, not asked".
         substrate_standing_authorizer=settings.substrate_auto_merge_authorized_by,
+        # #5450: a clearance follows a merge of main to the new head when the PR's patch is unchanged.
+        head_lineage=GhLineageReader(),
     )
 
 

@@ -65,6 +65,17 @@ def dispatch_worktree_path(ticket: "Ticket") -> str:
     return worktree.worktree_path if worktree else ""
 
 
+def worktree_head_sha(ticket: "Ticket") -> str:
+    """The git HEAD of *ticket*'s dispatch worktree, or '' when no checkout is on disk or git cannot read it."""
+    path = dispatch_worktree_path(ticket)
+    if not path:
+        return ""
+    try:
+        return git.head_sha(repo=path)
+    except (CommandFailedError, OSError):
+        return ""
+
+
 def worktree_has_commits_ahead(worktree: "Worktree") -> bool:
     """Whether ``worktree`` has commits ahead of its base branch.
 

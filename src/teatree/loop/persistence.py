@@ -26,6 +26,7 @@ from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
+from teatree.loop.scanners.head_lineage import review_head_is_carried
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -388,6 +389,8 @@ def _handle_codex_review(action: DispatchAction) -> Task | None:
         logger.debug("Skipping codex-review action with incomplete payload: %r", action.detail)
         return None
     variant = action.zone
+    if review_head_is_carried(slug=slug, pr_id=pr_id, head_sha=head_sha, pr_url=pr_url, variant=variant):
+        return None
     phase = "codex_adversarial_reviewing" if variant == "codex:adversarial-review" else "codex_reviewing"
     with transaction.atomic():
         ticket, _created = _get_or_create_ticket(
