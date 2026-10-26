@@ -15,6 +15,7 @@ from teatree.core.admission_pressure import (
     BRAKE_LOAD_PER_CORE,
     DEGRADE_AT,
     HALT_AT,
+    MACHINE_BRAKE_CAUSES,
     PACE_DENY,
     RAM_BRAKE_FLOOR_GB,
     RAM_RESUME_FLOOR_GB,
@@ -27,6 +28,7 @@ from teatree.core.admission_pressure import (
     MachineSignal,
     MeteredSignal,
     PressureBand,
+    PressureComponent,
     QuotaSignal,
     admission_pressure,
     box_load_headroom,
@@ -221,7 +223,36 @@ class TestHaltEquivalence:
         old = _old_reason(_quota(), machine, braked=braked)
         assert (pressure.band is PressureBand.HALT) is bool(old)
         if old:
-            assert pressure.reason == old
+            halted_machine = [
+                component
+                for component in pressure.components
+                if component.name in MACHINE_BRAKE_CAUSES and component.value >= HALT_AT
+            ]
+            if len(halted_machine) > 1:
+                assert pressure.dominant is not None
+                assert pressure.dominant.value == max(component.value for component in halted_machine)
+                assert pressure.reason == pressure.dominant.detail
+            else:
+                assert pressure.reason == old
+
+    @pytest.mark.parametrize(
+        ("causes", "expected"),
+        [
+            ([("load", 1.1), ("memory", 1.5)], "memory"),
+            ([("load", 1.1), ("swap", 1.8)], "swap"),
+            ([("memory", 1.5), ("swap", 1.8)], "swap"),
+            ([("load", 1.5), ("memory", 1.1)], "load"),
+            ([("load", 1.5), ("memory", 1.5), ("swap", 1.5)], "load"),
+            ([("memory", 1.5), ("swap", 1.5)], "memory"),
+            ([("5h-quota", 1.0), ("memory", 2.0)], "5h-quota"),
+            ([("metered-spend", 1.0), ("swap", 2.0)], "metered-spend"),
+            ([("memory-pressure", 1.0), ("load", 2.0)], "memory-pressure"),
+        ],
+    )
+    def test_halted_cause_ranking(self, causes: list[tuple[str, float]], expected: str) -> None:
+        pressure = AdmissionPressure(tuple(PressureComponent(name, value, name) for name, value in causes))
+        assert pressure.dominant is not None
+        assert pressure.dominant.name == expected
 
     def test_an_exhausted_fleet_is_named_exhausted_not_its_collapsed_pace(self) -> None:
         """Precedence, not magnitude: exhaustion drives pace to zero, so max() would rename it."""
