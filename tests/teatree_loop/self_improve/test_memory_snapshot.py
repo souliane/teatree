@@ -48,6 +48,17 @@ def stage_pid_namespace(root: Path, pid: int, namespace: str) -> None:
     (root / str(pid) / "ns" / "pid").symlink_to(namespace)
 
 
+def stage_worker_tree(root: Path) -> None:
+    stage_process(root, 10, ppid=1, rss_pages=256, comm="worker")
+    stage_pid_namespace(root, 10, _OWN_NAMESPACE)
+    (root / "10" / "status").write_text("NSpid:\t10\t7\n")
+    stage_process(root, 11, ppid=10, rss_pages=1024, comm="python")
+
+
+def process_rows(context: str) -> dict[str, str]:
+    return {line.split()[0]: line for line in context.splitlines() if line.startswith("pid=")}
+
+
 @contextmanager
 def staged_box(base: Path) -> Generator[Path]:
     proc = base / "proc"
@@ -102,10 +113,7 @@ class MemorySnapshotTicketTests(TestCase):
     def test_memory_ticket_carries_scopes_and_ranked_processes(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
             root = Path(directory) / "worktrees"
-            stage_process(proc, 10, ppid=1, rss_pages=256, comm="worker")
-            stage_pid_namespace(proc, 10, _OWN_NAMESPACE)
-            (proc / "10" / "status").write_text("NSpid:\t10\t7\n")
-            stage_process(proc, 11, ppid=10, rss_pages=1024, comm="python")
+            stage_worker_tree(proc)
             (proc / "11" / "cwd").symlink_to(root / "ticket-5321" / "repo")
             stage_process(proc, 20, ppid=1, rss_pages=768, comm="other")
             stage_process(proc, 30, ppid=1, rss_pages=128, comm="claude")
@@ -130,7 +138,7 @@ class MemorySnapshotTicketTests(TestCase):
         assert "ticket-dir=unreadable (FileNotFoundError) detached" in context
         assert "pid=31 ppid=30" in context
         assert "pid=41 ppid=40" in context
-        rows = {line.split()[0]: line for line in context.splitlines() if line.startswith("pid=")}
+        rows = process_rows(context)
         assert rows["pid=31"].endswith(" attached")
         assert rows["pid=41"].endswith(" attached")
         assert "attached = ancestry reaches the worker or an agent CLI" in context
@@ -145,7 +153,7 @@ class MemorySnapshotTicketTests(TestCase):
             result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
-        rows = {line.split()[0]: line for line in context.splitlines() if line.startswith("pid=")}
+        rows = process_rows(context)
         assert rows["pid=51"].endswith(" detached")
 
     def test_unknown_own_pid_namespace_never_matches_a_worker(self) -> None:
@@ -157,7 +165,7 @@ class MemorySnapshotTicketTests(TestCase):
                 result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
-        rows = {line.split()[0]: line for line in context.splitlines() if line.startswith("pid=")}
+        rows = process_rows(context)
         assert rows["pid=11"].endswith(" detached")
 
     def test_foreign_holder_namespace_never_attributes_matching_pid(self) -> None:
@@ -284,6 +292,39 @@ class MemorySnapshotTicketTests(TestCase):
             assert "Cgroup cap: unreadable (IsADirectoryError)" in context
             assert "headroom: unreadable (IsADirectoryError)" in context
 
+    def test_unreadable_cgroup_usage_alone_keeps_the_cap(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)):
+            usage = Path(directory) / "cgroup" / "memory.current"
+            usage.unlink()
+            usage.mkdir()
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "Cgroup cap: 16384 MiB; headroom: unreadable (IsADirectoryError)" in context
+
+    def test_cgroup_v1_files_supply_cap_and_headroom_when_v2_is_absent(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)):
+            cgroup = Path(directory) / "cgroup"
+            (cgroup / "memory.max").unlink()
+            (cgroup / "memory.current").unlink()
+            (cgroup / "memory.limit_in_bytes").write_text(str(16 * 1024 * _MIB))
+            (cgroup / "memory.usage_in_bytes").write_text(str(13 * 1024 * _MIB))
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "Cgroup cap: 16384 MiB; headroom: 3072 MiB; box-scoped: yes" in context
+
+    def test_unreadable_cgroup_v1_usage_is_unavailable_not_a_stale_v2_error(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)):
+            cgroup = Path(directory) / "cgroup"
+            (cgroup / "memory.max").unlink()
+            (cgroup / "memory.current").unlink()
+            (cgroup / "memory.limit_in_bytes").write_text(str(16 * 1024 * _MIB))
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "Cgroup cap: 16384 MiB; headroom: unavailable" in context
+
     def test_uncapped_cgroup_names_no_cap_for_headroom(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):
             (Path(directory) / "cgroup" / "memory.max").write_text("max\n")
@@ -312,7 +353,16 @@ class MemorySnapshotTicketTests(TestCase):
         assert "Host MemAvailable: 0 MiB" in context
         assert "unreadable (ValueError)" not in context
 
-    def test_oversized_worker_pid_keeps_the_ticket_and_names_the_error(self) -> None:
+    def test_meminfo_without_memavailable_is_unavailable_not_an_error(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)):
+            (Path(directory) / "meminfo").write_text("MemTotal: 16777216 kB\n")
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "Host MemAvailable: unavailable" in context
+        assert "KeyError" not in context
+
+    def test_oversized_worker_pid_keeps_the_process_table_and_names_the_error(self) -> None:
         record = json.dumps({"pid_namespace": _OWN_NAMESPACE, "hostname": "box", "role": "worker"})
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
             stage_process(proc, 8, ppid=1, rss_pages=1024, comm="python")
@@ -321,8 +371,39 @@ class MemorySnapshotTicketTests(TestCase):
                 result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
-        assert "Top processes by RSS: unreadable (OverflowError)" in context
+        assert "Worker attribution: unreadable (OverflowError)" in context
+        assert process_rows(context)["pid=8"].endswith(" detached")
         assert "Judged RAM: 4096 MiB (cgroup bound)" in context
+
+    def test_absent_worker_file_is_reported_and_attributes_nothing(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            (Path(directory) / "worker.pid").unlink()
+            stage_worker_tree(proc)
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert process_rows(context)["pid=11"].endswith(" detached")
+        assert "Worker attribution: unreadable (FileNotFoundError)" in context
+
+    def test_legacy_worker_file_without_a_namespace_attributes_nothing(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            (Path(directory) / "worker.pid").write_text("7\n")
+            stage_worker_tree(proc)
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert process_rows(context)["pid=11"].endswith(" detached")
+        assert "Worker attribution" not in context
+
+    def test_dead_worker_attributes_nothing(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            stage_worker_tree(proc)
+            with patch("teatree.utils.singleton.pid_alive", return_value=False):
+                result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert process_rows(context)["pid=11"].endswith(" detached")
+        assert "Worker attribution" not in context
 
     def test_unreadable_process_table_is_unavailable(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:

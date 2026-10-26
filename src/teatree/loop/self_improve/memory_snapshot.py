@@ -46,7 +46,7 @@ def _reading(value: int | None, trace: dict[str, int | str], *keys: str) -> str:
 def _memory_stat_line() -> str:
     try:
         stat = ram_scope.read_cgroup_memory_stat()
-    except (OSError, UnicodeError) as exc:
+    except OSError as exc:
         return f"memory.stat: {_unreadable(exc)}"
     parts = [f"{key}={stat[key] // _MIB} MiB" if key in stat else f"{key}=unavailable" for key in _STAT_KEYS]
     return f"memory.stat: {', '.join(parts)}"
@@ -97,13 +97,22 @@ def _resident_pages(pid_dir: Path) -> int | None:
         return None
 
 
-def _worker_host_pid(root: Path, stats: dict[int, ProcStat]) -> tuple[int | None, str | None]:
+def _live_worker_record() -> tuple[singleton.HolderRecord | None, str | None]:
     errors: list[Exception] = []
     record = singleton.read_holder(default_pid_path(WORKER_SINGLETON), errors=errors)
     if errors:
         return None, _unreadable(errors[0])
-    if record is None or not singleton.pid_alive(record.pid):
-        return None, None
+    try:
+        alive = record is not None and singleton.pid_alive(record.pid)
+    except OverflowError as exc:
+        return None, _unreadable(exc)
+    return (record if alive else None), None
+
+
+def _worker_host_pid(root: Path, stats: dict[int, ProcStat]) -> tuple[int | None, str | None]:
+    record, error = _live_worker_record()
+    if record is None:
+        return None, error
     own_namespace = current_pid_namespace()
     context = singleton.ExecutionContext(pid_namespace=own_namespace, hostname="", role="")
     if singleton.holder_verdict(record, context) is not singleton.HolderVerdict.SAME_CONTEXT:

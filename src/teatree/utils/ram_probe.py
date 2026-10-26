@@ -155,7 +155,7 @@ def _linux_meminfo(path: "str | None" = None, *, trace: "dict[str, int | str] | 
     try:
         with open(path or _MEMINFO_PATH, encoding="utf-8") as handle:  # noqa: PTH123 — builtin open on a device/proc path; Path.open adds nothing here
             lines = handle.readlines()
-    except (OSError, UnicodeError) as exc:
+    except OSError as exc:
         if trace is not None:
             trace["meminfo"] = type(exc).__name__
         return {}
@@ -254,11 +254,8 @@ def host_available_ram_mib(*, trace: "dict[str, int | str] | None" = None) -> in
     system = platform.system()
     if system == "Linux":
         info = _linux_meminfo(trace=trace)
-        if trace is not None and "meminfo" not in trace:
-            try:
-                trace["meminfo"] = info["MemAvailable"] // 1024
-            except KeyError as exc:
-                trace["meminfo"] = type(exc).__name__
+        if trace is not None and "MemAvailable" in info:
+            trace["meminfo"] = info["MemAvailable"] // 1024
         return info.get("MemAvailable", 0) // 1024
     if system == "Darwin":
         return _macos_available_ram_mib()
@@ -296,16 +293,11 @@ def cgroup_v2_memory_mib(filename: str, *, trace: "dict[str, int | str] | None" 
                 trace[filename] = "no cap"
             return None
         value = int(raw)
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         if trace is not None:
             trace[filename] = type(exc).__name__
         return None
-    if value < 0:
-        return None
-    mib = value // (1024 * 1024)
-    if trace is not None:
-        trace[filename] = mib
-    return mib
+    return value // (1024 * 1024) if value >= 0 else None
 
 
 def cgroup_v1_memory_mib(filename: str) -> "int | None":
