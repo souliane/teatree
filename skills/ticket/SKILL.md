@@ -213,6 +213,8 @@ split a compound criterion: the head-provable part stays a criterion, the rest m
 
 Already recorded a bundled one? Restate the rubric with `t3 <overlay> ticket rubric-set
 <ticket-id> --criteria-json '<json>'` — a replace that resets every grade, so re-grade after.
+An owner can waive one criterion with `t3 <overlay> ticket rubric-waive <ticket-id>
+--text-hash <hash> --waived-by <owner> --reason <why>`; later plans will not add it back.
 
 **Grading happens at the end, by someone other than the maker — automatically.** The cold
 reviewer is the producer: it returns `rubric_grades` in the same envelope as its verdict, and
@@ -220,7 +222,7 @@ the orchestrator stamps both in one transaction. A PASS must cite what proves it
 kind (unit, integration, functional, e2e), named in free-form prose:
 
 ```json
-"rubric_grades": [{"ordinal": 0, "status": "pass", "rationale": "<the test that proves it>"}]
+"rubric_grades": [{"ordinal": 0, "text_hash": "<hash from brief>", "status": "pass", "rationale": "<the test that proves it>"}]
 ```
 
 The CLI below is the **operator's** seam beside it — for a rubric no review will grade, never

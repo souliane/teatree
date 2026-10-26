@@ -9,7 +9,7 @@ invisible for as long as it existed (#4249). This module is the sweep's single a
 
 from dataclasses import dataclass
 
-from teatree.core.merge import fallback_repo_slug, normalize_repo_slug, slug_is_registered_repo
+from teatree.core.merge.clear_scope import clear_scopes_to_repo
 from teatree.core.models.merge_clear import MergeClear
 
 
@@ -25,25 +25,6 @@ class ClearLookup:
 
     clear: MergeClear | None
     unusable: MergeClear | None
-
-
-def clear_scopes_to_repo(clear: MergeClear, *, slug: str) -> bool:
-    """True iff *clear* authorises a PR in the repo *slug* names.
-
-    Only a slug the registry NAMES as a repo is a claim strong enough to exclude
-    another repo's sweep; every other shape resolves through the ticket / clone
-    fallback the merge path already walks, so the lookup and the merge stop holding
-    two different slug semantics.
-    """
-    canonical = normalize_repo_slug(slug)
-    if not canonical:
-        return False
-    row = normalize_repo_slug(clear.slug)
-    if row == canonical:
-        return True
-    if row and slug_is_registered_repo(row):
-        return False
-    return normalize_repo_slug(fallback_repo_slug(clear)) == canonical
 
 
 def look_up_clear_for_head(*, slug: str, pr_id: int, head_sha: str) -> ClearLookup:

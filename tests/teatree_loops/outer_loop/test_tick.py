@@ -11,9 +11,17 @@ import datetime as dt
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
 from teatree.core.factory.factory_signal_queries import SignalReading, SignalStatus
 from teatree.core.factory.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
-from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoopExperiment, ProposalSpec, Ticket
+from teatree.core.models import (
+    DeferredQuestion,
+    FactoryScoreSnapshot,
+    OuterLoopExperiment,
+    ProposalSpec,
+    PullRequest,
+    Ticket,
+)
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.outer_loop import guards
 from teatree.loops.outer_loop.tick import TickSeams, run_tick
@@ -62,7 +70,7 @@ class TestTickAdvanceBranches(TestCase):
         )
         return exp
 
-    def test_admitted_advances_to_implementing(self) -> None:
+    def _admitted(self) -> OuterLoopExperiment:
         exp = _make_experiment(
             hypothesis="H",
             target_provider_id="review_catch",
@@ -73,9 +81,28 @@ class TestTickAdvanceBranches(TestCase):
         DeferredQuestion.consume(question.pk, answer="approve")
         exp.attach_ratification(DeferredQuestion.objects.get(pk=question.pk))
         exp.admit()
+        return exp
+
+    def test_admitted_advances_to_implementing(self) -> None:
+        exp = self._admitted()
         result = run_tick(seams=_seams())
         assert result.action == "implementing"
         assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.IMPLEMENTING
+
+    def test_admitted_at_the_open_pr_cap_waits_and_implements_once_one_closes(self) -> None:
+        exp = self._admitted()
+        for index in range(OPEN_PR_START_CAP):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 2100}",
+            )
+        held = run_tick(seams=_seams())
+        assert (held.action, held.reason) == ("waiting", "open_pr_start_cap")
+        assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.ADMITTED
+        pr = PullRequest.objects.earliest("pk")
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
+        assert run_tick(seams=_seams()).action == "implementing"
 
     def test_implementing_waits_until_the_ticket_merges(self) -> None:
         self._implementing()

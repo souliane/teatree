@@ -143,6 +143,15 @@ class CorrectionSourceTestCase(SimpleTestCase):
         line = '{"role": "user"} why are you spamming me on slack? stop it!!'
         assert _correction_lines(_extract(_turn("s.jsonl", line + "\n"))) == [line]
 
+    def test_harness_prompt_shapes_are_not_corrections(self) -> None:
+        for body in (
+            "<system-reminder>Never skip the check</system-reminder>",
+            "[teatree peer message] Stop and review this result",
+            "Call mcp__teatree__status and do not stop",
+        ):
+            line = f'{{"role": "user"}} {body}'
+            assert _correction_lines(_extract(_turn("s.jsonl", line + "\n"))) == []
+
 
 class ToolResultAndHarnessTurnTestCase(SimpleTestCase):
     """Relayed tool output and hook feedback ride the user channel; neither corrects anyone.

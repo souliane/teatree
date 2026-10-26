@@ -97,6 +97,7 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | `run` | Run one consolidation pass NOW (manual escape hatch; ignores cadence) |
 | `tick` | Run one consolidation pass IF the dream cadence has elapsed (cron entry) |
 | `compliance` | Print the latest instruction-compliance snapshot — read-only (#2663) |
+| `funnel` | Report the daily dream funnel and whether a recurring question class has stopped |
 | `gap-coverage` | Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap |
 | `gap-disposition` | Record a folded dream gap's ADDRESS (with its citation) or reasoned REJECT on its host |
 
@@ -657,6 +658,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `skip-planning` | Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED |
 | `plan-reconcile-inflight` | Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added |
 | `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
+| `rubric-waive` | Waive one rubric criterion by its text hash; an owner identity and a reason are required |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
 | `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |
 | `dod-override` | Record the DoD local-E2E gate escape hatch for a ticket (#88) |

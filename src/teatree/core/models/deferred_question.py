@@ -344,7 +344,7 @@ class DeferredQuestion(models.Model):
 
         Recency is a heuristic, not identity: with a deep mirrored backlog the
         newest row is reliably NOT the one an unaddressed reply answers. Reply
-        binding therefore goes through :meth:`for_thread` /
+        binding therefore goes through :meth:`posted_since` /
         :meth:`sole_for_reply`; this stays the cursor for the capture path.
 
         Recency, not ``generation``, orders the candidates: the cursor
@@ -358,16 +358,13 @@ class DeferredQuestion(models.Model):
         return cls._reply_candidates(channel=channel, after_ts=after_ts).order_by("-created_at", "-pk").first()
 
     @classmethod
-    def for_thread(cls, *, channel: str, thread_ts: str, after_ts: str) -> "DeferredQuestion | None":
-        """The pending question *thread_ts* roots on — an exact mirror join, no guessing.
-
-        A Slack thread roots on the message being replied to, so a reply
-        carrying ``thread_ts`` names its question's mirror ``slack_ts``
-        outright. ``None`` when no pending row was mirrored at that ts.
-        """
-        if not channel or not thread_ts or not after_ts:
-            return None
-        return cls._reply_candidates(channel=channel, after_ts=after_ts).filter(slack_ts=thread_ts).first()
+    def posted_since(cls, *, channel: str, root_ts: str, before_ts: str) -> models.QuerySet["DeferredQuestion"]:
+        """Cards posted within a thread's time span, including cards now closed."""
+        if not channel or not root_ts or not before_ts:
+            return cls.objects.none()
+        return cls.objects.filter(
+            slack_channel=channel, slack_ts__gte=root_ts, slack_ts__lt=before_ts, slack_ts__gt=""
+        ).order_by("slack_ts", "pk")
 
     @classmethod
     def sole_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":

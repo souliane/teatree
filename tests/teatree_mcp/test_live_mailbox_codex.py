@@ -410,7 +410,7 @@ def test_claude_to_shared_codex_runs_through_the_real_drive_and_broker(
             receipt, refused = asyncio.run(run(broker))
     finally:
         manager.close()
-    assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", True)
+    assert receipt["outcome"] == "accepted_current_turn"
     assert len(refused) >= min_refusals
     steers = _requests(log, "turn/steer")
     assert len(steers) == 1

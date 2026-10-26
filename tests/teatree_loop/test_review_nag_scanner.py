@@ -278,7 +278,7 @@ class TestActivityGate(_PermittingPostureMixin, TestCase):
     def test_the_nag_builder_resolves_the_requester_at_its_overlay(self) -> None:
         backend = OverlayBackends(name="t3-test", hosts=(FakeHost(),), messaging=FakeSlack())
         with (
-            patch("teatree.loop.domain_jobs.egress_forbidden", return_value=False),
+            patch("teatree.loop.domain_ship_jobs.egress_forbidden", return_value=False),
             patch("teatree.loop.domain_jobs._user_slack_id_for_overlay", return_value="UOWNER") as resolve,
         ):
             jobs = _followup_jobs_for_overlay(backend)
@@ -294,7 +294,7 @@ class TestActivityGate(_PermittingPostureMixin, TestCase):
     def test_unreadable_requester_id_builds_a_safe_nag(self) -> None:
         backend = OverlayBackends(name="t3-test", hosts=(FakeHost(),), messaging=FakeSlack())
         with (
-            patch("teatree.loop.domain_jobs.egress_forbidden", return_value=False),
+            patch("teatree.loop.domain_ship_jobs.egress_forbidden", return_value=False),
             patch("teatree.loop.domain_jobs._user_slack_id_for_overlay", side_effect=RuntimeError("unreadable")),
         ):
             jobs = _followup_jobs_for_overlay(backend)
@@ -406,7 +406,7 @@ class TestOwnerAuthorshipGuard(_PermittingPostureMixin, TestCase):
             backend = OverlayBackends(name="t3-test", hosts=(host,), messaging=slack)
             with (
                 self.subTest(posture=posture),
-                patch("teatree.loop.domain_jobs.egress_forbidden", return_value=posture == "afk"),
+                patch("teatree.loop.domain_ship_jobs.egress_forbidden", return_value=posture == "afk"),
                 patch("teatree.loop.domain_jobs._user_identity_aliases_for_overlay", return_value=("owner",)),
             ):
                 jobs = _followup_jobs_for_overlay(backend)

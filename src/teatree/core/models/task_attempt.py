@@ -1,5 +1,6 @@
 from datetime import datetime
-from functools import partial
+from functools import partial, reduce
+from operator import or_
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from django.db import models, transaction
@@ -9,12 +10,7 @@ from teatree.core.modelkit.gate_registry import get
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.task import Task
 from teatree.core.models.task_repair_queries import next_repair_iteration
-from teatree.core.models.usage_window_state import (
-    CHECKOUT_PARKED_PREFIX,
-    LIMIT_PARKED_PREFIX,
-    OPERATOR_PAUSED_PREFIX,
-    PARK_ERROR_PREFIXES,
-)
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, PARK_ERROR_PREFIXES
 from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.core.telemetry.admission import LifecycleEvent, record_lifecycle_event
 from teatree.utils.session_ref import session_ref
@@ -44,14 +40,21 @@ READ_ONLY_BRIEF_REFUSED_PREFIX = "read-only executor brief refused:"
 NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
 
 
-PARK_ERROR_Q = (
-    models.Q(error__startswith=LIMIT_PARKED_PREFIX)
-    | models.Q(error__startswith=CHECKOUT_PARKED_PREFIX)
-    | models.Q(error__startswith=OPERATOR_PAUSED_PREFIX)
-)
+PARK_ERROR_Q = reduce(or_, (models.Q(error__startswith=prefix) for prefix in PARK_ERROR_PREFIXES))
 
 
 class TaskAttemptQuerySet(models.QuerySet):
+    def with_previous_end(self) -> "TaskAttemptQuerySet":
+        """Annotate ``previous_end``, when the task's previous finished attempt ended."""
+        previous = (
+            self.model.objects.filter(
+                task=models.OuterRef("task"), pk__lt=models.OuterRef("pk"), ended_at__isnull=False
+            )
+            .order_by("-pk")
+            .values("ended_at")[:1]
+        )
+        return self.annotate(previous_end=models.Subquery(previous))
+
     def skill_loads_in_session(self, session_id: str) -> list[str]:
         if not session_id:
             return []
@@ -390,6 +393,8 @@ class TaskAttempt(models.Model):
 
     objects = TaskAttemptQuerySet.as_manager()
 
+    previous_end: datetime | None  # annotation only: a page that forgets ``with_previous_end()`` raises
+
     class Meta:
         db_table = "teatree_taskattempt"
         indexes = (
@@ -476,6 +481,18 @@ class TaskAttempt(models.Model):
                 ),
                 using=using,
             )
+
+    @property
+    def display_started_at(self) -> datetime:
+        """When a finished attempt started working: its task's admission, never before the previous attempt ended.
+
+        ``started_at`` is the insert stamp, written when the run ends, so it stays the figure wherever no admission
+        can be measured (no stamp, or one overwritten by a later admission).
+        """
+        admitted = self.task.admitted_at
+        if admitted is None or self.ended_at is None or admitted > self.ended_at:
+            return self.started_at
+        return max(admitted, self.previous_end or admitted)
 
     def _classify_failure_kind(self) -> str:
         """Name this attempt's failure cause from ``error`` (#3957), blank when it did not fail.

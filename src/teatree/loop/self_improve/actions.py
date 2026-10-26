@@ -27,6 +27,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 
 from teatree.config import discover_active_overlay, discover_overlays
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.ticket import Ticket
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, fresh_or_escalated
@@ -281,6 +282,14 @@ def run_action_ladder(
         elif auto_fix_callable is not None:
             auto_fix_callable(report)
             auto_fix_executed = True
+
+    if (
+        rung == ActionRung.TICKET
+        and (linked_ticket is None or linked_ticket.state in Ticket.finished_states())
+        and (reason := open_pr_start_cap_hold_reason())
+    ):
+        logger.warning("self-improve is claiming nothing new: %s", reason)
+        return None
 
     firing = (
         _record_ticket_followup(report, overlay_name=resolved_overlay or _repair_overlay_name(overlay_name))

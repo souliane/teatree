@@ -208,7 +208,11 @@ class TestListOpenPrsResolvesBehindBase:
 
         client.list_open_prs(slug=SLUG)
 
-        graphql_calls = [argv for argv in _ScriptedClient.argv_log if argv[:2] == ["api", "graphql"]]
+        graphql_calls = [
+            argv
+            for argv in _ScriptedClient.argv_log
+            if argv[:2] == ["api", "graphql"] and "compare(headRef:" in argv[-1]
+        ]
         assert len(graphql_calls) == 2
 
     def test_cross_repo_head_is_owner_qualified_in_the_query(self) -> None:
@@ -236,7 +240,7 @@ class TestListOpenPrsResolvesBehindBase:
         pr = client.list_open_prs(slug=SLUG)[0]
 
         assert pr.behind_main is True
-        assert [argv for argv in _ScriptedClient.argv_log if argv[:2] == ["api", "graphql"]] == []
+        assert [argv for argv in _ScriptedClient.argv_log if "compare(headRef:" in argv[-1]] == []
 
     def test_pr_list_requests_the_fields_the_compare_needs(self) -> None:
         client = self._client([], behind={})

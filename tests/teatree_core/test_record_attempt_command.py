@@ -119,7 +119,9 @@ class TestRecordAttemptCommand(TestCase):
         with tempfile.TemporaryDirectory() as temp:
             checkout = Path(temp) / "checkout"
             _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
+            head = run_strict(repo=str(checkout), args=["rev-parse", "HEAD"])
             token = self._claim_next(task, checkout)
+            record_maker_review_for_test(ticket, head)
             with patch(
                 "teatree.core.worktree.occupancy.read_process_table", return_value=ProcessTable(frozenset(), "/proc")
             ):
@@ -127,7 +129,7 @@ class TestRecordAttemptCommand(TestCase):
                     "tasks",
                     "record-attempt",
                     str(task.pk),
-                    json.dumps(self_review_result("hold")),
+                    json.dumps(self_review_result("hold", reviewed_sha=head)),
                     claim_token=token,
                     stdout=StringIO(),
                 )
