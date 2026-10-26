@@ -18,6 +18,7 @@ import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core import agent_runner as agent_runner_mod
+from teatree.core.backend_protocols import PrMergeState
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
 from teatree.core.mode_resolution import clear_mode_override, set_mode_override
@@ -27,6 +28,7 @@ from teatree.core.models import (
     Mode,
     ModeOverride,
     PullRequest,
+    Rubric,
     Session,
     Task,
     TaskAttempt,
@@ -628,6 +630,37 @@ class TestExecuteRetrospect(TestCase):
         assert ticket.state == Ticket.State.DELIVERED
         assert ticket.extra.get("retro_scheduled") is True
         assert result.return_value == {"ticket_id": ticket.pk, "ok": True, "detail": "retro-scheduled"}
+
+    def test_owner_forge_merge_delivers_after_a_retrying_merger_read(self) -> None:
+        ConfigSetting.objects.set_value("user_identity_aliases", ["alice"])
+        ticket = planned_ticket(overlay="test", state=Ticket.State.RETRO_RECORDED)
+        ticket.merge_extra(
+            set_keys={"forge_merge_evidence": {"slug": "example/repo", "pr_id": 1, "merged_sha": "a" * 40}}
+        )
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://github.com/example/repo/pull/1",
+            repo="example/repo",
+            iid="1",
+            state=PullRequest.State.MERGED,
+        )
+        Rubric.populate(ticket, ["first criterion", "second criterion"])
+        read = "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state"
+
+        with patch(read, side_effect=RuntimeError("forge unavailable")):
+            refused = execute_retrospect.call(ticket.pk)
+        ticket.refresh_from_db()
+        assert refused["ok"] is False
+        assert ticket.state == Ticket.State.RETRO_RECORDED
+        assert "merged_by" not in ticket.extra["forge_merge_evidence"]
+        assert DeferredQuestion.objects.filter(dedupe_marker__startswith=f"fsm-wedge:{ticket.pk}:retro:").exists()
+
+        with patch(read, return_value=PrMergeState(state="MERGED", merge_commit_oid="a" * 40, merged_by="alice")):
+            delivered = execute_retrospect.call(ticket.pk)
+        ticket.refresh_from_db()
+        assert delivered == {"ticket_id": ticket.pk, "ok": True, "detail": "retro-scheduled"}
+        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.extra["forge_merge_evidence"]["merged_by"] == "alice"
 
     def test_a_fix_ticket_with_no_fix_record_returns_the_refusal_and_records_it_once(self) -> None:
         ticket = self._ticket_in_merged()

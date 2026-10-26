@@ -21,24 +21,24 @@ head moves off it (force-push, new commits) the recorded grade is treated as sta
 and the rubric must be re-graded — closing the replay window where a grade for an
 old tree authorises a later, unverified one.
 
-The gate runs on TWO transitions, and there is no setting that relaxes either. At
-``merge`` :func:`check_rubric_satisfied` additionally binds to the live head SHA. At
-``mark_delivered`` :func:`check_rubric_verified` drops that bind — a delivered ticket's
-head has long since moved on, and re-binding there would refuse every delivery — but
-keeps every other condition. It is the successor to the deleted spec-coverage DoD gate:
-a missing rubric blocks exactly as a missing manifest did, and the audited waiver is the
-human-authorized ``ticket plan-bypass`` — which waives a missing rubric and every rung
-except a recorded FAIL, because a bypass says "there was nothing to declare", never "the
-verifier's FAIL does not count".
+The gate runs on TWO transitions, and no setting disables either. At ``merge``
+:func:`check_rubric_satisfied` also binds to the live head SHA. At ``mark_delivered``
+:func:`check_rubric_verified` drops that bind, since the head has moved on. The
+human-authorized ``ticket plan-bypass`` waives a missing rubric and every rung except
+a recorded FAIL. Delivery also accepts an owner-merged forge PR when its recorded
+merge SHA matches the forge read, the merger matches an owner alias, no keystone
+audit exists, and no PR remains live. This exception never waives a recorded FAIL.
 
-Both are pure functions over the durable rubric row, mirroring
-:mod:`teatree.core.gates.anti_vacuity_gate`. The merge block raises
+The merge check is pure over the durable rubric row; delivery additionally reads
+recorded merge evidence, PR rows and owner aliases, without a network call. The merge block raises
 :class:`RubricNotSatisfiedError`, which the merge precondition gate re-wraps as a
 ``MergePreconditionError``; the delivery block raises :class:`RubricNotVerifiedError`,
 an ``InvalidTransitionError`` so the loop's outer atomic rolls the advance back and the
 ticket stays RETRO_RECORDED — merged on the forge, not yet *done*.
 """
 
+import logging
+from importlib import import_module
 from typing import TYPE_CHECKING
 
 from teatree.core.modelkit.gate_registry import register_gate
@@ -50,6 +50,8 @@ from teatree.core.models.rubric import Rubric
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
+
+logger = logging.getLogger(__name__)
 
 _NO_RUBRIC_REASON = (
     "no rubric is recorded for this ticket — declaring done on zero proven acceptance "
@@ -84,7 +86,7 @@ def latest_rubric(ticket: "Ticket") -> "Rubric | None":
 
 
 def _plan_is_bypassed(ticket: "Ticket") -> bool:
-    """Whether the ticket's LATEST plan is the human-authorized bypass — the ONE waiver."""
+    """Whether the ticket's LATEST plan is the human-authorized bypass."""
     latest = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
     return latest is not None and is_plan_bypass_shaped(latest.adequacy)
 
@@ -171,6 +173,14 @@ def check_rubric_verified(ticket: "Ticket") -> None:
     reason = _refusal_reason(ticket, None)
     if not reason:
         return
+    # The merge package imports this gate before merge_evidence_gate finishes loading.
+    owner_merger_login = import_module("teatree.core.gates.owner_merge_evidence").owner_merger_login
+    if merger := owner_merger_login(ticket):
+        rubric = latest_rubric(ticket)
+        reason = rubric.unverified_reason(None, waived=True) if rubric is not None else ""
+        if not reason:
+            logger.info("Owner forge merge waived unverified rubric for ticket %s, merger %s", ticket.pk, merger)
+            return
     msg = f"Refusing to mark ticket {ticket.pk} done — {reason}. " + _REMEDY.format(pk=ticket.pk)
     raise RubricNotVerifiedError(msg)
 

@@ -309,9 +309,8 @@ class Rubric(models.Model):
         NAMES the criteria that failed it, so the remediation points at what to fix
         rather than at a count.
 
-        *waived* is the human-authorized plan-bypass, and it keeps exactly one rung: a
-        recorded FAIL. A bypass says "there was nothing to declare"; it cannot say "the
-        verifier's FAIL does not count".
+        *waived* applies to a human-authorized plan bypass or an owner-merged
+        delivery; it keeps exactly one rung, a recorded FAIL.
         """
         criteria = list(self.criteria.all())
         if head_sha is not None and not waived:

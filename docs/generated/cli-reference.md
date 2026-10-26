@@ -12818,8 +12818,9 @@ Usage: t3 teatree ticket skip-planning [OPTIONS] TICKET_ID
  ``trivial_plan_skip`` marker (NO ``PlanArtifact``, no ``--human-authorize``)
  that ``check_plan_artifact`` accepts and ``execute_provision`` reads to
  skip the auto-planner. It escapes the PLAN gate ONLY — the rubric done-gate
- still grades whatever criteria the ticket carries, and the one waiver for that
- is ``plan-bypass``. ``--reason`` is mandatory — an unreasoned skip is refused
+ still grades whatever criteria the ticket carries; ``plan-bypass`` is its
+ human-authorized plan waiver. ``--reason`` is mandatory — an unreasoned skip
+ is refused
  and records nothing. See ``models.trivial_plan_skip``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮

@@ -198,8 +198,10 @@ t3 <overlay> ticket plan <ticket-id> '<plan text>' --base-sha "$(git rev-parse o
 
 Write criteria that can FAIL — one satisfied by inaction is refused at population. A
 `"none_reason"` there is an ordinary reasoned negative: it writes no rubric rows and waives
-NOTHING. The one waiver is the human-authorized `t3 <overlay> ticket plan-bypass <id>
---human-authorize <who> --reason <why>`, and even that never overrides a recorded FAIL.
+NOTHING. A human-authorized `t3 <overlay> ticket plan-bypass <id>
+--human-authorize <who> --reason <why>` waives the delivery rubric. A forge-evidenced
+owner merge also permits delivery with missing or ungraded criteria when no merge audit
+or live PR exists. Neither path overrides a recorded FAIL; merge-time grading stays strict.
 
 **Every criterion must be gradeable PASS at the PR head before merge.** The merge gate
 (`src/teatree/core/gates/rubric_gate.py`) refuses unless every criterion is PASS against the
