@@ -10,8 +10,8 @@ from django.db import connection
 from django.test import TestCase, TransactionTestCase
 
 from teatree.config.checkout_roots import CheckoutRoots
-from teatree.core.models import Ticket
-from teatree.loop.self_improve import ActionRung, DetectorReport, memory_snapshot, run_action_ladder
+from teatree.core.models import SelfImproveFiring, Ticket
+from teatree.loop.self_improve import ActionRung, DetectorReport, actions, memory_snapshot, run_action_ladder
 from teatree.utils.ram_scope import read_ram_headroom as actual_read_ram_headroom
 
 _MIB = 1024 * 1024
@@ -141,10 +141,30 @@ class MemorySnapshotTicketTests(TestCase):
                 initial = Ticket.objects.get(pk=first.firing.ticket_id).context
                 stage_process(proc, 21, ppid=1, rss_pages=1024, comm="second")
                 second = run_action_ladder(report("memory", state_hash="second"))
-                assert scan.call_count == 1
+                assert scan.call_count == 2
             assert second is not None
             assert Ticket.objects.get(pk=second.firing.ticket_id).context == initial
             assert Ticket.objects.count() == 1
+
+    def test_ticket_finished_after_pre_read_still_gets_snapshot(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)):
+            first = run_action_ladder(report("memory"))
+            assert first is not None
+            original_latest = actions.latest_firing
+
+            def finish_after_pre_read(detector: str, dedup_key: str) -> SelfImproveFiring | None:
+                firing = original_latest(detector, dedup_key)
+                assert firing is not None
+                ticket = firing.ticket
+                assert ticket is not None
+                Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.IGNORED)
+                return firing
+
+            with patch.object(actions, "latest_firing", side_effect=finish_after_pre_read):
+                second = run_action_ladder(report("memory", state_hash="second"))
+            assert second is not None
+            assert second.firing.ticket_id != first.firing.ticket_id
+            assert "Box memory snapshot" in Ticket.objects.get(pk=second.firing.ticket_id).context
 
     def test_unreadable_stat_and_missing_process_table_are_reported(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):

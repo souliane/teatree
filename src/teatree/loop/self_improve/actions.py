@@ -297,7 +297,7 @@ def run_action_ladder(
         _record_ticket_followup(
             report,
             overlay_name=resolved_overlay or _repair_overlay_name(overlay_name),
-            snapshot=box_memory_snapshot(report) if opens_ticket else "",
+            snapshot=box_memory_snapshot(report),
         )
         if rung == ActionRung.TICKET
         else record_firing(report, action=rung)
