@@ -161,6 +161,16 @@ def _stage_reads_secret(words: list[Token]) -> bool:
     return _t3_stage_reads_secret(words)
 
 
+def _exec_env_variables(options: list[str]) -> list[str]:
+    variables = []
+    for index, option in enumerate(options):
+        if option == "--env" and index + 1 < len(options):
+            variables.append(options[index + 1].split("=", 1)[0])
+        elif option.startswith("--env="):
+            variables.append(option.removeprefix("--env=").split("=", 1)[0])
+    return variables
+
+
 def _t3_stage_reads_secret(words: list[Token]) -> bool:
     values = [word.value for word in words]
     if PurePath(values[0]).name != "t3" or len(values) < _T3_COMMAND_WORDS or values[2] != "secrets":
@@ -169,15 +179,13 @@ def _t3_stage_reads_secret(words: list[Token]) -> bool:
         return len(values) >= _T3_GET_WITH_NAME_WORDS and not values[4].startswith("-")
     if values[3] == "exec" and "--" in values:
         separator = values.index("--")
-        if "--env" not in values[4:separator]:
+        variables = _exec_env_variables(values[4:separator])
+        if not variables:
             return False
         command = values[separator + 1 :]
         if command[:1] in (["env"], ["printenv"]):
             return True
         if len(command) >= _WRAPPED_COMMAND_WORDS and command[:2] in (["sh", "-c"], ["bash", "-c"]):
-            variables = [
-                values[index + 1].split("=", 1)[0] for index in range(4, separator - 1) if values[index] == "--env"
-            ]
             return any(
                 re.search(rf"(?:\$\{{{re.escape(variable)}\}}|\${re.escape(variable)}\b)", command[2])
                 for variable in variables

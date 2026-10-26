@@ -345,8 +345,9 @@ reads `pass`. `t3 teatree secrets import-pass` inventories candidate entries;
 `import-pass --apply` copies eligible entries into sealed rows without deleting them from `pass`.
 Set `T3_SECRET_STORE=sealed` after verifying the copied rows. Container shell readers then use the sealed
 control DB through `secret-read.sh`; host deploy commands leave sealed values for the container to read.
-An unreadable selected store stops boot; a missing entry leaves that credential unset.
-`t3 teatree secrets verify` exits 1 when any referenced entry is absent or unreadable.
+An unreadable selected store stops boot; a missing entry, or no `pass` executable under the `pass` selector,
+leaves that credential unset. `t3 teatree secrets verify` lists absent entries and exits 0; it exits 1 when
+any referenced entry is unreadable.
 
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
 bind mounts, deliberately decoupled from the data dir: the container's

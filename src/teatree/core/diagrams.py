@@ -32,7 +32,7 @@ def render_fsm_mermaid(model: type[Model], *, field: str = "state", title: str |
     (source ordinal, target ordinal, transition name) — the declaration order
     of the field's choices is the ordinal — so the output is byte-stable.
     """
-    fsm_field = cast("FSMField", model._meta.get_field(field))
+    fsm_field = cast("FSMField", model._meta.get_field(field))  # noqa: SLF001  # Django's documented Model._meta API
     choices = cast("Iterable[tuple[object, object]]", fsm_field.choices)
     states = [str(value) for value, _label in choices]
     ordinal = {state: index for index, state in enumerate(states)}

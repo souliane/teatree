@@ -76,7 +76,7 @@ def transition_source_states(name: str) -> set[str]:
     hand-duplication class). A ``source="*"`` wildcard is excluded — it carries
     no specific source to mirror.
     """
-    fsm_field = Ticket._meta.get_field("state")
+    fsm_field = Ticket._meta.get_field("state")  # noqa: SLF001 — Django's documented Model._meta API
     transitions = fsm_field.get_all_transitions(Ticket)  # ty: ignore[unresolved-attribute]  # django-fsm dynamic method
     return {str(t.source) for t in transitions if t.source != "*" and t.name == name}
 

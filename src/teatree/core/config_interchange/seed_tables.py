@@ -240,4 +240,4 @@ def write_seed_field(table: str, name: str, field: str, value: ConfigValue) -> N
 
 
 def _column_names(row: Loop | Mode | ModeSchedule) -> list[str]:
-    return [field.name for field in row._meta.get_fields() if hasattr(field, "attname")]
+    return [field.name for field in row._meta.get_fields() if hasattr(field, "attname")]  # noqa: SLF001 — Django's own model metadata API

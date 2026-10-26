@@ -2,6 +2,7 @@
 
 import sqlite3
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from teatree.config.cold_db import canonical_config_db, read_readonly
@@ -20,25 +21,26 @@ def _database_missing(path: Path) -> bool:
     return False
 
 
-def _row(name: str, *, db: Path) -> tuple[str, bytes, bytes] | None:
+def _in_sealed_table[T](db: Path, read: Callable[[sqlite3.Connection], T]) -> T | None:
     if _database_missing(db):
         return None
 
-    def query(connection: sqlite3.Connection) -> tuple[str, bytes, bytes] | None:
+    def guarded(connection: sqlite3.Connection) -> T | None:
         exists = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'teatree_sealed_secret'"
         ).fetchone()
-        if exists is None:
-            return None
-        return connection.execute(
-            "SELECT key_id, nonce, ciphertext FROM teatree_sealed_secret WHERE name = ?", (name,)
-        ).fetchone()
+        return read(connection) if exists is not None else None
 
-    return read_readonly(db, query)
+    return read_readonly(db, guarded)
 
 
 def read_sealed(name: str, *, db: Path | None = None, source: KeyFileSource | None = None) -> str | None:
-    row = _row(name, db=db or canonical_config_db())
+    row = _in_sealed_table(
+        db or canonical_config_db(),
+        lambda connection: connection.execute(
+            "SELECT key_id, nonce, ciphertext FROM teatree_sealed_secret WHERE name = ?", (name,)
+        ).fetchone(),
+    )
     if row is None:
         return None
     key_id, nonce, ciphertext = row
@@ -47,23 +49,14 @@ def read_sealed(name: str, *, db: Path | None = None, source: KeyFileSource | No
 
 
 def first_name(prefix: str, *, db: Path | None = None) -> str | None:
-    path = db or canonical_config_db()
-    if _database_missing(path):
-        return None
-
-    def query(connection: sqlite3.Connection) -> str | None:
-        exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'teatree_sealed_secret'"
-        ).fetchone()
-        if exists is None:
-            return None
-        row = connection.execute(
+    row = _in_sealed_table(
+        db or canonical_config_db(),
+        lambda connection: connection.execute(
             "SELECT name FROM teatree_sealed_secret WHERE substr(name, 1, ?) = ? ORDER BY name LIMIT 1",
             (len(prefix), prefix),
-        ).fetchone()
-        return str(row[0]) if row is not None else None
-
-    return read_readonly(path, query)
+        ).fetchone(),
+    )
+    return str(row[0]) if row is not None else None
 
 
 def _execute(operation: str, name: str) -> int:

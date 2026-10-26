@@ -382,9 +382,9 @@ def test_a_store_that_answers_still_exports_what_it_read(tmp_path: Path) -> None
     _assert_dispatched(_run_prologue(tmp_path, _ANSWERING_PASS), "stub-not-a-credential")
 
 
-def test_no_store_at_all_is_a_wedge(tmp_path: Path) -> None:
-    """A missing `pass` binary cannot confirm absence."""
-    _assert_refused(_run_prologue(tmp_path, None))
+def test_no_store_at_all_is_not_a_wedge(tmp_path: Path) -> None:
+    """A missing `pass` binary makes the selected reader report confirmed absence."""
+    _assert_dispatched(_run_prologue(tmp_path, None), "")
 
 
 def test_a_missing_entry_is_not_a_wedge(tmp_path: Path) -> None:

@@ -19,7 +19,7 @@ from teatree.core.models import ConfigSetting
 from teatree.core.models.sealed_secret import SealedSecret
 from teatree.core.sealed.store import DbStore
 from teatree.utils.master_key import KeyFileSource
-from teatree.utils.secrets import use_store
+from teatree.utils.secrets import PassStore, use_store
 
 
 class TestSecretsCommandIsReadOnly(TestCase):
@@ -154,6 +154,11 @@ class TestSecretsCommandsKeepValuesOffEveryChannel(TestCase):
         assert code == 2
         assert CANARY not in out + err
 
+    def test_get_exits_one_for_a_missing_pass_executable_like_the_shell_reader(self) -> None:
+        with use_store(PassStore()), patch("teatree.utils.secrets.run_bounded_group", side_effect=FileNotFoundError):
+            out, _, code = self._run("get", "team/token")
+        assert (code, out) == (1, "")
+
     def test_get_refuses_when_stdout_is_a_terminal(self) -> None:
         DbStore(self.source).write("team/token", CANARY)
         terminal = _Terminal()
@@ -172,12 +177,12 @@ class TestSecretsCommandsKeepValuesOffEveryChannel(TestCase):
         assert CANARY not in out + err
         assert "SECRET_VALUE" not in os.environ
 
-    def test_verify_exits_nonzero_for_absent_and_unreadable_rows(self) -> None:
+    def test_verify_lists_names_and_statuses_only_and_exits_one_only_on_an_unreadable_row(self) -> None:
         ConfigSetting.objects.create(scope="global", key="github_token_pass_key", value="team/github")
         ConfigSetting.objects.create(scope="global", key="gitlab_token_pass_key", value="team/absent")
         DbStore(self.source).write("team/github", CANARY)
         out, err, code = self._run("verify")
-        assert code == 1
+        assert code == 0
         assert "ok\tteam/github" in out
         assert "absent\tteam/absent" in out
         assert CANARY not in out + err

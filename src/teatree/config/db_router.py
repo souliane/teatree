@@ -91,7 +91,7 @@ class ConfigSettingRouter:
     """
 
     def _pinned_alias(self, model: type[Model]) -> str | None:  # noqa: PLR6301 — Django router contract: instance method
-        if model._meta.label_lower not in PINNED_MODEL_LABELS:
+        if model.__dict__["_meta"].label_lower not in PINNED_MODEL_LABELS:
             return None
         return CONFIG_DB_ALIAS if CONFIG_DB_ALIAS in connections.databases else None
 

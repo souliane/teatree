@@ -150,22 +150,21 @@ class Command(TyperCommand):
 
     @command()
     def verify(self) -> None:
-        """Print ok|absent|unreadable for every referenced entry in the sealed store; never a value."""
+        """Print ok|absent|unreadable per referenced entry, never a value; exit 1 if any is unreadable."""
         try:
             store = DbStore()
         except SecretStoreError as exc:
             _refuse(str(exc), EXIT_UNREADABLE)
-        incomplete = False
+        unreadable = False
         for name in sorted(referenced_entry_names()):
             try:
                 status = "ok" if store.read(name) is not None else "absent"
             except SecretStoreError:
                 status = "unreadable"
-            if status != "ok":
-                incomplete = True
+                unreadable = True
             typer.echo(f"{status}\t{name}")
-        if incomplete:
-            raise SystemExit(EXIT_ABSENT)
+        if unreadable:
+            raise SystemExit(1)
 
     @command()
     def get(self, name: Annotated[str, typer.Argument(help="Entry name.")] = "") -> None:

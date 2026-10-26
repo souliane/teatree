@@ -1078,7 +1078,7 @@
           "name": "rm"
         },
         {
-          "help": "Print ok|absent|unreadable for every referenced entry in the sealed store; never a value",
+          "help": "Print ok|absent|unreadable per referenced entry, never a value; exit 1 if any is unreadable",
           "name": "verify"
         },
         {

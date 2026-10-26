@@ -41,7 +41,7 @@ fi
 selector="$(secret_selector)"
 case "$selector" in
     pass)
-        command -v pass >/dev/null 2>&1 || exit 2
+        command -v pass >/dev/null 2>&1 || exit 1
         case "$operation" in
             get|host-get)
                 value="$(pass show "$name" 2>/dev/null)" || {

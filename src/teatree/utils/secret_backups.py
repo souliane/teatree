@@ -33,7 +33,7 @@ def backup_stamp(name: str) -> datetime | None:
 
 def expired_backup_names(names: Iterable[str], now: datetime) -> frozenset[str]:
     by_base: dict[str, list[tuple[datetime, str]]] = {}
-    for name in names:
+    for name in dict.fromkeys(names):
         if stamp := backup_stamp(name):
             by_base.setdefault(backup_base(name), []).append((stamp, name))
     cutoff = now - BACKUP_MAX_AGE

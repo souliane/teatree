@@ -283,6 +283,18 @@ def test_backup_retention_is_ranked_separately_for_each_base() -> None:
     assert {outcome.name: outcome.status for outcome in outcomes} == dict.fromkeys(names, "copied")
 
 
+def test_a_re_run_keeps_every_backup_the_first_run_retained() -> None:
+    now = datetime.now(UTC)
+    names = [backup_name("teatree/slack-app-config-token", now - timedelta(days=age)) for age in (1, 2, 3)]
+    source = MemoryStore()
+    source.entries.update(dict.fromkeys(names, "previous credential"))
+    plan = tuple(ImportEntry(name, "row", "readable") for name in names)
+    target = MemoryStore()
+    assert {outcome.status for outcome in apply_import(source, target, plan, now=now)} == {"copied"}
+    assert {outcome.status for outcome in apply_import(source, target, plan, now=now)} == {"unchanged"}
+    assert set(target.entries) == set(names)
+
+
 def test_a_database_failure_is_reported_per_name_without_aborting_the_summary() -> None:
     class LockedStore(MemoryStore):
         def write(self, key: str, value: str) -> bool:

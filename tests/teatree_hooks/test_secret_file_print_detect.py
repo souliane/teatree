@@ -23,6 +23,8 @@ class TestDenies:
             "uv run t3 teatree secrets get ci/deploy-token",
             "if true; then t3 teatree secrets get ci/deploy-token; fi",
             "t3 teatree secrets exec --env A=ci/deploy-token -- sh -c 'echo $A'",
+            "t3 teatree secrets exec --env=TOKEN=ci/deploy-token -- env",
+            "t3 teatree secrets exec --env=A=ci/deploy-token -- sh -c 'echo $A'",
             "echo glpat-abcdef123456",
             "printf ghp_deadbeefcafebabe0000",
             "echo 'gl" + "pat-fullyquotedtoken0'",  # a fully-quoted token still lands on stdout

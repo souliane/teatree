@@ -9397,8 +9397,8 @@ Usage: t3 teatree secrets rm [OPTIONS] [NAME]
 ```
 Usage: t3 teatree secrets verify [OPTIONS]
 
- Print ok|absent|unreadable for every referenced entry in the sealed store;
- never a value.
+ Print ok|absent|unreadable per referenced entry, never a value; exit 1 if any
+ is unreadable.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
