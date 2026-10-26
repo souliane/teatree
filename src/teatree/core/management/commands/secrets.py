@@ -122,14 +122,15 @@ class Command(TyperCommand):
             _refuse(f"refusing to store an empty value under {entry!r}", EXIT_ABSENT)
         try:
             store = DbStore()
-            existing = store.read(entry)
-            if existing == value:
-                typer.echo(f"unchanged {entry} in the sealed secret store")
-                return
-            if existing is not None:
-                store.write(backup_name(entry, timezone.now()), existing)
-            store.write(entry, value)
-            read_back = store.read(entry)
+            with store.locked():
+                existing = store.read(entry)
+                if existing == value:
+                    typer.echo(f"unchanged {entry} in the sealed secret store")
+                    return
+                if existing is not None:
+                    store.write(backup_name(entry, timezone.now()), existing)
+                store.write(entry, value)
+                read_back = store.read(entry)
         except SecretStoreError as exc:
             _refuse(str(exc), EXIT_UNREADABLE)
         if read_back != value:

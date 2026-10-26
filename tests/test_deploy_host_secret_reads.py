@@ -31,12 +31,12 @@ def _slice(script: str, first: str, last: str) -> str:
 
 
 READS = {
-    "deploy.sh": _slice("deploy.sh", 'if [ -z "${GITLAB_TOKEN:-}"', 'export NOTION_TOKEN="'),
+    "deploy.sh": _slice("deploy.sh", 'if [ -z "${GITLAB_TOKEN:-}"', "# Services the staged swap"),
     "roll.sh": _slice("roll.sh", 'for pair in "GITLAB_TOKEN', "done"),
 }
 
 
-def _run_reads(script: str, tmp_path: Path, selector: str) -> tuple[list[str], str]:
+def _run_reads(script: str, tmp_path: Path, selector: str) -> tuple[list[str], str, bool]:
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     stub = stub_dir / "pass"
@@ -50,7 +50,7 @@ def _run_reads(script: str, tmp_path: Path, selector: str) -> tuple[list[str], s
             "--noprofile",
             "--norc",
             "-c",
-            f'SCRIPT_DIR="$DEPLOY"\n{READS[script]}\nprintf "\\n%s|%s\\n" "$GITLAB_TOKEN" "$NOTION_TOKEN"',
+            f'SCRIPT_DIR="$DEPLOY"\n{READS[script]}\nprintf "\\n%s|%s\\n" "$GITLAB_TOKEN" "$NOTION_TOKEN"\nenv',
         ],
         capture_output=True,
         text=True,
@@ -64,20 +64,27 @@ def _run_reads(script: str, tmp_path: Path, selector: str) -> tuple[list[str], s
             "NOTION_TOKEN_PASS_PATH": "notion/token",
         },
     )
-    return log.read_text(encoding="utf-8").splitlines(), result.stdout.splitlines()[-1]
+    lines = result.stdout.splitlines()
+    tokens = next(line for line in lines if line.startswith("value-for-") or line == "|")
+    return log.read_text(encoding="utf-8").splitlines(), tokens, any(line.startswith("NOTION_TOKEN=") for line in lines)
 
 
 @pytest.mark.parametrize("script", sorted(READS))
 def test_the_sealed_selector_never_runs_pass_and_leaves_the_tokens_to_the_container(
     script: str, tmp_path: Path
 ) -> None:
-    calls, tokens = _run_reads(script, tmp_path, "sealed")
+    calls, tokens, _ = _run_reads(script, tmp_path, "sealed")
     assert calls == []
     assert tokens == "|"
 
 
 @pytest.mark.parametrize("script", sorted(READS))
 def test_the_pass_selector_reads_each_named_entry_once_and_exports_its_first_line(script: str, tmp_path: Path) -> None:
-    calls, tokens = _run_reads(script, tmp_path, "pass")
+    calls, tokens, _ = _run_reads(script, tmp_path, "pass")
     assert calls == ["show gitlab/pat", "show notion/token"]
     assert tokens == "value-for-gitlab/pat|value-for-notion/token"
+
+
+def test_sealed_deploy_does_not_export_an_empty_notion_token(tmp_path: Path) -> None:
+    _, _, exported = _run_reads("deploy.sh", tmp_path, "sealed")
+    assert not exported

@@ -1,13 +1,17 @@
 # test-path: cross-cutting
 # Pins that `secrets status|ls|import-pass`, the health collector and doctor never create the master key.
 import io
+import json
 import logging
 import os
 import sys
 import tempfile
-from contextlib import redirect_stderr, redirect_stdout
+from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event, Lock, local
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +20,7 @@ from django.test import TestCase
 
 from teatree.cli.doctor.checks_secret_store import check_secret_store
 from teatree.core.factory.operational_health import collect_signals
+from teatree.core.management.commands.secrets import Command
 from teatree.core.models import ConfigSetting
 from teatree.core.models.sealed_secret import SealedSecret
 from teatree.core.sealed.store import DbStore
@@ -99,6 +104,45 @@ class _Terminal(io.StringIO):
         return True
 
 
+class _InterleavingStore:
+    def __init__(self) -> None:
+        self.values = {"team/token": "first"}
+        self.mutex = Lock()
+        self.reads = 0
+        self.first_read, self.second_read, self.release = Event(), Event(), Event()
+
+    @contextmanager
+    def locked(self) -> Generator[None]:
+        with self.mutex:
+            yield
+
+    def read(self, name: str) -> str | None:
+        value = self.values.get(name)
+        if name == "team/token":
+            self.reads += 1
+            if self.reads == 1:
+                self.first_read.set()
+                assert self.release.wait(3)
+            elif self.reads == 2:
+                self.second_read.set()
+        return value
+
+    def write(self, name: str, value: str) -> bool:
+        self.values[name] = value
+        return True
+
+
+class _ThreadInput:
+    def __init__(self) -> None:
+        self.value = local()
+
+    def isatty(self) -> bool:
+        return False
+
+    def read(self) -> str:
+        return f"{self.value.current}\n"
+
+
 class TestSecretsCommandsKeepValuesOffEveryChannel(TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -171,12 +215,40 @@ class TestSecretsCommandsKeepValuesOffEveryChannel(TestCase):
     def test_exec_delivers_the_value_to_the_child_environment_only(self) -> None:
         DbStore(self.source).write("team/token", CANARY)
         sink = self.root / "child-saw"
-        script = f"import os, pathlib; pathlib.Path({str(sink)!r}).write_text(os.environ['SECRET_VALUE'])"
+        script = (
+            "import json, os, pathlib, sys; "
+            f"pathlib.Path({str(sink)!r}).write_text(json.dumps([os.environ['SECRET_VALUE'], sys.argv]))"
+        )
         out, err, code = self._run("exec", "--env", "SECRET_VALUE=team/token", "--", sys.executable, "-c", script)
         assert code == 0
-        assert sink.read_text() == CANARY
+        value, argv = json.loads(sink.read_text())
+        assert value == CANARY
+        assert CANARY not in " ".join(argv)
         assert CANARY not in out + err
         assert "SECRET_VALUE" not in os.environ
+
+    def test_concurrent_rotations_back_up_the_intermediate_value(self) -> None:
+        store, thread_input = _InterleavingStore(), _ThreadInput()
+
+        def rotate(value: str) -> None:
+            thread_input.value.current = value
+            Command().store_value("team/token")
+
+        with (
+            patch("teatree.core.management.commands.secrets.DbStore", return_value=store),
+            patch.object(sys, "stdin", thread_input),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            first = pool.submit(rotate, "second")
+            assert store.first_read.wait(3)
+            second = pool.submit(rotate, "third")
+            store.second_read.wait(1)
+            store.release.set()
+            first.result(timeout=3)
+            second.result(timeout=3)
+
+        assert {value for name, value in store.values.items() if ".bak-" in name} == {"first", "second"}
+        assert store.values["team/token"] == "third"
 
     def test_verify_lists_names_and_statuses_only_and_exits_one_only_on_an_unreadable_row(self) -> None:
         ConfigSetting.objects.create(scope="global", key="github_token_pass_key", value="team/github")

@@ -1,5 +1,7 @@
 """Database adapter for the secret facade."""
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import override
 
 from django.db import OperationalError, connections, transaction
@@ -27,9 +29,9 @@ class DbStore(SecretStore):
             raise SecretStoreError(message) from exc
         return row.reveal(self.source.load()) if row is not None else None
 
-    @override
-    def write(self, key: str, value: str) -> bool:
-        validate_pass_key_entry(key)
+    @staticmethod
+    @contextmanager
+    def locked() -> Generator[None]:
         alias = SealedSecret.objects.db
         try:
             with transaction.atomic(using=alias):
@@ -42,21 +44,27 @@ class DbStore(SecretStore):
                     else:
                         message = f"sealed secret writes require a database write lock on {connection.vendor}"
                         raise SecretStoreError(message)
-                stored_ids = set(SealedSecret.objects.key_census())
-                active = self.source.load() if stored_ids else self.source.create()
-                if stored_ids and stored_ids != {active.key_id}:
-                    message = (
-                        f"refusing to write sealed secret {key!r}: stored rows are sealed under key_id "
-                        f"{', '.join(sorted(stored_ids))} but the active key is {active.key_id}"
-                    )
-                    raise SecretStoreError(message)
-                SealedSecret.objects.store(key, value, active)
+                yield
         except OperationalError as exc:
             if SealedSecret.objects.table_missing():
                 message = f"sealed secret write requires migration {SEALED_MIGRATION} on the canonical database"
                 raise SecretStoreError(message) from exc
-            message = f"sealed secret {key!r} could not be written"
+            message = "sealed secret store could not be written"
             raise SecretStoreError(message) from exc
+
+    @override
+    def write(self, key: str, value: str) -> bool:
+        validate_pass_key_entry(key)
+        with self.locked():
+            stored_ids = set(SealedSecret.objects.key_census())
+            active = self.source.load() if stored_ids else self.source.create()
+            if stored_ids and stored_ids != {active.key_id}:
+                message = (
+                    f"refusing to write sealed secret {key!r}: stored rows are sealed under key_id "
+                    f"{', '.join(sorted(stored_ids))} but the active key is {active.key_id}"
+                )
+                raise SecretStoreError(message)
+            SealedSecret.objects.store(key, value, active)
         return True
 
     @override

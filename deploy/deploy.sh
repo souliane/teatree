@@ -543,10 +543,11 @@ fi
 if [ -z "${NOTION_TOKEN:-}" ] && [ -n "${NOTION_TOKEN_PASS_PATH:-}" ]; then
     NOTION_TOKEN="$("$SCRIPT_DIR/secret-read.sh" host-get "$NOTION_TOKEN_PASS_PATH" 2>/dev/null || true)"
 fi
-export NOTION_TOKEN="${NOTION_TOKEN:-}"
-if [ -n "$NOTION_TOKEN" ]; then
+if [ -n "${NOTION_TOKEN:-}" ]; then
+    export NOTION_TOKEN
     echo "deploy: Notion token exported to the container environment (key ${NOTION_TOKEN_PASS_PATH:-from this environment})"
 else
+    unset NOTION_TOKEN
     echo "deploy: no Notion token exported — containers read the entry notion_token_pass_key routes; 't3 setup' in one reports it"
 fi
 
