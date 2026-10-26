@@ -241,6 +241,7 @@ class AlreadyRunningError(RuntimeError):
                 holder_context.hostname if holder_context else "",
                 mine.pid_namespace,
                 mine.role,
+                str(pid_path.resolve()),
             )
         )
 

@@ -302,6 +302,15 @@ class TestRefusalMessage:
         sibling = AlreadyRunningError("worker", 11, path, holder_context=sibling_container, context=_IN_CONTAINER)
         assert outside.reason_fingerprint != sibling.reason_fingerprint
 
+    def test_fingerprint_changes_with_the_locked_database(self, tmp_path: Path) -> None:
+        first = AlreadyRunningError(
+            "worker", 11, tmp_path / "first.sqlite3.worker.pid", holder_context=_OUTSIDE_HOLDER, context=_IN_CONTAINER
+        )
+        second = AlreadyRunningError(
+            "worker", 11, tmp_path / "second.sqlite3.worker.pid", holder_context=_OUTSIDE_HOLDER, context=_IN_CONTAINER
+        )
+        assert first.reason_fingerprint != second.reason_fingerprint
+
 
 class TestCurrentContext:
     def test_reads_the_role_from_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
