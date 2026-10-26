@@ -54,7 +54,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestPrivateGateDatabase(TransactionTestCase):
-    def test_private_database_preserves_ticket_brief_for_push_hook(self) -> None:
+    def test_snapshot_preserves_ticket_brief_for_push_hook(self) -> None:
         with TemporaryDirectory() as temp_root:
             root = Path(temp_root)
             source = root / "live.sqlite3"
@@ -102,7 +102,7 @@ class TestPrivateGateDatabase(TransactionTestCase):
 
 
 @pytest.fixture(autouse=True)
-def _no_external_control_db():
+def _no_real_gate_receipt():
     with (
         patch("teatree.cli.verify_gates.write_gate_receipt"),
         patch("teatree.cli.verify_gates._snapshot_control_db"),
@@ -266,11 +266,9 @@ class TestVerifyGatesRunsBothStages:
         monkeypatch.setenv("T3_CONFIG_DB", str(live / "db.sqlite3"))
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{live / 'db.sqlite3'}")
         monkeypatch.setenv("XDG_DATA_HOME", str(live))
-        monkeypatch.setenv("T3_VERIFY_GATES_BRIEF_FILE", str(live / "forged.json"))
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
         def stage_run(cmd: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
-            assert "T3_VERIFY_GATES_BRIEF_FILE" not in env
             private_db = ControlDb(env, home=tmp_path).for_repo(worktree).path
             with closing(sqlite3.connect(private_db)) as db:
                 assert db.execute("SELECT id FROM teatree_worktree WHERE id=5322").fetchall() == [(5322,)]

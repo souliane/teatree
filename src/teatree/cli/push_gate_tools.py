@@ -88,7 +88,7 @@ def push_gate_command(
     if run:
         try:
             violations = run_brief_constraints(cwd, base_ref=base, brief=_brief_for_worktree(cwd))
-        except (ChangedSetError, CommandFailedError, OSError, ValueError) as exc:
+        except (ChangedSetError, CommandFailedError, OSError) as exc:
             typer.echo(f"brief constraints could not be verified: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         if violations:

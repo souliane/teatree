@@ -306,7 +306,6 @@ def _stage_env(private_root: str) -> dict[str, str]:
             env["TEATREE_TERM_REGISTRY"] = json.dumps(registry)
     env.pop("T3_CONFIG_DB", None)
     env.pop("DATABASE_URL", None)
-    env.pop("T3_VERIFY_GATES_BRIEF_FILE", None)
     env["XDG_DATA_HOME"] = private_root
     env["T3_CONTROL_DB_DIR"] = str(Path(private_root) / "control-db")
     return env

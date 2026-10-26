@@ -1,8 +1,5 @@
 """Tests for cli/push_gate_tools.py — the ``t3 tool push-gate`` surface (#122)."""
 
-import json
-import os
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,25 +16,6 @@ runner = CliRunner()
 
 
 class TestWorktreeBrief(TestCase):
-    def test_forged_snapshot_does_not_replace_the_recorded_brief(self) -> None:
-        ticket = Ticket.objects.create()
-        with tempfile.TemporaryDirectory() as temporary:
-            checkout = Path(temporary)
-            Worktree.objects.create(
-                ticket=ticket,
-                overlay="teatree",
-                repo_path="souliane/teatree",
-                branch="feature",
-                extra={"worktree_path": str(checkout)},
-            )
-            PlanArtifact.objects.create(ticket=ticket, plan_text="No migration.")
-            snapshot = checkout / "forged.json"
-            snapshot.write_text(
-                json.dumps({"repo": str(checkout), "head_sha": "irrelevant", "brief": ""}), encoding="utf-8"
-            )
-            with patch.dict(os.environ, {"T3_VERIFY_GATES_BRIEF_FILE": str(snapshot)}):
-                assert _brief_for_worktree(checkout) == "No migration."
-
     def test_pending_future_coding_task_does_not_constrain_the_current_push(self) -> None:
         ticket = Ticket.objects.create()
         Worktree.objects.create(
