@@ -308,6 +308,39 @@ def _stage_env(private_root: str) -> dict[str, str]:
     return env
 
 
+def _prepare_hermetic_db(repo: Path, env: dict[str, str]) -> bool:
+    if not (repo / "dev/push-gate.sh").is_file():
+        return True
+    command = [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=15s",
+        "180s",
+        "uv",
+        "run",
+        "--no-sync",
+        "python",
+        "manage.py",
+        "migrate",
+        "--noinput",
+        "--verbosity",
+        "0",
+    ]
+    result = run_streamed(command, check=False, cwd=repo, env=env)
+    if result != 0:
+        typer.echo(f"verify-gates: INCOMPLETE — isolated gate database migration exited {result}.", err=True)
+    return result == 0
+
+
+def _run_isolated_stages(repo: Path, stages: list[tuple[str, list[str]]]) -> tuple[list[str], list[str]]:
+    with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
+        env = _stage_env(private_root)
+        if not _prepare_hermetic_db(repo, env):
+            _record(repo, "incomplete", "isolated gate database migration failed")
+            raise typer.Exit(code=1)
+        return _run_stages(stages, repo, env)
+
+
 def verify_gates(
     expect_sha: str = typer.Option(
         "",
@@ -381,8 +414,7 @@ def verify_gates(
     scope_args, scope_reason = _scope_args(repo)
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
     stages = _stage_commands(scope_args, repo, tree.toplevel)
-    with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
-        failed, incomplete = _run_stages(stages, repo, _stage_env(private_root))
+    failed, incomplete = _run_isolated_stages(repo, stages)
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):
