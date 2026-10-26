@@ -162,9 +162,9 @@ def _first_post_reserve() -> int:
     return min(DeferredQuestion.unmirrored_pending().count(), _MAX_MIRRORS_PER_TICK)
 
 
-def owner_quiet_now() -> bool:
+def owner_quiet_now(at: dt.datetime | None = None) -> bool:
     """Whether it is 22:00-08:00 in the owner's zone — when no question DM is sent."""
-    return owner_quiet_at(timezone.now().astimezone(owner_zone()).time())
+    return owner_quiet_at((at if at is not None else timezone.now()).astimezone(owner_zone()).time())
 
 
 @contextmanager

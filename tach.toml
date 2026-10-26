@@ -1096,6 +1096,7 @@ depends_on = [
 path = "teatree.loop.self_improve"
 layer = "domain"
 depends_on = [
+  "teatree.core",
   "teatree.core.admission",
   "teatree.core.admission.pr_start_cap",
   "teatree.core.factory.queue_stall",
@@ -1105,8 +1106,7 @@ depends_on = [
   "teatree.loop.statusline_render",
   "teatree.core.telemetry",
   "teatree.core.modelkit",
-  "teatree.loop.persistence_phase_task",
-  "teatree.loop.preset_resolution"
+  "teatree.loop.persistence_phase_task"
 ]
 
 [[modules]]

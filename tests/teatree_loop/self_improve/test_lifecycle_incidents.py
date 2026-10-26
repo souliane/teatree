@@ -15,7 +15,6 @@ from django.utils import timezone
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
-from teatree.loop.preset_resolution import owner_zone
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
@@ -187,11 +186,13 @@ class LifecycleIncidentTests(TestCase):
         check_at = timezone.now() - timedelta(hours=3)
         detector = LifecycleIncidentDetector(now=lambda: check_at)
 
-        with patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", return_value=True) as quiet:
+        with patch(
+            "teatree.loop.self_improve.detectors.lifecycle_incident.owner_quiet_now", return_value=True
+        ) as quiet:
             kinds = {report.payload["kind"] for report in detector.detect()}
 
         assert "outbound_unposted" not in kinds
-        assert quiet.call_args.args[0] == check_at.astimezone(owner_zone()).time()
+        quiet.assert_called_once_with(check_at)
 
     def test_growing_unposted_count_does_not_send_another_alert(self) -> None:
         first = DeferredQuestion.record("First?", session_id="s", **OWNER_DECISION)
