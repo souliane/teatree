@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from claude_agent_sdk.types import RateLimitType
@@ -135,6 +135,22 @@ class TestRunHeadless(TestCase):
         with (
             _fake_sdk(_success_stream({"summary": "should not run"})),
             patch("teatree.agents.skill_assurance.harness_skills_dirs", return_value=[]),
+        ):
+            task = Task.objects.create(ticket=self.ticket, session=Session.objects.create(ticket=self.ticket))
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.result["skill_assurance"]["status"] == "missing"
+
+    def test_missing_skill_with_an_unreadable_install_root_still_fails(self) -> None:
+        root = Mock()
+        root.exists.return_value = True
+        root.is_dir.return_value = True
+        root.iterdir.side_effect = PermissionError("skill root unreadable")
+        with (
+            _fake_sdk(_success_stream({"summary": "should not run"})),
+            patch("teatree.agents.skill_assurance.harness_skills_dirs", return_value=[]),
+            patch("teatree.agents.runner_skill_staging.install_roots", return_value=[root]),
         ):
             task = Task.objects.create(ticket=self.ticket, session=Session.objects.create(ticket=self.ticket))
             attempt = run_agent(task, phase="coding", overlay_skill_metadata={})

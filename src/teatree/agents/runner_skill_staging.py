@@ -30,7 +30,11 @@ def park_if_worker_skill_roots_empty(task: Task, exc: SkillDispatchError) -> Tas
     if not exc.assurance["missing"]:
         return None
     roots = install_roots()
-    if any(root.exists() and (not root.is_dir() or any(root.iterdir())) for root in roots):
+    try:
+        populated = any(root.exists() and (not root.is_dir() or any(root.iterdir())) for root in roots)
+    except OSError:
+        return None
+    if populated:
         return None
     attempt = record_park(
         task,
