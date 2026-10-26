@@ -417,7 +417,6 @@ graph TD
     teatree.loop.dispatch --> teatree.loop.dispatch_tables
     teatree.loop.dispatch --> teatree.loop.dispatch_reducer
     teatree.loop.dispatch --> teatree.loop.dispatch_gates
-    teatree.loop.self_improve --> teatree.core
     teatree.loop.self_improve --> teatree.core.admission
     teatree.loop.self_improve --> teatree.core.admission.pr_start_cap
     teatree.loop.self_improve --> teatree.core.factory.queue_stall
@@ -428,6 +427,7 @@ graph TD
     teatree.loop.self_improve --> teatree.core.telemetry
     teatree.loop.self_improve --> teatree.core.modelkit
     teatree.loop.self_improve --> teatree.loop.persistence_phase_task
+    teatree.loop.self_improve --> teatree.loop.preset_resolution
     teatree.loop.rendering_items --> teatree.url_classify
     teatree.loop.rendering_dms --> teatree.loop.dispatch
     teatree.loop.rendering_classification --> teatree.loop.dispatch

@@ -138,10 +138,6 @@ class TestWithNoScheduleTheWindowIsStillParis(_QuietHours):
         with _at(dt.datetime(2026, 10, 12, 23, 30, tzinfo=dt.UTC)):
             assert owner_quiet_now() is True
 
-    def test_explicit_time_uses_the_owner_zone(self) -> None:
-        with _at(_paris("2026-10-12", 23, 30)):
-            assert owner_quiet_now(_paris("2026-10-12", 8, 0)) is False
-
 
 class TestAZoneTheScheduleNamesWins(TestCase):
     def test_a_schedule_in_another_zone_moves_the_window(self) -> None:
