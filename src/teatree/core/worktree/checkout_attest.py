@@ -316,18 +316,9 @@ def attest_card(task: Task, attestation: CheckoutAttestation) -> tuple[str, Ques
 
 def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> DeferredQuestion | None:
     try:
+        if task.pk in declined_attest_tasks(attestation.worktree, attestation.state.digest, task_id=task.pk):
+            return None
         marker = action_marker(attestation.action)
-        latest = (
-            DeferredQuestion.objects.filter(dedupe_marker=marker, answered_at__isnull=False)
-            .order_by("-answered_at", "-pk")
-            .first()
-        )
-        if (
-            latest is not None
-            and owner_declined(latest)
-            and task.pk in declined_attest_tasks(attestation.worktree, attestation.state.digest, task_id=task.pk)
-        ):
-            return latest
         unresolved = (
             DeferredQuestion.objects.awaiting_action_outcome()
             .filter(
@@ -347,6 +338,8 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
                 changed = (
                     held.evidence.get("checked") != list(card.checked)
                     or held.options_json != card.options_json()
+                    or re.findall(r"<(https://[^|>]+)\|", str(held.evidence.get("why", "")))
+                    != re.findall(r"<(https://[^|>]+)\|", card.why)
                     or (held.question == question and held.evidence != card.to_evidence())
                 )
                 if changed:

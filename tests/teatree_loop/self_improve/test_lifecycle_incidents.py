@@ -296,6 +296,21 @@ class LifecycleIncidentTests(TestCase):
         assert "outbound_unposted" not in {report.payload["kind"] for report in early}
         assert "outbound_unposted" in {report.payload["kind"] for report in later}
 
+    def test_unposted_incident_across_quiet_hours_boundary(self) -> None:
+        noon = timezone.now().astimezone(owner_zone()).replace(hour=12, minute=0, second=0, microsecond=0)
+        question = DeferredQuestion.record("Which option?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=question.pk).update(created_at=noon - timedelta(hours=11))
+
+        with patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", side_effect=owner_quiet_at):
+            for hour, minute, expected in ((3, 0, False), (8, 5, False), (8, 15, True), (12, 0, True)):
+                with self.subTest(hour=hour, minute=minute):
+                    now = noon.replace(hour=hour, minute=minute)
+                    kinds = {
+                        report.payload["kind"]
+                        for report in LifecycleIncidentDetector(now=lambda check_at=now: check_at).detect()
+                    }
+                    assert ("outbound_unposted" in kinds) is expected
+
     def test_attest_hold_ends_before_unposted_incident_wait(self) -> None:
         assert CHECKOUT_ATTEST_HOLD < _POST_WAIT
 

@@ -395,8 +395,34 @@ class TestCheckoutAttestCard(TestCase):
 
         assert declined_attest_tasks(worktree, state.digest, task_id=other.pk) == {other.pk}
         again = ask_owner_to_attest(other, CheckoutAttestation(worktree, state, host_evidence=False))
-        assert again is not None
-        assert again.pk == card.pk
+        assert again is None
+
+        changed_host_evidence = ask_owner_to_attest(other, CheckoutAttestation(worktree, state, host_evidence=True))
+        assert changed_host_evidence is None
+        assert DeferredQuestion.objects.filter(evidence__action__target=str(worktree.pk)).count() == 1
+
+    def test_changed_step_and_pull_request_link_replace_the_held_card(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        old_pr = PullRequestFactory(ticket=ticket)
+        task = TaskFactory(ticket=ticket, phase="coding")
+        worktree = WorktreeFactory(ticket=ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        first = ask_owner_to_attest(task, attestation)
+        assert first is not None
+
+        old_pr.state = PullRequest.State.MERGED
+        old_pr.save(update_fields=["state"])
+        new_pr = PullRequestFactory(ticket=ticket)
+        task.phase = "debugging"
+        task.save(update_fields=["phase"])
+
+        second = ask_owner_to_attest(task, attestation)
+
+        assert second is not None
+        assert second.pk != first.pk
+        assert new_pr.url in render_text(second)
+        first.refresh_from_db()
+        assert not first.is_pending
 
     def test_a_changed_pull_request_state_replaces_the_held_card(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
