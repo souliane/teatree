@@ -84,6 +84,10 @@ class HarnessOutcome:
     resumed: bool = False
 
     @property
+    def driver_ended(self) -> bool:
+        return bool(self.round_handoff or self.checkpointed or self.lease_lost or self.paused)
+
+    @property
     def model_fell_back(self) -> bool:
         """Whether the CLI's ``fallback_model`` served any of this run instead of the requested model."""
         return bool(self.model_fallbacks)

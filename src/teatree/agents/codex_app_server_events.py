@@ -65,6 +65,23 @@ def dynamic_mailbox_tools(phase: str | None) -> list[dict[str, Any]]:
     ]
 
 
+def thread_params(options: CodexAppServerOptions, *, resuming: bool = False) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "cwd": options.core.cwd,
+        "developerInstructions": options.core.system_prompt,
+        "approvalPolicy": "untrusted" if options.sandbox_mode == "danger-full-access" else "never",
+        "sandbox": options.sandbox_mode,
+        "runtimeWorkspaceRoots": list(options.runtime_workspace_roots),
+    }
+    if options.core.model is not None:
+        params["model"] = options.core.model
+    if options.config:
+        params["config"] = options.config
+    if options.core.mailbox is not None and not resuming:
+        params["dynamicTools"] = dynamic_mailbox_tools(options.mailbox_phase)
+    return params
+
+
 async def mailbox_tool_result(
     params: object, options_by_thread: Mapping[str, CodexAppServerOptions]
 ) -> dict[str, Any] | None:
