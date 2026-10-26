@@ -9,6 +9,8 @@ itself (not just the corpus orchestration) is observable, plus an anti-vacuity
 proof: breaking the underlying real function flips a predicate to ``False``.
 """
 
+import json
+import os
 from unittest.mock import patch
 
 import pytest
@@ -108,6 +110,14 @@ class TestPredicatesAreAntiVacuous(TestCase):
         with patch("teatree.hooks._repo_visibility.slug_is_allowlisted_private", return_value=True):
             # A matcher that flags the public alias-glued slug → must-not-match leg fails.
             assert predicates._check_private_repo_allowlist_path_segment_match() is False
+
+
+class TestBannedTermsPredicateHermeticAgainstAmbientRegistry(TestCase):
+    """The unset-registry arm holds on a host that exports ``TEATREE_TERM_REGISTRY`` (``verify-gates`` does)."""
+
+    def test_predicate_holds_with_an_ambient_term_registry(self) -> None:
+        with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": json.dumps({"leak": ["ambientterm"]})}):
+            assert predicates._check_banned_terms_scanner_fails_closed_on_crash() is True
 
 
 class TestStagedAutonomyHermeticAgainstDbTier(TestCase):
