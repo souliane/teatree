@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import teatree
+from teatree.core import overlay_loader
 from teatree.core.models.self_review import SelfReview
 from teatree.core.review import pr_open_state as _pr_open_state
 
@@ -30,24 +31,17 @@ def _infer_overlay_for_url(url: str) -> str:
     # Re-read the module attribute at call time so a test patching
     # ``teatree.core.overlay_loader.infer_overlay_for_url`` is still seen by the
     # model that fetches this resolver from the registry (#2385).
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: call-time import
-
-    return infer_overlay_for_url(url)
+    return overlay_loader.infer_overlay_for_url(url)
 
 
 def _resolve_overlay_name(name: str) -> str | None:
-    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415 — deferred: call-time import
-
-    return resolve_overlay_name(name)
+    return overlay_loader.resolve_overlay_name(name)
 
 
 def _running_checkout_overlay() -> str:
-    from teatree.core.overlay_loader import (  # noqa: PLC0415 — registry keeps models below loader
-        get_overlay_for_repo,
-        overlay_name_of,
+    return overlay_loader.overlay_name_of(
+        overlay_loader.get_overlay_for_repo(str(Path(teatree.__file__).resolve().parents[2]))
     )
-
-    return overlay_name_of(get_overlay_for_repo(str(Path(teatree.__file__).resolve().parents[2])))
 
 
 def _read_pr_open_state(ticket: "Ticket") -> "PrOpenState":
