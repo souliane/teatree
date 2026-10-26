@@ -28,6 +28,7 @@ from hooks.scripts.hook_router import (
     handle_session_start_bootstrap,
     handle_track_skill_usage,
 )
+from hooks.scripts.loop_registry_liveness import session_owns_loop
 from hooks.scripts.teatree_settings import autoload_enabled
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -404,6 +405,35 @@ class TestLoopAutoLoadOptInGate:
         out = capsys.readouterr().out
         assert "attended loop slot" in out
         assert _read_loop_registry().get(_OWNER_LOOP, {}).get("session_id") == "colleague"
+
+
+class TestRemoteFactoryLoopGate:
+    def test_remote_target_disarms_loop_predicate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path))
+        (tmp_path / "factory-target").write_text("factory.example\n")
+        _mark_active("remote-session")
+        assert _loop_auto_load_active("remote-session") is False
+
+    def test_remote_target_does_not_claim_slot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path))
+        (tmp_path / "factory-target").write_text("factory.example\n")
+        handle_session_start_bootstrap({"session_id": "remote-session", "source": "compact"})
+        assert _read_loop_registry() == {}
+        assert session_owns_loop("remote-session") is False
+        assert "attended loop slot" not in capsys.readouterr().out
+        assert _is_marked_active("remote-session")
+
+    def test_local_environment_allows_claim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path))
+        (tmp_path / "factory-target").write_text("factory.example\n")
+        monkeypatch.setenv("T3_FACTORY_TARGET", "local")
+        handle_session_start_bootstrap({"session_id": "local-session"})
+        assert _read_loop_registry().get(_OWNER_LOOP, {}).get("session_id") == "local-session"
+        assert "attended loop slot" in capsys.readouterr().out
 
 
 # ── Statusline shell script gating ────────────────────────────────────
