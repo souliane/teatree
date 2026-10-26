@@ -54,13 +54,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from teatree.core.merge.head_carry_over import LineageReader
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.loop.scanners import pr_sweep_branch_update as branch_update
 from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.loop.scanners.pr_sweep_ci_classify import ci_gate_verdict
-from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from teatree.loop.scanners.pr_sweep_decision import (
     head_review_state,
     own_or_same_repo,
@@ -68,6 +68,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
     red_required_at_stale_base,
     with_ci_context,
 )
+from teatree.loop.scanners.pr_sweep_head_carry import look_up_clear
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_reporting import (
     inventory_entry,
@@ -200,6 +201,8 @@ class PrSweepScanner:
     #: #4063: the per-pass merge-update allowance, reset by :meth:`scan` so a base
     #: that moves under a whole open-PR set mints a bounded number of CI runs.
     branch_update_budget: branch_update.TickBudget = field(default_factory=branch_update.TickBudget)
+    #: #5450: reads whether a head's patch is unchanged, so a clearance follows a merge of main to the new head.
+    head_lineage: LineageReader | None = None
     inventory_writer: Callable[..., object] | None = None
     inventory_invalidator: Callable[[str], object] | None = None
     name: str = "pr_sweep"
@@ -315,7 +318,7 @@ class PrSweepScanner:
         skip_reason = precondition_skip_reason(pr)
         if skip_reason is not None:
             return skip_attempt(pr, reason=skip_reason)
-        lookup = look_up_clear_for_head(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
+        lookup = look_up_clear(pr, reader=self.head_lineage)
         if lookup.clear is None:
             unusable = lookup.unusable is not None
             if unusable:

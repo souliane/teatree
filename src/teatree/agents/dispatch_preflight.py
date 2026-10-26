@@ -338,6 +338,12 @@ def branch_currency_brief_lines(task: "Task") -> tuple[str, ...]:
     return ("", _CURRENCY_HEADER, *_behind_lines(currency))
 
 
+_NO_MERGE_NEEDED = (
+    "  No merge needed: the squash applies this diff onto the target and the live required checks gate the merge;"
+    " a merge here would only move the head and restart CI."
+)
+
+
 def _merge_directive(target: str) -> tuple[str, ...]:
     return (
         "  Merge it in BEFORE gating — `t3 tool verify-gates` judges this tree against itself, never",
@@ -348,14 +354,13 @@ def _merge_directive(target: str) -> tuple[str, ...]:
 
 def _behind_lines(currency: "BranchCurrency") -> tuple[str, ...]:
     behind = f"  HEAD {currency.short_sha} is {currency.behind_count} commit(s) behind {currency.target}"
-    directive = _merge_directive(currency.target)
     if currency.conflicting_paths is None:
-        return (f"{behind}; conflict prediction unavailable.", _UNVERIFIED_HINT, *directive)
+        return (f"{behind}; conflict prediction unavailable.", _UNVERIFIED_HINT, *_merge_directive(currency.target))
     if not currency.conflicting_paths:
-        return (f"{behind} and merges clean.", *directive)
+        return (f"{behind} and merges clean.", _NO_MERGE_NEEDED)
     return (
         f"{behind} and CONFLICTS on: {', '.join(currency.conflicting_paths)}",
-        *directive,
+        *_merge_directive(currency.target),
         "  Resolve each conflicting path by re-deriving intent from the ticket + commit message (never",
         "  a blind ours/theirs), then grep the tree for every consumer of what the conflict touched.",
     )
