@@ -20,6 +20,17 @@ def test_no_target_is_local(target_dir: Path) -> None:
     assert remote_factory_target_active() is False
 
 
+@pytest.mark.parametrize("value", ["", " \t"])
+def test_blank_environment_without_file_is_local(target_dir: Path, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("T3_FACTORY_TARGET", value)
+    assert remote_factory_target_active() is False
+
+
+def test_local_target_match_is_case_sensitive(target_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("T3_FACTORY_TARGET", " Local ")
+    assert remote_factory_target_active() is True
+
+
 def test_named_file_is_remote(target_dir: Path) -> None:
     (target_dir / "factory-target").write_text("factory.example\n")
     assert remote_factory_target_active() is True
