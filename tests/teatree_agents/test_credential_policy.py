@@ -18,6 +18,7 @@ from teatree.agents.credential_policy import (
     ALL_ACCOUNTS_EXHAUSTED_CAUSE,
     EXHAUSTION_CAUSES,
     resolve_credential_provider,
+    spend_metered_key,
     subscription_lane_exhausted,
 )
 from teatree.agents.harness import resolve_harness
@@ -26,11 +27,21 @@ from teatree.agents.runner import _resolve_dispatch_lane
 from teatree.config import AgentHarnessProvider
 from teatree.config.cross_key_consistency import check_harness_provider_pair
 from teatree.config.schema import setting_choices
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, UsageWindowState
+from teatree.core.models import (
+    AnthropicActivePick,
+    AnthropicTokenUsage,
+    ConfigSetting,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+    UsageWindowState,
+)
 from teatree.credential_config import api_key_lane_available, resolve_eval_credential
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import AnthropicSubscriptionCredential
 from teatree.loops.usage_window_recovery import recover_windows
+from tests.teatree_agents._metered_keys import KEY_1, KEY_2, SCOPE, cap_the_plans, route_metered_keys
 
 _API_KEY_VAR = "ANTHROPIC_API_KEY"
 _OAUTH_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -274,3 +285,63 @@ class TestEvalLane(CredentialPolicyCase):
         _pin(_COMPOSITE.value)
         _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
         assert isinstance(resolve_eval_credential(scope=""), AnthropicSubscriptionCredential)
+
+
+class TestSpendMeteredKey(CredentialPolicyCase):
+    def setUp(self) -> None:
+        self.moment = timezone.now()
+
+    def _spend(self, signer: str, *, lane: str = TaskAttempt.Lane.METERED) -> datetime | None:
+        return spend_metered_key(scope=SCOPE, lane=lane, signer=signer, moment=self.moment)
+
+    def test_marks_the_signing_key_not_the_active_pick(self) -> None:
+        route_metered_keys(self, [KEY_1, KEY_2])
+        cap_the_plans()
+        AnthropicActivePick.objects.set_pick("api_key", SCOPE, KEY_2)
+
+        self._spend(KEY_1)
+
+        assert list(AnthropicTokenUsage.objects.values_list("pass_path", flat=True)) == [KEY_1]
+
+    def test_serves_now_while_another_key_resolves(self) -> None:
+        route_metered_keys(self, [KEY_1, KEY_2])
+        cap_the_plans()
+
+        assert self._spend(KEY_1) == self.moment
+
+    def test_waits_for_the_plan_reset_when_no_key_is_left(self) -> None:
+        route_metered_keys(self, [KEY_1])
+        reset = cap_the_plans()
+
+        assert self._spend(KEY_1) == reset
+
+    def test_serves_now_on_the_plans_when_no_window_is_open(self) -> None:
+        route_metered_keys(self, [KEY_1])
+
+        assert self._spend(KEY_1) == self.moment
+        assert AnthropicTokenUsage.objects.get(pass_path=KEY_1).is_exhausted
+
+    def test_an_ambient_key_waits_for_the_plan_reset_and_marks_nothing(self) -> None:
+        route_metered_keys(self, [])
+        reset = cap_the_plans()
+
+        assert self._spend("") == reset
+        assert not AnthropicTokenUsage.objects.exists()
+
+    def test_no_key_and_no_plan_window_is_left_alone(self) -> None:
+        route_metered_keys(self, [])
+
+        assert self._spend("") is None
+
+    def test_only_the_composite_on_the_metered_lane_is_touched(self) -> None:
+        for provider, lane in (
+            (AgentHarnessProvider.SUBSCRIPTION_OAUTH.value, TaskAttempt.Lane.METERED),
+            (AgentHarnessProvider.API_KEY.value, TaskAttempt.Lane.METERED),
+            (_COMPOSITE.value, TaskAttempt.Lane.SUBSCRIPTION),
+        ):
+            with self.subTest(provider=provider, lane=lane):
+                route_metered_keys(self, [KEY_1, KEY_2], provider=provider)
+                cap_the_plans()
+
+                assert self._spend(KEY_1, lane=lane) is None
+                assert not AnthropicTokenUsage.objects.exists()

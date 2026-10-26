@@ -12,9 +12,100 @@ from teatree.core import loop_lease_liveness as liveness
 from teatree.core.claim_liveness import driving
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, PLAN_STALE_PREFIX, FailureKind
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.transition import TicketTransition
+from tests.factories import planned_ticket
 from tests.teatree_core.test_claim_liveness import _READER_NS, pinned_reader_namespace
 
 _LAPSED = timedelta(seconds=120)
+
+
+class TestReplayAfterRetreat(TestCase):
+    def _completed(self, *, phase: str, state: str, attempted: bool = True) -> tuple[Ticket, Task]:
+        ticket = planned_ticket(overlay="test", state=state)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase=phase,
+            status=Task.Status.COMPLETED,
+        )
+        if attempted:
+            attempt = TaskAttempt.objects.create(task=task)
+            TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(minutes=2))
+        return ticket, task
+
+    def test_rework_does_not_replay_completed_coding(self) -> None:
+        ticket, task = self._completed(phase="coding", state=Ticket.State.PLAN_RECORDED)
+        ticket.code(parent_task=task)
+        ticket.save()
+        ticket.rework()
+        ticket.save()
+
+        assert Task.objects.filter(ticket=ticket, phase="testing", status=Task.Status.PENDING).count() == 0
+        assert Task.objects.filter(ticket=ticket).replay_orphaned_transitions() == 0
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert not Task.objects.filter(ticket=ticket, phase="testing", status=Task.Status.PENDING).exists()
+
+    def test_rework_does_not_record_a_reviewing_wedge(self) -> None:
+        ticket, _task = self._completed(phase="reviewing", state=Ticket.State.TESTED)
+        ticket.rework()
+        ticket.save()
+
+        assert Task.objects.filter(ticket=ticket).replay_orphaned_transitions() == 0
+        assert not DeferredQuestion.objects.filter(dedupe_marker__startswith=f"fsm-wedge:{ticket.pk}:").exists()
+
+    def test_self_review_retreat_does_not_record_a_reviewing_wedge(self) -> None:
+        ticket, _task = self._completed(phase="reviewing", state=Ticket.State.TESTED)
+        TicketTransition.objects.create(
+            ticket=ticket,
+            from_state=Ticket.State.TESTED,
+            to_state=Ticket.State.CODED,
+            triggered_by="address_self_review",
+        )
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.CODED)
+
+        Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+
+        assert not DeferredQuestion.objects.filter(dedupe_marker__startswith=f"fsm-wedge:{ticket.pk}:").exists()
+
+    def test_forward_edge_after_attempt_still_replays(self) -> None:
+        ticket, _task = self._completed(phase="coding", state=Ticket.State.PLAN_RECORDED)
+        TicketTransition.objects.create(
+            ticket=ticket,
+            from_state=Ticket.State.WORK_STARTED,
+            to_state=Ticket.State.PLAN_RECORDED,
+        )
+
+        assert Task.objects.filter(ticket=ticket).replay_orphaned_transitions() == 1
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+
+    def test_task_without_an_attempt_still_replays(self) -> None:
+        ticket, _task = self._completed(phase="coding", state=Ticket.State.PLAN_RECORDED, attempted=False)
+        TicketTransition.objects.create(
+            ticket=ticket,
+            from_state=Ticket.State.CODED,
+            to_state=Ticket.State.WORK_STARTED,
+        )
+
+        assert Task.objects.filter(ticket=ticket).replay_orphaned_transitions() == 1
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+
+    def test_latest_attempt_after_retreat_still_replays(self) -> None:
+        ticket, task = self._completed(phase="coding", state=Ticket.State.PLAN_RECORDED)
+        edge = TicketTransition.objects.create(
+            ticket=ticket,
+            from_state=Ticket.State.CODED,
+            to_state=Ticket.State.WORK_STARTED,
+        )
+        TicketTransition.objects.filter(pk=edge.pk).update(created_at=timezone.now() - timedelta(minutes=1))
+        TaskAttempt.objects.create(task=task)
+
+        assert Task.objects.filter(ticket=ticket).replay_orphaned_transitions() == 1
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
 
 
 class LeaseSweepCase(TestCase):

@@ -10,7 +10,16 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.models import DeferredQuestion, Directive, FactoryScoreSnapshot, IncomingEvent, Task, Ticket
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
+from teatree.core.models import (
+    DeferredQuestion,
+    Directive,
+    FactoryScoreSnapshot,
+    IncomingEvent,
+    PullRequest,
+    Task,
+    Ticket,
+)
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.core.models.provenance import Provenance
 from teatree.loops.directive_loop.implement import (
@@ -80,6 +89,18 @@ class TestScheduleDirectiveImplementation(TestCase):
                 task = schedule_directive_implementation(_admitted())
                 assert task is not None
                 assert task.ticket.overlay == expected
+
+    def test_open_pr_cap_holds_new_mechanism_ticket(self) -> None:
+        directive = _admitted()
+        for index in range(OPEN_PR_START_CAP):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 800}",
+            )
+        assert schedule_directive_implementation(directive) is None
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.ADMITTED
+        assert directive.ticket_id is None
 
     def test_anchors_the_ticket_links_it_back_and_moves_to_implementing(self) -> None:
         directive = _admitted()

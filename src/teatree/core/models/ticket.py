@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from teatree.core.managers import TaskQuerySet
     from teatree.core.models.merge_void import MergeVoid
     from teatree.core.models.task import Task
-    from teatree.core.models.transition import TicketTransition
+    from teatree.core.models.transition import TicketTransitionQuerySet
     from teatree.core.models.types import TicketExtra, TicketSiblingFields
     from teatree.core.models.worktree import Worktree
 
@@ -107,7 +107,7 @@ class Ticket(
         # exposes exactly this queryset's methods, which is what callers use.
         tasks: "TaskQuerySet"
         worktrees: "models.Manager[Worktree]"
-        transitions: "models.Manager[TicketTransition]"
+        transitions: "TicketTransitionQuerySet"
         merge_voids: "models.Manager[MergeVoid]"
 
     class State(models.TextChoices):
@@ -219,7 +219,8 @@ class Ticket(
     kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.FEATURE)
     extra = models.JSONField(default=dict, blank=True)
     context = models.TextField(blank=True, default="")
-    short_description = models.CharField(max_length=80, blank=True, default="")
+    SHORT_DESCRIPTION_MAX_LENGTH: ClassVar[int] = 80
+    short_description = models.CharField(max_length=SHORT_DESCRIPTION_MAX_LENGTH, blank=True, default="")
     # Set to True when the remote forge returns HTTP 404; the disposition scanner
     # then excludes this ticket from future fetches (#1875).
     remote_missing = models.BooleanField(default=False)
@@ -303,7 +304,7 @@ class Ticket(
         """The card label a blank ``short_description`` takes from *title*."""
         if not title or self.short_description:
             return ""
-        return title[: self._meta.get_field("short_description").max_length or 80]
+        return title[: self.SHORT_DESCRIPTION_MAX_LENGTH]
 
     @transition(field="state", source=State.NOT_STARTED, target=State.SCOPED)
     def scope(

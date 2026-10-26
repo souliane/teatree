@@ -51,6 +51,7 @@ from teatree.loops.dream.compliance_attribution import (
 from teatree.loops.dream.destination import points_at_core_fix
 from teatree.loops.dream.engine import DistilledCluster
 from teatree.loops.dream.replay import ConsolidationExtract
+from teatree.loops.dream.transcript_extract import looks_like_agent_authored_turn
 
 if TYPE_CHECKING:
     from teatree.loops.dream.batch_promote import PromotionBatch
@@ -191,11 +192,12 @@ def build_compliance_snapshot(extract: ConsolidationExtract) -> ComplianceSnapsh
 
 def _recurring_rule_slugs() -> set[str]:
     """Every rule identity that has a recorded MEMORY-backed recurrence."""
-    return set(
-        InstructionComplianceRecord.objects.filter(is_recurrence=True, rule_source=RuleSource.MEMORY).values_list(
-            "rule_identity", flat=True
-        )
-    )
+    records = InstructionComplianceRecord.objects.filter(is_recurrence=True, rule_source=RuleSource.MEMORY)
+    return {
+        identity
+        for identity, evidence in records.values_list("rule_identity", "evidence")
+        if not looks_like_agent_authored_turn(evidence)
+    }
 
 
 def _is_memory_only(destination: str) -> bool:

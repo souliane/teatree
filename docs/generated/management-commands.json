@@ -194,6 +194,10 @@
           "name": "compliance"
         },
         {
+          "help": "Report the daily dream funnel and whether a recurring question class has stopped",
+          "name": "funnel"
+        },
+        {
           "help": "Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap",
           "name": "gap-coverage"
         },
@@ -1349,6 +1353,10 @@
         {
           "help": "Re-bind a plan to a new base \u2014 the plan-currency gate's never-lockout escape",
           "name": "plan-reaffirm"
+        },
+        {
+          "help": "Waive one rubric criterion by its text hash; an owner identity and a reason are required",
+          "name": "rubric-waive"
         },
         {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",

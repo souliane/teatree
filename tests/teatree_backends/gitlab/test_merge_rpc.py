@@ -203,6 +203,28 @@ class TestFetchPrMergeStateConflictAxis:
 
 
 class TestFetchPrAuthor:
+    def test_merge_state_carries_actor_and_time(self) -> None:
+        mr = {
+            "state": "merged",
+            "merge_commit_sha": _SHA,
+            "merge_user": {"username": "operator"},
+            "merged_at": "2026-10-25T12:00:00Z",
+        }
+        state = _rpc(get=mr).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
+        assert (state.merged_by, state.merged_at) == ("operator", "2026-10-25T12:00:00Z")
+
+    def test_merge_state_falls_back_to_merged_by(self) -> None:
+        state = _rpc(get={"state": "merged", "merged_by": {"username": "backup"}}).fetch_pr_merge_state(
+            slug=_SLUG, pr_id=_IID
+        )
+        assert (state.merged_by, state.merged_at) == ("backup", "")
+
+    def test_merge_state_null_actor_and_time_are_empty(self) -> None:
+        state = _rpc(get={"state": "merged", "merge_user": None, "merged_at": None}).fetch_pr_merge_state(
+            slug=_SLUG, pr_id=_IID
+        )
+        assert (state.merged_by, state.merged_at) == ("", "")
+
     def test_username(self) -> None:
         assert _rpc(get={"author": {"username": "souliane"}}).fetch_pr_author(slug=_SLUG, pr_id=_IID) == "souliane"
 

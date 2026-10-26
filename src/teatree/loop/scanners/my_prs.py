@@ -1,13 +1,18 @@
 """Scan PRs the active user has open across configured code-host repos."""
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import RedMrFixAttempt
 from teatree.core.models.review_verdict import HeadVerdictState
 from teatree.core.review.mr_ci_state import GREEN_STATUSES, carries_pipeline_field, pipeline_status
+from teatree.core.review.pr_inventory import PrInventoryEntry
+from teatree.core.review.pr_next_action import UNKNOWN, approvals_label, approvals_text, my_pr_next_task, threads_label
 from teatree.core.review.review_candidate import author_username
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.pr_findings import (
@@ -21,8 +26,13 @@ from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
+from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
+
+
+def _known_count(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
 
 
 def _str_field(data: RawAPIDict, *names: str) -> str:
@@ -62,6 +72,7 @@ _SETTLED_STATUSES = GREEN_STATUSES | {"skipped"}
 _MANUAL_ACTION_STATUSES = frozenset({"manual"})
 
 MANUAL_ACTION_KIND = "my_pr.manual_action"
+FAILED_KIND = "my_pr.failed"
 
 
 def _needs_attention(status: str) -> bool:
@@ -71,6 +82,16 @@ def _needs_attention(status: str) -> bool:
     action-needed rather than passing silently as a benign open PR.
     """
     return status not in _SETTLED_STATUSES | _MANUAL_ACTION_STATUSES | _IN_PROGRESS_STATUSES
+
+
+def _ci_label(kind: str, status: str) -> str:
+    if status in _SETTLED_STATUSES:
+        return "green"
+    if kind == FAILED_KIND:
+        return "red"
+    if status in _IN_PROGRESS_STATUSES and status:
+        return "pending"
+    return status or UNKNOWN
 
 
 class CiEnricher(Protocol):
@@ -143,13 +164,17 @@ class MyPrsScanner:
     ci_enricher: CiEnricher | None = None
     verdict_reader: ReviewVerdictReader | None = None
     critic_reader: CriticFindingReader | None = None
+    overlay_name: str = ""
+    host_origin: str = ""
+    inventory_writer: Callable[[str, list[PrInventoryEntry]], object] | None = None
+    inventory_invalidator: Callable[[str], object] | None = None
     name: str = "my_prs"
 
     def scan(self) -> list[ScanSignal]:
         authors = self._resolve_identities()
         if not authors:
             return []
-        prs = self._collect_unique_prs(authors)
+        prs, complete = self._collect_unique_prs(authors)
         signals: list[ScanSignal] = []
         unenriched = 0
         for pr in prs:
@@ -190,7 +215,7 @@ class MyPrsScanner:
             if _needs_attention(status):
                 signals.append(
                     ScanSignal(
-                        kind="my_pr.failed",
+                        kind=FAILED_KIND,
                         summary=f"PR #{iid} pipeline {status or 'no-status'} (not green): {title}",
                         payload=base_payload,
                     )
@@ -209,6 +234,7 @@ class MyPrsScanner:
                     payload=base_payload,
                 )
             )
+        self._write_complete_inventory(signals, complete=complete)
         if unenriched:
             warn_throttled(
                 logger,
@@ -298,6 +324,84 @@ class MyPrsScanner:
         competing = best_url_match_specificity(url, self.competing_url_prefixes)
         return competing <= own
 
+    def _write_complete_inventory(self, signals: list[ScanSignal], *, complete: bool) -> None:
+        if not complete:
+            self._invalidate_inventory()
+            return
+        if self.inventory_writer is None:
+            return
+        if any(not _str_field(signal.payload, "url") for signal in signals):
+            logger.warning("my_prs found a PR without a URL; the prior inventory no longer counts as verified")
+            self._invalidate_inventory()
+            return
+        entries = [self._inventory_entry(signal) for signal in signals]
+        try:
+            self.inventory_writer(self._inventory_key(), entries)
+        except (OSError, ValueError):
+            logger.warning("my_prs could not record its PR inventory; signals are unaffected", exc_info=True)
+
+    def _invalidate_inventory(self) -> None:
+        if self.inventory_invalidator is not None:
+            try:
+                self.inventory_invalidator(self._inventory_key())
+            except (OSError, ValueError):
+                logger.warning("my_prs could not invalidate its PR inventory; signals are unaffected", exc_info=True)
+
+    def _forge_review_facts(self, url: str) -> tuple[str, str, str]:
+        ref = pr_ref_from_url(url)
+        if ref is None:
+            return UNKNOWN, UNKNOWN, UNKNOWN
+        try:
+            state = self.host.get_mr_approvals(repo=ref.slug, pr_iid=ref.pr_id)
+            label = approvals_label(state["approvals_left"])
+            return (
+                label,
+                threads_label(state["unresolved_resolvable"]),
+                approvals_text(label, _known_count(state.get("count")), _known_count(state.get("required"))),
+            )
+        except Exception:
+            logger.warning("my_prs could not read approvals for %s", url, exc_info=True)
+            return UNKNOWN, UNKNOWN, UNKNOWN
+
+    def _inventory_entry(self, signal: ScanSignal) -> PrInventoryEntry:
+        payload = signal.payload
+        raw = payload.get("raw")
+        pr = raw if isinstance(raw, dict) else {}
+        url = _str_field(payload, "url")
+        ref = pr_ref_from_url(url)
+        status = _str_field(payload, "status")
+        ci = _ci_label(signal.kind, status)
+        approvals, threads, approval_display = (
+            self._forge_review_facts(url) if ci == "green" else (UNKNOWN, UNKNOWN, UNKNOWN)
+        )
+        return PrInventoryEntry(
+            url=url,
+            repo=ref.slug if ref else "unknown repo",
+            iid=ref.pr_id if ref else _int_field(payload, "iid"),
+            title=_str_field(payload, "title"),
+            created_at=_str_field(pr, "created_at", "createdAt"),
+            updated_at=_str_field(pr, "updated_at", "updatedAt"),
+            next_task=my_pr_next_task(signal.kind, ci),
+            decision=signal.kind,
+            ci=ci,
+            approvals=approvals,
+            approvals_display=approval_display,
+            threads=threads,
+            draft=bool(pr.get("draft")),
+            head_sha=_str_field(payload, "head_sha"),
+            author=author_username(pr),
+            owned=True,
+        )
+
+    def _inventory_key(self) -> str:
+        prefixes = "|".join(sorted(self.allowed_url_prefixes))
+        first = urlsplit(self.allowed_url_prefixes[0]) if self.allowed_url_prefixes else None
+        origin = self.host_origin or (f"{first.scheme}://{first.netloc}" if first and first.netloc else "")
+        host_key = origin or f"{type(self.host).__module__}.{type(self.host).__qualname__}"
+        host_hash = sha256(host_key.encode()).hexdigest()[:16]
+        scope_hash = sha256((prefixes or host_key).encode()).hexdigest()[:16]
+        return f"own:{self.overlay_name}:{host_hash}:{scope_hash}"
+
     def _resolve_identities(self) -> tuple[str, ...]:
         # Multi-identity wins: caller supplied an explicit alias set, use it
         # verbatim so a misconfigured ``current_user`` (wrong PAT scope, or a
@@ -309,7 +413,7 @@ class MyPrsScanner:
         user = self.host.current_user()
         return (user,) if user else ()
 
-    def _collect_unique_prs(self, authors: tuple[str, ...]) -> list[RawAPIDict]:
+    def _collect_unique_prs(self, authors: tuple[str, ...]) -> tuple[list[RawAPIDict], bool]:
         """Union PRs across *authors*, deduped by URL.
 
         A PR returned for two aliases (co-author / shared identity) renders
@@ -318,11 +422,15 @@ class MyPrsScanner:
         """
         seen_urls: set[str] = set()
         prs: list[RawAPIDict] = []
+        complete = True
         for author in authors:
             try:
                 fetched = self.host.list_my_prs(author=author)
             except Exception:
-                logger.warning("list_my_prs failed for %s — skipping", author, exc_info=True)
+                logger.warning(
+                    "list_my_prs failed for %s — keeping the prior complete inventory", author, exc_info=True
+                )
+                complete = False
                 continue
             for pr in fetched:
                 url = _str_field(pr, "web_url", "html_url")
@@ -331,4 +439,4 @@ class MyPrsScanner:
                 if url:
                     seen_urls.add(url)
                 prs.append(pr)
-        return prs
+        return prs, complete

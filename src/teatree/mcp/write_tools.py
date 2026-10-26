@@ -340,7 +340,8 @@ async def _review_request_post(
     """Post a review request through the #1094 dedup + #960 on-behalf + review-state gates.
 
     Wraps ``t3 review-request post``: the anti-vacuity + reviewed-state gates run
-    first, then the live-channel dedup claim, then the #960 on-behalf approval
+    first (against the ticket that owns the merge request; none skips them), then the
+    live-channel dedup claim, then the #960 on-behalf approval
     (no recorded, unconsumed, exactly-scoped approval ⇒ ``refused`` with the
     ``t3 review approve-on-behalf`` remediation and the orphan claim rolled back),
     then the post. Returns ``action`` = post | draft | suppress | refused; ``refused`` names the missing

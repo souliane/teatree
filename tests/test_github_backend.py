@@ -55,7 +55,7 @@ class TestGetMrApprovals:
         # The FIRST call is the reviewDecision read (the graphql thread read follows).
         first_args = mock_run.call_args_list[0].args
         assert first_args[:4] == ("gh", "pr", "view", "9")
-        assert "reviewDecision" in first_args
+        assert "reviewDecision" in first_args[first_args.index("--json") + 1].split(",")
 
     def test_non_approved_decision_is_positive_approvals_left(self) -> None:
         with self._run_gh_returning(json.dumps({"reviewDecision": "REVIEW_REQUIRED"})):
