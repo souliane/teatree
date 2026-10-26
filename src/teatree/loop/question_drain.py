@@ -53,6 +53,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.question_heal import HEAL_CHECKS
 from teatree.loop.question_subjects import SubjectIndex
+from teatree.loop.recovered_repair_halts import REPAIR_HALT_RECOVERED, recovered_repair_halts
 
 #: The pull-request states that are DONE either way — the same partition
 #: ``PullRequestQuerySet.live()`` excludes. A merge succeeded and a close was given
@@ -120,7 +121,7 @@ class SweepContext:
     superseded_parked: frozenset[int]
     #: pks of the halt rows whose ticket has since run a phase to success.
     cleared_halts: frozenset[int]
-    #: Per ``HEAL_CHECKS`` name, the rows it proved healed and why.
+    #: Per healing resolver (``HEAL_CHECKS`` plus ``repair_halt_recovered``), the rows it proved healed and why.
     healed: Mapping[str, Mapping[int, str]]
 
     @classmethod
@@ -131,7 +132,10 @@ class SweepContext:
             now=timezone.now(),
             superseded_parked=_superseded_parked_questions(questions),
             cleared_halts=_cleared_halt_questions(questions, index),
-            healed={name: check(questions) for name, check in HEAL_CHECKS},
+            healed={
+                **{name: check(questions) for name, check in HEAL_CHECKS},
+                REPAIR_HALT_RECOVERED: recovered_repair_halts(questions, index),
+            },
         )
 
 
@@ -333,6 +337,7 @@ def _lane_moved_on(
 SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (
     *((name, _heal_resolver(name)) for name, _check in HEAL_CHECKS),
     ("halt_trigger_cleared", _halt_trigger_cleared),
+    (REPAIR_HALT_RECOVERED, _heal_resolver(REPAIR_HALT_RECOVERED)),
     ("parked_task_superseded", _parked_task_superseded),
     ("pr_terminal", _pr_terminal),
     ("subject_terminal", _subject_terminal),
