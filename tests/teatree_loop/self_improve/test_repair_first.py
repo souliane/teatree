@@ -72,6 +72,10 @@ def _incident(kind: str = "repairable_incident", *, state_hash: str = "first") -
     )
 
 
+def _detector_now() -> dt.datetime:
+    return timezone.now()
+
+
 class RepairFirstTests(TestCase):
     def test_real_lifecycle_incident_alerts_after_wait_while_pr_cap_holds(self) -> None:
         task = TaskFactory()
@@ -91,7 +95,7 @@ class RepairFirstTests(TestCase):
                 wait=dt.timedelta(minutes=60),
             ),
         )
-        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        detector = LifecycleIncidentDetector(now=_detector_now, overlay_name="t3-teatree")
         outcomes = []
         for minutes in (0, 31, 60, 90):
             with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=minutes)):
@@ -148,7 +152,7 @@ class RepairFirstTests(TestCase):
         repair_ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
         repair_task = TaskFactory(ticket=repair_ticket)
         repair_task.fail(reason="ProcessError: repair worker exited", by_holder=True)
-        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        detector = LifecycleIncidentDetector(now=_detector_now, overlay_name="t3-teatree")
         start = timezone.now()
         messages: list[str] = []
         routes = DeliveryRoutes(
