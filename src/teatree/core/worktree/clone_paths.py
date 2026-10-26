@@ -11,6 +11,7 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
+from teatree import config
 from teatree.config import clone_root
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
@@ -62,13 +63,24 @@ def find_clone_path(workspace: Path, repo_name: str) -> Path | None:
 
 
 def dispatch_detection_root(ticket: Ticket) -> Path | None:
-    """Where a dispatch for *ticket* detects its stack skills: its worktree, else its repo's clone.
+    """Where a dispatch for *ticket* detects its stack skills: worktree, package, or clone.
 
     Planning is queued alongside provisioning, so a ticket with no worktree yet is the normal
     case. A ticket naming a repo with no clone here answers ``None``, never another repo's clone.
     """
     if worktree := dispatch_worktree_path(ticket):
         return Path(worktree)
+    if (
+        isinstance(ticket.extra, dict)
+        and ticket.extra.get("source") == "self_improve"
+        and not ticket.repos
+        and not ticket.issue_url
+    ):
+        entry = next((entry for entry in config.discover_overlays() if entry.name == ticket.overlay), None)
+        if entry is not None and entry.project_path is not None and entry.project_path.is_dir():
+            return entry.project_path
+        logger.warning("Self-improve ticket %s has no checkout for overlay %r", ticket.pk, ticket.overlay)
+        return None
     workspace = clone_root()
     for name in _named_repos(ticket):
         if (clone := find_clone_path(workspace, name)) is not None:

@@ -24,7 +24,7 @@ from teatree.agents.skill_bundle import (
     resolve_skill_bundle,
     stage_skills_for_dispatch,
 )
-from teatree.config.settings import UserSettings
+from teatree.config.settings import OverlayEntry, UserSettings
 from teatree.core.models import Ticket
 from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.skill_support import index as skill_index_mod
@@ -119,6 +119,33 @@ class TestNoWorktreeDetectsFromTheRepoClone(TestCase):
         assert captured["cwd"] == self.clone
         assert captured["cwd"] != Path.cwd()
         assert {"ac-django", "ac-python"} <= set(bundle)
+
+
+class TestSelfImproveSkillBundle(TestCase):
+    @pytest.fixture(autouse=True)
+    def _repos(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        workspace = tmp_path / "clones"
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        product = workspace / "acme" / "api"
+        (product / ".git").mkdir(parents=True)
+        (product / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi"]\n')
+        self.package = tmp_path / "overlay-package"
+        self.package.mkdir()
+        (self.package / "manage.py").write_text("# django project\n")
+
+    def test_planning_and_coding_detect_the_package_stack(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
+        entries = [OverlayEntry("other", "", self.package.parent), OverlayEntry("t3-teatree", "", self.package)]
+        with (
+            patch("teatree.config.discover_overlays", return_value=entries),
+            patch("teatree.core.worktree.clone_paths.get_overlay_for_ticket") as overlay,
+        ):
+            overlay.return_value.get_workspace_repos.return_value = ["acme/api"]
+            root = dispatch_detection_root(ticket)
+            for phase in ("planning", "coding"):
+                bundle = resolve_skill_bundle(phase=phase, overlay_skill_metadata={}, detection_root=root)
+                assert "ac-django" in bundle
+                assert "fastapi" not in bundle
 
 
 class TestResolveSkillBundleStageSkillThreading(TestCase):

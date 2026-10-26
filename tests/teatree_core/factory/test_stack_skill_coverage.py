@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.config.settings import OverlayEntry
 from teatree.core.factory import stack_skill_coverage
 from teatree.core.factory.health_signal import HealthSignal
 from teatree.core.factory.operational_health import collect_signals
@@ -17,6 +18,12 @@ class TestStackSkillCoverageSignal(TestCase):
     def _clones(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         workspace = tmp_path / "clones"
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        self.package = tmp_path / "overlay-package"
+        self.package.mkdir()
+        (self.package / "manage.py").write_text("# django project\n")
+        product = workspace / "acme" / "api"
+        (product / ".git").mkdir(parents=True)
+        (product / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi"]\n')
         django_clone = workspace / "souliane" / "teatree"
         (django_clone / ".git").mkdir(parents=True)
         (django_clone / "manage.py").write_text("# django project\n", encoding="utf-8")
@@ -73,3 +80,20 @@ class TestStackSkillCoverageSignal(TestCase):
 
         assert "stack_skill_coverage_signals" in collected.unread
         assert not [s for s in collected.signals if s.fingerprint == "stack-skills-missing"]
+
+    def test_self_improve_gap_is_measured_against_its_package(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
+        attempt = TaskAttempt.objects.create(task=task, skills_loaded=["ac-python", "fastapi"])
+        entries = [OverlayEntry("t3-teatree", "", self.package)]
+        with (
+            patch("teatree.config.discover_overlays", return_value=entries),
+            patch("teatree.core.worktree.clone_paths.get_overlay_for_ticket") as overlay,
+        ):
+            overlay.return_value.get_workspace_repos.return_value = ["acme/api"]
+            signal = self._signal()
+            assert signal is not None
+            assert "ac-django" in signal.summary
+            attempt.skills_loaded = ["ac-python", "ac-django"]
+            attempt.save(update_fields=["skills_loaded"])
+            assert self._signal() is None
