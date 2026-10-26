@@ -90,9 +90,9 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         "A verdict for another head is REFUSED. On checkout mismatch, return",
         '  "review_head_mismatch": {"observed_sha": "<40-char SHA>", "reason": "<why>"}',
         "without review_verdict or owner question. Factory retries once at the live head; a repeat records a card.",
-        'If this venue cannot read CI, run the needed tests, or open the plan, return "review_venue_limit":',
-        '  {"limits": ["<each venue limit>"]} with NO review_verdict; the factory retries another route.',
-        "A hold requires a blocker observed in the code or checks, never this venue's own limit.",
+        'If CI, tests, or the plan cannot be read here, return "review_venue_limit":',
+        '  {"limits": ["<limit>"]} without review_verdict; the factory retries elsewhere.',
+        "HOLD needs an observed code or check blocker, never a venue limit.",
         "Missing `reviewed_sha` is REFUSED; never infer it from dispatch.",
         "A blocking finding (blocker/major/high/critical) outside PR-changed files is REFUSED and records nothing.",
         "Branch-only probes may blame main; recheck on the MERGE RESULT.",
@@ -119,7 +119,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             if read_only_venue
             else ()
         ),
-        "A result with no `review_verdict` FAILS unless it carries review_venue_limit or review_head_mismatch.",
+        "No review_verdict fails unless review_venue_limit or review_head_mismatch is returned.",
         *(_ASSIGNED_IDENTITY_LINES if identity else ()),
         "",
         "RUBRIC: grade here; independent verifier != maker:",
@@ -127,7 +127,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             '  "rubric_grades": [{"ordinal": 0, "text_hash": "<hash from brief>", '
             '"status": "pass"|"fail", "rationale": "<what proves it>"}, ...]'
         ),
-        "Grade EVERY criterion except CARRIED rows, which are stamped unless you override them.",
+        "Grade every row except CARRIED; grade to override a carry.",
         "An ungraded RE-GRADE row records nothing. A PASS cites a test; a FAIL needs none.",
         "FAIL is a finding; no bypass overrides it. do NOT run `ticket rubric-grade`.",
     )
