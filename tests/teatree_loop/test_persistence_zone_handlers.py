@@ -20,7 +20,7 @@ from django.test import TestCase
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import DeferredQuestion, Mode, ModeOverride, PullRequest, Task, Ticket
+from teatree.core.models import DeferredQuestion, HeadCarryOver, Mode, ModeOverride, PullRequest, Task, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
@@ -230,6 +230,58 @@ class TestCodexReviewZoneRevived(TestCase):
         assert (
             Task.objects.filter(ticket__issue_url="https://github.com/o/r/pull/7", phase="codex_reviewing").count() == 1
         )
+
+    def test_a_head_whose_records_followed_an_unchanged_patch_arms_no_review(self) -> None:
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=102, head_sha="a" * 40, variant="codex:review")
+        CodexReviewMarker.mark_resolved(slug="o/r", pr_id=102, head_sha="a" * 40)
+        HeadCarryOver.objects.create(
+            slug="o/r",
+            pr_id=102,
+            from_head="a" * 40,
+            to_head="b" * 40,
+            outcome=HeadCarryOver.Outcome.CARRIED,
+            carried={"review_verdicts": 1},
+        )
+
+        created = persist_agent_actions(_agent_actions(self._signal(pr_id=102, head_sha="b" * 40)))
+
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=102, head_sha="b" * 40).exists()
+
+    def test_a_carried_standard_review_does_not_skip_a_due_adversarial_variant(self) -> None:
+        old, new = "a" * 40, "b" * 40
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=104, head_sha=old, variant="codex:review")
+        CodexReviewMarker.mark_resolved(slug="o/r", pr_id=104, head_sha=old)
+        HeadCarryOver.objects.create(
+            slug="o/r",
+            pr_id=104,
+            from_head=old,
+            to_head=new,
+            outcome=HeadCarryOver.Outcome.CARRIED,
+            carried={"review_verdicts": 1},
+        )
+
+        created = persist_agent_actions(
+            _agent_actions(self._signal(pr_id=104, head_sha=new, variant="codex:adversarial-review"))
+        )
+
+        assert len(created) == 1
+        assert created[0].phase == "codex_adversarial_reviewing"
+
+    def test_a_head_the_patch_left_unchanged_that_no_verdict_followed_is_armed(self) -> None:
+        HeadCarryOver.objects.create(
+            slug="o/r",
+            pr_id=103,
+            from_head="a" * 40,
+            to_head="b" * 40,
+            outcome=HeadCarryOver.Outcome.CARRIED,
+            carried={"review_verdicts": 0},
+        )
+
+        created = persist_agent_actions(_agent_actions(self._signal(pr_id=103, head_sha="b" * 40)))
+
+        assert len(created) == 1
+        assert CodexReviewMarker.objects.filter(slug="o/r", pr_id=103).count() == 1
 
     def test_role_conflict_does_not_burn_marker(self) -> None:
         Ticket.objects.create(issue_url="https://github.com/o/r/pull/13", overlay="acme", role=Ticket.Role.AUTHOR)
