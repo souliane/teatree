@@ -789,9 +789,10 @@ Usage: t3 codex auth check [OPTIONS]
  would.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --executor          Act on the read-only executor's own login; only          │
-│                     teatree-worker reaches it.                               │
-│ --help              Show this message and exit.                              │
+│ --executor              Act on the read-only executor's own login; only      │
+│                         teatree-worker reaches it.                           │
+│ --phase           TEXT  Check a read-only executor phase.                    │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

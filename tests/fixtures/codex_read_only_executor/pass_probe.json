@@ -112,6 +112,12 @@
       "target": "/home/<user>/teatree-deploy/.git"
     },
     {
+      "fstype": "ext4",
+      "options": "ro,relatime",
+      "source": "/dev/mapper/hk-root",
+      "target": "$CODEX_SOURCE_GIT"
+    },
+    {
       "fstype": "proc",
       "options": "ro,nosuid,nodev,noexec,relatime",
       "source": "proc",
@@ -223,6 +229,10 @@
       "owner": 1001,
       "secrets": []
     },
+    "$CODEX_SOURCE_GIT": {
+      "owner": 1001,
+      "secrets": []
+    },
     "$CONTAINER_HOME/workspace": {
       "owner": 1001,
       "secrets": []
@@ -245,6 +255,7 @@
     "/etc/hosts": "EACCES",
     "/etc/resolv.conf": "EACCES",
     "/home/<user>/teatree-deploy/.git": "EROFS",
+    "$CODEX_SOURCE_GIT": "EROFS",
     "$CONTAINER_HOME/workspace": "EROFS",
     "$CONTAINER_HOME/workspace/t3-workspaces": "EROFS"
   }
