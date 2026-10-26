@@ -311,7 +311,7 @@ fi
 source_secret_from_pass() {
     local var="$1" path="$2" value rc
     [ -n "${!var:-}" ] && return 0
-    value="$("${T3_SECRET_READER:-${SCRIPT_DIR:-}/secret-read.sh}" get "$path" 2>/dev/null)" || {
+    value="$("${T3_SECRET_READER:-$SCRIPT_DIR/secret-read.sh}" get "$path" 2>/dev/null)" || {
         rc=$?
         [ "$rc" -eq 1 ] && return 0
         echo "entrypoint: credential store is unreadable for $path (rc=$rc)" >&2

@@ -39,6 +39,7 @@
 # 3: every `AppConfig.ready()` registration is call-time by Django's own contract —
 # the app registry is not ready at module import, so these can never be top-level.
 # 4: `ready()` runs before the app registry is ready, so wiring the fleet-admission refusal stays call-time.
+# 5: the sealed store factory imports `DbStore` only when `T3_SECRET_STORE=sealed` selects it, keeping it off the `t3 mcp serve` import graph.
 "src/teatree/core/apps.py" = 5
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1

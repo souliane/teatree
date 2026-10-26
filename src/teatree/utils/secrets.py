@@ -10,7 +10,6 @@ from typing import Protocol, override
 
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_bounded_group
-from teatree.utils.secret_backups import backup_name
 
 # ``pass show`` shells out to gpg, which talks to gpg-agent over a unix socket. A
 # wedged agent — a GNUPGHOME on a mount that cannot host the sockets, a dead
@@ -236,6 +235,8 @@ def write_pass_with_backup(key: str, value: str, *, echo: Callable[[str], object
 
 
 def _back_up_existing(key: str, *, echo: Callable[[str], object]) -> str:
+    from teatree.utils.secret_backups import backup_name  # noqa: PLC0415 — deferred: off the mcp-serve graph
+
     existing = read_pass(key)
     if not existing:
         return ""

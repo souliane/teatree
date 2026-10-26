@@ -77,7 +77,7 @@ case "$selector" in
         errors="$(mktemp "${TMPDIR:-/tmp}/t3-secret-read.XXXXXX")" || exit 2
         trap 'rm -f "$errors"' EXIT HUP INT TERM
         python_code='from teatree.config.cold_secret_reader import main; import sys; result = main(); raise SystemExit(42 if result == 1 else result)'
-        value="$("$interpreter" -c "$python_code" "$operation" "$name" 2>"$errors")" || {
+        value="$("$interpreter" -I -c "$python_code" "$operation" "$name" 2>"$errors")" || {
             rc=$?
             if [ "$rc" -eq 42 ]; then
                 exit 1

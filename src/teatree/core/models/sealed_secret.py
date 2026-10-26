@@ -13,7 +13,6 @@ from django.utils import timezone
 from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.utils.master_key import MasterKeySource, MasterKeySourceError
 from teatree.utils.sealing import InvalidMasterKeyError, MasterKey, SealedValue, SealedValueTamperedError, aad
-from teatree.utils.secret_backups import BACKUP_MARKER, backup_base, expired_backup_names, is_backup
 from teatree.utils.secrets import SecretStoreError
 
 TABLE_NAME = "teatree_sealed_secret"
@@ -75,11 +74,19 @@ class SealedSecretManager(models.Manager["SealedSecret"]):
             read_back = self.reveal(name, key)
             if read_back is None or not hmac.compare_digest(read_back.encode(), value.encode()):
                 raise SealedStoreReadBackError(name)
-            if is_backup(name):
-                self._prune_backups(backup_base(name))
+            self._prune_backups(name)
 
-    def _prune_backups(self, base: str) -> None:
-        names = self.filter(name__startswith=f"{base}{BACKUP_MARKER}").values_list("name", flat=True)
+    def _prune_backups(self, written: str) -> None:
+        from teatree.utils.secret_backups import (  # noqa: PLC0415 — deferred: keeps backup naming off `t3 mcp serve`
+            BACKUP_MARKER,
+            backup_base,
+            expired_backup_names,
+            is_backup,
+        )
+
+        if not is_backup(written):
+            return
+        names = self.filter(name__startswith=f"{backup_base(written)}{BACKUP_MARKER}").values_list("name", flat=True)
         expired = expired_backup_names(names, timezone.now())
         self.filter(name__in=expired).delete()
 
