@@ -70,10 +70,15 @@ def _run_worker() -> None:
         (Path(*home.parts[: index + 1]) for index, part in enumerate(home.parts) if part.startswith("pytest-of-")),
         None,
     )
-    configured_db = os.environ.get("T3_CONFIG_DB") or os.environ.get("T3_CONTROL_DB_DIR")
-    if pytest_root is not None and configured_db and not Path(configured_db).resolve().is_relative_to(pytest_root):
-        message = f"refusing t3 worker: pytest HOME {home} points at external control database {configured_db}"
-        raise RuntimeError(message)
+    if pytest_root is not None:
+        from teatree.utils.singleton import _worker_control_database  # noqa: PLC0415 (deferred: no DB at CLI import)
+
+        databases = [_worker_control_database(primary=True)]
+        databases.extend(Path(path) for key in ("T3_CONFIG_DB", "T3_CONTROL_DB_DIR") if (path := os.environ.get(key)))
+        external = next((path for path in databases if not path.resolve().is_relative_to(pytest_root)), None)
+        if external is not None:
+            message = f"refusing t3 worker: pytest HOME {home} points at external control database {external}"
+            raise RuntimeError(message)
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
     ensure_django()

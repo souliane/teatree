@@ -334,6 +334,50 @@ def test_worker_run_refuses_pytest_home_with_external_control_db(
     assert "pytest HOME" in str(result.exception)
 
 
+@pytest.mark.parametrize(
+    ("control_dir", "config_db"),
+    [
+        ("external", "internal"),
+        ("default", "unset"),
+        ("internal", "external"),
+    ],
+)
+def test_worker_run_checks_every_control_database_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, control_dir: str, config_db: str
+) -> None:
+    pytest_root = tmp_path / "pytest-of-test"
+    home = pytest_root / "pytest-1" / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    if control_dir == "default":
+        monkeypatch.delenv("T3_CONTROL_DB_DIR", raising=False)
+    else:
+        directory = pytest_root / "control" if control_dir == "internal" else Path("/var/lib/teatree/control-db")
+        monkeypatch.setenv("T3_CONTROL_DB_DIR", str(directory))
+    if config_db == "unset":
+        monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    else:
+        database = (
+            pytest_root / "config.sqlite3" if config_db == "internal" else Path("/var/lib/teatree/config.sqlite3")
+        )
+        monkeypatch.setenv("T3_CONFIG_DB", str(database))
+    with mock.patch("teatree.utils.django_bootstrap.ensure_django", side_effect=AssertionError("DB opened")):
+        result = runner.invoke(worker_app, ["run"])
+    assert result.exit_code != 0
+    assert "pytest HOME" in str(result.exception)
+
+
+def test_worker_run_allows_database_inside_pytest_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest_root = tmp_path / "pytest-of-test"
+    monkeypatch.setenv("HOME", str(pytest_root / "home"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(pytest_root / "data"))
+    monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    monkeypatch.delenv("T3_CONTROL_DB_DIR", raising=False)
+    with mock.patch("teatree.utils.django_bootstrap.ensure_django", side_effect=AssertionError("DB opened")):
+        result = runner.invoke(worker_app, ["run"])
+    assert str(result.exception) == "DB opened"
+
+
 class TestWorkerEnsure(django.test.TestCase):
     def test_ensure_reports_already_running(self) -> None:
         with mock.patch("teatree.utils.singleton.flock_is_held", return_value=True):
