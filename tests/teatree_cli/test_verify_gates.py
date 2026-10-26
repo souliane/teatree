@@ -256,7 +256,7 @@ class TestVerifyGatesRunsBothStages:
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0
         calls = _calls(run)
-        assert all(c[:4] == ["timeout", "--signal=TERM", "--kill-after=15s", "600s"] for c in calls)
+        assert [c[3] for c in calls] == ["600s", "2100s", "600s"]
         assert any(c[4:] == ["prek", "run", "--files", "README.md"] for c in calls)
         # One push-stage run — the gate CI re-runs that the bare run skips.
         push = [c for c in calls if "--hook-stage" in c]

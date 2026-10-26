@@ -68,6 +68,8 @@ _MIN_DISK_MIB = 4096
 _MIN_MEMORY_MIB = 2048
 _BYTES_PER_MIB = 1024 * 1024
 _STAGE_DEADLINE_SECONDS = 600
+# The push gate can wait 1500s for the shared lock before its checks start.
+_PUSH_STAGE_DEADLINE_SECONDS = 2100
 _MAX_SCOPED_FILES = 500
 # prek's own precedence when one directory holds several (measured on prek 0.4.10 and 0.5.3).
 _PREK_CONFIG_NAMES = ("prek.toml", ".pre-commit-config.yaml", ".pre-commit-config.yml")
@@ -259,9 +261,10 @@ def _declared_manual_hooks(config: Path) -> tuple[str, ...]:
 
 def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[tuple[str, list[str]]]:
     deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
+    push_deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_PUSH_STAGE_DEADLINE_SECONDS}s"]
     stages = [
         ("commit", [*deadline, "prek", "run", *scope_args]),
-        ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
+        ("pre-push (CI-parity gates)", [*push_deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
     ]
     config = _prek_config(repo, toplevel)
     # A config nobody could read is not one declaring no hooks: keep every id so the run cannot go green on it.
