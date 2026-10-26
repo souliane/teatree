@@ -2,7 +2,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    dependencies = [("core", "0020_ticket_thread_live_control")]
+    dependencies = [("core", "0021_head_carry_over")]
 
     operations = [
         migrations.AlterField(

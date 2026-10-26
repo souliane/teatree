@@ -47,6 +47,11 @@ class TestValidatedTicketExtra:
         urls = ["https://github.com/souliane/teatree/pull/5049"]
         assert validated_ticket_extra({"reopened_over_pr_urls": urls})["reopened_over_pr_urls"] == urls
 
+    def test_review_retry_heads_survive_validation(self) -> None:
+        retry_heads = {"review_retry_head_by_task": {"7": "a" * 40}, "review_retry_after_move": {"b" * 40: "7"}}
+
+        assert validated_ticket_extra(retry_heads) == retry_heads
+
 
 class TestValidatedWorktreeExtra:
     def test_none_returns_empty(self) -> None:

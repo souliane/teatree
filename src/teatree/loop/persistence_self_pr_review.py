@@ -7,7 +7,8 @@ sub-agent (a ``reviewing``-phase Task) instead of a codex slash-command agent,
 sharing the per-SHA :class:`CodexReviewMarker` idempotency so the unconditional
 scanner emit dedups per head SHA instead of flooding the queue. The marker rides
 the SAME atomic block that creates the Task — a dropped persist rolls it back and
-the next tick retries; a force-push (new head SHA) re-fires the review.
+the next tick retries; a force-push (new head SHA) re-fires the review, a merge of main
+that leaves the patch unchanged does not (:mod:`teatree.loop.scanners.head_lineage`).
 
 Imports the shared ticket/task helpers from :mod:`teatree.loop.persistence` at
 top level; that hub imports this module only lazily (inside ``_handle_reviewer``),
@@ -23,6 +24,7 @@ from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import _get_or_create_ticket, _owning_overlay
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
+from teatree.loop.scanners.head_lineage import review_head_is_carried
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,8 @@ def handle_self_pr_review(action: DispatchAction) -> Task | None:
         logger.debug("Skipping self-PR review action with incomplete payload: %r", action.detail)
         return None
     variant = str(payload.get("variant") or "claude:review")
+    if review_head_is_carried(slug=slug, pr_id=pr_id, head_sha=head_sha, pr_url=pr_url, variant=variant):
+        return None
     overlay = str(payload.get("overlay") or "")
     with transaction.atomic():
         ticket, _created = _get_or_create_ticket(

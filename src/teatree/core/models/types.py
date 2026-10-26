@@ -190,6 +190,8 @@ class TicketExtra(TypedDict, total=False):
     mr_title_generated: str
     labels: list[str]
     reviewed_sha: str
+    review_retry_head_by_task: dict[str, str]
+    review_retry_after_move: dict[str, str]
     # What the FORGE last reported. Overwritten with the live value on every scan, so a
     # LOCAL disposition stored here survives one pass and is then read back as an
     # observation — the discharge has its own key below for exactly that reason.
