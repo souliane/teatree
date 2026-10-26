@@ -18,6 +18,7 @@ the cgroup arm now does the same, from one reader both consumers share.
 import os
 import platform
 from dataclasses import dataclass
+from typing import Literal
 
 from teatree.utils.ram_probe import cgroup_file, cgroup_v1_memory_mib, cgroup_v2_memory_mib, host_available_ram_mib
 
@@ -59,16 +60,21 @@ def cgroup_v2_reclaimable_mib() -> int:
     nobody measured — under-reporting headroom is the safe direction.
     """
     try:
-        raw = cgroup_file("memory.stat").read_text(encoding="utf-8")
+        stat = read_cgroup_memory_stat()
     except OSError:
         return 0
-    total = 0
+    return sum(stat.get(key, 0) for key in _RECLAIMABLE_STAT_KEYS) // _BYTES_PER_MIB
+
+
+def read_cgroup_memory_stat() -> dict[str, int]:
+    raw = cgroup_file("memory.stat").read_text(encoding="utf-8")
+    values: dict[str, int] = {}
     for line in raw.splitlines():
         key, _, value = line.partition(" ")
         stripped = value.strip()
-        if key in _RECLAIMABLE_STAT_KEYS and stripped.isdigit():
-            total += int(stripped)
-    return total // _BYTES_PER_MIB
+        if stripped.isdigit():
+            values[key] = values.get(key, 0) + int(stripped)
+    return values
 
 
 def cgroup_v2_oom_kills() -> int | None:
@@ -129,19 +135,25 @@ def _cgroup_memory_cap_invalid(version: int, controller: str, limit: str, curren
     return not current.isdecimal()
 
 
-def _cgroup_cap_and_headroom_mib() -> tuple[int | None, int | None]:
+def _cgroup_cap_and_headroom_mib(*, trace: dict[str, int | str] | None = None) -> tuple[int | None, int | None]:
     """This cgroup's ``memory.max`` and its remaining headroom, both in whole MiB.
 
     Read together because :func:`read_ram_headroom` needs both, and a second read of
     ``memory.max`` would let the cap and the headroom describe different instants.
     """
-    limit_mib = cgroup_v2_memory_mib("memory.max")
-    current_mib = cgroup_v2_memory_mib("memory.current")
+    limit_mib = cgroup_v2_memory_mib("memory.max", trace=trace)
+    current_mib = cgroup_v2_memory_mib("memory.current", trace=trace)
     if limit_mib is None:
-        v1_limit = cgroup_v1_memory_mib("memory.limit_in_bytes")
+        v1_limit = cgroup_v1_memory_mib("memory.limit_in_bytes", trace=trace)
         if v1_limit is not None:
-            v1_current = cgroup_v1_memory_mib("memory.usage_in_bytes")
+            v1_current = cgroup_v1_memory_mib("memory.usage_in_bytes", trace=trace)
+            if trace is not None:
+                trace.pop("memory.max", None)
+                trace.pop("memory.current", None)
             return v1_limit, max(0, v1_limit - v1_current) if v1_current is not None else None
+        if trace is not None and trace.get("memory.limit_in_bytes") == "no cap":
+            trace.pop("memory.max", None)
+            trace.pop("memory.current", None)
     if limit_mib is None or current_mib is None:
         return limit_mib, None
     return limit_mib, max(0, limit_mib - max(0, current_mib - cgroup_v2_reclaimable_mib()))
@@ -161,6 +173,15 @@ class RamHeadroom:
     available_mib: int | None
     cgroup_limit_mib: int | None
     host_available_mib: int | None
+    cgroup_headroom_mib: int | None = None
+
+    @property
+    def binding_scope(self) -> Literal["cgroup", "host"]:
+        """Which scope :attr:`box_watermark_mib` reads; a tie goes to the host."""
+        available = self.available_mib
+        if self.cgroup_is_box_scoped and available is not None:
+            return "cgroup" if self.host_available_mib is None or available < self.host_available_mib else "host"
+        return "host"
 
     @property
     def cgroup_is_box_scoped(self) -> bool:
@@ -201,7 +222,7 @@ class RamHeadroom:
         return self.cgroup_limit_mib / _MIB_PER_GIB
 
 
-def read_ram_headroom() -> RamHeadroom:
+def read_ram_headroom(*, trace: dict[str, int | str] | None = None) -> RamHeadroom:
     """RAM available to THIS process — the minimum of every scope that can answer (#3992).
 
     ``/proc/meminfo`` inside a container reports the HOST's memory, so a capped worker
@@ -212,14 +233,15 @@ def read_ram_headroom() -> RamHeadroom:
     ``None`` (nothing readable) stays a different answer from ``0`` (readable, nothing
     left): a caller falls back on the first and tightens on the second.
     """
-    limit_mib, headroom_mib = _cgroup_cap_and_headroom_mib()
-    host = host_available_ram_mib()
+    limit_mib, headroom_mib = _cgroup_cap_and_headroom_mib(trace=trace)
+    host = host_available_ram_mib(trace=trace)
     host_mib = host if host > 0 else None
     candidates = [mib for mib in (host_mib, headroom_mib) if mib is not None]
     return RamHeadroom(
         available_mib=min(candidates) if candidates else None,
         cgroup_limit_mib=limit_mib,
         host_available_mib=host_mib,
+        cgroup_headroom_mib=headroom_mib,
     )
 
 
@@ -232,5 +254,6 @@ __all__ = [
     "cgroup_memory_probe_inert",
     "cgroup_v2_oom_kills",
     "cgroup_v2_reclaimable_mib",
+    "read_cgroup_memory_stat",
     "read_ram_headroom",
 ]

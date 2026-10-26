@@ -243,6 +243,14 @@ class TestHolderRecord:
         path.write_text(f"{os.getpid()}\nnot-json\n", encoding="utf-8")
         assert read_holder(path) is None
 
+    def test_undecodable_holder_reads_as_absent(self, tmp_path: Path) -> None:
+        path = tmp_path / "undecodable.pid"
+        path.write_bytes(f"{os.getpid()}\n".encode() + b"\xff\n")
+        errors: list[Exception] = []
+        assert read_holder(path, errors=errors) is None
+        assert len(errors) == 1
+        assert isinstance(errors[0], UnicodeDecodeError)
+
     def test_missing_file_has_no_record(self, tmp_path: Path) -> None:
         assert read_holder(tmp_path / "absent.pid") is None
 
