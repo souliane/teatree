@@ -37,7 +37,9 @@ CI jobs no local hook covers so exit 0 cannot be read as "CI will be green".
 import json
 import os
 import shutil
+import sqlite3
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -48,8 +50,10 @@ import yaml
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.hooks.banned_term_registry import load_registry
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
+from teatree.paths import ControlDb, canonical_db_in
 from teatree.quality.changed_set import ChangedSetError, changed_paths
 from teatree.quality.gate_receipt import write_gate_receipt
+from teatree.sqlite_snapshot import _sqlite_snapshot
 from teatree.utils.git_branch import current_branch, head_sha
 from teatree.utils.git_remote_ops import config_value
 from teatree.utils.git_run import run, run_strict
@@ -308,6 +312,33 @@ def _stage_env(private_root: str) -> dict[str, str]:
     return env
 
 
+def _task_database(env: Mapping[str, str]) -> Path:
+    home = Path.home()
+    return canonical_db_in(ControlDb(env=env, home=home).primary_data_dir(), env=env, home=home)
+
+
+def _stage_control_database(env: dict[str, str]) -> None:
+    source = _task_database(os.environ)
+    if not source.is_file():
+        return
+    target = _task_database(env)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _sqlite_snapshot(source, target)
+
+
+def _run_isolated_stages(stages: list[tuple[str, list[str]]], repo: Path) -> tuple[list[str], list[str]]:
+    with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
+        stage_env = _stage_env(private_root)
+        try:
+            _stage_control_database(stage_env)
+        except (OSError, sqlite3.Error) as exc:
+            reason = f"control DB snapshot failed: {exc}"
+            _record(repo, "incomplete", reason)
+            typer.echo(f"verify-gates: INCOMPLETE — {reason}", err=True)
+            raise typer.Exit(code=1) from exc
+        return _run_stages(stages, repo, stage_env)
+
+
 def verify_gates(
     expect_sha: str = typer.Option(
         "",
@@ -381,8 +412,7 @@ def verify_gates(
     scope_args, scope_reason = _scope_args(repo)
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
     stages = _stage_commands(scope_args, repo, tree.toplevel)
-    with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
-        failed, incomplete = _run_stages(stages, repo, _stage_env(private_root))
+    failed, incomplete = _run_isolated_stages(stages, repo)
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):
