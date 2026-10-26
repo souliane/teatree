@@ -39,6 +39,7 @@ from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
+from teatree.core.modelkit.db_retry import wait_out_locked_writes
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
@@ -155,6 +156,7 @@ def validate_result_keys(result: AgentResultBlob) -> str:
     return ""
 
 
+@wait_out_locked_writes()
 def record_result_envelope(
     task: Task,
     result: AgentResultBlob,
