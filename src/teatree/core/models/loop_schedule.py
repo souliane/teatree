@@ -8,8 +8,8 @@ governing slot at instant *t* is simply the latest slot-start ≤ *t* (searching
 back across midnight / week wrap), so there are no gaps, no overlaps, and no
 span-vs-fire ambiguity. Multiple named schedules may exist; the active one is the
 ``active_loop_schedule`` ``ConfigSetting`` (absent ⇒ no L2 layer). Slot resolution
-itself lives in :mod:`teatree.loop.preset_resolution`; this module is the durable
-shape only, referencing presets **by name** so a deleted preset fails open.
+itself lives in :mod:`teatree.loop.preset_resolution`; this module owns the
+durable shape, active-schedule lookup, and owner timezone.
 """
 
 import datetime as dt

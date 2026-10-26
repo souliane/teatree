@@ -25,7 +25,8 @@ treat both as "no preset governs"; publishing under the owner's identity is not,
 bare ``None`` let a failed read reach the permitting configured default indistinguishably
 from a box that simply has no schedule.
 
-A DOMAIN-layer leaf depending only on :mod:`teatree.core.models`, so
+A DOMAIN-layer leaf depending on :mod:`teatree.core.models` and pure
+:mod:`teatree.core.modelkit` policy, so
 :mod:`teatree.loop.loop_state_db` and the ``teatree.loops`` orchestration tick can
 both import it downward.
 """
