@@ -387,6 +387,7 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
     from teatree.hooks import banned_terms_scanner  # noqa: PLC0415 — deferred: loaded per eval run
     from teatree.hooks.banned_terms_scanner import (  # noqa: PLC0415 — lazy import
         SCANNER_UNAVAILABLE_MARKER,
+        STORE_UNREADABLE_MARKER,
         TERMS_UNSET_MARKER,
         scan_text,
     )
@@ -400,8 +401,15 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
         _seed_config_db(db, "banned_term_registry", {"leak": [], "prose_collider": ["acmecorp"]})
         with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
             on_crash = scan_text("we ship to acmecorp", config_path=db)
-        on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
-    return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config == TERMS_UNSET_MARKER
+        unset_db = Path(raw) / "unset.sqlite3"
+        _seed_config_db(unset_db, "unrelated_setting", "present")
+        on_no_config = scan_text("we ship to acmecorp", config_path=unset_db)
+        on_unreadable = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
+    return (
+        on_crash == SCANNER_UNAVAILABLE_MARKER
+        and on_no_config == TERMS_UNSET_MARKER
+        and on_unreadable == STORE_UNREADABLE_MARKER
+    )
 
 
 def _check_forge_resolves_by_host_not_token() -> bool:
