@@ -341,7 +341,7 @@ class WorkerInspect(TypedDict):
 
 def _fixture_text(name: str) -> str:
     template = Template((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
-    return template.substitute(CONTAINER_HOME=CONTAINER_HOME)
+    return template.substitute(CONTAINER_HOME=CONTAINER_HOME, SOURCE_GIT_SUBPATH=codex_source_git_subpath())
 
 
 def probe_fixture(name: str) -> Observation:
