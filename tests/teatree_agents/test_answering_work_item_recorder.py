@@ -131,7 +131,7 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
 
     def test_an_unknown_host_forge_files_nothing_and_names_the_cause(self) -> None:
         self.host.forge = ""
-        self._record(
+        task = self._record(
             {"answer": {"text": "On it."}, "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."}}
         )
 
@@ -140,7 +140,7 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         assert f"forge for {_REPO_A} could not be determined" in reply
         assert "nothing was filed" in reply
         assert "Tracking as" not in reply
-        assert not Ticket.objects.filter(issue_url=_FILED).exists()
+        assert list(Ticket.objects.values_list("pk", flat=True)) == [task.ticket_id]
 
     def test_the_request_is_filed_as_a_real_issue(self) -> None:
         self._record(
