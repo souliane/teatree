@@ -96,6 +96,58 @@ class TestShippingHoldSettlement(TestCase):
         assert ticket.extra["shipping_hold"]["reason"] == "no worktree row; nothing on the workspaces root or the forge"
         assert "shipping_skipped" not in ticket.extra
 
+    def test_row_added_after_evidence_scan_is_rechecked_before_ignore(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-empty")
+        host = _Host()
+        with TemporaryDirectory() as directory, TemporaryDirectory() as checkout_dir:
+            root = Path(directory)
+            path = Path(checkout_dir) / "new-checkout"
+            path.mkdir()
+            _git(path, "init", "-b", "main")
+            _git(
+                path,
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "base",
+            )
+            _git(path, "checkout", "-b", "5346-work")
+            _git(
+                path,
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "work",
+            )
+
+            def add_row(*, repo: str, prefix: str) -> list[str]:
+                Worktree.objects.create(
+                    ticket=ticket,
+                    overlay="test",
+                    repo_path="souliane/teatree",
+                    branch="5346-work",
+                    extra={"worktree_path": str(path)},
+                )
+                return []
+
+            with patch.object(host, "list_unshipped_branches", side_effect=add_row):
+                results = self._run(root, host)
+            ticket.refresh_from_db()
+            assert results[0].action == "hold"
+            assert ticket.state == Ticket.State.SELF_REVIEWED
+            assert "shipping_skipped" not in ticket.extra
+            assert self._run(root, _Host(), now=timezone.now() + timedelta(minutes=16))[0].action == "release"
+        assert Task.objects.filter(ticket=ticket, phase="shipping").count() == 1
+
     def test_unreadable_forge_with_a_row_is_held_as_unverified_never_ignored(self) -> None:
         ticket = self._ticket()
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-work")

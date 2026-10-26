@@ -64,7 +64,10 @@ def list_unshipped_branches(client: GitLabAPI, project: ProjectInfo | None, *, r
             f"{base}/merge_requests?state=merged&source_branch={quote_plus(name)}&per_page=100",
             require_list=True,
         )
-        if not any(isinstance(mr, dict) and mr.get("sha") == sha for mr in mrs):
+        if any(not isinstance(mr, dict) or not isinstance(mr.get("sha"), str) or not mr["sha"] for mr in mrs):
+            msg = f"GitLab {repo} returned an invalid merged request"
+            raise TypeError(msg)
+        if not any(mr["sha"] == sha for mr in mrs):
             result.append(name)
     return result
 

@@ -22,6 +22,15 @@ def test_merged_head_is_shipped_and_extended_head_is_unshipped() -> None:
     assert list_unshipped_branches(client, project, repo="souliane/teatree", prefix="5346-") == ["5346-work"]
 
 
+@pytest.mark.parametrize("merged_item", [{}, {"sha": None}, {"sha": ""}])
+def test_malformed_merged_request_is_unverified(merged_item: dict[str, object]) -> None:
+    branch = {"name": "5346-work", "commit": {"id": "new"}, "merged": False}
+    client = MagicMock()
+    client.get_json_paginated.side_effect = [[branch], [merged_item]]
+    with pytest.raises(TypeError, match="invalid merged request"):
+        list_unshipped_branches(client, SimpleNamespace(project_id=42), repo="souliane/teatree", prefix="5346-")
+
+
 def test_non_list_page_raises() -> None:
     client = GitLabAPI(token="x")
     response = MagicMock()

@@ -23,6 +23,7 @@ class Settlement:
     ticket_pk: int
     action: str
     reason: str
+    observed_worktree_ids: frozenset[int] = frozenset()
 
 
 def _checked_at(ticket: Ticket) -> datetime | None:
@@ -54,7 +55,7 @@ def _decide(ticket: Ticket) -> Settlement:
         return Settlement(ticket.pk, "hold", f"unverified: {unknown}")
     if not rows:
         return Settlement(ticket.pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
-    return Settlement(ticket.pk, "ignore", "every source verified empty")
+    return Settlement(ticket.pk, "ignore", "every source verified empty", frozenset(row.pk for row in rows))
 
 
 def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> Settlement | None:
@@ -67,8 +68,12 @@ def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> S
             return None
         if (checked := _checked_at(ticket)) is not None and now - checked < RECHECK_INTERVAL:
             return None
-        if result.action == "ignore" and not ticket.worktrees.select_for_update().exists():
-            result = Settlement(ticket_pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
+        if result.action == "ignore":
+            current_ids = frozenset(ticket.worktrees.select_for_update().values_list("pk", flat=True))
+            if not current_ids:
+                result = Settlement(ticket_pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
+            elif current_ids != result.observed_worktree_ids:
+                result = Settlement(ticket_pk, "hold", "worktree rows changed; awaiting the workspace and forge check")
         if result.action == "release":
             ticket.merge_extra(pop_keys=["shipping_hold"])
             ticket.schedule_shipping()

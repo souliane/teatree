@@ -27,6 +27,17 @@ def test_merged_head_is_shipped_and_extended_head_is_unshipped() -> None:
         assert names == ["5346-work"]
 
 
+@pytest.mark.parametrize("closed_item", [{}, {"merged_at": "2026-01-01", "head": {}}, {"merged_at": None}])
+def test_malformed_closed_pull_request_is_unverified(closed_item: dict[str, object]) -> None:
+    refs = [{"ref": "refs/heads/5346-work", "object": {"sha": "new"}}]
+    with (
+        patch.object(pr_reads, "_gh_api_get", side_effect=[{"default_branch": "main"}, {"ahead_by": 1}]),
+        patch.object(pr_reads, "_strict_list_pages", side_effect=[refs, [closed_item]]),
+        pytest.raises(TypeError, match="invalid closed pull request"),
+    ):
+        GitHubCodeHost(token="x").list_unshipped_branches(repo="souliane/teatree", prefix="5346-")
+
+
 def test_non_list_page_raises() -> None:
     with (
         patch.object(pr_reads, "_run_gh", return_value=SimpleNamespace(stdout='[{"message":"error"}]')),

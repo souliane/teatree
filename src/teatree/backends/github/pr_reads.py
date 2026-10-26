@@ -87,6 +87,21 @@ def _strict_list_pages(endpoint: str, *, token: str) -> list[_BranchOrPullItem]:
     return cast("list[_BranchOrPullItem]", items)
 
 
+def _matching_merged_head(prs: list[_BranchOrPullItem], *, sha: str, repo: str) -> bool:
+    matched = False
+    for pr in prs:
+        merged_at = pr.get("merged_at")
+        head = pr.get("head")
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        valid_merged_at = merged_at is None or (isinstance(merged_at, str) and bool(merged_at))
+        valid_head = isinstance(head_sha, str) and bool(head_sha)
+        if "merged_at" not in pr or not valid_merged_at or not valid_head:
+            msg = f"GitHub {repo} returned an invalid closed pull request"
+            raise TypeError(msg)
+        matched |= merged_at is not None and head_sha == sha
+    return matched
+
+
 class BranchReads:
     @staticmethod
     def list_unshipped_branches(*, repo: str, prefix: str, token: str) -> list[str]:
@@ -125,10 +140,7 @@ class BranchReads:
                 f"repos/{repo}/pulls?state=closed&head={quote(f'{owner}:{name}', safe='')}&per_page=100",
                 token=token,
             )
-            if not any(
-                pr.get("merged_at") and isinstance((head := pr.get("head")), dict) and head.get("sha") == sha
-                for pr in prs
-            ):
+            if not _matching_merged_head(prs, sha=sha, repo=repo):
                 unshipped.append(name)
         return unshipped
 
