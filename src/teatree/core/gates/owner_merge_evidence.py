@@ -53,6 +53,10 @@ def owner_merger_login(ticket: "Ticket") -> str | None:
         return None
     if PullRequest.objects.filter(ticket=ticket).live().exists():
         return None
-    aliases = get_effective_settings(ticket.overlay or None).user_identity_aliases
+    try:
+        aliases = get_effective_settings(ticket.overlay or None).user_identity_aliases
+    except (TypeError, ValueError):
+        logger.warning("Could not read owner aliases for ticket %s", ticket.pk, exc_info=True)
+        return None
     normalized = {alias.strip().casefold() for alias in aliases if isinstance(alias, str) and alias.strip()}
     return login if login.casefold() in normalized else None

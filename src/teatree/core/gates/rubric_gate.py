@@ -26,7 +26,7 @@ The gate runs on TWO transitions, and no setting disables either. At ``merge``
 :func:`check_rubric_verified` drops that bind, since the head has moved on. The
 human-authorized ``ticket plan-bypass`` waives a missing rubric and every rung except
 a recorded FAIL. Delivery also accepts an owner-merged forge PR when its recorded
-merge SHA matches the forge read, the merger matches an owner alias, no keystone
+merge SHA matches the forge read, its ``merged_by`` matches an owner alias, no keystone
 audit exists, and no PR remains live. This exception never waives a recorded FAIL.
 
 The merge check is pure over the durable rubric row; delivery additionally reads

@@ -98,7 +98,7 @@ class TestRecordForgeMerger(TestCase):
 
     def test_open_mismatched_or_blank_merger_records_nothing(self) -> None:
         states = (
-            PrMergeState(state="OPEN", merge_commit_oid=_SHA, merged_by="alice"),
+            PrMergeState(state="OPEN", merge_commit_oid=_SHA, raw_merge_commit_oid=_SHA, merged_by="alice"),
             PrMergeState(state="MERGED", merge_commit_oid="b" * 40, merged_by="alice"),
             PrMergeState(state="MERGED", merge_commit_oid=_SHA, merged_by=" "),
         )
@@ -167,9 +167,8 @@ class TestOwnerMergeRubricWaiver(TestCase):
             assert check_rubric_verified(with_rubric) is None
             assert check_rubric_verified(without_rubric) is None
         assert len(logs.output) == 2
-        assert all(
-            str(ticket.pk) in line for ticket, line in zip((with_rubric, without_rubric), logs.output, strict=True)
-        )
+        assert f"ticket {with_rubric.pk}, merger Alice" in logs.output[0]
+        assert f"ticket {without_rubric.pk}, merger alice" in logs.output[1]
         assert completeness(with_rubric) is None
 
     def test_recorded_fail_still_blocks_and_merge_time_stays_strict(self) -> None:
@@ -203,9 +202,20 @@ class TestOwnerMergeRubricWaiver(TestCase):
                         repo="example/repo",
                         iid=str(sibling_id),
                     )
-                with pytest.raises(RubricNotVerifiedError, match="ungraded"):
+                with (
+                    self.assertNoLogs("teatree.core.gates.rubric_gate", level="INFO"),
+                    pytest.raises(RubricNotVerifiedError, match="ungraded"),
+                ):
                     check_rubric_verified(ticket)
                 ConfigSetting.objects.set_value("user_identity_aliases", ["alice"])
+
+    def test_scalar_owner_aliases_keep_the_rubric_refusal(self) -> None:
+        ticket = _ticket(merger="alice")
+        Rubric.populate(ticket, ["ungraded criterion"])
+        ConfigSetting.objects.filter(key="user_identity_aliases", scope="").update(value="alice")
+
+        with pytest.raises(RubricNotVerifiedError, match="ungraded"):
+            check_rubric_verified(ticket)
 
     def test_closed_sibling_does_not_block_owner_delivery(self) -> None:
         ticket = _ticket(merger="alice")
