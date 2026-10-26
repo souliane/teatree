@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, Rubric, Session, Ticket
-from teatree.core.models.rubric_phase_criteria import FAILING_RUN_CRITERIA, PHASE_CRITERIA
+from teatree.core.models.rubric import FAILING_RUN_CRITERIA, PHASE_CRITERIA
 
 
 def _seeded_texts(ticket: Ticket, phase: str) -> list[str]:
