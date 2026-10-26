@@ -1,11 +1,13 @@
 """End-to-end dispatch proofs for ordered per-skill harness routes."""
 
 import contextlib
+import tempfile
 from collections.abc import AsyncGenerator
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -23,16 +25,26 @@ from teatree.agents.harness_registry import (
     register_harness,
 )
 from teatree.agents.runner import TaskUsage, run_agent
+from teatree.agents.runner_stream import HarnessOutcome
 from teatree.agents.session_lineage import resume_session_id
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import Session, Task, TaskAttempt, UsageWindowState
+from teatree.core.models import (
+    AgentRouteAvailability,
+    DeferredQuestion,
+    Session,
+    Task,
+    TaskAttempt,
+    UsageWindowState,
+    Worktree,
+)
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
 from tests.teatree_agents._route_fakes import scripted_session
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, result_message, success_stream
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 _CODEX_THREAD_ID = "22222222-2222-4222-8222-222222222222"
 
@@ -118,8 +130,15 @@ class TestSkillRouteRuntimeFallback(TestCase):
         ticket = planned_ticket()
         return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
 
-    def _run(self, config: AgentConfig, *, skills: list[str] | None = None, phase: str = "debugging") -> TaskAttempt:
-        task = self._task()
+    def _run(
+        self,
+        config: AgentConfig,
+        *,
+        skills: list[str] | None = None,
+        phase: str = "debugging",
+        task: Task | None = None,
+    ) -> TaskAttempt:
+        task = task or self._task()
         with (
             patch.object(harness_dispatch_mod, "resolve_agent_config", return_value=config),
             patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=skills or ["route-skill"]),
@@ -219,6 +238,33 @@ class TestSkillRouteRuntimeFallback(TestCase):
         assert attempts[1].fallback_from_attempt == attempts[0]
         assert attempts[1].fallback_reason == "ChatGPT quota exhausted"
         assert final.exit_code == 0
+
+    def test_round_handoff_parks_without_failing_the_route(self) -> None:
+        self._register("codex_like", FakeHarnessSession)
+        self._register("claude_like", FakeHarnessSession)
+        terminal = result_message(
+            is_error=True,
+            subtype="error_during_execution",
+            result="The process timed out while discussing authorization and credentials.",
+        )
+        outcome = HarnessOutcome("work done", terminal, None, tool_calls=1, round_handoff="round ceiling")
+        task = self._task()
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "repo"
+            _init_repo_with_branch(repo, branch="feature", commits_ahead=1)
+            Worktree.objects.create(
+                ticket=task.ticket, repo_path=str(repo), branch="feature", extra={"worktree_path": str(repo)}
+            )
+            with patch.object(runner_mod, "_drive_with_heartbeat", new=AsyncMock(return_value=outcome)):
+                parked = self._run(self._config("codex_like", "claude_like"), task=task)
+
+        parked.task.refresh_from_db()
+        assert self.built == ["codex_like"]
+        assert parked.result["needs_user_input"] is True
+        assert parked.task.status == Task.Status.COMPLETED
+        assert DeferredQuestion.objects.filter(parked_task=parked.task).exists()
+        assert not parked.task.attempts.filter(failure_kind="result_error").exists()
+        assert not AgentRouteAvailability.objects.exists()
 
     def test_selected_candidate_effort_reaches_spawn_and_attempt_provenance(self) -> None:
         self._register("codex_like", FakeHarnessSession)
