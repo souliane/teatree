@@ -29,7 +29,7 @@ import typer
 from django.utils import timezone
 from django_typer.management import command, initialize
 
-from teatree.backends.slack.table_format import render_table_message
+from teatree.backends.slack.table_format import render_table_message, slack_table_block
 from teatree.core.checking import (
     DEFAULT_CAP,
     AllOverlaysReportDict,
@@ -38,6 +38,7 @@ from teatree.core.checking import (
     gather_all_overlays_report,
     gather_checking_report,
 )
+from teatree.core.checking_types import CheckItem, OwnerWaitItem
 from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
@@ -65,31 +66,42 @@ def _stamp(when: datetime) -> str:
     return local.strftime("%H:%M")
 
 
-def _render_groups_tables(groups: list[CheckGroup], *, header: str, stamp: str, cap: int = DEFAULT_CAP) -> str:
+def _render_groups_tables(
+    groups: list[CheckGroup], *, header: str, stamp: str, internal_escalations: int = 0, cap: int = DEFAULT_CAP
+) -> str:
     """Render each non-empty group as a table under *header*.
 
-    Empty report (every group at ``total == 0``) collapses to the single
+    Empty report (every group has no table content) collapses to the single
     ``Nothing since <stamp>.`` line the terse view uses, so a no-change run
     stays one line. A capped group notes the pre-cap total in its title.
     """
-    if all(group.total == 0 for group in groups):
+    if all(not group.has_table_content() for group in groups) and not internal_escalations:
         return f"Nothing since {stamp}."
     buffer = io.StringIO()
     buffer.write(header + "\n")
     for group in groups:
-        if group.total == 0:
+        if not group.has_table_content():
             continue
         title = group.title if group.total <= cap else f"{group.title} — {group.total} (top {cap})"
+        rows = [
+            [render_ref(item.label, title=item.title, url=item.url), item.detail] for item in group.table_items(cap=cap)
+        ]
+        if group.total > cap:
+            rows.append(["", f"…and {group.total - cap} more"])
         print_table(
             ["Ref", "Detail"],
-            [[render_ref(item.label, title=item.title, url=item.url), item.detail] for item in group.items[:cap]],
+            rows,
             title=title,
             stream=buffer,
         )
+    if internal_escalations:
+        buffer.write(f"{internal_escalations} internal escalations: factory work, not questions\n")
     return buffer.getvalue()
 
 
-def _recap_table_dm(groups: list[CheckGroup], *, header: str, cap: int = DEFAULT_CAP) -> tuple[list[RawAPIDict], str]:
+def _recap_table_dm(
+    groups: list[CheckGroup], *, header: str, internal_escalations: int = 0, cap: int = DEFAULT_CAP
+) -> tuple[list[RawAPIDict], str]:
     """Render the non-empty recap groups as native ``table`` blocks + a fence.
 
     Each group becomes a titled :func:`render_table_message` — the native
@@ -102,33 +114,55 @@ def _recap_table_dm(groups: list[CheckGroup], *, header: str, cap: int = DEFAULT
     for group in groups:
         if group.total == 0:
             continue
-        rows = [[item.label, item.title, item.detail] for item in group.items[:cap]]
-        message = render_table_message(["Ref", "Title", "Detail"], rows, title=f"{group.title} ({group.total})")
+        rows = [
+            [
+                f"Q{item.row_id}" if isinstance(item, OwnerWaitItem) and item.row_id is not None else item.label,
+                item.title or item.url or item.label.partition(": ")[2] or item.label,
+                item.detail,
+            ]
+            for item in group.items[:cap]
+        ]
+        links = {(index, 1): item.url for index, item in enumerate(group.items[:cap]) if item.url}
+        headers = ["Ref", "Subject", "Detail"]
+        message = render_table_message(headers, rows, title=f"{group.title} ({group.total})")
+        message.blocks[-1] = slack_table_block(headers, rows, links=links)
         blocks.extend(message.blocks)
         fences.append(message.fence)
-    if not blocks:
+    if internal_escalations:
+        line = f"{internal_escalations} internal escalations: factory work, not questions"
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": line}})
+        fences.append(line)
+    if not fences:
         return [], ""
     return blocks, f"{header}\n" + "\n".join(fences)
 
 
-def _recap_key(groups: list[CheckGroup], *, scope: str) -> str:
+def _item_identity(item: CheckItem) -> str:
+    detail = f"{item.kind}:{item.row_id}:{item.owner_only}" if isinstance(item, OwnerWaitItem) else item.detail
+    return f"{item.label}|{item.url}|{item.title}|{detail}"
+
+
+def _recap_key(groups: list[CheckGroup], *, scope: str, internal_escalations: int = 0) -> str:
     """Content-hashed idempotency key so an unchanged recap never re-DMs."""
-    payload = "\n".join(f"{group.title}|{item.label}|{item.detail}" for group in groups for item in group.items)
+    payload = "\n".join(f"{group.title}|{_item_identity(item)}" for group in groups for item in group.items)
+    payload += f"\ninternal_escalations:{internal_escalations}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     return f"checking_recap:{scope}:{digest}"
 
 
-def _maybe_notify_recap(groups: list[CheckGroup], *, header: str, scope: str, notify: bool) -> bool:
+def _maybe_notify_recap(
+    groups: list[CheckGroup], *, header: str, scope: str, notify: bool, internal_escalations: int = 0
+) -> bool:
     """Whether the recap DM landed — trivially true when there is nothing to send (#2966)."""
     if not notify:
         return True
-    blocks, fence = _recap_table_dm(groups, header=header)
-    if not blocks:
+    blocks, fence = _recap_table_dm(groups, header=header, internal_escalations=internal_escalations)
+    if not fence:
         return True
     return notify_user(
         fence,
         kind=NotifyKind.INFO,
-        idempotency_key=_recap_key(groups, scope=scope),
+        idempotency_key=_recap_key(groups, scope=scope, internal_escalations=internal_escalations),
         audience=NotifyAudience.OWNER_DELIVERY,
         blocks=blocks,
     )
@@ -196,7 +230,13 @@ class Command(MachineOutputCommand):
         groups = report.groups
         # The checkpoint consumes the window, so advancing it over an undelivered
         # recap loses those rows for good — deliver first, advance only on success.
-        delivered = _maybe_notify_recap(groups, header=header, scope=overlay_name or "global", notify=flags.notify)
+        delivered = _maybe_notify_recap(
+            report.recap_groups,
+            header=header,
+            scope=overlay_name or "global",
+            notify=flags.notify,
+            internal_escalations=report.internal_escalations,
+        )
         if not delivered:
             self.stderr.write("  recap DM not delivered — the checking window is left unadvanced")
         if not flags.since and not flags.no_advance and delivered:
@@ -228,7 +268,13 @@ class Command(MachineOutputCommand):
         stamp = _stamp(report.earliest_since)
         header = f"Since {stamp} · all overlays"
         groups = report.groups
-        delivered = _maybe_notify_recap(groups, header=header, scope="all", notify=flags.notify)
+        delivered = _maybe_notify_recap(
+            report.recap_groups,
+            header=header,
+            scope="all",
+            notify=flags.notify,
+            internal_escalations=report.internal_escalations,
+        )
         if not delivered:
             self.stderr.write("  recap DM not delivered — the checking window is left unadvanced")
         if not flags.since and not flags.no_advance and delivered:
@@ -253,7 +299,9 @@ class Command(MachineOutputCommand):
             json_output=flags.json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=_render_groups_tables(groups, header=header, stamp=stamp),
+            human=_render_groups_tables(
+                groups, header=header, stamp=stamp, internal_escalations=payload["internal_escalations"]
+            ),
         )
         return payload
 

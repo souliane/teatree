@@ -4,6 +4,7 @@ import json
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db import connection
@@ -11,19 +12,29 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from teatree.core.modelkit.notify_policy import CHECKOUT_ATTEST_HOLD
+from teatree.core.modelkit.reask_cadence import owner_quiet_at
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
+from teatree.core.worktree.checkout_state import CheckoutState
+from teatree.loop.preset_resolution import owner_zone
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
-from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
+from teatree.loop.self_improve.detectors.lifecycle_incident import _POST_WAIT, LifecycleIncidentDetector
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.self_improve.schedule import DeliveryRoutes, Tier, TierResult, detectors_for_tier, run_tier
 from tests._owner_channel import OWNER_DECISION
-from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
+from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory, WorktreeFactory
 
 
 class LifecycleIncidentTests(TestCase):
+    def setUp(self) -> None:
+        quiet = patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", return_value=False)
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
     def _reports(self) -> list:
         detector = next(
             detector for detector in detectors_for_tier(Tier.CHEAP) if detector.name == "lifecycle_incident"
@@ -87,6 +98,93 @@ class LifecycleIncidentTests(TestCase):
         reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
         assert len(reports) == 1
         assert reports[0].payload["count"] == 3
+
+    def test_later_completed_canonical_phase_recovers_failure(self) -> None:
+        for failed_phase, completed_phase in (("testing", "test"), ("test", "testing")):
+            failed = TaskFactory(phase=failed_phase)
+            failed.fail(reason="ProcessError: worker exited", by_holder=True)
+            TaskFactory(ticket=failed.ticket, phase=completed_phase, status=Task.Status.COMPLETED)
+
+        assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+    def test_later_completed_same_phase_recovers_failure_with_pending_question(self) -> None:
+        failed = TaskFactory(phase="coding")
+        failed.fail(reason="ProcessError: worker exited", by_holder=True)
+        successor = TaskFactory(ticket=failed.ticket, phase="coding", status=Task.Status.COMPLETED)
+        question = DeferredQuestion.record("Which path?", parked_task=successor, **OWNER_DECISION)
+
+        assert question.answered_at is None
+        assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+    def test_failure_after_completion_remains_current(self) -> None:
+        old = TaskFactory(phase="coding")
+        old.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=old.ticket, phase="coding", status=Task.Status.COMPLETED)
+        current = TaskFactory(ticket=old.ticket, phase="coding")
+        current.fail(reason="ProcessError: worker exited", by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert [task_id for report in reports for task_id in report.payload["ids"]] == [current.pk]
+
+    def test_only_later_same_ticket_same_nonblank_phase_recovers_failure(self) -> None:
+        older_completion = TaskFactory(status=Task.Status.COMPLETED)
+        after_older = TaskFactory(ticket=older_completion.ticket)
+        after_older.fail(reason="ProcessError: worker exited", by_holder=True)
+
+        other_phase = TaskFactory()
+        other_phase.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=other_phase.ticket, phase="reviewing", status=Task.Status.COMPLETED)
+
+        other_ticket = TaskFactory()
+        other_ticket.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(phase=other_ticket.phase, status=Task.Status.COMPLETED)
+
+        blank_phase = TaskFactory(phase="")
+        blank_phase.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=blank_phase.ticket, phase="", status=Task.Status.COMPLETED)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert {task_id for report in reports for task_id in report.payload["ids"]} == {
+            after_older.pk,
+            other_phase.pk,
+            other_ticket.pk,
+            blank_phase.pk,
+        }
+
+    def test_newer_claimed_and_substantive_failed_tasks_supersede_old_failure(self) -> None:
+        claimed_old = TaskFactory()
+        claimed_old.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=claimed_old.ticket, status=Task.Status.CLAIMED)
+
+        failed_old = TaskFactory()
+        failed_old.fail(reason="ProcessError: worker exited", by_holder=True)
+        failed_new = TaskFactory(ticket=failed_old.ticket)
+        failed_new.fail(reason="ProcessError: worker exited", by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert {task_id for report in reports for task_id in report.payload["ids"]} == {failed_new.pk}
+
+    def test_later_completion_resolves_task_failed_firing(self) -> None:
+        failed = TaskFactory(phase="testing")
+        failed.fail(reason="ProcessError: worker exited", by_holder=True)
+        detector = LifecycleIncidentDetector()
+        first = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+        firing = SelfImproveFiring.objects.get(dedup_key=first.reports[0].dedup_key)
+        assert firing.resolved_at is None
+
+        TaskFactory(ticket=failed.ticket, phase="test", status=Task.Status.COMPLETED)
+        second = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+
+        assert not [report for report in second.reports if report.payload["kind"] == "task_failed"]
+        assert SelfImproveFiring.objects.get(pk=firing.pk).resolved_at is not None
+
+    def test_later_completion_recovers_repair_task_failure(self) -> None:
+        repair_ticket = TicketFactory(extra={"source": "self_improve"})
+        failed = TaskFactory(ticket=repair_ticket, phase="testing")
+        failed.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=repair_ticket, phase="test", status=Task.Status.COMPLETED)
+
+        assert not [report for report in self._reports() if report.payload["kind"] == "repair_task_failed"]
 
     def test_old_inbound_question_without_answer_is_an_incident(self) -> None:
         row = PendingChatInjection.record(channel="D1", slack_ts="100.1", text="Why did my task fail?")
@@ -173,6 +271,111 @@ class LifecycleIncidentTests(TestCase):
         kinds_after = {report.payload["kind"] for report in self._reports()}
         assert "outbound_unposted" not in kinds_after
         assert "outbound_unanswered" in kinds_after
+
+    def test_quiet_hours_hold_is_not_a_delivery_failure(self) -> None:
+        question = DeferredQuestion.record("Which option?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=question.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        check_at = timezone.now() - timedelta(hours=3)
+        detector = LifecycleIncidentDetector(now=lambda: check_at)
+
+        with patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", return_value=True) as quiet:
+            kinds = {report.payload["kind"] for report in detector.detect()}
+
+        assert "outbound_unposted" not in kinds
+        assert quiet.call_args.args[0] == check_at.astimezone(owner_zone()).time()
+
+    def test_delivery_incident_waits_ten_minutes_after_quiet_hours(self) -> None:
+        check_at = timezone.now().astimezone(owner_zone()).replace(hour=8, minute=5, second=0, microsecond=0)
+        question = DeferredQuestion.record("Which option?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=question.pk).update(created_at=check_at - timedelta(hours=2))
+
+        with patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", side_effect=owner_quiet_at):
+            early = LifecycleIncidentDetector(now=lambda: check_at).detect()
+            later = LifecycleIncidentDetector(now=lambda: check_at + timedelta(minutes=6)).detect()
+
+        assert "outbound_unposted" not in {report.payload["kind"] for report in early}
+        assert "outbound_unposted" in {report.payload["kind"] for report in later}
+
+    def test_unposted_incident_across_quiet_hours_boundary(self) -> None:
+        noon = timezone.now().astimezone(owner_zone()).replace(hour=12, minute=0, second=0, microsecond=0)
+        question = DeferredQuestion.record("Which option?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=question.pk).update(created_at=noon - timedelta(hours=11))
+
+        with patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", side_effect=owner_quiet_at):
+            for hour, minute, expected in ((3, 0, False), (8, 5, False), (8, 15, True), (12, 0, True)):
+                with self.subTest(hour=hour, minute=minute):
+                    now = noon.replace(hour=hour, minute=minute)
+                    kinds = {
+                        report.payload["kind"]
+                        for report in LifecycleIncidentDetector(now=lambda check_at=now: check_at).detect()
+                    }
+                    assert ("outbound_unposted" in kinds) is expected
+
+    def test_attest_hold_ends_before_unposted_incident_wait(self) -> None:
+        assert CHECKOUT_ATTEST_HOLD < _POST_WAIT
+
+    def test_unposted_attest_incident_waits_until_after_ten_minutes(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        card = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert card is not None
+        now = timezone.now()
+        detector = LifecycleIncidentDetector(now=lambda: now)
+
+        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=now - timedelta(minutes=9))
+        early = {report.payload["kind"] for report in detector.detect()}
+        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=now - timedelta(minutes=11))
+        late = {report.payload["kind"] for report in detector.detect()}
+
+        assert "outbound_unposted" not in early
+        assert "outbound_unposted" in late
+
+    def test_quiet_hours_keep_a_posted_unanswered_question_visible(self) -> None:
+        check_at = timezone.now().astimezone(owner_zone()).replace(hour=3, minute=0, second=0, microsecond=0)
+        row = DeferredQuestion.record("Which option?", slack_ts="200.1", slack_channel="D1", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=row.pk).update(created_at=check_at - timedelta(hours=2))
+
+        with patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", side_effect=owner_quiet_at):
+            kinds = {report.payload["kind"] for report in LifecycleIncidentDetector(now=lambda: check_at).detect()}
+
+        assert "outbound_unanswered" in kinds
+
+    def test_growing_unposted_count_does_not_send_another_alert(self) -> None:
+        first = DeferredQuestion.record("First?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        alerts: list[str] = []
+        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        delivery = DeliveryRoutes(
+            overlay_name="t3-teatree", owner_alert=lambda report, _existing: alerts.append(report.summary) or True
+        )
+
+        run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+        second = DeferredQuestion.record("Second?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=second.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        result = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+
+        assert result.reports[0].payload["count"] == 2
+        assert len(alerts) == 1
+
+    def test_new_unposted_gap_alerts_after_the_previous_gap_clears(self) -> None:
+        first = DeferredQuestion.record("First?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        alerts: list[str] = []
+        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        delivery = DeliveryRoutes(
+            overlay_name="t3-teatree", owner_alert=lambda report, _existing: alerts.append(report.summary) or True
+        )
+
+        run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+        DeferredQuestion.consume(first.pk, answer="yes")
+        run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+        second = DeferredQuestion.record("Second?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=second.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+
+        assert len(alerts) == 2
 
     def test_stale_claim_with_no_heartbeat_is_an_incident(self) -> None:
         task = TaskFactory(status=Task.Status.CLAIMED)

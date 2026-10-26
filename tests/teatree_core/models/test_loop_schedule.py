@@ -4,7 +4,8 @@ import datetime as dt
 
 import django.test
 
-from teatree.core.models import ModeSchedule, ModeScheduleSlot
+from teatree.core.models import ConfigSetting, ModeSchedule, ModeScheduleSlot
+from teatree.core.models.loop_schedule import ACTIVE_SCHEDULE_SETTING, owner_zone
 
 
 class TestLoopScheduleSlotWeekdays(django.test.SimpleTestCase):
@@ -23,3 +24,9 @@ class TestLoopSchedulePersistence(django.test.TestCase):
         ModeScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="present")
         schedule.delete()
         assert ModeScheduleSlot.objects.count() == 0
+
+    def test_owner_zone_uses_the_active_schedule(self) -> None:
+        ModeSchedule.objects.create(name="standard", timezone="Europe/Zurich")
+        ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
+
+        assert str(owner_zone()) == "Europe/Zurich"

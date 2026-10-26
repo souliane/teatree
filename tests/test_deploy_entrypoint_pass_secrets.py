@@ -14,11 +14,17 @@ pass is the fallback, a missing entry is a no-op — is exercised end to end.
 
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
+import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
+
+from teatree.utils.master_key import KeyFileSource
+from teatree.utils.sealing import aad
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None,
@@ -50,7 +56,8 @@ def _write_pass_stub(bin_dir: Path, entries: dict[str, str]) -> None:
     shim = bin_dir / "pass"
     cases = "".join(f'    {path!r}) printf "%s\\n" {value!r} ;;\n' for path, value in entries.items())
     shim.write_text(
-        f'#!/usr/bin/env bash\nif [ "$1" != "show" ]; then exit 2; fi\ncase "$2" in\n{cases}    *) exit 1 ;;\nesac\n',
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$PASS_LOG"\n'
+        f'if [ "$1" != "show" ]; then exit 2; fi\ncase "$2" in\n{cases}    *) exit 1 ;;\nesac\n',
         encoding="utf-8",
     )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
@@ -68,6 +75,8 @@ def _source_secret(tmp_path: Path, entries: dict[str, str], *, var: str, path: s
     )
     run_env = dict(os.environ)
     run_env["PATH"] = f"{bin_dir}{os.pathsep}{run_env['PATH']}"
+    run_env["T3_SECRET_READER"] = str(ENTRYPOINT.parent / "secret-read.sh")
+    run_env["PASS_LOG"] = str(tmp_path / "pass-calls")
     run_env.pop(var, None)
     run_env.update(env)
     proc = subprocess.run([_BASH, str(harness)], capture_output=True, text=True, check=False, env=run_env)
@@ -75,6 +84,33 @@ def _source_secret(tmp_path: Path, entries: dict[str, str], *, var: str, path: s
 
 
 class TestSourceSecretFromPass:
+    def test_sealed_selector_sources_the_row_without_calling_pass(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        source = KeyFileSource(tmp_path / "master.key")
+        name = "team/token"
+        sealed = source.create().seal("sealed-token", aad=aad("instance", name))
+        with closing(sqlite3.connect(db)) as connection:
+            connection.execute(
+                "CREATE TABLE teatree_sealed_secret (name TEXT PRIMARY KEY, key_id TEXT, nonce BLOB, ciphertext BLOB)"
+            )
+            connection.execute(
+                "INSERT INTO teatree_sealed_secret VALUES (?, ?, ?, ?)",
+                (name, sealed.key_id, sealed.nonce, sealed.ciphertext),
+            )
+            connection.commit()
+        value, rc = _source_secret(
+            tmp_path,
+            {name: "pass-token"},
+            var="TEATREE_GH_TOKEN",
+            path=name,
+            T3_SECRET_STORE="sealed",
+            T3_CONFIG_DB=str(db),
+            T3_MASTER_KEY_SOURCE=source.label,
+            T3_SECRET_PYTHON=sys.executable,
+        )
+        assert (rc, value) == (0, "sealed-token")
+        assert not (tmp_path / "pass-calls").exists()
+
     def test_rotated_pass_token_is_sourced_when_env_unset(self, tmp_path: Path) -> None:
         value, rc = _source_secret(
             tmp_path,
@@ -107,6 +143,19 @@ class TestSourceSecretFromPass:
         )
         assert rc == 0
         assert value == ""
+
+    def test_broken_pass_reader_aborts_boot(self, tmp_path: Path) -> None:
+        broken = tmp_path / "broken-reader"
+        broken.write_text("#!/bin/sh\nexit 2\n")
+        broken.chmod(0o755)
+        value, rc = _source_secret(
+            tmp_path,
+            {},
+            var="T3_ADMIN_PASSWORD",
+            path="teatree/admin-password",
+            T3_SECRET_READER=str(broken),
+        )
+        assert (rc, value) == (2, "")
 
     def test_admin_password_sourced_from_pass(self, tmp_path: Path) -> None:
         value, rc = _source_secret(

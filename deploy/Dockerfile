@@ -208,7 +208,7 @@ RUN install -d -o teatree -g teatree /home/teatree/.claude/projects  # privacy-s
 
 # What deploy/entrypoint.sh's ENTRYPOINT_IMAGE_CONTRACT checks before running from the
 # checkout: an older image lacks this file and runs the entrypoint baked above instead.
-RUN install -d /usr/local/share/teatree && echo 2 > /usr/local/share/teatree/entrypoint-contract
+RUN install -d /usr/local/share/teatree && echo 3 > /usr/local/share/teatree/entrypoint-contract
 
 # Align the runtime user to the HOST deploy user's UID (the TEATREE_UID build
 # arg). Every host bind mount is at path identity (see deploy/README.md § UID
@@ -364,6 +364,7 @@ FROM system AS toolchain
 # Where core sits inside the build context: empty for a core clone, `vendor/teatree` for a fork's archive.
 ARG TEATREE_CORE_SUBDIR=""
 COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/secret-read.sh /usr/local/bin/secret-read.sh
 COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/git-pins.sh /usr/local/bin/git-pins.sh
 COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/locked-version.sh /usr/local/bin/locked-version.sh
 # The deploy-managed default ~/.claude/settings.json template (#3359). The init
@@ -416,6 +417,7 @@ RUN if ! printf '%s' "$TEATREE_GENERATION" | grep -Eqx '[0-9a-f]{40}'; then \
         exit 1; \
     fi
 COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/secret-read.sh /usr/local/bin/secret-read.sh
 COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/git-pins.sh /usr/local/bin/git-pins.sh
 COPY ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/claude-settings.template.json /usr/local/share/teatree/claude-settings.template.json
 # The dependencies are the base's; the sync below only installs the workspace's own packages.

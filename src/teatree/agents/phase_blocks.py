@@ -523,6 +523,13 @@ def phase_specific_lines(
     else:
         builder = (read_only_venue and _READ_ONLY_PHASE_BLOCK_BUILDERS.get(phase)) or _PHASE_BLOCK_BUILDERS.get(phase)
         block = builder(task) if builder is not None else ()
+        if phase in _WORKER_EXECUTION_COMMANDS:
+            block = (
+                *block,
+                "",
+                f"PHASE: {phase} — execute on the current worker under its existing write approval policy.",
+                _WORKER_EXECUTION_COMMANDS[phase],
+            )
         if phase == "debugging":
             block = (*block, *round_brief_lines(task))
     if fanout := _phase_fanout_directive(task):
@@ -533,6 +540,12 @@ def phase_specific_lines(
 #: Phases whose agent is the one FIXING the defect, so it is the actor that can state
 #: the root cause. Mirrors ``transient_requeue_correction.CORRECTIVE_PHASES``.
 _FIXING_PHASES = frozenset({"coding", "debugging"})
+
+_WORKER_EXECUTION_COMMANDS = {
+    "bughunt": "Inspect and reproduce candidates before reporting each finding.",
+    "dogfood_smoke": "Run `t3 dogfood overlay-provision-smoke` for the configured overlay and report its result.",
+    "eval_local": "Run `t3 eval run` for the configured local evaluation and report its result.",
+}
 
 
 def _fix_record_lines(task: Task, phase: str) -> tuple[str, ...]:
