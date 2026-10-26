@@ -38,7 +38,7 @@ def park_if_worker_skill_roots_empty(task: Task, exc: SkillDispatchError) -> Tas
         return None
     attempt = record_park(
         task,
-        reason=f"{LIMIT_PARKED_PREFIX}{exc}",
+        reason=f"{LIMIT_PARKED_PREFIX}skill_roots_empty: {exc}",
         not_before=timezone.now() + _UNREADABLE_PINS_RECHECK,
     )
     attempt.result = {**(attempt.result or {}), "skill_assurance": exc.assurance}

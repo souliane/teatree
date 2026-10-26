@@ -10,6 +10,10 @@ forever, so the count of consecutive identical refusals is the only thing that c
 a deploy hand-over apart from a race this deployment can never win.
 """
 
+import os
+import subprocess
+import sys
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +21,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.management.commands import worker as worker_command
 from teatree.core.management.commands.worker import STARVED_EXIT
 from teatree.core.models import WorkerGeneration
 from teatree.utils import singleton as singleton_mod
@@ -76,8 +81,37 @@ def test_worker_holds_the_control_database_lock_while_running(monkeypatch: pytes
     monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     db_lock = database.with_name(f"{database.name}.worker.pid")
 
+    def second_worker_exit() -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env["HOME"] = str(tmp_path / "other-home")
+        env["T3_DATA_DIR"] = str(tmp_path / "other-worker-state")
+        env["T3_CONTROL_DB_DIR"] = str(database.parent)
+        env.pop("XDG_DATA_HOME", None)
+        return subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from teatree.utils.singleton import AlreadyRunningError, WORKER_SINGLETON, "
+                    "singleton, worker_control_lock_path\n"
+                    "try:\n"
+                    "    with singleton(WORKER_SINGLETON, pid_path=worker_control_lock_path(primary=True)):\n"
+                    "        raise SystemExit(1)\n"
+                    "except AlreadyRunningError:\n"
+                    "    raise SystemExit(0)\n"
+                ),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
     def check_running() -> None:
         assert flock_is_held(WORKER_SINGLETON, pid_path=db_lock)
+        result = second_worker_exit()
+        assert result.returncode == 0, result.stderr
 
     with (
         patch("teatree.loops.worker.LoopWorker") as worker_cls,
@@ -86,6 +120,25 @@ def test_worker_holds_the_control_database_lock_while_running(monkeypatch: pytes
         worker_cls.return_value.run.side_effect = check_running
         call_command("worker")
     assert not flock_is_held(WORKER_SINGLETON, pid_path=db_lock)
+    assert second_worker_exit().returncode == 1
+
+
+def test_direct_worker_command_refuses_external_database_under_pytest_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "pytest-of-worker" / "home"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", "/var/lib/teatree/control-db")
+    with (
+        patch.object(singleton_mod, "singleton", return_value=nullcontext()),
+        patch.object(worker_command, "current_generation", return_value=None),
+        patch("teatree.utils.singleton_refusals.clear_refusals"),
+        patch("teatree.loops.worker.LoopWorker"),
+        patch.object(worker_command.signal, "signal"),
+        pytest.raises(RuntimeError, match="external control database"),
+    ):
+        call_command("worker")
 
 
 def test_deployed_worker_holds_a_separate_health_lock_only_while_running(

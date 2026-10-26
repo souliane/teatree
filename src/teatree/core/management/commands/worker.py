@@ -39,12 +39,15 @@ class Command(TyperCommand):
     help = "Run the singleton loop-timer worker (#1796) — K pinned executors, no OS scheduler."
 
     def handle(self) -> None:
-        from teatree.loops.worker import LoopWorker  # noqa: PLC0415 — deferred: pulls the timer machinery
         from teatree.utils.singleton import (  # noqa: PLC0415 — deferred with LoopWorker
             WORKER_SINGLETON,
             singleton,
             worker_control_lock_path,
         )
+        from teatree.utils.worker_spawn import refuse_external_database_under_pytest_home  # noqa: PLC0415 — cold boot
+
+        refuse_external_database_under_pytest_home()
+        from teatree.loops.worker import LoopWorker  # noqa: PLC0415 — deferred: pulls the timer machinery
         from teatree.utils.singleton_refusals import clear_refusals  # noqa: PLC0415 — deferred with LoopWorker
 
         try:

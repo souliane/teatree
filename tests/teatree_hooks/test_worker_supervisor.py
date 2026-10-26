@@ -125,6 +125,24 @@ def test_database_lock_blocks_resurrection_under_another_home(monkeypatch: pytes
     db_lock = database.with_name(f"{database.name}.worker.pid")
     with singleton.singleton(singleton.WORKER_SINGLETON, pid_path=db_lock):
         assert supervisor._flock_is_free() is False
+        env = os.environ.copy()
+        env["T3_DATA_DIR"] = str(tmp_path / "another-worker-state")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from hooks.scripts.worker_supervisor import _flock_is_free; "
+                    "raise SystemExit(0 if not _flock_is_free() else 1)"
+                ),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_resurrection_from_worktree_probes_spawned_workers_primary_database(

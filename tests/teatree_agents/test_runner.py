@@ -123,6 +123,7 @@ class TestRunHeadless(TestCase):
         assert task.status == Task.Status.PENDING
         assert task.claimed_by == ""
         assert started + timedelta(minutes=5) <= task.not_before <= timezone.now() + timedelta(minutes=5)
+        assert attempt.error.startswith("limit_parked: skill_roots_empty")
         assert str(Path.home()) in attempt.error
         record_skill_assurance.assert_called_once_with(
             task_id=task.pk,
