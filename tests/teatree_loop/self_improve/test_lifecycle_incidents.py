@@ -496,6 +496,16 @@ class LifecycleIncidentTests(TestCase):
         assert own.reports == []
         assert SelfImproveFiring.objects.get(pk=foreign_firing.pk).resolved_at is None
 
+    def test_first_observation_requests_a_ticket_only_when_the_repair_wait_is_zero(self) -> None:
+        task = TaskFactory()
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
+
+        waiting = LifecycleIncidentDetector(overlay_name="t3-teatree").detect()
+        immediate = LifecycleIncidentDetector(overlay_name="t3-teatree", repair_after=timedelta(0)).detect()
+
+        assert [report.requested_rung for report in waiting] == [ActionRung.SLACK]
+        assert [report.requested_rung for report in immediate] == [ActionRung.TICKET]
+
     def test_singleton_age_changes_reuse_early_repair_ticket(self) -> None:
         task = TaskFactory()
         task.fail(reason="ProcessError: worker exited", by_holder=True)
