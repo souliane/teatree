@@ -92,12 +92,14 @@ def _registry_project_path(path_str: str, module_locator: str) -> Path | None:
     this filesystem up to its ``manage.py``. That is boundary-neutral by
     construction — the import system already resolved it here.
 
-    With no registry path, use the installed package checkout when it resolves.
-    Otherwise return ``None``; keep an unresolved configured path visible so the
-    operator can see what was configured rather than taking down discovery.
+    ``None`` when the registry declares no path at all (an entry-point overlay
+    configured only for its overrides); the stored path unchanged when nothing else
+    resolves — including when a malformed ``class`` makes the locator unresolvable —
+    so the failure still names what the operator configured rather than taking down
+    discovery, which nearly every CLI path runs through.
     """
     stored = Path(path_str).expanduser() if path_str else None
-    if (stored is not None and stored.is_dir()) or not module_locator:
+    if stored is None or stored.is_dir() or not module_locator:
         return stored
     try:
         return _resolve_ep_project_path(module_locator) or stored

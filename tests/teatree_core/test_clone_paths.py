@@ -15,7 +15,7 @@ judgment skill reads as safe to delete.
 
 from pathlib import Path
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -434,11 +434,33 @@ class TestSelfImproveDispatchDetectionRoot(TestCase):
 
         assert self._root(ticket) == self.package
 
+    def test_pathless_registry_entry_uses_installed_checkout_only_for_dispatch(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
+        ep = MagicMock()
+        ep.name = "t3-teatree"
+        ep.value = "installed:Overlay"
+
+        with (
+            patch("teatree.config.discover_overlays", return_value=[OverlayEntry("t3-teatree", "")]),
+            patch("teatree.core.worktree.clone_paths.entry_points", return_value=[ep]),
+            patch("teatree.core.worktree.clone_paths.resolve_ep_project_path", return_value=self.package),
+        ):
+            assert dispatch_detection_root(ticket) == self.package
+
+        with (
+            patch("teatree.config.discover_overlays", return_value=[OverlayEntry("t3-teatree", "")]),
+            patch("teatree.core.worktree.clone_paths.entry_points", return_value=[ep]),
+            patch("teatree.core.worktree.clone_paths.resolve_ep_project_path", return_value=None),
+            self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING"),
+        ):
+            assert dispatch_detection_root(ticket) is None
+
     def test_missing_package_checkout_never_falls_back_to_product(self) -> None:
         for entries in ([], [OverlayEntry("t3-teatree", "")], [OverlayEntry("t3-teatree", "", self.package / "gone")]):
             ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
             with (
                 patch("teatree.config.discover_overlays", return_value=entries),
+                patch("teatree.core.worktree.clone_paths.entry_points", return_value=[]),
                 patch("teatree.core.worktree.clone_paths.get_overlay_for_ticket") as overlay,
                 self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING") as logs,
             ):

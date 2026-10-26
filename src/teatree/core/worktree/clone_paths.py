@@ -7,11 +7,14 @@ resolve a clone.
 """
 
 import logging
+from contextlib import suppress
+from importlib.metadata import entry_points
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree import config
+from teatree.config import _resolve_ep_project_path as resolve_ep_project_path
 from teatree.config import clone_root
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
@@ -77,8 +80,17 @@ def dispatch_detection_root(ticket: Ticket) -> Path | None:
         and not ticket.issue_url
     ):
         entry = next((entry for entry in config.discover_overlays() if entry.name == ticket.overlay), None)
-        if entry is not None and entry.project_path is not None and entry.project_path.is_dir():
-            return entry.project_path
+        if entry is not None:
+            package = entry.project_path
+            if package is None:
+                locator = next(
+                    (ep.value for ep in entry_points(group="teatree.overlays") if ep.name == ticket.overlay), None
+                )
+                if locator is not None:
+                    with suppress(ImportError, ValueError):
+                        package = resolve_ep_project_path(locator)
+            if package is not None and package.is_dir():
+                return package
         logger.warning("Self-improve ticket %s has no checkout for overlay %r", ticket.pk, ticket.overlay)
         return None
     workspace = clone_root()
