@@ -195,10 +195,10 @@ def _close_posted_card(row: DeferredQuestion) -> None:
 
 def _options(attestation: CheckoutAttestation, decline: str) -> tuple[CardOption, CardOption]:
     accept = (
-        "The step resumes on the folder as it is; changes the factory did not make become part of its work."
+        "All eligible waiting steps for this folder resume; changes the factory did not make become part of their work."
         if attestation.host_evidence
-        else "The step runs once on the folder as it is; "
-        "edits the factory did not make, even unfinished ones, become part of its work."
+        else "All eligible waiting steps for this folder resume; "
+        "edits the factory did not make, even unfinished ones, become part of their work."
     )
     return CardOption("Accept", accept, recommended=True), CardOption("Decline", decline)
 
@@ -325,7 +325,6 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
                 evidence__action__kind=OwnerActionKind.ATTEST,
                 evidence__action__target=str(attestation.worktree.pk),
                 evidence__action__binding=attestation.state.digest,
-                evidence__action__host_evidence=attestation.host_evidence,
             )
             .order_by("-answered_at", "-pk")
         )
@@ -333,10 +332,23 @@ def ask_owner_to_attest(task: Task, attestation: CheckoutAttestation) -> Deferre
             return waiting
         question, card = attest_card(task, attestation)
         with transaction.atomic():
-            held = DeferredQuestion.owner_pending().select_for_update().filter(dedupe_marker=marker).first()
+            held = (
+                DeferredQuestion.owner_pending()
+                .select_for_update()
+                .filter(
+                    evidence__action__kind=OwnerActionKind.ATTEST,
+                    evidence__action__target=str(attestation.worktree.pk),
+                    evidence__action__binding=attestation.state.digest,
+                )
+                .order_by("-slack_ts", "-pk")
+                .first()
+            )
             if held is not None:
+                if held.slack_ts:
+                    return held
                 changed = (
-                    held.evidence.get("checked") != list(card.checked)
+                    held.evidence.get("action") != card.action
+                    or held.evidence.get("checked") != list(card.checked)
                     or held.options_json != card.options_json()
                     or re.findall(r"<(https://[^|>]+)\|", str(held.evidence.get("why", "")))
                     != re.findall(r"<(https://[^|>]+)\|", card.why)

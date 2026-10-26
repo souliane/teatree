@@ -193,9 +193,10 @@ class TestCheckoutAttestCard(TestCase):
 
     def test_accept_and_decline_say_what_they_do_and_risk(self) -> None:
         accepts = {
-            False: "The step runs once on the folder as it is; "
-            "edits the factory did not make, even unfinished ones, become part of its work.",
-            True: "The step resumes on the folder as it is; changes the factory did not make become part of its work.",
+            False: "All eligible waiting steps for this folder resume; "
+            "edits the factory did not make, even unfinished ones, become part of their work.",
+            True: "All eligible waiting steps for this folder resume; "
+            "changes the factory did not make become part of their work.",
         }
         declines = {
             True: "The step stays stuck until the folder changes or the factory can check it safely; "
