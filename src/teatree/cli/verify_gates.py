@@ -45,6 +45,7 @@ from tempfile import TemporaryDirectory
 import typer
 import yaml
 
+from teatree.cli.push_gate_tools import BRIEF_SNAPSHOT_ENV, _brief_for_worktree
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.hooks.banned_term_registry import load_registry
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
@@ -292,7 +293,7 @@ def _run_stages(stages: list[tuple[str, list[str]]], repo: Path, env: dict[str, 
     return failed, incomplete
 
 
-def _stage_env(private_root: str) -> dict[str, str]:
+def _stage_env(private_root: str, brief_snapshot: Path) -> dict[str, str]:
     env = os.environ.copy()
     if not env.get("TEATREE_TERM_REGISTRY"):
         try:
@@ -305,6 +306,7 @@ def _stage_env(private_root: str) -> dict[str, str]:
     env.pop("DATABASE_URL", None)
     env["XDG_DATA_HOME"] = private_root
     env["T3_CONTROL_DB_DIR"] = str(Path(private_root) / "control-db")
+    env[BRIEF_SNAPSHOT_ENV] = str(brief_snapshot)
     return env
 
 
@@ -382,7 +384,19 @@ def verify_gates(
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
     stages = _stage_commands(scope_args, repo, tree.toplevel)
     with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
-        failed, incomplete = _run_stages(stages, repo, _stage_env(private_root))
+        brief_snapshot = Path(private_root) / "push-gate-brief.json"
+        brief_snapshot.write_text(
+            json.dumps(
+                {
+                    "repo": str(repo.resolve()),
+                    "head_sha": tree.head_sha,
+                    "brief": _brief_for_worktree(repo, allow_snapshot=False),
+                }
+            ),
+            encoding="utf-8",
+        )
+        brief_snapshot.chmod(0o600)
+        failed, incomplete = _run_stages(stages, repo, _stage_env(private_root, brief_snapshot))
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):

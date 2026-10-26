@@ -45,8 +45,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(autouse=True)
-def _no_real_gate_receipt():
-    with patch("teatree.cli.verify_gates.write_gate_receipt"):
+def _no_external_control_db():
+    with (
+        patch("teatree.cli.verify_gates.write_gate_receipt"),
+        patch("teatree.cli.verify_gates._brief_for_worktree", return_value=""),
+    ):
         yield
 
 
@@ -205,14 +208,26 @@ class TestVerifyGatesRunsBothStages:
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{live / 'db.sqlite3'}")
         monkeypatch.setenv("XDG_DATA_HOME", str(live))
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        snapshots: list[dict[str, str]] = []
+
+        def run_stage(*_args: object, **kwargs: object) -> int:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            snapshots.append(json.loads(Path(env["T3_VERIFY_GATES_BRIEF_FILE"]).read_text(encoding="utf-8")))
+            return 0
+
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
-            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+            patch("teatree.cli.verify_gates._brief_for_worktree", return_value="No migration."),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=run_stage) as run,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0, _text(result)
         assert len(run.call_args_list) >= 2
+        assert snapshots == [
+            {"repo": str(worktree.resolve()), "head_sha": _head_sha(worktree), "brief": "No migration."}
+        ] * len(run.call_args_list)
         for call in run.call_args_list:
             env = call.kwargs["env"]
             private_root = Path(env["XDG_DATA_HOME"])
