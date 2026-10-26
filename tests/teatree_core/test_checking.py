@@ -474,7 +474,7 @@ class TestTerseFormatting(CheckingTestBase):
         assert terse.count("](") == 5
 
     def test_no_bare_numeric_ids_in_reference_lines(self) -> None:
-        # Exercise ALL three groups, including a pending DeferredQuestion —
+        # Exercise the recap groups, including a pending DeferredQuestion —
         # the question path sets url="" and previously rendered a bare ``Q#N``,
         # which this test must now catch.
         merged_ticket = self._ticket(number=42)
@@ -488,15 +488,14 @@ class TestTerseFormatting(CheckingTestBase):
             stripped = line.strip()
             if not stripped.startswith("- "):
                 continue
-            # A reference line either carries a clickable markdown link
-            # (PR/issue/ticket) or is a question line whose content is an
-            # actionable CLI command. In BOTH cases, no bare ``#NNN`` token may
-            # appear OUTSIDE a [..](..) link — that is the contract violation.
+            # Total and Queue are fixed Remaining summaries, not references.
+            # No line may contain a bare ``#NNN`` outside a link.
             outside_links = re.sub(r"\[[^\]]*\]\([^)]*\)", "", stripped)
             assert not re.search(r"#\d", outside_links), f"bare #-id outside a link: {line!r}"
             has_link = bool(re.search(r"\]\(https?://", stripped))
             is_command = "t3 " in stripped and "questions dismiss" in stripped
-            assert has_link or is_command, f"reference line is neither a link nor a command: {line!r}"
+            is_summary = stripped.startswith(("- Total — ", "- Queue — "))
+            assert has_link or is_command or is_summary, f"reference line is neither a link nor a command: {line!r}"
 
 
 class TestJsonShape(CheckingTestBase):
