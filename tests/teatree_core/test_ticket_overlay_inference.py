@@ -166,6 +166,9 @@ class TestReconcileOverlay(TestCase):
             return_value={"umbrella-owner": _DynamicRepoOverlay(["souliane/teatree"])},
         ):
             ticket = Ticket.objects.create(issue_url=f"{SYNTHETIC_LOOP_UMBRELLA_URL}#directive=43")
+            assert ticket.apply_inferred_overlay("umbrella-owner") is False
+            assert ticket.reconcile_overlay() is False
+        ticket.refresh_from_db()
         assert ticket.overlay == ""
 
 
@@ -227,6 +230,7 @@ class TestReconcileOverlayCommand(TestCase):
             directive = Ticket.objects.create(
                 overlay="directive-scope", issue_url=f"{SYNTHETIC_LOOP_UMBRELLA_URL}#directive-impl=45"
             )
+            blank = Ticket.objects.create(issue_url=f"{SYNTHETIC_LOOP_UMBRELLA_URL}#outer-loop-experiment=46")
             slack = Ticket.objects.create(
                 overlay="conversation-scope",
                 issue_url=slack_conversation_anchor(channel="test-channel", slack_ts="123.456"),
@@ -236,8 +240,10 @@ class TestReconcileOverlayCommand(TestCase):
         assert dry == []
         assert actual == []
         directive.refresh_from_db()
+        blank.refresh_from_db()
         slack.refresh_from_db()
         assert directive.overlay == "directive-scope"
+        assert blank.overlay == ""
         assert slack.overlay == "conversation-scope"
 
 

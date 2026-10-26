@@ -18,11 +18,7 @@ class TicketOverlayModel(TicketFacet):
         return scope_overlay or str(get_resolver("running_checkout_overlay")())
 
     def would_apply_inferred_overlay(self, inferred: str) -> bool:
-        return bool(
-            inferred
-            and inferred != self.overlay
-            and not (self.overlay and is_synthetic_loop_umbrella_url(self.issue_url))
-        )
+        return bool(inferred and inferred != self.overlay and not is_synthetic_loop_umbrella_url(self.issue_url))
 
     def apply_inferred_overlay(self, inferred: str) -> bool:
         """Persist ``inferred`` overlay on a conclusive change (True when changed).
