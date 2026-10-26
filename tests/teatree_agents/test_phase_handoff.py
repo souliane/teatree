@@ -18,14 +18,7 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 from django.test import TestCase
 from pydantic_ai import Agent
-from pydantic_ai.messages import (
-    ModelResponse,
-    RetryPromptPart,
-    SystemPromptPart,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-)
+from pydantic_ai.messages import ModelResponse, SystemPromptPart, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 import teatree.agents.harness as harness_mod
@@ -373,7 +366,7 @@ async def _adversarial_stream(seen: dict[str, str], messages, _info) -> AsyncIte
         ("tamper", TOOL_BASH, {"command": f"echo tampered >> {shlex.quote(str(handoff))}"}),
         ("own", TOOL_READ, {"path": str(handoff)}),
     )
-    answers = [part for part in parts if isinstance(part, ToolReturnPart | RetryPromptPart)]
+    answers = [part for part in parts if isinstance(part, ToolReturnPart)]
     seen["path"] = str(handoff)
     for (name, _tool, _args), answer in zip(attacks, answers, strict=False):
         seen[name] = str(answer.content)

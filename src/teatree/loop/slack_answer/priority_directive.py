@@ -9,8 +9,7 @@ from django.db import transaction
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DeferredQuestion, PendingChatInjection, ThreadBinding, Ticket
-from teatree.loop.inbound_reading import InboundReader
-from teatree.loop.question_binding import bind_reply, configured_owner_id
+from teatree.loop.question_binding import configured_owner_id
 from teatree.loop.slack_answer.session_routing import _mark_unit_loop_replied, _unmark_unit_loop_replied
 from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread
 from teatree.utils.url_slug import is_synthetic_loop_umbrella_url, repo_namespaced_key
@@ -253,7 +252,6 @@ def handle_priority_directive(
     backend: MessagingBackend,
     unit: "_Unit",
     report: "SlackAnswerReport",
-    reader: InboundReader,
     binding: ThreadBinding | None,
 ) -> PriorityOutcome:
     directive = parse_priority_directive(unit.text)
@@ -261,8 +259,6 @@ def handle_priority_directive(
     if directive is None or not owner_id or unit.lead.user_id != owner_id:
         return "none"
     if pending_question_prefix(unit.lead, unit.text):
-        return "none"
-    if bind_reply(unit.lead, reader=reader, owner_user_id=owner_id, text=unit.text) is not None:
         return "none"
     tickets = select_tickets(backend, unit.lead, unit.text, directive, binding)
     if not tickets:

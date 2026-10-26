@@ -62,6 +62,7 @@ from teatree.core.gates.review_request_guard import (
     should_post_review_request,
 )
 from teatree.core.gates.review_request_state_gate import check_reviewed_state
+from teatree.core.merge.ticket_resolution import resolve_gated_ticket
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Ticket
 from teatree.core.on_behalf_egress import observed_channel_post, routed_channel_text
@@ -78,6 +79,7 @@ from teatree.core.send_proxy import SendBlockedError
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.on_behalf_gate import OnBehalfContext
 from teatree.types import RawAPIDict
+from teatree.utils.url_slug import pr_ref_from_url
 
 _ACTION = "review_request_post"
 
@@ -134,11 +136,11 @@ def _ticket_iid_for(canonical: str, ticket_id: str) -> str:
 
     ``mr_review_messages.json`` lives under ``tickets/<ticket-iid>/``; keying it
     on the MR URL's numeric segment (the MR iid) filed it under the wrong ticket
-    dir. Resolve the owning ticket's ``issue_number`` from ``--ticket-id`` first,
-    then from the ``PullRequest`` row that links the MR URL to its ticket. Only
-    when no ticket link exists does it fall back to the MR-URL segment.
+    dir. Resolve the owning ticket's ``issue_number`` from the effective ticket id
+    (``--ticket-id``, else the ticket that owns the MR). Only when no ticket exists
+    does it fall back to the MR-URL segment.
     """
-    ticket = _resolve_ticket(ticket_id) or _ticket_from_pr(canonical)
+    ticket = _resolve_ticket(ticket_id)
     if ticket is not None:
         return ticket.issue_number or str(ticket.pk)
     return _iid_from_mr(canonical)
@@ -153,11 +155,10 @@ def _resolve_ticket(ticket_id: str) -> "Ticket | None":
         return None
 
 
-def _ticket_from_pr(canonical: str) -> "Ticket | None":
-    from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-    pr = PullRequest.objects.filter(url=canonical).select_related("ticket").first()
-    return pr.ticket if pr is not None else None
+def _owning_ticket_id(mr_url: str) -> str:
+    ref = pr_ref_from_url(mr_url)
+    ticket = resolve_gated_ticket(slug=ref.slug, pr_id=ref.pr_id) if ref else None
+    return str(ticket.pk) if ticket else ""
 
 
 class Command(TyperCommand):
@@ -169,11 +170,11 @@ class Command(TyperCommand):
         title: Annotated[str, typer.Option("--title", help="Review-request subject (recommended).")] = "",
         ticket_id: Annotated[
             str,
-            typer.Option("--ticket-id", help="Ticket pk carrying the #1829 anti-vacuity attestation (gate input)."),
+            typer.Option("--ticket-id", help="Ticket pk of the #1829 attestation (default: the MR's owning ticket)."),
         ] = "",
         head_sha: Annotated[
             str,
-            typer.Option("--head-sha", help="Full head SHA the #1829 anti-vacuity attestation must bind to."),
+            typer.Option("--head-sha", help="Full head SHA the attestation binds to (needed when a ticket owns it)."),
         ] = "",
     ) -> None:
         """Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
@@ -196,6 +197,8 @@ class Command(TyperCommand):
                 {"action": "refused", "reason": "review_exempt_repo", "mr_url": mr_url},
                 exit_code=2,
             )
+
+        ticket_id = ticket_id.strip() or _owning_ticket_id(mr_url)
 
         # #1829 anti-vacuity gate runs before the dedup claim and any
         # wire call — so a missing attestation refuses without leaving an
@@ -423,20 +426,22 @@ class Command(TyperCommand):
     def _anti_vacuity_block(ticket_id: str, head_sha: str) -> str:
         """The #1829 block message, or ``""`` when allowed.
 
-        A ``--ticket-id`` + ``--head-sha`` is required (the gate reads
-        the attestation off the ticket and binds it to the head); a missing one
-        is itself a block with actionable steering, since the request-review
-        transition must be SHA-bound.
+        A merge request no ticket owns has no attestation to read and skips the gate.
+        Otherwise a ``--head-sha`` is required (the gate reads the attestation off the
+        ticket and binds it to the head); a missing one is itself a block with
+        actionable steering, since the request-review transition must be SHA-bound.
         """
         from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415 — deferred: keeps command import light
             AntiVacuityAttestationError,
             check_anti_vacuity_attestation,
         )
 
-        if not ticket_id.strip() or not head_sha.strip():
+        if not ticket_id:
+            return ""
+        if not head_sha.strip():
             return (
-                "request review refused: pass --ticket-id and "
-                "--head-sha so the anti-vacuity attestation can be verified SHA-bound. Record it first "
+                "request review refused: pass --head-sha so the anti-vacuity attestation can be verified "
+                "SHA-bound. Record it first "
                 "with `lifecycle record-anti-vacuity <ticket> --head-sha <sha> --ac-coverage <...> "
                 "--proven-test <test::id>` (or `--no-new-tests`)."
             )
@@ -454,15 +459,11 @@ class Command(TyperCommand):
     def _reviewed_state_block(ticket_id: str) -> str:
         """The PR-08 review-state block message, or ``""`` when allowed.
 
-        A ``--ticket-id`` is required (the gate reads the
-        ticket's FSM state and its review-evidence artifact); a missing or
-        unknown ticket is itself a block with actionable steering.
+        A merge request no ticket owns has no FSM state or review evidence to read and
+        skips the gate; an unknown ticket is itself a block with actionable steering.
         """
-        if not ticket_id.strip():
-            return (
-                "request review refused: pass --ticket-id so "
-                "the gate can verify the ticket is SELF_REVIEWED with a recorded review-evidence artifact."
-            )
+        if not ticket_id:
+            return ""
         try:
             ticket = Ticket.objects.resolve(ticket_id)
         except Ticket.DoesNotExist:

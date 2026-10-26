@@ -3,6 +3,7 @@
 import errno
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -23,6 +24,7 @@ class ProbeRequest(TypedDict):
     device_root: str
     tmpfs: list[str]
     roots: list[str]
+    git_mounts: list[str]
     home: str
     tools: list[str]
 
@@ -174,14 +176,26 @@ def _readable(path: str) -> bool:
     return _head(path, 0) is not None
 
 
-def _secret_file(name: str, path: str) -> bool:
+def _secret_file(name: str, path: str, git_mounts: set[str]) -> bool:
     if secret_name(name):
         return _readable(path)
+    if name in {"config", "config.worktree"} and (
+        "/.git/" in path or any(_under(path, target) for target in git_mounts)
+    ):
+        content = _head(path, KEY_READ_BYTES + 1)
+        normalized = re.sub(rb"\\\r?\n\s*", b"", content) if content is not None else None
+        if content is not None and (
+            len(content) > KEY_READ_BYTES
+            or re.search(
+                rb"https?://[^\s/@]+@|^\s*(?:extraheader|password)\s*=", normalized or b"", re.IGNORECASE | re.MULTILINE
+            )
+        ):
+            return True
     head = _head(path, KEY_READ_BYTES) if key_name(name) else None
     return head is not None and any(marker in head for marker in PRIVATE_KEY_MARKERS)
 
 
-def _secrets(top: str, mounted: set[str]) -> list[str]:
+def _secrets(top: str, mounted: set[str], git_mounts: set[str]) -> list[str]:
     """Every readable, non-empty secret file under *top*, never crossing into another mount."""
     found: list[str] = []
     pending = [top]
@@ -203,7 +217,7 @@ def _secrets(top: str, mounted: set[str]) -> list[str]:
             if is_dir:
                 if entry.path not in mounted:
                     pending.append(entry.path)
-            elif _secret_file(entry.name, entry.path):
+            elif _secret_file(entry.name, entry.path, git_mounts):
                 found.append(entry.path)
     return sorted(found)
 
@@ -292,6 +306,7 @@ def observe(request: ProbeRequest, proc: Path = Path("/proc")) -> Observation:
     unprobed = [*request["kernel_roots"], request["device_root"]]
     tmpfs = set(request["tmpfs"])
     targets = sorted({mount["target"] for mount in mounts})
+    git_mounts = set(request["git_mounts"]) & set(targets)
     probed = [
         target for target in targets if target not in tmpfs and not any(_under(target, root) for root in unprobed)
     ]
@@ -313,7 +328,7 @@ def observe(request: ProbeRequest, proc: Path = Path("/proc")) -> Observation:
         home=_home(request["home"]),
         uid=os.getuid(),
         scan={
-            target: ScanAnswer(owner=Path(target).stat().st_uid, secrets=_secrets(target, set(targets)))
+            target: ScanAnswer(owner=Path(target).stat().st_uid, secrets=_secrets(target, set(targets), git_mounts))
             for target in probed
             if Path(target).is_dir()
         },

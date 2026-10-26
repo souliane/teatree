@@ -18,11 +18,18 @@ one: an :attr:`~NotifyAudience.OWNER_DELIVERY` or
 is registered as worth a push, and is otherwise recorded for the pulled surface. So the
 four owner audiences below name the owner's four concerns, not four guaranteed DMs.
 
-The taxonomy is deliberately closed and coupling-light (only :mod:`enum`) so the
+The policy is deliberately closed and coupling-light (stdlib only) so the
 ``BotPing`` model can import it to filter its re-delivery backlog without a cycle.
+Its owner timing constants are shared with Django models and the pre-app preset
+resolver without importing the re-ask scheduler during CLI startup.
 """
 
 import enum
+from datetime import timedelta
+
+CHECKOUT_ATTEST_HOLD = timedelta(minutes=8)
+ACTIVE_SCHEDULE_SETTING = "active_loop_schedule"
+OWNER_FALLBACK_ZONE = "Europe/Paris"
 
 
 class NotifyAudience(enum.StrEnum):
@@ -52,4 +59,11 @@ OWNER_AUDIENCES: frozenset[NotifyAudience] = frozenset(
 OWNER_AUDIENCE_VALUES: frozenset[str] = frozenset(a.value for a in OWNER_AUDIENCES)
 
 
-__all__ = ["OWNER_AUDIENCES", "OWNER_AUDIENCE_VALUES", "NotifyAudience"]
+__all__ = [
+    "ACTIVE_SCHEDULE_SETTING",
+    "CHECKOUT_ATTEST_HOLD",
+    "OWNER_AUDIENCES",
+    "OWNER_AUDIENCE_VALUES",
+    "OWNER_FALLBACK_ZONE",
+    "NotifyAudience",
+]

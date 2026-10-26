@@ -63,6 +63,11 @@ _QUIESCED_NOTICE = (
 
 def _run_worker() -> None:
     """Run the singleton loop-timer worker in the foreground (the cadence owner)."""
+    from teatree.utils.worker_spawn import (  # noqa: PLC0415 (deferred: cold CLI)
+        refuse_external_database_under_pytest_home,
+    )
+
+    refuse_external_database_under_pytest_home()
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
     ensure_django()
@@ -208,13 +213,10 @@ def _ensure_worker() -> tuple[str, str]:
     a worker whose preset admits nothing parks with its executors stopped and its process
     alive, which is exactly what has to be running for the next schedule boundary to land.
     """
-    from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
-        WORKER_SINGLETON,
-        flock_is_held,
-    )
+    from teatree.utils.singleton import worker_lock_is_held  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
     from teatree.utils.worker_spawn import spawn_detached_worker  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
-    if flock_is_held(WORKER_SINGLETON):
+    if worker_lock_is_held():
         return "already-running", "a worker already holds the flock"
     if not spawn_detached_worker():
         return "error", "`t3` not found on PATH"

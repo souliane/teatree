@@ -15,7 +15,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from teatree.cli.django_groups import DJANGO_GROUPS
-from teatree.core._checking_gather import deferred_questions
+from teatree.core.checking import owner_wait_items
 from teatree.core.models import DeferredQuestion
 from teatree.core.owner_question_message import (
     answered_line,
@@ -97,7 +97,7 @@ class TestNoPageSaysDeferred(TestCase):
     def test_the_checking_needs_you_group_names_no_deferred_question(self) -> None:
         DeferredQuestion.record("Can I ship the widgets?", **OWNER_DECISION)
 
-        items = deferred_questions(overlay_slug="acme")
+        items = owner_wait_items(overlay_slug="acme")
 
         assert items
         for item in items:

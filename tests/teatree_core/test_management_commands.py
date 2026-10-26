@@ -115,7 +115,7 @@ class TestLifecycleCommands(TestCase):
                 # start no-ops with "no compose file" since CommandOverlay has none;
                 # state advances to SERVICES_UP, teardown still works from any state
                 call_command("worktree", "start")
-                call_command("worktree", "teardown")
+                call_command("worktree", "teardown", force=True)
 
             assert worktree_id == wt.id
             assert status["state"] == Worktree.State.PROVISIONED

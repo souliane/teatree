@@ -187,10 +187,8 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
     """
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
-        phase = _implied_phase(ticket)
-        if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
-            continue
-        if normalize_phase(phase) == "coding" and _merge_safe_review_after_plan(ticket):
+        phase = _recoverable_phase(ticket)
+        if phase is None:
             continue
         failing = (
             _phase_is_failing(ticket, phase=phase)
@@ -200,6 +198,15 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
         if failing or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))
     return candidates
+
+
+def _recoverable_phase(ticket: Ticket) -> str | None:
+    phase = _implied_phase(ticket)
+    if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
+        return None
+    if normalize_phase(phase) == "coding" and _merge_safe_review_after_plan(ticket):
+        return None
+    return phase
 
 
 def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
@@ -215,13 +222,28 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
     """
     author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(_STATE_PHASE))
     reviewer = Q(role=Ticket.Role.REVIEWER, state__in=tuple(Ticket.pre_ship_states()))
-    open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__state__in=_OPEN_PR_STATES)
+    open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__in=PullRequest.objects.live())
     return list(
         Ticket.objects.filter(author | reviewer)
         .exclude(tasks__status__in=Task.Status.active())
         .exclude(open_pr)
         .distinct()
     )
+
+
+def idle_started_author_tickets(*, now: datetime, threshold_hours: int) -> list[Ticket]:
+    """Author tickets idle past *threshold_hours* with no active task or live PR, whose newest task was not cancelled.
+
+    The read-only half of the frozen class, for callers that hold on an idle ticket instead of
+    re-dispatching it. A reviewer ticket is someone else's PR, so it never counts as started work.
+    """
+    return [
+        ticket
+        for ticket in _live_tickets_with_nothing_in_flight()
+        if ticket.role == Ticket.Role.AUTHOR
+        and _is_idle(ticket, now=now, threshold_hours=threshold_hours)
+        and _recoverable_phase(ticket) is not None
+    ]
 
 
 def _warn_unknown_states() -> None:
@@ -307,12 +329,6 @@ def _merge_safe_review_after_plan(ticket: Ticket) -> bool:
         result__review_verdict__verdict="merge_safe",
         result__review_verdict__reviewed_sha=head,
     ).exists()
-
-
-#: PR states that count as "open" (a merged PR does not keep a ticket alive).
-_OPEN_PR_STATES = frozenset(
-    {PullRequest.State.OPEN, PullRequest.State.REVIEW_REQUESTED, PullRequest.State.APPROVED},
-)
 
 
 def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:

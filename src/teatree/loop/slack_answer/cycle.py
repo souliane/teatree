@@ -58,11 +58,18 @@ from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionC
 from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, memoized_reader, read_inbound
-from teatree.loop.question_binding import apply_bound_answer, bind_reply, configured_owner_id
+from teatree.loop.question_binding import (
+    AmbiguousCards,
+    BoundAnswer,
+    apply_bound_answer,
+    bind_reply,
+    log_coalesced_replies,
+)
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.priority_directive import handle_priority_directive
 from teatree.loop.slack_answer.session_routing import (
+    _card_result_reply,
     _command_reply,
     _live_receipt,
     _mark_unit_loop_replied,
@@ -369,7 +376,7 @@ def _report_coverage(backend: MessagingBackend, unit: _Unit, coverage: Coverage)
     return True
 
 
-def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: InboundReader) -> bool:
+def _answer_bound_question(backend: MessagingBackend, unit: _Unit, bound: BoundAnswer | None) -> bool:
     """Apply the unit to the queued question it answers; ``True`` when it resolved one.
 
     The FIRST rung, ahead of the routing read. This cycle wakes ~1s after an
@@ -385,7 +392,6 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
     idempotency boundary, and a lost apply (a concurrent answer won) releases it
     so nothing carries a receipt for a question it did not resolve.
     """
-    bound = bind_reply(unit.lead, reader=reader, owner_user_id=configured_owner_id(backend), text=unit.text)
     if bound is None:
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.QUESTION_REPLY):
@@ -414,9 +420,9 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
 
 
 def _answer_or_acknowledge_question(
-    backend: MessagingBackend, unit: _Unit, report: SlackAnswerReport, reader: InboundReader
+    backend: MessagingBackend, unit: _Unit, report: SlackAnswerReport, bound: BoundAnswer | None
 ) -> bool:
-    if _answer_bound_question(backend, unit, reader):
+    if _answer_bound_question(backend, unit, bound):
         report.answered_question += 1
         return True
     if unit.lead.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY:
@@ -441,31 +447,41 @@ def _process_unit(
         report.eyes_reacted += 1
 
     read = memoized_reader(reader)
-    priority_outcome = handle_priority_directive(backend, unit, report, read, binding)
-    if priority_outcome == "confirmed":
-        _react_done(backend, unit)
+    result = bind_reply(unit.lead, reader=read, backend=backend, text=unit.text)
+    log_coalesced_replies(unit.rows, result)
+    bound = result if isinstance(result, BoundAnswer) else None
+    if isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result):
         return
-    if priority_outcome == "retry":
+    priority_outcome = (
+        handle_priority_directive(backend, unit, report, binding)
+        if bound is None and not isinstance(result, AmbiguousCards)
+        else "none"
+    )
+    if priority_outcome in {"confirmed", "retry"}:
+        if priority_outcome == "confirmed":
+            _react_done(backend, unit)
         return
     if priority_outcome in {"mixed_on", "mixed_off"}:
         backend.react(
             channel=unit.channel, ts=unit.slack_ts, emoji="zap" if priority_outcome == "mixed_on" else "sleeping"
         )
-    _route_unit(backend, unit, report, read, binding)
+    if binding is not None and _live_receipt(backend, unit, report, binding, (read, bound)):
+        return
+    if _card_result_reply(backend, unit, report, result):
+        return
+    if _answer_or_acknowledge_question(backend, unit, report, bound):
+        return
+
+    _route_unbound(backend, unit, report, read, binding)
 
 
-def _route_unit(
+def _route_unbound(
     backend: MessagingBackend,
     unit: _Unit,
     report: SlackAnswerReport,
     read: InboundReader,
     binding: ThreadBinding | None,
 ) -> None:
-    if binding is not None and _live_receipt(backend, unit, report, binding, read):
-        return
-    if _answer_or_acknowledge_question(backend, unit, report, read):
-        return
-
     reading = read(unit.text)
     if reading.needs_nothing:
         if _handle_noted(backend, unit):

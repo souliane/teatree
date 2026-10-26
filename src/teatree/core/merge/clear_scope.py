@@ -17,7 +17,13 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from teatree.core.merge.pr_slug_resolution import _looks_like_owner_repo, _project_repo_slug, normalize_repo_slug
+from teatree.core.merge.pr_slug_resolution import (
+    _looks_like_owner_repo,
+    _project_repo_slug,
+    fallback_repo_slug,
+    normalize_repo_slug,
+    slug_is_registered_repo,
+)
 from teatree.core.overlay_loader import get_all_overlays
 
 if TYPE_CHECKING:
@@ -124,3 +130,22 @@ def clear_scope_predicate(overlay: str) -> Callable[["MergeClear"], bool]:
     if not overlay:
         return _every_clear
     return _ClearScope(overlay)
+
+
+def clear_scopes_to_repo(clear: "MergeClear", *, slug: str) -> bool:
+    """True iff *clear* authorises a PR in the repo *slug* names.
+
+    Only a slug the registry NAMES as a repo is a claim strong enough to exclude
+    another repo's sweep; every other shape resolves through the ticket / clone
+    fallback the merge path already walks, so the lookup and the merge stop holding
+    two different slug semantics.
+    """
+    canonical = normalize_repo_slug(slug)
+    if not canonical:
+        return False
+    row = normalize_repo_slug(clear.slug)
+    if row == canonical:
+        return True
+    if row and slug_is_registered_repo(row):
+        return False
+    return normalize_repo_slug(fallback_repo_slug(clear)) == canonical

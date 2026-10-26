@@ -32,7 +32,7 @@ through :func:`hard_deny_reason` and asserts identical refusals, so a future
 divergence fails CI.
 
 :class:`HardDenyToolset` wraps a toolset and raises the refusal into the model as
-a ``RetryPromptPart`` (the model sees the reason and must adapt) exactly as a
+a retried ``ToolReturnPart`` (the model sees the reason and must adapt) exactly as a
 Lane-A PreToolUse deny surfaces its message — under a per-run retry cap so a
 predicate false-positive aborts the run cleanly instead of looping the model. It
 routes a tool's OWN failure on the model's input
@@ -199,7 +199,7 @@ class HardDenyToolset(WrapperToolset[None]):
     """Wraps a toolset so every tool call is hard-deny-checked before it runs.
 
     A refused call raises :class:`ModelRetry` carrying the reason — pydantic_ai
-    records it as a ``RetryPromptPart`` the model sees and must adapt to, the
+    records it as a retried ``ToolReturnPart`` the model sees and must adapt to, the
     Lane-B analogue of a Lane-A PreToolUse deny message. The wrapped tool never
     executes. *cwd* is the worktree the Lane-B tools are jailed to; it keys the
     main-clone gate so the deny fires only when a command targets a managed main

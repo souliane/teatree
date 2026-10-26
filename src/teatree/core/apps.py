@@ -1,6 +1,13 @@
 from django.apps import AppConfig
 
 from teatree.core.process_freshness import record_loaded_snapshot
+from teatree.utils.secrets import SecretStore, register_sealed_store
+
+
+def _open_sealed_store() -> SecretStore:
+    from teatree.core.sealed.store import DbStore  # noqa: PLC0415 — deferred: sealed store only
+
+    return DbStore()
 
 
 class CoreConfig(AppConfig):
@@ -19,6 +26,7 @@ class CoreConfig(AppConfig):
         register_signals()
         register_projection_signals()
         register_fleet_admission_refusal(fleet_admission_refusal)
+        register_sealed_store(_open_sealed_store)
         # Freeze the migration heads this interpreter loaded, BEFORE any DB access (#4387).
         # It is the only moment the answer is knowable: from here on the files on disk can be
         # fast-forwarded under a running process while its imported model classes stay old.
