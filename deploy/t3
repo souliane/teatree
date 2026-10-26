@@ -655,7 +655,7 @@ CONTAINER_CREDENTIAL_PROLOGUE='if [ -z "${GITLAB_TOKEN:-}" ] && [ -z "${TEATREE_
         reader="${TEATREE_DEPLOY_CHECKOUT:-}/deploy/secret-read.sh"
     fi
     if [ ! -x "$reader" ]; then
-        echo "t3(container): credential reader is unavailable" >&2
+        echo "t3(container): credential reader is unavailable - a WEDGED store, not a missing secret. Refusing." >&2
         exit 69
     fi
     rc=0

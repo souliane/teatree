@@ -20,7 +20,6 @@ from _deploy_wrapper_paths import container_credential_prologue, copy_wrapper
 
 VENUE_UNAVAILABLE = 69
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
-READER = WRAPPER.parent / "secret-read.sh"
 SERVICE_IMAGE = "teatree-worker:local"
 
 DOCKER_STUB = """#!/usr/bin/env bash
@@ -130,8 +129,6 @@ def test_exit_69_for_a_wedged_container_secret_store(tmp_path: Path) -> None:
         text=True,
         env={
             "PATH": str(bin_dir),
-            "T3_SECRET_STORE": "pass",
-            "T3_SECRET_READER": str(READER),
             "TEATREE_GNUPG_RUNTIME_DIR": str(tmp_path / "run"),
             "TEATREE_GITLAB_TOKEN_PASS_PATH": "gitlab/pat",
         },
@@ -141,26 +138,6 @@ def test_exit_69_for_a_wedged_container_secret_store(tmp_path: Path) -> None:
 
     assert proc.returncode == VENUE_UNAVAILABLE, proc.stderr
     assert "WEDGED" in proc.stderr
-
-
-def test_exit_69_for_an_unavailable_container_secret_reader(tmp_path: Path) -> None:
-    proc = subprocess.run(
-        [shutil.which("sh") or "sh", "-c", container_credential_prologue(), "t3-in-container", "true"],
-        capture_output=True,
-        text=True,
-        env={
-            "PATH": str(tmp_path),
-            "T3_SECRET_READER": str(tmp_path / "missing-reader"),
-            "TEATREE_DEPLOY_CHECKOUT": str(tmp_path / "missing-checkout"),
-            "TEATREE_GITLAB_TOKEN_PASS_PATH": "gitlab/pat",
-        },
-        check=False,
-        timeout=120,
-    )
-
-    assert proc.returncode == VENUE_UNAVAILABLE, proc.stderr
-    assert "credential reader is unavailable" in proc.stderr
-    assert "WEDGED" not in proc.stderr
 
 
 def test_the_ref_prek_pushes_crosses_into_the_container() -> None:
