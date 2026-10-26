@@ -1595,8 +1595,9 @@ with a message naming the executor. Until the executor deploys, served read-only
 The optional Codex source Git mount uses a neutral executor target. `deploy.sh` derives
 `TEATREE_CODEX_SOURCE_GIT_SUBPATH` from the checkout's origin and passes it to the
 worker and compose; the read-only verdict compares the exact volume subpath.
-A worker recreated without it gets an empty value, which means no source clone and the
-original mounts; a malformed value refuses the executor with a reason naming the variable.
+An empty value, which is what a worker recreated without it gets and what `deploy.sh` passes
+when origin yields no owner and repository, means no source clone and the original mounts;
+a malformed value refuses the executor with a reason naming the variable.
 A worker that had to be contained instead of drained leaves the running executor in
 place, because its tmpfs may still hold a rotated login that the next server start
 recovers. The next deploy replaces it.
