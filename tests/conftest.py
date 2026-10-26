@@ -931,8 +931,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     There is no config file — every setting is DB-home, read from the canonical
     ``ConfigSetting`` store (Django-side) or via the Django-free ``cold_reader``
     (pre-Django hooks). Config isolation is therefore purely about the DB the cold
-    reader resolves: clearing ``T3_CONFIG_DB`` and ``XDG_DATA_HOME`` (and redirecting
-    ``$HOME``) leaves the cold reader with no config DB, so every setting fails OPEN
+    reader resolves: clearing ``T3_CONFIG_DB`` and setting ``T3_CONTROL_DB_DIR`` to
+    a throwaway directory leaves the cold reader with no config DB, so every setting fails OPEN
     to its dataclass default. A test that needs a cold-read value sets ``T3_CONFIG_DB``
     at a temp sqlite it seeds with a ``teatree_config_setting`` row. The update-check
     cache is redirected (below) at a hermetic per-test "up to date" verdict so the
@@ -949,11 +949,12 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / ".cache"))
-    # The cold readers resolve the canonical ConfigSetting DB from these: clear both
-    # so a cold reader resolves under the isolated ``$HOME`` (no DB → defaults) and
-    # never reads a host DB.
+    # Keep cold readers and child interpreters on a per-test control DB directory
+    # with no DB, so settings resolve to defaults without reading a host DB.
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
-    monkeypatch.delenv("T3_CONTROL_DB_DIR", raising=False)
+    control_db_dir = tmp_path / "control-db"
+    control_db_dir.mkdir(exist_ok=True)
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control_db_dir))
     monkeypatch.delenv("T3_DATA_DIR", raising=False)
     monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)

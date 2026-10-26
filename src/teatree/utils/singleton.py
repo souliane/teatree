@@ -67,9 +67,10 @@ def worker_control_lock_path(*, primary: bool = False) -> Path:
 
 
 def worker_lock_is_held() -> bool:
-    return flock_is_held(WORKER_SINGLETON) or flock_is_held(
-        WORKER_SINGLETON, pid_path=worker_control_lock_path(primary=True)
-    )
+    if flock_is_held(WORKER_SINGLETON):
+        return True
+    lock_path = worker_control_lock_path(primary=True)
+    return lock_path.is_file() and flock_is_held(WORKER_SINGLETON, pid_path=lock_path)
 
 
 #: The ``TEATREE_ROLE`` a containerized deployment gives the service that is SUPPOSED

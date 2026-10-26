@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -13,6 +14,7 @@ import pytest
 from claude_agent_sdk.types import RateLimitType
 from django.db import OperationalError
 from django.test import TestCase
+from django.utils import timezone
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
@@ -110,6 +112,7 @@ class TestRunHeadless(TestCase):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
             task.claim(claimed_by="test-worker")
+            started = timezone.now()
             attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
@@ -119,7 +122,7 @@ class TestRunHeadless(TestCase):
         assert attempt.input_tokens is None
         assert task.status == Task.Status.PENDING
         assert task.claimed_by == ""
-        assert task.not_before is not None
+        assert started + timedelta(minutes=5) <= task.not_before <= timezone.now() + timedelta(minutes=5)
         assert str(Path.home()) in attempt.error
         record_skill_assurance.assert_called_once_with(
             task_id=task.pk,

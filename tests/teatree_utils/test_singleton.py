@@ -22,6 +22,7 @@ from teatree.utils.singleton import (
     read_pid,
     singleton,
     worker_control_lock_path,
+    worker_lock_is_held,
 )
 
 
@@ -49,6 +50,19 @@ def test_spawn_lock_uses_primary_task_database_even_with_a_config_override(
     monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     assert worker_control_lock_path(primary=True) == tmp_path / "control" / "db.sqlite3.worker.pid"
+
+
+def test_worker_probe_does_not_create_an_unmounted_control_volume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    control = tmp_path / "unmounted-control"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(singleton_module, "DATA_DIR", tmp_path / "worker-state")
+
+    assert worker_lock_is_held() is False
+    assert not control.exists()
 
 
 def _hold_lock(lock_path: str, ready_path: str, release_path: str) -> None:

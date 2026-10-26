@@ -1,7 +1,8 @@
 """``manage.py worker`` — run the singleton loop-timer worker (#1796).
 
-Acquires the ``worker`` flock singleton (:func:`teatree.utils.singleton.singleton`)
-so at most one worker drains the shared queue per box, installs SIGTERM/SIGINT
+Acquires the ``worker`` flock singleton and a second flock beside the control
+database (:func:`teatree.utils.singleton.singleton`) so at most one worker
+drains each control database, installs SIGTERM/SIGINT
 handlers that ask the supervisor to shut down, then runs the executor pool
 (:class:`teatree.loops.worker.LoopWorker`). A second invocation while a worker is
 alive refuses immediately with a non-zero exit (the ``flock`` is the lock; the pid
