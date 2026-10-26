@@ -225,6 +225,45 @@ class TestVerifyGatesRunsBothStages:
             assert ControlDb(env, home=tmp_path).for_repo(worktree).path.is_relative_to(private_root)
             assert not private_root.exists()
 
+    def test_stage_children_read_a_private_snapshot_of_the_worktree_database(
+        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live = tmp_path / "live.sqlite3"
+        with closing(sqlite3.connect(live)) as db:
+            db.execute("CREATE TABLE teatree_worktree (brief TEXT)")
+            db.execute("INSERT INTO teatree_worktree VALUES ('No migration.')")
+            db.commit()
+        monkeypatch.setenv("T3_CONFIG_DB", str(live))
+        snapshots: list[Path] = []
+
+        def inspect_stage(_command: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
+            assert not check
+            assert cwd == worktree
+            snapshot = ControlDb(env, home=tmp_path).for_repo(worktree).path
+            assert snapshot != live
+            with closing(sqlite3.connect(snapshot)) as db:
+                expected = "No migration." if not snapshots else "Private update."
+                assert db.execute("SELECT brief FROM teatree_worktree").fetchone() == (expected,)
+                if not snapshots:
+                    db.execute("UPDATE teatree_worktree SET brief = 'Private update.'")
+                    db.commit()
+            snapshots.append(snapshot)
+            return 0
+
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=inspect_stage),
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+
+        assert result.exit_code == 0, _text(result)
+        assert len(snapshots) >= 2
+        assert len(set(snapshots)) == 1
+        with closing(sqlite3.connect(live)) as db:
+            assert db.execute("SELECT brief FROM teatree_worktree").fetchone() == ("No migration.",)
+        assert not snapshots[0].exists()
+
     @pytest.mark.parametrize("registry_error", [BannedTermsUnreadableError, BannedTermsUnsetError])
     def test_unavailable_registry_still_isolates_stage(
         self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry_error: type[Exception]

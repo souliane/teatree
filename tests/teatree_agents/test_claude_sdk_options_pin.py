@@ -1,12 +1,9 @@
 """Pin what a ``claude_sdk`` session receives: its context, its turns, its prefix.
 
-The owner guardrail on the cheap-lane work is that none of it may change the
-subscription lane. That lane is not addressed by any of it — the changes live in
-the loop's review-dispatch rules and in the metered harness — so the guarantee is
-cheap to give and worth nothing unspoken: a later edit to
-:func:`~teatree.agents._runner_options._build_options` or to
-:func:`~teatree.agents.prompt.build_system_context` would move it silently, on a
-lane with no cost signal to notice.
+The coding prompt now carries the merge-quality self-check into the SDK session
+context. The hashes pin that deliberate context and options change so a later
+edit to :func:`~teatree.agents._runner_options._build_options` or to
+:func:`~teatree.agents.prompt.build_system_context` cannot move it silently.
 
 So this pins the three axes by name.
 
@@ -67,8 +64,8 @@ from tests._git_repo import make_git_repo, run_git
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
 # Every headless spawn loads only the injected teatree MCP server (strict_mcp_config).
-_OPTIONS_SHA256 = "dd3f844417c35266715b550397095f6d5fa5488d120d38d33017b1b573a7a391"
-_SYSTEM_CONTEXT_SHA256 = "ba41482be486950821a37dd20a71a89e1eb718517c9958b913a307c465bbee59"
+_OPTIONS_SHA256 = "999e21d7fdfcd2f03fce103754f13057bfc7ecb6fce8f3f00a7755365f90e549"
+_SYSTEM_CONTEXT_SHA256 = "de59b9b5ef5580b99c10535effb6601dc9f290113e4080f2116d56e727d4c717"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]
 
