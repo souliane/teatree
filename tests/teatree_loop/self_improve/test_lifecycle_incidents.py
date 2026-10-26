@@ -17,6 +17,8 @@ from teatree.core.modelkit.reask_cadence import owner_quiet_at
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
+from teatree.core.worktree.checkout_state import CheckoutState
 from teatree.loop.preset_resolution import owner_zone
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
@@ -24,7 +26,7 @@ from teatree.loop.self_improve.detectors.lifecycle_incident import _POST_WAIT, L
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.self_improve.schedule import DeliveryRoutes, Tier, TierResult, detectors_for_tier, run_tier
 from tests._owner_channel import OWNER_DECISION
-from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
+from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory, WorktreeFactory
 
 
 class LifecycleIncidentTests(TestCase):
@@ -297,6 +299,34 @@ class LifecycleIncidentTests(TestCase):
     def test_attest_hold_ends_before_unposted_incident_wait(self) -> None:
         assert CHECKOUT_ATTEST_HOLD < _POST_WAIT
 
+    def test_unposted_attest_incident_waits_until_after_ten_minutes(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        card = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert card is not None
+        now = timezone.now()
+        detector = LifecycleIncidentDetector(now=lambda: now)
+
+        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=now - timedelta(minutes=9))
+        early = {report.payload["kind"] for report in detector.detect()}
+        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=now - timedelta(minutes=11))
+        late = {report.payload["kind"] for report in detector.detect()}
+
+        assert "outbound_unposted" not in early
+        assert "outbound_unposted" in late
+
+    def test_quiet_hours_keep_a_posted_unanswered_question_visible(self) -> None:
+        check_at = timezone.now().astimezone(owner_zone()).replace(hour=3, minute=0, second=0, microsecond=0)
+        row = DeferredQuestion.record("Which option?", slack_ts="200.1", slack_channel="D1", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=row.pk).update(created_at=check_at - timedelta(hours=2))
+
+        with patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", side_effect=owner_quiet_at):
+            kinds = {report.payload["kind"] for report in LifecycleIncidentDetector(now=lambda: check_at).detect()}
+
+        assert "outbound_unanswered" in kinds
+
     def test_growing_unposted_count_does_not_send_another_alert(self) -> None:
         first = DeferredQuestion.record("First?", session_id="s", **OWNER_DECISION)
         DeferredQuestion.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=2))
@@ -313,6 +343,24 @@ class LifecycleIncidentTests(TestCase):
 
         assert result.reports[0].payload["count"] == 2
         assert len(alerts) == 1
+
+    def test_new_unposted_gap_alerts_after_the_previous_gap_clears(self) -> None:
+        first = DeferredQuestion.record("First?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        alerts: list[str] = []
+        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        delivery = DeliveryRoutes(
+            overlay_name="t3-teatree", owner_alert=lambda report, _existing: alerts.append(report.summary) or True
+        )
+
+        run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+        DeferredQuestion.consume(first.pk, answer="yes")
+        run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+        second = DeferredQuestion.record("Second?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=second.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+
+        assert len(alerts) == 2
 
     def test_stale_claim_with_no_heartbeat_is_an_incident(self) -> None:
         task = TaskFactory(status=Task.Status.CLAIMED)

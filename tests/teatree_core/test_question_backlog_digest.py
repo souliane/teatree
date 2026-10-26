@@ -114,6 +114,20 @@ class TestResurfaceQuestionBacklog(TestCase):
         assert result == (False, 1)
         notify.assert_not_called()
 
+    def test_one_old_card_keeps_a_mixed_age_digest_due(self) -> None:
+        old = DeferredQuestion.record("Old decision?", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=old.pk).update(created_at=timezone.now() - dt.timedelta(hours=2))
+        DeferredQuestion.record("New decision?", **OWNER_DECISION)
+
+        with (
+            patch("teatree.core.notify_question_drains.owner_quiet_now", return_value=False),
+            patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify,
+        ):
+            result = resurface_question_backlog(now=timezone.now())
+
+        assert result == (True, 2)
+        notify.assert_called_once()
+
     def test_unposted_attest_card_under_hold_does_not_trigger_a_digest(self) -> None:
         task = TaskFactory()
         worktree = WorktreeFactory(ticket=task.ticket)
@@ -125,7 +139,7 @@ class TestResurfaceQuestionBacklog(TestCase):
         with patch("teatree.core.notify_question_drains.notify_user") as notify:
             result = resurface_question_backlog()
 
-        assert result == (False, 1)
+        assert result == (False, 0)
         notify.assert_not_called()
 
     def test_the_interval_bucket_is_the_idempotency_key(self) -> None:
