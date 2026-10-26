@@ -1,9 +1,12 @@
 """A crashed critic is decided by its own dispatch budget, not by the ticket-phase budget."""
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import timedelta
+from threading import Barrier, BrokenBarrierError
 from unittest.mock import patch
 
-from django.db import connection
+from django.db import connection, connections
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
@@ -16,6 +19,7 @@ from teatree.core.repair_loop import max_phase_iterations
 from teatree.loop import transient_requeue
 from teatree.loop.transient_requeue import HALT_STAMP, requeue_transient_failed
 from teatree.loop.transient_requeue_disposal import LIVE_SUCCESSOR_STAMP
+from tests._file_backed_db import file_backed_default_database
 
 _HEAD = "a" * 40
 _CRASH = "result_error: the critic session died"
@@ -174,6 +178,53 @@ class TestCriticRetryTransaction(TransactionTestCase):
 
         assert transactions["spend"] is not None
         assert transactions["spend"] is transactions["reopen"]
+
+
+class TestTwoWorkerCriticRetry(TransactionTestCase):
+    def test_two_workers_spend_one_attempt(self) -> None:
+        with file_backed_default_database():
+            ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+            dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_HEAD, contract="grade")
+            assert dispatch is not None
+            assert dispatch.task is not None
+            _crash(dispatch.task)
+
+            both_scanned = Barrier(2)
+            both_spent = Barrier(2)
+            original_scan = transient_requeue._non_terminal_failed_tasks
+            original_reopen = transient_requeue._reopen
+
+            def scan() -> list[Task]:
+                tasks = original_scan()
+                both_scanned.wait(timeout=10)
+                return tasks
+
+            def sweep() -> int:
+                try:
+                    return requeue_transient_failed()
+                finally:
+                    connections.close_all()
+
+            def reopen(task: Task) -> int:
+                with suppress(BrokenBarrierError):
+                    both_spent.wait(timeout=0.5)
+                return original_reopen(task)
+
+            with (
+                patch("teatree.loop.transient_requeue._non_terminal_failed_tasks", side_effect=scan),
+                patch("teatree.loop.transient_requeue._reopen", side_effect=reopen),
+                patch("teatree.core.managers_task_claim.claim_admission_block_reason", return_value=""),
+                ThreadPoolExecutor(max_workers=2) as workers,
+            ):
+                first = workers.submit(sweep)
+                second = workers.submit(sweep)
+                assert sorted((first.result(timeout=15), second.result(timeout=15))) == [0, 1]
+
+            dispatch.refresh_from_db()
+            dispatch.task.refresh_from_db()
+            assert dispatch.attempts == 2
+            assert dispatch.task.status == Task.Status.PENDING
+            assert _open_questions() == 0
 
 
 class TestOnlyACriticOwnsADispatchBudget(TestCase):
