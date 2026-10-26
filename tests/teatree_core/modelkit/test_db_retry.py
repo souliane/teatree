@@ -172,6 +172,16 @@ class TestWaitOutLockedWrites(TransactionTestCase):
             self._select_one()
         assert locked.calls == 3
 
+    def test_the_wait_doubles_up_to_its_cap(self) -> None:
+        locked = _LockedStatement(times=4)
+        with (
+            patch("teatree.core.modelkit.db_retry.time.sleep") as sleep,
+            wait_out_locked_writes(),
+            connection.execute_wrapper(locked),
+        ):
+            self._select_one()
+        assert [call.args[0] for call in sleep.call_args_list] == [0.02, 0.04, 0.05, 0.05]
+
     def test_a_lock_error_inside_an_open_transaction_surfaces_at_once(self) -> None:
         locked = _LockedStatement()
         with (

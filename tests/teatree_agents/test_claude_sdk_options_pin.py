@@ -1,9 +1,12 @@
 """Pin what a ``claude_sdk`` session receives: its context, its turns, its prefix.
 
-The coding prompt now carries the merge-quality self-check into the SDK session
-context. The hashes pin that deliberate context and options change so a later
-edit to :func:`~teatree.agents._runner_options._build_options` or to
-:func:`~teatree.agents.prompt.build_system_context` cannot move it silently.
+The owner guardrail on the cheap-lane work is that none of it may change the
+subscription lane. That lane is not addressed by any of it — the changes live in
+the loop's review-dispatch rules and in the metered harness — so the guarantee is
+cheap to give and worth nothing unspoken: a later edit to
+:func:`~teatree.agents._runner_options._build_options` or to
+:func:`~teatree.agents.prompt.build_system_context` would move it silently, on a
+lane with no cost signal to notice.
 
 So this pins the three axes by name.
 

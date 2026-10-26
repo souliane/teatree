@@ -1,5 +1,7 @@
 """A crashed critic is decided by its own dispatch budget, not by the ticket-phase budget."""
 
+from datetime import timedelta
+
 from django.test import TestCase
 from django.utils import timezone
 
@@ -52,6 +54,16 @@ class TestACrashedCriticIsDecidedByItsDispatchBudget(TestCase):
         assert self.task.status == Task.Status.PENDING
         assert self._attempts() == 2
         assert _open_questions() == 0
+
+    def test_a_reopened_critic_is_not_saturated_while_it_runs(self) -> None:
+        CriticDispatch.objects.filter(pk=self.dispatch.pk).update(
+            attempts=MAX_DISPATCH_ATTEMPTS - 1, deadline=timezone.now() - timedelta(hours=1)
+        )
+        self._crashed_over_the_ticket_phase_budget()
+
+        assert requeue_transient_failed() == 1
+
+        assert not CriticDispatch.saturated().filter(pk=self.dispatch.pk).exists()
 
     def test_a_crash_at_the_dispatch_cap_escalates_once(self) -> None:
         CriticDispatch.objects.filter(pk=self.dispatch.pk).update(attempts=MAX_DISPATCH_ATTEMPTS)
