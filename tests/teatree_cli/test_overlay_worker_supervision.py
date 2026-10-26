@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli.overlay import OverlayAppBuilder, _run_workers
+from teatree.utils import singleton as singleton_mod
 from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held
 
 
@@ -38,7 +39,8 @@ class TestWorkerExitCodesAreCounted:
 
 def test_overlay_worker_holds_the_control_database_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     database = tmp_path / "control" / "db.sqlite3"
-    monkeypatch.setenv("T3_CONFIG_DB", str(database))
+    monkeypatch.setattr(singleton_mod, "CANONICAL_DB", database)
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     lock = database.with_name(f"{database.name}.worker.pid")
     app = OverlayAppBuilder(overlay_name="acme", project_path=tmp_path).build()
 

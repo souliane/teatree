@@ -27,19 +27,30 @@ from teatree.utils.singleton import (
 
 
 def test_worker_lock_follows_the_control_database_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(singleton_module, "CODE_REPO_ROOT", tmp_path / "primary")
-    monkeypatch.setattr(paths, "_TRUE_CANONICAL_DATA_DIR", Path.home() / ".local" / "share" / "teatree")
-    monkeypatch.delenv("T3_CONFIG_DB", raising=False)
-    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(tmp_path / "control"))
+    monkeypatch.setattr(singleton_module, "CANONICAL_DB", tmp_path / "control" / "db.sqlite3")
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     assert worker_control_lock_path() == tmp_path / "control" / "db.sqlite3.worker.pid"
 
 
 def test_worker_lock_keeps_distinct_database_names_distinct(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "first.sqlite3"))
+    monkeypatch.setattr(singleton_module, "CANONICAL_DB", tmp_path / "first.sqlite3")
     first = worker_control_lock_path()
-    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "second.sqlite3"))
+    monkeypatch.setattr(singleton_module, "CANONICAL_DB", tmp_path / "second.sqlite3")
     second = worker_control_lock_path()
     assert first != second
+
+
+def test_spawn_lock_uses_primary_task_database_even_with_a_config_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "other-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(tmp_path / "control"))
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(paths, "_TRUE_CANONICAL_DATA_DIR", home / ".local" / "share" / "teatree")
+    assert worker_control_lock_path(primary=True) == tmp_path / "control" / "db.sqlite3.worker.pid"
 
 
 def _hold_lock(lock_path: str, ready_path: str, release_path: str) -> None:

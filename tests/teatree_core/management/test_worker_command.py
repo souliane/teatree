@@ -19,6 +19,7 @@ from django.test import TestCase
 
 from teatree.core.management.commands.worker import STARVED_EXIT
 from teatree.core.models import WorkerGeneration
+from teatree.utils import singleton as singleton_mod
 from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, ExecutionContext, flock_is_held
 from teatree.utils.singleton_refusals import ESCALATION_THRESHOLD, read_streak, record_refusal
 
@@ -55,7 +56,8 @@ def test_runs_the_worker_under_the_singleton_and_installs_signals() -> None:
 
 def test_worker_holds_the_control_database_lock_while_running(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     database = tmp_path / "control" / "db.sqlite3"
-    monkeypatch.setenv("T3_CONFIG_DB", str(database))
+    monkeypatch.setattr(singleton_mod, "CANONICAL_DB", database)
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     db_lock = database.with_name(f"{database.name}.worker.pid")
 
     def check_running() -> None:

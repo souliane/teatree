@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from teatree.paths import CODE_REPO_ROOT, DATA_DIR, ControlDb
+from teatree.paths import CANONICAL_DB, DATA_DIR, ControlDb, canonical_db_in
 
 #: The #1796 :class:`~teatree.loops.worker.LoopWorker` flock singleton name — at most
 #: one worker drains the shared queue per box. Homed here, next to the singleton
@@ -55,8 +55,10 @@ WORKER_SINGLETON = "worker"
 
 
 def worker_control_lock_path(*, primary: bool = False) -> Path:
-    control_db = ControlDb(env=os.environ)
-    database = (control_db.primary() if primary else control_db.for_repo(CODE_REPO_ROOT).path).resolve()
+    database = (
+        canonical_db_in(ControlDb(env=os.environ).primary_data_dir(), env=os.environ) if primary else CANONICAL_DB
+    )
+    database = database.resolve()
     return database.with_name(f"{database.name}.worker.pid")
 
 

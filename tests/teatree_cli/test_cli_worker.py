@@ -21,6 +21,7 @@ from django.utils import timezone
 from typer.testing import CliRunner
 
 import teatree.cli.worker as worker_cli
+from teatree import paths
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_worker_running
 from teatree.cli.worker import DrainPayload, _drain_payload, worker_app
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, Prompt, Task, WorkerGeneration
@@ -301,8 +302,13 @@ class TestWorkerStatusShowsTheDeployDrain(django.test.TestCase):
 
 def test_database_lock_blocks_ensure_across_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     database = tmp_path / "control" / "db.sqlite3"
-    monkeypatch.setenv("T3_CONFIG_DB", str(database))
-    monkeypatch.setenv("HOME", str(tmp_path / "other-home"))
+    home = tmp_path / "other-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(database.parent))
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(paths, "_TRUE_CANONICAL_DATA_DIR", home / ".local" / "share" / "teatree")
     db_lock = database.with_name(f"{database.name}.worker.pid")
     with (
         singleton_mod.singleton(singleton_mod.WORKER_SINGLETON, pid_path=db_lock),
