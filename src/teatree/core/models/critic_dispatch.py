@@ -165,7 +165,12 @@ class CriticDispatch(models.Model):
         The fresh deadline keeps :meth:`saturated` false while the reopened task runs.
         """
         return bool(
-            cls.objects.filter(task=task, state=cls.State.DISPATCHED, attempts__lt=MAX_DISPATCH_ATTEMPTS).update(
+            cls.objects.filter(
+                task=task,
+                task__status=Task.Status.FAILED,
+                state=cls.State.DISPATCHED,
+                attempts__lt=MAX_DISPATCH_ATTEMPTS,
+            ).update(
                 deadline=timezone.now() + DEFAULT_DISPATCH_TTL,
                 attempts=models.F("attempts") + 1,
             )

@@ -1,16 +1,19 @@
 """An owner's recorded waiver turns one LLM merge item from unmet to met, for that ticket only."""
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 
+from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.gates.merge_item_waiver import MergeItemWaiverError, waive_merge_item
 from teatree.core.gates.merge_quality_gate import MergeQualityVerdictError, check_merge_quality_verdict, unmet_items
-from teatree.core.models import CriticFinding, CriticVerdict, Ticket
+from teatree.core.models import CriticFinding, CriticVerdict, DeferredQuestion, Ticket
 from teatree.core.models.types import validated_ticket_extra
+from teatree.loop.question_binding import answer_from_click
 
 _HEAD = "a" * 40
 _PASS = {"slug": "cleanliness", "status": "pass", "citation": "src/x.py:1 clean"}
@@ -38,6 +41,10 @@ class _ConfiguredOwner(TestCase):
             patch(
                 "teatree.config.get_effective_settings", return_value=SimpleNamespace(user_identity_aliases=["owner"])
             )
+        )
+        self.enterContext(patch("teatree.core.gates.merge_item_waiver.direct_owner_action", return_value=True))
+        self.enterContext(
+            patch("teatree.core.management.commands._rubric_commands.direct_owner_action", return_value=True)
         )
 
 
@@ -95,6 +102,28 @@ class TestAWaivedItemIsNotUnmet(_ConfiguredOwner):
         assert unmet_items(_fresh(self.verdict)) == []
 
 
+class TestFirstWaiverTransaction(TransactionTestCase):
+    def test_the_first_waiver_check_and_merge_share_a_transaction(self) -> None:
+        ticket = _ticket()
+        atomic_at_merge: list[bool] = []
+        original_merge = Ticket.merge_extra
+
+        def observe_merge(row: Ticket, *, merge_into_dicts: dict[str, dict[str, str]]) -> None:
+            atomic_at_merge.append(connection.in_atomic_block)
+            original_merge(row, merge_into_dicts=merge_into_dicts)
+
+        with (
+            patch(
+                "teatree.config.get_effective_settings", return_value=SimpleNamespace(user_identity_aliases=["owner"])
+            ),
+            patch("teatree.core.gates.merge_item_waiver.direct_owner_action", return_value=True, create=True),
+            patch.object(Ticket, "merge_extra", observe_merge),
+        ):
+            waive_merge_item(ticket, slug="test_value", waived_by="owner", reason="first reason")
+
+        assert atomic_at_merge == [True]
+
+
 class TestAWaiverIsRefused(_ConfiguredOwner):
     def setUp(self) -> None:
         super().setUp()
@@ -118,6 +147,10 @@ class TestAWaiverIsRefused(_ConfiguredOwner):
 
     def test_without_a_reason(self) -> None:
         self._assert_refused(reason="  ")
+
+    def test_an_agent_cannot_claim_the_configured_owner_alias(self) -> None:
+        with patch("teatree.core.gates.merge_item_waiver.direct_owner_action", return_value=False, create=True):
+            self._assert_refused(waived_by="owner")
 
     def test_without_a_configured_owner_alias(self) -> None:
         with patch("teatree.config.get_effective_settings", return_value=SimpleNamespace(user_identity_aliases=[])):
@@ -160,6 +193,39 @@ class TestTheMergeItemWaiveCommand(_ConfiguredOwner):
         )
 
         assert unmet_items(_fresh(verdict)) == []
+
+    def test_an_agent_command_queues_an_owner_question_and_the_owner_tap_records_once(self) -> None:
+        ticket = _ticket()
+        with patch("teatree.core.management.commands._rubric_commands.direct_owner_action", return_value=False):
+            call_command(
+                "ticket",
+                "merge-item-waive",
+                str(ticket.pk),
+                "--item",
+                "test_value",
+                "--waived-by",
+                "owner",
+                "--reason",
+                "three rounds on the same test",
+            )
+        ticket.refresh_from_db()
+        assert not ticket.extra.get("merge_item_waivers")
+        row = DeferredQuestion.objects.get()
+        assert row.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000300")
+        backend = MagicMock(user_id="U0DEMOOWNER")
+        backend.update_message.return_value = {"ok": True}
+        click = {
+            "type": "block_actions",
+            "user": {"id": "U0DEMOOWNER"},
+            "channel": {"id": row.slack_channel},
+            "message": {"ts": row.slack_ts},
+            "actions": [{"action_id": "owner-question-option-1", "value": "1", "text": {"text": "Accept"}}],
+        }
+        assert answer_from_click(click, backend=backend)
+        assert carry_out_owner_actions() == [f"carried out {row.pk}"]
+        assert carry_out_owner_actions() == []
+        ticket.refresh_from_db()
+        assert ticket.extra["merge_item_waivers"]["test_value"]["waived_by"] == "slack:U0DEMOOWNER"
 
     def test_a_refusal_exits_nonzero_and_records_nothing(self) -> None:
         ticket = _ticket()

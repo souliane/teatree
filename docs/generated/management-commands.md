@@ -659,7 +659,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `plan-reconcile-inflight` | Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added |
 | `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
 | `rubric-waive` | Waive one rubric criterion by its text hash; an owner identity and a reason are required |
-| `merge-item-waive` | Waive one LLM merge-critic item for a ticket; an owner identity and a reason are required |
+| `merge-item-waive` | Request the owner's waiver, or record it from a direct owner command |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
 | `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |
 | `dod-override` | Record the DoD local-E2E gate escape hatch for a ticket (#88) |

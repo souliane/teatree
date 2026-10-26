@@ -1359,7 +1359,7 @@
           "name": "rubric-waive"
         },
         {
-          "help": "Waive one LLM merge-critic item for a ticket; an owner identity and a reason are required",
+          "help": "Request the owner's waiver, or record it from a direct owner command",
           "name": "merge-item-waive"
         },
         {

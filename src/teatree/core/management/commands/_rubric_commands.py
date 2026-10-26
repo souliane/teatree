@@ -22,11 +22,12 @@ from typing import Annotated, TypedDict
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.gates.merge_item_waiver import MergeItemWaiverError, waive_merge_item
+from teatree.core.gates.merge_item_waiver import MergeItemWaiverError, request_merge_item_waiver, waive_merge_item
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.models import Rubric, RubricError, Ticket
 from teatree.core.models.rubric_waiver import waive_criterion
 from teatree.core.models.types import RubricGrade
+from teatree.core.owner_action_auth import direct_owner_action
 
 
 class RubricCommandError(ValueError):
@@ -152,9 +153,15 @@ class RubricCommands(TyperCommand):
         waived_by: Annotated[str, typer.Option("--waived-by", help="Owner identity recording the waiver.")] = "",
         reason: Annotated[str, typer.Option("--reason", help="Why this item is waived.")] = "",
     ) -> None:
-        """Waive one LLM merge-critic item for a ticket; an owner identity and a reason are required."""
+        """Request the owner's waiver, or record it from a direct owner command."""
         ticket = self._resolve_rubric_ticket(ticket_id)
         try:
+            if not direct_owner_action():
+                question = request_merge_item_waiver(ticket, slug=item, reason=reason)
+                self.stdout.write(
+                    f"  requested owner waiver of {item.strip()} for ticket {ticket.pk}: question {question.pk}"
+                )
+                return
             waive_merge_item(ticket, slug=item, waived_by=waived_by, reason=reason)
         except MergeItemWaiverError as exc:
             self.stderr.write(f"  merge-item-waive refused: {exc}")

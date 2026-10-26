@@ -11,6 +11,7 @@ class OwnerActionKind(StrEnum):
     ATTEST = "attest"
     ESCAPE = "escape"
     VOID = "void"
+    MERGE_ITEM_WAIVER = "merge_item_waiver"
 
 
 class ActionRequest(TypedDict):

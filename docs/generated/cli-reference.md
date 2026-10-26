@@ -12722,7 +12722,7 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              criteria (#2241).                               │
 │ rubric-waive                 Record an owner's waiver of one rubric          │
 │                              criterion.                                      │
-│ merge-item-waive             Record an owner's waiver of one LLM             │
+│ merge-item-waive             Request an owner's waiver of one LLM            │
 │                              merge-critic item.                              │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
@@ -13726,8 +13726,7 @@ Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
 ```
 Usage: t3 teatree ticket merge-item-waive [OPTIONS] TICKET_ID
 
- Waive one LLM merge-critic item for a ticket; an owner identity and a reason
- are required.
+ Request the owner's waiver, or record it from a direct owner command.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │

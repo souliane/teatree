@@ -1,8 +1,10 @@
 """A crashed critic is decided by its own dispatch budget, not by the ticket-phase budget."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
@@ -11,6 +13,7 @@ from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.repair_loop import max_phase_iterations
+from teatree.loop import transient_requeue
 from teatree.loop.transient_requeue import HALT_STAMP, requeue_transient_failed
 from teatree.loop.transient_requeue_disposal import LIVE_SUCCESSOR_STAMP
 
@@ -44,6 +47,13 @@ class TestACrashedCriticIsDecidedByItsDispatchBudget(TestCase):
 
     def _attempts(self) -> int:
         return CriticDispatch.objects.get(pk=self.dispatch.pk).attempts
+
+    def test_a_stale_sweep_cannot_spend_an_attempt_after_the_task_reopened(self) -> None:
+        _crash(self.task)
+        assert requeue_transient_failed() == 1
+
+        assert CriticDispatch.spend_reopen(self.task) is False
+        assert self._attempts() == 2
 
     def test_a_crash_with_dispatch_budget_left_is_reopened_and_spends_one_attempt(self) -> None:
         self._crashed_over_the_ticket_phase_budget()
@@ -134,6 +144,35 @@ class TestACrashedCriticIsDecidedByItsDispatchBudget(TestCase):
         assert LIVE_SUCCESSOR_STAMP in self.task.execution_reason
         assert self._attempts() == attempts
         assert _open_questions() == 0
+
+
+class TestCriticRetryTransaction(TransactionTestCase):
+    def test_dispatch_spend_and_task_reopen_share_one_transaction(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_HEAD, contract="grade")
+        assert dispatch is not None
+        assert dispatch.task is not None
+        _crash(dispatch.task)
+        transactions: dict[str, object | None] = {}
+        original_spend = CriticDispatch.spend_reopen
+        original_reopen = transient_requeue._reopen
+
+        def spend(task: Task) -> bool:
+            transactions["spend"] = connection.atomic_blocks[-1] if connection.in_atomic_block else None
+            return original_spend(task)
+
+        def reopen(task: Task) -> int:
+            transactions["reopen"] = connection.atomic_blocks[-1] if connection.in_atomic_block else None
+            return original_reopen(task)
+
+        with (
+            patch.object(CriticDispatch, "spend_reopen", side_effect=spend),
+            patch("teatree.loop.transient_requeue._reopen", side_effect=reopen),
+        ):
+            assert requeue_transient_failed() == 1
+
+        assert transactions["spend"] is not None
+        assert transactions["spend"] is transactions["reopen"]
 
 
 class TestOnlyACriticOwnsADispatchBudget(TestCase):

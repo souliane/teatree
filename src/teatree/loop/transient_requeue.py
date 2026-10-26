@@ -219,14 +219,20 @@ def _route_failed_task(task: Task, *, now: datetime) -> int:
     # build cannot route on a stale kind.
     strategy = recovery_strategy(classify_failure(error))
     if strategy is RecoveryStrategy.RETRY:
-        halt = critic_dispatch_halt(task, fallback=_budget_halt_reason)
-        if halt is None:
-            return _reopen(task)
-        _escalate_once(task, reason=halt)
-        return 0
+        return _retry_failed_task(task)
     if (cause := recoverable_exhaustion_cause(error)) is not None:
         return _requeue_on_window_reset(task, cause, now=now)
     return _handle_deterministic(task, strategy)
+
+
+def _retry_failed_task(task: Task) -> int:
+    if not Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).exists():
+        return 0
+    halt = critic_dispatch_halt(task, fallback=_budget_halt_reason)
+    if halt is None:
+        return _reopen(task)
+    _escalate_once(task, reason=halt)
+    return 0
 
 
 def _answer_moved_target(task: Task, *, error: str) -> bool:
