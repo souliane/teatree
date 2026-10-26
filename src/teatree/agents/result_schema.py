@@ -1,17 +1,4 @@
-"""Structured output schema for agent task results.
-
-Agents return JSON matching this schema. Any agent that can produce JSON works —
-Claude structured output just makes schema compliance guaranteed.
-
-Phase-specific evidence requirements (#1284 / codex #1282-6): a successful
-phase task must carry concrete evidence the work actually happened — not just
-a summary string. ``PHASE_REQUIRED_EVIDENCE`` names the per-phase fields the
-agent must supply (in addition to ``summary``); ``_record_success`` consults
-this map and refuses to complete the task when the claim has no evidence. The
-"DM sent successfully but didn't deliver" false-positive class is exactly the
-shape this prevents: a one-line summary advancing the FSM with no underlying
-proof.
-"""
+"""Structured result schema and phase evidence requirements for agent tasks."""
 
 from collections.abc import Callable
 from typing import TypedDict
