@@ -1359,6 +1359,10 @@
           "name": "rubric-waive"
         },
         {
+          "help": "Waive one LLM merge-critic item for a ticket; an owner identity and a reason are required",
+          "name": "merge-item-waive"
+        },
+        {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",
           "name": "rubric-set"
         },

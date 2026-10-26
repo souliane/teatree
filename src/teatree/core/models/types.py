@@ -240,6 +240,8 @@ class TicketExtra(TypedDict, total=False):
     rubric_grades_by_head: "dict[str, dict[str, dict[str, str]]]"
     rubric_grades_recorded: bool
     rubric_waivers: list[dict[str, str | int]]
+    # Owner waivers of one LLM merge-critic item, keyed by item slug; read by ``unmet_items``.
+    merge_item_waivers: dict[str, dict[str, str]]
     # #1661 per-ticket FixRecord read by ``fix_dod_gate`` at ``mark_delivered`` for
     # ``kind=fix``; written from the agent result envelope by
     # ``agents.fix_record_recorder``. ``fix_record_override`` is the audited escape

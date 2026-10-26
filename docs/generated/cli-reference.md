@@ -12721,6 +12721,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              criteria (#2241).                               │
 │ rubric-waive                 Record an owner's waiver of one rubric          │
 │                              criterion.                                      │
+│ merge-item-waive             Record an owner's waiver of one LLM             │
+│                              merge-critic item.                              │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -13714,6 +13716,25 @@ Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
 │ --text-hash        TEXT  Hash shown beside the criterion.                    │
 │ --waived-by        TEXT  Owner identity recording the waiver.                │
 │ --reason           TEXT  Why this criterion is waived.                       │
+│ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket merge-item-waive`
+
+```
+Usage: t3 teatree ticket merge-item-waive [OPTIONS] TICKET_ID
+
+ Waive one LLM merge-critic item for a ticket; an owner identity and a reason
+ are required.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --item             TEXT  The LLM merge item: test_value or cleanliness.      │
+│ --waived-by        TEXT  Owner identity recording the waiver.                │
+│ --reason           TEXT  Why this item is waived.                            │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

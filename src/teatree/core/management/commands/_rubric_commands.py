@@ -22,6 +22,7 @@ from typing import Annotated, TypedDict
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.gates.merge_item_waiver import MergeItemWaiverError, waive_merge_item
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.models import Rubric, RubricError, Ticket
 from teatree.core.models.rubric_waiver import waive_criterion
@@ -141,6 +142,24 @@ class RubricCommands(TyperCommand):
             self.stderr.write(f"  rubric-waive refused: {exc}")
             raise SystemExit(1) from exc
         self.stdout.write(f"  waived criterion {waiver['text_hash']}: {waiver['text']}")
+
+    @command(name="merge-item-waive")
+    def merge_item_waive(
+        self,
+        ticket_id: int,
+        *,
+        item: Annotated[str, typer.Option("--item", help="The LLM merge item: test_value or cleanliness.")] = "",
+        waived_by: Annotated[str, typer.Option("--waived-by", help="Owner identity recording the waiver.")] = "",
+        reason: Annotated[str, typer.Option("--reason", help="Why this item is waived.")] = "",
+    ) -> None:
+        """Waive one LLM merge-critic item for a ticket; an owner identity and a reason are required."""
+        ticket = self._resolve_rubric_ticket(ticket_id)
+        try:
+            waive_merge_item(ticket, slug=item, waived_by=waived_by, reason=reason)
+        except MergeItemWaiverError as exc:
+            self.stderr.write(f"  merge-item-waive refused: {exc}")
+            raise SystemExit(1) from exc
+        self.stdout.write(f"  waived merge item {item.strip()} for ticket {ticket.pk}")
 
     @command(name="rubric-set")
     def rubric_set(

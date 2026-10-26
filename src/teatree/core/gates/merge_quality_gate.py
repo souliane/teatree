@@ -32,6 +32,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from teatree.core.gates.merge_item_waiver import waived_merge_items
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.ticket_resolution import resolve_gated_ticket
@@ -201,18 +202,21 @@ def unmet_items(verdict: "CriticVerdict") -> list[str]:
     A slug is met only by an OK item WITH a citation (``CriticItemVerdict.coerce``
     downgrades an uncited pass to ``instrumentation_gap``, which ``is_fail``).
     A FAIL, an uncited pass, OR an OMITTED item is unmet — a critic cannot wave a
-    merge through by staying silent on an item.
+    merge through by staying silent on an item. An item the owner waived for the ticket
+    counts as met.
     """
     passed = {item.slug for item in verdict.item_verdicts() if item.status == item.OK and item.verified}
+    passed |= waived_merge_items(verdict.ticket)
     return [item.slug for item in llm_items(_MERGE_TRANSITION) if item.slug not in passed]
 
 
 def _finding_specs(verdict: "CriticVerdict", head_sha: str) -> list[CriticFindingSpec]:
     specs: list[CriticFindingSpec] = []
+    waived = waived_merge_items(verdict.ticket)
     for failed in verdict.failed_items():
         item = item_for(failed.slug, _MERGE_TRANSITION)
-        if item is None:
-            continue  # a verdict slug outside the merge rubric is ignored, never a phantom finding
+        if item is None or item.slug in waived:
+            continue  # outside the merge rubric: never a phantom finding; waived: no FAIL for a met item
         status = (
             CriticFinding.Status.INSTRUMENTATION_GAP
             if failed.status == failed.INSTRUMENTATION_GAP
