@@ -490,13 +490,7 @@ class TestApplyPhaseTransitionReReadsStateUnderLock(TestCase):
 
 
 class TestApplyPhaseTransitionUnshippableReviewDisposition(TestCase):
-    """A SELF_REVIEWED ticket with no shippable diff gets an explicit terminal disposition.
-
-    ``review()`` lands SELF_REVIEWED and stamps ``shipping_skipped`` when there is no
-    shippable diff. Without a disposition the ticket rests at SELF_REVIEWED forever,
-    holding its issue-implementer marker + WIP slot. It is now auto-ignored
-    (terminal → releases both), preserving the reason in ``extra``.
-    """
+    """A no-diff review holds the ticket until the settlement sweep proves a disposition."""
 
     def _completed_reviewing_task(self, ticket: Ticket) -> Task:
         record_review_context_for_test(ticket)
@@ -504,7 +498,7 @@ class TestApplyPhaseTransitionUnshippableReviewDisposition(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         return Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
 
-    def test_no_shippable_diff_auto_ignores(self) -> None:
+    def test_no_shippable_diff_holds_without_worktree(self) -> None:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
         review_task = self._completed_reviewing_task(ticket)
 
@@ -513,9 +507,13 @@ class TestApplyPhaseTransitionUnshippableReviewDisposition(TestCase):
 
         ticket.refresh_from_db()
         assert fired is True
-        assert ticket.state == Ticket.State.IGNORED, "a no-shippable-diff review must reach a terminal disposition"
-        assert ticket.extra.get("shipping_skipped")
-        assert ticket.extra.get("ignored_from") == Ticket.State.SELF_REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        hold = ticket.extra.get("shipping_hold")
+        assert hold["reason"] == "no worktree row"
+        assert "no shippable diff" in hold["skipped"]
+        assert hold["held_at"]
+        assert "shipping_skipped" not in ticket.extra
+        assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
 
     def test_shippable_diff_stays_reviewed_and_schedules_shipping(self) -> None:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)

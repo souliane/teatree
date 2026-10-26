@@ -1,6 +1,5 @@
 import logging
 import re
-from pathlib import Path
 from typing import TypedDict, cast
 from urllib.parse import urlparse
 
@@ -197,6 +196,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             repo=repo,
             since=since,
         )
+
+    def list_unshipped_branches(self, *, repo: str, prefix: str) -> list[str]:
+        return _pr_reads.list_unshipped_branches(self._client, self._resolve_project(repo), repo=repo, prefix=prefix)
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return _pr_reads.project_pr_diff(self._client, self._resolve_project(repo), pr_iid=pr_iid)
@@ -515,17 +517,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         )
 
     def _resolve_project(self, repo: str) -> ProjectInfo | None:
-        """Resolve a GitLab project from a local path, ``namespace/repo`` slug, or bare name.
-
-        Bare repo names (no slash, no matching path) fall back to the CWD's
-        git remote — ``Worktree.repo_path`` stores a bare name, and callers
-        that hand it straight to the code host would otherwise 404.
-        """
-        if Path(repo).exists():
-            return self._client.resolve_project_from_remote(repo)
-        if "/" in repo:
-            return self._client.resolve_project(repo)
-        return self._client.resolve_project_from_remote(".")
+        return _pr_reads.ProjectResolution.resolve_project(self._client, repo)
 
     def _merge_rpc(self) -> _gitlab_merge_rpc.GitLabApiMergeRpc:
         return _gitlab_merge_rpc.GitLabApiMergeRpc(self._client)

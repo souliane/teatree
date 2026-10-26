@@ -15,10 +15,10 @@ import json
 import logging
 import re
 from collections.abc import Sequence
-from typing import cast
+from typing import TypedDict, cast
 from urllib.parse import quote, urlparse
 
-from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _run_gh
+from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _run_gh, is_not_found
 from teatree.backends.github.api import gh_api_get as _gh_api_get
 from teatree.backends.github.payloads import _GitHubPullRequestSummary, pr_open_state_from_payload
 from teatree.backends.types import dig
@@ -57,6 +57,80 @@ _REVIEW_THREADS_MAX_PAGES = 20
 
 _ENGAGED_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"})
 _STANDING_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
+
+
+class _BranchOrPullItem(TypedDict, total=False):
+    ref: str
+    object: RawAPIDict
+    merged_at: str | None
+    head: RawAPIDict
+
+
+def _strict_list_pages(endpoint: str, *, token: str) -> list[_BranchOrPullItem]:
+    response = _run_gh(
+        "gh",
+        "api",
+        endpoint,
+        "--paginate",
+        "--slurp",
+        token=token,
+        timeout=_FORGE_READ_TIMEOUT_SECONDS,
+    )
+    pages = json.loads(response.stdout)
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        msg = f"GitHub {endpoint} returned a non-list page"
+        raise TypeError(msg)
+    items = [item for page in pages for item in page]
+    if any(not isinstance(item, dict) for item in items):
+        msg = f"GitHub {endpoint} returned a non-object item"
+        raise TypeError(msg)
+    return cast("list[_BranchOrPullItem]", items)
+
+
+class BranchReads:
+    @staticmethod
+    def list_unshipped_branches(*, repo: str, prefix: str, token: str) -> list[str]:
+        metadata = _gh_api_get(f"repos/{repo}", token=token)
+        default = metadata.get("default_branch") if isinstance(metadata, dict) else None
+        if not isinstance(default, str) or not default:
+            msg = f"GitHub {repo} has no readable default branch"
+            raise TypeError(msg)
+        try:
+            endpoint = f"repos/{repo}/git/matching-refs/heads/{quote(prefix, safe='')}?per_page=100"
+            refs = _strict_list_pages(endpoint, token=token)
+        except CommandFailedError as exc:
+            if is_not_found(exc):
+                return []
+            raise
+        owner = repo.split("/", 1)[0]
+        unshipped = []
+        for ref in refs:
+            full_name = ref.get("ref")
+            item = ref.get("object")
+            sha = item.get("sha") if isinstance(item, dict) else None
+            if not isinstance(full_name, str) or not full_name.startswith("refs/heads/") or not isinstance(sha, str):
+                msg = f"GitHub {repo} returned an invalid branch ref"
+                raise TypeError(msg)
+            name = full_name.removeprefix("refs/heads/")
+            if not name.startswith(prefix):
+                continue
+            comparison = _gh_api_get(f"repos/{repo}/compare/{quote(default, safe='')}...{sha}", token=token)
+            ahead = comparison.get("ahead_by") if isinstance(comparison, dict) else None
+            if not isinstance(ahead, int):
+                msg = f"GitHub {repo} returned an invalid branch comparison"
+                raise TypeError(msg)
+            if ahead == 0:
+                continue
+            prs = _strict_list_pages(
+                f"repos/{repo}/pulls?state=closed&head={quote(f'{owner}:{name}', safe='')}&per_page=100",
+                token=token,
+            )
+            if not any(
+                pr.get("merged_at") and isinstance((head := pr.get("head")), dict) and head.get("sha") == sha
+                for pr in prs
+            ):
+                unshipped.append(name)
+        return unshipped
 
 
 def approval_count(reviews: object) -> int | None:

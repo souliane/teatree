@@ -28,9 +28,9 @@ class WorktreeProbeUnverifiableError(RuntimeError):
     Raised by :func:`worktree_has_commits_ahead` when a PRESENT on-disk checkout's
     commit-count probe fails (a transient git error, a lock, a corrupt ref). The
     old code swallowed such a failure to ``False``, which the shippable-diff path
-    reads as "no diff" and routes ``review() → dispose_unshippable_review() →
-    ticket.ignore()`` — terminally ABANDONING a live ticket on a transient git
-    failure (#F1.4). A distinct typed error lets a caller tell "could not verify"
+    reads as "no diff" and routes ``review() → dispose_unshippable_review()`` to a
+    shipping hold — and a hold the settlement sweep can later ignore — on a transient
+    git failure (#F1.4). A distinct typed error lets a caller tell "could not verify"
     apart from "verified: nothing to ship" and HOLD/skip the tick (retry later)
     rather than dispose. A genuinely-missing path/branch is NOT this error — that
     is an honest ``False`` (nothing on disk to ship).
@@ -105,7 +105,7 @@ def worktree_has_commits_ahead(worktree: "Worktree") -> bool:
     except (CommandFailedError, ValueError, OSError) as exc:
         # A PRESENT checkout whose commit-count probe could not be verified. Do
         # NOT return False (which routes review() → dispose_unshippable_review()
-        # → ticket.ignore(), abandoning a live ticket on a transient git error).
+        # → a shipping hold, on a transient git error).
         # Surface it typed so the caller holds/skips the tick.
         logger.warning(
             "worktree_has_commits_ahead: could not verify commits ahead for %s (%s..%s): %s",

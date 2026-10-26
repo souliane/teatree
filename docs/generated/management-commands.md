@@ -636,6 +636,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `plan` | Record a PlanArtifact and advance the ticket WORK_STARTED → PLAN_RECORDED |
 | `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, address_self_review, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
+| `settle-holds` |  |
 | `rework-hold` | Supersede the ticket's active tasks and queue one coding task carrying its held self-review's findings |
 | `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
 | `list-clears` | List every unconsumed merge authorisation, each with the standing that hides it |

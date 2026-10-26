@@ -125,6 +125,13 @@ class PlanningHandoff(TypedDict, total=False):
     reason: str
 
 
+class ShippingHold(TypedDict):
+    reason: str
+    skipped: str
+    held_at: str
+    checked_at: str
+
+
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     nit_follow_up: bool
@@ -181,6 +188,7 @@ class TicketExtra(TypedDict, total=False):
     description: str
     provision: dict[str, str]
     shipping_skipped: str
+    shipping_hold: ShippingHold
     tracker_status: str
     # Notion status-sync: the tracked page URL (input) and the last status read
     # from it via the direct Notion API (``core.sync.fetch_notion_statuses``).

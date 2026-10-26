@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.models.self_review import SelfReview
 from teatree.core.review import pr_open_state as _pr_open_state
+from teatree.core.shipping_hold_notice import send_shipping_hold_notice
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import PrOpenState
@@ -74,4 +75,5 @@ def populate_model_registries() -> None:
     register_resolver("infer_overlay_for_url", _infer_overlay_for_url)
     register_resolver("resolve_overlay_name", _resolve_overlay_name)
     register_resolver("pr_open_state", _read_pr_open_state)
+    register_resolver("shipping_hold_notice", send_shipping_hold_notice)
     register_cost_factories()

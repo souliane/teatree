@@ -1267,6 +1267,10 @@
           "name": "clear"
         },
         {
+          "help": "",
+          "name": "settle-holds"
+        },
+        {
           "help": "Supersede the ticket's active tasks and queue one coding task carrying its held self-review's findings",
           "name": "rework-hold"
         },

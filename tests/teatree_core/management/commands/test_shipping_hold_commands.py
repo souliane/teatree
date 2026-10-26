@@ -1,0 +1,41 @@
+"""The operator dry-run reaches the settlement pass, reads evidence and writes nothing."""
+
+import json
+from io import StringIO
+from unittest.mock import patch
+
+from django.core.management import call_command
+from django.test import TestCase
+
+from teatree.core.models import Ticket
+from teatree.loop.shipping_hold_evidence import Evidence
+
+
+class TestShippingHoldCommands(TestCase):
+    def test_settle_holds_dry_run_reports_without_writing(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            role=Ticket.Role.AUTHOR,
+            state=Ticket.State.SELF_REVIEWED,
+            issue_url="https://github.com/souliane/teatree/issues/5346",
+            extra={
+                "shipping_hold": {
+                    "reason": "no worktree row",
+                    "skipped": "no shippable diff",
+                    "held_at": "2026-10-26T00:00:00+00:00",
+                    "checked_at": "",
+                }
+            },
+        )
+        output = StringIO()
+        with (
+            patch("teatree.loop.shipping_hold_settle.disk_evidence", return_value=Evidence()),
+            patch("teatree.loop.shipping_hold_settle.forge_evidence", return_value=Evidence(found="branch 5346-work")),
+        ):
+            call_command("ticket", "settle-holds", "--dry-run", "--json", stdout=output)
+        assert json.loads(output.getvalue()) == [
+            {"ticket_id": ticket.pk, "action": "hold", "reason": "branch 5346-work"}
+        ]
+        ticket.refresh_from_db()
+        assert ticket.extra["shipping_hold"]["checked_at"] == ""
+        assert ticket.extra["shipping_hold"]["reason"] == "no worktree row"

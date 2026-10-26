@@ -1,0 +1,214 @@
+"""Public settlement pass over held author tickets."""
+
+import shutil
+import subprocess
+from datetime import datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.core.models import Task, Ticket, Worktree
+from teatree.loop.shipping_hold_settle import Settlement, settle_held_tickets
+
+
+class _Host:
+    def __init__(self, branches: list[str] | None = None) -> None:
+        self.branches = branches or []
+        self.calls = 0
+
+    def list_unshipped_branches(self, *, repo: str, prefix: str) -> list[str]:
+        self.calls += 1
+        return [name for name in self.branches if name.startswith(prefix)]
+
+
+def _git(path: Path, *args: str) -> None:
+    executable = shutil.which("git")
+    assert executable is not None
+    subprocess.run([executable, "-C", str(path), *args], check=True, capture_output=True)
+
+
+class TestShippingHoldSettlement(TestCase):
+    def _ticket(self, number: int = 5346) -> Ticket:
+        now = timezone.now()
+        return Ticket.objects.create(
+            overlay="test",
+            role=Ticket.Role.AUTHOR,
+            state=Ticket.State.SELF_REVIEWED,
+            issue_url=f"https://github.com/souliane/teatree/issues/{number}",
+            extra={
+                "shipping_hold": {
+                    "reason": "no worktree row",
+                    "skipped": "no shippable diff",
+                    "held_at": now.isoformat(),
+                    "checked_at": "",
+                }
+            },
+        )
+
+    def _run(self, root: Path, host: _Host, *, now: datetime | None = None, dry_run: bool = False) -> list[Settlement]:
+        with (
+            patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root),
+            patch("teatree.loop.shipping_hold_evidence.get_overlay", return_value=object()),
+            patch("teatree.loop.shipping_hold_evidence.get_code_host_for_url", return_value=host),
+        ):
+            return settle_held_tickets(now=now, dry_run=dry_run)
+
+    def test_rowless_empty_sources_stay_held(self) -> None:
+        ticket = self._ticket()
+        with TemporaryDirectory() as directory:
+            results = self._run(Path(directory), _Host())
+        ticket.refresh_from_db()
+        assert results[0].action == "hold"
+        assert ticket.extra["shipping_hold"]["reason"] == "no worktree row; nothing on the workspaces root or the forge"
+        assert ticket.extra["shipping_hold"]["checked_at"]
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+
+    def test_row_with_verified_empty_sources_is_ignored(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-work")
+        with TemporaryDirectory() as directory:
+            results = self._run(Path(directory), _Host())
+        ticket.refresh_from_db()
+        assert results[0].action == "ignore"
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.extra["shipping_skipped"] == "no shippable diff"
+        assert "shipping_hold" not in ticket.extra
+        assert ticket.extra["ignored_from"] == Ticket.State.SELF_REVIEWED
+
+    def test_unreadable_forge_with_a_row_is_held_as_unverified_never_ignored(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-work")
+        host = _Host()
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(host, "list_unshipped_branches", side_effect=RuntimeError("HTTP 500")),
+        ):
+            results = self._run(Path(directory), host)
+        ticket.refresh_from_db()
+        assert results[0].action == "hold"
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert ticket.extra["shipping_hold"]["reason"] == "unverified: forge (RuntimeError: HTTP 500)"
+
+    def test_pass_settles_the_ten_least_recently_checked_tickets(self) -> None:
+        now = timezone.now()
+        tickets = [self._ticket(7000 + index) for index in range(11)]
+        for age, ticket in enumerate(tickets):
+            stamp = (now - timedelta(hours=age + 1)).isoformat()
+            ticket.merge_extra(set_keys={"shipping_hold": {**ticket.extra["shipping_hold"], "checked_at": stamp}})
+        with TemporaryDirectory() as directory:
+            results = self._run(Path(directory), _Host(), now=now)
+        assert len(results) == 10
+        newest_checked = tickets[0]
+        newest_checked.refresh_from_db()
+        assert newest_checked.extra["shipping_hold"]["reason"] == "no worktree row"
+        assert all(
+            Ticket.objects.get(pk=t.pk).extra["shipping_hold"]["checked_at"] == now.isoformat() for t in tickets[1:]
+        )
+
+    def test_unmerged_forge_branch_keeps_hold(self) -> None:
+        ticket = self._ticket()
+        with TemporaryDirectory() as directory:
+            results = self._run(Path(directory), _Host(["5346-work"]))
+        ticket.refresh_from_db()
+        assert results[0].action == "hold"
+        assert ticket.extra["shipping_hold"]["reason"] == "branch 5346-work"
+
+    def test_recorded_checkout_commits_release_once(self) -> None:
+        ticket = self._ticket()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "checkout"
+            path.mkdir()
+            _git(path, "init", "-b", "main")
+            _git(
+                path,
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "base",
+            )
+            _git(path, "checkout", "-b", "5346-work")
+            _git(
+                path,
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "work",
+            )
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="souliane/teatree",
+                branch="5346-work",
+                extra={"worktree_path": str(path)},
+            )
+            assert self._run(Path(directory), _Host())[0].action == "release"
+            assert self._run(Path(directory), _Host()) == []
+        ticket.refresh_from_db()
+        assert "shipping_hold" not in ticket.extra
+        assert Task.objects.filter(ticket=ticket, phase="shipping").count() == 1
+
+    def test_recheck_window_and_dry_run_do_not_write(self) -> None:
+        ticket = self._ticket()
+        host = _Host()
+        now = timezone.now()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            assert self._run(root, host, now=now, dry_run=True)[0].action == "hold"
+            ticket.refresh_from_db()
+            assert ticket.extra["shipping_hold"]["checked_at"] == ""
+            self._run(root, host, now=now)
+            assert self._run(root, host, now=now + timedelta(minutes=14)) == []
+            assert host.calls == 2
+            self._run(root, host, now=now + timedelta(minutes=16))
+            assert host.calls == 3
+
+    def test_scheduling_failure_rolls_back_hold_removal(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-work")
+        with (
+            patch("teatree.loop.shipping_hold_settle.worktree_has_commits_ahead", return_value=True),
+            patch.object(Ticket, "schedule_shipping", side_effect=RuntimeError("scheduler unavailable")),
+            pytest.raises(RuntimeError, match="scheduler unavailable"),
+        ):
+            settle_held_tickets()
+        ticket.refresh_from_db()
+        assert ticket.extra["shipping_hold"]["reason"] == "no worktree row"
+        assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
+
+    def test_claim_refusal_writes_nothing(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-work")
+        with (
+            patch("teatree.loop.shipping_hold_settle.worktree_has_commits_ahead", return_value=True),
+            patch("teatree.core.managers_task_claim.claim_admission_block_reason", return_value="quiescing"),
+        ):
+            assert settle_held_tickets() == []
+        ticket.refresh_from_db()
+        assert ticket.extra["shipping_hold"]["checked_at"] == ""
+        assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
+
+    def test_moved_ticket_is_not_settled_from_stale_forge_evidence(self) -> None:
+        ticket = self._ticket()
+        host = _Host()
+
+        def move_ticket(*, repo: str, prefix: str) -> list[str]:
+            Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
+            return []
+
+        with TemporaryDirectory() as directory, patch.object(host, "list_unshipped_branches", side_effect=move_ticket):
+            assert self._run(Path(directory), host) == []
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert "shipping_hold" in ticket.extra

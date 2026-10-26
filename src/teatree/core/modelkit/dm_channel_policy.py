@@ -72,6 +72,8 @@ PUSH_SIGNALS: frozenset[str] = frozenset(
         "self-improve:outbound-unposted",
         # A merge reached the default branch with no audit row; the owner decides whether to revert it.
         "unaudited-merge",
+        # A reviewed ticket with no worktree row is held, not ignored; the owner learns the review saw no work.
+        "shipping-hold",
     }
 )
 
