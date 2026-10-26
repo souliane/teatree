@@ -155,6 +155,9 @@ ram_warn_avail_gb = 3.0 # float — available RAM below this many GB warns
 [teatree.Loops.review]
 admit_colleague_prs_to_board = true # bool — put pull requests opened by colleagues onto the review board
 
+[teatree.Loops.self_improve]
+self_improve_owner_wait_minutes = 60 # int — minutes before one still-open repair notice
+
 [teatree.Loops.snapshot_warmer]
 snapshot_warmer_max_age_days = 1 # int — days a warmed snapshot stays usable
 

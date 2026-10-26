@@ -62,8 +62,8 @@ class DetectorReport:
 
     ``dedup_key`` is the canonical identity (see
     :func:`teatree.loop.self_improve.dedup.canonical_key`); same key +
-    same ``state_hash`` is suppressed by cool-down.  ``max_rung`` caps
-    the ladder so a detector cannot escalate past its declared ceiling.
+    same ``state_hash`` is suppressed by cool-down. ``max_rung`` caps ordinary
+    escalation; repair-first handling can open a ticket at the Slack rung.
     """
 
     detector: str
@@ -108,6 +108,17 @@ class DetectorScan:
     protected_prefixes: tuple[str, ...] = ()
     candidate_keys: frozenset[str] | None = None
     reopen_keys: frozenset[str] = frozenset()
+
+    def covers(self, key: str, *, key_prefix: str | None = None) -> bool:
+        if not self.complete and not (
+            self.protected_keys or self.protected_prefixes or self.candidate_keys is not None
+        ):
+            return False
+        if key_prefix is not None and not key.startswith(key_prefix):
+            return False
+        if self.candidate_keys is not None and key not in self.candidate_keys:
+            return False
+        return key not in self.protected_keys and not any(key.startswith(prefix) for prefix in self.protected_prefixes)
 
 
 @runtime_checkable

@@ -36,6 +36,7 @@ class _StubDetector:
 
     detector_name: str = "stub_detector"
     state_value: str = "h1"
+    kind: str = ""
 
     def detect(self) -> list[DetectorReport]:
         return [
@@ -46,7 +47,7 @@ class _StubDetector:
                 severity="warn",
                 max_rung=ActionRung.SLACK,
                 summary="stub",
-                payload={"slack_channel": "C0"},
+                payload={"slack_channel": "C0", "kind": self.kind},
             )
         ]
 
@@ -68,8 +69,8 @@ class SchedulerMetaTests(TestCase):
         assert SelfImproveFiring.objects.count() == 0
 
     def test_implemented_tiers_resolve_to_the_shipped_detectors(self) -> None:
-        assert len(detectors_for_tier(Tier.CHEAP)) == 7
-        assert len(detectors_for_tier(Tier.ALL)) == 7
+        assert len(detectors_for_tier(Tier.CHEAP)) == 8
+        assert len(detectors_for_tier(Tier.ALL)) == 8
 
     def test_unbuilt_tier_is_refused_naming_what_is_missing(self) -> None:
         for tier in (Tier.MEDIUM, Tier.EXPENSIVE):
@@ -134,7 +135,7 @@ class SchedulerMetaTests(TestCase):
             summary="seed",
         )
         record_firing(ladder_first, action=ActionRung.STATUSLINE)
-        detector = _StubDetector(state_value="h1")  # different state_hash ⇒ escalate
+        detector = _StubDetector(state_value="h1", kind="ram_probe_inert")  # different state_hash ⇒ escalate
         messaging = MagicMock()
         result = run_tier(
             Tier.CHEAP,

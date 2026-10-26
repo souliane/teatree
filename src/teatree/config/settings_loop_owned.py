@@ -17,6 +17,7 @@ as declaration bases of ``UserSettings`` — see that module's docstring for why
 are inheritance bases rather than composed attributes.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -28,6 +29,15 @@ from teatree.config.setting_parsers import (
     _parse_strict_int,
     _parse_strict_str,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def parse_self_improve_owner_wait_minutes(raw: object) -> int:
+    if type(raw) is int and raw >= 1:
+        return raw
+    logger.error("Invalid self_improve_owner_wait_minutes %r; using 60", raw)
+    return 60
 
 
 @dataclass
@@ -284,6 +294,18 @@ class _ReviewLoopSettings:
 
 
 @dataclass
+class _SelfImproveLoopSettings:
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "self_improve")
+
+    self_improve_owner_wait_minutes: int = setting(
+        60,
+        spec=SettingSpec(
+            help="minutes before one still-open repair notice", parse=parse_self_improve_owner_wait_minutes
+        ),
+    )
+
+
+@dataclass
 class _SnapshotWarmerLoopSettings:
     """When a reference-DB snapshot counts as stale enough to re-warm."""
 
@@ -325,6 +347,7 @@ LOOP_OWNED_SETTING_BASES: tuple[type, ...] = (
     _NewsLoopSettings,
     _ResourcePressureLoopSettings,
     _ReviewLoopSettings,
+    _SelfImproveLoopSettings,
     _SnapshotWarmerLoopSettings,
     _TicketsLoopSettings,
 )

@@ -81,7 +81,7 @@ class LifecycleIncidentDetector:
             return ActionRung.TICKET
         firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
         if firing is None or firing.resolved_at is not None:
-            return ActionRung.STATUSLINE
+            return ActionRung.TICKET if ticket_allowed and self.repair_after <= timedelta(0) else ActionRung.SLACK
         if ticket_allowed and firing.last_action == ActionRung.TICKET:
             return ActionRung.TICKET
         age = now - firing.first_fired_at

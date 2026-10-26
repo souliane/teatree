@@ -116,6 +116,7 @@ from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
+from teatree.core.models.scanner_fault import ScannerFault
 from teatree.core.models.sealed_secret import KeyHealth, SealedSecret
 from teatree.core.models.secret_cutover import SecretCutover
 from teatree.core.models.self_improve_firing import SelfImproveFiring
@@ -329,6 +330,7 @@ __all__ = [
     "RuleSource",
     "ScannedBroadcast",
     "ScannedFailedE2E",
+    "ScannerFault",
     "ScenarioPassRate",
     "ScenarioRegression",
     "SealedSecret",

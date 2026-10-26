@@ -12,6 +12,7 @@ from collections.abc import Callable
 from teatree.core.backend_factory import OverlayBackends, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models.scanner_fault import ScannerFault
 from teatree.core.notify import NotifyKind, resolve_user_id
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.review.mr_triage import RepoOwner
@@ -397,12 +398,24 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
         # spam the channel (#1287). The dispatcher continues with the
         # other scanners — only THIS scanner is skipped for one tick.
         logger.warning("Scanner %s recoverable error: %s", label, exc)
+        try:
+            ScannerFault.objects.record_failure(label, exc.error_class.value, exc.detail or str(exc))
+        except Exception:
+            logger.exception("Could not record scanner fault for %s", label)
         notify_scanner_error(label=label, exc=exc, overlay=job.overlay)
         partial = exc.signals if isinstance(exc, PartialScanError) else []
         return label, partial, f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
     except Exception as exc:
         logger.exception("Scanner %s raised", label)
+        try:
+            ScannerFault.objects.record_failure(label, type(exc).__name__, str(exc))
+        except Exception:
+            logger.exception("Could not record scanner fault for %s", label)
         return label, [], f"{type(exc).__name__}: {exc}"
+    try:
+        ScannerFault.objects.heal(label)
+    except Exception:
+        logger.exception("Could not heal scanner fault for %s", label)
     return label, signals, ""
 
 

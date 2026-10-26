@@ -10,6 +10,7 @@ envelope directive that keeps the run from being wasted.
 """
 
 import json
+import logging
 from collections.abc import Callable
 
 from teatree.agents.coding_prompt import _coding_phase_directive
@@ -32,7 +33,10 @@ from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
 from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
+from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.live_head import live_head_at
+
+logger = logging.getLogger(__name__)
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
 # first, then grade every quality dimension.
@@ -450,6 +454,11 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
     lines.extend(_ANSWER_RETURN_LINES)
     if owes_work_item(task.ticket):
         lines.extend(_WORK_ITEM_RETURN_LINES)
+        if task.ticket.overlay:
+            try:
+                lines.extend(get_overlay_for_ticket(task.ticket).metadata.work_item_return_lines())
+            except Exception:
+                logger.exception("Answering work-item overlay hook failed for ticket %s", task.ticket_id)
     return tuple(lines)
 
 

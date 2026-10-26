@@ -4,10 +4,9 @@ Each ladder rung is a no-op upgrade over the previous one:
 
     ``log`` -> ``statusline`` -> ``slack`` -> ``ticket`` -> ``auto_fix``
 
-Phase 1 only mechanically reaches ``statusline`` for every detector and
-``slack`` for ``ForgottenMergeDetector``; ``ticket`` is plumbed but
-gated by detector-declared ``max_rung``; ``auto_fix`` is whitelisted
-(``StaleStatuslineEntryDetector`` only).  The full rung table:
+Reports reaching Slack start a repair ticket and defer owner contact; resource
+probe failures retain immediate delivery. ``auto_fix`` is whitelisted
+(``StaleStatuslineEntryDetector`` only). The full rung table:
 
     log         — durable row only; no UI surface
     statusline  — ``ScanSignal`` rendered in the action_needed zone
@@ -37,6 +36,7 @@ from teatree.loop.self_improve.persistence import (
     recent_slack_firings_within,
     record_firing,
 )
+from teatree.loop.self_improve.repair_first import OwnerAlertDelivery, marked_report, probe_inert, repair_kind
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -61,14 +61,6 @@ class ActionResult:
     firing: SelfImproveFiring
     slack_capped: bool = False
     auto_fix_executed: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class OwnerAlertDelivery:
-    """Delivery outcome at the domain boundary; a pull is not a sent DM."""
-
-    sent: bool
-    pulled: bool = False
 
 
 def _ceiling_index(report: DetectorReport) -> int:
@@ -229,6 +221,15 @@ def _record_ticket_followup(report: DetectorReport, *, overlay_name: str) -> Sel
         return firing
 
 
+def _repair_first_report(
+    report: DetectorReport, existing: SelfImproveFiring | None, rung: str
+) -> tuple[DetectorReport, str]:
+    if rung not in {ActionRung.SLACK, ActionRung.TICKET} or probe_inert(report):
+        return report, rung
+    marked = marked_report(report, existing)
+    return marked, ActionRung.STATUSLINE if repair_kind(marked) else ActionRung.TICKET
+
+
 def run_action_ladder(
     report: DetectorReport,
     *,
@@ -265,6 +266,7 @@ def run_action_ladder(
     prior = None if existing is not None and existing.resolved_at else existing
     rung_index = _next_rung_index(report, prior, ceiling_index)
     rung = _LADDER_ORDER[rung_index]
+    report, rung = _repair_first_report(report, existing, rung)
 
     slack_capped = False
     auto_fix_executed = False

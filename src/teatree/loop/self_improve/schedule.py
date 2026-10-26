@@ -11,10 +11,13 @@ rather than resolving to an empty detector list: a cycle that scans
 nothing and reports success is a worse contract than a loud refusal.
 """
 
+import datetime as dt
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 
 from teatree.core.telemetry.admission import record_factory_issue
@@ -30,6 +33,7 @@ from teatree.loop.self_improve.detectors import (
     DispatchGapDetector,
     ForgottenMergeDetector,
     LifecycleIncidentDetector,
+    LoopHealthDetector,
     PressureIncidentDetector,
     SkillAssuranceGapDetector,
     StaleStatuslineEntryDetector,
@@ -41,7 +45,11 @@ from teatree.loop.self_improve.detectors.base import (
     DetectorScan,
     SelfImproveDetector,
 )
+from teatree.loop.self_improve.detectors.loop_health import HealthReading
 from teatree.loop.self_improve.persistence import resolve_absent_firings
+from teatree.loop.self_improve.repair_first import CycleEvidence, OwnerWaitChannel, sweep_owner_wait
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -61,13 +69,16 @@ IMPLEMENTED_TIERS: tuple[str, ...] = (Tier.CHEAP, Tier.ALL)
 UNBUILT_TIERS: tuple[str, ...] = (Tier.MEDIUM, Tier.EXPENSIVE)
 
 
-def _cheap_detectors(*, overlay_name: str | None = None) -> list[SelfImproveDetector]:
+def _cheap_detectors(
+    *, overlay_name: str | None = None, loop_health_reader: Callable[[dt.datetime], HealthReading] | None = None
+) -> list[SelfImproveDetector]:
     # The forge reader is injected here rather than defaulted inside the detector:
     # its fail-safe default reports nothing, so this is the one place that arms it.
     return [
         DispatchGapDetector(),
         ForgottenMergeDetector(read_state=live_pr_state_reader()),
         LifecycleIncidentDetector(overlay_name=overlay_name),
+        LoopHealthDetector(read_health=loop_health_reader),
         PressureIncidentDetector(),
         SkillAssuranceGapDetector(overlay_name=overlay_name),
         StaleStatuslineEntryDetector(),
@@ -101,14 +112,19 @@ def require_implemented_tier(tier: str) -> None:
         raise UnimplementedTierError(tier)
 
 
-def detectors_for_tier(tier: str, *, overlay_name: str | None = None) -> list[SelfImproveDetector]:
+def detectors_for_tier(
+    tier: str,
+    *,
+    overlay_name: str | None = None,
+    loop_health_reader: Callable[[dt.datetime], HealthReading] | None = None,
+) -> list[SelfImproveDetector]:
     """Return the detector list for the requested tier.
 
     A tier with no detectors raises rather than returning an empty list —
     see the module docstring.
     """
     require_implemented_tier(tier)
-    return _cheap_detectors(overlay_name=overlay_name)
+    return _cheap_detectors(overlay_name=overlay_name, loop_health_reader=loop_health_reader)
 
 
 @dataclass(slots=True)
@@ -120,6 +136,7 @@ class TierResult:
     reports: list[DetectorReport] = field(default_factory=list)
     actions: list[ActionResult] = field(default_factory=list)
     degraded_scans: list[tuple[str, str]] = field(default_factory=list)
+    owner_waits: list[int] = field(default_factory=list)
 
     @property
     def skipped(self) -> bool:
@@ -133,6 +150,8 @@ class DeliveryRoutes:
     messaging: "MessagingBackend | None" = None
     owner_alert: Callable[[DetectorReport, "SelfImproveFiring | None"], OwnerAlertDelivery | bool] | None = None
     overlay_name: str | None = None
+    owner_wait: OwnerWaitChannel | None = None
+    loop_health_reader: Callable[[dt.datetime], HealthReading] | None = None
 
 
 def run_tier(
@@ -154,7 +173,11 @@ def run_tier(
     refusal behind a benign "skipped" result.
     """
     routes = delivery or DeliveryRoutes()
-    detector_list = detectors if detectors is not None else detectors_for_tier(tier, overlay_name=routes.overlay_name)
+    detector_list = (
+        detectors
+        if detectors is not None
+        else detectors_for_tier(tier, overlay_name=routes.overlay_name, loop_health_reader=routes.loop_health_reader)
+    )
     verdict = (
         budget
         if budget is not None
@@ -163,40 +186,60 @@ def run_tier(
     reports: list[DetectorReport] = []
     actions: list[ActionResult] = []
     degraded_scans: list[tuple[str, str]] = []
+    evidence = CycleEvidence(reported=set(), scans={})
     for detector in detector_list:
         if not verdict.ok and not getattr(detector, "always_on", False):
             continue
-        observed_at = timezone.now()
-        scan = (
-            detector.detect_checked()
-            if isinstance(detector, ConfidenceAwareDetector)
-            else DetectorScan(detector.detect())
-        )
-        detected = scan.reports
-        if not scan.complete:
-            degraded_scans.append((detector.name, scan.reason or "source_unknown"))
-        resolve_absent_firings(
-            detector.name,
-            scan,
-            observed_at=observed_at,
-            key_prefix=getattr(detector, "dedup_prefix", None),
-        )
-        fix = auto_fix_callable if auto_fix_callable is not None else _detector_auto_fix(detector)
-        for report in detected:
-            reports.append(report)
-            record_factory_issue(report)
-            if not verdict.ok and report.auto_fix:
-                continue
-            result = run_action_ladder(
-                report,
-                overlay_name=routes.overlay_name,
-                messaging=routes.messaging,
-                owner_alert=routes.owner_alert,
-                auto_fix_callable=fix if verdict.ok else None,
+        reported_before = evidence.reported.copy()
+        try:
+            observed_at = timezone.now()
+            scan = (
+                detector.detect_checked()
+                if isinstance(detector, ConfidenceAwareDetector)
+                else DetectorScan(detector.detect())
             )
-            if result is not None:
-                actions.append(result)
-    return TierResult(tier=tier, budget=verdict, reports=reports, actions=actions, degraded_scans=degraded_scans)
+            evidence.scans[detector.name] = (scan, getattr(detector, "dedup_prefix", None))
+            detected = scan.reports
+            if not scan.complete:
+                degraded_scans.append((detector.name, scan.reason or "source_unknown"))
+            resolve_absent_firings(
+                detector.name,
+                scan,
+                observed_at=observed_at,
+                key_prefix=getattr(detector, "dedup_prefix", None),
+            )
+            fix = auto_fix_callable if auto_fix_callable is not None else _detector_auto_fix(detector)
+            for report in detected:
+                evidence.reported.add((report.detector, report.dedup_key))
+                reports.append(report)
+                record_factory_issue(report)
+                if not verdict.ok and report.auto_fix:
+                    continue
+                result = run_action_ladder(
+                    report,
+                    overlay_name=routes.overlay_name,
+                    messaging=routes.messaging,
+                    owner_alert=routes.owner_alert,
+                    auto_fix_callable=fix if verdict.ok else None,
+                )
+                if result is not None:
+                    actions.append(result)
+        except ImproperlyConfigured:
+            raise
+        except Exception:
+            logger.exception("self-improve detector %s raised", detector.name)
+            degraded_scans.append((detector.name, "detector_raised"))
+            evidence.scans.pop(detector.name, None)
+            evidence.reported = reported_before
+    owner_waits = sweep_owner_wait(evidence, routes.owner_wait, now=timezone.now())
+    return TierResult(
+        tier=tier,
+        budget=verdict,
+        reports=reports,
+        actions=actions,
+        degraded_scans=degraded_scans,
+        owner_waits=owner_waits,
+    )
 
 
 def _detector_auto_fix(detector: SelfImproveDetector) -> Callable[[DetectorReport], None] | None:
