@@ -8,7 +8,8 @@ It outlives heads: it covers the ticket, not one shipped tree.
 
 from django.utils import timezone
 
-from teatree.core.models.reviewer_identity import is_non_reviewer_role
+from teatree import config
+from teatree.core.models.reviewer_identity import is_non_reviewer_role, normalize_reviewer_identity
 from teatree.core.models.ticket import Ticket
 from teatree.core.review.critic_rubric import _MERGE_TRANSITION, llm_items
 
@@ -28,6 +29,16 @@ def waive_merge_item(ticket: Ticket, *, slug: str, waived_by: str, reason: str) 
     identity = waived_by.strip()
     if not identity or is_non_reviewer_role(identity):
         msg = "an owner identity is required; the maker, coding-agent and loop role identities cannot waive an item"
+        raise MergeItemWaiverError(msg)
+    try:
+        owner_aliases = {
+            normalize_reviewer_identity(alias) for alias in config.get_effective_settings().user_identity_aliases
+        }
+    except Exception as exc:
+        msg = "owner identities could not be read; no merge item was waived"
+        raise MergeItemWaiverError(msg) from exc
+    if normalize_reviewer_identity(identity) not in owner_aliases:
+        msg = "the waiver identity is not a configured owner alias; set user_identity_aliases first"
         raise MergeItemWaiverError(msg)
     if not reason.strip():
         msg = "a non-empty waiver reason is required"

@@ -217,7 +217,8 @@ An owner can waive one criterion with `t3 <overlay> ticket rubric-waive <ticket-
 --text-hash <hash> --waived-by <owner> --reason <why>`; later plans will not add it back.
 After repeated merge-critic rounds an owner can likewise accept one LLM merge item with
 `t3 <overlay> ticket merge-item-waive <ticket-id> --item test_value|cleanliness --waived-by <owner>
---reason <why>`; it covers that ticket across heads and no other gate can be waived.
+--reason <why>`; `--waived-by` must name a configured `user_identity_aliases` entry.
+It covers that ticket across heads and no other gate can be waived.
 
 **Grading happens at the end, by someone other than the maker — automatically.** The cold
 reviewer is the producer: it returns `rubric_grades` in the same envelope as its verdict, and

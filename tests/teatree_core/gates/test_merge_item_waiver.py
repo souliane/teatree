@@ -1,5 +1,8 @@
 """An owner's recorded waiver turns one LLM merge item from unmet to met, for that ticket only."""
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
@@ -28,7 +31,17 @@ def _fresh(verdict: CriticVerdict) -> CriticVerdict:
     return CriticVerdict.objects.get(pk=verdict.pk)
 
 
-class TestAWaivedItemIsNotUnmet(TestCase):
+class _ConfiguredOwner(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(
+            patch(
+                "teatree.config.get_effective_settings", return_value=SimpleNamespace(user_identity_aliases=["owner"])
+            )
+        )
+
+
+class TestAWaivedItemIsNotUnmet(_ConfiguredOwner):
     def setUp(self) -> None:
         super().setUp()
         self.ticket = _ticket()
@@ -38,7 +51,7 @@ class TestAWaivedItemIsNotUnmet(TestCase):
         assert unmet_items(_fresh(self.verdict)) == ["test_value"]
 
     def test_an_owner_waiver_makes_it_met(self) -> None:
-        waive_merge_item(self.ticket, slug="test_value", waived_by="owner", reason="three rounds on the same test")
+        waive_merge_item(self.ticket, slug="test_value", waived_by=" OWNER ", reason="three rounds on the same test")
 
         assert unmet_items(_fresh(self.verdict)) == []
 
@@ -70,7 +83,7 @@ class TestAWaivedItemIsNotUnmet(TestCase):
         assert unmet_items(_fresh(self.verdict)) == ["test_value"]
 
 
-class TestAWaiverIsRefused(TestCase):
+class TestAWaiverIsRefused(_ConfiguredOwner):
     def setUp(self) -> None:
         super().setUp()
         self.ticket = _ticket()
@@ -87,15 +100,23 @@ class TestAWaiverIsRefused(TestCase):
                 self._assert_refused(slug=slug)
 
     def test_for_an_agent_identity(self) -> None:
-        for identity in ("coding-agent", "loop", ""):
+        for identity in ("coding-agent", "loop", "critic-agent-7", "unknown-agent", ""):
             with self.subTest(identity=identity):
                 self._assert_refused(waived_by=identity)
 
     def test_without_a_reason(self) -> None:
         self._assert_refused(reason="  ")
 
+    def test_without_a_configured_owner_alias(self) -> None:
+        with patch("teatree.config.get_effective_settings", return_value=SimpleNamespace(user_identity_aliases=[])):
+            self._assert_refused()
 
-class TestAWaivedItemLeavesNoFailFinding(TestCase):
+    def test_when_owner_aliases_cannot_be_read(self) -> None:
+        with patch("teatree.config.get_effective_settings", side_effect=RuntimeError("control database locked")):
+            self._assert_refused()
+
+
+class TestAWaivedItemLeavesNoFailFinding(_ConfiguredOwner):
     def test_the_stale_finding_is_removed_and_the_merge_check_passes(self) -> None:
         ticket = _ticket()
         _verdict(ticket, _FAIL, _PASS)
@@ -109,7 +130,7 @@ class TestAWaivedItemLeavesNoFailFinding(TestCase):
         assert not CriticFinding.objects.filter(ticket=ticket, transition="merge").exists()
 
 
-class TestTheMergeItemWaiveCommand(TestCase):
+class TestTheMergeItemWaiveCommand(_ConfiguredOwner):
     def test_it_records_the_waiver(self) -> None:
         ticket = _ticket()
         verdict = _verdict(ticket, _FAIL, _PASS)
