@@ -15,6 +15,7 @@ from teatree.loop.self_improve import ActionRung, DetectorReport, actions, memor
 from teatree.utils.ram_scope import read_ram_headroom as actual_read_ram_headroom
 
 _MIB = 1024 * 1024
+_OWN_NAMESPACE = "pid:[111]"
 
 
 def stage_process(
@@ -35,6 +36,11 @@ def stage_process(
     (process / "stat").write_text(f"{pid} ({comm}) {' '.join(fields)}\n")
     (process / "statm").write_text(f"10000 {rss_pages} 0\n")
     (process / "status").write_text(f"NSpid:\t{pid}\t{pid}\n")
+
+
+def stage_pid_namespace(root: Path, pid: int, namespace: str) -> None:
+    (root / str(pid) / "ns").mkdir()
+    (root / str(pid) / "ns" / "pid").symlink_to(namespace)
 
 
 @contextmanager
@@ -59,6 +65,7 @@ def staged_box(base: Path) -> Generator[Path]:
         patch.object(memory_snapshot, "checkout_roots", return_value=CheckoutRoots((root,), (), ())),
         patch.object(memory_snapshot, "discover_overlays", return_value=[]),
         patch.object(memory_snapshot, "read_pid", return_value=7),
+        patch.object(memory_snapshot, "current_pid_namespace", return_value=_OWN_NAMESPACE),
         patch("teatree.utils.ram_scope.cgroup_file", side_effect=lambda name, **_kwargs: cgroup / name),
         patch("teatree.utils.ram_probe.cgroup_file", side_effect=lambda name, **_kwargs: cgroup / name),
         patch("teatree.utils.ram_scope.host_available_ram_mib", return_value=12 * 1024),
@@ -92,6 +99,7 @@ class MemorySnapshotTicketTests(TestCase):
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
             root = Path(directory) / "worktrees"
             stage_process(proc, 10, ppid=1, rss_pages=256, comm="worker")
+            stage_pid_namespace(proc, 10, _OWN_NAMESPACE)
             (proc / "10" / "status").write_text("NSpid:\t10\t7\n")
             stage_process(proc, 11, ppid=10, rss_pages=1024, comm="python")
             (proc / "11" / "cwd").symlink_to(root / "ticket-5321" / "repo")
@@ -122,6 +130,30 @@ class MemorySnapshotTicketTests(TestCase):
         assert rows["pid=31"].endswith(" attached")
         assert rows["pid=41"].endswith(" attached")
         assert str(Path(directory)) not in context
+
+    def test_process_numbered_like_the_worker_in_another_pid_namespace_is_not_the_worker(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            stage_process(proc, 50, ppid=1, rss_pages=256, comm="sidecar")
+            stage_pid_namespace(proc, 50, "pid:[1]")
+            (proc / "50" / "status").write_text("NSpid:\t50\t7\n")
+            stage_process(proc, 51, ppid=50, rss_pages=1024, comm="python")
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        rows = {line.split()[0]: line for line in context.splitlines() if line.startswith("pid=")}
+        assert rows["pid=51"].endswith(" detached")
+
+    def test_unknown_own_pid_namespace_never_matches_a_worker(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            stage_process(proc, 10, ppid=1, rss_pages=256, comm="worker")
+            (proc / "10" / "status").write_text("NSpid:\t10\t7\n")
+            stage_process(proc, 11, ppid=10, rss_pages=1024, comm="python")
+            with patch.object(memory_snapshot, "current_pid_namespace", return_value=""):
+                result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        rows = {line.split()[0]: line for line in context.splitlines() if line.startswith("pid=")}
+        assert rows["pid=11"].endswith(" detached")
 
     def test_swap_gets_snapshot_but_load_keeps_three_lines(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):

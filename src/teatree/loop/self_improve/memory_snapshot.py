@@ -8,7 +8,7 @@ from pathlib import Path
 from teatree.config import discover_overlays, worktree_root
 from teatree.config.checkout_roots import checkout_roots
 from teatree.core.cleanup.orphan_process_groups import CLOCK_TICKS_PER_SECOND, ProcStat, read_stat, read_uptime
-from teatree.core.cleanup.process_table import host_proc_root, namespace_pids
+from teatree.core.cleanup.process_table import current_pid_namespace, host_proc_root, namespace_pids, pid_namespace_of
 from teatree.loop.self_improve.detectors.base import DetectorReport
 from teatree.utils import ram_probe, ram_scope
 from teatree.utils.singleton import WORKER_SINGLETON, default_pid_path, read_pid
@@ -105,9 +105,12 @@ def _worker_host_pid(root: Path, stats: dict[int, ProcStat]) -> int | None:
     worker_pid = read_pid(default_pid_path(WORKER_SINGLETON))
     if worker_pid is None:
         return None
+    own_namespace = current_pid_namespace()
     for pid in stats:
-        namespace = namespace_pids(root / str(pid))
-        if namespace and namespace[-1] == str(worker_pid):
+        pid_dir = root / str(pid)
+        if namespace_pids(pid_dir)[-1:] != (str(worker_pid),):
+            continue
+        if own_namespace and pid_namespace_of(pid_dir) == own_namespace:
             return pid
     return worker_pid if root == Path("/proc") and worker_pid in stats else None
 

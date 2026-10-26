@@ -286,10 +286,11 @@ def run_action_ladder(
             auto_fix_callable(report)
             auto_fix_executed = True
 
-    opens_ticket = rung == ActionRung.TICKET and (
-        linked_ticket is None or linked_ticket.state in Ticket.finished_states()
-    )
-    if opens_ticket and (reason := open_pr_start_cap_hold_reason()):
+    if (
+        rung == ActionRung.TICKET
+        and (linked_ticket is None or linked_ticket.state in Ticket.finished_states())
+        and (reason := open_pr_start_cap_hold_reason())
+    ):
         logger.warning("self-improve is claiming nothing new: %s", reason)
         return None
 
