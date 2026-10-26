@@ -151,7 +151,20 @@ def bump_text(row: DeferredQuestion, *, now: dt.datetime) -> str:
 
 def digest_text(rows: list[DeferredQuestion], *, now: dt.datetime) -> str:
     """The daily digest: how many decisions wait and how long the oldest has — counts and age only."""
-    age = age_phrase(now - min(_asked_at(row) for row in rows))
-    if len(rows) == 1:
-        return f"1 decision is waiting for you; it was asked {age}. It is in its own thread."
-    return f"{len(rows)} decisions are waiting for you; the oldest was asked {age}. Each one is in its own thread."
+    posted = [row for row in rows if row.slack_ts]
+    unposted = len(rows) - len(posted)
+    if not posted:
+        if unposted == 1:
+            return "1 decision is waiting for you; it is not posted yet."
+        return f"{unposted} decisions are waiting for you; they are not posted yet."
+
+    age = age_phrase(now - min(_asked_at(row) for row in posted))
+    if len(posted) == 1:
+        text = f"1 decision is waiting for you; it was asked {age}. It is in its own thread."
+    else:
+        text = (
+            f"{len(posted)} decisions are waiting for you; the oldest was asked {age}. Each one is in its own thread."
+        )
+    if unposted:
+        text += f" {unposted} more {'is' if unposted == 1 else 'are'} not posted yet."
+    return text

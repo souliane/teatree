@@ -229,4 +229,6 @@ class TestTheBatchIsBoundedAndUrgentFirst(TestCase):
         _bump(backend)
 
         text = backend.post_message.call_args.kwargs["text"]
-        assert text == "Still waiting for your decision; I asked 12 hours ago. Tap an option above, or reply here."
+        assert (
+            text == "<@U_ME> Still waiting for your decision; I asked 12 hours ago. Tap an option above, or reply here."
+        )

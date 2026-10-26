@@ -55,7 +55,7 @@ class TestNoSendIsRewritten(TestCase):
         with _rewriter(), patch.object(notify_module, "messaging_from_overlay", return_value=backend):
             drain_unmirrored_deferred_questions(user_id=_OWNER, backend=backend)
 
-        assert _posted(backend) == render_text(row)
+        assert _posted(backend) == f"<@{_OWNER}> {render_text(row)}"
 
     def test_the_bump_is_not_rewritten(self) -> None:
         self._three_hour_old_mirrored_row()
@@ -64,7 +64,7 @@ class TestNoSendIsRewritten(TestCase):
         with _rewriter(), patch.object(notify_module, "messaging_from_overlay", return_value=backend):
             reask_escalated_questions(user_id=_OWNER, backend=backend)
 
-        assert _posted(backend).startswith("Still waiting for your decision")
+        assert _posted(backend).startswith(f"<@{_OWNER}> Still waiting for your decision")
 
     def test_the_digest_is_not_rewritten(self) -> None:
         self._three_hour_old_mirrored_row()
