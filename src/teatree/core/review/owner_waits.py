@@ -5,13 +5,12 @@ import logging
 from collections.abc import Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDecision
+from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, OwnerDecision, owner_kept_decision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard, safe_ticket_card_title
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionError
 from teatree.core.models.live_post_approval import canonical_mr_scope
 
 logger = logging.getLogger(__name__)
-HELD_PR_MARKER_PREFIX = "owner-wait:held-pr:"
 LIVE_POST_MARKER_PREFIX = "owner-wait:post:"
 
 
@@ -71,11 +70,7 @@ def ask_owner_to_read(pr_url: str, title: str, head_sha: str) -> DeferredQuestio
 
 
 def owner_kept_wait(question: DeferredQuestion, card: QuestionCard | None) -> bool:
-    return (
-        card is None
-        or card.decision in OWNER_KEPT_DECISIONS
-        or question.dedupe_marker.startswith(HELD_PR_MARKER_PREFIX)
-    )
+    return owner_kept_decision(card.decision if card else None, question.dedupe_marker)
 
 
 def _post_card(subject: str) -> QuestionCard:
