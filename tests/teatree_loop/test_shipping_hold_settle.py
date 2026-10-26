@@ -79,6 +79,23 @@ class TestShippingHoldSettlement(TestCase):
         assert "shipping_hold" not in ticket.extra
         assert ticket.extra["ignored_from"] == Ticket.State.SELF_REVIEWED
 
+    def test_row_removed_before_ticket_lock_stays_held(self) -> None:
+        ticket = self._ticket()
+        row = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-work")
+        host = _Host()
+
+        def remove_row(*, repo: str, prefix: str) -> list[str]:
+            row.delete()
+            return []
+
+        with TemporaryDirectory() as directory, patch.object(host, "list_unshipped_branches", side_effect=remove_row):
+            results = self._run(Path(directory), host)
+        ticket.refresh_from_db()
+        assert results[0].action == "hold"
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert ticket.extra["shipping_hold"]["reason"] == "no worktree row; nothing on the workspaces root or the forge"
+        assert "shipping_skipped" not in ticket.extra
+
     def test_unreadable_forge_with_a_row_is_held_as_unverified_never_ignored(self) -> None:
         ticket = self._ticket()
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-work")

@@ -57,16 +57,18 @@ def _decide(ticket: Ticket) -> Settlement:
     return Settlement(ticket.pk, "ignore", "every source verified empty")
 
 
-def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> bool:
+def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> Settlement | None:
     with redispatch_window() as refusal:
         if refusal:
-            return False
+            return None
         ticket = Ticket.objects.select_for_update().get(pk=ticket_pk)  # select-for-update: caller-atomic
         hold = shipping_hold_of(ticket)
         if ticket.state != Ticket.State.SELF_REVIEWED or hold is None:
-            return False
+            return None
         if (checked := _checked_at(ticket)) is not None and now - checked < RECHECK_INTERVAL:
-            return False
+            return None
+        if result.action == "ignore" and not ticket.worktrees.select_for_update().exists():
+            result = Settlement(ticket_pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
         if result.action == "release":
             ticket.merge_extra(pop_keys=["shipping_hold"])
             ticket.schedule_shipping()
@@ -82,7 +84,7 @@ def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> b
                 checked_at=now.isoformat(),
             )
             ticket.merge_extra(set_keys={"shipping_hold": updated})
-        return True
+        return result
 
 
 def settle_held_tickets(*, dry_run: bool = False, now: datetime | None = None) -> list[Settlement]:
@@ -98,8 +100,10 @@ def settle_held_tickets(*, dry_run: bool = False, now: datetime | None = None) -
     for ticket in due[:PER_PASS_CAP]:
         try:
             result = _decide(ticket)
-            if dry_run or _apply_settlement(ticket.pk, result, now=current):
+            if dry_run:
                 results.append(result)
+            elif applied := _apply_settlement(ticket.pk, result, now=current):
+                results.append(applied)
         except Exception as exc:
             logger.exception("Shipping-hold settlement failed for ticket %s", ticket.pk)
             failures.append(f"{ticket.pk}: {type(exc).__name__}: {exc}")

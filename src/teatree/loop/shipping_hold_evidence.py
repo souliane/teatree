@@ -64,7 +64,11 @@ def _checkout_evidence(path: Path, *, named: bool, ticket: Ticket) -> Evidence:
     recorded = str((ticket.extra or {}).get("branch") or "")
     read_branch = run_with_status(repo=str(path), args=["rev-parse", "--abbrev-ref", "HEAD"])
     if read_branch.returncode != 0:
-        return Evidence(unverified=f"git ({path.name}: {read_branch.stderr.strip()[:120]})") if named else Evidence()
+        return (
+            Evidence(unverified=f"git ({path.name}: {read_branch.stderr.strip()[:120]})")
+            if named or recorded
+            else Evidence()
+        )
     branch = read_branch.stdout.strip()
     if not (named or (recorded and branch == recorded) or _mentions(number, branch)):
         return Evidence()

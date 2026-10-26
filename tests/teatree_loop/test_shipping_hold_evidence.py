@@ -79,6 +79,16 @@ def test_unreadable_matching_checkout_is_unverified_and_unrelated_one_is_ignored
             assert "git (" in disk_evidence(_ticket()).unverified
 
 
+def test_unreadable_branch_with_recorded_branch_is_unverified() -> None:
+    ticket = _ticket()
+    ticket.extra = {"branch": "5346-work"}
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "workspace" / "teatree" / ".git").mkdir(parents=True)
+        with patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root):
+            assert "git (" in disk_evidence(ticket).unverified
+
+
 def test_failed_forge_read_is_unverified() -> None:
     ticket = _ticket()
     host = Mock()
