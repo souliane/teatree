@@ -20,6 +20,7 @@ against a ``glab`` stub.
 """
 
 import os
+import pty
 import shutil
 import stat
 import subprocess
@@ -56,6 +57,10 @@ pytestmark = pytest.mark.skipif(
 
 DOCKER_STUB = (
     """#!/usr/bin/env bash
+if [ "${1:-}" = ps ] && [ -n "${DOCKER_STUB_RUNNING:-}" ]; then
+    printf 'container-id teatree-worker False\n'
+    exit 0
+fi
 for arg in "$@"; do
     [ "$arg" = ps ] && exit 0
 done
@@ -121,7 +126,7 @@ def _invoke(
     pass_stub: str | None = PASS_STUB,
     with_glab: bool = False,
     env_overrides: dict[str, str] | None = None,
-    check: bool = True,
+    dispatch: tuple[tuple[str, ...], int | None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the genuine wrapper. ``pass_stub=None`` is a host with NO store at all."""
     stub_dir = tmp_path / "stub-bin"
@@ -150,15 +155,37 @@ def _invoke(
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir(parents=True, exist_ok=True)
     bash = shutil.which("bash", path=SYSTEM_PATH) or "bash"
+    command, stdin_fd = dispatch if dispatch is not None else (CREDENTIAL_PROBE, None)
     return subprocess.run(
-        [bash, str(entry), *CREDENTIAL_PROBE],
+        [bash, str(entry), *command],
+        stdin=stdin_fd,
         capture_output=True,
         text=True,
-        check=check,
+        check=False,
         env=env,
         cwd=elsewhere,
         timeout=120,
     )
+
+
+def test_captured_secret_get_disables_container_tty_even_with_interactive_stdin(tmp_path: Path) -> None:
+    master, slave = pty.openpty()
+    try:
+        proc = _invoke(
+            tmp_path,
+            env_overrides={"GITLAB_TOKEN": FAKE_TOKEN, "DOCKER_STUB_RUNNING": "1"},
+            dispatch=(("teatree", "secrets", "get", "team/token"), slave),
+        )
+    finally:
+        os.close(master)
+        os.close(slave)
+    assert "ARG -T\n" in proc.stdout
+
+
+def test_sealed_selector_never_invokes_the_host_pass_store(tmp_path: Path) -> None:
+    proc = _invoke(tmp_path, env_overrides={"T3_SECRET_STORE": "sealed"})
+    assert proc.returncode == 0
+    assert _pass_keys(tmp_path) == []
 
 
 def _pass_keys(tmp_path: Path) -> list[str]:
@@ -272,17 +299,17 @@ class TestAnAbsentStoreIsNotAWedgedOne:
         assert not argv(proc), "the wrapper dispatched anyway after refusing"
 
     def test_no_store_at_all_lets_the_cli_run(self, tmp_path: Path) -> None:
-        proc = _invoke(tmp_path, pass_stub=None, check=False)
+        proc = _invoke(tmp_path, pass_stub=None)
         self._assert_ran_to_dispatch(proc)
         assert "GITLAB_TOKEN" not in forwarded(proc)
 
     def test_a_missing_entry_lets_the_cli_run(self, tmp_path: Path) -> None:
-        proc = _invoke(tmp_path, env_overrides={"PASS_STUB_KEY": "gitlab/not-this-one"}, check=False)
+        proc = _invoke(tmp_path, env_overrides={"PASS_STUB_KEY": "gitlab/not-this-one"})
         self._assert_ran_to_dispatch(proc)
         assert "GITLAB_TOKEN" not in forwarded(proc)
 
     def test_a_present_but_broken_store_stops_the_cli(self, tmp_path: Path) -> None:
-        proc = _invoke(tmp_path, pass_stub=WEDGED_PASS_STUB, check=False)
+        proc = _invoke(tmp_path, pass_stub=WEDGED_PASS_STUB)
         self._assert_refused_loudly(proc)
         assert _pass_keys(tmp_path) == [DEFAULT_PASS_KEY]
 
@@ -291,13 +318,12 @@ class TestAnAbsentStoreIsNotAWedgedOne:
             tmp_path,
             pass_stub=UNANSWERING_PASS_STUB,
             env_overrides={"TEATREE_SECRET_READ_DEADLINE_SECONDS": "1"},
-            check=False,
         )
         self._assert_refused_loudly(proc)
         assert _pass_keys(tmp_path) == [DEFAULT_PASS_KEY]
 
     def test_a_wedged_store_is_never_papered_over_by_an_ambient_glab_login(self, tmp_path: Path) -> None:
-        self._assert_refused_loudly(_invoke(tmp_path, pass_stub=WEDGED_PASS_STUB, with_glab=True, check=False))
+        self._assert_refused_loudly(_invoke(tmp_path, pass_stub=WEDGED_PASS_STUB, with_glab=True))
 
 
 if __name__ == "__main__":
