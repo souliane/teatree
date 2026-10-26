@@ -25,6 +25,9 @@ from teatree.utils import git
 logger = logging.getLogger(__name__)
 
 
+#: The engagement skill every attended skill requires; a dispatched phase never loads it.
+ATTENDED_SESSION_SKILL = "interactive"
+
 _STATUS_TO_SKILL: dict[str, str] = {
     "not_started": "ticket",
     "scoped": "ticket",
@@ -282,7 +285,7 @@ class SkillLoadingPolicy:
             ordered.extend(s for s in stage_skills if isinstance(s, str) and s)
         resolved = self._resolve_requires_chain(ordered, skill_index)
         return SkillSelectionResult(
-            skills=_dedupe(resolved),
+            skills=_dedupe([skill for skill in resolved if _skill_identity(skill) != ATTENDED_SESSION_SKILL]),
             lifecycle_skill=lifecycle_skill,
         )
 

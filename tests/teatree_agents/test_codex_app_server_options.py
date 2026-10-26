@@ -84,6 +84,11 @@ def in_container(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
 
 
+@pytest.fixture
+def on_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: False)
+
+
 @pytest.mark.usefixtures("in_container")
 def test_container_write_phase_runs_codex_without_its_own_sandbox() -> None:
     # The container is the sandbox; Codex's bwrap cannot create a user namespace inside it.
@@ -135,6 +140,7 @@ def test_container_read_only_phase_keeps_every_denial() -> None:
     assert codex_worker_denials(denied, "reviewing") == denied
 
 
+@pytest.mark.usefixtures("on_host")
 @pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke", "eval_local"])
 def test_host_execution_phase_keeps_every_denial(phase: str) -> None:
     denied = sdk_disallowed_tools_for_phase(phase)
