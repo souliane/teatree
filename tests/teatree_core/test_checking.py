@@ -474,7 +474,7 @@ class TestTerseFormatting(CheckingTestBase):
         assert terse.count("](") == 5
 
     def test_no_bare_numeric_ids_in_reference_lines(self) -> None:
-        # Exercise ALL three groups, including a pending DeferredQuestion —
+        # Exercise the recap groups, including a pending DeferredQuestion —
         # the question path sets url="" and previously rendered a bare ``Q#N``,
         # which this test must now catch.
         merged_ticket = self._ticket(number=42)
@@ -488,15 +488,14 @@ class TestTerseFormatting(CheckingTestBase):
             stripped = line.strip()
             if not stripped.startswith("- "):
                 continue
-            # A reference line either carries a clickable markdown link
-            # (PR/issue/ticket) or is a question line whose content is an
-            # actionable CLI command. In BOTH cases, no bare ``#NNN`` token may
-            # appear OUTSIDE a [..](..) link — that is the contract violation.
+            # Total and Queue are fixed Remaining summaries, not references.
+            # No line may contain a bare ``#NNN`` outside a link.
             outside_links = re.sub(r"\[[^\]]*\]\([^)]*\)", "", stripped)
             assert not re.search(r"#\d", outside_links), f"bare #-id outside a link: {line!r}"
             has_link = bool(re.search(r"\]\(https?://", stripped))
             is_command = "t3 " in stripped and "questions dismiss" in stripped
-            assert has_link or is_command, f"reference line is neither a link nor a command: {line!r}"
+            is_summary = stripped.startswith(("- Total — ", "- Queue — "))
+            assert has_link or is_command or is_summary, f"reference line is neither a link nor a command: {line!r}"
 
 
 class TestJsonShape(CheckingTestBase):
@@ -507,7 +506,7 @@ class TestJsonShape(CheckingTestBase):
         payload = report.to_dict()
         encoded = json.dumps(payload)  # must not raise
         decoded = json.loads(encoded)
-        assert set(decoded) == {"since", "merged", "in_flight", "needs_you", "metered", "terse"}
+        assert set(decoded) == {"since", "merged", "in_flight", "needs_you", "metered", "remaining", "terse"}
         assert decoded["merged"]["total"] == 1
         assert decoded["merged"]["items"][0]["label"] == "acme/widgets#7"
 
@@ -719,6 +718,23 @@ class TestAllOverlaysAggregation(CheckingTestBase):
             "acme/widgets#100",
             "acme/widgets#101",
         ]
+
+    def test_remaining_cap_limits_work_rows_across_overlays(self) -> None:
+        for ticket in (
+            self._ticket(number=1, state=Ticket.State.CODED),
+            self._ticket_b(number=2, state=Ticket.State.CODED),
+        ):
+            Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="testing")
+        overlay_windows = {self.OVERLAY: (self.since, self.now), self.OVERLAY_B: (self.since, self.now)}
+        overlay_configs = {self.OVERLAY: ("github", ["acme/widgets"]), self.OVERLAY_B: ("github", ["beta/core"])}
+
+        remaining = gather_all_overlays_report(
+            overlay_windows=overlay_windows, overlay_configs=overlay_configs, cap=1
+        ).remaining
+
+        assert remaining.total == 2
+        assert [row.label for row in remaining.items[:2]] == ["Total", "Queue"]
+        assert len(remaining.items) == 3
 
     def test_all_overlays_report_is_dataclass(self) -> None:
         overlay_windows = {self.OVERLAY: (self.since, self.now)}
