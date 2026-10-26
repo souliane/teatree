@@ -14,6 +14,7 @@ from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from teatree.core.modelkit import reask_cadence
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind, is_causeless
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
@@ -252,11 +253,28 @@ class LifecycleIncidentDetector:
             Task.objects.filter(status=Task.Status.FAILED)
             .exclude(failure_kind__in=_RECOVERED_KINDS)
             .exclude(ticket__state__in=Ticket.finished_states())
-            .without_newer_phase_sibling()
         )
         if self.overlay_name:
             tasks = tasks.filter(ticket__overlay=self.overlay_name)
-        for task_id, failure_kind, source in tasks.values_list("pk", "failure_kind", "ticket__extra__source"):
+        failed_rows = list(tasks.values_list("pk", "ticket_id", "phase", "failure_kind", "ticket__extra__source"))
+        newest: dict[tuple[int, str], int] = {}
+        if failed_rows:
+            successors = (
+                Task.objects.filter(
+                    ticket_id__in={ticket_id for _, ticket_id, _, _, _ in failed_rows},
+                )
+                .exclude(status=Task.Status.FAILED, failure_kind__in=NON_REPAIR_KINDS)
+                .order_by("-pk")
+                .values_list("pk", "ticket_id", "phase")
+            )
+            for successor_id, ticket_id, phase in successors.iterator():
+                canonical_phase = normalize_phase(phase)
+                if canonical_phase:
+                    newest.setdefault((ticket_id, canonical_phase), successor_id)
+        for task_id, ticket_id, phase, failure_kind, source in failed_rows:
+            canonical_phase = normalize_phase(phase)
+            if canonical_phase and newest.get((ticket_id, canonical_phase), 0) > task_id:
+                continue
             groups = repair_by_cause if source == "self_improve" else by_cause
             groups[failure_kind or FailureKind.UNRECORDED].append(task_id)
         reports = [

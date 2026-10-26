@@ -97,6 +97,93 @@ class LifecycleIncidentTests(TestCase):
         assert len(reports) == 1
         assert reports[0].payload["count"] == 3
 
+    def test_later_completed_canonical_phase_recovers_failure(self) -> None:
+        for failed_phase, completed_phase in (("testing", "test"), ("test", "testing")):
+            failed = TaskFactory(phase=failed_phase)
+            failed.fail(reason="ProcessError: worker exited", by_holder=True)
+            TaskFactory(ticket=failed.ticket, phase=completed_phase, status=Task.Status.COMPLETED)
+
+        assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+    def test_later_completed_same_phase_recovers_failure_with_pending_question(self) -> None:
+        failed = TaskFactory(phase="coding")
+        failed.fail(reason="ProcessError: worker exited", by_holder=True)
+        successor = TaskFactory(ticket=failed.ticket, phase="coding", status=Task.Status.COMPLETED)
+        question = DeferredQuestion.record("Which path?", parked_task=successor, **OWNER_DECISION)
+
+        assert question.answered_at is None
+        assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+    def test_failure_after_completion_remains_current(self) -> None:
+        old = TaskFactory(phase="coding")
+        old.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=old.ticket, phase="coding", status=Task.Status.COMPLETED)
+        current = TaskFactory(ticket=old.ticket, phase="coding")
+        current.fail(reason="ProcessError: worker exited", by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert [task_id for report in reports for task_id in report.payload["ids"]] == [current.pk]
+
+    def test_only_later_same_ticket_same_nonblank_phase_recovers_failure(self) -> None:
+        older_completion = TaskFactory(status=Task.Status.COMPLETED)
+        after_older = TaskFactory(ticket=older_completion.ticket)
+        after_older.fail(reason="ProcessError: worker exited", by_holder=True)
+
+        other_phase = TaskFactory()
+        other_phase.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=other_phase.ticket, phase="reviewing", status=Task.Status.COMPLETED)
+
+        other_ticket = TaskFactory()
+        other_ticket.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(phase=other_ticket.phase, status=Task.Status.COMPLETED)
+
+        blank_phase = TaskFactory(phase="")
+        blank_phase.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=blank_phase.ticket, phase="", status=Task.Status.COMPLETED)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert {task_id for report in reports for task_id in report.payload["ids"]} == {
+            after_older.pk,
+            other_phase.pk,
+            other_ticket.pk,
+            blank_phase.pk,
+        }
+
+    def test_newer_claimed_and_substantive_failed_tasks_supersede_old_failure(self) -> None:
+        claimed_old = TaskFactory()
+        claimed_old.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=claimed_old.ticket, status=Task.Status.CLAIMED)
+
+        failed_old = TaskFactory()
+        failed_old.fail(reason="ProcessError: worker exited", by_holder=True)
+        failed_new = TaskFactory(ticket=failed_old.ticket)
+        failed_new.fail(reason="ProcessError: worker exited", by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert {task_id for report in reports for task_id in report.payload["ids"]} == {failed_new.pk}
+
+    def test_later_completion_resolves_task_failed_firing(self) -> None:
+        failed = TaskFactory(phase="testing")
+        failed.fail(reason="ProcessError: worker exited", by_holder=True)
+        detector = LifecycleIncidentDetector()
+        first = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+        firing = SelfImproveFiring.objects.get(dedup_key=first.reports[0].dedup_key)
+        assert firing.resolved_at is None
+
+        TaskFactory(ticket=failed.ticket, phase="test", status=Task.Status.COMPLETED)
+        second = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+
+        assert not [report for report in second.reports if report.payload["kind"] == "task_failed"]
+        assert SelfImproveFiring.objects.get(pk=firing.pk).resolved_at is not None
+
+    def test_later_completion_recovers_repair_task_failure(self) -> None:
+        repair_ticket = TicketFactory(extra={"source": "self_improve"})
+        failed = TaskFactory(ticket=repair_ticket, phase="testing")
+        failed.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=repair_ticket, phase="test", status=Task.Status.COMPLETED)
+
+        assert not [report for report in self._reports() if report.payload["kind"] == "repair_task_failed"]
+
     def test_old_inbound_question_without_answer_is_an_incident(self) -> None:
         row = PendingChatInjection.record(channel="D1", slack_ts="100.1", text="Why did my task fail?")
         assert row is not None
