@@ -56,10 +56,13 @@ class TestFixRecordSchema:
     def test_it_is_a_typed_member_of_the_result(self) -> None:
         assert "fix_record" in AgentResult.__annotations__
 
-    def test_properties_and_required_both_derive_from_the_field_tuple(self) -> None:
+    def test_properties_derive_from_the_field_tuple(self) -> None:
         schema = _PROPERTIES["fix_record"]
         assert tuple(schema["properties"]) == FIX_RECORD_FIELDS
-        assert schema["required"] == list(FIX_RECORD_FIELDS)
+
+    def test_schema_allows_omitting_red_attestation_for_an_opted_out_fix(self) -> None:
+        schema = _PROPERTIES["fix_record"]
+        assert schema["required"] == ["root_cause", "evidence", "regression_test", "recurrence_fingerprint"]
 
     def test_it_is_no_phase_required_evidence(self) -> None:
         """Kind-conditional, not phase-conditional — requiring it would refuse every non-fix run."""

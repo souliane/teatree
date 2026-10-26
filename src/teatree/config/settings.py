@@ -334,7 +334,10 @@ class _MergeGateSettings:
     forced_repro_gate_enabled: bool = setting(
         default=True,
         spec=SettingSpec(
-            help=("require an executed pre-fix failing run for fix tickets at coding, testing and ship"),
+            help=(
+                "require an executed pre-fix failing run for fix tickets at coding, testing and ship; "
+                "off also stops seeding the rubric criteria that demand one and makes observed_red optional"
+            ),
             parse=_parse_strict_bool,
         ),
     )

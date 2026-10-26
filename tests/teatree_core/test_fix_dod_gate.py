@@ -17,7 +17,7 @@ from teatree.core.gates.fix_dod_gate import (
     missing_fix_record_fields,
     override_reason,
 )
-from teatree.core.models import Ticket
+from teatree.core.models import ConfigSetting, Ticket
 from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, validated_ticket_extra
 from teatree.loop.dispatch import dispatch
 from teatree.loop.persistence import persist_agent_actions
@@ -50,6 +50,24 @@ class TestIsFix(TestCase):
 
 
 class TestMissingFixRecordFields(TestCase):
+    def test_switched_off_observed_red_is_optional_but_root_cause_stays_required(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        record = {key: value for key, value in _COMPLETE_RECORD.items() if key != "observed_red"}
+        ticket = _fix_ticket(fix_record=record)
+        assert missing_fix_record_fields(ticket) == []
+        check_fix_record_dod(ticket)
+        ticket.extra["fix_record"].pop("root_cause")
+        assert missing_fix_record_fields(ticket) == ["root_cause"]
+        with pytest.raises(FixRecordDodError, match="root_cause"):
+            check_fix_record_dod(ticket)
+
+    def test_switched_on_observed_red_remains_required(self) -> None:
+        record = {key: value for key, value in _COMPLETE_RECORD.items() if key != "observed_red"}
+        ticket = _fix_ticket(fix_record=record)
+        assert missing_fix_record_fields(ticket) == ["observed_red"]
+        with pytest.raises(FixRecordDodError, match="observed_red"):
+            check_fix_record_dod(ticket)
+
     def test_no_record_means_all_fields_missing(self) -> None:
         ticket = _fix_ticket()
         assert set(missing_fix_record_fields(ticket)) == {
