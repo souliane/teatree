@@ -400,7 +400,8 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
         _seed_config_db(db, "banned_term_registry", {"leak": [], "prose_collider": ["acmecorp"]})
         with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
             on_crash = scan_text("we ship to acmecorp", config_path=db)
-        on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
+        with patch.dict("os.environ", {"TEATREE_TERM_REGISTRY": ""}):
+            on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
     return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config == TERMS_UNSET_MARKER
 
 
