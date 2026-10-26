@@ -54,8 +54,6 @@ _FLOOR_CLEARING_MIB = _RESUME_FLOOR_MIB + 1
 _VM_STAT_PAGE_SIZE_RE = re.compile(r"page size of (\d+) bytes")
 _DEFAULT_PAGE_SIZE = 4096
 _MEMINFO_PATH = "/proc/meminfo"
-
-
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _CGROUP_MEM_V1_UNLIMITED = 9223372036854771712
 _CGROUP_V2 = 2

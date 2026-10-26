@@ -1,20 +1,23 @@
 """Memory and swap repair tickets retain the box state observed at firing."""
 
 import json
+import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
 
-from teatree.config.checkout_roots import CheckoutRoots
 from teatree.core.models import SelfImproveFiring, Ticket
 from teatree.loop.self_improve import ActionRung, DetectorReport, actions, memory_snapshot, run_action_ladder
+from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.ram_probe import host_available_ram_mib as actual_host_available_ram_mib
 from teatree.utils.ram_scope import read_ram_headroom as actual_read_ram_headroom
+from teatree.utils.singleton import pid_alive as actual_pid_alive
 
 _MIB = 1024 * 1024
 _OWN_NAMESPACE = "pid:[111]"
@@ -68,8 +71,8 @@ def staged_box(base: Path) -> Generator[Path]:
     )
     with (
         patch.object(memory_snapshot, "host_proc_root", return_value=(proc, "")),
-        patch.object(memory_snapshot, "checkout_roots", return_value=CheckoutRoots((root,), (), ())),
-        patch.object(memory_snapshot, "discover_overlays", return_value=[]),
+        patch.object(memory_snapshot, "discover_overlays", return_value=[SimpleNamespace(name="acme")]),
+        patch.object(memory_snapshot, "worktree_root", return_value=root),
         patch.object(memory_snapshot, "default_pid_path", return_value=worker_file),
         patch("teatree.utils.singleton.pid_alive", return_value=True),
         patch.object(memory_snapshot, "current_pid_namespace", return_value=_OWN_NAMESPACE),
@@ -130,6 +133,7 @@ class MemorySnapshotTicketTests(TestCase):
         rows = {line.split()[0]: line for line in context.splitlines() if line.startswith("pid=")}
         assert rows["pid=31"].endswith(" attached")
         assert rows["pid=41"].endswith(" attached")
+        assert "attached = ancestry reaches the worker or an agent CLI" in context
         assert str(Path(directory)) not in context
 
     def test_process_numbered_like_the_worker_in_another_pid_namespace_is_not_the_worker(self) -> None:
@@ -216,13 +220,11 @@ class MemorySnapshotTicketTests(TestCase):
     def test_second_firing_keeps_first_snapshot(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
             stage_process(proc, 20, ppid=1, rss_pages=512, comm="first")
-            with patch.object(memory_snapshot, "_process_lines", wraps=memory_snapshot._process_lines) as scan:
-                first = run_action_ladder(report("memory"))
-                assert first is not None
-                initial = Ticket.objects.get(pk=first.firing.ticket_id).context
-                stage_process(proc, 21, ppid=1, rss_pages=1024, comm="second")
-                second = run_action_ladder(report("memory", state_hash="second"))
-                assert scan.call_count == 2
+            first = run_action_ladder(report("memory"))
+            assert first is not None
+            initial = Ticket.objects.get(pk=first.firing.ticket_id).context
+            stage_process(proc, 21, ppid=1, rss_pages=1024, comm="second")
+            second = run_action_ladder(report("memory", state_hash="second"))
             assert second is not None
             assert Ticket.objects.get(pk=second.firing.ticket_id).context == initial
             assert Ticket.objects.count() == 1
@@ -260,6 +262,15 @@ class MemorySnapshotTicketTests(TestCase):
                 second = run_action_ladder(report("swap"))
             assert second is not None
             assert "scan unavailable" in Ticket.objects.get(pk=second.firing.ticket_id).context
+
+    def test_memory_stat_without_a_key_marks_it_unavailable_not_an_error(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)):
+            (Path(directory) / "cgroup" / "memory.stat").write_text(f"anon {7 * 1024 * _MIB}\n")
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "memory.stat: anon=7168 MiB, shmem=unavailable" in context
+        assert "KeyError" not in context
 
     def test_unreadable_cgroup_cap_and_usage_name_the_error(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):
@@ -301,13 +312,17 @@ class MemorySnapshotTicketTests(TestCase):
         assert "Host MemAvailable: 0 MiB" in context
         assert "unreadable (ValueError)" not in context
 
-    def test_failed_memory_probe_still_creates_the_ticket(self) -> None:
-        with TemporaryDirectory() as directory, staged_box(Path(directory)):
-            with patch("teatree.utils.ram_scope.read_ram_headroom", side_effect=PermissionError):
+    def test_oversized_worker_pid_keeps_the_ticket_and_names_the_error(self) -> None:
+        record = json.dumps({"pid_namespace": _OWN_NAMESPACE, "hostname": "box", "role": "worker"})
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            stage_process(proc, 8, ppid=1, rss_pages=1024, comm="python")
+            (Path(directory) / "worker.pid").write_text(f"99999999999999999999\n{record}\n")
+            with patch("teatree.utils.singleton.pid_alive", actual_pid_alive):
                 result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
-            assert "Memory scopes: unreadable (PermissionError)" in context
+        assert "Top processes by RSS: unreadable (OverflowError)" in context
+        assert "Judged RAM: 4096 MiB (cgroup bound)" in context
 
     def test_unreadable_process_table_is_unavailable(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
@@ -349,6 +364,18 @@ class MemorySnapshotTicketTests(TestCase):
             assert rows[0].startswith("pid=31 ")
             assert rows[-1].startswith("pid=22 ")
 
+    def test_working_directory_outside_every_overlay_worktree_root_is_not_a_ticket_dir(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            stage_process(proc, 20, ppid=1, rss_pages=512, comm="python")
+            scratch = Path(directory) / "scratch"
+            (proc / "20" / "cwd").symlink_to(scratch / "review-checkout" / "repo")
+            with patch.dict(os.environ, {DISPOSABLE_ROOTS_ENV: str(scratch)}):
+                result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "pid=20 " in context
+        assert "ticket-dir=- detached" in context
+
     def test_never_records_cmdline_environment_or_absolute_path(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
             stage_process(proc, 20, ppid=1, rss_pages=512, comm="python")
@@ -367,11 +394,11 @@ class MemorySnapshotTransactionTests(TransactionTestCase):
         with TemporaryDirectory() as directory, staged_box(Path(directory)):
             observed: list[bool] = []
 
-            def scan() -> list[str]:
+            def table_root() -> tuple[Path, str]:
                 observed.append(connection.in_atomic_block)
-                return ["Top processes by RSS: scan unavailable"]
+                return Path(directory) / "proc", ""
 
-            with patch.object(memory_snapshot, "_process_lines", side_effect=scan):
+            with patch.object(memory_snapshot, "host_proc_root", side_effect=table_root):
                 result = run_action_ladder(report("memory"))
             assert result is not None
             assert observed == [False]

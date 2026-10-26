@@ -1,21 +1,26 @@
 """Box memory evidence captured when a pressure repair ticket opens."""
 
+import logging
 import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 
 from teatree.config import discover_overlays, worktree_root
-from teatree.config.checkout_roots import checkout_roots
-from teatree.core.cleanup.orphan_process_groups import CLOCK_TICKS_PER_SECOND, ProcStat, read_stat, read_uptime
+from teatree.core.cleanup.orphan_process_groups import CLOCK_TICKS_PER_SECOND, ProcStat, collect_stats, read_uptime
 from teatree.core.cleanup.process_table import current_pid_namespace, host_proc_root, namespace_pids, pid_namespace_of
 from teatree.loop.self_improve.detectors.base import DetectorReport
+from teatree.loop.self_improve.detectors.pressure_incident import PressureIncidentDetector
 from teatree.utils import ram_scope, singleton
 from teatree.utils.singleton import WORKER_SINGLETON, default_pid_path
 
+logger = logging.getLogger(__name__)
+
 _MIB = 1024 * 1024
 _TOP_PROCESSES = 10
+_STAT_KEYS = ("anon", "shmem", "active_file", "inactive_file", "slab_reclaimable")
 _AGENT_COMM = re.compile(r"(?:claude|codex|\d+\.\d+\.\d+)", re.IGNORECASE)
+_NO_PROCESS_TABLE = "Top processes by RSS: scan unavailable (no process table)"
 
 
 def _unreadable(exc: Exception) -> str:
@@ -26,52 +31,47 @@ def _safe_label(value: str) -> str:
     return re.sub(r"[^\w .-]", "_", value)[:80]
 
 
-def _reading(value: int | None, key: str, trace: dict[str, int | str]) -> str:
+def _reading(value: int | None, trace: dict[str, int | str], *keys: str) -> str:
     if value is not None:
         return f"{value} MiB"
-    observed = trace.get(key)
-    if key == "meminfo" and isinstance(observed, int):
-        return f"{observed} MiB"
-    if observed == "no cap":
-        return "no cap"
-    if isinstance(observed, str):
-        return f"unreadable ({observed})"
+    for key in keys:
+        observed = trace.get(key)
+        if observed == "no cap":
+            return "no cap"
+        if isinstance(observed, str):
+            return f"unreadable ({observed})"
     return "unavailable"
+
+
+def _memory_stat_line() -> str:
+    try:
+        stat = ram_scope.read_cgroup_memory_stat()
+    except (OSError, UnicodeError) as exc:
+        return f"memory.stat: {_unreadable(exc)}"
+    parts = [f"{key}={stat[key] // _MIB} MiB" if key in stat else f"{key}=unavailable" for key in _STAT_KEYS]
+    return f"memory.stat: {', '.join(parts)}"
 
 
 def _memory_lines() -> list[str]:
     trace: dict[str, int | str] = {}
     headroom = ram_scope.read_ram_headroom(trace=trace)
-    judged = _reading(headroom.box_watermark_mib, "judged", trace)
-    cap = _reading(headroom.cgroup_limit_mib, "memory.max", trace)
-    cgroup_headroom = "no cap" if cap == "no cap" else _reading(headroom.cgroup_headroom_mib, "memory.current", trace)
-    lines = [
-        f"Judged RAM: {judged} ({headroom.binding_scope} bound)",
-        f"Host MemAvailable: {_reading(headroom.host_available_mib, 'meminfo', trace)}",
+    host = headroom.host_available_mib
+    if host is None and isinstance(meminfo := trace.get("meminfo"), int):
+        host = meminfo
+    return [
+        f"Judged RAM: {_reading(headroom.box_watermark_mib, trace)} ({headroom.binding_scope} bound)",
+        f"Host MemAvailable: {_reading(host, trace, 'meminfo')}",
         (
-            f"Cgroup cap: {cap}; "
-            f"headroom: {cgroup_headroom}; "
+            f"Cgroup cap: {_reading(headroom.cgroup_limit_mib, trace, 'memory.max')}; "
+            f"headroom: {_reading(headroom.cgroup_headroom_mib, trace, 'memory.max', 'memory.current')}; "
             f"box-scoped: {'yes' if headroom.cgroup_is_box_scoped else 'no'}"
         ),
+        _memory_stat_line(),
     ]
-    try:
-        stat = ram_scope.read_cgroup_memory_stat()
-    except (OSError, UnicodeError) as exc:
-        lines.append(f"memory.stat: {_unreadable(exc)}")
-    else:
-        parts = [
-            f"{key}={stat[key] // _MIB} MiB" if key in stat else f"{key}=unreadable (KeyError)"
-            for key in ("anon", "shmem", "active_file", "inactive_file", "slab_reclaimable")
-        ]
-        lines.append(f"memory.stat: {', '.join(parts)}")
-    return lines
 
 
 def _ticket_roots() -> tuple[Path, ...]:
-    roots = checkout_roots()
-    candidates = [*roots.durable, *roots.disposable, *roots.harness]
-    candidates.extend(worktree_root(overlay=overlay.name) for overlay in discover_overlays())
-    return tuple(sorted(set(candidates), key=lambda root: len(root.parts), reverse=True))
+    return tuple(dict.fromkeys(worktree_root(overlay=overlay.name) for overlay in discover_overlays()))
 
 
 def _ticket_dir(pid_dir: Path, roots: tuple[Path, ...]) -> str:
@@ -110,9 +110,7 @@ def _worker_host_pid(root: Path, stats: dict[int, ProcStat]) -> tuple[int | None
         return None, None
     for pid in stats:
         pid_dir = root / str(pid)
-        if namespace_pids(pid_dir)[-1:] != (str(record.pid),):
-            continue
-        if own_namespace and pid_namespace_of(pid_dir) == own_namespace:
+        if namespace_pids(pid_dir)[-1:] == (str(record.pid),) and pid_namespace_of(pid_dir) == own_namespace:
             return pid, None
     return None, None
 
@@ -131,45 +129,38 @@ def _attached(pid: int, stats: dict[int, ProcStat], worker_pid: int | None) -> b
 def _process_lines() -> list[str]:
     root, _reason = host_proc_root()
     if root is None or (uptime := read_uptime(root)) is None:
-        return ["Top processes by RSS: scan unavailable (no process table)"]
-    try:
-        pid_dirs = (entry for entry in root.iterdir() if entry.name.isdigit())
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        ranked: list[tuple[int, ProcStat]] = []
-        stats: dict[int, ProcStat] = {}
-        for pid_dir in pid_dirs:
-            stat = read_stat(pid_dir)
-            if stat is None:
-                continue
-            stats[stat.pid] = stat
-            if (pages := _resident_pages(pid_dir)) is not None:
-                ranked.append((pages, stat))
-    except OSError:
-        return ["Top processes by RSS: scan unavailable (no process table)"]
-    ranked.sort(key=lambda row: (-row[0], row[1].pid))
+        return [_NO_PROCESS_TABLE]
+    listed, _opaque = collect_stats(root, exclude_nested_namespaces=False)
+    if not listed:
+        return [_NO_PROCESS_TABLE]
+    stats = {stat.pid: stat for stat in listed}
+    pages_by_pid = {pid: pages for pid in stats if (pages := _resident_pages(root / str(pid))) is not None}
+    top = sorted(pages_by_pid, key=lambda pid: (-pages_by_pid[pid], pid))[:_TOP_PROCESSES]
+    page_size = os.sysconf("SC_PAGE_SIZE")
     roots = _ticket_roots()
     worker_pid, worker_error = _worker_host_pid(root, stats)
-    lines = [f"Top processes by RSS (up to {_TOP_PROCESSES}):"]
+    lines = [f"Top processes by RSS (up to {_TOP_PROCESSES}; attached = ancestry reaches the worker or an agent CLI):"]
     if worker_error:
         lines.append(f"Worker attribution: {worker_error}")
-    for pages, stat in ranked[:_TOP_PROCESSES]:
+    for pid in top:
+        stat = stats[pid]
         age = max(0, int(uptime - stat.start_ticks / CLOCK_TICKS_PER_SECOND))
-        comm = _safe_label(stat.comm)
         lines.append(
-            f"pid={stat.pid} ppid={stat.ppid} age={age}s rss={pages * page_size // _MIB} MiB "
-            f"comm={comm} ticket-dir={_ticket_dir(root / str(stat.pid), roots)} "
-            f"{'attached' if _attached(stat.pid, stats, worker_pid) else 'detached'}"
+            f"pid={pid} ppid={stat.ppid} age={age}s rss={pages_by_pid[pid] * page_size // _MIB} MiB "
+            f"comm={_safe_label(stat.comm)} ticket-dir={_ticket_dir(root / str(pid), roots)} "
+            f"{'attached' if _attached(pid, stats, worker_pid) else 'detached'}"
         )
     return lines
 
 
 def box_memory_snapshot(report: DetectorReport) -> str:
-    if report.detector != "pressure_incident" or report.payload.get("cause") not in {"memory", "swap"}:
+    if report.detector != PressureIncidentDetector.name or report.payload.get("cause") not in {"memory", "swap"}:
         return ""
     lines = [f"Box memory snapshot ({datetime.now(UTC).isoformat(timespec='seconds')}):"]
     for heading, read in (("Memory scopes", _memory_lines), ("Top processes by RSS", _process_lines)):
         try:
             lines.extend(read())
-        except (OSError, UnicodeError, ValueError) as exc:
+        except Exception as exc:
+            logger.warning("Box memory snapshot: %s could not be read", heading, exc_info=True)
             lines.append(f"{heading}: {_unreadable(exc)}")
     return "\n".join(lines)

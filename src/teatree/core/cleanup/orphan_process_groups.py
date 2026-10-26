@@ -164,7 +164,7 @@ def read_uptime(root: Path) -> float | None:
         return None
 
 
-def read_stat(pid_dir: Path) -> ProcStat | None:
+def _read_stat(pid_dir: Path) -> ProcStat | None:
     """Parse one ``stat``, or ``None`` when the pid vanished or the line is malformed."""
     try:
         raw = (pid_dir / "stat").read_text(encoding="utf-8", errors="replace")
@@ -247,7 +247,7 @@ def collect_stats(root: Path, *, exclude_nested_namespaces: bool) -> tuple[list[
     for pid_dir in pid_dirs:
         if exclude_nested_namespaces and _is_nested_namespace(pid_dir):
             continue
-        stat = read_stat(pid_dir)
+        stat = _read_stat(pid_dir)
         if stat is not None:
             collected.append(stat)
         elif pid_dir.exists():
@@ -319,7 +319,7 @@ def venue_ancestry_pgids() -> set[int]:
         seen.add(pid)
         with contextlib.suppress(OSError):
             protected.add(os.getpgid(pid))
-        stat = read_stat(Path("/proc") / str(pid))
+        stat = _read_stat(Path("/proc") / str(pid))
         if stat is None or stat.ppid <= 0:
             break
         pid = stat.ppid
@@ -359,7 +359,6 @@ __all__ = [
     "collect_stats",
     "live_group_members",
     "min_age_seconds_setting",
-    "read_stat",
     "read_uptime",
     "scan_orphan_groups",
     "survey_orphan_groups",

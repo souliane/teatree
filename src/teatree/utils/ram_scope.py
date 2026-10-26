@@ -18,6 +18,7 @@ the cgroup arm now does the same, from one reader both consumers share.
 import os
 import platform
 from dataclasses import dataclass
+from typing import Literal
 
 from teatree.utils.ram_probe import cgroup_file, cgroup_v1_memory_mib, cgroup_v2_memory_mib, host_available_ram_mib
 
@@ -140,14 +141,8 @@ def _cgroup_cap_and_headroom_mib(*, trace: dict[str, int | str] | None = None) -
     Read together because :func:`read_ram_headroom` needs both, and a second read of
     ``memory.max`` would let the cap and the headroom describe different instants.
     """
-    limit_mib = (
-        cgroup_v2_memory_mib("memory.max", trace=trace) if trace is not None else cgroup_v2_memory_mib("memory.max")
-    )
-    current_mib = (
-        cgroup_v2_memory_mib("memory.current", trace=trace)
-        if trace is not None
-        else cgroup_v2_memory_mib("memory.current")
-    )
+    limit_mib = cgroup_v2_memory_mib("memory.max", trace=trace)
+    current_mib = cgroup_v2_memory_mib("memory.current", trace=trace)
     if limit_mib is None:
         v1_limit = cgroup_v1_memory_mib("memory.limit_in_bytes")
         if v1_limit is not None:
@@ -179,13 +174,11 @@ class RamHeadroom:
     cgroup_headroom_mib: int | None = None
 
     @property
-    def binding_scope(self) -> str:
-        if (
-            self.cgroup_is_box_scoped
-            and self.cgroup_headroom_mib is not None
-            and (self.host_available_mib is None or self.cgroup_headroom_mib < self.host_available_mib)
-        ):
-            return "cgroup"
+    def binding_scope(self) -> Literal["cgroup", "host"]:
+        """Which scope :attr:`box_watermark_mib` reads; a tie goes to the host."""
+        available = self.available_mib
+        if self.cgroup_is_box_scoped and available is not None:
+            return "cgroup" if self.host_available_mib is None or available < self.host_available_mib else "host"
         return "host"
 
     @property
@@ -239,7 +232,7 @@ def read_ram_headroom(*, trace: dict[str, int | str] | None = None) -> RamHeadro
     left): a caller falls back on the first and tightens on the second.
     """
     limit_mib, headroom_mib = _cgroup_cap_and_headroom_mib(trace=trace)
-    host = host_available_ram_mib(trace=trace) if trace is not None else host_available_ram_mib()
+    host = host_available_ram_mib(trace=trace)
     host_mib = host if host > 0 else None
     candidates = [mib for mib in (host_mib, headroom_mib) if mib is not None]
     return RamHeadroom(

@@ -43,25 +43,23 @@ _HOST_AVAILABLE_MIB = 22557
 
 
 @pytest.mark.parametrize(
-    ("limit", "headroom", "host", "expected"),
+    ("limit", "available", "host", "expected"),
     [
         (16384, 4096, 12288, "cgroup"),
-        (16384, 14336, 12288, "host"),
+        (16384, 12288, 12288, "host"),
+        (16384, 8192, None, "cgroup"),
         (2048, 1024, 12288, "host"),
-        (None, None, 12288, "host"),
+        (None, 12288, 12288, "host"),
+        (16384, None, None, "host"),
     ],
+    ids=["cgroup-smaller", "tie-goes-to-host", "host-unreadable", "sidecar-cgroup", "uncapped", "nothing-readable"],
 )
-def test_binding_scope_names_the_scope_used_by_the_box_watermark(
-    limit: int | None, headroom: int | None, host: int, expected: str
+def test_binding_scope_names_the_scope_the_box_watermark_judges(
+    limit: int | None, available: int | None, host: int | None, expected: str
 ) -> None:
-    candidates = [value for value in (headroom, host) if value is not None]
-    reading = RamHeadroom(
-        available_mib=min(candidates),
-        cgroup_limit_mib=limit,
-        host_available_mib=host,
-        cgroup_headroom_mib=headroom,
-    )
+    reading = RamHeadroom(available_mib=available, cgroup_limit_mib=limit, host_available_mib=host)
     assert reading.binding_scope == expected
+    assert reading.box_watermark_mib == (available if expected == "cgroup" else host)
 
 
 def test_reclaimable_memory_stat_preserves_duplicate_key_totals(tmp_path: Path) -> None:
@@ -158,7 +156,7 @@ def _cgroup_reads(values: dict[str, int | None]) -> tuple[AbstractContextManager
     """
     seen: list[str] = []
 
-    def _read(filename: str) -> int | None:
+    def _read(filename: str, **_kwargs: object) -> int | None:
         seen.append(filename)
         return values.get(filename)
 
