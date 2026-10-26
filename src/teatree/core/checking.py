@@ -14,8 +14,8 @@ Four delta groups scoped to the window ``[since, now)`` and one live group:
 * **In-flight** — the latest :class:`TicketTransition` per ticket inside the
     window (the standup latest-per-ticket dedup), plus completed background
     :class:`TaskAttempt` runs.
-* **Needs you** — pending :class:`DeferredQuestion` rows (NOT window-bounded: a
-    pending question still needs the user however old it is) plus failed
+* **Needs you** — all four live waiting kinds (NOT window-bounded: a
+    pending wait still needs the user however old it is) plus failed
     ``TaskAttempt`` runs inside the window. Failed agent runs are the durable
     proxy for "blocked" — core makes no live forge calls; an overlay opts into
     richer signals via :meth:`OverlayBase.get_checking_sources`.
@@ -28,9 +28,8 @@ Multi-overlay aggregation (``gather_all_overlays_report``):
 
 :func:`gather_all_overlays_report` merges per-overlay groups into a single
 :class:`AllOverlaysReport`. Each overlay-scoped item carries an ``[overlay]``
-inline tag in its detail so the reader can tell provenance. The global
-:class:`DeferredQuestion` query runs exactly once for the whole report — not
-once per overlay — so a pending question never appears more than once.
+inline tag in its detail so the reader can tell provenance. The global owner
+waiting gather runs exactly once, so a pending question never appears twice.
 """
 
 import operator
@@ -43,7 +42,6 @@ from django.db.models import Count, Max, Sum
 from teatree.core import checking_types
 from teatree.core._checking_gather import (
     _MergedScope,
-    deferred_questions,
     failed_attempts,
     merged_entries_from_qs,
     merged_group_from_qs,
@@ -56,14 +54,53 @@ from teatree.core.checking_types import (
     CheckGroup,
     CheckGroupDict,
     CheckItem,
+    OwnerWaitItem,
     RemainingGroup,
     RemainingGroupDict,
 )
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.waiting import WaitingKind, format_age, gather_waiting
 
 CheckItemDict = checking_types.CheckItemDict
+
+
+def owner_wait_items(*, overlay_slug: str, overlay: str = "") -> list[OwnerWaitItem]:
+    waits = sorted(gather_waiting(overlay), key=lambda entry: entry.age, reverse=True)
+    items: list[OwnerWaitItem] = []
+    for wait in waits:
+        question = wait.kind == WaitingKind.QUESTION
+        label = f"Q{wait.row_id}: {wait.ref}" if question else wait.ref
+        if not overlay and wait.overlay:
+            label = f"[{wait.overlay}] {label}"
+        detail = (
+            "awaiting your Slack reply"
+            if question and wait.owner_only
+            else (
+                f"answer in its Slack thread, or t3 {overlay_slug} questions dismiss {wait.row_id}"
+                " --reason '<evidence>'"
+            )
+            if question
+            else f"waiting {format_age(wait.age)}"
+        )
+        items.append(
+            OwnerWaitItem(
+                label=label,
+                url=wait.url,
+                detail=detail,
+                kind=wait.kind,
+                age_days=max(0, wait.age.days),
+                row_id=wait.row_id,
+                owner_only=wait.owner_only,
+            )
+        )
+    return items
+
+
+def internal_escalation_count() -> int:
+    return DeferredQuestion.internal_pending().count()
 
 
 class CheckingReportDict(TypedDict):
@@ -72,6 +109,7 @@ class CheckingReportDict(TypedDict):
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
     metered: CheckGroupDict
+    internal_escalations: int
     remaining: RemainingGroupDict
     terse: str
 
@@ -83,6 +121,7 @@ class AllOverlaysReportDict(TypedDict):
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
     metered: CheckGroupDict
+    internal_escalations: int
     remaining: RemainingGroupDict
     terse: str
 
@@ -96,6 +135,7 @@ class CheckingReport:
     in_flight: CheckGroup
     needs_you: CheckGroup
     metered: CheckGroup
+    internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
 
     @property
@@ -113,6 +153,7 @@ class CheckingReport:
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
+            internal_escalations=self.internal_escalations,
             remaining=self.remaining.to_dict(),
             terse=self.to_terse(),
         )
@@ -131,12 +172,14 @@ class CheckingReport:
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 and not group.items for group in groups):
+        if all(not group.has_table_content() for group in groups) and not self.internal_escalations:
             return f"Nothing since {stamp}."
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
         lines = [header]
         for group in groups:
             lines.extend(group.render(cap=cap))
+        if self.internal_escalations:
+            lines.append(f"{self.internal_escalations} internal escalations: factory work, not questions")
         return "\n".join(lines)
 
 
@@ -156,6 +199,7 @@ class AllOverlaysReport:
     in_flight: CheckGroup
     needs_you: CheckGroup
     metered: CheckGroup
+    internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
 
     @property
@@ -174,6 +218,7 @@ class AllOverlaysReport:
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
+            internal_escalations=self.internal_escalations,
             remaining=self.remaining.to_dict(),
             terse=self.to_terse(),
         )
@@ -191,11 +236,13 @@ class AllOverlaysReport:
         )
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 and not group.items for group in groups):
+        if all(not group.has_table_content() for group in groups) and not self.internal_escalations:
             return f"Nothing since {stamp}."
         lines = [f"Since {stamp} · all overlays"]
         for group in groups:
             lines.extend(group.render(cap=cap))
+        if self.internal_escalations:
+            lines.append(f"{self.internal_escalations} internal escalations: factory work, not questions")
         return "\n".join(lines)
 
 
@@ -232,9 +279,8 @@ def gather_all_overlays_report(
     *overlay_windows* maps overlay name → ``(since, now)`` pair.
     *overlay_configs* maps overlay name → ``(code_host, overlay_repos)`` pair.
 
-    The global :class:`DeferredQuestion` query runs exactly ONCE — pending
-    questions are not scoped per overlay, so repeating the query per overlay
-    would duplicate them in the output.
+    The global waiting gather runs exactly ONCE — pending questions are not
+    scoped per overlay, so repeating the gather would duplicate them.
 
     Overlay-scoped items (merged, in-flight, failed attempts) have their
     detail text suffixed with ``[overlay]`` so the reader sees provenance.
@@ -247,7 +293,7 @@ def gather_all_overlays_report(
         reverse=True,
     )
     overlay_slug = next(iter(overlay_windows), "") or "<overlay>"
-    needs_you_items = deferred_questions(overlay_slug=overlay_slug)
+    needs_you_items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug)]
     needs_you_items.extend(failed_items)
     effective_since = earliest_since or next(iter(overlay_windows.values()), (None, None))[0] or datetime.now(UTC)
     metered_groups = [
@@ -266,6 +312,7 @@ def gather_all_overlays_report(
         ),
         in_flight=CheckGroup(title="In-flight", items=in_flight_items[:cap], total=len(in_flight_items)),
         needs_you=CheckGroup(title="Needs you", items=needs_you_items[:cap], total=len(needs_you_items)),
+        internal_escalations=internal_escalation_count(),
         metered=CheckGroup(
             title="Metered",
             items=[item for _, item in metered_entries[:cap]],
@@ -346,6 +393,7 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         merged=_merged_group(since=since, now=now, scope=scope, cap=cap),
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
+        internal_escalations=internal_escalation_count(),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         remaining=gather_remaining(
             now=now, overlay_names=[overlay_name] if overlay_name else None, tag_overlays=False, cap=cap
@@ -427,10 +475,8 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
 
 
 def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
-    items: list[CheckItem] = []
-
     overlay_slug = overlay_name or "<overlay>"
-    items.extend(deferred_questions(overlay_slug=overlay_slug))
+    items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name)]
 
     failed = failed_attempts(since=since, now=now, overlay_name=overlay_name)
     seen_tickets: set[int] = set()

@@ -432,14 +432,15 @@ async def _task_list(
     )
 
 
-async def _question_list(*, limit: int = 50) -> list[dict[str, Any]]:
-    """Pending DeferredQuestion rows — the backlog awaiting the user's answer.
+async def _question_list(*, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    """Pending owner questions — the backlog awaiting the user's answer.
 
-    The read counterpart to the ``question_answer`` write tool. Returns each
-    pending question's id, text, raw options, originating session, and Slack
-    ``ts`` / ``channel`` (when mirrored), newest first.
+    Owner-audience rows only: the internal rows ``question_answer`` can settle are not listed
+    here (``t3 <overlay> questions list`` shows them). Returns each pending question's id,
+    decision, owner-only flag, text, raw options, originating session, and Slack destination,
+    oldest first. Page with ``offset``.
     """
-    return await sync_to_async(introspection.question_list, thread_sensitive=True)(limit=limit)
+    return await sync_to_async(introspection.question_list, thread_sensitive=True)(limit=limit, offset=offset)
 
 
 async def _config_setting_get(key: str, *, overlay: str | None = None) -> dict[str, Any]:

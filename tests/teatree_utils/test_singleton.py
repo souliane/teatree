@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree.utils import singleton as singleton_module
 from teatree.utils.singleton import (
     AlreadyRunningError,
     ExecutionContext,
@@ -20,7 +21,48 @@ from teatree.utils.singleton import (
     read_holder,
     read_pid,
     singleton,
+    worker_control_lock_path,
+    worker_lock_is_held,
 )
+
+
+def test_worker_lock_follows_the_control_database_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(singleton_module, "CANONICAL_DB", tmp_path / "control" / "db.sqlite3")
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
+    assert worker_control_lock_path() == tmp_path / "control" / "db.sqlite3.worker.pid"
+
+
+def test_worker_lock_keeps_distinct_database_names_distinct(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(singleton_module, "CANONICAL_DB", tmp_path / "first.sqlite3")
+    first = worker_control_lock_path()
+    monkeypatch.setattr(singleton_module, "CANONICAL_DB", tmp_path / "second.sqlite3")
+    second = worker_control_lock_path()
+    assert first != second
+
+
+def test_spawn_lock_uses_primary_task_database_even_with_a_config_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "other-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(tmp_path / "control"))
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    assert worker_control_lock_path(primary=True) == tmp_path / "control" / "db.sqlite3.worker.pid"
+
+
+def test_worker_probe_does_not_create_an_unmounted_control_volume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    control = tmp_path / "unmounted-control"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(singleton_module, "DATA_DIR", tmp_path / "worker-state")
+
+    assert worker_lock_is_held() is False
+    assert not control.exists()
 
 
 def _hold_lock(lock_path: str, ready_path: str, release_path: str) -> None:
@@ -273,6 +315,15 @@ class TestRefusalMessage:
         outside = AlreadyRunningError("worker", 11, path, holder_context=_OUTSIDE_HOLDER, context=_IN_CONTAINER)
         sibling = AlreadyRunningError("worker", 11, path, holder_context=sibling_container, context=_IN_CONTAINER)
         assert outside.reason_fingerprint != sibling.reason_fingerprint
+
+    def test_fingerprint_changes_with_the_locked_database(self, tmp_path: Path) -> None:
+        first = AlreadyRunningError(
+            "worker", 11, tmp_path / "first.sqlite3.worker.pid", holder_context=_OUTSIDE_HOLDER, context=_IN_CONTAINER
+        )
+        second = AlreadyRunningError(
+            "worker", 11, tmp_path / "second.sqlite3.worker.pid", holder_context=_OUTSIDE_HOLDER, context=_IN_CONTAINER
+        )
+        assert first.reason_fingerprint != second.reason_fingerprint
 
 
 class TestCurrentContext:

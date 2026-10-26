@@ -52,7 +52,7 @@ The gate **fails loud, never skip-as-pass**: a rubric that cannot be confirmed f
 
 ## Configuration
 
-None. The gate is unconditional on both transitions — there is no setting that disables it, because a flag is what let the behaviour ship inert. The escapes are the audited, recorded ones:
+None for the gate. It is unconditional on both transitions — there is no setting that disables it, because a flag is what let the behaviour ship inert. The one thing a deployment changes is what the phase visit SEEDS: with `forced_repro_gate_enabled` off for the ticket's overlay, `Session.visit_phase` no longer adds the two criteria that demand a failing run (`FAILING_RUN_CRITERIA` in `core/models/rubric_phase_criteria.py`, matched by criterion text so re-keying a phase changes nothing). A row already on a rubric is never pruned, re-graded or re-added, and a ticket whose only visited phase is `coding` then has no rubric, so both gates refuse it with 'no rubric is recorded'. The escapes are the audited, recorded ones:
 
 - `ticket plan-bypass <id> --human-authorize <who> --reason <why>` — bypasses a missing or ungraded rubric, never a recorded FAIL.
 - A forge-evidenced owner merge permits delivery with missing or ungraded criteria when no merge audit or live PR exists; it never permits delivery over a recorded FAIL.
