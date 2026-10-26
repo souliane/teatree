@@ -7,6 +7,7 @@ from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.utils import timezone
 
@@ -205,6 +206,29 @@ class _RaisingDetector(_CountingDetector):
 
 
 class SchedulerDetectorIsolationTests(TestCase):
+    def test_invalid_detector_configuration_does_not_abort_later_detectors_or_owner_sweep(self) -> None:
+        sweeps: list[str] = []
+        after = _StubDetector(detector_name="after_invalid_configuration")
+        channel = OwnerWaitChannel(
+            deliver=lambda text, key: OwnerAlertDelivery(sent=True),
+            quiet_now=lambda: sweeps.append("swept") or True,
+            wait=dt.timedelta(minutes=60),
+        )
+        with (
+            patch.object(_RaisingDetector, "detect", side_effect=ImproperlyConfigured("missing overlay")),
+            self.assertLogs("teatree.loop.self_improve.schedule", level="ERROR"),
+        ):
+            result = run_tier(
+                Tier.CHEAP,
+                detectors=[_RaisingDetector(), after],
+                budget=BudgetVerdict.allow(),
+                delivery=DeliveryRoutes(owner_wait=channel),
+            )
+
+        assert result.degraded_scans == [("raising", "detector_raised")]
+        assert [report.detector for report in result.reports] == ["after_invalid_configuration"]
+        assert sweeps == ["swept"]
+
     def test_a_raising_detector_is_degraded_and_later_detectors_and_the_owner_sweep_still_run(self) -> None:
         sweeps: list[str] = []
 

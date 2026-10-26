@@ -17,7 +17,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 
 from teatree.core.telemetry.admission import record_factory_issue
@@ -224,8 +223,6 @@ def run_tier(
                 )
                 if result is not None:
                     actions.append(result)
-        except ImproperlyConfigured:
-            raise
         except Exception:
             logger.exception("self-improve detector %s raised", detector.name)
             degraded_scans.append((detector.name, "detector_raised"))
