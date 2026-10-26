@@ -377,7 +377,8 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
     gate failing open on a crash. The fixed :func:`scan_text` must:
     * return :data:`SCANNER_UNAVAILABLE_MARKER` (gate BLOCKS) when the shell
         scanner CRASHES, never ``None``, and
-    * return :data:`TERMS_UNSET_MARKER` when no classed registry is installed.
+    * return :data:`STORE_UNREADABLE_MARKER` when the store cannot be read, and
+    * return :data:`TERMS_UNSET_MARKER` when a readable store has no registry.
 
     A scan killed at its budget is the sibling case and carries its own marker, so
     this predicate pins the crash arm only.
@@ -387,6 +388,7 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
     from teatree.hooks import banned_terms_scanner  # noqa: PLC0415 — deferred: loaded per eval run
     from teatree.hooks.banned_terms_scanner import (  # noqa: PLC0415 — lazy import
         SCANNER_UNAVAILABLE_MARKER,
+        STORE_UNREADABLE_MARKER,
         TERMS_UNSET_MARKER,
         scan_text,
     )
@@ -397,12 +399,21 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
 
     with tempfile.TemporaryDirectory() as raw:
         db = Path(raw) / "config.sqlite3"
+        unreadable_db = Path(raw) / "unreadable.sqlite3"
+        unset_db = Path(raw) / "unset.sqlite3"
         _seed_config_db(db, "banned_term_registry", {"leak": [], "prose_collider": ["acmecorp"]})
+        sqlite3.connect(unreadable_db).close()
+        _seed_config_db(unset_db, "unrelated_setting", "present")
         with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
             with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
                 on_crash = scan_text("we ship to acmecorp", config_path=db)
-            on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
-    return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config == TERMS_UNSET_MARKER
+            on_unreadable_store = scan_text("we ship to acmecorp", config_path=unreadable_db)
+            on_unset_registry = scan_text("we ship to acmecorp", config_path=unset_db)
+    return (
+        on_crash == SCANNER_UNAVAILABLE_MARKER
+        and on_unreadable_store == STORE_UNREADABLE_MARKER
+        and on_unset_registry == TERMS_UNSET_MARKER
+    )
 
 
 def _check_forge_resolves_by_host_not_token() -> bool:

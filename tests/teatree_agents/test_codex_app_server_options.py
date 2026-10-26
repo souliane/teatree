@@ -11,7 +11,9 @@ from teatree.agents.codex_app_server_options import (
     CodexAppServerError,
     CodexAppServerOptions,
     codex_phase_policy_unavailable_reason,
+    codex_worker_denials,
 )
+from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from tests.teatree_agents._codex_plugin import CODEX_PLUGIN_ID
 from tests.teatree_agents._executor_fakes import EXECUTOR_ID, FakeExecutor, attested
 
@@ -82,6 +84,11 @@ def in_container(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
 
 
+@pytest.fixture
+def on_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: False)
+
+
 @pytest.mark.usefixtures("in_container")
 def test_container_write_phase_runs_codex_without_its_own_sandbox() -> None:
     # The container is the sandbox; Codex's bwrap cannot create a user namespace inside it.
@@ -113,6 +120,32 @@ def test_container_phase_policy_routes_read_only_phases_to_another_harness() -> 
 
 def test_host_phase_policy_still_enforces_read_only_through_the_sandbox() -> None:
     assert codex_phase_policy_unavailable_reason(["Edit", "NotebookEdit", "Write"]) is None
+
+
+@pytest.mark.usefixtures("in_container")
+@pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke", "eval_local"])
+def test_container_execution_phase_lifts_only_the_mutation_denials(phase: str) -> None:
+    denied = sdk_disallowed_tools_for_phase(phase)
+    lifted = codex_worker_denials(denied, phase)
+
+    assert codex_phase_policy_unavailable_reason(denied) is not None
+    assert codex_phase_policy_unavailable_reason(lifted) is None
+    assert set(denied) - set(lifted) == {"Edit", "NotebookEdit", "Write"}
+
+
+@pytest.mark.usefixtures("in_container")
+def test_container_read_only_phase_keeps_every_denial() -> None:
+    denied = sdk_disallowed_tools_for_phase("reviewing")
+
+    assert codex_worker_denials(denied, "reviewing") == denied
+
+
+@pytest.mark.usefixtures("on_host")
+@pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke", "eval_local"])
+def test_host_execution_phase_keeps_every_denial(phase: str) -> None:
+    denied = sdk_disallowed_tools_for_phase(phase)
+
+    assert codex_worker_denials(denied, phase) == denied
 
 
 @pytest.mark.parametrize(

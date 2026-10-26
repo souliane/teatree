@@ -1546,7 +1546,9 @@ mount instead, and the worker never takes the executor's word for it:
   `GIT_OPTIONAL_LOCKS`, `LANG` and `TZ`.
 - **Read-only mounts.** Of the deploy checkout only its `.git` (path identity), never the
   directory that holds `deploy/teatree.env`; plus the clone volume and the `t3-workspaces`
-  tree, all `read_only`, over a read-only root filesystem. The only writable paths are two
+  tree, all `read_only`, over a read-only root filesystem. When the worker's Codex source
+  clone exists, deploy adds only its `.git` through a volume subpath; a fresh install keeps
+  the original mounts. The only writable paths are two
   tmpfs mounts, `/run/t3-ro` (Codex homes) and `/run/t3-tmp` (`TMPDIR`), which are never
   persisted and are emptied at every app server start and stop. It mounts no control DB,
   data dir, credential store, agent home or docker socket.
@@ -1565,7 +1567,8 @@ mount instead, and the worker never takes the executor's word for it:
   `.env_*` other than templates, `.envrc`, `.netrc`, `.npmrc`, `.pypirc`,
   `.git-credentials`, `.pgpass`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`) or a private
   key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other than `*.pub`, found
-  by its content marker, so certificates and public keys pass). The secret it does hold is
+  by its content marker, so certificates and public keys pass). Git config with an embedded
+  HTTP credential or auth header is also refused. The secret it does hold is
   its own Codex login: the worker hydrates it from pass into a fresh `/run/t3-ro/codex-*` home per
   app server, persists a rotated token of the same account back to pass with a verifying
   re-read, and deletes the home only after that persist succeeded. Store it once with
@@ -1589,6 +1592,13 @@ waiting in its tmpfs, and after init, whose read-write clone mount creates the
 `t3-workspaces` mountpoint a fresh clone volume lacks. Either step failing does not stop
 the deploy: the worker and every other service still converge, and the deploy then fails
 with a message naming the executor. Until the executor deploys, served read-only phases on Codex are refused and try another route.
+The optional Codex source Git mount uses the worker's path in the executor, so
+worktree `.git` pointers resolve to the same Git directory. `deploy.sh` derives
+the volume subpath and mount target from the checkout's origin and passes them to
+compose; it passes the subpath to the worker for the read-only verdict's comparison.
+An empty value, which is what a worker recreated without it gets and what `deploy.sh` passes
+when origin yields no owner and repository, means no source clone and the original mounts;
+a malformed value refuses the executor with a reason naming the variable.
 A worker that had to be contained instead of drained leaves the running executor in
 place, because its tmpfs may still hold a rotated login that the next server start
 recovers. The next deploy replaces it.

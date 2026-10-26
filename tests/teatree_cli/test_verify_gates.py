@@ -14,16 +14,22 @@ local hook covers.
 """
 
 import json
+import os
 import re
 import sqlite3
+import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import yaml
+from django.db import connection
+from django.test import TransactionTestCase
 from typer.testing import CliRunner
 
 from teatree.cli import app
@@ -33,7 +39,10 @@ from teatree.cli.verify_gates import (
     _declared_manual_hooks,
     _prek_config,
     _resource_refusal,
+    _snapshot_control_db,
+    _stage_env,
 )
+from teatree.core.models import PlanArtifact, Ticket, Worktree
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.paths import ControlDb
 from teatree.quality.changed_set import ChangedSet, ChangeEntry
@@ -44,9 +53,60 @@ runner = CliRunner()
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+class TestPrivateGateDatabase(TransactionTestCase):
+    def test_snapshot_preserves_ticket_brief_for_push_hook(self) -> None:
+        with TemporaryDirectory() as temp_root:
+            root = Path(temp_root)
+            source = root / "live.sqlite3"
+            ticket = Ticket.objects.create()
+            checkout = root / "checkout"
+            checkout.mkdir()
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="teatree",
+                repo_path="souliane/teatree",
+                branch="feature",
+                extra={"worktree_path": str(checkout)},
+            )
+            PlanArtifact.objects.create(ticket=ticket, plan_text="No migration.")
+            connection.ensure_connection()
+            with closing(sqlite3.connect(source)) as destination:
+                connection.connection.backup(destination)
+
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(source)}):
+                private_root = root / "private"
+                private_root.mkdir()
+                env = _stage_env(str(private_root))
+                _snapshot_control_db(checkout, env)
+
+            program = (
+                "from pathlib import Path; from teatree.cli.push_gate_tools import _brief_for_worktree; "
+                "import sys; print(_brief_for_worktree(Path(sys.argv[1])))"
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    program,
+                    str(checkout),
+                ],
+                cwd=REPO_ROOT,
+                env={**env, "DJANGO_SETTINGS_MODULE": "teatree.settings"},
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == "No migration."
+
+
 @pytest.fixture(autouse=True)
 def _no_real_gate_receipt():
-    with patch("teatree.cli.verify_gates.write_gate_receipt"):
+    with (
+        patch("teatree.cli.verify_gates.write_gate_receipt"),
+        patch("teatree.cli.verify_gates._snapshot_control_db"),
+    ):
         yield
 
 
@@ -224,81 +284,6 @@ class TestVerifyGatesRunsBothStages:
             assert {key: child_registry[key] for key in registry} == registry
             assert ControlDb(env, home=tmp_path).for_repo(worktree).path.is_relative_to(private_root)
             assert not private_root.exists()
-
-    def test_stage_children_read_a_private_snapshot_of_the_worktree_database(
-        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        live = tmp_path / "live.sqlite3"
-        with closing(sqlite3.connect(live)) as db:
-            db.execute("CREATE TABLE teatree_worktree (brief TEXT)")
-            db.execute("INSERT INTO teatree_worktree VALUES ('No migration.')")
-            db.commit()
-        monkeypatch.setenv("T3_CONFIG_DB", str(live))
-        snapshots: list[Path] = []
-
-        def inspect_stage(_command: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
-            assert not check
-            assert cwd == worktree
-            snapshot = ControlDb(env, home=tmp_path).for_repo(worktree).path
-            assert snapshot != live
-            with closing(sqlite3.connect(snapshot)) as db:
-                expected = "No migration." if not snapshots else "Private update."
-                assert db.execute("SELECT brief FROM teatree_worktree").fetchone() == (expected,)
-                if not snapshots:
-                    db.execute("UPDATE teatree_worktree SET brief = 'Private update.'")
-                    db.commit()
-            snapshots.append(snapshot)
-            return 0
-
-        with (
-            patch("teatree.cli.verify_gates._prek_available", return_value=True),
-            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
-            patch("teatree.cli.verify_gates.run_streamed", side_effect=inspect_stage),
-        ):
-            result = runner.invoke(app, ["tool", "verify-gates"])
-
-        assert result.exit_code == 0, _text(result)
-        assert len(snapshots) >= 2
-        assert len(set(snapshots)) == 1
-        with closing(sqlite3.connect(live)) as db:
-            assert db.execute("SELECT brief FROM teatree_worktree").fetchone() == ("No migration.",)
-        assert not snapshots[0].exists()
-
-    def test_stage_snapshot_reads_the_primary_db_when_the_worktree_db_is_empty(
-        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("T3_CONFIG_DB", raising=False)
-        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-        resolver = ControlDb({}, home=tmp_path)
-        primary = resolver.primary()
-        isolated = resolver.for_repo(worktree).path
-        assert primary != isolated
-        primary.parent.mkdir(parents=True)
-        isolated.parent.mkdir(parents=True)
-        with closing(sqlite3.connect(primary)) as db:
-            db.execute("CREATE TABLE teatree_worktree (brief TEXT)")
-            db.execute("INSERT INTO teatree_worktree VALUES ('Primary plan.')")
-            db.commit()
-        with closing(sqlite3.connect(isolated)):
-            pass
-
-        def inspect_stage(_command: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
-            assert not check
-            assert cwd == worktree
-            snapshot = ControlDb(env, home=tmp_path).for_repo(worktree).path
-            with closing(sqlite3.connect(snapshot)) as db:
-                assert db.execute("SELECT brief FROM teatree_worktree").fetchone() == ("Primary plan.",)
-            return 0
-
-        with (
-            patch("teatree.cli.verify_gates.ControlDb", side_effect=lambda env: ControlDb(env, home=tmp_path)),
-            patch("teatree.cli.verify_gates._prek_available", return_value=True),
-            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
-            patch("teatree.cli.verify_gates.run_streamed", side_effect=inspect_stage),
-        ):
-            result = runner.invoke(app, ["tool", "verify-gates"])
-
-        assert result.exit_code == 0, _text(result)
 
     @pytest.mark.parametrize("registry_error", [BannedTermsUnreadableError, BannedTermsUnsetError])
     def test_unavailable_registry_still_isolates_stage(

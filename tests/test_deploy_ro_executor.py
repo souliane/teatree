@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import pytest
 import yaml
@@ -22,9 +22,11 @@ from teatree.agents.codex_read_only_verdict import (
 
 _DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 _COMPOSE = _DEPLOY / "docker-compose.yml"
+_SOURCE_GIT_COMPOSE = _DEPLOY / "docker-compose.codex-source-git.yml"
 _DOCKERFILE = _DEPLOY / "Dockerfile"
 _SERVICE = EXECUTOR_SERVICE
 _NOBODY = "65534:65534"
+CODEX_SOURCE_GIT = "${TEATREE_CODEX_SOURCE_GIT_TARGET:?set by deploy.sh}"
 _WORKER_DIGEST_AT_BASE = "b10b4113dadb7b3d3c01daaca1e22ae00adcb25c16afbfa2aff78424d685d548"
 
 
@@ -33,6 +35,7 @@ class _Volume(TypedDict):
     source: str
     target: str
     read_only: bool
+    volume: NotRequired[dict[str, str]]
 
 
 class _Build(TypedDict):
@@ -99,6 +102,7 @@ def _stages() -> dict[str, list[str]]:
 
 def test_worker_service_is_unchanged() -> None:
     worker = _worker()
+    assert worker["environment"].pop("TEATREE_CODEX_SOURCE_GIT_SUBPATH") == "${TEATREE_CODEX_SOURCE_GIT_SUBPATH:-}"
 
     assert hashlib.sha256(json.dumps(worker, sort_keys=True).encode()).hexdigest() == _WORKER_DIGEST_AT_BASE
 
@@ -160,6 +164,21 @@ def test_executor_mounts_and_env_are_exactly_the_declared_set() -> None:
     assert executor["read_only"] is True
     assert executor["cap_drop"] == ["ALL"]
     assert executor["security_opt"] == ["no-new-privileges:true"]
+
+
+def test_source_git_bind_is_only_in_the_existing_clone_override() -> None:
+    override = yaml.safe_load(_SOURCE_GIT_COMPOSE.read_text(encoding="utf-8"))
+    (mount,) = override["services"][_SERVICE]["volumes"]
+    deploy = (_DEPLOY / "deploy.sh").read_text(encoding="utf-8")
+
+    assert mount["target"] == CODEX_SOURCE_GIT
+    assert mount["read_only"] is True
+    assert mount["source"] == "teatree_codex_home"
+    assert mount["volume"] == {"subpath": "${TEATREE_CODEX_SOURCE_GIT_SUBPATH:?set by deploy.sh}"}
+    assert 'TEATREE_CODEX_SOURCE_GIT_TARGET="$CONTAINER_HOME/.codex/$TEATREE_CODEX_SOURCE_GIT_SUBPATH"' in deploy
+    assert "compose exec -T teatree-worker true" in deploy
+    assert 'compose exec -T teatree-worker test -d "$CONTAINER_HOME/.codex/$TEATREE_CODEX_SOURCE_GIT_SUBPATH"' in deploy
+    assert "compose_executor up -d --no-deps" in deploy
 
 
 def test_executor_never_mounts_the_directory_that_holds_the_box_secrets() -> None:
