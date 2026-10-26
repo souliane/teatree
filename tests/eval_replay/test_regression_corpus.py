@@ -11,6 +11,8 @@ The corpus runs under :class:`~django.test.TestCase` so the DB-backed checks
 (merge precondition, loop-lease, migration graph) execute against the test DB.
 """
 
+import json
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -150,6 +152,13 @@ class TestRegressionCorpusAntiVacuous(TestCase):
             report = run_regression_corpus()
         assert not report.ok
         assert any("banned-terms scanner fail-closed" in r.check.failure_class for r in report.failures)
+
+    def test_banned_terms_scanner_check_ignores_gate_environment_registry(self) -> None:
+        check = next(c for c in regression_corpus._CHECKS if "banned-terms scanner fail-closed" in c.failure_class)
+        registry = {"leak": [], "prose_collider": ["acmecorp"]}
+        with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": json.dumps(registry)}):
+            report = run_regression_corpus(checks=(check,))
+        assert report.ok
 
     def test_forge_check_fails_when_resolver_ignores_host(self) -> None:
         def _by_token_not_host(remote_url: str) -> str:
