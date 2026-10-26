@@ -79,6 +79,28 @@ def test_unreadable_matching_checkout_is_unverified_and_unrelated_one_is_ignored
             assert "git (" in disk_evidence(_ticket()).unverified
 
 
+def test_named_checkout_with_dangling_git_symlink_is_unverified() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        checkout = root / "5346-ticket"
+        checkout.mkdir()
+        (checkout / ".git").symlink_to("missing-gitdir")
+        with patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root):
+            assert "git (" in disk_evidence(_ticket()).unverified
+
+
+def test_named_checkout_with_unreadable_git_metadata_is_unverified() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        checkout = root / "5346-ticket"
+        checkout.mkdir()
+        with (
+            patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root),
+            patch.object(Path, "lstat", side_effect=PermissionError("git metadata unreadable")),
+        ):
+            assert "workspaces root (PermissionError" in disk_evidence(_ticket()).unverified
+
+
 def test_unreadable_branch_with_recorded_branch_is_unverified() -> None:
     ticket = _ticket()
     ticket.extra = {"branch": "5346-work"}

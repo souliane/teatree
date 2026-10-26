@@ -96,6 +96,44 @@ class TestShippingHoldSettlement(TestCase):
         assert ticket.extra["shipping_hold"]["reason"] == "no worktree row; nothing on the workspaces root or the forge"
         assert "shipping_skipped" not in ticket.extra
 
+    def test_row_branch_changed_after_scan_stays_held(self) -> None:
+        ticket = self._ticket()
+        row = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-empty")
+        host = _Host()
+
+        def change_branch(*, repo: str, prefix: str) -> list[str]:
+            row.branch = "5346-new-work"
+            row.save(update_fields=["branch"])
+            return []
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(host, "list_unshipped_branches", side_effect=change_branch),
+        ):
+            results = self._run(Path(directory), host)
+        ticket.refresh_from_db()
+        assert results[0].action == "hold"
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+
+    def test_row_checkout_path_changed_after_scan_stays_held(self) -> None:
+        ticket = self._ticket()
+        row = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-empty")
+        host = _Host()
+
+        def change_checkout(*, repo: str, prefix: str) -> list[str]:
+            row.extra = {"worktree_path": "/tmp/5346-new-checkout"}
+            row.save(update_fields=["extra"])
+            return []
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(host, "list_unshipped_branches", side_effect=change_checkout),
+        ):
+            results = self._run(Path(directory), host)
+        ticket.refresh_from_db()
+        assert results[0].action == "hold"
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+
     def test_row_added_after_evidence_scan_is_rechecked_before_ignore(self) -> None:
         ticket = self._ticket()
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-empty")
@@ -161,6 +199,20 @@ class TestShippingHoldSettlement(TestCase):
         assert results[0].action == "hold"
         assert ticket.state == Ticket.State.SELF_REVIEWED
         assert ticket.extra["shipping_hold"]["reason"] == "unverified: forge (RuntimeError: HTTP 500)"
+
+    def test_dangling_git_metadata_with_empty_forge_stays_held(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-empty")
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "5346-ticket"
+            checkout.mkdir()
+            (checkout / ".git").symlink_to("missing-gitdir")
+            results = self._run(root, _Host())
+        ticket.refresh_from_db()
+        assert results[0].action == "hold"
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert ticket.extra["shipping_hold"]["reason"].startswith("unverified: git (")
 
     def test_pass_settles_the_ten_least_recently_checked_tickets(self) -> None:
         now = timezone.now()

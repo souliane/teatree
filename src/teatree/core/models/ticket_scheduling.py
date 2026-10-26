@@ -251,6 +251,12 @@ class TicketSchedulingModel(TicketFacet):
         if gate is not None:
             get_gate(gate)(self)
         with transaction.atomic():
+            if (
+                phase == "shipping"
+                and type(self).objects.select_for_update().filter(pk=self.pk, extra__has_key="shipping_hold").exists()
+            ):
+                msg = "shipping held pending worktree and forge evidence"
+                raise InvalidTransitionError(msg)
             in_flight = Task.objects.in_flight_for_phase(self.overlay, phase).filter(ticket=self).order_by("pk").first()
             if in_flight is not None:
                 logger.info(

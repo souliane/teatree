@@ -37,6 +37,14 @@ def _mentions(number: str, text: str) -> bool:
     return re.search(rf"(?<!\d){re.escape(number)}(?!\d)", text) is not None
 
 
+def _has_git_metadata(path: Path) -> bool:
+    try:
+        (path / ".git").lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def _checkout_paths(root: Path, number: str) -> list[Path]:
     try:
         mode = root.stat().st_mode
@@ -48,11 +56,11 @@ def _checkout_paths(root: Path, number: str) -> list[Path]:
     for first in root.iterdir():
         if not first.is_dir():
             continue
-        if (first / ".git").exists():
+        if _has_git_metadata(first):
             paths.append(first)
             continue
         try:
-            paths.extend(child for child in first.iterdir() if child.is_dir() and (child / ".git").exists())
+            paths.extend(child for child in first.iterdir() if child.is_dir() and _has_git_metadata(child))
         except OSError:
             if _mentions(number, first.name):
                 raise

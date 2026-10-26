@@ -11,6 +11,7 @@ from teatree.core.models.shipping_hold import held_author_tickets, shipping_hold
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError, worktree_has_commits_ahead
 from teatree.core.models.types import ShippingHold
+from teatree.core.models.worktree import Worktree
 from teatree.loop.shipping_hold_evidence import disk_evidence, forge_evidence
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,13 @@ class Settlement:
     ticket_pk: int
     action: str
     reason: str
-    observed_worktree_ids: frozenset[int] = frozenset()
+    observed_worktrees: frozenset[tuple[int, str, str, str]] = frozenset()
+
+
+def _worktree_snapshot(rows: list[Worktree]) -> frozenset[tuple[int, str, str, str]]:
+    return frozenset(
+        (row.pk, row.repo_path, row.branch, str((row.extra or {}).get("worktree_path") or "")) for row in rows
+    )
 
 
 def _checked_at(ticket: Ticket) -> datetime | None:
@@ -55,7 +62,7 @@ def _decide(ticket: Ticket) -> Settlement:
         return Settlement(ticket.pk, "hold", f"unverified: {unknown}")
     if not rows:
         return Settlement(ticket.pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
-    return Settlement(ticket.pk, "ignore", "every source verified empty", frozenset(row.pk for row in rows))
+    return Settlement(ticket.pk, "ignore", "every source verified empty", _worktree_snapshot(rows))
 
 
 def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> Settlement | None:
@@ -69,10 +76,10 @@ def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> S
         if (checked := _checked_at(ticket)) is not None and now - checked < RECHECK_INTERVAL:
             return None
         if result.action == "ignore":
-            current_ids = frozenset(ticket.worktrees.select_for_update().values_list("pk", flat=True))
-            if not current_ids:
+            current_rows = list(ticket.worktrees.select_for_update())
+            if not current_rows:
                 result = Settlement(ticket_pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
-            elif current_ids != result.observed_worktree_ids:
+            elif _worktree_snapshot(current_rows) != result.observed_worktrees:
                 result = Settlement(ticket_pk, "hold", "worktree rows changed; awaiting the workspace and forge check")
         if result.action == "release":
             ticket.merge_extra(pop_keys=["shipping_hold"])
