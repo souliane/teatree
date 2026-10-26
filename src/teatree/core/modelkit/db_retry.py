@@ -26,6 +26,7 @@ idempotent as a whole; use :func:`retry_on_locked` where the callable owns its t
 """
 
 import logging
+import sqlite3
 import time
 from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager, contextmanager
@@ -112,12 +113,11 @@ class _WaitOutLockedStatements:
             try:
                 return execute(sql, params, *forwarded)
             except OperationalError as exc:
-                if (
-                    many
-                    or self.connection.in_atomic_block
-                    or not is_locked_error(exc)
-                    or time.monotonic() >= give_up_at
-                ):
+                raw_connection = self.connection.connection
+                transaction_open = self.connection.in_atomic_block or (
+                    isinstance(raw_connection, sqlite3.Connection) and raw_connection.in_transaction
+                )
+                if many or transaction_open or not is_locked_error(exc) or time.monotonic() >= give_up_at:
                     raise
                 logger.info("db_retry: statement hit 'database is locked' — re-issuing in %.1fs", delay)
                 time.sleep(delay)

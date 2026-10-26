@@ -226,6 +226,20 @@ class TestWaitOutLockedWrites(TransactionTestCase):
             self._select_one()
         assert locked.calls == 1
 
+    def test_a_lock_error_after_raw_begin_surfaces_without_reissuing(self) -> None:
+        locked = _LockedStatement()
+        with wait_out_locked_writes(), connection.execute_wrapper(locked), connection.cursor() as cursor:
+            cursor.execute("BEGIN")
+            try:
+                assert not connection.in_atomic_block
+                assert connection.connection is not None
+                assert connection.connection.in_transaction
+                with pytest.raises(OperationalError, match="database is locked"):
+                    cursor.execute("SELECT 1")
+            finally:
+                cursor.execute("ROLLBACK")
+        assert locked.calls == 1
+
     def test_any_other_operational_error_surfaces_at_once(self) -> None:
         broken = _LockedStatement("no such table: teatree_task")
         with (

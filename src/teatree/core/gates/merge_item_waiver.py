@@ -9,14 +9,12 @@ It outlives heads: it covers the ticket, not one shipped tree.
 from django.db import transaction
 from django.utils import timezone
 
-from teatree import config
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker, read_action
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard, match_action_option, safe_ticket_card_title
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
-from teatree.core.models.reviewer_identity import is_non_reviewer_role, normalize_reviewer_identity
+from teatree.core.models.reviewer_identity import is_non_reviewer_role
 from teatree.core.models.ticket import Ticket
-from teatree.core.owner_action_auth import direct_owner_action
 from teatree.core.review.critic_rubric import _MERGE_TRANSITION, llm_items
 
 _WAIVERS_KEY = "merge_item_waivers"
@@ -105,25 +103,12 @@ def waive_merge_item(
         msg = "an owner identity is required; the maker, coding-agent and loop role identities cannot waive an item"
         raise MergeItemWaiverError(msg)
     with transaction.atomic():
-        if owner_question is not None:
-            if identity != _owner_answer(owner_question, ticket, slug, reason):
-                msg = "the waiver identity does not match the owner's answer"
-                raise MergeItemWaiverError(msg)
-        else:
-            if not direct_owner_action():
-                msg = "only a direct owner command or an owner button answer can waive a merge item"
-                raise MergeItemWaiverError(msg)
-            try:
-                owner_aliases = {
-                    normalize_reviewer_identity(alias)
-                    for alias in config.get_effective_settings(ticket.overlay or None).user_identity_aliases
-                }
-            except Exception as exc:
-                msg = "owner identities could not be read; no merge item was waived"
-                raise MergeItemWaiverError(msg) from exc
-            if normalize_reviewer_identity(identity) not in owner_aliases:
-                msg = "the waiver identity is not a configured owner alias; set user_identity_aliases first"
-                raise MergeItemWaiverError(msg)
+        if owner_question is None:
+            msg = "a matching owner button answer is required to waive this item"
+            raise MergeItemWaiverError(msg)
+        if identity != _owner_answer(owner_question, ticket, slug, reason):
+            msg = "the waiver identity does not match the owner's answer"
+            raise MergeItemWaiverError(msg)
         locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
         if existing := (locked.extra.get(_WAIVERS_KEY) or {}).get(slug):
             ticket.extra = locked.extra

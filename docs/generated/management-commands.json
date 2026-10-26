@@ -1359,7 +1359,7 @@
           "name": "rubric-waive"
         },
         {
-          "help": "Request the owner's waiver, or record it from a direct owner command",
+          "help": "Request an owner button answer for one LLM merge item",
           "name": "merge-item-waive"
         },
         {

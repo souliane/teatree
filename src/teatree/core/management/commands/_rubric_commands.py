@@ -22,12 +22,11 @@ from typing import Annotated, TypedDict
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.gates.merge_item_waiver import MergeItemWaiverError, request_merge_item_waiver, waive_merge_item
+from teatree.core.gates.merge_item_waiver import MergeItemWaiverError, request_merge_item_waiver
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.models import Rubric, RubricError, Ticket
 from teatree.core.models.rubric_waiver import waive_criterion
 from teatree.core.models.types import RubricGrade
-from teatree.core.owner_action_auth import direct_owner_action
 
 
 class RubricCommandError(ValueError):
@@ -150,23 +149,19 @@ class RubricCommands(TyperCommand):
         ticket_id: int,
         *,
         item: Annotated[str, typer.Option("--item", help="The LLM merge item: test_value or cleanliness.")] = "",
-        waived_by: Annotated[str, typer.Option("--waived-by", help="Owner identity recording the waiver.")] = "",
+        _waived_by: Annotated[
+            str, typer.Option("--waived-by", help="Legacy hint; the owner answer supplies the identity.")
+        ] = "",
         reason: Annotated[str, typer.Option("--reason", help="Why this item is waived.")] = "",
     ) -> None:
-        """Request the owner's waiver, or record it from a direct owner command."""
+        """Request an owner button answer for one LLM merge item."""
         ticket = self._resolve_rubric_ticket(ticket_id)
         try:
-            if not direct_owner_action():
-                question = request_merge_item_waiver(ticket, slug=item, reason=reason)
-                self.stdout.write(
-                    f"  requested owner waiver of {item.strip()} for ticket {ticket.pk}: question {question.pk}"
-                )
-                return
-            waive_merge_item(ticket, slug=item, waived_by=waived_by, reason=reason)
+            question = request_merge_item_waiver(ticket, slug=item, reason=reason)
         except MergeItemWaiverError as exc:
             self.stderr.write(f"  merge-item-waive refused: {exc}")
             raise SystemExit(1) from exc
-        self.stdout.write(f"  waived merge item {item.strip()} for ticket {ticket.pk}")
+        self.stdout.write(f"  requested owner waiver of {item.strip()} for ticket {ticket.pk}: question {question.pk}")
 
     @command(name="rubric-set")
     def rubric_set(

@@ -13726,14 +13726,15 @@ Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
 ```
 Usage: t3 teatree ticket merge-item-waive [OPTIONS] TICKET_ID
 
- Request the owner's waiver, or record it from a direct owner command.
+ Request an owner button answer for one LLM merge item.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --item             TEXT  The LLM merge item: test_value or cleanliness.      │
-│ --waived-by        TEXT  Owner identity recording the waiver.                │
+│ --waived-by        TEXT  Legacy hint; the owner answer supplies the          │
+│                          identity.                                           │
 │ --reason           TEXT  Why this item is waived.                            │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
