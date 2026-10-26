@@ -20,6 +20,9 @@ class TestDenies:
             "FOO=1 t3 teatree secrets get ci/deploy-token",
             "echo $(t3 teatree secrets get ci/deploy-token)",
             "t3 teatree secrets exec --env TOKEN=ci/deploy-token -- env",
+            "uv run t3 teatree secrets get ci/deploy-token",
+            "if true; then t3 teatree secrets get ci/deploy-token; fi",
+            "t3 teatree secrets exec --env A=ci/deploy-token -- sh -c 'echo $A'",
             "echo glpat-abcdef123456",
             "printf ghp_deadbeefcafebabe0000",
             "echo 'gl" + "pat-fullyquotedtoken0'",  # a fully-quoted token still lands on stdout
@@ -42,6 +45,9 @@ class TestAllows:
             "t3 teatree secrets get ci/deploy-token | wc -c",  # piped to a consuming sink
             "t3 teatree secrets exec --env TOKEN=ci/deploy-token -- curl https://api",  # value never printed
             "t3 teatree secrets verify",  # names and statuses only
+            "t3 teatree secrets get --help",
+            "echo 'mention $(pass show ci/deploy-token) in docs'",
+            "printf '%s\\n' 'mention $(t3 teatree secrets get ci/deploy-token)'",
             "t3 teatree ticket comment secrets get",
             "cat ~/.netrc > /tmp/out",  # redirected to a file
             "cat README.md",  # ordinary file

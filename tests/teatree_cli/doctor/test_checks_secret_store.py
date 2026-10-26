@@ -44,6 +44,15 @@ class TestSecretStoreDoctor(TestCase):
         assert "provision the key on the host" in report
         assert "first write will create it" not in report
 
+    def test_missing_key_directory_names_host_provisioning(self) -> None:
+        missing = self.source.path.parent / "missing"
+        with patch.dict(os.environ, {"T3_MASTER_KEY_SOURCE": f"file:{missing / 'master.key'}"}):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                assert check_secret_store() is False
+        assert str(missing) in output.getvalue()
+        assert "provision the key on the host" in output.getvalue()
+
     def test_ok_line_carries_the_active_key_id(self) -> None:
         key_id = self.source.create().key_id
         assert (

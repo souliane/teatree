@@ -201,6 +201,26 @@ def test_the_deadline_holds_without_gnu_timeout() -> None:
     assert "value=ok" in result.stdout, result.stderr
 
 
+def test_fallback_deadline_terminates_a_reader_child(tmp_path: Path) -> None:
+    marker = tmp_path / "late-child"
+    result = _run_bash(
+        CRED_PREAMBLE,
+        """
+        command() {
+            if [ "${1:-}" = -v ] && [ "${2:-}" = timeout ]; then return 1; fi
+            builtin command "$@"
+        }
+        rc=0
+        run_with_deadline 1 sh -c '(sleep 2; printf leaked > "$CHILD_MARKER") & wait' || rc=$?
+        sleep 2
+        echo "$rc"
+        """,
+        env={"CHILD_MARKER": str(marker)},
+    )
+    assert result.stdout.strip() == "124", result.stderr
+    assert not marker.exists()
+
+
 def test_a_genuine_absence_stays_distinct_from_a_wedge() -> None:
     """rc=1 means "no such entry" and must continue without a host token."""
     result = _run_bash(
@@ -362,9 +382,9 @@ def test_a_store_that_answers_still_exports_what_it_read(tmp_path: Path) -> None
     _assert_dispatched(_run_prologue(tmp_path, _ANSWERING_PASS), "stub-not-a-credential")
 
 
-def test_no_store_at_all_is_not_a_wedge(tmp_path: Path) -> None:
-    """A missing `pass` binary makes the selected reader report confirmed absence."""
-    _assert_dispatched(_run_prologue(tmp_path, None), "")
+def test_no_store_at_all_is_a_wedge(tmp_path: Path) -> None:
+    """A missing `pass` binary cannot confirm absence."""
+    _assert_refused(_run_prologue(tmp_path, None))
 
 
 def test_a_missing_entry_is_not_a_wedge(tmp_path: Path) -> None:

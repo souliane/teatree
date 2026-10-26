@@ -17,6 +17,11 @@ from teatree.utils.secrets import SecretStoreError
 logger = logging.getLogger(__name__)
 _WARNED_IN_VOLUME: set[str] = set()
 
+
+def reset_master_key_volume_warnings() -> None:
+    _WARNED_IN_VOLUME.clear()
+
+
 SOURCE_ENV = "T3_MASTER_KEY_SOURCE"
 ROLE_ENV = "TEATREE_ROLE"
 PRIVATE_FILE_MODE = 0o600

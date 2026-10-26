@@ -308,6 +308,18 @@ class TestARaisingStoreKeepsTheDomainErrors:
             _STORE.assert_writable()
         assert "cleanup failed" in str(raised.value)
 
+    def test_cleanup_failure_inside_a_caller_exception_is_still_a_refusal(self) -> None:
+        def fail_manifest() -> None:
+            message = "previous request failed"
+            raise SlackManifestError(message)
+
+        with use_store(_RaisingRemoveStore()):
+            try:
+                fail_manifest()
+            except SlackManifestError:
+                with pytest.raises(SlackConfigTokenStoreUnwritableError, match="cleanup failed"):
+                    _STORE.assert_writable()
+
     def test_cleanup_failure_does_not_replace_the_writability_refusal(self) -> None:
         with use_store(_RaisingWriteAndRemoveStore()), pytest.raises(SlackConfigTokenStoreUnwritableError) as raised:
             _STORE.assert_writable()

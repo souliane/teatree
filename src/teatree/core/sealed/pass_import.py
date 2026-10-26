@@ -51,7 +51,9 @@ def _readability(store: SecretStore, name: str) -> str:
         return "unreadable"
 
 
-def build_import_plan(*, store: SecretStore | None = None, root: Path | None = None) -> tuple[ImportEntry, ...]:
+def build_import_plan(
+    *, store: SecretStore | None = None, root: Path | None = None, check_readability: bool = True
+) -> tuple[ImportEntry, ...]:
     source = store if store is not None else PassStore()
     store_root = (
         root if root is not None else Path(os.environ.get("PASSWORD_STORE_DIR") or Path.home() / ".password-store")
@@ -72,7 +74,7 @@ def build_import_plan(*, store: SecretStore | None = None, root: Path | None = N
             destination = "external"
         readability = (
             _readability(source, name)
-            if name in present and destination == "row"
+            if name in present and destination == "row" and check_readability
             else "not-checked"
             if name in present
             else "missing"
@@ -121,7 +123,20 @@ def apply_import(
     changed mid-run shows as ``failed`` instead of being reported copied.
     """
     rows = [entry.name for entry in plan if entry.destination == "row" and entry.readability != "missing"]
-    expired = expired_backup_names((name for name in rows if is_backup(name)), now)
+    backup_rows = [name for name in rows if is_backup(name)]
+    existing_backups: set[str] = set()
+    for base in {backup_base(name) for name in backup_rows}:
+        parent, _, _ = base.rpartition("/")
+        stem = f"{base}.bak-"
+        try:
+            existing_backups.update(
+                f"{parent}/{name}" if parent else name
+                for name in target.names(parent)
+                if (f"{parent}/{name}" if parent else name).startswith(stem)
+            )
+        except (SecretStoreError, OperationalError):
+            return tuple(CopyOutcome("failed", name) for name in rows)
+    expired = expired_backup_names((*backup_rows, *existing_backups), now)
     outcomes = [CopyOutcome("expired", name) if name in expired else _copy_one(source, target, name) for name in rows]
     return tuple(
         CopyOutcome("failed", outcome.name)

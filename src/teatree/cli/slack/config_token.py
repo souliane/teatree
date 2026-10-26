@@ -42,7 +42,6 @@ module's store so the two paths cannot drift.
 """
 
 import datetime as dt
-import sys
 from dataclasses import dataclass
 from enum import Enum
 from uuid import uuid4
@@ -172,6 +171,7 @@ class ConfigTokenStore:
         fails, which the caller turns into a refusal rather than a rotation.
         """
         witness = f"teatree-writability-probe-{uuid4().hex}"
+        probe_failed = True
         try:
             if not write_pass(self.writability_probe_key, witness):
                 raise SlackConfigTokenStoreUnwritableError(self._unwritable_message("the write was rejected"))
@@ -179,14 +179,14 @@ class ConfigTokenStore:
                 raise SlackConfigTokenStoreUnwritableError(
                     self._unwritable_message("the write reported success but could not be read back")
                 )
+            probe_failed = False
         except SecretStoreError as exc:
             raise SlackConfigTokenStoreUnwritableError(self._unwritable_message("the store raised an error")) from exc
         finally:
-            failure = sys.exception()
             try:
                 remove_pass(self.writability_probe_key)
             except SecretStoreError as exc:
-                if failure is None:
+                if not probe_failed:
                     raise SlackConfigTokenStoreUnwritableError(self._unwritable_message("the cleanup failed")) from exc
 
     def _unwritable_message(self, reason: str) -> str:

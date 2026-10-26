@@ -745,8 +745,10 @@ run_with_deadline() {
         timeout "$seconds" "$@" || rc=$?
         return "$rc"
     fi
+    set -m
     "$@" &
     pid=$!
+    set +m
     (
         deadline_waited=0
         while [ "$deadline_waited" -lt "$seconds" ]; do
@@ -754,7 +756,7 @@ run_with_deadline() {
             sleep 1
             deadline_waited=$((deadline_waited + 1))
         done
-        kill -TERM "$pid" 2>/dev/null
+        kill -TERM -- "-$pid" 2>/dev/null
     ) >/dev/null 2>&1 &
     killer=$!
     wait "$pid" 2>/dev/null || rc=$?

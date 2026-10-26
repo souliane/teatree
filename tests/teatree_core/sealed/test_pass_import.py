@@ -205,6 +205,23 @@ class TestApplyImport(TestCase):
         assert {line.split("\t")[0] for line in out.splitlines()} == {"unchanged", "expired"}
         assert SecretCutover.objects.count() == 1
 
+    def test_apply_does_not_decrypt_a_row_during_inventory(self) -> None:
+        _, _, code = self._apply()
+        assert code == 0
+        calls = self.pass_log.read_text().splitlines()
+        assert calls.count("show team/github") == 2
+
+    def test_existing_newer_backups_do_not_make_an_older_copy_fail(self) -> None:
+        store = DbStore(self.source)
+        now = datetime.now(UTC)
+        for age in (0, 1, 2):
+            store.write(backup_name("teatree/slack-app-config-token", now - timedelta(hours=age)), "newer")
+        out, _, code = self._apply()
+        assert code == 0
+        assert f"expired\t{self.recent}" in out
+        assert store.read(self.recent) is None
+        assert SecretCutover.objects.filter(pk=1).exists()
+
     def test_an_unreadable_entry_exits_non_zero_and_writes_no_marker(self) -> None:
         (self.store_root / "team" / "github.gpg.broken").write_text("")
         out, _, code = self._apply()

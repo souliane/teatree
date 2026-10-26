@@ -39,7 +39,7 @@
 # 3: every `AppConfig.ready()` registration is call-time by Django's own contract —
 # the app registry is not ready at module import, so these can never be top-level.
 # 4: `ready()` runs before the app registry is ready, so wiring the fleet-admission refusal stays call-time.
-"src/teatree/core/apps.py" = 4
+"src/teatree/core/apps.py" = 5
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/cost.py" = 1

@@ -172,19 +172,19 @@ class TestSecretsCommandsKeepValuesOffEveryChannel(TestCase):
         assert CANARY not in out + err
         assert "SECRET_VALUE" not in os.environ
 
-    def test_verify_lists_names_and_statuses_only_and_exits_two_on_an_unreadable_row(self) -> None:
+    def test_verify_exits_nonzero_for_absent_and_unreadable_rows(self) -> None:
         ConfigSetting.objects.create(scope="global", key="github_token_pass_key", value="team/github")
         ConfigSetting.objects.create(scope="global", key="gitlab_token_pass_key", value="team/absent")
         DbStore(self.source).write("team/github", CANARY)
         out, err, code = self._run("verify")
-        assert code == 0
+        assert code == 1
         assert "ok\tteam/github" in out
         assert "absent\tteam/absent" in out
         assert CANARY not in out + err
         row = SealedSecret.objects.get(name="team/github")
         SealedSecret.objects.filter(pk=row.pk).update(ciphertext=bytes(len(row.ciphertext)))
         out, err, code = self._run("verify")
-        assert code == 2
+        assert code == 1
         assert "unreadable\tteam/github" in out
         assert CANARY not in out + err
 

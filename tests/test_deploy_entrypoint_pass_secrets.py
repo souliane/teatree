@@ -144,6 +144,19 @@ class TestSourceSecretFromPass:
         assert rc == 0
         assert value == ""
 
+    def test_broken_pass_reader_aborts_boot(self, tmp_path: Path) -> None:
+        broken = tmp_path / "broken-reader"
+        broken.write_text("#!/bin/sh\nexit 2\n")
+        broken.chmod(0o755)
+        value, rc = _source_secret(
+            tmp_path,
+            {},
+            var="T3_ADMIN_PASSWORD",
+            path="teatree/admin-password",
+            T3_SECRET_READER=str(broken),
+        )
+        assert (rc, value) == (2, "")
+
     def test_admin_password_sourced_from_pass(self, tmp_path: Path) -> None:
         value, rc = _source_secret(
             tmp_path,

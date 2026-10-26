@@ -330,8 +330,11 @@ losing it loses every sealed row. Provision it once on the host, as the deploy u
 before the first write (`deploy.sh`, `roll.sh` and `deploy/t3` create the empty directory):
 
 ```bash
-umask 077
-head -c 32 /dev/urandom | base64 > "$HOME/.config/teatree-master-key/master.key"
+(
+    umask 077
+    set -C
+    head -c 32 /dev/urandom | base64 > "$HOME/.config/teatree-master-key/master.key"
+)
 ```
 
 In a container a key path inside the control-DB directory is refused when a write
@@ -342,6 +345,8 @@ reads `pass`. `t3 teatree secrets import-pass` inventories candidate entries;
 `import-pass --apply` copies eligible entries into sealed rows without deleting them from `pass`.
 Set `T3_SECRET_STORE=sealed` after verifying the copied rows. Container shell readers then use the sealed
 control DB through `secret-read.sh`; host deploy commands leave sealed values for the container to read.
+An unreadable selected store stops boot; a missing entry leaves that credential unset.
+`t3 teatree secrets verify` exits 1 when any referenced entry is absent or unreadable.
 
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
 bind mounts, deliberately decoupled from the data dir: the container's

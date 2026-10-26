@@ -55,6 +55,12 @@ def _check_key_in_volume(source: KeyFileSource, *, populated: bool) -> bool:
 def _check_unused_key(source: KeyFileSource) -> bool:
     try:
         if not source.path.exists():
+            if not source.path.parent.is_dir():
+                typer.echo(
+                    f"FAIL  Sealed secret key {source.label}: key directory {source.path.parent} is absent; "
+                    "provision the key on the host"
+                )
+                return False
             if os.statvfs(source.path.parent).f_flag & os.ST_RDONLY:
                 typer.echo(f"WARN  Sealed secret key {source.label}: no key yet; provision the key on the host")
             else:

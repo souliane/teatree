@@ -97,7 +97,7 @@ class Command(TyperCommand):
         if apply:
             _refuse_unsafe_copy()
         try:
-            plan = build_import_plan()
+            plan = build_import_plan(check_readability=not apply)
         except PasswordStoreDirectoryError as exc:
             typer.echo(str(exc), err=True)
             raise SystemExit(1) from exc
@@ -155,16 +155,17 @@ class Command(TyperCommand):
             store = DbStore()
         except SecretStoreError as exc:
             _refuse(str(exc), EXIT_UNREADABLE)
-        unreadable = False
+        incomplete = False
         for name in sorted(referenced_entry_names()):
             try:
                 status = "ok" if store.read(name) is not None else "absent"
             except SecretStoreError:
                 status = "unreadable"
-                unreadable = True
+            if status != "ok":
+                incomplete = True
             typer.echo(f"{status}\t{name}")
-        if unreadable:
-            raise SystemExit(EXIT_UNREADABLE)
+        if incomplete:
+            raise SystemExit(EXIT_ABSENT)
 
     @command()
     def get(self, name: Annotated[str, typer.Argument(help="Entry name.")] = "") -> None:

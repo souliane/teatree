@@ -71,7 +71,10 @@ def _execute(operation: str, name: str) -> int:
         value = read_sealed(name)
         if value is None:
             return 1
-        sys.stdout.write(value.split("\n", 1)[0] + "\n")
+        first = value.split("\n", 1)[0]
+        if not first:
+            return 1
+        sys.stdout.write(first + "\n")
         return 0
     candidate = first_name(name)
     if candidate is None:

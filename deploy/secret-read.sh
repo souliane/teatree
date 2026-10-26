@@ -6,8 +6,13 @@ secret_selector() {
         return
     fi
     file="${TEATREE_SECRET_ENV_FILE:-$(dirname "$0")/teatree.env}"
+    selected=pass
     if [ -r "$file" ]; then
         while IFS= read -r line || [ -n "$line" ]; do
+            line="${line%"$(printf '\r')"}"
+            case "$line" in
+                export\ T3_SECRET_STORE=*) line="${line#export }" ;;
+            esac
             case "$line" in
                 T3_SECRET_STORE=*)
                     value="${line#*=}"
@@ -15,13 +20,12 @@ secret_selector() {
                         \"*\") value="${value#\"}"; value="${value%\"}" ;;
                         "'"*"'") value="${value#\'}"; value="${value%\'}" ;;
                     esac
-                    printf '%s\n' "$value"
-                    return
+                    selected="${value:-pass}"
                     ;;
             esac
         done < "$file"
     fi
-    printf 'pass\n'
+    printf '%s\n' "$selected"
 }
 
 operation="${1:-}"
@@ -37,7 +41,7 @@ fi
 selector="$(secret_selector)"
 case "$selector" in
     pass)
-        command -v pass >/dev/null 2>&1 || exit 1
+        command -v pass >/dev/null 2>&1 || exit 2
         case "$operation" in
             get|host-get)
                 value="$(pass show "$name" 2>/dev/null)" || {
@@ -70,7 +74,18 @@ case "$selector" in
             binary="$(command -v t3)" || exit 2
             interpreter="$(dirname "$(readlink -f "$binary")")/python"
         fi
-        exec "$interpreter" -m teatree.config.cold_secret_reader "$operation" "$name"
+        errors="$(mktemp "${TMPDIR:-/tmp}/t3-secret-read.XXXXXX")" || exit 2
+        trap 'rm -f "$errors"' EXIT HUP INT TERM
+        python_code='from teatree.config.cold_secret_reader import main; import sys; result = main(); raise SystemExit(42 if result == 1 else result)'
+        value="$("$interpreter" -c "$python_code" "$operation" "$name" 2>"$errors")" || {
+            rc=$?
+            if [ "$rc" -eq 42 ]; then
+                exit 1
+            fi
+            cat "$errors" >&2
+            exit 2
+        }
+        [ -z "$value" ] || printf '%s\n' "$value"
         ;;
     *) echo "secret-read: invalid T3_SECRET_STORE=$selector" >&2; exit 2 ;;
 esac
