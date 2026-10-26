@@ -265,6 +265,22 @@ def _overlay_entry_point(name: str, value: str) -> MagicMock:
     return ep
 
 
+def test_pathless_registry_entry_uses_installed_package_checkout(tmp_path: Path, config_db: Path) -> None:
+    package_root = tmp_path / "installed-overlay"
+    _write_manage_py(package_root, "installed.settings")
+    _seed_config_db(config_db, overlays={"t3-installed": {}})
+
+    with (
+        patch(
+            "importlib.metadata.entry_points", return_value=[_overlay_entry_point("t3-installed", "installed:Overlay")]
+        ),
+        patch("teatree.config.discovery._resolve_ep_project_path", return_value=package_root),
+    ):
+        by_name = {entry.name: entry for entry in discover_overlays()}
+
+    assert by_name["t3-installed"].project_path == package_root
+
+
 def test_registry_path_from_the_other_side_resolves_through_the_installed_package(
     tmp_path: Path,
     config_db: Path,
