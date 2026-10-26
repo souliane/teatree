@@ -26,7 +26,7 @@ _SOURCE_GIT_COMPOSE = _DEPLOY / "docker-compose.codex-source-git.yml"
 _DOCKERFILE = _DEPLOY / "Dockerfile"
 _SERVICE = EXECUTOR_SERVICE
 _NOBODY = "65534:65534"
-CODEX_SOURCE_GIT = "/opt/teatree/codex-source-git"
+CODEX_SOURCE_GIT = "${TEATREE_CODEX_SOURCE_GIT_TARGET:?set by deploy.sh}"
 _WORKER_DIGEST_AT_BASE = "b10b4113dadb7b3d3c01daaca1e22ae00adcb25c16afbfa2aff78424d685d548"
 
 
@@ -175,6 +175,7 @@ def test_source_git_bind_is_only_in_the_existing_clone_override() -> None:
     assert mount["read_only"] is True
     assert mount["source"] == "teatree_codex_home"
     assert mount["volume"] == {"subpath": "${TEATREE_CODEX_SOURCE_GIT_SUBPATH:?set by deploy.sh}"}
+    assert 'TEATREE_CODEX_SOURCE_GIT_TARGET="$CONTAINER_HOME/.codex/$TEATREE_CODEX_SOURCE_GIT_SUBPATH"' in deploy
     assert "compose exec -T teatree-worker true" in deploy
     assert 'compose exec -T teatree-worker test -d "$CONTAINER_HOME/.codex/$TEATREE_CODEX_SOURCE_GIT_SUBPATH"' in deploy
     assert "compose_executor up -d --no-deps" in deploy

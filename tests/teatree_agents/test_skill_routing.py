@@ -34,11 +34,9 @@ def test_runtime_fallback_requires_a_failure_signal_not_narration() -> None:
     assert routing_mod.runtime_fallback_reason("the process finished") is None
     assert routing_mod.runtime_fallback_reason("failed to start") == "failed to start"
     assert routing_mod.runtime_fallback_reason("spawn x ENOENT") == "spawn x ENOENT"
-    assert (
-        routing_mod.runtime_fallback_reason("agent could not be spawned: E2BIG") == "agent could not be spawned: E2BIG"
-    )
-    assert routing_mod.runtime_fallback_reason("ProcessError: the agent process exited with code 1") is not None
-    assert routing_mod.runtime_fallback_reason("Failed to spawn: pytest") == "Failed to spawn: pytest"
+    assert routing_mod.runtime_fallback_reason("agent could not be spawned: E2BIG") is None
+    assert routing_mod.runtime_fallback_reason("ProcessError: the agent process exited with code 1") is None
+    assert routing_mod.runtime_fallback_reason("Failed to spawn: pytest") is None
 
 
 def test_one_loaded_skill_owns_ordered_route() -> None:

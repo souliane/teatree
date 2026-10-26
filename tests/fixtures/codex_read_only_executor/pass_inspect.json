@@ -136,7 +136,7 @@
       "Type": "bind"
     },
     {
-      "Destination": "/opt/teatree/codex-source-git",
+      "Destination": "$CODEX_SOURCE_GIT",
       "Mode": "ro",
       "Name": "example_codex_home",
       "Propagation": "",

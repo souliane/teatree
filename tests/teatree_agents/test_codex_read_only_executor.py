@@ -138,6 +138,43 @@ def test_checkout_git_repair_requires_matching_clone_and_worktree_mounts(tmp_pat
         repair.assert_not_called()
 
 
+def test_source_git_mount_serves_worktree_git_pointer_at_worker_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subpath = "workspace/example/project/.git"
+    monkeypatch.setenv("TEATREE_CODEX_SOURCE_GIT_SUBPATH", subpath)
+    monkeypatch.setattr("teatree.agents.codex_read_only_verdict._CODEX_SOURCE_GIT_SUBPATH", subpath)
+    codex_home = tmp_path / "codex"
+    source_git = codex_home / subpath
+    linked_git = source_git / "worktrees" / "branch"
+    linked_git.mkdir(parents=True)
+    (linked_git / "commondir").write_text("../..\n", encoding="utf-8")
+    worktrees = tmp_path / "worktrees"
+    checkout = worktrees / "branch"
+    checkout.mkdir(parents=True)
+    (checkout / ".git").write_text(f"gitdir: {linked_git}\n", encoding="utf-8")
+    worker = worker_fixture()
+    executor = executor_fixture("pass")
+    worker["Mounts"].extend(
+        [
+            {"Type": "volume", "Source": str(codex_home), "Destination": str(codex_home), "RW": True},
+            {"Type": "bind", "Source": str(worktrees), "Destination": str(worktrees), "RW": True},
+        ]
+    )
+    executor["Mounts"].extend(
+        [
+            {"Type": "volume", "Source": str(source_git), "Destination": str(source_git), "RW": False},
+            {"Type": "bind", "Source": str(worktrees), "Destination": str(worktrees), "RW": False},
+        ]
+    )
+
+    with (
+        patch.object(codex_read_only_executor, "CODEX_HOME_ROOT", str(codex_home)),
+        patch.object(codex_read_only_executor, "WORKTREE_ROOT", str(worktrees)),
+    ):
+        codex_read_only_executor._repair_mounted_git(worker, executor, (str(checkout),))
+
+
 def test_attest_repairs_mounted_git_before_the_probe(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
     _applied(fake, monkeypatch)
     with patch("teatree.agents.codex_read_only_executor._repair_mounted_git") as repair:

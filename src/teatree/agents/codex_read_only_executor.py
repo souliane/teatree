@@ -134,6 +134,8 @@ class ExecutorDocker:
         except MalformedAnswerError as exc:
             msg = f"the worker's Codex source Git path is malformed ({exc})"
             raise ExecutorRefusalError(msg) from exc
+        if not subpath:
+            return False
         result = self.run(self.exec_argv(worker_id, ["test", "-d", f"{CODEX_HOME_ROOT}/{subpath}"]))
         if result.returncode not in {0, 1} or result.stderr.strip():
             msg = "the worker's Codex source Git path could not be checked"
@@ -156,12 +158,15 @@ class ExecutorDocker:
         command = ["/usr/bin/python3", "-I", "-S", "-", json.dumps(request)]
         return self.answer(self.exec_argv(container_id, command), stdin=source)
 
-    def probe(self, container_id: str, roots: Sequence[str], home: str = "") -> object:
+    def probe(
+        self, container_id: str, roots: Sequence[str], home: str = "", *, git_mounts: Sequence[str] = ()
+    ) -> object:
         request = {
             "kernel_roots": list(KERNEL_ROOTS),
             "device_root": DEVICE_ROOT,
             "tmpfs": sorted(DECLARED_TMPFS),
             "roots": list(roots),
+            "git_mounts": list(git_mounts),
             "home": home,
             "tools": list(FORBIDDEN_TOOLS),
         }
@@ -325,14 +330,16 @@ def _repair_mounted_git(worker: Mapping[str, object], executor: object, roots: S
 
     allowed = [Path(target) for target in (CLONE_ROOT, WORKTREE_ROOT) if same_source(target)]
     worker_codex = mounted(CODEX_HOME_ROOT, worker_mounts, writable=True)
-    executor_git = mounted(CODEX_SOURCE_GIT, executor_mounts, writable=False)
+    subpath = codex_source_git_subpath()
+    source_git_target = str(Path(CODEX_HOME_ROOT) / subpath) if subpath else ""
+    executor_git = mounted(source_git_target, executor_mounts, writable=False) if source_git_target else None
     if (
         worker_codex is not None
         and executor_git is not None
         and worker_codex.get("Type") == executor_git.get("Type") == "volume"
-        and str(Path(str(worker_codex.get("Source"))) / codex_source_git_subpath()) == executor_git.get("Source")
+        and str(Path(str(worker_codex.get("Source"))) / subpath) == executor_git.get("Source")
     ):
-        allowed.append(Path(CODEX_SOURCE_GIT))
+        allowed.append(Path(source_git_target))
     checkouts = [
         Path(root) for root in roots if Path(root).is_dir() and any(Path(root).is_relative_to(a) for a in allowed)
     ]
@@ -378,7 +385,19 @@ def attest(
     container_id = docker.executor_id(str(worker["Project"]))
     executor = docker.answer(["inspect", "--format", EXECUTOR_INSPECT_FORMAT, container_id])
     _repair_mounted_git(worker, executor, roots)
-    observation = docker.probe(container_id, roots, home)
+    mounts = executor.get("Mounts") if isinstance(executor, Mapping) else None
+    git_mounts = (
+        [
+            target
+            for mount in mounts
+            if isinstance(mount, Mapping)
+            and isinstance(target := mount.get("Destination"), str)
+            and (target == CODEX_SOURCE_GIT or target.endswith("/.git"))
+        ]
+        if isinstance(mounts, list)
+        else []
+    )
+    observation = docker.probe(container_id, roots, home, git_mounts=git_mounts)
     if refusal := evaluate(observation, executor, worker, roots, codex_source_git_present=codex_source_git_present):
         msg = f"{EXECUTOR_SERVICE} is not read-only: {refusal}"
         raise ExecutorRefusalError(msg)

@@ -3,7 +3,7 @@ services:
     volumes:
       - type: volume
         source: teatree_codex_home
-        target: /opt/teatree/codex-source-git
+        target: ${TEATREE_CODEX_SOURCE_GIT_TARGET:?set by deploy.sh}
         read_only: true
         volume:
           subpath: ${TEATREE_CODEX_SOURCE_GIT_SUBPATH:?set by deploy.sh}

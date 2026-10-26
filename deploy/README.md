@@ -1592,9 +1592,10 @@ waiting in its tmpfs, and after init, whose read-write clone mount creates the
 `t3-workspaces` mountpoint a fresh clone volume lacks. Either step failing does not stop
 the deploy: the worker and every other service still converge, and the deploy then fails
 with a message naming the executor. Until the executor deploys, served read-only phases on Codex are refused and try another route.
-The optional Codex source Git mount uses a neutral executor target. `deploy.sh` derives
-`TEATREE_CODEX_SOURCE_GIT_SUBPATH` from the checkout's origin and passes it to the
-worker and compose; the read-only verdict compares the exact volume subpath.
+The optional Codex source Git mount uses the worker's path in the executor, so
+worktree `.git` pointers resolve to the same Git directory. `deploy.sh` derives
+the volume subpath and mount target from the checkout's origin and passes them to
+compose; it passes the subpath to the worker for the read-only verdict's comparison.
 An empty value, which is what a worker recreated without it gets and what `deploy.sh` passes
 when origin yields no owner and repository, means no source clone and the original mounts;
 a malformed value refuses the executor with a reason naming the variable.

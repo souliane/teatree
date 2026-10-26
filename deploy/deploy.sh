@@ -378,12 +378,15 @@ source_owner="${source_origin%/*}"
 source_owner="${source_owner##*/}"
 source_owner="${source_owner##*:}"
 TEATREE_CODEX_SOURCE_GIT_SUBPATH=""
+TEATREE_CODEX_SOURCE_GIT_TARGET=""
 if [[ "$source_owner" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ && "$source_repo" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
     TEATREE_CODEX_SOURCE_GIT_SUBPATH="workspace/$source_owner/$source_repo/.git"
+    TEATREE_CODEX_SOURCE_GIT_TARGET="$CONTAINER_HOME/.codex/$TEATREE_CODEX_SOURCE_GIT_SUBPATH"
 else
     echo "deploy: no Codex source Git path derivable from origin; the read-only executor keeps its original mounts" >&2
 fi
 export TEATREE_CODEX_SOURCE_GIT_SUBPATH
+export TEATREE_CODEX_SOURCE_GIT_TARGET
 
 # The checkout this deploy runs out of — the directory holding `deploy/`. The
 # watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs

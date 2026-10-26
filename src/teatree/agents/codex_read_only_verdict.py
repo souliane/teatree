@@ -12,9 +12,11 @@ SCRATCH_ROOT: Final = "/run/t3-tmp"
 CLONE_ROOT: Final = "/home/teatree/workspace"  # privacy-scan:allow — the box's public, documented deploy home
 WORKTREE_ROOT: Final = f"{CLONE_ROOT}/t3-workspaces"
 CODEX_HOME_ROOT: Final = os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
-CODEX_SOURCE_GIT: Final = "/opt/teatree/codex-source-git"
-_CODEX_SOURCE_GIT_SUBPATH: Final = os.environ.get("TEATREE_CODEX_SOURCE_GIT_SUBPATH", "")
 _UNCONFIGURED_CODEX_SOURCE_GIT_SUBPATH: Final = "workspace/example/project/.git"
+_CODEX_SOURCE_GIT_SUBPATH: Final = os.environ.get(
+    "TEATREE_CODEX_SOURCE_GIT_SUBPATH", _UNCONFIGURED_CODEX_SOURCE_GIT_SUBPATH
+)
+CODEX_SOURCE_GIT: Final = f"{CODEX_HOME_ROOT}/{_CODEX_SOURCE_GIT_SUBPATH}" if _CODEX_SOURCE_GIT_SUBPATH else ""
 DECLARED_TMPFS: Final = frozenset({EXECUTOR_HOME_ROOT, SCRATCH_ROOT})
 KERNEL_ROOTS: Final = ("/proc", "/sys")
 DEVICE_ROOT: Final = "/dev"
@@ -60,7 +62,9 @@ class MalformedAnswerError(ValueError):
 
 
 def codex_source_git_subpath() -> str:
-    value = _CODEX_SOURCE_GIT_SUBPATH or _UNCONFIGURED_CODEX_SOURCE_GIT_SUBPATH
+    value = _CODEX_SOURCE_GIT_SUBPATH
+    if not value:
+        return ""
     parts = PurePosixPath(value).parts
     if (
         len(parts) != len(("workspace", "owner", "repo", ".git"))

@@ -20,7 +20,7 @@ from teatree.agents.codex_read_only_probe_program import (
     parse_mountinfo,
     write_result,
 )
-from teatree.agents.codex_read_only_verdict import WORKTREE_ROOT, evaluate
+from teatree.agents.codex_read_only_verdict import WORKTREE_ROOT, codex_source_git_subpath, evaluate
 from tests.teatree_agents._executor_fakes import EXAMPLE_ROOT, executor_fixture, probe_fixture, worker_fixture
 
 _STATUS = "Name:\tpython3\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n"
@@ -48,13 +48,15 @@ def _request(tmp_path: Path, roots: tuple[str, ...] = (), home: str = "") -> Pro
         device_root=str(tmp_path / "dev"),
         tmpfs=[str(tmp_path / "scratch")],
         roots=list(roots),
+        git_mounts=[],
         home=home,
         tools=["gh"],
     )
 
 
 @pytest.fixture
-def layout(tmp_path: Path) -> Path:
+def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("TEATREE_CODEX_SOURCE_GIT_SUBPATH", codex_source_git_subpath())
     for name in ("root", "ws", "scratch", "dev"):
         (tmp_path / name).mkdir()
     return tmp_path
@@ -182,6 +184,21 @@ def test_git_config_with_embedded_http_credential_is_a_secret(layout: Path) -> N
         '[remote "origin"]\n    url = https://token\\\n      @example.test/org/repo.git\n', encoding="utf-8"
     )
     assert str(config) in observe(_request(layout), proc)["scan"][str(layout / "root")]["secrets"]
+
+
+def test_git_config_on_a_neutral_named_declared_mount_is_a_secret(layout: Path) -> None:
+    git = layout / "root" / "source-metadata"
+    git.mkdir()
+    config = git / "config"
+    config.write_text("[http]\n    extraheader = Authorization: Bearer placeholder\n", encoding="utf-8")
+    request = _request(layout)
+    request["git_mounts"] = [str(git)]
+    proc = _fake_proc(layout, [(str(layout / "root"), "ext4"), (str(git), "ext4")])
+
+    assert str(config) in observe(request, proc)["scan"][str(git)]["secrets"]
+
+    config.write_text("[core]\n    repositoryformatversion = 0\n", encoding="utf-8")
+    assert str(config) not in observe(request, proc)["scan"][str(git)]["secrets"]
 
 
 def test_a_readable_private_key_is_found_by_its_content_under_any_key_name(layout: Path) -> None:

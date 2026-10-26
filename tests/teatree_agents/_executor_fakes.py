@@ -25,6 +25,7 @@ from teatree.agents.codex_read_only_probe_program import Mount, Observation
 from teatree.agents.codex_read_only_verdict import (
     CLONE_ROOT,
     CODEX_HOME_ROOT,
+    CODEX_SOURCE_GIT,
     EXECUTOR_HOME_ROOT,
     SCRATCH_ROOT,
     WORKTREE_ROOT,
@@ -344,6 +345,7 @@ def _fixture_text(name: str) -> str:
     return template.substitute(
         CONTAINER_HOME=CONTAINER_HOME,
         CODEX_HOME_ROOT=CODEX_HOME_ROOT,
+        CODEX_SOURCE_GIT=CODEX_SOURCE_GIT,
         SOURCE_GIT_SUBPATH=codex_source_git_subpath(),
     )
 
@@ -574,6 +576,7 @@ class FakeExecutor:
             "PATH": f"{self.bin_dir}:/usr/bin:/bin",
             "PASSWORD_STORE_DIR": str(self.store),
             "T3_DATA_DIR": str(self.root / "data"),
+            "TEATREE_CODEX_SOURCE_GIT_SUBPATH": codex_source_git_subpath(),
         }
 
     def _executable(self, name: str, body: str) -> None:
