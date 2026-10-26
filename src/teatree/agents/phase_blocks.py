@@ -66,7 +66,8 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
     return (
         "",
         "RECORD YOUR VERDICT BY RETURNING IT in final JSON; maker≠checker: do NOT try `t3 <overlay> review record`.",
-        '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
+        "The orchestrator records it and releases the review lock:",
+        '  "review_verdict": {"verdict": "merge_safe"|"hold"|"unverified", "reviewed_sha": "<full 40-char HEAD SHA>",',
         f'                     "reviewer_identity": "{identity or REVIEWER_IDENTITY_INSTRUCTION}",',
         '                     "gh_verify_result": "green"|"pending"|"failed",',
         '                     "blast_class": "substrate"|"logic"|"docs",',
@@ -76,7 +77,11 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         "test, duplicate definition, or red check. NIT: wording, naming, style, or placement.",
         "Only BLOCKING findings may hold a review; NITs need a merge_safe verdict and follow-up.",
         ENVELOPE_FINDINGS_RULE,
-        "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
+        (
+            "Use unverified with evidence_gaps (ci_unreadable, tests_unavailable, or plan_unavailable) "
+            "when a venue cannot establish a required fact; it grants no merge authority and re-arms review."
+        ),
+        "A confirmed failed check or blocking code finding requires hold; PASS/LGTM/approve are refused.",
         (
             (
                 "Use the dispatched head in the DIFF UNDER REVIEW block as the full 40-char `reviewed_sha`."
@@ -93,7 +98,12 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         "A blocking finding (blocker/major/high/critical) outside PR-changed files is REFUSED and records nothing.",
         "Branch-only probes may blame main; recheck on the MERGE RESULT.",
         *(
-            ("This venue cannot build it; return `hold` with the unverified concern.",)
+            (
+                (
+                    "This venue cannot build it; return `unverified` with the evidence gap "
+                    "if the result cannot be established."
+                ),
+            )
             if read_only_venue
             else (
                 "Use `t3 review merge-tree` (plain directory, never a git worktree),",
@@ -104,7 +114,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             (
                 (
                     "Set gh_verify_result green only when WORKER CI says green at the dispatched head; "
-                    "otherwise set pending or failed and return hold."
+                    "a confirmed failure requires hold; an unreadable check requires unverified."
                     if identity
                     else (
                         "Pre-PR self-review may return merge_safe with gh_verify_result pending; "
@@ -124,6 +134,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             '"status": "pass"|"fail", "rationale": "<what proves it>"}, ...]'
         ),
         "Grade EVERY criterion or verdict records nothing. A PASS cites a test; a FAIL needs none.",
+        "An unverified verdict may leave criteria ungraded; it never authorizes a merge.",
         "FAIL is a finding; no bypass overrides it. do NOT run `ticket rubric-grade`.",
     )
 

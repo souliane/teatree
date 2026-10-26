@@ -25,12 +25,17 @@ from teatree.agents.result_payloads import (
 )
 from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
-from teatree.agents.result_schema_review import REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY, ReviewHeadMismatch
+from teatree.agents.result_schema_review import (
+    REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY,
+    ReviewFinding,
+    ReviewHeadMismatch,
+    ReviewVerdictEnvelope,
+)
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, RubricGrade
+from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy
 
 
 class FileChange(TypedDict, total=False):
@@ -50,17 +55,6 @@ class SingleTestResult(TypedDict, total=False):
 class SkillApplication(TypedDict):
     skill: str
     evidence: str
-
-
-class ReviewFinding(TypedDict, total=False):
-    severity: str
-    summary: str
-    file: str
-    line: int
-    kind: str
-    basis: str
-    citation: str
-    reproduction: str
 
 
 class ArticleSuggestion(TypedDict, total=False):
@@ -101,19 +95,6 @@ class WorkItemEnvelope(TypedDict, total=False):
     body: str
     existing_issue_url: str
     no_work_reason: str
-
-
-class ReviewVerdictEnvelope(TypedDict, total=False):
-    """A reviewing-phase agent's typed verdict, recorded server-side (corr-11)."""
-
-    verdict: str
-    reviewed_sha: str
-    reviewer_identity: str
-    gh_verify_result: str
-    blast_class: str
-    findings: list[ReviewFinding]
-    merge_result_retake: bool
-    rubric_grades: list[RubricGrade]
 
 
 class ReviewContextEnvelope(TypedDict, total=False):
@@ -302,7 +283,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "type": "object",
             "description": "A reviewing-phase agent's typed verdict, recorded server-side (corr-11).",
             "properties": {
-                "verdict": {"type": "string", "enum": ["merge_safe", "hold"]},
+                "verdict": {"type": "string", "enum": ["merge_safe", "hold", "unverified"]},
                 "reviewed_sha": {
                     "type": "string",
                     "description": (
@@ -329,6 +310,10 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                             "reproduction": {"type": "string"},
                         },
                     },
+                },
+                "evidence_gaps": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["ci_unreadable", "tests_unavailable", "plan_unavailable"]},
                 },
                 "merge_result_retake": {
                     "type": "boolean",

@@ -49,7 +49,7 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.expiring_claim import acquirable_q, retire_head_claim
+from teatree.core.modelkit.expiring_claim import acquirable_q, release_head_claim, retire_head_claim
 from teatree.core.models.auto_review_dispatch import DEFAULT_DISPATCH_TTL, MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
 from teatree.core.models.mr_review_lock import MRReviewLock
 
@@ -59,6 +59,7 @@ class CodexReviewMarker(models.Model):
 
     class State(models.TextChoices):
         DISPATCHED = "dispatched", "Dispatched"
+        UNVERIFIED = "unverified", "Unverified"
         RESOLVED = "resolved", "Resolved"
         REFUSED = "refused", "Refused"
 
@@ -69,7 +70,7 @@ class CodexReviewMarker(models.Model):
     #: REFUSED means a verdict for that exact tree is structurally unrecordable and a
     #: human has been paged. Neither is re-armable, for opposite reasons, and both are
     #: escaped the same way — by a new head (#4530).
-    _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset()
+    _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset({State.UNVERIFIED})
 
     slug = models.CharField(max_length=128)
     pr_id = models.IntegerField()
@@ -125,7 +126,11 @@ class CodexReviewMarker(models.Model):
         with transaction.atomic():
             lock, _ = MRReviewLock.objects.select_for_update().get_or_create(slug=slug.strip(), pr_id=pr_id)
             MRReviewLock.objects.filter(pk=lock.pk).update(state=models.F("state"))
-            if AutoReviewDispatch.objects.filter(slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha).exists():
+            if (
+                AutoReviewDispatch.objects.filter(slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha)
+                .exclude(state=AutoReviewDispatch.State.UNVERIFIED)
+                .exists()
+            ):
                 return None
             row, created = cls.objects.get_or_create(
                 slug=slug,
@@ -195,6 +200,16 @@ class CodexReviewMarker(models.Model):
             pr_id=pr_id,
             head_sha=head_sha,
             to_state=cls.State.RESOLVED,
+        )
+
+    @classmethod
+    def mark_unverified(cls, *, slug: str, pr_id: int, head_sha: str) -> bool:
+        return release_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.UNVERIFIED,
         )
 
     @classmethod

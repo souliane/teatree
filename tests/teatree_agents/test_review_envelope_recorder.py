@@ -162,6 +162,22 @@ def _criteria(ticket: Ticket) -> list[RubricCriterion]:
 
 
 class TestTheReviewerGradesTheRubricItVerifies(TestCase):
+    def test_unreadable_ci_records_unverified_without_grading_the_rubric(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=None, verdict="unverified")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["gh_verify_result"] = "pending"
+        verdict["evidence_gaps"] = ["ci_unreadable"]
+        result.pop("anti_vacuity")
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == "", attempt.error
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.UNVERIFIED
+        assert all(criterion.status == RubricCriterion.Status.PENDING for criterion in _criteria(ticket))
+
     def test_venue_only_hold_becomes_a_recorded_note(self) -> None:
         ticket = _author_ticket()
         result = _envelope(grades=_full_pass(), verdict="hold")

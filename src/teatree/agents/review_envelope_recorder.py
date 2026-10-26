@@ -170,13 +170,14 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     if evidence_error:
         return evidence_error
     returned = envelope.get("rubric_grades")
+    unverified = str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.UNVERIFIED
     try:
         # Scoped to a rubric that EXISTS, like both refusals below — with none, nothing is stamped.
-        grades: list[RubricGrade] = [] if rubric is None else Rubric.normalize_grades(returned)
+        grades: list[RubricGrade] = [] if rubric is None or unverified else Rubric.normalize_grades(returned)
     except RubricError as exc:
         return f"{MALFORMED_RUBRIC_GRADES_PREFIX}{exc}"
     return (
-        _rubric_coverage_error(rubric, grades, returned=returned)
+        ("" if unverified else _rubric_coverage_error(rubric, grades, returned=returned))
         or _merge_safe_over_fail_error(rubric, envelope, grades)
         or _nit_comment_error(envelope)
         or _record_verdict_and_grades(task, result, envelope=envelope, target=target, rubric_grades=(rubric, grades))
@@ -359,6 +360,7 @@ def _record_verdict_and_grades(
         return refusal
     ticket = gated_ticket_for_review_task(task)
     merge_safe = str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.MERGE_SAFE
+    unverified = str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.UNVERIFIED
     raw_findings = envelope.get("findings", [])
     findings = (
         [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
@@ -386,6 +388,7 @@ def _record_verdict_and_grades(
                 verdict=str(envelope.get("verdict", "")),
                 reviewer_identity=identity,
                 findings=findings,
+                evidence_gaps=envelope.get("evidence_gaps"),
                 gh_verify_result=str(envelope.get("gh_verify_result") or "green"),
                 blast_class=str(envelope.get("blast_class") or "logic"),
                 ticket=ticket or task.ticket,
@@ -397,6 +400,7 @@ def _record_verdict_and_grades(
             if (
                 ticket is not None
                 and len(distinct_repos(ticket)) >= _MIN_INTEGRATION_REPOS
+                and merge_safe
                 and isinstance(integration_review, dict)
             ):
                 ReviewEvidence.record(
@@ -407,7 +411,7 @@ def _record_verdict_and_grades(
                     head_sha=target.head_sha,
                     repos=[str(repo) for repo in integration_review.get("repos", [])],
                 )
-            if rubric is not None:
+            if rubric is not None and not unverified:
                 rubric.apply_grades(grades, grader_identity=identity, reviewed_sha=target.head_sha)
     except (ReviewVerdictError, NitLaneError) as exc:
         # The one refusal class a re-dispatch can never satisfy at this head is latched;

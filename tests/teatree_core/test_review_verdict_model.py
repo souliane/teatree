@@ -12,9 +12,13 @@ from django.test import TestCase
 
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.models import (
+    AutoReviewDispatch,
+    ClearRequest,
+    CodexReviewMarker,
     Finding,
     MergeClear,
     MRReviewLock,
+    ReviewHoldDisposition,
     ReviewVerdict,
     ReviewVerdictError,
     Ticket,
@@ -31,6 +35,99 @@ _OTHER_SHA = "b" * 40
 
 
 class TestRecordContract(TestCase):
+    def test_unverified_evidence_gap_is_recorded_without_merge_authority(self) -> None:
+        dispatch = AutoReviewDispatch.objects.create(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+        marker = CodexReviewMarker.objects.create(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+        verdict = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="unverified",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="pending",
+            evidence_gaps=["ci_unreadable"],
+        )
+
+        assert verdict.evidence_gaps == ["ci_unreadable"]
+        assert not verdict.stands_as_hold()
+        dispatch.refresh_from_db()
+        marker.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.UNVERIFIED
+        assert marker.state == CodexReviewMarker.State.UNVERIFIED
+        assert AutoReviewDispatch.enqueue(slug="souliane/teatree", pr_id=42, head_sha=_SHA) is not None
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+            is HeadVerdictState.NO_MERGE_SAFE
+        )
+
+    def test_unverified_does_not_hide_a_recorded_same_head_pass(self) -> None:
+        passed = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="first-reviewer",
+        )
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="unverified",
+            reviewer_identity="second-reviewer",
+            evidence_gaps=["tests_unavailable"],
+        )
+
+        assert ReviewVerdict.objects.speaking_verdict_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA) == passed
+
+    def test_independent_cited_pass_can_disposition_a_same_head_hold(self) -> None:
+        hold = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            findings=[
+                Finding(severity="blocker", summary="CI result may be stale", file="a.py", line=1, basis="venue_limit")
+            ],
+        )
+        clearing = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="independent-reviewer",
+        )
+
+        disposition = ReviewHoldDisposition.record(
+            hold=hold,
+            clearing_verdict=clearing,
+            points=[{"index": 0, "classification": "disproved_premise", "citation": "CI run at this head is green"}],
+        )
+
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+            is HeadVerdictState.MERGE_SAFE
+        )
+        assert ReviewVerdict.objects.unreconciled_holds_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA) == []
+        clear = MergeClear.issue(
+            ClearRequest(pr_id=42, slug="souliane/teatree", reviewed_sha=_SHA, reviewer_identity="independent-reviewer")
+        )
+        assert clear.hold_disposition_ids == [disposition.pk]
+
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            findings=[Finding(severity="major", summary="a second issue", file="b.py", line=2)],
+        )
+
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=42, head_sha=_SHA)
+            is HeadVerdictState.HOLD
+        )
+
     def test_direct_recorder_retries_a_venue_only_hold(self) -> None:
         with pytest.raises(ReviewVerdictError, match="retry"):
             ReviewVerdict.record(

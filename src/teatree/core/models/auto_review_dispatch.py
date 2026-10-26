@@ -72,7 +72,7 @@ from django.apps import apps
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.expiring_claim import acquirable_q, retire_head_claim
+from teatree.core.modelkit.expiring_claim import acquirable_q, release_head_claim, retire_head_claim
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
@@ -147,6 +147,7 @@ class AutoReviewDispatch(models.Model):
 
     class State(models.TextChoices):
         DISPATCHED = "dispatched", "Dispatched"
+        UNVERIFIED = "unverified", "Unverified"
         RESOLVED = "resolved", "Resolved"
         REFUSED = "refused", "Refused"
         SUPERSEDED = "superseded", "Superseded by a newer head"
@@ -159,7 +160,7 @@ class AutoReviewDispatch(models.Model):
     #: has been paged. SUPERSEDED means the PR no longer points at that tree at all.
     #: None is re-armable, for three different reasons, and all are escaped the same
     #: way — by a new head (#4522, #4737).
-    _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset()
+    _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset({State.UNVERIFIED})
 
     slug = models.CharField(max_length=255)
     pr_id = models.IntegerField()
@@ -231,6 +232,16 @@ class AutoReviewDispatch(models.Model):
             pr_id=pr_id,
             head_sha=head_sha,
             to_state=cls.State.RESOLVED,
+        )
+
+    @classmethod
+    def mark_unverified(cls, *, slug: str, pr_id: int, head_sha: str) -> bool:
+        return release_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.UNVERIFIED,
         )
 
     @classmethod
@@ -369,7 +380,11 @@ class AutoReviewDispatch(models.Model):
                 transaction.set_rollback(True)
                 return None
             marker = apps.get_model("core", "CodexReviewMarker")
-            if marker.objects.filter(slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha).exists():
+            if (
+                marker.objects.filter(slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha)
+                .exclude(state="unverified")
+                .exists()
+            ):
                 transaction.set_rollback(True)
                 return None
             row.refresh_from_db()

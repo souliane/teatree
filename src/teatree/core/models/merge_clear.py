@@ -25,6 +25,7 @@ from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.review_hold_disposition import ReviewHoldDisposition
 from teatree.core.models.reviewer_identity import (
     is_independent_reviewer_identity,
     normalize_reviewer_identity,
@@ -249,6 +250,7 @@ class MergeClear(models.Model):
     # rows written outside that path, which resolve at merge time or fail loud.
     host_kind = models.CharField(max_length=16, blank=True, default="")
     reviewed_sha = models.CharField(max_length=64)
+    hold_disposition_ids = models.JSONField(default=list, blank=True)
     reviewer_identity = models.CharField(max_length=255)
     gh_verify_result = models.CharField(max_length=32, choices=VerifyResult.choices)
     blast_class = models.CharField(max_length=16, choices=BlastClass.choices)
@@ -393,12 +395,23 @@ class MergeClear(models.Model):
         def _create() -> "MergeClear":
             with transaction.atomic():
                 _assert_no_standing_hold_for_clear(slug=request.slug, pr_id=request.pr_id, head_sha=normalized_sha)
+                verdict_model = cast("type[ReviewVerdict]", apps.get_model("core", "ReviewVerdict"))
+                disposition_ids = [
+                    row.pk
+                    for verdict in verdict_model.objects.verdicts_at(
+                        slug=request.slug, pr_id=request.pr_id, head_sha=normalized_sha
+                    )
+                    if verdict.stands_as_hold()
+                    for row in ReviewHoldDisposition.objects.filter(hold=verdict)
+                    if row.covers(verdict)
+                ]
                 return cls.objects.create(
                     ticket=request.ticket,
                     pr_id=request.pr_id,
                     slug=request.slug.strip(),
                     host_kind=normalized_host_kind,
                     reviewed_sha=normalized_sha,
+                    hold_disposition_ids=disposition_ids,
                     reviewer_identity=reviewer,
                     gh_verify_result=normalized_verify,
                     blast_class=normalized_blast,

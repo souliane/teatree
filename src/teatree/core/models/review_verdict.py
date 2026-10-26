@@ -26,8 +26,7 @@ this same verdict just vouched for (or held).
 """
 
 import enum
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Final, NotRequired, TypedDict
+from typing import ClassVar, Final
 
 from django.db import models, transaction
 from django.utils import timezone
@@ -37,19 +36,18 @@ from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveChe
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.checks_admission import ReviewVerdictError, assert_checks_admit_merge_safe, live_checks_reader
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.core.models.finding_standard import FindingKind, normalize_finding_kind
+from teatree.core.models.finding_standard import FindingKind
 from teatree.core.models.head_carry_over import HeadCarryOver
 from teatree.core.models.merge_clear import SHA_FULL_LEN, ClearIssuanceError, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
+from teatree.core.models.review_finding import Finding
+from teatree.core.models.review_hold_disposition import ReviewHoldDisposition
 from teatree.core.models.reviewer_identity import (
     is_independent_reviewer_identity,
     normalize_reviewer_identity,
     unrecognised_reviewer_message,
 )
 from teatree.core.models.ticket import Ticket
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 
 class HeadVerdictState(enum.Enum):
@@ -60,115 +58,10 @@ class HeadVerdictState(enum.Enum):
     MERGE_SAFE = "merge_safe"
 
 
-class FindingDict(TypedDict):
-    """The JSONField-serialised shape of one :class:`Finding`."""
-
-    severity: str
-    summary: str
-    file: str
-    line: int
-    kind: str
-    basis: NotRequired[str]
-    citation: NotRequired[str]
-    reproduction: NotRequired[str]
-
-
-def _coerce_line(value: object) -> int:
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return 0
-
-
-@dataclass(frozen=True, slots=True)
-class Finding:
-    """One structured cold-review finding: severity + ``file:line`` + summary.
-
-    Serialised to / from the ``findings`` JSONField as a :class:`FindingDict`
-    so the record survives compaction in the canonical DB tier. ``line`` is
-    ``0`` for a file-level (non-line-anchored) finding; ``file`` is empty for
-    an MR-level one.
-    """
-
-    severity: str
-    summary: str
-    file: str = ""
-    line: int = 0
-    kind: str = ""
-    basis: str = ""
-    citation: str = ""
-    reproduction: str = ""
-
-    def __post_init__(self) -> None:
-        kind = normalize_finding_kind(self.kind, self.severity)
-        if kind == FindingKind.BLOCKING and not self.reproduction.strip():
-            summary = self.summary.casefold()
-            venue_resource = any(
-                phrase in summary
-                for phrase in (
-                    "ci rollup",
-                    "verify-gates",
-                    "plan artifact",
-                    "red-first",
-                    "revert-to-red",
-                    "review venue",
-                )
-            )
-            venue_limit = any(
-                phrase in summary
-                for phrase in ("could not", "cannot", "unavailable", "no access", "not possible", "unable to")
-            )
-            docs_only = self.basis == "documentation" or self.citation.startswith(("https://docs.", "docs/"))
-            no_code_anchor = not self.file and not self.line
-            if docs_only or (no_code_anchor and (self.basis == "venue_limit" or (venue_resource and venue_limit))):
-                kind = FindingKind.NOTE
-                object.__setattr__(self, "severity", "note")
-        object.__setattr__(self, "kind", kind)
-
-    def as_dict(self) -> FindingDict:
-        data: FindingDict = {
-            "severity": self.severity,
-            "summary": self.summary,
-            "file": self.file,
-            "line": self.line,
-            "kind": self.kind,
-        }
-        if self.basis:
-            data["basis"] = self.basis
-        if self.citation:
-            data["citation"] = self.citation
-        if self.reproduction:
-            data["reproduction"] = self.reproduction
-        return data
-
-    @classmethod
-    def from_dict(cls, raw: "Mapping[str, object]") -> "Finding":
-        return cls(
-            severity=str(raw.get("severity", "")),
-            summary=str(raw.get("summary", "")),
-            file=str(raw.get("file", "")),
-            line=_coerce_line(raw.get("line")),
-            kind=str(raw.get("kind", "")),
-            basis=str(raw.get("basis", "")),
-            citation=str(raw.get("citation", "")),
-            reproduction=str(raw.get("reproduction", "")),
-        )
-
-    def location(self) -> str:
-        if self.file and self.line:
-            return f"{self.file}:{self.line}"
-        return self.file or "(MR-level)"
-
-    def describe(self) -> str:
-        return f"[{self.severity}] {self.location()} — {self.summary}"
-
-
-class Severity(models.TextChoices):
-    BLOCKER = "blocker", "Blocker"
-    MAJOR = "major", "Major"
-    MINOR = "minor", "Minor"
-    NIT = "nit", "Nit"
+class ReviewEvidenceGap(enum.StrEnum):
+    CI_UNREADABLE = "ci_unreadable"
+    TESTS_UNAVAILABLE = "tests_unavailable"
+    PLAN_UNAVAILABLE = "plan_unavailable"
 
 
 def _known_choice(value: str, choices: type[models.TextChoices], *, field: str) -> str:
@@ -179,6 +72,26 @@ def _known_choice(value: str, choices: type[models.TextChoices], *, field: str) 
         msg = f"Unknown {field} {value!r}; valid: {sorted(valid)}"
         raise ReviewVerdictError(msg)
     return normalized
+
+
+def _validated_evidence_gaps(
+    *, verdict: str, verify_result: str, findings: list[Finding], evidence_gaps: list[str] | None
+) -> list[str]:
+    gaps = list(dict.fromkeys(evidence_gaps or []))
+    if verdict == "unverified":
+        invalid = set(gaps) - {gap.value for gap in ReviewEvidenceGap}
+        if not gaps or invalid:
+            msg = f"unverified verdict requires known evidence gaps; invalid: {sorted(invalid)}"
+            raise ReviewVerdictError(msg)
+        if verify_result == MergeClear.VerifyResult.FAILED or any(
+            finding.kind == FindingKind.BLOCKING for finding in findings
+        ):
+            msg = "unverified verdict cannot conceal a confirmed failed check or blocking finding"
+            raise ReviewVerdictError(msg)
+    elif gaps:
+        msg = "evidence gaps belong only to an unverified verdict"
+        raise ReviewVerdictError(msg)
+    return gaps
 
 
 #: Every per-HEAD review claim a RECORDED verdict retires. Both, because a verdict is a
@@ -287,13 +200,16 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
     def speaking_verdicts_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
         """Every standing hold, or the newest pass when no hold stands."""
         at_head = self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
-        holds = [verdict for verdict in at_head if verdict.stands_as_hold()]
-        return holds or at_head[:1]
+        holds = self.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+        if holds:
+            return holds
+        passed = next((verdict for verdict in at_head if verdict.is_merge_safe()), None)
+        return [passed] if passed is not None else at_head[:1]
 
     def effective_state_at(self, *, slug: str, pr_id: int, head_sha: str) -> "HeadVerdictState":
         """A pass authorizes only when no hold stands at the same head."""
         at_head = self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
-        if any(verdict.stands_as_hold() for verdict in at_head):
+        if self.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha):
             return HeadVerdictState.HOLD
         if any(verdict.is_merge_safe() for verdict in at_head):
             return HeadVerdictState.MERGE_SAFE
@@ -301,10 +217,15 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
 
     def unreconciled_holds_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
         """Every standing hold at this head, including one followed by a pass."""
-        return [
+        holds = [
             verdict
             for verdict in self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
             if verdict.stands_as_hold()
+        ]
+        return [
+            hold
+            for hold in holds
+            if not any(row.covers(hold) for row in ReviewHoldDisposition.objects.filter(hold=hold))
         ]
 
     def standing_hold_remedy_at(self, *, slug: str, pr_id: int, head_sha: str) -> str:
@@ -319,8 +240,16 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
 
 
 def standing_hold_remedy(holds: list["ReviewVerdict"]) -> str:
-    ids = ", ".join(f"#{hold.pk}" for hold in holds)
-    return f"standing HOLD verdict(s) {ids}; push a fix and get the new head reviewed"
+    parts = []
+    for hold in holds:
+        answered = {point["index"] for row in ReviewHoldDisposition.objects.filter(hold=hold) for point in row.points}
+        remaining = sorted(ReviewHoldDisposition.blocking_indices(hold) - answered)
+        parts.append(f"#{hold.pk} unanswered {remaining}")
+    points = ", ".join(parts)
+    return (
+        f"standing HOLD verdict(s) {points}; push a fix and get the new head reviewed "
+        "or record an independent cited disposition"
+    )
 
 
 class ReviewVerdict(models.Model):
@@ -338,6 +267,7 @@ class ReviewVerdict(models.Model):
     class Verdict(models.TextChoices):
         MERGE_SAFE = "merge_safe", "Merge-safe"
         HOLD = "hold", "Hold"
+        UNVERIFIED = "unverified", "Unverified"
 
     #: The Slack review-DONE reaction set per verdict (#113/#88): the loop
     #: reacts ``:eyes:`` (review finished — never at claim time) plus the
@@ -348,6 +278,7 @@ class ReviewVerdict(models.Model):
     DONE_EMOJIS: ClassVar[dict[str, tuple[str, ...]]] = {
         Verdict.MERGE_SAFE: ("eyes", "white_check_mark"),
         Verdict.HOLD: ("eyes", "question"),
+        Verdict.UNVERIFIED: ("eyes",),
     }
 
     ticket = models.ForeignKey(
@@ -370,6 +301,7 @@ class ReviewVerdict(models.Model):
     blast_class = models.CharField(max_length=16, choices=MergeClear.BlastClass.choices)
     gh_verify_result = models.CharField(max_length=32, choices=MergeClear.VerifyResult.choices)
     findings = models.JSONField(default=list, blank=True)
+    evidence_gaps = models.JSONField(default=list, blank=True)
     recorded_at = models.DateTimeField(default=timezone.now)
 
     objects: ClassVar[ReviewVerdictManager] = ReviewVerdictManager()
@@ -399,6 +331,7 @@ class ReviewVerdict(models.Model):
         verdict: str,
         reviewer_identity: str,
         findings: list[Finding] | None = None,
+        evidence_gaps: list[str] | None = None,
         blast_class: str = MergeClear.BlastClass.LOGIC,
         gh_verify_result: str = MergeClear.VerifyResult.GREEN,
         ticket: Ticket | None = None,
@@ -439,6 +372,12 @@ class ReviewVerdict(models.Model):
         normalized_verdict = _known_choice(verdict, cls.Verdict, field="verdict")
         normalized_blast = _known_choice(blast_class, MergeClear.BlastClass, field="blast_class")
         normalized_verify = _known_choice(gh_verify_result, MergeClear.VerifyResult, field="gh_verify_result")
+        gaps = _validated_evidence_gaps(
+            verdict=normalized_verdict,
+            verify_result=normalized_verify,
+            findings=findings or [],
+            evidence_gaps=evidence_gaps,
+        )
         if (
             normalized_verdict == cls.Verdict.HOLD
             and findings
@@ -486,6 +425,7 @@ class ReviewVerdict(models.Model):
                     "blast_class": normalized_blast,
                     "gh_verify_result": normalized_verify,
                     "findings": [finding.as_dict() for finding in (findings or [])],
+                    "evidence_gaps": gaps,
                     "recorded_at": timezone.now(),
                 },
             )
@@ -499,17 +439,23 @@ class ReviewVerdict(models.Model):
                 if merged != recorded.findings:
                     recorded.findings = merged
                     recorded.save(update_fields=["findings"])
-            # A late old-head verdict must not release a newer review's lock.
             if conclude_review:
-                resolve_head_claims(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
-                carried_descendant = HeadCarryOver.objects.filter(
-                    slug__iexact=recorded.slug, pr_id=recorded.pr_id, from_head=recorded.reviewed_sha
-                ).filter(models.Q(outcome=HeadCarryOver.Outcome.CARRIED) | models.Q(reason="no_records"))
-                if lock_holder or not carried_descendant.exists():
-                    MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
-                if recorded.stands_as_hold():
-                    recorded.carry_late_hold()
+                recorded.conclude_review(lock_holder=lock_holder)
             return recorded
+
+    def conclude_review(self, *, lock_holder: str) -> None:
+        if self.verdict == self.Verdict.UNVERIFIED:
+            for claim in _PER_HEAD_REVIEW_CLAIMS:
+                claim.mark_unverified(slug=self.slug, pr_id=self.pr_id, head_sha=self.reviewed_sha)
+        else:
+            resolve_head_claims(slug=self.slug, pr_id=self.pr_id, head_sha=self.reviewed_sha)
+        carried_descendant = HeadCarryOver.objects.filter(
+            slug__iexact=self.slug, pr_id=self.pr_id, from_head=self.reviewed_sha
+        ).filter(models.Q(outcome=HeadCarryOver.Outcome.CARRIED) | models.Q(reason="no_records"))
+        if lock_holder or not carried_descendant.exists():
+            MRReviewLock.resolve(slug=self.slug, pr_id=self.pr_id, holder=lock_holder)
+        if self.stands_as_hold():
+            self.carry_late_hold()
 
     def carry_late_hold(self) -> None:
         seen = {self.reviewed_sha}
@@ -546,6 +492,7 @@ class ReviewVerdict(models.Model):
             verdict=self.verdict,
             reviewer_identity=self.reviewer_identity,
             findings=self.structured_findings,
+            evidence_gaps=self.evidence_gaps,
             blast_class=self.blast_class,
             gh_verify_result=self.gh_verify_result,
             ticket=self.ticket,
@@ -561,7 +508,7 @@ class ReviewVerdict(models.Model):
         return self.verdict == self.Verdict.MERGE_SAFE
 
     def stands_as_hold(self) -> bool:
-        return not self.is_merge_safe()
+        return self.verdict == self.Verdict.HOLD
 
     @staticmethod
     def is_head_unreadable(current_head_sha: str) -> bool:

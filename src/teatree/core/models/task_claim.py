@@ -15,6 +15,7 @@ the model class through the instance, so this module needs no runtime import of
 import logging
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -326,9 +327,25 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
     :func:`renew_lease` already names as the harm.
     """
     _refuse_lost_lease(task)
-    if normalize_phase(task.phase) in VERDICT_REVIEW_PHASES and not task.attempts.exists():
-        msg = "review task cannot complete without a recorded attempt"
-        raise InvalidTransitionError(msg)
+    if normalize_phase(task.phase) in VERDICT_REVIEW_PHASES:
+        if not task.attempts.exists():
+            msg = "review task cannot complete without a recorded attempt"
+            raise InvalidTransitionError(msg)
+        from teatree.core.models.review_target import (  # noqa: PLC0415 — avoids Task import cycle
+            review_target_for_task,
+            verdict_at,
+        )
+
+        target = review_target_for_task(task)
+        if target is not None and target.bind_live_head and not target.head_sha:
+            result = task.attempts.order_by("-pk").values_list("result", flat=True).first()
+            envelope = result.get("review_verdict") if isinstance(result, dict) else None
+            reviewed_sha = envelope.get("reviewed_sha", "") if isinstance(envelope, dict) else ""
+            if isinstance(reviewed_sha, str):
+                target = replace(target, head_sha=reviewed_sha)
+        if target is not None and verdict_at(target) is None:
+            msg = "PR review task cannot complete without a recorded verdict at its reviewed head"
+            raise InvalidTransitionError(msg)
     from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
         release_task_occupancy,
         task_occupancy_release_deferred,

@@ -22,7 +22,8 @@ answer a question findings do not bear on.
 from dataclasses import dataclass
 
 from teatree.core.backend_protocols import PrReview, PrReviewComment
-from teatree.core.models.review_verdict import Finding, FindingDict, ReviewVerdict, Severity
+from teatree.core.models.review_finding import Finding, FindingDict, Severity
+from teatree.core.models.review_verdict import ReviewVerdict
 
 MARKER_PREFIX = "<!-- teatree-review-verdict:"
 """Prefix of the hidden marker every published findings review carries.

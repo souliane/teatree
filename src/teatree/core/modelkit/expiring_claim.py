@@ -89,3 +89,13 @@ def retire_head_claim(
             state=to_state, resolved_at=timezone.now()
         )
     )
+
+
+def release_head_claim(
+    in_flight: "models.QuerySet[_ClaimT]", *, slug: str, pr_id: int, head_sha: str, to_state: str
+) -> bool:
+    return bool(
+        in_flight.filter(slug=slug.strip(), pr_id=pr_id, head_sha=head_sha.strip().lower()).update(
+            state=to_state, deadline=timezone.now() - dt.timedelta(microseconds=1), resolved_at=None
+        )
+    )

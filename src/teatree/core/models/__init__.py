@@ -110,8 +110,10 @@ from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_backend_cooldown import ReviewBackendCooldown
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
+from teatree.core.models.review_finding import Finding, Severity
+from teatree.core.models.review_hold_disposition import ReviewHoldDisposition, ReviewHoldDispositionError
 from teatree.core.models.review_request_post import ReviewRequestPost
-from teatree.core.models.review_verdict import Finding, ReviewVerdict, Severity
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
@@ -319,6 +321,8 @@ __all__ = [
     "ReviewBackendCooldown",
     "ReviewEvidence",
     "ReviewEvidenceError",
+    "ReviewHoldDisposition",
+    "ReviewHoldDispositionError",
     "ReviewIntent",
     "ReviewRequestPost",
     "ReviewVerdict",
