@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models
 from django.utils import timezone as django_timezone
 
-from teatree.core.modelkit.reask_cadence import ACTIVE_SCHEDULE_SETTING, OWNER_FALLBACK_ZONE
+from teatree.core.modelkit.notify_policy import ACTIVE_SCHEDULE_SETTING, OWNER_FALLBACK_ZONE
 from teatree.core.models.config_setting import ConfigSetting
 
 logger = logging.getLogger(__name__)

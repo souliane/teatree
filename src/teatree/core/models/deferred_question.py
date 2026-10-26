@@ -34,9 +34,9 @@ from django.db.models import Max, Q
 from django.utils import timezone
 
 from teatree import answer_handback
+from teatree.core.modelkit.notify_policy import CHECKOUT_ATTEST_HOLD
 from teatree.core.modelkit.owner_action import OwnerActionKind, action_marker, is_owner_action_marker
 from teatree.core.modelkit.question_card import QuestionCard
-from teatree.core.modelkit.reask_cadence import CHECKOUT_ATTEST_HOLD
 from teatree.core.models.question_actions import DeferredQuestionAuditQuerySet, DeferredQuestionQuerySet, held_question
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import options_digest

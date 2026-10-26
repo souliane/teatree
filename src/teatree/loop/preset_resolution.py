@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
-from teatree.core.modelkit.reask_cadence import ACTIVE_SCHEDULE_SETTING, OWNER_FALLBACK_ZONE
+from teatree.core.modelkit.notify_policy import ACTIVE_SCHEDULE_SETTING, OWNER_FALLBACK_ZONE
 from teatree.request_cache import cached_per_request
 
 if TYPE_CHECKING:

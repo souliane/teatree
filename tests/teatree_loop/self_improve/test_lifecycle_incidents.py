@@ -12,7 +12,7 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from teatree.core.modelkit.reask_cadence import CHECKOUT_ATTEST_HOLD
+from teatree.core.modelkit.notify_policy import CHECKOUT_ATTEST_HOLD
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
