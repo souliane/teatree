@@ -53,12 +53,15 @@ compose_executor() {
     if [ "${TEATREE_HOST_HOME:-$CONTAINER_HOME}" != "$CONTAINER_HOME" ]; then
         files+=(-f "$HOST_IDENTITY_FILE")
     fi
-    if ! compose exec -T teatree-worker true; then
-        echo "deploy: teatree-worker could not answer the executor mount check" >&2
-        return 1
+    local check_status=1
+    if [ -n "$TEATREE_CODEX_SOURCE_GIT_SUBPATH" ]; then
+        if ! compose exec -T teatree-worker true; then
+            echo "deploy: teatree-worker could not answer the executor mount check" >&2
+            return 1
+        fi
+        check_status=0
+        compose exec -T teatree-worker test -d "$CONTAINER_HOME/.codex/$TEATREE_CODEX_SOURCE_GIT_SUBPATH" || check_status=$?
     fi
-    local check_status=0
-    compose exec -T teatree-worker test -d "$CONTAINER_HOME/.codex/$TEATREE_CODEX_SOURCE_GIT_SUBPATH" || check_status=$?
     case "$check_status" in
         0) files+=(-f "$CODEX_SOURCE_GIT_FILE") ;;
         1) ;;
@@ -368,17 +371,19 @@ echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(g
 # mount keeps path identity with the container's `/home/teatree/...` targets.
 export TEATREE_HOST_HOME="$HOME"
 
-source_origin="$(git -C "$REPO_ROOT" remote get-url origin)"
+source_origin="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
 source_repo="${source_origin##*/}"
 source_repo="${source_repo%.git}"
 source_owner="${source_origin%/*}"
 source_owner="${source_owner##*/}"
 source_owner="${source_owner##*:}"
-if [[ ! "$source_owner" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ || ! "$source_repo" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-    echo "deploy: could not derive the Codex source checkout from origin" >&2
-    exit 1
+TEATREE_CODEX_SOURCE_GIT_SUBPATH=""
+if [[ "$source_owner" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ && "$source_repo" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    TEATREE_CODEX_SOURCE_GIT_SUBPATH="workspace/$source_owner/$source_repo/.git"
+else
+    echo "deploy: no Codex source Git path derivable from origin; the read-only executor keeps its original mounts" >&2
 fi
-export TEATREE_CODEX_SOURCE_GIT_SUBPATH="workspace/$source_owner/$source_repo/.git"
+export TEATREE_CODEX_SOURCE_GIT_SUBPATH
 
 # The checkout this deploy runs out of — the directory holding `deploy/`. The
 # watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs
