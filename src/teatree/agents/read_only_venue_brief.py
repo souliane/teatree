@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
+from urllib.parse import urlparse
 
 from teatree.agents._runner_options import _resolve_task_cwd
 from teatree.agents.context_budget import MAX_APPEND_BYTES
@@ -21,7 +22,7 @@ from teatree.core.review.live_head import live_head_at
 from teatree.core.review.review_plan import plan_for_task
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils.git_sync import fetch_branch
-from teatree.utils.url_slug import pr_ref_from_url
+from teatree.utils.url_slug import pr_ref_from_url, slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
     from teatree.core.models import Task, Ticket
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 ISSUE_BODY_CAP_BYTES: Final = 64 * 1024
 ISSUE_COMMENTS_CAP_BYTES: Final = 64 * 1024
 SURVEY_CAP_BYTES: Final = 32 * 1024
-REVIEW_DIFF_CAP_BYTES: Final = 128 * 1024
+REVIEW_DIFF_CAP_BYTES: Final = 256 * 1024
 REVIEW_CHECKS_CAP_BYTES: Final = 4 * 1024
 HANDOFF_CAP_BYTES: Final = 32 * 1024
 TICKET_CONTEXT_CAP_BYTES: Final = 32 * 1024
@@ -165,7 +166,7 @@ def _refused(reason: str) -> ReadOnlyBriefRefusedError:
 
 def _issue(ticket: "Ticket") -> tuple[str, str]:
     """The issue or PR body and its comments, where owner decisions often land."""
-    if not ticket.issue_url:
+    if not ticket.issue_url or not slug_from_issue_or_pr_url(urlparse(ticket.issue_url).path):
         return "", ""
     host = None
     pr = pr_ref_from_url(ticket.issue_url)

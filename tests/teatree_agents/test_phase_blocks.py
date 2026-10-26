@@ -58,6 +58,17 @@ class TestPhaseSpecificLinesDispatch(TestCase):
         assert "PHASE: bughunt" in lines
         assert any("find-then-verify" in line and "N=3" in line for line in lines)
 
+    def test_execution_phases_name_the_current_worker_and_their_command(self) -> None:
+        for phase, command in (
+            ("bughunt", "reproduce"),
+            ("dogfood_smoke", "t3 dogfood overlay-provision-smoke"),
+            ("eval_local", "t3 eval run"),
+        ):
+            with self.subTest(phase=phase):
+                brief = "\n".join(phase_specific_lines(_task(phase), []))
+                assert "current worker" in brief
+                assert command in brief
+
 
 class TestTheReviewerIsToldToGradeTheRubric(TestCase):
     """Nothing else grades the rubric, so an unbriefed reviewer leaves every merge refused.

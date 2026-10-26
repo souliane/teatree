@@ -14,16 +14,22 @@ local hook covers.
 """
 
 import json
+import os
 import re
 import sqlite3
+import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import yaml
+from django.db import connection
+from django.test import TransactionTestCase
 from typer.testing import CliRunner
 
 from teatree.cli import app
@@ -33,7 +39,10 @@ from teatree.cli.verify_gates import (
     _declared_manual_hooks,
     _prek_config,
     _resource_refusal,
+    _snapshot_control_db,
+    _stage_env,
 )
+from teatree.core.models import PlanArtifact, Ticket, Worktree
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.paths import ControlDb
 from teatree.quality.changed_set import ChangedSet, ChangeEntry
@@ -44,9 +53,60 @@ runner = CliRunner()
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+class TestPrivateGateDatabase(TransactionTestCase):
+    def test_snapshot_preserves_ticket_brief_for_push_hook(self) -> None:
+        with TemporaryDirectory() as temp_root:
+            root = Path(temp_root)
+            source = root / "live.sqlite3"
+            ticket = Ticket.objects.create()
+            checkout = root / "checkout"
+            checkout.mkdir()
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="teatree",
+                repo_path="souliane/teatree",
+                branch="feature",
+                extra={"worktree_path": str(checkout)},
+            )
+            PlanArtifact.objects.create(ticket=ticket, plan_text="No migration.")
+            connection.ensure_connection()
+            with closing(sqlite3.connect(source)) as destination:
+                connection.connection.backup(destination)
+
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(source)}):
+                private_root = root / "private"
+                private_root.mkdir()
+                env = _stage_env(str(private_root))
+                _snapshot_control_db(checkout, env)
+
+            program = (
+                "from pathlib import Path; from teatree.cli.push_gate_tools import _brief_for_worktree; "
+                "import sys; print(_brief_for_worktree(Path(sys.argv[1])))"
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    program,
+                    str(checkout),
+                ],
+                cwd=REPO_ROOT,
+                env={**env, "DJANGO_SETTINGS_MODULE": "teatree.settings"},
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == "No migration."
+
+
 @pytest.fixture(autouse=True)
 def _no_real_gate_receipt():
-    with patch("teatree.cli.verify_gates.write_gate_receipt"):
+    with (
+        patch("teatree.cli.verify_gates.write_gate_receipt"),
+        patch("teatree.cli.verify_gates._snapshot_control_db"),
+    ):
         yield
 
 
@@ -199,6 +259,8 @@ class TestVerifyGatesRunsBothStages:
                 "INSERT INTO teatree_config_setting VALUES ('', 'banned_term_registry', ?)",
                 (json.dumps(registry),),
             )
+            db.execute("CREATE TABLE teatree_worktree (id INTEGER)")
+            db.execute("INSERT INTO teatree_worktree VALUES (5322)")
             db.commit()
         monkeypatch.setenv("T3_CONTROL_DB_DIR", str(live))
         monkeypatch.setenv("T3_CONFIG_DB", str(live / "db.sqlite3"))
@@ -206,21 +268,23 @@ class TestVerifyGatesRunsBothStages:
         monkeypatch.setenv("XDG_DATA_HOME", str(live))
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
-        def inspect_stage(_cmd: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
+        def stage_run(_cmd: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
             assert check is False
             assert cwd == worktree
-            child = ControlDb(env, home=tmp_path).for_repo(worktree).path
-            with closing(sqlite3.connect(f"file:{child}?mode=ro", uri=True)) as db:
+            private_db = ControlDb(env, home=tmp_path).for_repo(worktree).path
+            with closing(sqlite3.connect(f"file:{private_db}?mode=ro", uri=True)) as db:
                 assert db.execute("SELECT value FROM teatree_config_setting").fetchone()[0] == json.dumps(registry)
-            with closing(sqlite3.connect(child)) as db:
-                db.execute("CREATE TABLE IF NOT EXISTS isolated_write (value TEXT)")
+            with closing(sqlite3.connect(private_db)) as db:
+                assert db.execute("SELECT id FROM teatree_worktree WHERE id=5322").fetchall() == [(5322,)]
+                db.execute("INSERT INTO teatree_worktree VALUES (5323)")
                 db.commit()
             return 0
 
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
-            patch("teatree.cli.verify_gates.run_streamed", side_effect=inspect_stage) as run,
+            patch("teatree.cli.verify_gates._snapshot_control_db", side_effect=_snapshot_control_db),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=stage_run) as run,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0, _text(result)
@@ -237,7 +301,7 @@ class TestVerifyGatesRunsBothStages:
             assert ControlDb(env, home=tmp_path).for_repo(worktree).path.is_relative_to(private_root)
             assert not private_root.exists()
         with closing(sqlite3.connect(live / "db.sqlite3")) as db:
-            assert db.execute("SELECT name FROM sqlite_master WHERE name='isolated_write'").fetchone() is None
+            assert db.execute("SELECT id FROM teatree_worktree").fetchall() == [(5322,)]
 
     @pytest.mark.parametrize("registry_error", [BannedTermsUnreadableError, BannedTermsUnsetError])
     def test_unavailable_registry_still_isolates_stage(
@@ -259,6 +323,25 @@ class TestVerifyGatesRunsBothStages:
             env = call.kwargs["env"]
             assert Path(env["XDG_DATA_HOME"]) != live_home
             assert "TEATREE_TERM_REGISTRY" not in env
+
+    def test_snapshot_failure_refuses_to_run_stages(
+        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live_db = tmp_path / "live.sqlite3"
+        live_db.touch()
+        monkeypatch.setenv("T3_CONFIG_DB", str(live_db))
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", "{}")
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.cli.verify_gates._snapshot_control_db", side_effect=_snapshot_control_db),
+            patch("teatree.cli.verify_gates._sqlite_snapshot", side_effect=sqlite3.OperationalError("busy")),
+            patch("teatree.cli.verify_gates.run_streamed") as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 1
+        assert "private control database unavailable: busy" in _text(result)
+        run.assert_not_called()
 
     def test_invokes_push_stage_hooks_not_just_commit(self) -> None:
         with (

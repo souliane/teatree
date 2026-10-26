@@ -22,6 +22,7 @@ from teatree.agents.codex_app_server_errors import (
     transport_error,
 )
 from teatree.agents.codex_app_server_events import CodexToolEvents
+from teatree.agents.codex_app_server_events import thread_params as _thread_params
 from teatree.agents.codex_app_server_lifecycle import chatgpt_authenticated, opened_session, opened_shared_session
 from teatree.agents.codex_app_server_messages import CodexEventTranslator
 from teatree.agents.codex_app_server_options import (
@@ -29,6 +30,7 @@ from teatree.agents.codex_app_server_options import (
     CodexAppServerOptions,
     codex_container_unavailable_reason,
     codex_model_unavailable_reason,
+    codex_worker_denials,
     codex_worker_unavailable_reason,
     container_is_the_sandbox,
 )
@@ -42,7 +44,7 @@ from teatree.agents.codex_read_only_executor import (
 )
 from teatree.agents.codex_turn_steering import CodexTurnSteering
 from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallbackError, HarnessFallbackKind, HarnessSpec
-from teatree.agents.sdk_tool_map import phase_bars_write_tools
+from teatree.agents.sdk_tool_map import CODEX_WORKER_EXECUTION_PHASES, phase_bars_write_tools
 
 if TYPE_CHECKING:
     from teatree.agents.harness import HarnessSession
@@ -453,6 +455,7 @@ class CodexAppServerHarness:
         code_home: Path | None = None,
         command: Sequence[str] | None = None,
         read_only_phase: str | None = None,
+        worker_execution_phase: str | None = None,
     ) -> None:
         self.capabilities = codex_capabilities()
         if read_only_phase is not None:
@@ -461,6 +464,7 @@ class CodexAppServerHarness:
         self.command = command
         self.refusal = refusal
         self.read_only_phase = read_only_phase
+        self.worker_execution_phase = worker_execution_phase
 
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncGenerator["HarnessSession"]:
@@ -475,6 +479,11 @@ class CodexAppServerHarness:
             async with codex_read_only_server.executor_session(options, self.read_only_phase) as executor_session:
                 yield executor_session
             return
+        if self.worker_execution_phase is not None:
+            options = replace(
+                options,
+                disallowed_tools=list(codex_worker_denials(options.disallowed_tools, self.worker_execution_phase)),
+            )
         translated = CodexAppServerOptions.from_sdk_options(options)
         if self.command is None:
             session = codex_shared_app_server.SharedCodexSession(
@@ -513,7 +522,11 @@ def codex_app_server_spec() -> HarnessSpec:
     return HarnessSpec(
         name="codex_app_server",
         factory=lambda context: CodexAppServerHarness(
-            refusal=_codex_unavailable_reason(context), read_only_phase=_read_only_phase(context)
+            refusal=_codex_unavailable_reason(context),
+            read_only_phase=_read_only_phase(context),
+            worker_execution_phase=(
+                context.phase if context.phase in CODEX_WORKER_EXECUTION_PHASES and container_is_the_sandbox() else None
+            ),
         ),
         capabilities=codex_capabilities(),
         allows_provider=False,
@@ -523,7 +536,12 @@ def codex_app_server_spec() -> HarnessSpec:
 
 
 def _read_only_phase(context: "HarnessBuildContext") -> str | None:
-    if context.phase and container_is_the_sandbox() and phase_bars_write_tools(context.phase):
+    if (
+        context.phase
+        and context.phase not in CODEX_WORKER_EXECUTION_PHASES
+        and container_is_the_sandbox()
+        and phase_bars_write_tools(context.phase)
+    ):
         return context.phase
     return None
 
@@ -538,20 +556,3 @@ def _codex_unavailable_reason(context: "HarnessBuildContext") -> str | None:
             resolve_codex_home(), context.model
         )
     return codex_worker_unavailable_reason(context)
-
-
-def _thread_params(options: CodexAppServerOptions, *, resuming: bool = False) -> dict[str, Any]:
-    params: dict[str, Any] = {
-        "cwd": options.core.cwd,
-        "developerInstructions": options.core.system_prompt,
-        "approvalPolicy": "untrusted" if options.sandbox_mode == "danger-full-access" else "never",
-        "sandbox": options.sandbox_mode,
-        "runtimeWorkspaceRoots": list(options.runtime_workspace_roots),
-    }
-    if options.core.model is not None:
-        params["model"] = options.core.model
-    if options.config:
-        params["config"] = options.config
-    if options.core.mailbox is not None and not resuming:
-        params["dynamicTools"] = codex_app_server_events.dynamic_mailbox_tools(options.mailbox_phase)
-    return params

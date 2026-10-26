@@ -384,6 +384,13 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "GH_TOKEN" in pr_call.call_args.kwargs["env"]
         assert "repos/example-org/example-repo/issues/5/comments?per_page=100" in api_call.call_args.args[0]
 
+    def test_non_forge_ticket_does_not_attempt_a_forge_read(self) -> None:
+        with patch("teatree.agents.read_only_venue_brief.get_backend_provider") as provider:
+            assert _issue(Ticket(issue_url="auto:local-task")) == ("", "")
+            assert _issue(Ticket(issue_url="")) == ("", "")
+            assert _issue(Ticket(issue_url=None)) == ("", "")
+        provider.assert_not_called()
+
     def test_gitlab_merge_request_reads_its_message_and_notes(self) -> None:
         ticket = Ticket(issue_url="https://gitlab.example/group/team/repo/-/merge_requests/17")
         host = Mock()
@@ -706,6 +713,24 @@ class TestTheReadOnlyVenueBrief(TestCase):
         body = "y" * (22 * 1024)
 
         assert body in self._prepare(self._task(), host=_Host({"body": body})).prompt
+
+    def test_review_diff_admits_200kib_and_names_300kib_refusal(self) -> None:
+        task = self._task()
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        with (
+            patch("teatree.agents.read_only_venue_brief._issue", return_value=("", "")),
+            patch("teatree.agents.read_only_venue_brief._fetch_target"),
+            patch("teatree.agents.read_only_venue_brief._review_diff", return_value=("head", "x" * (200 * 1024), "")),
+        ):
+            assert len(ReadOnlyFacts.gather(task, None).review_diff) == 200 * 1024
+        with (
+            patch("teatree.agents.read_only_venue_brief._issue", return_value=("", "")),
+            patch("teatree.agents.read_only_venue_brief._fetch_target"),
+            patch("teatree.agents.read_only_venue_brief._review_diff", return_value=("head", "x" * (300 * 1024), "")),
+            pytest.raises(HarnessFallbackError, match="review diff 307200 bytes > 262144"),
+        ):
+            ReadOnlyFacts.gather(task, None)
 
     def test_ticket_context_is_never_elided_with_a_t3_pointer(self) -> None:
         lines = [f"note {index}: {'z' * 60}" for index in range(450)]
