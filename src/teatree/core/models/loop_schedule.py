@@ -60,7 +60,7 @@ class ModeSchedule(models.Model):
 
 
 def active_schedule_name() -> str:
-    raw = ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING)
+    raw = ConfigSetting.objects.get_effective("active_loop_schedule")
     return raw.strip() if isinstance(raw, str) and raw.strip() else ""
 
 
