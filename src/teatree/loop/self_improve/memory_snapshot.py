@@ -9,6 +9,7 @@ from pathlib import Path
 from teatree.config import discover_overlays, worktree_root
 from teatree.core.cleanup.orphan_process_groups import CLOCK_TICKS_PER_SECOND, ProcStat, collect_stats, read_uptime
 from teatree.core.cleanup.process_table import current_pid_namespace, host_proc_root, namespace_pids, pid_namespace_of
+from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.loop.self_improve.detectors.base import DetectorReport
 from teatree.loop.self_improve.detectors.pressure_incident import PressureIncidentDetector
 from teatree.utils import ram_scope, singleton
@@ -102,6 +103,8 @@ def _live_worker_record() -> tuple[singleton.HolderRecord | None, str | None]:
     record = singleton.read_holder(default_pid_path(WORKER_SINGLETON), errors=errors)
     if errors:
         return None, _unreadable(errors[0])
+    if record is not None and not namespace_is_proven(record.context.pid_namespace):
+        return None, None
     try:
         alive = record is not None and singleton.pid_alive(record.pid)
     except OverflowError as exc:
@@ -114,9 +117,6 @@ def _worker_host_pid(root: Path, stats: dict[int, ProcStat]) -> tuple[int | None
     if record is None:
         return None, error
     own_namespace = current_pid_namespace()
-    context = singleton.ExecutionContext(pid_namespace=own_namespace, hostname="", role="")
-    if singleton.holder_verdict(record, context) is not singleton.HolderVerdict.SAME_CONTEXT:
-        return None, None
     for pid in stats:
         pid_dir = root / str(pid)
         if namespace_pids(pid_dir)[-1:] == (str(record.pid),) and pid_namespace_of(pid_dir) == own_namespace:

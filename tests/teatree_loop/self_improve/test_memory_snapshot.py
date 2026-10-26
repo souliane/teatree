@@ -87,6 +87,7 @@ def staged_box(base: Path) -> Generator[Path]:
         patch.object(memory_snapshot, "default_pid_path", return_value=worker_file),
         patch("teatree.utils.singleton.pid_alive", return_value=True),
         patch.object(memory_snapshot, "current_pid_namespace", return_value=_OWN_NAMESPACE),
+        patch("teatree.core.loop_lease_liveness.reader_pid_namespace", return_value=_OWN_NAMESPACE),
         patch("teatree.utils.ram_scope.cgroup_file", side_effect=lambda name, **_kwargs: cgroup / name),
         patch("teatree.utils.ram_probe.cgroup_file", side_effect=lambda name, **_kwargs: cgroup / name),
         patch("teatree.utils.ram_scope.host_available_ram_mib", actual_host_available_ram_mib),
@@ -161,7 +162,10 @@ class MemorySnapshotTicketTests(TestCase):
             stage_process(proc, 10, ppid=1, rss_pages=256, comm="worker")
             (proc / "10" / "status").write_text("NSpid:\t10\t7\n")
             stage_process(proc, 11, ppid=10, rss_pages=1024, comm="python")
-            with patch.object(memory_snapshot, "current_pid_namespace", return_value=""):
+            with (
+                patch.object(memory_snapshot, "current_pid_namespace", return_value=""),
+                patch("teatree.core.loop_lease_liveness.reader_pid_namespace", return_value=""),
+            ):
                 result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
