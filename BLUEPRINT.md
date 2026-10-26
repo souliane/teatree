@@ -80,6 +80,8 @@ Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) — and the 
 
 ## 4. Domain Models
 
+**Ticket DM identity (#5361).** `TicketDmThread` owns one outbound Slack DM root per ticket, with a generation incremented only after a deleted root is proven. `TicketDmPost` records each confirmed header, note, card, chase, and answer reply in that generation; its channel and message timestamp pair is unique. `ThreadBinding` still maps inbound roots to tickets. A question card keeps its own mirror timestamp even when posted inside the ticket root, so button taps still address that card.
+
 **One agent per checkout (#5238).** A factory task holds its ticket checkout throughout its run. The writer fence checks occupancy, process evidence, and the attested checkout state before dispatch. Normal exits settle occupancy and attestation together; interrupted, deferred, and released exits can be re-attested at the next writer fence only with the custody, process, and forge proof described in [the worktree occupancy appendix](docs/blueprint/worktree-occupancy.md). A failed proof parks the task without spending its repair budget.
 
 An attestable checkout refusal records a durable owner card in plain words: the waiting step and what it will do, the ticket link when available, any open pull request in the checkout's repo or that none was open when asked, the commit and uncommitted-file counts, whether nothing was found running, and what Accept and Decline each do. A writing step may hold up that pull request while it stays open; a design-review or wrap-up step only links it. The card is the owner notice for the episode. The authenticated Slack answer records its user identity; an owner-action tick checks the live digest, process table and occupancy before and inside the write transaction, then attests, releases the parked task and records the outcome audit once. Declining leaves the task parked, and another step's acceptance of the same folder state does not release it. A title too long for the card is replaced by "this ticket". The direct owner terminal command keeps its existing checks.
@@ -569,6 +571,8 @@ The monitor never auto-merges substrate unless a standing owner opt-in authorize
 
 ### 5.8 Reactive Slack-Answer Loop
 
+An owner reply in the current ticket root selects a pending question only when that question's card or chase is the newest confirmed ticket post before the reply; later progress posts leave the reply for ordinary ticket routing. A status question in a bound ticket thread reads that ticket's state, active tasks, and open pull requests directly, before a pending session can consume it. Top-level status questions retain the global statusline path. Confirmed loop replies join the ticket post ledger, including a reply found on retry.
+
 A token-cheap reactive `/loop` slot that answers user DMs out-of-band so a quick ack / status question gets a reply in seconds, not at the next slower per-loop tick. Coalesces consecutive same-user messages into one logical turn, classifies (pure Python) into `ACK_ONLY` / `SIMPLE` / `NEEDS_WORK`, and either reacts, posts a threaded reply, or delegates to the `t3:answerer` sub-agent.
 
 **A bound thread follows the filed work ticket.** `ThreadBinding` maps `(overlay, channel, root thread ts)` to the answering ticket during triage, then `work_item_filing._attach` rebinds it to the admissible ticket created or reused for the work. A later message from the configured owner is offered to that ticket's live session before ordinary answer routing: a progress question uses read-only `inspect`, while a direction uses `steer`. `SessionCommand` stores the message's stable command ID, task and typed outcome; a settled command replays its receipt, while an unsettled command retries delivery to that same task. A stale unconfirmed session claim re-enters the loop after two minutes so a sender crash cannot strand it. The reply is confirmed by exact text and timestamp under the thread root before the inbound row is marked answered by the loop. If the bound task is pending behind a gate, the message queues for that task; once its work has ended, the ordinary answering path creates a follow-up on the bound ticket and names that path in the thread. Another author in a bound thread cannot reach either the live session or the answering task.
@@ -636,6 +640,8 @@ Every facet hook defaults to empty / permissive so existing overlays keep workin
 ---
 
 ## 7. Backend Protocols and ABCs
+
+Ticket DM delivery uses `MessagingBackend.fetch_thread_replies` to verify each header before posting a body. The Slack implementation raises the core `MessagingReadRefusedError` with its refusal code: only `thread_not_found`, `message_not_found`, or a root tombstone proves deletion and permits a new generation; rate limits and unreadable replies preserve the current root. An unnamed notification posts at the DM root unless its invoking run resolves a ticket; a named thread keeps explicit precedence.
 
 Every external API concern is a `@runtime_checkable Protocol` in `teatree.core.backend_protocols` (the domain owns the abstractions it consumes; `backends` implements them). PR is the canonical term in core; GitLab MRs are translated at the API edge.
 

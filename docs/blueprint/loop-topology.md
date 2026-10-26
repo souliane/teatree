@@ -14,6 +14,8 @@ Each tick runs three stages:
 
 **Scanners (`teatree.loop.scanners.*`):**
 
+The deferred-question poster and answer cycle share the current ticket DM root when a question has one subject ticket. The poster records each card or chase in `TicketDmPost` while retaining the card's own timestamp for taps. The reply scanner consults the newest confirmed ticket post before a free-text reply; a later note or progress reply prevents an old card from claiming that reply. The answer cycle records its verified replies in the same ledger, including a reply recovered on retry.
+
 | Scanner | Signal collected | Typical action |
 |---|---|---|
 | `my_prs` | Open PRs I authored: pipeline status, draft comments, dismissed approvals, mergeability. | Mechanical fix (lint/type/format) inline; otherwise surface in statusline. |

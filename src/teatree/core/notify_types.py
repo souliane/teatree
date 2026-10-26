@@ -94,20 +94,8 @@ class NotifyOptions:
     ``user_id``, ``linkify=False`` for pre-linkified text, the ``answering_slack_ts``
     of a question this DM answers, or opaque Block Kit ``blocks``.
 
-    ``as_thread_root`` opts OUT of nesting the DM under the owner's active DM
-    thread. A DM whose ``ts`` is later stored as a reply-binding identity — the
-    ``DeferredQuestion.slack_ts`` a Slack reply's ``thread_ts`` is joined against
-    — MUST be its own thread root: Slack stamps a reply with the ROOT's ts, never
-    the replied-to message's, so a mirror nested one level down is unreachable by
-    that join. Every other notification keeps nesting; the conversation context is
-    worth more than a ts nobody binds on.
-
-    ``thread_ts`` names the thread to post INTO — the other half of the same
-    concern. A follow-up about an already-mirrored question (a re-ask bump) must
-    land in that question's own thread: Slack stamps every reply there with that
-    same root ts, which is exactly the identity
-    :func:`teatree.loop.question_binding.bind_reply` joins a reply against. A bump
-    posted anywhere else is a re-ask no reply can bind to.
+    ``thread_ts`` names an explicit thread. Without it, an unbound notification
+    posts at the DM root; a ticket-bound notification uses its ticket root.
     """
 
     backend: MessagingBackend | None = None
@@ -115,24 +103,13 @@ class NotifyOptions:
     linkify: bool = True
     answering_slack_ts: str = ""
     blocks: list[RawAPIDict] | None = None
-    as_thread_root: bool = False
     thread_ts: str = ""
+    ticket_id: int | None = None
+    question_id: int | None = None
     #: The caller asked for a DM, so the push/pull registry does not withhold it. For
     #: the surfaces a person or agent invokes directly (`t3 <overlay> notify dm`, the
     #: MCP tool), whose one-off key nobody could have registered; never for an alarm.
     requested_push: bool = False
-
-    @property
-    def dm_thread(self) -> str | None:
-        """Where in the DM this notification lands, as the egress's tri-state.
-
-        A named thread wins; ``""`` is the DM root (``as_thread_root``); ``None``
-        means "resolve the owner's active DM thread", which needs the channel and
-        so can only be answered inside the egress.
-        """
-        if self.thread_ts:
-            return self.thread_ts
-        return "" if self.as_thread_root else None
 
 
 #: Delivered outcome — the single shared success record.

@@ -28,6 +28,7 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.notify_types import DELIVERED
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, occupancy_holder, task_holder_id
 from teatree.mcp import review_seam, review_write_tools, write_tools
 from teatree.mcp.review_seam import SeamNote, register_review_post_seam
@@ -47,6 +48,19 @@ def _call(tool: str, args: dict[str, Any]) -> Any:
 def _review_post_descriptions() -> dict[str, str]:
     tools = asyncio.run(build_server().list_tools())
     return {tool.name: tool.description or "" for tool in tools if tool.name.startswith("review_post_")}
+
+
+class TestNotifyTicketRouting(TestCase):
+    def test_mcp_dm_passes_invoking_ticket_to_notification(self) -> None:
+        ticket = Ticket.objects.create(short_description="Bound")
+        with (
+            patch("teatree.mcp.write_tools.resolve_invoking_ticket", return_value=ticket),
+            patch("teatree.mcp.write_tools.notify_user_outcome", return_value=DELIVERED) as notify,
+        ):
+            result = async_to_sync(write_tools._notify_user)("ticket note", idempotency_key="mcp-ticket-note")
+
+        assert result["sent"]
+        assert notify.call_args.kwargs["options"].ticket_id == ticket.pk
 
 
 class TestConfigSettingSetGateRefusal(TestCase):

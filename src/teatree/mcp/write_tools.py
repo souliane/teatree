@@ -30,13 +30,14 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.config.setting_taxonomy import owner_only_reason
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user_outcome
-from teatree.core.notify_types import NotifyOptions
+from teatree.core.notify_types import NotifyOptions, NotifyOutcome
 from teatree.mcp.review_write_tools import _review_post_comment, _review_post_comments
 from teatree.mcp.write_tool_run import run_command, run_emitting_command
 
@@ -231,16 +232,18 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
         raise ToolError(msg) from None
     if kind_value is NotifyKind.QUESTION:
         raise ToolError(OWNER_QUESTION_ROUTE)
-    outcome = await sync_to_async(
-        lambda: notify_user_outcome(
+
+    def deliver() -> NotifyOutcome:
+        ticket = resolve_invoking_ticket()
+        return notify_user_outcome(
             text,
             kind=kind_value,
             idempotency_key=idempotency_key,
             audience=NotifyAudience.OWNER_DELIVERY,
-            options=NotifyOptions(requested_push=True),
-        ),
-        thread_sensitive=True,
-    )()
+            options=NotifyOptions(requested_push=True, ticket_id=ticket.pk if ticket is not None else None),
+        )
+
+    outcome = await sync_to_async(deliver, thread_sensitive=True)()
     return {
         "ok": outcome.sent,
         "sent": outcome.sent,

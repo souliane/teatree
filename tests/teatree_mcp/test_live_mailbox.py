@@ -1695,6 +1695,27 @@ def test_runner_binding_keeps_the_launch_flags(broker: LiveMailboxBroker) -> Non
         assert cast("McpStdioServerConfig", options.mcp_servers["teatree"])["args"] == launch
 
 
+def test_runner_binding_passes_ticket_to_child_and_restores_environment(broker: LiveMailboxBroker) -> None:
+    options = ClaudeAgentOptions(
+        env={"KEEP": "value"},
+        mcp_servers={"teatree": {"type": "stdio", "command": "t3", "args": ["mcp", "serve"]}},
+    )
+    with bound_task_mailbox(options, _TASK, broker=broker):
+        assert options.env["T3_TICKET_ID"] == "3"
+        assert isinstance(options.mcp_servers, dict)
+        teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
+        assert teatree["env"]["T3_TICKET_ID"] == "3"
+    assert options.env == {"KEEP": "value"}
+
+
+def test_runner_without_mailbox_child_restores_environment() -> None:
+    options = ClaudeAgentOptions(env={"KEEP": "value"})
+    with bound_task_mailbox(options, _TASK) as identity:
+        assert identity is None
+        assert options.env["T3_TICKET_ID"] == "3"
+    assert options.env == {"KEEP": "value"}
+
+
 def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytest.LogCaptureFixture) -> None:
     """The mailbox is a convenience of the run; a broken broker must not fail every dispatch."""
 

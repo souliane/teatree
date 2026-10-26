@@ -28,6 +28,7 @@ import os
 from typing import TYPE_CHECKING
 
 from teatree.agents.one_shot import OneShotSpec, run_one_shot
+from teatree.core.models import PullRequest, Task, Ticket
 from teatree.loop.inbound_classifier import strip_urls
 from teatree.loop.self_improve.budget import precheck_budget
 from teatree.loop.statusline import statusline_for_slack
@@ -92,6 +93,26 @@ def _stage_a(text: str) -> str | None:
     if not rendered:
         return None
     return rendered
+
+
+def is_status_question(text: str) -> bool:
+    lowered = strip_urls(text.lower()).strip()
+    return bool(
+        any(token in lowered for token in _DASHBOARD_TOKENS)
+        and ("?" in lowered or lowered.startswith(("status", "progress", "update")))
+    )
+
+
+def ticket_status_answer(ticket: Ticket) -> str:
+    label = ticket.repo_namespaced_key or f"ticket-{ticket.pk}"
+    lines = [f"{label}: {ticket.state}"]
+    tasks = Task.objects.filter(ticket=ticket, status__in=Task.Status.active()).order_by("pk")
+    lines.extend(f"Task {task.pk}: {task.phase} ({task.status})" for task in tasks)
+    prs = PullRequest.objects.filter(ticket=ticket).exclude(
+        state__in=(PullRequest.State.MERGED, PullRequest.State.CLOSED)
+    )
+    lines.extend(f"<{pr.url}|{pr.repo}#{pr.iid}>: {pr.state}" for pr in prs.order_by("pk"))
+    return "\n".join(lines)
 
 
 def _compact_state_digest() -> str:

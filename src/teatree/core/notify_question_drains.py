@@ -9,18 +9,18 @@ of ``teatree.core.notify`` (at its module-health LOC cap). Both post pending
     pending backlog (manual ``questions resurface`` + the auto away→present
     transition);
 * :func:`drain_unmirrored_deferred_questions` — the headless ask-loop poster:
-    posts rows with no Slack mirror yet AT THE DM ROOT (never nested under the
-    owner's active thread, so the stamped ts is one a reply can name) and stamps
-    the mirror coordinates so a reply can later bind;
+    posts rows with no Slack mirror yet under their subject ticket when known,
+    otherwise at the DM root, and stamps the card's own mirror coordinates;
 * :func:`resurface_question_backlog` — the RECURRING nag's DIGEST half
     (directive #36). The two drains above are single-shot per question (each keys
     its idempotency on the row's ``stable_notify_ref``), so a question the owner
     never answers is never raised again. This one re-raises the backlog as ONE
-    count per :data:`RESURFACE_INTERVAL_HOURS` bucket in the same DM thread;
+    count per :data:`RESURFACE_INTERVAL_HOURS` bucket in the owner's DM;
 * :func:`reask_escalated_questions` — the RECURRING nag's ANSWERABLE half. A
     digest is a place the owner cannot answer from (a reply under it carries the
     digest's thread ts, which joins no question), so the per-question bump is
-    posted INTO each question's own mirror thread, once per escalation generation.
+    posted in its subject ticket thread when known, otherwise its mirror thread,
+    once per escalation generation.
     It records no row and re-records nothing: ``DeferredQuestion.record`` returns
     the existing pending row for a marker, so a re-ask built on it posts nothing
     at all.
@@ -56,7 +56,7 @@ from teatree.core.modelkit.reask_cadence import (
     owner_quiet_at,
     reask_key,
 )
-from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding
+from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding, TicketDmPost
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyOutcome, NotifyReason
 from teatree.core.owner_question_message import (
@@ -69,6 +69,7 @@ from teatree.core.owner_question_message import (
     withheld_message,
 )
 from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
+from teatree.core.question_ticket import single_question_ticket_id
 from teatree.loop.preset_resolution import owner_zone
 
 # How many deferred questions one tick may mirror. The backlog accumulates silently
@@ -264,8 +265,7 @@ def resurface_question_backlog(
     """Post at most one backlog digest per interval; return ``(posted, pending)``.
 
     Directive #36's recurring half: an unanswered question is re-raised until the
-    owner reacts, in the same DM thread (:func:`notify_user` threads into the
-    active DM thread) and never as a per-question burst. The interval bucket IS
+    owner reacts, in the owner's DM and never as a per-question burst. The interval bucket IS
     the idempotency key, so every tick inside one bucket collapses onto the single
     delivered ``BotPing`` row and only a new bucket posts again. INTERNAL-audience
     rows (an agent's own tool-lack self-report) are excluded, as in the two
@@ -317,23 +317,9 @@ def _replace_root(row: DeferredQuestion, backend: "MessagingBackend | None") -> 
 def _post(
     row: DeferredQuestion, key: str, *, backend: "MessagingBackend | None", user_id: str, now: dt.datetime
 ) -> NotifyOutcome:
-    """Send what *row* needs next where a reply to it BINDS.
-
-    A row that already carries a mirror OWNS a Slack thread, so the post goes INTO
-    it as a short bump: Slack stamps every reply in a thread with the ROOT's ts, so a
-    reply under this post carries ``row.slack_ts`` and rung (b) of
-    :mod:`teatree.loop.question_binding` joins it exactly. A row with no mirror yet
-    has no thread to ride, so its card goes at the DM ROOT and its own ts becomes
-    the row's mirror (:func:`_stamp_mirror_from`) — the same at-root rule, for the
-    same reason.
-
-    The one shape that is never right is the default: nesting the post under
-    whatever DM thread the owner happens to be in stamps replies with THAT root, so
-    the join misses and — at any backlog above one — the sole-question rung refuses
-    too. The answer is acknowledged and dropped. Nothing here is link-rewritten:
-    the card's text and blocks arrive byte for byte.
-    """
+    """Send a card or chase through its subject ticket when uniquely known."""
     mirrored = bool(row.slack_ts)
+    ticket_id = single_question_ticket_id(row)
     return notify_user_outcome(
         bump_text(row, now=now) if mirrored else render_text(row),
         kind=NotifyKind.QUESTION,
@@ -342,8 +328,9 @@ def _post(
         options=NotifyOptions(
             backend=backend,
             user_id=user_id or None,
-            thread_ts=row.slack_ts,
-            as_thread_root=not mirrored,
+            thread_ts="" if ticket_id is not None else row.slack_ts,
+            ticket_id=ticket_id,
+            question_id=row.pk if ticket_id is not None else None,
             linkify=False,
             blocks=None if mirrored else render_blocks(row),
         ),
@@ -359,7 +346,8 @@ def _stamp_mirror_from(row: DeferredQuestion, key: str) -> bool:
     """
     ping = BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).first()
     stamped = bool(ping and ping.posted_ts and row.mark_mirrored(channel=ping.channel_ref, slack_ts=ping.posted_ts))
-    if stamped and (parked_task := row.parked_task) is not None:
+    nested = TicketDmPost.objects.filter(channel=row.slack_channel, slack_ts=row.slack_ts, question=row).exists()
+    if stamped and not nested and (parked_task := row.parked_task) is not None:
         try:
             ThreadBinding.bind(ticket=parked_task.ticket, channel=row.slack_channel, thread_ts=row.slack_ts)
         except ValueError:
@@ -381,7 +369,7 @@ def reask_escalated_questions(
     re-recording is a no-op, because :meth:`DeferredQuestion.record` returns the
     EXISTING pending row for a dedupe marker — a pending row IS the mute — and
     dismissing-and-recreating would break that mute and cut the single-use audit
-    chain. So the bump rides the row and the mirror thread it already has, and the
+    chain. So the bump rides the row and its ticket or mirror thread, and the
     only new state is one ``BotPing`` under ``reask:<stable_notify_ref>:<gap>``, where
     ``gap`` is the widening bump index :func:`~teatree.core.modelkit.reask_cadence.bump_due`
     derives from the row's age, so every tick between two bumps collapses onto the delivered ping.
@@ -392,8 +380,8 @@ def reask_escalated_questions(
     Escalated rows come first and, within each half, the oldest — the rows the age
     backstop has already stamped as sat-past-the-ceiling. Only MIRRORED rows are
     candidates: an un-mirrored row has no thread to bump into, and it belongs to
-    :func:`drain_unmirrored_deferred_questions`, which posts its FIRST copy at root
-    and stamps the mirror this function then rides.
+    :func:`drain_unmirrored_deferred_questions`, which posts its first copy and
+    stamps the card timestamp this function then reuses.
 
     A row already bumped at its current gap is dropped BEFORE the batch is cut, which is
     what makes the five slots rotate: otherwise the same five most-urgent rows hold the
@@ -462,14 +450,9 @@ def drain_deferred_questions(
     ``write_override(MODE_PRESENT)`` away→present transition call this — one code
     path, no duplicated egress logic.
 
-    Each post lands where a reply to it BINDS — into the question's own mirror
-    thread when it has one, else at the DM root with the posted ts stamped as the
-    mirror (:func:`_post`). Nested under the owner's active DM thread
-    — this drain's previous shape, with no ``mark_mirrored`` at all — the resurfaced
-    copy carried no bindable identity in either direction: a reply to it matched no
-    question by thread, and at a backlog above one the sole-question rung refused,
-    so the answer was acked and dropped. A question re-asked that way is worse than
-    one left alone.
+    A uniquely identified subject routes to its ticket thread. Other cards use
+    the existing mirror thread or post at the DM root, and every card retains
+    its own message timestamp for reply and button binding.
 
     Idempotent per question (the ``BotPing`` ledger dedupes the per-question
     ``resurface-deferred-question:<stable-ref>`` key — the row's
@@ -506,10 +489,7 @@ def drain_deferred_questions(
     try:
         for row in rows:
             key = f"{_RESURFACE_KEY_PREFIX}{row.stable_notify_ref}"
-            # Posted where a reply BINDS — into the row's own mirror thread, or at
-            # root and stamped as the mirror when it has none. A resurfaced question
-            # the owner cannot answer is worse than one not resurfaced at all: it
-            # spends the owner's attention and returns nothing.
+            # A resurfaced question the owner cannot answer spends attention for nothing.
             with _question_ping_slot() as open_slot:
                 if not open_slot:
                     break
@@ -565,13 +545,6 @@ def drain_unmirrored_deferred_questions(
     try:
         for row in rows:
             key = f"{_MIRROR_KEY_PREFIX}{row.stable_notify_ref}"
-            # AT ROOT, never nested — ``_post`` gives an un-mirrored
-            # row exactly that. This ``posted_ts`` becomes the row's ``slack_ts``
-            # two lines down, the identity a Slack reply's ``thread_ts`` is joined
-            # against by ``teatree.loop.question_binding``. Slack stamps a thread
-            # reply with the ROOT's ts, so a mirror nested under the owner's active
-            # DM thread is a ts no reply can ever carry: the join misses every time
-            # and the answer falls through unbound.
             with _question_ping_slot() as open_slot:
                 if not open_slot:
                     break

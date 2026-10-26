@@ -40,6 +40,12 @@ class BackendResolutionError(Exception):
     """
 
 
+class MessagingReadRefusedError(RuntimeError):
+    def __init__(self, method: str, subject: str, error_code: str) -> None:
+        super().__init__(f"Messaging read refused {method} on {subject}: {error_code}")
+        self.error_code = error_code
+
+
 class ApprovalState(TypedDict):
     """Backend-resolved approval snapshot for a single PR/MR (#936).
 

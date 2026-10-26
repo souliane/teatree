@@ -30,8 +30,7 @@ branch on delivered-or-not. Both are no-op-safe and never raise into the CLI tur
 
 import logging
 import os
-
-from django.db import DatabaseError
+from collections.abc import Callable
 
 from teatree.core.backend_factory import OwnerMessagingTransport, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
@@ -59,6 +58,7 @@ from teatree.core.notify_types import (
     blocked,
 )
 from teatree.core.send_proxy import SendChannel, SendRequest, route_send
+from teatree.core.ticket_dm_delivery import TicketDmRequest, deliver_ticket_dm
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 from teatree.types import RawAPIDict
 
@@ -178,13 +178,27 @@ def notify_user_outcome(
 
     payload_text = maybe_linkify(text) if options.linkify else text
 
-    channel, posted_ts, failure = _deliver_dm(
-        resolved_backend,
-        user_id=resolved_user_id,
-        text=format_notification(payload_text, kind_value),
-        blocks=options.blocks,
-        thread_ts=options.dm_thread,
-    )
+    if options.ticket_id is not None and not options.thread_ts:
+        channel, posted_ts, failure = deliver_ticket_dm(
+            TicketDmRequest(
+                backend=resolved_backend,
+                user_id=resolved_user_id,
+                text=format_notification(payload_text, kind_value),
+                blocks=options.blocks,
+                ticket_id=options.ticket_id,
+                deliver=_deliver_dm,
+                post_root=_post_ticket_root,
+                question_id=options.question_id,
+            )
+        )
+    else:
+        channel, posted_ts, failure = _deliver_dm(
+            resolved_backend,
+            user_id=resolved_user_id,
+            text=format_notification(payload_text, kind_value),
+            blocks=options.blocks,
+            thread_ts=options.thread_ts,
+        )
     if failure:
         # Any non-delivery — empty channel from ``open_dm`` (Slack
         # ``conversations.open ok:false``), a transport exception, a
@@ -302,14 +316,8 @@ def _preflight_result(
     return None
 
 
-def _active_dm_thread(channel: str) -> str:
-    from teatree.core.models import IncomingEvent  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-    try:
-        return IncomingEvent.objects.active_dm_thread(channel=channel)
-    except DatabaseError as exc:
-        logger.debug("active_dm_thread lookup failed for channel=%s: %s", channel, exc)
-        return ""
+def _post_ticket_root(backend: MessagingBackend, channel: str, text: str) -> RawAPIDict:
+    return backend.post_message(channel=channel, text=text, thread_ts="")
 
 
 def _deliver_dm(
@@ -318,15 +326,12 @@ def _deliver_dm(
     user_id: str,
     text: str,
     blocks: list[RawAPIDict] | None = None,
-    thread_ts: str | None = None,
+    thread_ts: str | Callable[[str], str] | None = None,
 ) -> tuple[str, str, str]:
     """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
 
-    ``thread_ts`` is :attr:`NotifyOptions.dm_thread`: a named thread to post into,
-    ``""`` for the DM root (skipping the active-DM-thread lookup), or ``None`` to
-    nest under whatever DM thread the owner is currently in. A caller stores the
-    returned ``ts`` as a reply-binding identity only when it posted at root — see
-    :class:`NotifyOptions`.
+    ``thread_ts`` names an explicit thread, or a callback that resolves a
+    ticket thread after the DM channel opens. Empty posts at the DM root.
 
     ``failure`` is ``""`` on a confirmed delivery (non-empty channel,
     ``ok:true`` response with a non-empty ``ts``). Otherwise it holds a
@@ -367,11 +372,17 @@ def _deliver_dm(
     suppressed = suppressed_egress_response(user_id, "owner_dm_post", EgressKind.POST)
     if suppressed is not None:
         return "dry-run", str(suppressed.get("ts") or "dry-run"), ""
+    channel = ""
     try:
         channel = backend.open_dm(user_id)
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
-        thread = _active_dm_thread(channel) if thread_ts is None else thread_ts
+        if isinstance(thread_ts, str):
+            thread = thread_ts
+        elif thread_ts is None:
+            thread = ""
+        else:
+            thread = thread_ts(channel)
         # Pass ``blocks`` only when a table is actually present — the common
         # text-only path stays a 3-arg call, so any backend (or test double)
         # that predates the ``blocks`` kwarg keeps working unchanged.
@@ -380,7 +391,7 @@ def _deliver_dm(
         else:
             response = backend.post_message(channel=channel, text=text, thread_ts=thread, blocks=blocks)
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
-        return "", "", str(exc)
+        return channel, "", str(exc)
 
     posted_ts = str(response.get("ts", "")) if isinstance(response, dict) else ""
     response_ok = bool(response.get("ok")) if isinstance(response, dict) else False

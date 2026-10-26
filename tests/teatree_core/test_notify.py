@@ -18,9 +18,10 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
+from teatree.core.backend_protocols import MessagingReadRefusedError
 from teatree.core.egress_transport import EgressKind, suppress_on_behalf_egress
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import BotPing, IncomingEvent
+from teatree.core.models import BotPing, IncomingEvent, Ticket, TicketDmPost, TicketDmThread
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyReason
 from teatree.types import RawAPIDict
@@ -54,6 +55,163 @@ def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p170000
 
 
 class TestNotifyUser(TestCase):
+    def test_ticket_notes_share_one_header_per_ticket(self) -> None:
+        tickets = [
+            Ticket.objects.create(
+                overlay="teatree",
+                issue_url=f"https://github.com/example/project/issues/{number}",
+                short_description=f"Issue {number}",
+            )
+            for number in (12, 13)
+        ]
+        backend = _backend()
+        posted: list[tuple[str, str, str]] = []
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "", **_kwargs: object) -> RawAPIDict:
+            ts = f"1700000000.{len(posted) + 1:06d}"
+            posted.append((text, thread_ts, ts))
+            return {"ok": True, "ts": ts}
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = lambda *, channel, thread_ts: [
+            {"ts": thread_ts, "text": next(text for text, _, ts in posted if ts == thread_ts)}
+        ]
+
+        for index, ticket in enumerate((tickets[0], tickets[1], tickets[0])):
+            outcome = notify_user_outcome(
+                f"note {index}",
+                kind=NotifyKind.INFO,
+                idempotency_key=f"ticket-note-{index}",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+            assert outcome.sent
+
+        roots = [entry for entry in posted if not entry[1]]
+        assert len(roots) == 2
+        assert roots[0][0] == "<https://github.com/example/project/issues/12|example/project#12> Issue 12"
+        assert roots[1][0] == "<https://github.com/example/project/issues/13|example/project#13> Issue 13"
+        assert [entry[1] for entry in posted if "note " in entry[0]] == [
+            roots[0][2],
+            roots[1][2],
+            roots[0][2],
+        ]
+        assert TicketDmPost.objects.count() == 5
+
+    def test_failed_ticket_header_never_posts_body_at_root(self) -> None:
+        ticket = Ticket.objects.create(overlay="teatree", short_description="Retry")
+        backend = _backend()
+        backend.post_message.return_value = {"ok": False, "error": "ratelimited"}
+
+        outcome = notify_user_outcome(
+            "body",
+            kind=NotifyKind.INFO,
+            idempotency_key="failed-header",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert not outcome.sent
+        assert "ticket header failed" in outcome.detail
+        assert backend.post_message.call_count == 1
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.root_ts, thread.generation) == ("", 0)
+
+    def test_proven_deleted_root_reopens_on_next_message(self) -> None:
+        ticket = Ticket.objects.create(overlay="teatree", short_description="Retry")
+        backend = _backend()
+        posted: list[tuple[str, str, str]] = []
+        refusal = ""
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "", **_kwargs: object) -> RawAPIDict:
+            nonlocal refusal
+            if "second" in text:
+                refusal = "thread_not_found"
+                return {"ok": False, "error": "ratelimited"}
+            ts = f"1700000000.{len(posted) + 1:06d}"
+            posted.append((text, thread_ts, ts))
+            return {"ok": True, "ts": ts}
+
+        def fetch(*, channel: str, thread_ts: str) -> list[RawAPIDict]:
+            if refusal:
+                method = "conversations.replies"
+                raise MessagingReadRefusedError(method, thread_ts, refusal)
+            return [{"ts": thread_ts, "text": "header"}]
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = fetch
+
+        def send(body: str) -> bool:
+            return notify_user_outcome(
+                body,
+                kind=NotifyKind.INFO,
+                idempotency_key=f"deleted-root-{body}",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            ).sent
+
+        assert send("first")
+        first_root = TicketDmThread.objects.get(ticket=ticket).root_ts
+        assert not send("second")
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.root_ts, thread.generation) == ("", 1)
+        refusal = ""
+        assert send("third")
+        thread.refresh_from_db()
+        assert thread.root_ts != first_root
+        assert thread.generation == 1
+        assert len([entry for entry in posted if not entry[1]]) == 2
+
+    def test_refused_root_read_preserves_generation_and_blocks_body(self) -> None:
+        ticket = Ticket.objects.create(short_description="Read refusal")
+        backend = _backend()
+        posts: list[tuple[str, str]] = []
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+            posts.append((text, thread_ts))
+            return {"ok": True, "ts": f"1700000000.{len(posts):06d}"}
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = MessagingReadRefusedError(
+            "conversations.replies", "1700000000.000001", "ratelimited"
+        )
+        outcome = notify_user_outcome(
+            "body",
+            kind=NotifyKind.INFO,
+            idempotency_key="read-refusal",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert not outcome.sent
+        assert len(posts) == 1
+        assert posts[0][1] == ""
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.root_ts, thread.generation) == ("1700000000.000001", 0)
+
+    def test_schedule_anchor_and_explicit_thread_keep_existing_routing(self) -> None:
+        ticket = Ticket.objects.create(issue_url="schedule:daily", short_description="Daily")
+        backend = _backend()
+        first = notify_user_outcome(
+            "schedule note",
+            kind=NotifyKind.INFO,
+            idempotency_key="schedule-note",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+        second = notify_user_outcome(
+            "named thread",
+            kind=NotifyKind.INFO,
+            idempotency_key="named-thread",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk, thread_ts="9.0"),
+        )
+
+        assert first.sent
+        assert second.sent
+        assert [call.kwargs["thread_ts"] for call in backend.post_message.call_args_list] == ["", "9.0"]
+        assert not TicketDmThread.objects.filter(ticket=ticket).exists()
+
     def test_happy_path_posts_dm_and_records_audit_with_permalink(self) -> None:
         backend = _backend()
         sent = notify_user(
@@ -84,7 +242,7 @@ class TestNotifyUser(TestCase):
         assert row.permalink.startswith("https://")
         assert row.text == "tests are green"
 
-    def test_threads_under_active_dm_thread_when_one_exists(self) -> None:
+    def test_unnamed_dm_stays_at_root_when_an_inbound_thread_exists(self) -> None:
         IncomingEvent.objects.create(
             source=IncomingEvent.Source.SLACK,
             channel_ref="D-USER",
@@ -102,9 +260,9 @@ class TestNotifyUser(TestCase):
             user_id="U_ME",
         )
 
-        assert backend.post_message.call_args.kwargs["thread_ts"] == "1700000000.000111"
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
 
-    def test_as_thread_root_ignores_the_active_dm_thread(self) -> None:
+    def test_unnamed_dm_ignores_the_active_dm_thread(self) -> None:
         IncomingEvent.objects.create(
             source=IncomingEvent.Source.SLACK,
             channel_ref="D-USER",
@@ -118,7 +276,7 @@ class TestNotifyUser(TestCase):
             kind=NotifyKind.QUESTION,
             idempotency_key="rooted-question",
             audience=NotifyAudience.OWNER_QUESTION,
-            options=NotifyOptions(backend=backend, user_id="U_ME", as_thread_root=True),
+            options=NotifyOptions(backend=backend, user_id="U_ME"),
         )
 
         assert backend.post_message.call_args.kwargs["thread_ts"] == ""
@@ -175,24 +333,6 @@ class TestNotifyUser(TestCase):
         )
 
         assert "blocks" not in backend.post_message.call_args.kwargs
-
-    def test_active_thread_lookup_db_error_falls_back_to_root(self) -> None:
-        backend = _backend()
-        with patch(
-            "teatree.core.models.IncomingEvent.objects.active_dm_thread",
-            side_effect=OperationalError("database is locked"),
-        ):
-            sent = notify_user(
-                "lookup blew up but the DM still lands",
-                kind=NotifyKind.INFO,
-                idempotency_key="thread-lookup-db-error",
-                audience=NotifyAudience.OWNER_QUESTION,
-                backend=backend,
-                user_id="U_ME",
-            )
-
-        assert sent is True
-        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
 
     def test_kind_accepts_string_alias(self) -> None:
         backend = _backend()

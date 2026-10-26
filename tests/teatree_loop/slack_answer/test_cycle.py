@@ -20,7 +20,18 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.models import PendingChatInjection, Task, Ticket
+from teatree.core.models import (
+    DmContext,
+    PendingChatInjection,
+    PullRequest,
+    Session,
+    Task,
+    ThreadBinding,
+    Ticket,
+    TicketDmPost,
+    TicketDmThread,
+)
+from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
 
@@ -106,6 +117,58 @@ class RecordingBackend:
     def resolve_user_id(self, handle: str) -> str:
         _ = handle
         return ""
+
+
+class TestTicketThreadStatus:
+    def test_bound_status_uses_ticket_rows_without_statusline_or_model(self) -> None:
+        ticket = Ticket.objects.create(overlay="", short_description="Fix retry")
+        ThreadBinding.bind(ticket=ticket, channel="C1", thread_ts="100.0")
+        TicketDmThread.objects.create(ticket=ticket, channel="C1", root_ts="100.0")
+        Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        PullRequest.objects.create(
+            ticket=ticket, url="https://github.com/example/project/pull/12", repo="example/project", iid="12"
+        )
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://github.com/example/project/pull/11",
+            repo="example/project",
+            iid="11",
+            state=PullRequest.State.MERGED,
+        )
+        other = Ticket.objects.create(short_description="Other")
+        Task.objects.create(ticket=other, session=Session.objects.create(ticket=other), phase="shipping")
+        row = PendingChatInjection.record(
+            channel="C1",
+            slack_ts="101.0",
+            text="what's the status?",
+            context=DmContext(user_id=_USER_UID, thread_ts="100.0"),
+        )
+        assert row is not None
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        reading = InboundReading(
+            intent=InboundIntent.QUESTION, answerable=True, work_summary="", source=ReadingSource.HEURISTIC
+        )
+
+        with (
+            patch(
+                "teatree.loop.slack_answer.simple_answer.statusline_for_slack", return_value="global state"
+            ) as statusline,
+            patch("teatree.loop.slack_answer.simple_answer._run_cheap_turn") as model,
+        ):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend), reader=lambda _text: reading)
+
+        assert report.answered_simple == 1
+        assert f"ticket-{ticket.pk}" in backend.replies[0][2]
+        assert ticket.state in backend.replies[0][2]
+        assert "coding" in backend.replies[0][2]
+        assert "example/project/pull/12" in backend.replies[0][2]
+        assert "example/project/pull/11" not in backend.replies[0][2]
+        assert "shipping" not in backend.replies[0][2]
+        posted_ts = backend.thread_replies["100.0"][0]["ts"]
+        assert TicketDmPost.objects.filter(channel="C1", slack_ts=posted_ts).exists()
+        statusline.assert_not_called()
+        model.assert_not_called()
 
 
 def _row(text: str, ts: str = "1.0", overlay: str = "") -> PendingChatInjection:

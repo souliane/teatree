@@ -28,7 +28,17 @@ from django.utils import timezone
 
 from teatree import answer_handback
 from teatree.core import notify as notify_module
-from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection, Session, Task, Ticket
+from teatree.core.models import (
+    BotPing,
+    DmContext,
+    IncomingEvent,
+    PendingChatInjection,
+    Session,
+    Task,
+    Ticket,
+    TicketDmPost,
+    TicketDmThread,
+)
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.task_handoff import RESUME_ANSWER_PREFIX
 from teatree.core.notify_question_drains import (
@@ -508,6 +518,40 @@ class TestReplyThreadedUnderANonQuestion:
         )
         only.refresh_from_db()
         assert only.is_pending
+
+
+class TestTicketThreadReplyOrdering:
+    def test_card_as_latest_recorded_post_binds_thread_reply(self) -> None:
+        ticket = Ticket.objects.create(overlay="")
+        thread = TicketDmThread.objects.create(ticket=ticket, channel=_CHANNEL, root_ts="100.0")
+        question = _question("Which route?", slack_ts="110.0")
+        TicketDmPost.objects.create(thread=thread, generation=0, channel=_CHANNEL, slack_ts="110.0", question=question)
+        reply = _reply("Use the new route", slack_ts="120.0", thread_ts="100.0")
+
+        bound = bind_reply(reply, reader=_statement, backend=FakeMessaging())
+
+        assert isinstance(bound, BoundAnswer)
+        assert bound.question.pk == question.pk
+
+    def test_progress_after_card_leaves_thread_reply_unbound(self) -> None:
+        ticket = Ticket.objects.create(overlay="")
+        thread = TicketDmThread.objects.create(ticket=ticket, channel=_CHANNEL, root_ts="100.0")
+        question = _question("Which route?", slack_ts="110.0")
+        TicketDmPost.objects.create(thread=thread, generation=0, channel=_CHANNEL, slack_ts="110.0", question=question)
+        TicketDmPost.objects.create(thread=thread, generation=0, channel=_CHANNEL, slack_ts="120.0")
+        reply = _reply("Use the new route", slack_ts="130.0", thread_ts="100.0")
+        backend = FakeMessaging()
+        with patch.object(backend, "fetch_thread_replies", return_value=[{"ts": "110.0"}]):
+            assert bind_reply(reply, reader=_statement, backend=backend) is None
+
+    def test_top_level_instruction_skips_a_nested_ticket_card(self) -> None:
+        ticket = Ticket.objects.create(overlay="")
+        thread = TicketDmThread.objects.create(ticket=ticket, channel=_CHANNEL, root_ts="100.0")
+        question = _question("Which route?", slack_ts="110.0")
+        TicketDmPost.objects.create(thread=thread, generation=0, channel=_CHANNEL, slack_ts="110.0", question=question)
+        reply = _reply("Use the new route", slack_ts="130.0")
+
+        assert bind_reply(reply, reader=_statement, backend=FakeMessaging()) is None
 
 
 class TestABoundAnswerSurvivesARefusedResume(TestCase):

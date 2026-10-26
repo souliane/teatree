@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
 from teatree.core.models.thread_binding import slack_command_id
+from teatree.core.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, memoized_reader, read_inbound
 from teatree.loop.question_binding import (
@@ -77,8 +78,18 @@ from teatree.loop.slack_answer.session_routing import (
     _uncertain_question_reply,
     _unmark_unit_loop_replied,
 )
-from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
-from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread, resolve_thread_root
+from teatree.loop.slack_answer.simple_answer import (
+    NEEDS_WORK_SENTINEL,
+    build_simple_answer,
+    is_status_question,
+    ticket_status_answer,
+)
+from teatree.loop.slack_answer.thread_readback import (
+    ExpectedReply,
+    bot_reply_match_in_thread,
+    bot_reply_present_in_thread,
+    resolve_thread_root,
+)
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 
 logger = logging.getLogger(__name__)
@@ -190,7 +201,7 @@ def _handle_noted(backend: MessagingBackend, unit: _Unit) -> bool:
     return True
 
 
-def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
+def _handle_simple(backend: MessagingBackend, unit: _Unit, binding: ThreadBinding | None = None) -> str:
     """SIMPLE path: resolve-root, dedup, post, readback-verify, stamp.
 
     Returns an outcome tag: ``"simple"`` — answered & whole unit stamped;
@@ -213,7 +224,11 @@ def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
     idempotent across cooperating answerers that do not share the
     ``mark_loop_replied`` CAS (#2061's cross-agent duplicate incident).
     """
-    answer = build_simple_answer(unit.lead)
+    answer = (
+        ticket_status_answer(binding.ticket)
+        if binding is not None and is_status_question(unit.text)
+        else build_simple_answer(unit.lead)
+    )
     if answer is None or answer == NEEDS_WORK_SENTINEL:
         return "needs_work"
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE):
@@ -221,18 +236,21 @@ def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
     try:
         thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
         floor = unit.rows[-1].slack_ts
-        if not bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor):
+        matched_ts = bot_reply_match_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor)
+        if matched_ts is None:
             post = backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=answer)
             posted_ts = post.get("ts")
-            if (
-                post.get("ok") is not True
-                or not isinstance(posted_ts, str)
-                or not verify_reply_visible(
+            matched_ts = (
+                bot_reply_match_in_thread(
                     backend, channel=unit.channel, thread_root=thread_root, after_ts=floor, expected_ts=posted_ts
                 )
-            ):
+                if post.get("ok") is True and isinstance(posted_ts, str)
+                else None
+            )
+            if matched_ts is None:
                 _unmark_unit_loop_replied(unit)
                 return "retry"
+        record_ticket_thread_post(unit.channel, thread_root, matched_ts)
     except Exception:
         _unmark_unit_loop_replied(unit)
         raise
@@ -353,21 +371,24 @@ def _report_coverage(backend: MessagingBackend, unit: _Unit, coverage: Coverage)
     """
     thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
     floor = unit.rows[-1].slack_ts
-    if not bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor):
+    matched_ts = bot_reply_match_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor)
+    if matched_ts is None:
         post = backend.post_reply(
             channel=unit.channel,
             ts=unit.slack_ts,
             text=f"Already covered by {coverage.describe()} — not dispatching a second lane.",
         )
         posted_ts = post.get("ts")
-        if (
-            post.get("ok") is not True
-            or not isinstance(posted_ts, str)
-            or not verify_reply_visible(
+        matched_ts = (
+            bot_reply_match_in_thread(
                 backend, channel=unit.channel, thread_root=thread_root, after_ts=floor, expected_ts=posted_ts
             )
-        ):
+            if post.get("ok") is True and isinstance(posted_ts, str)
+            else None
+        )
+        if matched_ts is None:
             return False
+    record_ticket_thread_post(unit.channel, thread_root, matched_ts)
     for row in unit.rows:
         row.observe_confirmed_loop_reply()
     backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
@@ -445,6 +466,11 @@ def _process_unit(
     if _reject_foreign_bound_unit(backend, unit, report, binding):
         return
 
+    if binding is not None and is_status_question(unit.text):
+        if _handle_simple(backend, unit, binding) == "simple":
+            report.answered_simple += 1
+        return
+
     read = memoized_reader(reader)
     result = bind_reply(unit.lead, reader=read, backend=backend, text=unit.text)
     log_coalesced_replies(unit.rows, result)
@@ -474,7 +500,7 @@ def _route_unbound(
             report.acked += 1
         return
     if reading.intent is InboundIntent.QUESTION and reading.answerable:
-        outcome = _handle_simple(backend, unit)
+        outcome = _handle_simple(backend, unit, binding)
         if outcome == "simple":
             report.answered_simple += 1
             return

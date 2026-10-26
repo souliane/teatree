@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import PendingChatInjection, TicketDmPost, TicketDmThread
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_text import options_digest
@@ -400,6 +400,19 @@ def cards_in_thread(
 def _thread_cards(
     reply: PendingChatInjection, *, backend: "MessagingBackend", body: str, reader: InboundReader
 ) -> tuple[DeferredQuestion | None, str] | AmbiguousCards | UnmatchedCardThread:
+    ticket_thread = TicketDmThread.objects.filter(channel=reply.channel, root_ts=reply.thread_ts).first()
+    if ticket_thread is not None:
+        latest = (
+            TicketDmPost.objects.filter(
+                thread=ticket_thread, generation=ticket_thread.generation, slack_ts__lt=reply.slack_ts
+            )
+            .order_by("-slack_ts", "-pk")
+            .first()
+        )
+        question = (
+            DeferredQuestion.objects.filter(pk=latest.question_id).first() if latest and latest.question_id else None
+        )
+        return (question, "ticket-newest") if question is not None and question.is_pending else (None, "")
     matched, key = cards_in_thread(
         channel=reply.channel, thread_ts=reply.thread_ts, before_ts=reply.slack_ts, backend=backend
     )
