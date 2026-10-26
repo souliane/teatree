@@ -22,7 +22,16 @@ from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import CANONICAL_PHASES
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
-from teatree.core.models import AutoReviewDispatch, ConfigSetting, LandscapeArtifact, PullRequest, Session, Task, Ticket
+from teatree.core.models import (
+    AutoReviewDispatch,
+    ConfigSetting,
+    LandscapeArtifact,
+    PullRequest,
+    RoundMetric,
+    Session,
+    Task,
+    Ticket,
+)
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -100,6 +109,36 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
 
     def test_a_non_reviewing_brief_does_not_carry_it(self) -> None:
         assert "rubric_grades" not in "\n".join(phase_specific_lines(_task("coding"), []))
+
+    def test_delta_review_uses_persisted_patch_instead_of_whole_branch_diff(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example/repo/pull/1",
+            overlay="teatree",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewer")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=1,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+fixed line\n",
+                "delta_files": ["src/f.py"],
+                "carried": [],
+            },
+        )
+
+        with patch("teatree.agents.phase_blocks.review_diff_brief_lines", side_effect=AssertionError("whole diff")):
+            brief = "\n".join(phase_specific_lines(task, []))
+
+        assert "REVIEW CASE: delta since aaaaaaaaaaaa" in brief
+        assert "+fixed line" in brief
 
     def test_every_phase_the_recorder_bills_for_coverage_is_shown_the_checklist(self) -> None:
         # The recorder refuses a verdict leaving a criterion ungraded, so a phase it bills

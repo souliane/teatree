@@ -33,7 +33,7 @@ from teatree.agents.read_only_venue_brief import (
 )
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.backends.github.client import GitHubCodeHost
-from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import LandscapeArtifact, RoundMetric, Session, Task, TaskAttempt, Ticket
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -549,6 +549,45 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "Set gh_verify_result green only when WORKER CI says green" in context
         assert "git rev-parse HEAD" not in context
 
+    def test_delta_review_skips_the_forge_whole_pr_diff(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=1,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+fixed line\n",
+                "delta_files": ["src/example.py"],
+                "carried": [],
+            },
+        )
+        host = _Host()
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="green"),
+            ),
+            patch.object(host, "get_pr_file_diffs", side_effect=AssertionError("whole PR diff read")),
+        ):
+            prompt = self._prepare(task, host=host).prompt
+        assert "+fixed line" in prompt
+        assert "REVIEW CASE: delta" in prompt
+
     def test_large_review_keeps_required_skill_and_full_diff_within_system_budget(self) -> None:
         head = "a" * 40
         ticket = Ticket.objects.create(
@@ -618,10 +657,9 @@ class TestTheReadOnlyVenueBrief(TestCase):
                 return_value=SimpleNamespace(status="unreadable", detail="no workflow runs"),
             ),
         ):
-            prepared = self._prepare(task)
+            refusal = self._refusal(task)
 
-        assert f"WORKER CI at dispatched head {head}: unreadable" in prepared.prompt
-        assert "otherwise set pending or failed and return hold" in self._system_context(prepared)
+        assert "worker CI" in str(refusal)
 
     def test_remote_review_refuses_a_head_that_moves_during_the_diff_read(self) -> None:
         head = "a" * 40

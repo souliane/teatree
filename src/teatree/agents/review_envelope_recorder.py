@@ -18,12 +18,17 @@ from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
 from teatree.agents.review_nit_policy import normalize_review_envelope
+from teatree.agents.review_rubric_recorder import ReviewGrading, merge_safe_over_fail_error, rubric_coverage_error
 from teatree.core.gates.integration_review_gate import distinct_repos
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX, WRONG_HEAD_RETRY_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import (
+    REVIEW_UNRECORDABLE_PREFIX,
+    VENUE_LIMIT_PREFIX,
+    WRONG_HEAD_RETRY_PREFIX,
+)
 from teatree.core.models import (
     ChecksContradictionError,
     DeferredQuestion,
@@ -31,8 +36,8 @@ from teatree.core.models import (
     ReviewEvidence,
     ReviewVerdict,
     ReviewVerdictError,
+    RoundMetric,
     Rubric,
-    RubricCriterion,
     RubricError,
     Task,
 )
@@ -55,6 +60,7 @@ from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import live_head_at
 from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
 from teatree.core.review.nit_publish import pr_url_for_nits, publish_nits, review_nits
+from teatree.core.review.review_plan import plan_for_task
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
 
@@ -78,9 +84,38 @@ def review_head_mismatch_refusal(task: Task, result: AgentResultBlob, *, phase: 
     return f"{WRONG_HEAD_RETRY_PREFIX}{live.sha}; checkout resolved to {mismatch['observed_sha']}: {mismatch['reason']}"
 
 
+def review_venue_limit_refusal(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+    if "review_venue_limit" not in result:
+        return ""
+    if normalize_phase(phase or task.phase) not in ENVELOPE_VERDICT_PHASES or "review_verdict" in result:
+        return "review_venue_limit requires a reviewing phase without review_verdict"
+    limit = result["review_venue_limit"]
+    reasons = limit.get("limits") if isinstance(limit, dict) else None
+    if (
+        not isinstance(reasons, list)
+        or not reasons
+        or not all(isinstance(reason, str) and reason.strip() for reason in reasons)
+    ):
+        return "review_venue_limit requires nonempty limits"
+    return VENUE_LIMIT_PREFIX + "; ".join(reasons)
+
+
+def settle_review_venue_limit(task: Task, error: str) -> None:
+    if not error.startswith(VENUE_LIMIT_PREFIX):
+        return
+    target = review_target_for_task(task)
+    if target is None or not target.head_sha:
+        return
+    ticket = gated_ticket_for_review_task(task) or task.ticket
+    RoundMetric.objects.settle(
+        kind=RoundMetric.Kind.REVIEW, ticket=ticket, subject=target.head_sha, outcome="venue_limit"
+    )
+
+
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import FixRecord, RubricGrade
+
 
 #: Reviewing phases whose returned ``review_verdict`` the orchestrator records
 #: server-side (corr-11) — the shell-free envelope seam. Both members now ALSO
@@ -165,6 +200,8 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
     envelope = normalize_review_envelope(envelope, ticket)
+    plan = plan_for_task(task, create=False)
+    carried = plan.valid_carried(task, target.head_sha) if plan is not None else frozenset()
     evidence_error = _additional_evidence_error(ticket, envelope, result)
     if evidence_error:
         return evidence_error
@@ -175,11 +212,17 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     except RubricError as exc:
         return f"{MALFORMED_RUBRIC_GRADES_PREFIX}{exc}"
     return (
-        _rubric_coverage_error(rubric, grades, returned=returned)
-        or _merge_safe_over_fail_error(rubric, envelope, grades)
+        rubric_coverage_error(rubric, grades, returned=returned, carried=carried)
+        or merge_safe_over_fail_error(rubric, envelope, grades)
         or _nit_comment_error(envelope)
-        or _record_verdict_and_grades(task, result, envelope=envelope, target=target, rubric_grades=(rubric, grades))
-        or _settle_recorded_verdict(task, target, rubric=rubric)
+        or _record_verdict_and_grades(
+            task,
+            result,
+            envelope=envelope,
+            target=target,
+            grading=ReviewGrading(rubric, grades, carried, plan.delta.prior_head if plan is not None else ""),
+        )
+        or _settle_recorded_verdict(task, target, rubric=rubric, outcome=str(envelope.get("verdict", "")))
     )
 
 
@@ -230,82 +273,6 @@ def _recorded_reviewer_identity(target: ReviewTarget, envelope: "ReviewVerdictEn
     return assigned_reviewer_identity(target.pr_id)
 
 
-def _rubric_coverage_error(rubric: "Rubric | None", grades: "list[RubricGrade]", *, returned: object) -> str:
-    """Refuse a verdict that leaves any criterion of *rubric* ungraded, or ``""``.
-
-    ORDERING IS LOAD-BEARING, which is why this runs BEFORE any write.
-    ``ReviewVerdict.record`` retires the per-head claim and releases the review lock in
-    the same transaction that records the verdict — so a verdict written over a
-    half-graded rubric leaves nothing to re-arm review, while the done-gate goes on
-    refusing the merge for the PENDING criterion. The head is then unmergeable forever.
-
-    A ticket with no rubric, and a PR no ticket owns, owe no grades at all: that is
-    byte-for-byte the subject ``core.merge.ticket_gates`` already skips, and widening it
-    here would refuse a colleague's PR the merge gate never grades.
-    """
-    if rubric is None:
-        return ""
-    ungraded = rubric.ungraded_ordinals(grades)
-    if not ungraded:
-        return ""
-    named = ", ".join(f"#{ordinal}" for ordinal in ungraded)
-    return (
-        f"{MALFORMED_RUBRIC_GRADES_PREFIX}criteria {named} of ticket {rubric.ticket.pk} are ungraded "
-        f"({_returned_grades_phrase(returned)}) — "
-        f"a verdict that leaves a criterion PENDING records nothing, because recording it would retire "
-        f"this head's review claim while the done-gate still refuses the merge, leaving the head "
-        f"unmergeable with no reviewer left to re-arm. You are the independent verifier: grade EVERY "
-        f"criterion and return the verdict again, as "
-        '"rubric_grades": [{"ordinal": <int>, "text_hash": "<hash from brief>", '
-        '"status": "pass"|"fail", "rationale": "<what proves it>"}] '
-        f"— a PASS cites the test that proves it, a FAIL needs no citation"
-    )
-
-
-def _returned_grades_phrase(returned: object) -> str:
-    """What the envelope actually carried under ``rubric_grades`` — the actionable half.
-
-    Naming only the criteria leaves a reviewer that returned ``{"0": "pass"}`` reading a
-    refusal about coverage when its payload was never a list of grades at all.
-    """
-    if returned is None:
-        return 'you returned no "rubric_grades" at all'
-    if isinstance(returned, list):
-        return f'your "rubric_grades" carried {len(returned)} grade(s)'
-    return f'your "rubric_grades" was a {type(returned).__name__}, not a JSON array'
-
-
-def _merge_safe_over_fail_error(
-    rubric: "Rubric | None", envelope: "ReviewVerdictEnvelope", grades: "list[RubricGrade]"
-) -> str:
-    """Refuse a ``merge_safe`` verdict carrying a criterion the same envelope grades FAIL.
-
-    The sibling of ``ReviewVerdict._assert_checks_admit_merge_safe`` one field over: that
-    one refuses merge_safe over checks the reviewer itself reported RED, this one over an
-    acceptance criterion the reviewer itself grades unmet. Both are a contradiction between
-    two fields ONE reviewer wrote in ONE envelope, and neither is a statement about the tree.
-
-    Recorded, it retires the per-head claim and releases the lock, and the done-gate then
-    refuses the merge on a FAIL no bypass overrides — recoverable only by a push that mints
-    a new head. Refusing before the write keeps the head re-reviewable instead.
-
-    Scoped to a rubric that EXISTS, like the coverage refusal beside it: with no rubric the
-    grade is stamped nowhere, so there is no FAIL for the done-gate to refuse the merge on.
-    """
-    if rubric is None or str(envelope.get("verdict", "")).strip().lower() != ReviewVerdict.Verdict.MERGE_SAFE:
-        return ""
-    failed = [grade["ordinal"] for grade in grades if grade["status"].strip().lower() == RubricCriterion.Status.FAIL]
-    if not failed:
-        return ""
-    named = ", ".join(f"#{ordinal}" for ordinal in failed)
-    return (
-        f"{MALFORMED_RUBRIC_GRADES_PREFIX}your verdict is merge_safe but you graded criteria {named} FAIL — "
-        f"one envelope cannot both vouch for the head and record an unmet acceptance criterion, and a FAIL is "
-        f"never overridable, so recording this would retire the review claim onto a merge the done-gate refuses "
-        f"forever. Return `hold` if the criteria really are unmet, or re-grade them honestly if they are not"
-    )
-
-
 def _publish_review_nits(ticket: "Ticket", target: ReviewTarget, findings: list[Finding]) -> None:
     points = review_nits(findings)
     if not points:
@@ -338,7 +305,7 @@ def _record_verdict_and_grades(
     *,
     envelope: ReviewVerdictEnvelope,
     target: ReviewTarget,
-    rubric_grades: "tuple[Rubric | None, list[RubricGrade]]",
+    grading: ReviewGrading,
 ) -> str:
     """Write the verdict and the rubric grades in ONE transaction, or return the refusal.
 
@@ -352,7 +319,6 @@ def _record_verdict_and_grades(
     the branch advanced to) rather than the reviewer's raw assertion, so a grade can never
     vouch for a tree the verdict does not.
     """
-    rubric, grades = rubric_grades
     fix_record = result.get("fix_record")
     if fix_record is not None and (refusal := fix_record_refusal(fix_record)):
         return refusal
@@ -406,8 +372,7 @@ def _record_verdict_and_grades(
                     head_sha=target.head_sha,
                     repos=[str(repo) for repo in integration_review.get("repos", [])],
                 )
-            if rubric is not None:
-                rubric.apply_grades(grades, grader_identity=identity, reviewed_sha=target.head_sha)
+            grading.apply(identity=identity, head=target.head_sha)
     except (ReviewVerdictError, NitLaneError) as exc:
         # The one refusal class a re-dispatch can never satisfy at this head is latched;
         # every other one names something the next reviewer could get right, so it keeps
@@ -433,12 +398,20 @@ def _nit_comment_error(envelope: ReviewVerdictEnvelope) -> str:
     return ""
 
 
-def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None") -> str:
+def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None", outcome: str) -> str:
     """After a recorded verdict: rebind the claim, clear a satisfied escalation, and prove the row reads back."""
     _rebind_claim_to_recorded_head(task, target)
     if rubric is not None and rubric.is_fully_passed_at(target.head_sha):
         clear_honesty_escalation_on_pass(rubric.ticket)
-    return _unpersisted_verdict_error(target)
+    error = _unpersisted_verdict_error(target)
+    if not error:
+        RoundMetric.objects.settle(
+            kind=RoundMetric.Kind.REVIEW,
+            ticket=gated_ticket_for_review_task(task) or task.ticket,
+            subject=target.head_sha,
+            outcome=outcome,
+        )
+    return error
 
 
 def _supersede_moved_head(target: ReviewTarget) -> None:

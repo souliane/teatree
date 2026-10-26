@@ -18,6 +18,7 @@ from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import live_head_at
+from teatree.core.review.review_plan import plan_for_task
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils.git_sync import fetch_branch
 from teatree.utils.url_slug import pr_ref_from_url
@@ -213,31 +214,41 @@ def _review_diff(task: "Task") -> tuple[str, str, str]:
     if head.unreadable or head.sha != target.head_sha:
         reason = "the dispatched pull request head is unreadable or moved"
         raise _refused(reason)
-    try:
-        host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(task.ticket), task.ticket.issue_url)
-        diffs = host.get_pr_file_diffs(repo=target.slug, pr_iid=target.pr_id) if host is not None else None
-    except Exception as exc:
-        reason = f"the review diff could not be read ({type(exc).__name__})"
-        raise _refused(reason) from exc
-    if (
-        not isinstance(diffs, Mapping)
-        or not diffs
-        or any(
-            not isinstance(path, str) or not path or not isinstance(patch, str) or not patch.strip()
-            for path, patch in diffs.items()
-        )
-    ):
-        reason = "the review diff is empty or has an unreadable file"
-        raise _refused(reason)
+    plan = plan_for_task(task)
+    if plan is not None and plan.delta.case == "delta":
+        diff_text = plan.delta.patch
+    else:
+        try:
+            host = get_backend_provider().get_code_host_for_url(
+                get_overlay_for_ticket(task.ticket), task.ticket.issue_url
+            )
+            diffs = host.get_pr_file_diffs(repo=target.slug, pr_iid=target.pr_id) if host is not None else None
+        except Exception as exc:
+            reason = f"the review diff could not be read ({type(exc).__name__})"
+            raise _refused(reason) from exc
+        if (
+            not isinstance(diffs, Mapping)
+            or not diffs
+            or any(
+                not isinstance(path, str) or not path or not isinstance(patch, str) or not patch.strip()
+                for path, patch in diffs.items()
+            )
+        ):
+            reason = "the review diff is empty or has an unreadable file"
+            raise _refused(reason)
+        diff_text = "\n".join(f"--- {path} ---\n{patch}" for path, patch in diffs.items())
     current = live_head_at(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind)
     if current.unreadable or current.sha != target.head_sha:
         reason = "the pull request head moved while its diff was read"
         raise _refused(reason)
     checks = live_checks_at(slug=target.slug, head_sha=target.head_sha)
     status = checks.status if checks.status in {"green", "pending", "failed"} else "unreadable"
+    if status == "unreadable":
+        reason = "worker CI at the dispatched head is unreadable"
+        raise _refused(reason)
     return (
         target.head_sha,
-        "\n".join(f"--- {path} ---\n{patch}" for path, patch in diffs.items()),
+        diff_text,
         f"{status} — {checks.detail}",
     )
 
