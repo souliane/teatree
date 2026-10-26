@@ -31,6 +31,54 @@ _OTHER_SHA = "b" * 40
 
 
 class TestRecordContract(TestCase):
+    def test_direct_recorder_retries_a_venue_only_hold(self) -> None:
+        with pytest.raises(ReviewVerdictError, match="retry"):
+            ReviewVerdict.record(
+                pr_id=42,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict="hold",
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                findings=[
+                    Finding(severity="blocker", kind="blocking", summary="CI rollup could not be read in this venue")
+                ],
+            )
+
+        assert not ReviewVerdict.objects.exists()
+
+    def test_venue_only_pending_check_retries_without_recording_a_hold(self) -> None:
+        with pytest.raises(ReviewVerdictError, match="retry"):
+            ReviewVerdict.record(
+                pr_id=42,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict="hold",
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="pending",
+                findings=[
+                    Finding(severity="blocker", kind="blocking", summary="verify-gates could not run in this venue")
+                ],
+            )
+
+        assert not ReviewVerdict.objects.exists()
+
+    def test_failed_required_check_still_holds_with_a_venue_note(self) -> None:
+        verdict = ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="failed",
+            findings=[
+                Finding(severity="blocker", kind="blocking", summary="CI rollup could not be read in this venue")
+            ],
+        )
+
+        assert verdict.verdict == ReviewVerdict.Verdict.HOLD
+        assert verdict.structured_findings[0].kind == "note"
+
     def test_records_a_merge_safe_verdict_with_structured_findings(self) -> None:
         verdict = ReviewVerdict.record(
             pr_id=42,

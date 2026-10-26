@@ -322,7 +322,7 @@ class TestDispatchedTaskReachesTerminalState:
 
         record_review_context_for_test(ticket)
 
-        task.complete()
+        task.complete_with_attempt()
 
         ticket.refresh_from_db()
         task.refresh_from_db()

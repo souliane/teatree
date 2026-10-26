@@ -57,6 +57,9 @@ class ReviewFinding(TypedDict, total=False):
     file: str
     line: int
     kind: str
+    basis: str
+    citation: str
+    reproduction: str
 
 
 class ArticleSuggestion(TypedDict, total=False):
@@ -317,6 +320,10 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                             "summary": {"type": "string"},
                             "file": {"type": "string"},
                             "line": {"type": "integer"},
+                            "kind": {"type": "string", "enum": ["blocking", "nit", "note"]},
+                            "basis": {"type": "string", "enum": ["executed", "documentation", "venue_limit"]},
+                            "citation": {"type": "string"},
+                            "reproduction": {"type": "string"},
                         },
                     },
                 },

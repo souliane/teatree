@@ -68,6 +68,7 @@ during an in-flight review used to arm a second reviewer.
 import datetime as dt
 from typing import TYPE_CHECKING, ClassVar
 
+from django.apps import apps
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -365,6 +366,10 @@ class AutoReviewDispatch(models.Model):
                 # Another reviewer holds the MR. Unwind the claim rather than
                 # strand it: a half-claimed head would dedup the next tick out of
                 # arming a review that was never dispatched.
+                transaction.set_rollback(True)
+                return None
+            marker = apps.get_model("core", "CodexReviewMarker")
+            if marker.objects.filter(slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha).exists():
                 transaction.set_rollback(True)
                 return None
             row.refresh_from_db()

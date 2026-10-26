@@ -620,5 +620,20 @@ class TestResolveGatedTicketFailsClosed(TestCase):
         _record_merge_verdict(ticket, items=_clean_verdict_items())
         assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)  # no raise
 
+    def test_critic_verdict_on_clear_ticket_covers_the_pr_ledger_ticket(self) -> None:
+        ledger_ticket = _ordinary_ticket()
+        clear_ticket = _ordinary_ticket()
+        PullRequest.objects.create(
+            ticket=ledger_ticket,
+            overlay="t3-teatree",
+            repo=_SLUG,
+            iid=str(_PR),
+            url=f"https://github.com/{_SLUG}/pull/{_PR}",
+        )
+        self._clear_only(clear_ticket)
+        _record_merge_verdict(clear_ticket, items=_clean_verdict_items())
+
+        assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)
+
     def test_no_pr_and_no_clear_is_a_noop(self) -> None:
         assert_merge_quality_verdict(slug=_SLUG, pr_id=_PR, head_sha=_FORTY_HEX)  # nothing to gate

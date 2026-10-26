@@ -1278,7 +1278,7 @@ This file holds the architecture. The appendices below carry detail that is genu
 
 | Appendix | Why it stays an appendix |
 |---|---|
-| [factory-architecture.md](docs/blueprint/factory-architecture.md) | §17.2–§17.8 — flywheel, components, orchestrator-decides / loop-executes topology, enforcement-gate family. Subsections are cross-referenced from code (`hook_router.py` cites §17.4 / §17.6 / §17.8). |
+| [factory-architecture.md](docs/blueprint/factory-architecture.md) | §17.2–§17.8 — flywheel, components, orchestrator-decides / loop-executes topology, PR-identity review evidence and venue limits, enforcement-gate family. Subsections are cross-referenced from code (`hook_router.py` cites §17.4 / §17.6 / §17.8). |
 | [loop-topology.md](docs/blueprint/loop-topology.md) | §5.6 deep mechanics — lease + owner-record interplay, scanner roster, three-stage tick, statusline, the mode posture's dual question-mode. Cited from `tests/test_blueprint_loop_epic_alignment.py`. |
 | [configuration.md](docs/blueprint/configuration.md) | §10 — the #1775 config home (the DB-home `ConfigSetting` store, env on top), Django settings, `OverlayConfig` methods, logging, data storage, state-placement rule. `### 10.1` cited from `commands/followup.py`; §11.4 (Bash permissions, cited from `cli/recommended_authorizations.py`) stays inline in this file. |
 | [rubric-done-gate.md](docs/blueprint/rubric-done-gate.md) | The §17.4.3 rubric→verifier merge precondition (#2241) — the `Rubric` / `RubricCriterion` model, the independent-verifier grade, and the unconditional fail-closed gate on both `merge` and `mark_delivered`. Cited from `core/gates/rubric_gate`. |

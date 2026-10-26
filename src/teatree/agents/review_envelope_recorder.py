@@ -143,6 +143,7 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
     envelope = normalize_review_envelope(envelope, ticket)
+    result["review_verdict"] = envelope
     evidence_error = _additional_evidence_error(ticket, envelope, result)
     if evidence_error:
         return evidence_error

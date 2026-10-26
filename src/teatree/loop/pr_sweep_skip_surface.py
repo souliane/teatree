@@ -7,16 +7,15 @@ merges and nobody is told why. Silence is the defect, not the skip.
 This reads the sweep's own emitted signals rather than reaching into the scanner, so
 ``pr_sweep`` needs no hook: every outcome on which the PR did NOT land extends that
 PR's streak, only a :data:`_PROGRESS_KINDS` outcome resolves it, and a streak reaching
-:data:`SURFACE_AFTER_TICKS` is announced — then again only after backing off for :data:`REANNOUNCE_COOLDOWN`.
+:data:`SURFACE_AFTER_TICKS` is announced once for each reason until it changes.
 A deliberately-parked reason (a draft PR) never announces however long it runs, and the
 doctor's standing view is ONE finding naming the count rather than a line per row (#4523).
 A granular reason wobble (``ci_red`` flapping to ``ci_pending`` and back on the same
 stuck PR) is not a new problem, and the ledger reads it as one condition on both sides:
 the streak keeps counting through it (the CI-verdict reasons are one group, so the
 flappiest PRs still reach the threshold rather than restarting below it every tick), and
-the backoff is reason-independent on BOTH halves — the DB gate and the idempotency key
-(see :func:`_announcement_key`) — so the wobble never re-arms an immediate second DM.
-Only the cooldown window does. ``t3 doctor check`` reports every aged streak standing,
+the latest reason is announced once, with a stable key for that reason's episode.
+``t3 doctor check`` reports every aged streak standing,
 announced or not.
 
 Every failure is swallowed: a missing table, an unreachable DM transport, or a
@@ -41,12 +40,6 @@ logger = logging.getLogger(__name__)
 #: Consecutive identical skips before a PR is announced. Below this a skip is
 #: ordinary sweep bookkeeping; at it, the PR is stuck and nobody has been told.
 SURFACE_AFTER_TICKS = 3
-
-#: Minimum time between announcements for the SAME PR, regardless of how many times
-#: (or how often) its skip reason changes in between. Stops a flapping reason from
-#: re-arming a fresh DM every few ticks while still reminding the owner daily that a
-#: PR is genuinely still stuck.
-REANNOUNCE_COOLDOWN = dt.timedelta(hours=24)
 
 #: How long a tracked PR may go unobserved before the pass reads it as gone from the open
 #: set. ``PrSweepScanner.scan`` emits no signal for a PR whose evaluation raised, so one
@@ -198,26 +191,13 @@ def _discard_fossils(signals: list[ScanSignal], moment: dt.datetime) -> None:
     )
 
 
-def _announcement_key(row: "SweepSkipStreak", *, moment: dt.datetime, cooldown: dt.timedelta) -> str:
-    """One key per PR per cooldown window — deliberately NOT per reason.
-
-    The notify ledger no-ops a key it has already delivered, forever. Keying on the
-    reason therefore swallowed the backed-off reminder in the case that matters most
-    (a PR stuck on ONE unchanged reason for days) while a reason wobble sailed
-    through — the exact inversion of the backoff. A window index is stable for a
-    re-run inside the window and provably distinct once ``cooldown`` has elapsed.
-
-    A non-positive ``cooldown`` degrades to a one-second window rather than raising:
-    this module's contract is that no failure aborts a tick.
-    """
-    window = int(moment.timestamp() // max(cooldown.total_seconds(), 1.0))
-    return f"pr_sweep_aged_skip:{row.ref}:{window}"
+def _announcement_key(row: "SweepSkipStreak") -> str:
+    return f"pr_sweep_aged_skip:{row.ref}:{row.reason}:{row.first_seen_at.isoformat()}:{row.tick_count}"
 
 
 def _announce_due(
     notify: SkipNotifier,
     threshold: int,
-    cooldown: dt.timedelta,
     moment: dt.datetime,
 ) -> list[str]:
     from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM import needs the app registry
@@ -226,14 +206,12 @@ def _announce_due(
     due = list(
         SweepSkipStreak.objects.due_to_surface(
             threshold=threshold,
-            cooldown=cooldown,
-            now=moment,
             observed_since=moment,
         ),
     )
     for row in due:
         try:
-            notify(text=_surface_text(row), idempotency_key=_announcement_key(row, moment=moment, cooldown=cooldown))
+            notify(text=_surface_text(row), idempotency_key=_announcement_key(row))
         except Exception:
             logger.exception("pr_sweep aged-skip surfacing failed to notify for %s", row.ref)
         announced.append(row.ref)
@@ -248,7 +226,6 @@ def record_sweep_outcomes(
     *,
     notify: SkipNotifier | None = None,
     threshold: int = SURFACE_AFTER_TICKS,
-    cooldown: dt.timedelta = REANNOUNCE_COOLDOWN,
     now: dt.datetime | None = None,
 ) -> list[str]:
     """Fold this tick's sweep signals into the streak ledger; announce the newly aged.
@@ -263,7 +240,7 @@ def record_sweep_outcomes(
         for signal in sweep_signals:
             _observe(signal, moment)
         _discard_fossils(sweep_signals, moment)
-        return _announce_due(notify or _default_notify, threshold, cooldown, moment)
+        return _announce_due(notify or _default_notify, threshold, moment)
     except Exception:
         logger.exception("pr_sweep aged-skip surfacing failed")
         return []

@@ -22,6 +22,19 @@ _FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 class TestTask(TestCase):
+    def test_review_cannot_complete_without_a_recorded_attempt(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER)
+        ticket.record_review_context("issue", ["spec"], "checked against spec")
+        session = Session.objects.create(ticket=ticket, agent_id="reviewer")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        task.claim(claimed_by="worker")
+
+        with pytest.raises(InvalidTransitionError, match=r"review.*attempt"):
+            task.complete()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
     def test_claim_route_complete_fail_and_attempt_storage(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")

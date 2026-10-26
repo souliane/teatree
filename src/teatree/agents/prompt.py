@@ -201,6 +201,8 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     if facts.review_diff:
         lines.extend(("", f"DIFF UNDER REVIEW at dispatched head {facts.review_head}:", facts.review_diff))
         lines.extend(("", f"WORKER CI at dispatched head {facts.review_head}: {facts.review_checks}"))
+        lines.extend(("", "CONTROL PLANE plan live measurement:", facts.review_plan))
+        lines.extend(("", "CONTROL PLANE recorded RED-first evidence:", facts.review_red))
     elif normalize_phase(task.phase) == "reviewing" and ticket.role == Ticket.Role.AUTHOR:
         lines.extend(review_diff_brief_lines(task))
     if parent_summary := _parent_result_summary(task):

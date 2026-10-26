@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, cast
 
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.merge.errors import MergePreconditionError
-from teatree.core.merge.ticket_resolution import resolve_gated_ticket
+from teatree.core.merge.ticket_resolution import related_gated_tickets, resolve_gated_ticket
 from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict
@@ -240,7 +240,9 @@ def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str) -> None:
         logger.warning("merge-quality critic dispatch enqueue failed for ticket %s: %s", ticket.pk, exc)
 
 
-def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
+def check_merge_quality_verdict(
+    ticket: "Ticket", head_sha: str, *, related_tickets: "tuple[Ticket, ...] | None" = None
+) -> None:
     """Refuse the merge unless a clean merge-quality verdict covers *head_sha*.
 
     For every ticket, fail closed: no covering verdict → arm the async critic and refuse; a verdict
@@ -249,8 +251,11 @@ def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
     """
     head = head_sha.strip().lower()
     _check_brief_constraints(ticket)
-    verdict = covering_verdict(ticket, head)
-    if verdict is None:
+    candidates = related_tickets or (ticket,)
+    verdicts = [
+        (candidate, verdict) for candidate in candidates if (verdict := covering_verdict(candidate, head)) is not None
+    ]
+    if not verdicts:
         _arm_merge_quality_critic(ticket, head)
         from teatree.config.resolution import worker_is_quiescing  # noqa: PLC0415 — deferred: reads live worker config
 
@@ -271,17 +276,18 @@ def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
             f"the exact head is required before a merge. {recovery}"
         )
         raise MergeQualityVerdictError(msg)
-    record_merge_quality_findings(verdict, ticket=ticket, head_sha=head)
-    unmet = unmet_items(verdict)
-    if unmet:
-        msg = (
-            f"the merge-quality CriticVerdict at head {head} for ticket {ticket.pk} does not clear "
-            f"{', '.join(unmet)} — refusing to merge (north-star PR-4): merely-green is not well-engineered. Each "
-            f"unmet item is recorded as a CriticFinding naming the offending test/file — resolve them and re-judge "
-            f"at the shipped head."
-        )
-        raise MergeQualityVerdictError(msg)
-    _assert_nit_receipts(ticket, head, verdict)
+    for evidence_ticket, verdict in verdicts:
+        record_merge_quality_findings(verdict, ticket=evidence_ticket, head_sha=head)
+        unmet = unmet_items(verdict)
+        if unmet:
+            msg = (
+                f"the merge-quality CriticVerdict at head {head} for ticket {evidence_ticket.pk} does not clear "
+                f"{', '.join(unmet)} — refusing to merge (north-star PR-4): merely-green is not well-engineered. Each "
+                f"unmet item is recorded as a CriticFinding naming the offending test/file — resolve them and re-judge "
+                f"at the shipped head."
+            )
+            raise MergeQualityVerdictError(msg)
+        _assert_nit_receipts(evidence_ticket, head, verdict)
 
 
 def _check_brief_constraints(ticket: "Ticket") -> None:
@@ -354,4 +360,4 @@ def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str) -> Non
     ticket = resolve_gated_ticket(slug=slug, pr_id=pr_id)
     if ticket is None:
         return
-    check_merge_quality_verdict(ticket, head_sha)
+    check_merge_quality_verdict(ticket, head_sha, related_tickets=related_gated_tickets(slug=slug, pr_id=pr_id))

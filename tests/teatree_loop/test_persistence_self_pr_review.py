@@ -53,7 +53,7 @@ class TestHandleSelfPrReview(TestCase):
         first = handle_self_pr_review(_action(pr_id=91, head_sha="selfsha-91"))
         assert first is not None
         record_review_context_for_test(first.ticket)
-        first.complete()
+        first.complete_with_attempt()
         assert handle_self_pr_review(_action(pr_id=91, head_sha="selfsha-91")) is None
         assert Task.objects.filter(ticket__issue_url=_PR_URL, phase="reviewing").count() == 1
 
@@ -67,7 +67,7 @@ class TestHandleSelfPrReview(TestCase):
         assert first is not None
         assert first.ticket.extra["reviewed_sha"] == "selfsha-93-a"
         record_review_context_for_test(first.ticket)
-        first.complete()
+        first.complete_with_attempt()
         second = handle_self_pr_review(_action(pr_id=93, head_sha="selfsha-93-b"))
         assert second is not None
         assert second.ticket.pk == first.ticket.pk

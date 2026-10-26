@@ -27,7 +27,7 @@ this same verdict just vouched for (or held).
 
 import enum
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Final, TypedDict
+from typing import TYPE_CHECKING, ClassVar, Final, NotRequired, TypedDict
 
 from django.db import models, transaction
 from django.utils import timezone
@@ -37,7 +37,7 @@ from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveChe
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.checks_admission import ReviewVerdictError, assert_checks_admit_merge_safe, live_checks_reader
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.core.models.finding_standard import normalize_finding_kind
+from teatree.core.models.finding_standard import FindingKind, normalize_finding_kind
 from teatree.core.models.merge_clear import SHA_FULL_LEN, ClearIssuanceError, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.reviewer_identity import (
@@ -67,6 +67,9 @@ class FindingDict(TypedDict):
     file: str
     line: int
     kind: str
+    basis: NotRequired[str]
+    citation: NotRequired[str]
+    reproduction: NotRequired[str]
 
 
 def _coerce_line(value: object) -> int:
@@ -92,18 +95,51 @@ class Finding:
     file: str = ""
     line: int = 0
     kind: str = ""
+    basis: str = ""
+    citation: str = ""
+    reproduction: str = ""
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "kind", normalize_finding_kind(self.kind, self.severity))
+        kind = normalize_finding_kind(self.kind, self.severity)
+        if kind == FindingKind.BLOCKING and not self.reproduction.strip():
+            summary = self.summary.casefold()
+            venue_resource = any(
+                phrase in summary
+                for phrase in (
+                    "ci rollup",
+                    "verify-gates",
+                    "plan artifact",
+                    "red-first",
+                    "revert-to-red",
+                    "review venue",
+                )
+            )
+            venue_limit = any(
+                phrase in summary
+                for phrase in ("could not", "cannot", "unavailable", "no access", "not possible", "unable to")
+            )
+            docs_only = self.basis == "documentation" or self.citation.startswith(("https://docs.", "docs/"))
+            no_code_anchor = not self.file and not self.line
+            if docs_only or (no_code_anchor and (self.basis == "venue_limit" or (venue_resource and venue_limit))):
+                kind = FindingKind.NOTE
+                object.__setattr__(self, "severity", "note")
+        object.__setattr__(self, "kind", kind)
 
     def as_dict(self) -> FindingDict:
-        return {
+        data: FindingDict = {
             "severity": self.severity,
             "summary": self.summary,
             "file": self.file,
             "line": self.line,
             "kind": self.kind,
         }
+        if self.basis:
+            data["basis"] = self.basis
+        if self.citation:
+            data["citation"] = self.citation
+        if self.reproduction:
+            data["reproduction"] = self.reproduction
+        return data
 
     @classmethod
     def from_dict(cls, raw: "Mapping[str, object]") -> "Finding":
@@ -113,6 +149,9 @@ class Finding:
             file=str(raw.get("file", "")),
             line=_coerce_line(raw.get("line")),
             kind=str(raw.get("kind", "")),
+            basis=str(raw.get("basis", "")),
+            citation=str(raw.get("citation", "")),
+            reproduction=str(raw.get("reproduction", "")),
         )
 
     def location(self) -> str:
@@ -398,6 +437,15 @@ class ReviewVerdict(models.Model):
         normalized_verdict = _known_choice(verdict, cls.Verdict, field="verdict")
         normalized_blast = _known_choice(blast_class, MergeClear.BlastClass, field="blast_class")
         normalized_verify = _known_choice(gh_verify_result, MergeClear.VerifyResult, field="gh_verify_result")
+        if (
+            normalized_verdict == cls.Verdict.HOLD
+            and findings
+            and normalized_verify != MergeClear.VerifyResult.FAILED
+            and not any(finding.kind == FindingKind.BLOCKING for finding in findings)
+            and any(finding.kind == FindingKind.NOTE for finding in findings)
+        ):
+            msg = "venue-only or documentation-only concern cannot hold this head; retry the review"
+            raise ReviewVerdictError(msg)
         if normalized_verdict == cls.Verdict.MERGE_SAFE:
             assert_checks_admit_merge_safe(
                 normalized_verify,

@@ -29,8 +29,15 @@ here even if Wave A's own unit tests stay green.
 """
 
 import datetime as dt
+from typing import TYPE_CHECKING
 
 import typer
+
+from teatree.utils.run import redact_secrets
+from teatree.utils.url_slug import pr_ref_from_url
+
+if TYPE_CHECKING:
+    from teatree.core.models import Task
 
 from teatree.cli.doctor.checks_external_outcomes import EXTERNAL_CHECKS
 from teatree.cli.doctor.reconciliation_finding import Level, ReconciliationFinding, _alarm, _degraded, _now, _ok
@@ -407,27 +414,68 @@ def _check_review_dispatch_saturation(now: dt.datetime | None = None) -> Reconci
             AutoReviewDispatch,
             CodexReviewMarker,
             CriticDispatch,
+            Task,
         )
 
         moment = _now(now)
-        reviews = [f"`{row.slug}#{row.pr_id}@{row.head_sha[:8]}`" for row in AutoReviewDispatch.saturated(at=moment)]
-        codex = [f"`codex:{row.slug}#{row.pr_id}@{row.head_sha[:8]}`" for row in CodexReviewMarker.saturated(at=moment)]
-        critics = [
-            f"`ticket:{row.ticket_id}/{row.transition}@{row.head_sha[:8]}`"
-            for row in CriticDispatch.saturated(at=moment)
+        stranded: list[tuple[str, str]] = [
+            (f"`{row.slug}#{row.pr_id}@{row.head_sha[:8]}`", _review_saturation_reason(row.task))
+            for row in AutoReviewDispatch.saturated(at=moment).select_related("task")
         ]
+        for row in CodexReviewMarker.saturated(at=moment):
+            task = next(
+                (
+                    task
+                    for task in Task.objects.filter(
+                        ticket__role="reviewer",
+                        ticket__issue_url__iendswith=f"/{row.pr_id}",
+                        ticket__extra__reviewed_sha=row.head_sha,
+                    )
+                    .select_related("ticket")
+                    .order_by("-pk")
+                    if (ref := pr_ref_from_url(task.ticket.issue_url)) is not None
+                    and ref.slug.casefold() == row.slug.casefold()
+                    and ref.pr_id == row.pr_id
+                ),
+                None,
+            )
+            stranded.append((f"`codex:{row.slug}#{row.pr_id}@{row.head_sha[:8]}`", _review_saturation_reason(task)))
+        stranded.extend(
+            (f"`ticket:{row.ticket_id}/{row.transition}@{row.head_sha[:8]}`", _review_saturation_reason(row.task))
+            for row in CriticDispatch.saturated(at=moment).select_related("task")
+        )
     except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
         return _degraded(check_id, exc)
-    stranded = reviews + codex + critics
     if not stranded:
         return _ok(check_id, "no saturated review/critic dispatches")
+    by_reason: dict[str, list[str]] = {}
+    for ref, reason in stranded:
+        by_reason.setdefault(reason, []).append(ref)
+    details = "; ".join(f"{reason}: {', '.join(refs)}" for reason, refs in by_reason.items())
     return _alarm(
         check_id,
         f"Review-dispatch saturation alarm: {len(stranded)} claim(s) exhausted the retry budget "
-        f"with no verdict recorded: {', '.join(stranded)}. Every armed review/critic for those heads "
+        f"with no verdict recorded. Causes by reason: {details}. Every armed review/critic for those heads "
         f"died, so nothing will re-arm them and the merge gate stays unsatisfied — review each by hand "
         f"or push a new commit to arm a fresh head.",
     )
+
+
+def _review_saturation_reason(task: "Task | None") -> str:
+    if task is None:
+        return "no linked review task for this head"
+    attempt = task.attempts.exclude(error="").order_by("-pk").first()
+    error = (attempt.error if attempt is not None else task.failure_reason).strip()
+    if not error:
+        return "attempt recorded without verdict or failure reason" if task.attempts.exists() else "no recorded attempt"
+    lowered = error.casefold()
+    if "turn ceiling" in lowered or "maximum turns" in lowered:
+        return "turn ceiling"
+    if "brief refused" in lowered or "brief could not" in lowered:
+        return "refused brief"
+    if "credential" in lowered or "api_credit:" in lowered:
+        return "credential"
+    return redact_secrets(error.splitlines()[0])[:160]
 
 
 def _high_churn_counts() -> dict[str, tuple[int, int]]:

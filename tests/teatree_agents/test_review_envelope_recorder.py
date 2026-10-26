@@ -162,6 +162,106 @@ def _criteria(ticket: Ticket) -> list[RubricCriterion]:
 
 
 class TestTheReviewerGradesTheRubricItVerifies(TestCase):
+    def test_venue_only_hold_becomes_a_recorded_note(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "venue_limit",
+                "summary": "Review venue cannot run verify-gates",
+                "file": "",
+                "line": 0,
+            }
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "retry" in attempt.error
+        assert attempt.result["review_verdict"]["findings"][0]["kind"] == "note"
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_documentation_claim_without_executed_reproduction_is_a_note(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "documentation",
+                "summary": "Documentation suggests zero-argument super fails in slots dataclasses",
+                "citation": "https://docs.python.org/3/library/dataclasses.html",
+                "file": "a.py",
+                "line": 5,
+            }
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "retry" in attempt.error
+        assert attempt.result["review_verdict"]["findings"][0]["kind"] == "note"
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_pending_checks_retry_and_preserve_the_venue_note_in_the_attempt(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["gh_verify_result"] = "pending"
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "venue_limit",
+                "summary": "Review venue cannot run verify-gates",
+                "file": "",
+                "line": 0,
+            }
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "retry" in attempt.error
+        assert attempt.result["review_verdict"]["findings"][0]["kind"] == "note"
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_executed_code_finding_still_blocks_with_venue_note(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "venue_limit",
+                "summary": "Review venue cannot read CI",
+                "file": "",
+                "line": 0,
+            },
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "basis": "executed",
+                "reproduction": "uv run pytest tests/test_a.py::test_bug: failed with AssertionError",
+                "summary": "The changed function returns the wrong value",
+                "file": "a.py",
+                "line": 5,
+            },
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.HOLD
+        assert [finding.kind for finding in recorded.structured_findings] == ["note", "blocking"]
+
     def test_a_nit_only_hold_records_merge_safe(self) -> None:
         ticket = _author_ticket()
         result = _envelope(grades=_full_pass(), verdict="hold")

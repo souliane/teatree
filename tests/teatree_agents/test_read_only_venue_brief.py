@@ -33,7 +33,18 @@ from teatree.agents.read_only_venue_brief import (
 )
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.backends.github.client import GitHubCodeHost
-from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.core.modelkit.forge_readability import LiveChecksRead, LiveHeadRead
+from teatree.core.models import (
+    AutoReviewDispatch,
+    LandscapeArtifact,
+    PullRequest,
+    ReproEvidence,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+)
+from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -113,6 +124,59 @@ def _provider(host: _Host) -> SimpleNamespace:
 
 
 class TestTheReadOnlyVenueBrief(TestCase):
+    def test_review_brief_includes_control_plane_plan_and_red_facts(self) -> None:
+        author = self.ticket
+        PullRequest.objects.create(
+            ticket=author,
+            overlay="t3-teatree",
+            url="https://github.com/example-org/example-repo/pull/5",
+            repo="example-org/example-repo",
+            iid="5",
+        )
+        PlanArtifact.objects.create(
+            ticket=author,
+            plan_text="Live measurement: test failed on the old head.\nShip after review.",
+            base_sha="b" * 40,
+        )
+        ReproEvidence.objects.create(
+            ticket=author,
+            command="uv run pytest tests/test_bug.py",
+            command_fingerprint="a" * 64,
+            red_head_sha="b" * 40,
+            red_exit_code=1,
+            red_output_digest="c" * 64,
+            provenance_ok=True,
+        )
+        dispatch = AutoReviewDispatch.enqueue(
+            slug="example-org/example-repo",
+            pr_id=5,
+            head_sha="a" * 40,
+            pr_url="https://github.com/example-org/example-repo/pull/5",
+            overlay="teatree",
+        )
+        assert dispatch is not None
+        assert dispatch.task is not None
+        with (
+            patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=_provider(_Host())),
+            patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=LiveHeadRead(sha="a" * 40, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=LiveChecksRead("green", "CI passed"),
+            ),
+        ):
+            facts = ReadOnlyFacts.gather(dispatch.task, None)
+        prompt = build_read_only_task_prompt(dispatch.task, facts)
+
+        assert "WORKER CI at dispatched head" in prompt
+        assert "CI passed" in prompt
+        assert "Live measurement: test failed on the old head." in prompt
+        assert "uv run pytest tests/test_bug.py" in prompt
+        assert "RED exit 1" in prompt
+
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create(issue_url=_ISSUE_URL, context="decision: keep the bar\nnote: two lines")
@@ -732,10 +796,17 @@ class TestWorkerBriefsAreTheBaseBytes(TestCase):
                     text.replace(f"Task ID: {task.pk}", "Task ID: <task>")
                     .replace(f"context show {ticket.pk}`", "context show <ticket>`")
                     .replace(f"{DEFAULT_SKILLS_DIR}/", "<skills>/")
+                    .replace(
+                        " NOTE: a venue cannot read or run a check, or documentation suggests a defect "
+                        "without executed reproduction.",
+                        "",
+                    )
                 )
 
             with self.subTest(phase=phase):
                 system_prompt = prepared.options.system_prompt
                 assert isinstance(system_prompt, dict)
+                if phase == "coding":
+                    assert "NOTE: a venue cannot read or run a check" in str(system_prompt.get("append"))
                 assert normalized(str(system_prompt.get("append"))) == golden[phase]["context"]
                 assert normalized(prepared.prompt) == golden[phase]["prompt"]
