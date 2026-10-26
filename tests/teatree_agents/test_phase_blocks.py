@@ -111,7 +111,8 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
 
     def test_the_reviewing_brief_requires_every_criterion_graded(self) -> None:
         brief = self._reviewing_brief()
-        assert "EVERY criterion" in brief
+        assert "Grade every row except CARRIED" in brief
+        assert "An ungraded RE-GRADE row records nothing" in brief
         assert "records nothing" in brief
 
     def test_the_reviewing_brief_says_a_pass_cites_a_test_and_a_fail_does_not(self) -> None:
@@ -165,7 +166,10 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
             },
         )
 
-        with patch("teatree.agents.phase_blocks.review_diff_brief_lines", side_effect=AssertionError("whole diff")):
+        with (
+            patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of(head)),
+            patch("teatree.agents.phase_blocks.review_diff_brief_lines", side_effect=AssertionError("whole diff")),
+        ):
             brief = "\n".join(phase_specific_lines(task, []))
 
         assert "REVIEW CASE: delta since aaaaaaaaaaaa" in brief
@@ -529,7 +533,12 @@ class TestReviewingGreenProofBinding(TestCase):
         return Task.objects.create(ticket=ticket, session=session, phase="reviewing")
 
     def _brief(self, **kwargs: str) -> str:
-        return "\n".join(phase_specific_lines(self._reviewer_task(**kwargs), []))
+        head = kwargs["reviewed_sha"]
+        with (
+            patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of(head)),
+            patch("teatree.agents.phase_blocks.live_head_at", return_value=LiveHeadRead.of(head)),
+        ):
+            return "\n".join(phase_specific_lines(self._reviewer_task(**kwargs), []))
 
     def test_brief_names_the_head_and_the_expect_sha_command(self) -> None:
         brief = self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha=self._HEAD)
