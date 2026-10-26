@@ -9,7 +9,7 @@ is referenced by name and its own edge cases are pinned at the unit level.
 from django.test import TestCase
 
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import Task, Ticket
+from teatree.core.models import HeadCarryOver, ReviewVerdict, Task, Ticket
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
@@ -87,3 +87,66 @@ class TestHandleSelfPrReview(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.extra == extra
+
+
+class TestACarriedHeadArmsNoReview(TestCase):
+    """A head whose records followed an unchanged patch (#5450) was reviewed already; a changed one is reviewed."""
+
+    _OLD = "a" * 40
+    _NEW = "b" * 40
+
+    def _carry_row(self, outcome: HeadCarryOver.Outcome, *, review_verdicts: int = 1) -> None:
+        HeadCarryOver.objects.create(
+            slug="o/r",
+            pr_id=95,
+            from_head=self._OLD,
+            to_head=self._NEW,
+            outcome=outcome,
+            carried={"review_verdicts": review_verdicts},
+        )
+
+    def test_a_carried_head_creates_no_marker_and_no_task(self) -> None:
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=95, head_sha=self._OLD, variant="claude:review")
+        CodexReviewMarker.mark_resolved(slug="o/r", pr_id=95, head_sha=self._OLD)
+        self._carry_row(HeadCarryOver.Outcome.CARRIED)
+
+        assert handle_self_pr_review(_action(pr_id=95, head_sha=self._NEW)) is None
+
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=95, head_sha=self._NEW).exists()
+        assert not Task.objects.filter(ticket__issue_url=_PR_URL.replace("90", "95")).exists()
+
+    def test_a_carried_head_arms_a_variant_not_completed_at_the_old_head(self) -> None:
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=95, head_sha=self._OLD, variant="codex:review")
+        CodexReviewMarker.mark_resolved(slug="o/r", pr_id=95, head_sha=self._OLD)
+        self._carry_row(HeadCarryOver.Outcome.CARRIED)
+
+        task = handle_self_pr_review(_action(pr_id=95, head_sha=self._NEW))
+
+        assert task is not None
+        assert task.phase == "reviewing"
+
+    def test_a_head_the_patch_left_unchanged_that_no_verdict_followed_is_armed(self) -> None:
+        self._carry_row(HeadCarryOver.Outcome.CARRIED, review_verdicts=0)
+
+        task = handle_self_pr_review(_action(pr_id=95, head_sha=self._NEW))
+
+        assert task is not None
+        assert CodexReviewMarker.objects.filter(slug="o/r", pr_id=95, head_sha=self._NEW).count() == 1
+
+    def test_a_head_whose_patch_changed_is_armed(self) -> None:
+        self._carry_row(HeadCarryOver.Outcome.REFUSED)
+
+        task = handle_self_pr_review(_action(pr_id=95, head_sha=self._NEW))
+
+        assert task is not None
+        assert CodexReviewMarker.objects.filter(slug="o/r", pr_id=95, head_sha=self._NEW).count() == 1
+
+    def test_a_head_the_forge_could_not_vouch_for_is_armed(self) -> None:
+        ReviewVerdict.record(
+            pr_id=96, slug="o/r", reviewed_sha=self._OLD, verdict="merge_safe", reviewer_identity="cold-reviewer"
+        )
+
+        task = handle_self_pr_review(_action(pr_id=96, head_sha=self._NEW))
+
+        assert task is not None
+        assert not HeadCarryOver.objects.filter(pr_id=96).exists()

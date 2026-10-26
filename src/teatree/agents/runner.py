@@ -5,6 +5,7 @@ import logging
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
@@ -13,6 +14,7 @@ from django.utils import timezone
 from teatree.agents._runner_env import DispatchCredential, _provider_child_env, agent_spawn_env
 from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa: F401 — compatibility re-exports
 from teatree.agents.compaction_guard import GuardedHarness
+from teatree.agents.credential_policy import spend_metered_key
 from teatree.agents.dispatch_refusal import pre_harness_refusal
 from teatree.agents.harness import Harness
 from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness, route_hold
@@ -25,6 +27,7 @@ from teatree.agents.harness_registry import (
 )
 from teatree.agents.live_control import DEFAULT_IDLE_WINDOW_SECONDS
 from teatree.agents.model_tiering import resolve_spawn_effort
+from teatree.agents.own_pr_review_head import prepare_own_pr_review_head
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
 from teatree.agents.read_only_venue_brief import ReadOnlyBriefRefusedError
@@ -64,9 +67,10 @@ from teatree.agents.runner_route_recording import fail_routed_crash as _fail_rou
 from teatree.agents.runner_route_recording import fallback_reason_for_outcome as _fallback_reason_for_outcome
 from teatree.agents.runner_route_recording import learn_route_failure as _learn_route_failure
 from teatree.agents.runner_route_recording import park_after_route_failure as _park_after_route_failure
+from teatree.agents.runner_route_recording import park_until as _park_until
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
-from teatree.agents.runner_skill_staging import staged_skills_or_refusal
+from teatree.agents.runner_skill_staging import park_if_worker_skill_roots_empty, staged_skills_or_refusal
 from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
@@ -131,12 +135,19 @@ class _RouteRetry:
     def after(self, record: _RouteFailureRecord, *, learn_failure: bool = True) -> TaskAttempt:
         attempt = _record_route_failure_attempt(self.task, self.dispatch, record)
         _alert_owner_of_metered_fallback(attempt)
+        side_effects = record.outcome is not None and bool(record.outcome.tool_calls)
         if record.outcome is not None:
             release_finished_thread(self.task)
-            if record.outcome.tool_calls:
+        moment = timezone.now()
+        retry_at = self._spent_key_retry_at(record, moment)
+        if retry_at is None:
+            if side_effects:
                 _park_after_route_failure(self.task, self.dispatch, record, phase=self.phase)
                 return attempt
-        if learn_failure:
+        elif side_effects or not record.account or (retry_at > moment and not self.dispatch.has_later_candidate):
+            _park_until(self.task, retry_at)
+            return attempt
+        if learn_failure and (retry_at is None or not record.account):
             _learn_route_failure(self.task, self.dispatch, record, phase=self.phase)
         return _run_agent(
             self.task,
@@ -144,6 +155,13 @@ class _RouteRetry:
             overlay_skill_metadata=self.overlay_skill_metadata,
             handoff=self.handoff,
             route_fallback=_RouteFallback(record.reason, int(attempt.pk)),
+        )
+
+    def _spent_key_retry_at(self, record: _RouteFailureRecord, moment: datetime) -> datetime | None:
+        if not record.refused_for_credit:
+            return None
+        return spend_metered_key(
+            scope=self.task.ticket.overlay or "", lane=record.lane, signer=record.account, moment=moment
         )
 
 
@@ -274,9 +292,11 @@ def _ready_run_or_failure(
     except SkillDispatchError as exc:
         _restore_unconsumed_resume_thread(preflight.dispatch.harness)
         logger.warning("Refusing task %s: %s", route_retry.task.pk, exc)
-        attempt = _record_failure(  # no-usage: required skill refused before the harness opened; no turn billed
-            route_retry.task, error=str(exc), result={"skill_assurance": exc.assurance}
-        )
+        attempt = park_if_worker_skill_roots_empty(route_retry.task, exc)
+        if attempt is None:
+            attempt = _record_failure(  # no-usage: required skill refused before the harness opened; no turn billed
+                route_retry.task, error=str(exc), result={"skill_assurance": exc.assurance}
+            )
         record_skill_assurance_attempt(route_retry.task, attempt)
         return attempt
     if isinstance(prepared, TaskAttempt):
@@ -420,6 +440,7 @@ def _run_agent(
                     _selected_fallback_reason(route_fallback, preflight.dispatch),
                     route_fallback.source_attempt_id,
                 ),
+                account=credential.account,
             ),
         )
     # #3673 Tier 3 provenance: resolve the per-tier effort the same way
@@ -464,6 +485,8 @@ def _preflight(
     overlay_skill_metadata: SkillMetadata,
 ) -> _Preflight | TaskAttempt:
     """The refusals that must all pass before a turn can be billed, as one short-circuit."""
+    if (held := prepare_own_pr_review_head(task, phase=phase)) is not None:
+        return held
     refusal = pre_harness_refusal(task, phase=phase)
     if refusal is not None:
         logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)

@@ -58,6 +58,8 @@ _OLDEST_FIRST = "sort=created&order=asc"
 class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBackend Protocol surface, not poor encapsulation.
     """CodeHost implementation backed by the ``gh`` CLI."""
 
+    forge: str = "github"
+
     def __init__(self, *, token: str = "") -> None:
         self._token = token
         self._notes = GitHubPrNotes(token)

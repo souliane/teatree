@@ -9,6 +9,7 @@ injected from here.
 import logging
 
 from teatree.backends.slack.receiver import DeliveredEvents
+from teatree.backends.slack.self_identity import is_on_behalf_posted
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.loops.slack_catchup_job import CatchUpState, SlackCatchUpJob, run_catch_up
@@ -46,7 +47,8 @@ def record_slack_dm(overlay: str, event: dict) -> bool:
     if recorder is None:
         logger.warning("No slack backend for overlay %r — the inbox drain will record this DM", overlay)
         return False
-    return recorder.record_events([event]) > 0
+    # The durable queue drain owns ignored-event diagnostics after this live attempt.
+    return recorder.record_events([event], log_ignored=False) > 0
 
 
 def record_and_wake_slack_answer(overlay: str, event: dict) -> None:
@@ -56,7 +58,9 @@ def record_and_wake_slack_answer(overlay: str, event: dict) -> None:
     ``PendingChatInjection.loop_unreplied()``, so a wake that lands before the row
     finds an empty queue and stops without re-arming. Nothing is posted to Slack here.
     """
-    record_slack_dm(overlay, event)
+    recorded = record_slack_dm(overlay, event)
+    if event.get("channel_type") == "im" and is_on_behalf_posted(event) and not recorded:
+        return
     wake_slack_answer.enqueue()
 
 

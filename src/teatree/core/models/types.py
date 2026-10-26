@@ -9,6 +9,7 @@ from teatree.core.models.checkout_proof import (
     DeferredExitAttestation,
     ReleasedPrHeadAttestation,
 )
+from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -118,20 +119,6 @@ class PREntrySerialized(TypedDict, total=False):
     draft_comments_count: int
 
 
-class DreamGapEntry(TypedDict, total=False):
-    gap_key: str
-    cluster_key: str
-    title: str
-    citation: str
-    theme: str
-    detail: str
-
-
-class DreamGapDisposition(TypedDict):
-    disposition: str
-    evidence: str
-
-
 class PlanningHandoff(TypedDict, total=False):
     planning_task: int
     phase: str
@@ -201,8 +188,11 @@ class TicketExtra(TypedDict, total=False):
     notion_url: str
     notion_status: str
     issue_title: str
+    mr_title_generated: str
     labels: list[str]
     reviewed_sha: str
+    review_retry_head_by_task: dict[str, str]
+    review_retry_after_move: dict[str, str]
     # What the FORGE last reported. Overwritten with the live value on every scan, so a
     # LOCAL disposition stored here survives one pass and is then read back as an
     # observation — the discharge has its own key below for exactly that reason.
@@ -250,6 +240,7 @@ class TicketExtra(TypedDict, total=False):
     anti_vacuity_attestations: "dict[str, AntiVacuityAttestation]"
     rubric_grades_by_head: "dict[str, dict[str, dict[str, str]]]"
     rubric_grades_recorded: bool
+    rubric_waivers: list[dict[str, str | int]]
     # #1661 per-ticket FixRecord read by ``fix_dod_gate`` at ``mark_delivered`` for
     # ``kind=fix``; written from the agent result envelope by
     # ``agents.fix_record_recorder``. ``fix_record_override`` is the audited escape
@@ -288,7 +279,7 @@ class TicketExtra(TypedDict, total=False):
     # ``dream_gap_claimed_delivered`` is the coder/reviewer-recorded subset of gap
     # keys actually delivered, verified independently at review before the
     # reconcile checks a box or retires a memory. See ``teatree.loops.dream.batch_promote``.
-    dream_gap_batch: "list[dict[str, str]]"
+    dream_gap_batch: "list[DreamGapEntry]"
     dream_gap_claimed_delivered: list[str]
     # The umbrella host's queue of a pass's collected gaps awaiting the backlog sweep's
     # fold into an existing host, and a host's per-gap address/reject record.
@@ -298,6 +289,8 @@ class TicketExtra(TypedDict, total=False):
     # ``schedule_planned_work`` mints it when ``plan()`` fires.
     planning_handoff: "PlanningHandoff"
     dream_gap_dispositions: "dict[str, DreamGapDisposition]"
+    dream_gap_released: DreamGapRelease
+    dream_funnel: list[DreamFunnelEntry]
     # #2886: durable pydantic_ai conversation store, keyed by the ``Task.pk`` whose run produced
     # it and selected through ``Task.session_continuation``; see ``teatree.agents.pydantic_ai_resume``.
     pydantic_ai_threads: dict[str, list[object]]
@@ -486,6 +479,7 @@ class RubricGrade(TypedDict, total=False):
     ordinal: int
     status: str
     rationale: str
+    text_hash: str
 
 
 class FixRecord(TypedDict, total=False):

@@ -112,7 +112,8 @@ class TestExecVenueResolvesTheToken:
         # Bound to a variable rather than spelled inline at the read: the wedge
         # diagnostic below it names the same path, and two literals would drift.
         assert 'pass_path="${TEATREE_GITLAB_TOKEN_PASS_PATH:-}"' in prologue
-        assert 'pass show "$pass_path"' in prologue
+        assert "secret-read.sh" in prologue
+        assert '"$reader" get "$pass_path"' in prologue
         assert "export GITLAB_TOKEN" in prologue
 
     def test_an_already_set_token_wins(self, prologue: str) -> None:
@@ -130,7 +131,7 @@ class TestExecVenueResolvesTheToken:
         """
         assert 'deadline="${TEATREE_SECRET_READ_DEADLINE_SECONDS:-20}"' in prologue
         assert 'timeout "$deadline"' in prologue
-        assert prologue.index("timeout ") < prologue.index("pass show")
+        assert prologue.index("timeout ") < prologue.index('"$reader" get')
 
     def test_a_wedged_store_refuses_rather_than_exporting_an_empty_token(self, prologue: str) -> None:
         """An EMPTY token authenticates as nobody: GitLab reports it as a missing branch.
@@ -145,8 +146,8 @@ class TestExecVenueResolvesTheToken:
 
     def test_an_absent_store_is_not_treated_as_a_wedged_one(self, prologue: str) -> None:
         """CI and a laptop that never set `pass` up are not outages — they must not be refused."""
-        assert "command -v pass" in prologue
-        assert '"$rc" -eq 127' in prologue
+        assert "secret-read.sh" in prologue
+        assert '"$rc" -gt 1' in prologue
 
     def test_the_token_never_reaches_the_host_argv(self, wrapper: str) -> None:
         """The read is INSIDE the container; a host-side `pass show` would leak it to `ps`.

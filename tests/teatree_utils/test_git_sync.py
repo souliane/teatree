@@ -14,7 +14,14 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.utils.git_sync import RemoteReadError, _run_remote, fetch_all_prune, fetch_branch, remote_heads
+from teatree.utils.git_sync import (
+    RemoteReadError,
+    _run_remote,
+    fetch_all_prune,
+    fetch_branch,
+    remote_head_shas,
+    remote_heads,
+)
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -91,6 +98,23 @@ class TestStrictRemoteReads:
 
         _run_git("push", "-q", "origin", "main:refs/heads/feat", cwd=self.repo)
         assert remote_heads(str(self.repo), ["feat", "main"]) == {"feat", "main"}
+
+    def test_live_head_shas_distinguish_a_moved_ref_from_a_stale_tracking_ref(self) -> None:
+        old_sha = subprocess.run(
+            [_GIT, "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        ).stdout.strip()
+        _run_git("push", "-q", "origin", "main:refs/heads/feat", cwd=self.repo)
+        _run_git("commit", "-q", "--allow-empty", "-m", "new tip", cwd=self.repo)
+        _run_git("push", "-q", "origin", "main:refs/heads/feat", cwd=self.repo)
+
+        heads = remote_head_shas(str(self.repo), ["feat"])
+
+        assert heads["feat"] != old_sha
+        assert len(heads["feat"]) == 40
 
     def test_an_unreachable_remote_raises_gits_error(self) -> None:
         _run_git("remote", "set-url", "origin", str(self.tmp / "gone.git"), cwd=self.repo)

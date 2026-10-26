@@ -428,6 +428,18 @@ class TestAnUngradedCriterionRecordsNothing(TestCase):
     write, which is why coverage is a DB question only this actor can answer.
     """
 
+    def test_stale_text_hash_records_neither_verdict_nor_grades(self) -> None:
+        ticket = _author_ticket()
+        task = _reviewing_task_via_dispatch()
+        grades = _full_pass()
+        grades[1]["text_hash"] = "0" * 12
+
+        attempt = record_result_envelope(task, _envelope(grades=grades), phase="reviewing")
+
+        assert attempt.error.startswith("malformed rubric_grades:")
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert [c.status for c in _criteria(ticket)] == ["pending", "pending"]
+
     def test_a_verdict_that_grades_no_criterion_records_nothing(self) -> None:
         ticket = _author_ticket()
         task = _reviewing_task_via_dispatch()

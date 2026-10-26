@@ -11,7 +11,6 @@ from collections.abc import Callable
 
 from teatree.core.backend_factory import OverlayBackends, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, resolve_user_id
 from teatree.core.overlay_metadata import OverlayMetadata
@@ -25,6 +24,7 @@ from teatree.loop.domain_optional_scanner_jobs import (
     _issue_implementer_jobs_for_overlay,
     _triage_assessor_jobs_for_overlay,
 )
+from teatree.loop.domain_ship_jobs import _colleague_egress_selected, _ship_jobs_for_overlay
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.overlay_followup_jobs import OverlayHookRefusalError, overlay_followup_jobs
 from teatree.loop.question_drain import sweep_owner_questions
@@ -33,9 +33,7 @@ from teatree.loop.scanner_factories import (
     _admit_colleague_prs_to_board,
     _competing_url_prefixes,
     _effective_settings_for_overlay,
-    _mr_conflict_scanner_for,
     _mr_triage_scanner_for,
-    _pr_sweep_scanner_for,
     _self_pr_review_scanner_for,
     _slack_broadcasts_scanner_for,
     _task_sweep_scanner_for,
@@ -49,9 +47,7 @@ from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AskUserQuestionReplyScanner,
     DeferredQuestionPosterScanner,
-    GitLabApprovalsScanner,
     IncomingEventsScanner,
-    MyPrsScanner,
     OutboundAuditScanner,
     PendingPrDrainScanner,
     PendingTasksScanner,
@@ -75,14 +71,12 @@ from teatree.loop.scanners import (
     WaitingDigestScanner,
     WorkStateScanner,
 )
-from teatree.loop.scanners.base import ScannerError
+from teatree.loop.scanners.base import PartialScanError, ScannerError
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
 from teatree.loop.scanners.owner_actions import OwnerActionScanner
-from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.scanners.review_nag_mention import IDENTITY_LOOKUP_ERRORS
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
-from teatree.loops.enable_verdict import loop_admits
 from teatree.messaging import notify_with_fallback
 
 logger = logging.getLogger(__name__)
@@ -182,65 +176,6 @@ def _tickets_per_host_jobs(backend: OverlayBackends, tag: str) -> list[_ScannerJ
     return jobs
 
 
-def _ship_jobs_for_overlay(
-    backend: OverlayBackends,
-    *,
-    all_backends: tuple[OverlayBackends, ...],
-) -> list[_ScannerJob]:
-    """Own-author PR scanner + the auto-merge PR sweep + the GitLab-approvals poll, per host."""
-    tag = backend.name
-    jobs: list[_ScannerJob] = []
-    # One enricher for the whole overlay: its per-tick budget is shared across the
-    # hosts below rather than multiplied by them, and this builder runs once a tick.
-    ci_enricher = BoundedCiEnricher()
-    for code_host in backend.hosts:
-        url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
-        competing_prefixes = _competing_url_prefixes(
-            this_backend=backend,
-            code_host=code_host,
-            all_backends=all_backends,
-        )
-        # Every open merge request owes a resolved conflict whatever its review policy
-        # says, so the sweep rides the ship domain alongside the merge engine rather
-        # than the colleague-facing review loop the away posture skips.
-        jobs.extend(
-            [
-                _ScannerJob(
-                    scanner=MyPrsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        allowed_url_prefixes=url_prefixes,
-                        competing_url_prefixes=competing_prefixes,
-                        ci_enricher=ci_enricher,
-                        verdict_reader=RecordedVerdictReader(),
-                        critic_reader=RecordedCriticFindingReader(),
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=GitLabApprovalsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        allowed_url_prefixes=url_prefixes,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(scanner=_mr_conflict_scanner_for(backend, code_host), overlay=tag),
-            ]
-        )
-    sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
-    if sweep_scanner is not None:
-        jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
-    triage_scanner = _mr_triage_scanner_for(
-        backend,
-        ci_enricher=ci_enricher,
-        ask_owner_on_missing_review=not _review_request_sender_runs(backend),
-    )
-    if triage_scanner is not None:
-        jobs.append(_ScannerJob(scanner=triage_scanner, overlay=tag))
-    return jobs
-
-
 def _review_jobs_for_overlay(
     backend: OverlayBackends,
     *,
@@ -314,16 +249,6 @@ def _repo_owner_resolver(backend: OverlayBackends) -> Callable[[str], RepoOwner]
     if overlay is None:
         return default_repo_owner
     return overlay.review.repo_owner_for_slug
-
-
-def _colleague_egress_selected(backend: OverlayBackends) -> bool:
-    """Whether this tick selects the scanners that act outward under the owner's name."""
-    return backend.messaging is not None and not egress_forbidden()
-
-
-def _review_request_sender_runs(backend: OverlayBackends) -> bool:
-    """Whether the followup loop will send what the triage ladder finds owed, so SHIP need not ask."""
-    return _colleague_egress_selected(backend) and loop_admits(Domain.FOLLOWUP.value)
 
 
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
@@ -473,7 +398,8 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
         # other scanners — only THIS scanner is skipped for one tick.
         logger.warning("Scanner %s recoverable error: %s", label, exc)
         notify_scanner_error(label=label, exc=exc, overlay=job.overlay)
-        return label, [], f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
+        partial = exc.signals if isinstance(exc, PartialScanError) else []
+        return label, partial, f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
     except Exception as exc:
         logger.exception("Scanner %s raised", label)
         return label, [], f"{type(exc).__name__}: {exc}"

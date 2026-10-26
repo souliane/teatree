@@ -448,6 +448,13 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "GH_TOKEN" in pr_call.call_args.kwargs["env"]
         assert "repos/example-org/example-repo/issues/5/comments?per_page=100" in api_call.call_args.args[0]
 
+    def test_non_forge_ticket_does_not_attempt_a_forge_read(self) -> None:
+        with patch("teatree.agents.read_only_venue_brief.get_backend_provider") as provider:
+            assert _issue(Ticket(issue_url="auto:local-task")) == ("", "")
+            assert _issue(Ticket(issue_url="")) == ("", "")
+            assert _issue(Ticket(issue_url=None)) == ("", "")
+        provider.assert_not_called()
+
     def test_gitlab_merge_request_reads_its_message_and_notes(self) -> None:
         ticket = Ticket(issue_url="https://gitlab.example/group/team/repo/-/merge_requests/17")
         host = Mock()
@@ -644,8 +651,8 @@ class TestTheReadOnlyVenueBrief(TestCase):
         context = self._system_context(prepared)
         delivered = f"{context}\n{prepared.prompt}"
         assert len(context.encode()) <= MAX_APPEND_BYTES
-        assert "Any other head is REFUSED and records nothing" in context
-        assert "OMITTING `reviewed_sha` is REFUSED too" in context
+        assert "A verdict for another head is REFUSED" in context
+        assert "Missing `reviewed_sha` is REFUSED" in context
         assert "required-review-rule " * 3800 in delivered
         assert "--- SKILL: review ---" in delivered
         assert "+review-evidence " * 7000 in prepared.prompt
@@ -733,6 +740,24 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
         assert body in self._prepare(self._task(), host=_Host({"body": body})).prompt
 
+    def test_review_diff_admits_200kib_and_names_300kib_refusal(self) -> None:
+        task = self._task()
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        with (
+            patch("teatree.agents.read_only_venue_brief._issue", return_value=("", "")),
+            patch("teatree.agents.read_only_venue_brief._fetch_target"),
+            patch("teatree.agents.read_only_venue_brief._review_diff", return_value=("head", "x" * (200 * 1024), "")),
+        ):
+            assert len(ReadOnlyFacts.gather(task, None).review_diff) == 200 * 1024
+        with (
+            patch("teatree.agents.read_only_venue_brief._issue", return_value=("", "")),
+            patch("teatree.agents.read_only_venue_brief._fetch_target"),
+            patch("teatree.agents.read_only_venue_brief._review_diff", return_value=("head", "x" * (300 * 1024), "")),
+            pytest.raises(HarnessFallbackError, match="review diff 307200 bytes > 262144"),
+        ):
+            ReadOnlyFacts.gather(task, None)
+
     def test_ticket_context_is_never_elided_with_a_t3_pointer(self) -> None:
         lines = [f"note {index}: {'z' * 60}" for index in range(450)]
         ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}1", context="\n".join(lines))
@@ -769,7 +794,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
 
 class TestWorkerBriefsAreTheBaseBytes(TestCase):
-    """Captured at 0962b16fb with no skills loaded; a deliberate worker-brief change re-captures it."""
+    """Captured worker briefs; a deliberate prompt change re-captures the fixture."""
 
     def test_planning_coding_and_reviewing_worker_briefs_match_the_base_byte_for_byte(self) -> None:
         golden = json.loads(_WORKER_BRIEFS_AT_BASE.read_text(encoding="utf-8"))

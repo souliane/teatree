@@ -23,18 +23,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def guard_or_warn_dirty_worktree(
-    worktree: Worktree, wt_path: str, target: "_EffectiveTarget", *, keep_if_dirty: bool, force: bool
-) -> None:
-    """KEEP a dirty worktree when ``keep_if_dirty`` (the fail-closed default), else warn-and-proceed.
+def guard_or_warn_dirty_worktree(worktree: Worktree, wt_path: str, target: "_EffectiveTarget", *, force: bool) -> None:
+    """KEEP a dirty worktree (fail-closed), or warn-and-proceed under ``force``.
 
     A worktree with uncommitted changes may be a live one an agent is mid-task
     in, and those edits are on no remote — a board "Done" event or an unattended
-    teardown would wipe them with no salvage. ``keep_if_dirty`` defaults ``True``
-    (fail-closed): a dirty worktree raises ``RuntimeError`` before any destructive
-    step, which the reaper / sync backend routes to a KEEP-with-warning. Only an
-    explicit ``keep_if_dirty=False`` caller warns-and-proceeds, and ``force=True``
-    (the proven-redundant reaper / explicit abandon) overrides the guard entirely.
+    teardown would wipe them with no salvage. A dirty worktree raises
+    ``RuntimeError`` before any destructive step, which the reaper / sync backend
+    routes to a KEEP-with-warning; ``force=True`` (the proven-redundant reaper /
+    explicit abandon) overrides the guard entirely.
 
     "Dirty" is REAL uncommitted work — :func:`working_tree_dirt` ignores the
     regenerable env cache every provisioned worktree carries and the "every tracked
@@ -47,7 +44,7 @@ def guard_or_warn_dirty_worktree(
     dirt = working_tree_dirt(wt_path, target)
     if not dirt.reasons:
         return
-    if keep_if_dirty and not force:
+    if not force:
         raise RuntimeError(kept_worktree_message(worktree, wt_path, dirt))
     if dirt.proven:
         logger.warning("%s has uncommitted changes — cleaning anyway (PR merged)", worktree.repo_path)

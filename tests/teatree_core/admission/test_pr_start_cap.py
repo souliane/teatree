@@ -5,7 +5,7 @@ from django.db.models import QuerySet
 from django.db.models.signals import post_save
 from django.test import TestCase
 
-from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP, new_pr_start_allowed_q
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP, new_pr_start_allowed_q, open_pr_start_cap_hold_reason
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.signals import _auto_enqueue_task
@@ -18,6 +18,18 @@ class TestNewPullRequestStartEligibility(TestCase):
 
     def _task(self, phase: str, ticket: Ticket) -> Task:
         return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase)
+
+    def test_shared_cap_read_names_live_pull_requests_and_releases_when_one_closes(self) -> None:
+        urls = [f"https://github.com/example-org/example-repo/pull/{index + 500}" for index in range(OPEN_PR_START_CAP)]
+        for url in urls:
+            PullRequest.objects.record_opened(ticket=Ticket.objects.create(), url=url)
+        reason = open_pr_start_cap_hold_reason()
+        assert reason is not None
+        assert all(url in reason for url in urls)
+        row = PullRequest.objects.get(url=urls[0])
+        row.mark_closed()
+        row.save(update_fields=["state"])
+        assert open_pr_start_cap_hold_reason() is None
 
     def test_cap_holds_source_work_but_not_started_review_or_expedited_work(self) -> None:
         assert OPEN_PR_START_CAP == 3

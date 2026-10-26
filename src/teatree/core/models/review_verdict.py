@@ -38,6 +38,7 @@ from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.checks_admission import ReviewVerdictError, assert_checks_admit_merge_safe, live_checks_reader
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.finding_standard import FindingKind, normalize_finding_kind
+from teatree.core.models.head_carry_over import HeadCarryOver
 from teatree.core.models.merge_clear import SHA_FULL_LEN, ClearIssuanceError, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.reviewer_identity import (
@@ -406,6 +407,7 @@ class ReviewVerdict(models.Model):
         changed_files: ChangedFileSet | None = None,
         merge_result_retake: bool = False,
         live_checks: LiveChecksProbe | None = None,
+        conclude_review: bool = True,
     ) -> "ReviewVerdict":
         """The single guarded factory for a recorded verdict.
 
@@ -497,20 +499,30 @@ class ReviewVerdict(models.Model):
                 if merged != recorded.findings:
                     recorded.findings = merged
                     recorded.save(update_fields=["findings"])
-            # Every claim this verdict concludes, retired in the same transaction
-            # that records it. The per-HEAD dispatch claims are spent outright — a
-            # verdict covers this exact tree, so re-arming either would be churn;
-            # whichever path armed the review, the other's mark_resolved is a no-op.
-            # The per-MR lock is released too, UNLESS *lock_holder* names a lock
-            # identity that is not the one holding it: a self-identifying verdict
-            # from a path that took no lock must not free a still-running
-            # reviewer's lock. An absent *lock_holder* is ignorance of the
-            # dispatcher's identity, not a claim of holding nothing, and still
-            # releases — a concluded review may never strand a lock (#3920). See
-            # MRReviewLock.resolve for the full asymmetry.
-            resolve_head_claims(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
-            MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
+            # A late old-head verdict must not release a newer review's lock.
+            if conclude_review:
+                resolve_head_claims(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
+                carried_descendant = HeadCarryOver.objects.filter(
+                    slug__iexact=recorded.slug, pr_id=recorded.pr_id, from_head=recorded.reviewed_sha
+                ).filter(models.Q(outcome=HeadCarryOver.Outcome.CARRIED) | models.Q(reason="no_records"))
+                if lock_holder or not carried_descendant.exists():
+                    MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
+                if recorded.stands_as_hold():
+                    recorded.carry_late_hold()
             return recorded
+
+    def carry_late_hold(self) -> None:
+        seen = {self.reviewed_sha}
+        pending = [self.reviewed_sha]
+        while pending:
+            rows = HeadCarryOver.objects.filter(
+                slug__iexact=self.slug, pr_id=self.pr_id, from_head=pending.pop()
+            ).filter(models.Q(outcome=HeadCarryOver.Outcome.CARRIED) | models.Q(reason="no_records"))
+            for row in rows:
+                if row.to_head not in seen:
+                    self.carry_forward(reviewed_sha=row.to_head)
+                    seen.add(row.to_head)
+                    pending.append(row.to_head)
 
     def carry_forward(self, *, reviewed_sha: str) -> "ReviewVerdict":
         """Re-record this verdict at *reviewed_sha*, preserving the expedite waiver.
@@ -538,6 +550,7 @@ class ReviewVerdict(models.Model):
             gh_verify_result=self.gh_verify_result,
             ticket=self.ticket,
             expedited=(self.gh_verify_result == MergeClear.VerifyResult.PENDING),
+            conclude_review=False,
         )
 
     @property

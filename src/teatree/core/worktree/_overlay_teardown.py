@@ -9,11 +9,21 @@ overlay-free reap path keeps the git/DB teardown that lives in ``cleanup``.
 import logging
 from typing import TYPE_CHECKING
 
+from teatree.core.models import Worktree
+from teatree.core.worktree.worktree_env import compose_project
+
 if TYPE_CHECKING:
-    from teatree.core.models import Worktree
     from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
+
+
+def shared_resources(worktree: Worktree) -> tuple[bool, bool, bool]:
+    peers = Worktree.objects.runtime_peers(worktree)
+    compose_shared = any(compose_project(peer) == compose_project(worktree) for peer in peers)
+    db_shared = bool(worktree.db_name) and any(peer.db_name == worktree.db_name for peer in peers)
+    pass_shared = any(peer.ticket_id == worktree.ticket_id for peer in peers)
+    return compose_shared, db_shared, pass_shared
 
 
 def run_overlay_cleanup_steps(overlay: "OverlayBase | None", worktree: "Worktree", step_errors: list[str]) -> None:
