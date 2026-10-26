@@ -101,19 +101,6 @@ class TestReadPassRequired:
             secrets.read_pass_required("acme/token")
 
 
-class TestReadPassOrDefault:
-    """The warn-on-default reader: value when present, default + WARNING when not."""
-
-    def test_returns_secret_when_present(self) -> None:
-        with patch("teatree.utils.secrets.read_pass", return_value="live"):
-            assert secrets.read_pass_or_default("acme/token", "fallback") == "live"
-
-    def test_returns_default_and_warns_when_absent(self, caplog: pytest.LogCaptureFixture) -> None:
-        with patch("teatree.utils.secrets.read_pass", return_value=""), caplog.at_level("WARNING"):
-            assert secrets.read_pass_or_default("acme/token", "fallback") == "fallback"
-        assert "acme/token" in caplog.text
-
-
 class TestWritePassWithBackup:
     """The shared safe-overwrite primitive: back up the prior value, or refuse to clobber."""
 
@@ -287,10 +274,3 @@ class TestMessagesMatchMain:
             secrets.write_pass("team/token", "previous")
             backup = secrets.write_pass_with_backup("team/token", "replacement", echo=said.append)
         assert said == [f"OK    Backed up the previous value to `pass {backup}` before overwriting."]
-
-    def test_default_warning_text(self, caplog: pytest.LogCaptureFixture) -> None:
-        with use_store(MemoryStore()), caplog.at_level("WARNING", logger="teatree.utils.secrets"):
-            assert secrets.read_pass_or_default("team/token", "fallback") == "fallback"
-        assert caplog.messages == [
-            "secret 'team/token' not found in the `pass` password store — using the provided default"
-        ]

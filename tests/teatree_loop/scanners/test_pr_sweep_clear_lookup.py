@@ -12,8 +12,9 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.merge.clear_scope import clear_scopes_to_repo
 from teatree.core.models.merge_clear import MergeClear
-from teatree.loop.scanners.pr_sweep_clear_lookup import clear_scopes_to_repo, look_up_clear_for_head
+from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from tests.factories import MergeClearFactory, TicketFactory
 
 _HEAD = "5e3dd9fd" + "0" * 32

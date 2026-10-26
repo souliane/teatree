@@ -14,10 +14,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from teatree.core.models.task import Task
+from teatree.core.models.task_enqueue import phase_eligible
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
 #: The phases a dashboard button may enqueue, in drawer order. A strict subset of
 #: ``CANONICAL_PHASES``: the CLI accepts a free-form phase, the button surface does not.
@@ -53,12 +54,25 @@ def enqueue_buttons(ticket: Ticket) -> tuple[EnqueueButton, ...]:
     A button whose phase already has an unstarted task is disabled naming that task,
     so a click that would be refused is never offered in the first place.
     """
-    return _buttons(_oldest_pending_task_per_phase(ticket), ENQUEUEABLE_PHASES)
+    return _buttons(_oldest_pending_task_per_phase(ticket), ENQUEUEABLE_PHASES, ticket=ticket)
 
 
-def board_enqueue_buttons(queued: "Mapping[str, int]") -> tuple[EnqueueButton, ...]:
+def board_enqueue_buttons(queued: "Mapping[str, int]", *, ticket: Ticket) -> tuple[EnqueueButton, ...]:
     """A card's button row, built from *queued* — the card's slice of the batched read."""
-    return _buttons(queued, BOARD_PHASES)
+    return _buttons(queued, BOARD_PHASES, ticket=ticket)
+
+
+def oldest_pending_phase_tasks(tasks: "Iterable[Task]") -> dict[int, dict[str, int]]:
+    """Ticket pk -> offered phase -> oldest unstarted task pk, from *tasks* newest first.
+
+    Descending pk so the later, lower pk overwrites: the oldest wins, the row
+    :func:`teatree.core.models.task_enqueue.enqueue_phase_task_once` refuses against.
+    """
+    queued: dict[int, dict[str, int]] = {}
+    for task in tasks:
+        if task.status == Task.Status.PENDING and task.phase in BOARD_PHASES:
+            queued.setdefault(task.ticket_id, {})[task.phase] = task.pk
+    return queued
 
 
 def pending_phase_tasks_by_ticket(ticket_ids: "list[int]") -> dict[int, dict[str, int]]:
@@ -70,27 +84,22 @@ def pending_phase_tasks_by_ticket(ticket_ids: "list[int]") -> dict[int, dict[str
     """
     if not ticket_ids:
         return {}
-    rows = (
-        Task.objects.filter(ticket_id__in=ticket_ids, phase__in=BOARD_PHASES, status=Task.Status.PENDING)
-        .order_by("-pk")
-        .values_list("ticket_id", "phase", "pk")
-    )
-    queued: dict[int, dict[str, int]] = {}
-    for ticket_id, phase, task_pk in rows:
-        queued.setdefault(ticket_id, {})[phase] = task_pk
-    return queued
-
-
-def _buttons(queued: "Mapping[str, int]", phases: tuple[str, ...]) -> tuple[EnqueueButton, ...]:
-    return tuple(
-        EnqueueButton(
-            phase=phase,
-            label=_LABELS[phase],
-            enabled=phase not in queued,
-            reason=f"TODO-{queued[phase]} is already queued for {phase}" if phase in queued else "",
+    return oldest_pending_phase_tasks(
+        Task.objects.filter(ticket_id__in=ticket_ids, phase__in=BOARD_PHASES, status=Task.Status.PENDING).order_by(
+            "-pk"
         )
-        for phase in phases
     )
+
+
+def _buttons(queued: "Mapping[str, int]", phases: tuple[str, ...], *, ticket: Ticket) -> tuple[EnqueueButton, ...]:
+    buttons: list[EnqueueButton] = []
+    for phase in phases:
+        if not phase_eligible(ticket, phase):
+            continue
+        task_id = queued.get(phase)
+        reason = f"TODO-{task_id} is already queued for {phase}" if task_id is not None else ""
+        buttons.append(EnqueueButton(phase=phase, label=_LABELS[phase], enabled=task_id is None, reason=reason))
+    return tuple(buttons)
 
 
 def _oldest_pending_task_per_phase(ticket: Ticket) -> dict[str, int]:

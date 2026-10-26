@@ -188,6 +188,17 @@ def test_select_for_runtime_phase_known(tmp_path: Path):
     assert "test" in result.skills
 
 
+def test_select_for_runtime_phase_leaves_out_the_attended_skill_a_lifecycle_skill_requires(tmp_path: Path):
+    result = SkillLoadingPolicy().select_for_runtime_phase(
+        cwd=tmp_path,
+        phase="dogfood_smoke",
+        overlay_skill_metadata={},
+    )
+    assert result.lifecycle_skill == "dogfooding"
+    assert "dogfooding" in result.skills
+    assert "interactive" not in result.skills
+
+
 def test_select_for_runtime_phase_unknown(tmp_path: Path):
     policy = SkillLoadingPolicy()
     result = policy.select_for_runtime_phase(

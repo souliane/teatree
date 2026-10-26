@@ -5,7 +5,7 @@ from existing rows, with ``to_dict()`` (JSON) and ``to_terse()`` (human)
 renderers. Every query here is read-only — the gatherer never transitions a
 :class:`Ticket` nor writes any row.
 
-Four groups, each scoped to one overlay over the window ``[since, now)``:
+Four delta groups scoped to the window ``[since, now)`` and one live group:
 
 * **Merged** — a :class:`MergeAudit` joined to its :class:`MergeClear`, merged
     inside the window. The clickable reference prefers an exact stored PR URL on
@@ -21,6 +21,8 @@ Four groups, each scoped to one overlay over the window ``[since, now)``:
     richer signals via :meth:`OverlayBase.get_checking_sources`.
 * **Metered** — one row per ticket with metered attempts inside the window,
     showing the attempt count and estimated total cost.
+* **Remaining** — live work, queue, holds, and measured ETA ranges; independent
+    of the delta window and excluded from recap notifications.
 
 Multi-overlay aggregation (``gather_all_overlays_report``):
 
@@ -38,33 +40,30 @@ from typing import TypedDict
 
 from django.db.models import Count, Max, Sum
 
+from teatree.core import checking_types
 from teatree.core._checking_gather import (
     _MergedScope,
     deferred_questions,
+    failed_attempts,
     merged_entries_from_qs,
     merged_group_from_qs,
     motion_for_overlay,
     ticket_url,
 )
+from teatree.core.checking_remaining import empty_remaining, gather_remaining
+from teatree.core.checking_types import (
+    DEFAULT_CAP,
+    CheckGroup,
+    CheckGroupDict,
+    CheckItem,
+    RemainingGroup,
+    RemainingGroupDict,
+)
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 
-#: Per-group item cap; beyond it the renderer appends "…and X more".
-DEFAULT_CAP = 5
-
-
-class CheckItemDict(TypedDict):
-    label: str
-    url: str
-    detail: str
-    title: str
-
-
-class CheckGroupDict(TypedDict):
-    title: str
-    items: list[CheckItemDict]
-    total: int
+CheckItemDict = checking_types.CheckItemDict
 
 
 class CheckingReportDict(TypedDict):
@@ -73,6 +72,7 @@ class CheckingReportDict(TypedDict):
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
     metered: CheckGroupDict
+    remaining: RemainingGroupDict
     terse: str
 
 
@@ -83,68 +83,8 @@ class AllOverlaysReportDict(TypedDict):
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
     metered: CheckGroupDict
+    remaining: RemainingGroupDict
     terse: str
-
-
-@dataclass(frozen=True, slots=True)
-class CheckItem:
-    """One line in a group — a clickable reference plus optional detail.
-
-    ``url`` is the clickable target (a PR/issue/ticket URL, or an actionable
-    command for a deferred question). ``title`` is the human-readable
-    description rendered inline next to the id (#2092), so a reader never sees a
-    bare/link-only ``#N`` they can't interpret. The shared
-    :func:`teatree.core.ref_render.render_ref` chokepoint produces the
-    ``[#N (short title)](url)`` shape every listing surface uses.
-    """
-
-    label: str
-    url: str
-    detail: str = ""
-    title: str = ""
-
-    def to_dict(self) -> CheckItemDict:
-        return CheckItemDict(label=self.label, url=self.url, detail=self.detail, title=self.title)
-
-    def render(self) -> str:
-        from teatree.core.ref_render import render_ref  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-        ref = render_ref(self.label, title=self.title, url=self.url)
-        return f"  - {ref} — {self.detail}" if self.detail else f"  - {ref}"
-
-
-@dataclass(frozen=True, slots=True)
-class CheckGroup:
-    """One titled group of items, with the full pre-cap total.
-
-    ``total`` is the count before the cap (``total >= len(items)``) so the
-    renderer can append "…and X more" without re-querying.
-    """
-
-    title: str
-    items: list[CheckItem] = field(default_factory=list)
-    total: int = 0
-
-    def to_dict(self) -> CheckGroupDict:
-        return CheckGroupDict(
-            title=self.title,
-            items=[item.to_dict() for item in self.items],
-            total=self.total,
-        )
-
-    def render(self, *, cap: int = DEFAULT_CAP) -> list[str]:
-        """Render the group header + capped items, or ``[]`` when empty.
-
-        An empty group is omitted entirely (returns no lines). A group with
-        more than *cap* items appends a ``…and X more`` line.
-        """
-        if self.total == 0:
-            return []
-        lines = [self.title]
-        lines.extend(item.render() for item in self.items[:cap])
-        if self.total > cap:
-            lines.append(f"  …and {self.total - cap} more")
-        return lines
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,9 +96,14 @@ class CheckingReport:
     in_flight: CheckGroup
     needs_you: CheckGroup
     metered: CheckGroup
+    remaining: RemainingGroup = field(default_factory=empty_remaining)
 
     @property
     def groups(self) -> list[CheckGroup]:
+        return [*self.recap_groups, self.remaining]
+
+    @property
+    def recap_groups(self) -> list[CheckGroup]:
         return [self.merged, self.in_flight, self.needs_you, self.metered]
 
     def to_dict(self) -> CheckingReportDict:
@@ -168,6 +113,7 @@ class CheckingReport:
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
+            remaining=self.remaining.to_dict(),
             terse=self.to_terse(),
         )
 
@@ -185,7 +131,7 @@ class CheckingReport:
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 for group in groups):
+        if all(group.total == 0 and not group.items for group in groups):
             return f"Nothing since {stamp}."
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
         lines = [header]
@@ -210,9 +156,14 @@ class AllOverlaysReport:
     in_flight: CheckGroup
     needs_you: CheckGroup
     metered: CheckGroup
+    remaining: RemainingGroup = field(default_factory=empty_remaining)
 
     @property
     def groups(self) -> list[CheckGroup]:
+        return [*self.recap_groups, self.remaining]
+
+    @property
+    def recap_groups(self) -> list[CheckGroup]:
         return [self.merged, self.in_flight, self.needs_you, self.metered]
 
     def to_dict(self) -> AllOverlaysReportDict:
@@ -223,6 +174,7 @@ class AllOverlaysReport:
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
+            remaining=self.remaining.to_dict(),
             terse=self.to_terse(),
         )
 
@@ -239,7 +191,7 @@ class AllOverlaysReport:
         )
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 for group in groups):
+        if all(group.total == 0 and not group.items for group in groups):
             return f"Nothing since {stamp}."
         lines = [f"Since {stamp} · all overlays"]
         for group in groups:
@@ -319,6 +271,12 @@ def gather_all_overlays_report(
             items=[item for _, item in metered_entries[:cap]],
             total=sum(total for _, total in metered_groups),
         ),
+        remaining=gather_remaining(
+            now=max((window[1] for window in overlay_windows.values()), default=effective_since),
+            overlay_names=list(overlay_windows),
+            tag_overlays=True,
+            cap=cap,
+        ),
     )
 
 
@@ -389,6 +347,9 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
+        remaining=gather_remaining(
+            now=now, overlay_names=[overlay_name] if overlay_name else None, tag_overlays=False, cap=cap
+        ),
     )
 
 
@@ -471,14 +432,7 @@ def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
     overlay_slug = overlay_name or "<overlay>"
     items.extend(deferred_questions(overlay_slug=overlay_slug))
 
-    failed = (
-        TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
-        .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
-        .select_related("task__ticket")
-        .order_by("-ended_at")
-    )
-    if overlay_name:
-        failed = failed.filter(task__ticket__overlay=overlay_name)
+    failed = failed_attempts(since=since, now=now, overlay_name=overlay_name)
     seen_tickets: set[int] = set()
     for attempt in failed:
         tick = attempt.task.ticket

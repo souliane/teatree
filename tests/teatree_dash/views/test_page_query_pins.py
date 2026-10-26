@@ -16,7 +16,9 @@ from uuid import uuid4
 
 import pytest
 from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from teatree.core.models import Loop, Mode, Task
@@ -25,7 +27,7 @@ from teatree.core.models.session import Session
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from tests.factories import TicketFactory
+from tests.factories import PullRequestFactory, TicketFactory
 from tests.teatree_dash._overlay_venue import core_overlay_only
 
 State = Ticket.State
@@ -69,13 +71,15 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: The health chip also dates its verdict, so ``read_health`` pays ONE ``MAX(last_seen)`` over
 #: the whole registry — a second, independent +1 on the same two pages, O(1) in the population
 #: and flat at both. The two land together: 21 -> 23, not 22.
-#: The board's PR chips read the voided-merge refs once per render: +1, O(1), flat at both.
+#: The lifecycle board's PR chips read the voided-merge refs once per render: +1, O(1), flat at both.
+#: The lifecycle board counts every column in one grouped read before fetching pages: +1, O(1), flat at both.
 #: Eight merge-attribution reads plus one batched first-session read for inferred hand tasks; flat at both sizes.
 MERGE_READ_QUERIES = 9
 #: The cycle-time page reads merged and open pull-request flow once each: +2, O(1), flat at both.
 PAGE_QUERY_PINS: dict[str, int] = {
-    "dash:board": 14,
-    "dash:board_columns": 11,
+    "dash:board": 11,
+    "dash:board_lifecycle": 15,
+    "dash:board_columns": 12,
     "dash:cycle_time": 13,
     "dash:health": 23,
     "dash:health_bands": 23,
@@ -94,7 +98,8 @@ PAGE_QUERY_PINS: dict[str, int] = {
 # the two-population assertion below is what tells those apart.
 # code_direct's legality now reads the recorded plan decision: one more bounded EXISTS, O(1).
 # The PR chips read the voided-merge refs once per render: one more bounded read, O(1).
-TICKET_DRAWER_QUERIES = 14
+# The enqueue buttons' coding legality reads the plan decision again: one more bounded EXISTS, O(1).
+TICKET_DRAWER_QUERIES = 15
 TRANSCRIPT_QUERIES = 2
 
 
@@ -151,6 +156,18 @@ class DashboardPageQueryPlansTestCase(TestCase):
             with self.subTest(page=name):
                 self._assert_pinned(reverse(name), expected)
 
+    def test_pr_board_stays_flat_for_cards_owned_by_recorded_pull_requests(self) -> None:
+        measured: list[tuple[int, int]] = []
+        for scale in (2, 8):
+            for _ in range(scale):
+                PullRequestFactory(ticket=TicketFactory(state=State.TESTED))
+            cache.clear()
+            with CaptureQueriesContext(connection) as queries:
+                body = self.client.get(reverse("dash:board"), **_LOOPBACK).content.decode()
+            measured.append((body.count("data-pr-card="), len(queries)))
+        assert [cards for cards, _ in measured] == [2, 10]
+        assert measured[0][1] == measured[1][1], measured
+
     def test_merge_wait_reads_stay_flat_with_more_merged_tickets(self) -> None:
         for scale in (3, 15):
             _populate(scale)
@@ -163,7 +180,7 @@ class DashboardPageQueryPlansTestCase(TestCase):
                 TicketTransition(ticket_id=ticket_id, from_state=State.PR_OPENED, to_state=State.MERGED)
                 for ticket_id in merged_ids
             )
-            for name in ("dash:board", "dash:cycle_time"):
+            for name in ("dash:board_lifecycle", "dash:cycle_time"):
                 with self.subTest(page=name, scale=scale):
                     cache.clear()
                     with self.assertNumQueries(PAGE_QUERY_PINS[name] + MERGE_READ_QUERIES):

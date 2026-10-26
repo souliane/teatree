@@ -1,6 +1,5 @@
-"""Secret storage via the ``pass`` password store."""
+"""The secret facade: one reader/writer API over the installed store (the ``pass`` password store by default)."""
 
-import logging
 import os
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -9,9 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, override
 
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_bounded_group
-
-logger = logging.getLogger(__name__)
 
 # ``pass show`` shells out to gpg, which talks to gpg-agent over a unix socket. A
 # wedged agent — a GNUPGHOME on a mount that cannot host the sockets, a dead
@@ -27,6 +25,8 @@ KEYRING_READ_TIMEOUT_ENV_VAR = "T3_KEYRING_READ_TIMEOUT_SECONDS"
 # running"). Those are opposite answers: 1 is a genuine empty, anything else is a
 # read that never happened and must never be laundered into one.
 PASS_ABSENT_RETURNCODE = 1
+
+SELECTOR_ENV = "T3_SECRET_STORE"
 
 
 def keyring_read_timeout_seconds() -> float:
@@ -57,8 +57,8 @@ class SecretStoreError(RuntimeError):
         )
 
     @classmethod
-    def refused_empty(cls, key: str) -> "SecretStoreError":
-        return cls(f"refusing to write an empty value to {key!r} in the `pass` password store")
+    def refused_empty(cls, key: str, store: "SecretStore | None" = None) -> "SecretStoreError":
+        return cls(f"refusing to write an empty value to {key!r} in {(store or PassStore()).label}")
 
     @classmethod
     def not_backed_up(cls, key: str, backup_key: str) -> "SecretStoreError":
@@ -107,12 +107,14 @@ class SecretNotFoundError(RuntimeError):
     """
 
     @classmethod
-    def absent(cls, key: str) -> "SecretNotFoundError":
-        return cls(f"secret {key!r} has no entry in the `pass` password store — set it with `pass insert {key}`")
+    def absent(cls, key: str, store: "SecretStore | None" = None) -> "SecretNotFoundError":
+        active = store or PassStore()
+        return cls(f"secret {key!r} has no entry in {active.label} — set it with {active.remedy(key)}")
 
     @classmethod
-    def empty(cls, key: str) -> "SecretNotFoundError":
-        return cls(f"secret {key!r} is empty in the `pass` password store — set it with `pass insert {key}`")
+    def empty(cls, key: str, store: "SecretStore | None" = None) -> "SecretNotFoundError":
+        active = store or PassStore()
+        return cls(f"secret {key!r} is empty in {active.label} — set it with {active.remedy(key)}")
 
     @classmethod
     def tool_missing(cls, key: str) -> "SecretNotFoundError":
@@ -164,8 +166,7 @@ def read_pass(key: str) -> str:
 
     This reader cannot distinguish an absent secret from an empty one — both are
     ``""``. When the caller cannot function without the value, use
-    :func:`read_pass_required`; for a genuinely-optional secret with a fallback,
-    use :func:`read_pass_or_default`.
+    :func:`read_pass_required`.
     """
     try:
         return _first_line(_store().read(key))
@@ -182,30 +183,16 @@ def read_pass_required(key: str) -> str:
     that FAILED propagates as :class:`SecretStoreError` — naming a wedged keyring
     as such rather than as a missing entry.
     """
+    store = _store()
     try:
-        raw = _store().read(key)
+        raw = store.read(key)
     except FileNotFoundError as exc:
         raise SecretNotFoundError.tool_missing(key) from exc
     if raw is None:
-        raise SecretNotFoundError.absent(key)
+        raise SecretNotFoundError.absent(key, store)
     value = _first_line(raw)
     if not value:
-        raise SecretNotFoundError.empty(key)
-    return value
-
-
-def read_pass_or_default(key: str, default: str) -> str:
-    """Return the secret at *key*, or *default* with a logged warning when absent.
-
-    For a genuinely-optional secret: the fallback stays available, but taking it
-    is a VISIBLE event (a ``WARNING`` naming the key) rather than the invisible
-    empty-string fallback :func:`read_pass` gives, so a deliberate default is
-    never mistaken for a configured value.
-    """
-    value = read_pass(key)
-    if not value:
-        logger.warning("secret %r not found in the `pass` password store — using the provided default", key)
-        return default
+        raise SecretNotFoundError.empty(key, store)
     return value
 
 
@@ -240,7 +227,7 @@ def write_pass_with_backup(key: str, value: str, *, echo: Callable[[str], object
     value nobody can get back.
     """
     if not value.strip():
-        raise SecretStoreError.refused_empty(key)
+        raise SecretStoreError.refused_empty(key, _store())
     backup_key = _back_up_existing(key, echo=echo)
     if not write_pass(key, value):
         raise SecretStoreError.not_written(key)
@@ -248,11 +235,17 @@ def write_pass_with_backup(key: str, value: str, *, echo: Callable[[str], object
 
 
 def _back_up_existing(key: str, *, echo: Callable[[str], object]) -> str:
+    from teatree.utils.secret_backups import backup_name  # noqa: PLC0415 — deferred: off the mcp-serve graph
+
     existing = read_pass(key)
     if not existing:
         return ""
-    backup_key = f"{key}.bak-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
-    if not write_pass(backup_key, existing):
+    backup_key = backup_name(key, datetime.now(UTC))
+    try:
+        backed_up = write_pass(backup_key, existing)
+    except SecretStoreError as exc:
+        raise SecretStoreError.not_backed_up(key, backup_key) from exc
+    if not backed_up:
         raise SecretStoreError.not_backed_up(key, backup_key)
     echo(f"OK    Backed up the previous value to `pass {backup_key}` before overwriting.")
     return backup_key
@@ -304,6 +297,8 @@ def pass_entry_exists(key: str) -> bool:
 
 
 class SecretStore(Protocol):
+    label: str
+
     def read(self, key: str) -> str | None: ...
 
     def write(self, key: str, value: str) -> bool: ...
@@ -312,8 +307,12 @@ class SecretStore(Protocol):
 
     def names(self, prefix: str) -> frozenset[str]: ...
 
+    def remedy(self, key: str) -> str: ...
+
 
 class PassStore(SecretStore):
+    label = "the `pass` password store"
+
     @override
     def read(self, key: str) -> str | None:
         return _pass_show(key)
@@ -330,28 +329,55 @@ class PassStore(SecretStore):
     def names(self, prefix: str) -> frozenset[str]:
         return _pass_names(prefix)
 
+    @override
+    def remedy(self, key: str) -> str:
+        return f"`pass insert {key}`"
+
 
 @dataclass(slots=True)
 class _StoreSlot:
-    active: SecretStore
+    active: SecretStore | None = None
+    sealed_factory: Callable[[], SecretStore] | None = None
 
-    def install(self, store: SecretStore) -> None:
+    def install(self, store: SecretStore | None) -> None:
         self.active = store
 
+    def register_sealed(self, factory: Callable[[], SecretStore]) -> None:
+        self.sealed_factory = factory
 
-_store_slot = _StoreSlot(PassStore())
+    def resolve(self) -> SecretStore:
+        if self.active is None:
+            self.active = self._from_selector()
+        return self.active
+
+    def _from_selector(self) -> SecretStore:
+        choice = os.environ.get(SELECTOR_ENV, "") or "pass"
+        if choice == "pass":
+            return PassStore()
+        if choice != "sealed":
+            message = f"{SELECTOR_ENV} must be 'pass' or 'sealed', not {choice!r}"
+            raise SecretStoreError(message)
+        ensure_django()
+        if self.sealed_factory is None:
+            message = f"{SELECTOR_ENV}=sealed but the sealed store is not registered (Django apps not ready)"
+            raise SecretStoreError(message)
+        return self.sealed_factory()
+
+
+_store_slot = _StoreSlot()
 
 
 def _store() -> SecretStore:
-    return _store_slot.active
+    return _store_slot.resolve()
 
 
 install_store = _store_slot.install
+register_sealed_store = _store_slot.register_sealed
 
 
 @contextmanager
-def use_store(store: SecretStore) -> Generator[SecretStore]:
-    previous = _store()
+def use_store(store: SecretStore | None) -> Generator[SecretStore | None]:
+    previous = _store_slot.active
     install_store(store)
     try:
         yield store

@@ -325,6 +325,87 @@ class TestCleanupWorktree(TestCase):
 
         assert not Worktree.objects.filter(pk=wt_id).exists()
 
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_shared_database_and_pass_entry_survive_until_last_row(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        first = self._make_worktree(db_name="shared_db")
+        first.state = Worktree.State.PROVISIONED
+        first.compose_project = "shared_stack"
+        first.save(update_fields=["state", "compose_project"])
+        second = Worktree.objects.create(
+            ticket=first.ticket,
+            overlay="test",
+            repo_path="other",
+            branch="other",
+            db_name="shared_db",
+            compose_project="shared_stack",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        with (
+            patch("teatree.core.cleanup.cleanup._drop_worktree_db") as drop_db,
+            patch("teatree.core.cleanup.cleanup._remove_overlay_pass_entry") as remove_pass,
+            patch("teatree.core.cleanup.cleanup.reap_external_resources") as reap_external,
+            patch("teatree.core.runners.worktree_start.docker_compose_down") as compose_down,
+        ):
+            cleanup_worktree(first)
+            compose_down.assert_not_called()
+            drop_db.assert_not_called()
+            remove_pass.assert_not_called()
+            reap_external.assert_not_called()
+            cleanup_worktree(second)
+            compose_down.assert_called_once()
+            drop_db.assert_called_once()
+            remove_pass.assert_called_once()
+            reap_external.assert_called_once()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_created_kept_peer_preserves_shared_resources(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        kept = self._make_worktree(db_name="shared_db")
+        kept.compose_project = "shared_stack"
+        kept.extra = {"worktree_path": "/tmp/kept-checkout"}
+        kept.save(update_fields=["compose_project", "extra"])
+        second = Worktree.objects.create(
+            ticket=kept.ticket,
+            overlay="test",
+            repo_path="other",
+            branch="other",
+            db_name="shared_db",
+            compose_project="shared_stack",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        with (
+            patch("teatree.core.cleanup.cleanup._drop_worktree_db") as drop_db,
+            patch("teatree.core.cleanup.cleanup._remove_overlay_pass_entry") as remove_pass,
+            patch("teatree.core.runners.worktree_start.docker_compose_down") as compose_down,
+        ):
+            cleanup_worktree(second)
+
+        compose_down.assert_not_called()
+        drop_db.assert_not_called()
+        remove_pass.assert_not_called()
+        assert Worktree.objects.filter(pk=kept.pk).exists()
+
     @_patch_content
     @_patch_overlay
     @_patch_git
@@ -690,7 +771,7 @@ class TestCleanupWorktree(TestCase):
         mock_git: MagicMock,
         mock_overlay: MagicMock,
     ) -> None:
-        """An explicit force override discards even commits on no remote."""
+        """Force skips the legacy guard when no checkout exists to prove."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
@@ -1331,7 +1412,7 @@ class TestCleanupWorktreeRefuseBeforeDestroy(TestCase):
     """Guards refuse BEFORE any destructive step, and a dirty worktree is kept by default.
 
     Two data-loss regressions: (1) uncommitted changes must not be wiped by
-    default on an unattended teardown — ``keep_if_dirty`` defaults ``True`` so a
+    default on an unattended teardown — a
     dirty worktree raises and is kept; (2) a refused teardown must not have
     already destroyed the per-worktree docker volume — the git data-loss guards
     run ahead of ``docker_compose_down(remove_volumes=True)``.
@@ -1435,18 +1516,19 @@ class TestCleanupWorktreeRefuseBeforeDestroy(TestCase):
         assert Worktree.objects.filter(pk=wt.pk).exists()
 
     @_patch_overlay
-    def test_force_overrides_dirty_guard(self, mock_overlay: MagicMock) -> None:
+    def test_force_still_refuses_dirty_checkout(self, mock_overlay: MagicMock) -> None:
         mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         workspace, wt_dir, wt = self._dirty_worktree()
         wt_id = wt.pk
         with (
             patch("teatree.core.cleanup.cleanup.clone_root", return_value=workspace),
             patch("teatree.core.runners.worktree_start.docker_compose_down"),
+            pytest.raises(RuntimeError, match="not proven shipped"),
         ):
             cleanup_worktree(wt, force=True)
 
-        assert not wt_dir.exists(), "force must reap the dirty worktree from disk"
-        assert not Worktree.objects.filter(pk=wt_id).exists()
+        assert wt_dir.exists()
+        assert Worktree.objects.filter(pk=wt_id).exists()
 
     @_patch_ref_tree
     @_patch_overlay

@@ -9,11 +9,16 @@ from teatree.cli.django_group import DjangoGroup
 
 DJANGO_GROUPS: dict[str, DjangoGroup] = {
     "secrets": DjangoGroup(
-        "Inspect sealed credentials and plan a password-store import.",
+        "Inspect, manage and copy sealed credentials.",
         [
             ("status", "Show sealed-store key health and key IDs."),
             ("ls", "List sealed entry names."),
-            ("import-pass", "Classify password-store entries without copying values."),
+            ("import-pass", "Classify password-store entries; --apply copies row entries."),
+            ("set", "Seal a value from stdin or a hidden prompt."),
+            ("rm", "Remove a sealed entry."),
+            ("verify", "Check referenced sealed entries without printing values."),
+            ("get", "Print one secret line to a pipe."),
+            ("exec", "Run a command with secrets in its environment."),
         ],
         core_dispatch=True,
     ),
@@ -354,6 +359,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("expedite", "Flag a ticket as an expedite/release-blocker."),
             ("attachments", "Print (and with --fetch download) a ticket's referenced attachments."),
             ("rubric-set", "Restate a ticket's rubric from explicit JSON criteria (#2241)."),
+            ("rubric-waive", "Record an owner's waiver of one rubric criterion."),
             ("rubric-grade", "Record a verifier's per-criterion PASS/FAIL on the rubric (#2241)."),
         ],
         core_dispatch=True,

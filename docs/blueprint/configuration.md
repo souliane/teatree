@@ -135,16 +135,26 @@ a less-safe mode.
 
 ### 10.1.0 Staged sealed credential store
 
-The `teatree.utils.secrets` facade now has one swappable `SecretStore` slot.
-`PassStore` remains the production default while the migration is staged; tests
-install `MemoryStore` so they cannot read an operator's `pass` store. The new
-`DbStore` keeps AES-256-GCM sealed values in `SealedSecret` rows on the control
-DB, with the installation master key in a mode-0600 file beside that database.
-`T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override;
-it is never a `ConfigSetting` row. `t3 <overlay> secrets status`, `ls` and
-`import-pass` provide read-only key-health diagnostics and a names-only import
-inventory; `secrets status` exits 1 on any key verdict other than OK. No production reader or writer reaches the sealed rows: `DbStore` is
-not installed, and `import-pass` copies nothing.
+The `teatree.utils.secrets` facade has one swappable `SecretStore` slot, resolved at first use.
+`T3_SECRET_STORE` (`pass` by default, or `sealed`; environment-only, never a `ConfigSetting` row) selects it:
+`sealed` reads and writes `SealedSecret` rows with no fallback to `pass`, an unknown value raises naming the
+variable, and a store installed in code (tests install `MemoryStore`) always wins.
+
+`DbStore` keeps AES-256-GCM sealed values in `SealedSecret` rows on the control DB, with the installation master
+key in a mode-0600 file. `T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override. In a
+deployed container (`TEATREE_ROLE` set) a key path inside the control-DB directory is refused for creation and
+warned for loads, and the deployment mounts the key directory read-only from the host into the services that
+mount the password store.
+
+`t3 <overlay> secrets status`, `ls` and `import-pass` are read-only diagnostics (`status` prints the selected
+store and exits 1 on any key verdict other than OK; `import-pass` prints a names-only inventory). `set|rm|verify`
+act on sealed rows directly; `get|exec` read through the active store, `get` refuses a terminal, and the
+secret-print detector denies an unredirected `get`. `import-pass --apply` copies the `row` entries from `pass`
+into sealed rows (names and statuses only), writes the `SecretCutover` marker after a second full read-back, and
+refuses when the selector is `sealed` or the key sits inside the control-DB volume.
+Deploy shell readers use `deploy/secret-read.sh` for the same selector. In sealed mode, its Django-free
+reader opens the canonical control DB read-only and returns 0 for a value, 1 for absence, or 2 for an unreadable
+row; host-only readers leave the value for the container, which mounts the DB and key.
 
 ### 10.1.1 Per-Overlay Setting Overrides
 
@@ -348,6 +358,7 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | `require_human_approval_to_answer` | Training-wheel for `t3:answerer`: drafts + DMs, posts only on confirm |
 | `on_behalf_auto_actions` | Allowlist of on-behalf actions that PROCEED even under a forbidding egress posture (default `["post_e2e_evidence"]`): the user's own-ticket self-documentation, not a colleague-facing voice, so they never need per-post approval. Clear to `[]` to re-gate test plan; env `T3_ON_BEHALF_AUTO_ACTIONS` (comma-separated) wins |
 | `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
+| `issue_intake_repos` | Full `owner/repo` or nested group slugs replacing the intake scope, including repos the overlay does not declare. Malformed entries are dropped with a warning; empty or all-malformed lists use all overlay-owned repos. Common branch prefixes such as `fix/` are rejected. Affects intake only. DB-home precedence: overlay row, global row, declared default; no `T3_*` env override. |
 | `architectural_review_skill` | Override which skill the scanner dispatches (default `architectural-review`) |
 | `architectural_review_cadence_hours` | Per-overlay success-cadence floor (age of the last COMPLETED review) for the architectural-review scanner (default 168) |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
@@ -355,7 +366,7 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | `review_skill` | #1539: per-ticket deep-review skill (env `T3_REVIEW_SKILL`). Empty (default) ⇒ reviewing-phase gate is a NO-OP; when set, `visit-phase … reviewing` needs a `review_skill_run` artifact. |
 | `review_exempt_repos` | Repo patterns whose merge requests never get a review request (a repo whose review the owner asks for in person). Matched on the host-free `slug_namespace_matches` segment grammar, so a namespace entry covers every repo under it. This is the PIN layer over the overlay's derived `review_exempt_repo_slugs()`, resolved by `teatree.core.review.repo_exemption`, and it wins in BOTH directions — an entry ADDS an exemption, a `!`-prefixed one SUBTRACTS one the overlay declared, so a changed policy is a config edit rather than a merge. Both sources feed one list where the deepest matching pattern decides and a tie does not exempt; both are empty by default, so it ships INERT. Exemption is its own declared axis — never derived from `RepoOwner`, which answers DEVOPS for every unrecognised repo. |
 | `review_exempt_repos_count_toward_group_readiness` | Whether a review-exempt merge request still gates its work group's readiness. Default `true` is the conservative reading — an exempt member keeps holding the group, biasing toward NOT broadcasting a partial batch. |
-| `review_nag_max_interval_days` | Followup-loop setting: ceiling (default `30`) for the review-nag Fibonacci re-ask backoff, so an unanswered request settles into a monthly rhythm instead of going quiet for months. |
+| `review_nag_max_interval_days` | Shared communication setting: ceiling (default `30`) for the review-nag Fibonacci re-ask backoff, so an unanswered request settles into a monthly rhythm instead of going quiet for months. |
 | `review_nag_reask_mention` | Followup-loop fallback when no engaged reviewer maps safely to one active Slack user. A Slack user-group id renders as a group mention; a handle resolves through `usergroups.list` (the bot needs `usergroups:read`) to a group mention, else through the user directory to a user mention, never a user id inside a group mention. Empty or unresolved fallback holds the re-ask instead of posting without a mention. A PERSONAL key, so it never ships in `defaults.toml`. |
 | `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) — same registry/consumer gap as above |
 | `scanning_news_cadence_hours` | Cadence floor for the news-scanning scanner — same registry/consumer gap as above |

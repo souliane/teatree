@@ -14,11 +14,13 @@ from typing import TYPE_CHECKING
 from django.db.models import Max
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
+from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.plan_decision import has_plan_decision
 from teatree.core.models.self_review import SelfReview
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.ticket_worktree_checks import worktree_head_sha
 from teatree.core.repair_loop import max_phase_iterations, terminal_reason_fingerprint
 
 if TYPE_CHECKING:
@@ -49,23 +51,6 @@ _PHASE_TARGET_STATE: dict[str, str] = {
     "reviewing": Ticket.State.SELF_REVIEWED,
     "shipping": Ticket.State.PR_OPENED,
 }
-#: Lifecycle order used to compare a ticket's position to a phase's target.
-#: The off-ladder terminals IGNORED and REVIEW_DELIVERED are intentionally absent —
-#: a settled ticket is never a wedge (guarded via ``is_settled`` before the lookup).
-_STATE_ORDER: list[str] = [
-    Ticket.State.NOT_STARTED,
-    Ticket.State.SCOPED,
-    Ticket.State.WORK_STARTED,
-    Ticket.State.PLAN_RECORDED,
-    Ticket.State.CODED,
-    Ticket.State.TESTED,
-    Ticket.State.SELF_REVIEWED,
-    Ticket.State.PR_OPENED,
-    Ticket.State.REVIEW_REQUESTED,
-    Ticket.State.MERGED,
-    Ticket.State.RETRO_RECORDED,
-    Ticket.State.DELIVERED,
-]
 
 
 def transition_source_states(name: str) -> set[str]:
@@ -108,7 +93,9 @@ def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
     """Fire a completed coding task's transition, or escalate a wedge; ``True`` iff one fired.
 
     Only the rework parented on a held self-review discharges it: any other coding run on a
-    held ticket queues that rework instead, so the HOLD's own findings always reach a coder.
+    held ticket queues that rework instead, so the HOLD's own findings always reach a coder —
+    unless the ticket has moved past the HOLD's head, which that run then addressed: it is
+    re-tested and re-reviewed at the head it left.
     """
     if ticket.state == Ticket.State.PLAN_RECORDED:
         ticket.code(parent_task=task)
@@ -119,7 +106,7 @@ def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
         # early ticket) legitimately mints coding before PLAN_RECORDED; ``code_direct`` advances it.
         ticket.code_direct(parent_task=task)
     elif ticket.state in transition_source_states("address_self_review") and (held := SelfReview.open_hold_for(ticket)):
-        if task.parent_task_id != held.task_pk:
+        if task.parent_task_id != held.task_pk and not _head_past(ticket, held):
             queue_self_review_rework(ticket, held, after=task)
             return False
         ticket.address_self_review(parent_task=task)
@@ -137,7 +124,10 @@ def advance_self_reviewed_ticket(task: "Task", ticket: Ticket) -> bool:
         return False
     if (review := SelfReview.of_task(task)) is not None and review.is_hold:
         if not task.recorded_by_hand():
-            queue_self_review_rework(ticket, review)
+            if live := _head_past(ticket, review):
+                _retest_superseded_hold(ticket, review, after=task, live=live)
+            else:
+                queue_self_review_rework(ticket, review)
         return False
     ticket.review(parent_task=task, schedule_followup=not task.recorded_by_hand())
     ticket.save()
@@ -158,7 +148,10 @@ def advance_shipped_ticket(task: "Task", ticket: Ticket) -> bool:
         escalate_unmatched_phase_transition(task, phase="shipping", ticket=ticket)
         return False
     if (held := SelfReview.open_hold_for(ticket)) is not None:
-        queue_self_review_rework(ticket, held, after=task)
+        if live := _head_past(ticket, held):
+            _retest_superseded_hold(ticket, held, after=task, live=live)
+        else:
+            queue_self_review_rework(ticket, held, after=task)
         return False
     task.session.check_gate_across_ticket("shipping")
     ticket.ship()
@@ -171,7 +164,11 @@ def queue_self_review_rework(ticket: Ticket, review: SelfReview, *, after: "Task
 
     Keyed on the parent link, and after another coding or shipping completion on reworks newer than it:
     a replay never re-mints, yet a rework failed or cancelled before that completion is replaced once.
+    A HOLD whose head the ticket has moved past queues nothing: its still-pending reworks fail instead.
     """
+    if live := _head_past(ticket, review):
+        _fail_pending_reworks(ticket, review, live=live)
+        return
     reworks = ticket.tasks.filter(parent_task_id=review.task_pk, phase__in=phase_spellings("coding"))
     if after is not None:
         reworks = reworks.filter(pk__gt=after.pk)
@@ -182,6 +179,34 @@ def queue_self_review_rework(ticket: Ticket, review: SelfReview, *, after: "Task
         _record_hold_cap(ticket, review, laps=len(earlier_laps) + 1)
         return
     ticket.schedule_self_review_rework(ticket.tasks.get(pk=review.task_pk), review)
+
+
+def _head_past(ticket: Ticket, review: SelfReview) -> str:
+    """The ticket worktree's head when it has moved off the tree *review* judged, else ''.
+
+    A HOLD is a verdict on one tree: its findings say nothing about the commits that came after it, so a rework
+    minted for it makes a coder fix code that is no longer the branch. An unknown worktree head, or a HOLD that
+    recorded none, proves nothing stale, so the rework stays.
+    """
+    live = worktree_head_sha(ticket)
+    reviewed = review.reviewed_sha
+    return live if live and re.fullmatch(r"[0-9a-f]{7,40}", reviewed) and not live.startswith(reviewed) else ""
+
+
+def _retest_superseded_hold(ticket: Ticket, review: SelfReview, *, after: "Task", live: str) -> None:
+    _fail_pending_reworks(ticket, review, live=live)
+    ticket.address_self_review(parent_task=after)
+    ticket.save()
+
+
+def _fail_pending_reworks(ticket: Ticket, review: SelfReview, *, live: str) -> None:
+    """Fail the reworks of *review* no agent has claimed; a claimed one is left, an agent is on it."""
+    reason = f"{HEAD_SUPERSEDED_PREFIX}self-review HOLD at {review.reviewed_sha[:12]}, the ticket is now at {live[:12]}"
+    pending = ticket.tasks.pending_in_phase("coding").filter(
+        parent_task_id=review.task_pk, status=ticket.tasks.model.Status.PENDING
+    )
+    for rework in pending:
+        rework.fail(reason=reason, by_holder=False)
 
 
 def _record_hold_cap(ticket: Ticket, review: SelfReview, *, laps: int) -> None:
@@ -217,11 +242,11 @@ def phase_output_reached(ticket: Ticket, phase: str) -> bool:
     position to compare, so both answer ``False``.
     """
     target = _PHASE_TARGET_STATE.get(normalize_phase(phase))
-    if target is None or ticket.state not in _STATE_ORDER:
+    if target is None or ticket.state not in Ticket.State.values or ticket.state in Ticket.off_ladder_states():
         return False
     if target == Ticket.State.CODED and ticket.owes_self_review_rework():
         return False
-    return _STATE_ORDER.index(ticket.state) >= _STATE_ORDER.index(target)
+    return Ticket.state_index(ticket.state) >= Ticket.state_index(target)
 
 
 def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Ticket) -> None:
@@ -291,7 +316,7 @@ def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket:
 
 
 def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, str]:
-    """Question pk -> reason, for each wedge row whose ticket went terminal or moved past it.
+    """Question pk -> reason, for each wedge row whose task was moved back over or ticket settled or advanced.
 
     Positive-only. "Moved past" needs the phase's output reached AND a task newer than the
     wedged one, so a refusal recorded on a ticket already past the phase stays pending
@@ -310,7 +335,15 @@ def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, st
         ticket = tickets.get(int(match["ticket"]))
         if ticket is None:
             continue
-        if ticket.state in Ticket.marker_release_states():
+        if (
+            (task_pk := _wedged_task_pk(match))
+            and (task := ticket.tasks.filter(pk=task_pk).first())
+            and ticket.transitions.moved_back_over(task)
+        ):
+            healed[question_pk] = (
+                f"ticket {ticket.pk} was moved back over the {match['phase']} wedge task {task.pk} ({ticket.state})"
+            )
+        elif ticket.state in Ticket.marker_release_states():
             healed[question_pk] = f"ticket {ticket.pk} is terminal ({ticket.state})"
         elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task_pk or 0) > _wedged_task_pk(match):
             healed[question_pk] = f"ticket {ticket.pk} moved past the {match['phase']} wedge ({ticket.state})"

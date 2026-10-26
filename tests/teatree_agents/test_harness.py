@@ -556,7 +556,7 @@ def test_pydantic_ai_num_turns_reflects_the_request_count() -> None:
 def _denial_gauntlet_stream(turns: int) -> Callable[[object, AgentInfo], AsyncIterator[object]]:
     """A streamed model that repeats a denylisted ``Bash`` call *turns* times, then yields text.
 
-    Progress is derived from how many ``RetryPromptPart``s the history already
+    Progress is derived from how many retried tool returns the history already
     carries (mirrors :func:`_tool_then_text_stream`'s returned-part probe) rather
     than closed-over mutable state, so the double stays stateless and safe to
     reuse across `asyncio.run` calls.
@@ -569,7 +569,7 @@ def _denial_gauntlet_stream(turns: int) -> Callable[[object, AgentInfo], AsyncIt
             for message in (messages if isinstance(messages, list) else [])
             if isinstance(message, ModelRequest)
             for part in message.parts
-            if type(part).__name__ == "RetryPromptPart"
+            if isinstance(part, ToolReturnPart) and part.outcome == "retried"
         )
         if denials < turns:
             args = json.dumps({"command": "rm -rf /"})

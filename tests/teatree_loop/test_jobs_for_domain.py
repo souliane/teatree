@@ -183,6 +183,7 @@ class PrSweepShipDomainTestCase(TestCase):
         backend = self._backend_with_sweep()
         ship = self._scanner_type_names(jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,)))
         assert "PrSweepScanner" in ship
+        assert "UnauditedMergeScanner" in ship
 
     def test_review_domain_does_not_own_the_pr_sweep(self) -> None:
         backend = self._backend_with_sweep()

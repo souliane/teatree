@@ -15,6 +15,7 @@ from teatree.config import discover_active_overlay, discover_overlays, get_effec
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.core.models.dream_gap_ledger import dream_umbrella_url
+from teatree.core.review.pr_inventory import mark_inventory_unknown, write_inventory
 from teatree.generation import in_place_update_refusal
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain, single_overlay_messaging_jobs
 from teatree.loop.job_identity import CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
@@ -42,6 +43,7 @@ from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.scanners.pr_findings import RecordedCriticFindingReader, RecordedVerdictReader
 from teatree.loop.scanners.self_update import CORE_REPO_LABEL
 from teatree.loop.scanners.self_update_ci import ForgeMainCiStatus
+from teatree.loop.tick_resolvers import _web_origin_for_host
 
 logger = logging.getLogger(__name__)
 
@@ -465,6 +467,10 @@ def build_default_jobs(
                     _ScannerJob(
                         scanner=MyPrsScanner(
                             host=host,
+                            overlay_name="",
+                            host_origin=_web_origin_for_host(host),
+                            inventory_writer=write_inventory,
+                            inventory_invalidator=mark_inventory_unknown,
                             verdict_reader=RecordedVerdictReader(),
                             critic_reader=RecordedCriticFindingReader(),
                         ),

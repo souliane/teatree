@@ -95,7 +95,6 @@ tests/teatree_core/test_worktree_verify_runner.py
 tests/teatree_loop/slack_answer/test_loop_slack_answer_command.py
 tests/teatree_loop/test_active_tickets.py
 tests/teatree_loop/test_architectural_review_scanner.py
-tests/teatree_loop/test_askuserquestion_reply_scanner.py
 tests/teatree_loop/test_bug_fixes.py
 tests/teatree_loop/test_codex_review_scanner.py
 tests/teatree_loop/test_disposition_identity_groups.py

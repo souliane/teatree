@@ -6,7 +6,7 @@ denies a Bash command that would print a known secret-bearing source to stdout:
 
 * cat/head/tail of known secret-bearing paths (credential files, key files,
     ``.env`` files, pass stores);
-* ``pass show …`` whose stdout is NOT captured or redirected to a file;
+* ``pass show …`` or ``t3 … secrets get …`` whose stdout is NOT captured or redirected to a file;
 * echo/printf of a pasted token literal (glpat-/ghp_/gho_/xoxb-/xoxp-/sk-).
 
 Allowed (must NOT false-positive): reading a value into a shell variable
@@ -48,7 +48,8 @@ _CREDENTIAL_PRINT_BLOCK_MSG = (
     "BLOCKED: this command would print a secret-bearing file or credential token "
     "to the transcript. Reading a secret into the transcript is irrecoverable — "
     "rotation is the only remedy. Instead, extract the value into a shell variable "
-    "(`TOKEN=$(pass show …)`) and use it via env/header without printing it. "
+    '(`TOKEN=$(pass show …)` or `TOKEN="$(t3 <overlay> secrets get …)"`) '
+    "and use it via env/header without printing it. "
     "Do NOT implement 'mask-then-print' — a masking regex is one edge case away "
     "from leaking. The gate's job is to keep the value off stdout entirely."
 )

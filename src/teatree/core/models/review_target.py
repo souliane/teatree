@@ -16,7 +16,7 @@ landed-work guard both read. A stricter read-back would refuse a row those consu
 see, which is a false "never persisted" on a forge slug spelled another way.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
@@ -29,6 +29,9 @@ from teatree.utils.url_slug import pr_ref_from_url
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
+
+REVIEW_RETRY_HEAD_KEY = "review_retry_head_by_task"
+MOVED_REVIEW_RETRY_HEADS_KEY = "review_retry_after_move"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,19 +101,22 @@ def review_target_for_task(task: "Task") -> ReviewTarget | None:
     head_sha)`` and holds the per-MR lock. Failing that, the ticket itself is the answer,
     and failing that, the one live PR an issue-anchored ticket records.
     """
+    retry_heads = (task.ticket.extra or {}).get(REVIEW_RETRY_HEAD_KEY, {})
+    retry_head = str(retry_heads.get(str(task.pk), "")) if isinstance(retry_heads, dict) else ""
     dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     if dispatch is not None:
         dispatched_pr = pr_ref_from_url(dispatch.pr_url)
         return ReviewTarget(
             slug=dispatch.slug,
             pr_id=dispatch.pr_id,
-            head_sha=(dispatch.recorded_head_sha or dispatch.head_sha).strip(),
+            head_sha=retry_head or (dispatch.recorded_head_sha or dispatch.head_sha).strip(),
             claim_head_sha=dispatch.head_sha.strip(),
             host_kind="github" if dispatched_pr is None else dispatched_pr.host_kind,
             lock_holder=LOOP_SCANNER_HOLDER,
             armed_by=AutoReviewDispatch,
         )
-    return review_target_for_ticket(task.ticket) or _recorded_pr_target(task.ticket)
+    target = review_target_for_ticket(task.ticket) or _recorded_pr_target(task.ticket)
+    return replace(target, head_sha=retry_head) if target is not None and retry_head else target
 
 
 def _recorded_pr_target(ticket: "Ticket") -> ReviewTarget | None:
