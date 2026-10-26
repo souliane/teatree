@@ -63,7 +63,8 @@ def test_isolation_replaces_inherited_control_plane_paths(monkeypatch: pytest.Mo
     for name in ("T3_CONTROL_DB_DIR", "T3_DATA_DIR", "T3_WORKER_HEALTH_DIR"):
         monkeypatch.setenv(name, "/var/lib/teatree/production")
     conftest._isolate_env.__wrapped__(monkeypatch, tmp_path)
-    expected = tmp_path / "control-db"
+    expected = tmp_path / "isolated-control-db"
+    assert not expected.exists()
     child = subprocess.run(
         [sys.executable, "-I", "-c", "import os; print(os.environ['T3_CONTROL_DB_DIR'])"],
         capture_output=True,

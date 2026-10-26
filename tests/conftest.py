@@ -952,8 +952,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Keep cold readers and child interpreters on a per-test control DB directory
     # with no DB, so settings resolve to defaults without reading a host DB.
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
-    control_db_dir = tmp_path / "control-db"
-    control_db_dir.mkdir(exist_ok=True)
+    control_db_dir = tmp_path / "isolated-control-db"
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control_db_dir))
     monkeypatch.delenv("T3_DATA_DIR", raising=False)
     monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)

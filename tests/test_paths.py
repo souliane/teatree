@@ -634,7 +634,7 @@ class TestPrimaryDataDirIsNotTheDatabasesParent:
         # The data dir captures the original HOME at import; the DB captures the
         # control-dir override then. The test harness's later HOME changes neither.
         assert paths.TRUE_CANONICAL_DB.parent != paths._TRUE_CANONICAL_DATA_DIR
-        assert paths.TRUE_CANONICAL_DB.parent == paths.control_db_dir(os.environ)
+        assert paths.TRUE_CANONICAL_DB.parent == paths.DEFAULT_CONTROL_DB_DIR
 
 
 class TestCoreRepoRoot:
