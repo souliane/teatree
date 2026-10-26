@@ -212,7 +212,7 @@ class SweepCommands(TyperCommand):
 
         for ticket in Ticket.objects.exclude(issue_url="").order_by("pk"):
             inferred = ticket._infer_overlay()  # noqa: SLF001 — backfill owns this model concern.
-            if not inferred or inferred == ticket.overlay:
+            if not ticket.would_apply_inferred_overlay(inferred):
                 continue
 
             from_overlay = ticket.overlay

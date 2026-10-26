@@ -5,6 +5,9 @@
 to CONFIGURING. Both snapshot the admission baseline the verify step compares against.
 """
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 from django.test import TestCase
 
 from teatree.core.models import DeferredQuestion, Directive, FactoryScoreSnapshot, IncomingEvent, Task, Ticket
@@ -30,8 +33,8 @@ def _ratify_and_admit(directive: Directive) -> None:
     directive.admit()
 
 
-def _admitted(**sketch_over: object) -> Directive:
-    directive = Directive.objects.capture("max 1 MR per repo", source=Directive.Source.CLI, scope_overlay="")
+def _admitted(*, scope_overlay: str = "", **sketch_over: object) -> Directive:
+    directive = Directive.objects.capture("max 1 MR per repo", source=Directive.Source.CLI, scope_overlay=scope_overlay)
     directive.record_interpretation(sketch_from_envelope(valid_envelope(**sketch_over)), constraint_statement="cst")
     _ratify_and_admit(directive)
     return directive
@@ -55,6 +58,29 @@ def _admitted_ambient() -> Directive:
 
 
 class TestScheduleDirectiveImplementation(TestCase):
+    def test_explicit_scope_is_stored_despite_umbrella_owner(self) -> None:
+        overlays = {"umbrella-owner": SimpleNamespace(get_workspace_repos=lambda: ["souliane/teatree"])}
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            directive = _admitted(scope_overlay="another-overlay")
+            task = schedule_directive_implementation(directive)
+        assert task is not None
+        assert task.ticket.overlay == "another-overlay"
+
+    def test_blank_scope_uses_only_the_unique_installed_checkout_owner(self) -> None:
+        overlays = {
+            "umbrella-owner": SimpleNamespace(get_workspace_repos=lambda: ["souliane/teatree"]),
+            "factory-owner": SimpleNamespace(get_workspace_repos=lambda: ["vendor/factory"]),
+        }
+        for slug, expected in (("vendor/factory", "factory-owner"), ("unclaimed/repo", "")):
+            with (
+                self.subTest(slug=slug),
+                patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays),
+                patch("teatree.utils.git.remote_slug", return_value=slug),
+            ):
+                task = schedule_directive_implementation(_admitted())
+                assert task is not None
+                assert task.ticket.overlay == expected
+
     def test_anchors_the_ticket_links_it_back_and_moves_to_implementing(self) -> None:
         directive = _admitted()
         task = schedule_directive_implementation(directive)
@@ -79,16 +105,23 @@ class TestScheduleDirectiveImplementation(TestCase):
         # A pre-existing synthetic ticket already carrying the directive_id + a planning
         # task (a re-tick after a crash) is neither double-scheduled nor re-written: the
         # directive still advances, task returns None.
-        directive = _admitted()
+        directive = _admitted(scope_overlay="new-scope")
         ticket, _ = Ticket.objects.get_or_create(
             issue_url=f"{DIRECTIVE_IMPL_UMBRELLA_URL}#directive-impl={directive.pk}",
-            defaults={"role": Ticket.Role.AUTHOR, "short_description": "pre", "extra": {"directive_id": directive.pk}},
+            defaults={
+                "role": Ticket.Role.AUTHOR,
+                "short_description": "pre",
+                "extra": {"directive_id": directive.pk},
+                "overlay": "first-scope",
+            },
         )
         ticket.begin_planning()
         task = schedule_directive_implementation(directive)
         assert task is None
         directive.refresh_from_db()
         assert directive.state == Directive.State.IMPLEMENTING
+        ticket.refresh_from_db()
+        assert ticket.overlay == "first-scope"
 
 
 class TestImplementerNeverRefetchesRawSource(TestCase):
