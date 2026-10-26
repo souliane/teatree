@@ -453,15 +453,17 @@ class TestCheckingNotify:
             issue_url="https://github.com/acme/widgets/issues/42",
             short_description="A change in progress",
         )
-        TicketTransition.objects.create(ticket=ticket, from_state="started", to_state="coding")
+        TicketTransition.objects.create(
+            ticket=ticket, from_state=Ticket.State.WORK_STARTED, to_state=Ticket.State.CODED
+        )
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
 
-        TicketTransition.objects.create(ticket=ticket, from_state="coding", to_state="testing")
+        TicketTransition.objects.create(ticket=ticket, from_state=Ticket.State.CODED, to_state=Ticket.State.TESTED)
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
 
         rows = list(BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:"))
         assert len(rows) == 2
-        assert all(detail in "\n".join(row.text for row in rows) for detail in ("→ coding", "→ testing"))
+        assert all(detail in "\n".join(row.text for row in rows) for detail in ("→ coded", "→ tested"))
 
 
 class TestCheckingShowAllOverlays:
