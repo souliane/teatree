@@ -15,12 +15,12 @@ from teatree.agents.usage_window import record_park
 from teatree.core import task_dispatch
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Worktree
+from teatree.core.models import DeferredQuestion, InvalidTransitionError, Task, TaskAttempt, Worktree
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.task_repair import check_requeue_allowed
 from teatree.core.models.task_repair_queries import phase_attempts
 from teatree.core.owner_question_message import render_text
-from teatree.core.worktree.checkout_attest import CheckoutAttestation
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
 from teatree.core.worktree.checkout_fence import (
     CheckoutFenceError,
     claim_task_checkout_or_park,
@@ -116,7 +116,7 @@ class CheckoutFenceTests(TestCase):
         assert "nothing is running in its folder" in render_text(row)
         assert row.evidence["action"]["kind"] == "attest"
 
-    def test_an_answered_card_falls_back_to_the_notice_for_the_same_state(self) -> None:
+    def test_an_answered_card_does_not_send_another_notice_for_the_same_state(self) -> None:
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
             self._park_on_a_foreign_edit()
             row = self.task.deferred_questions.get()
@@ -133,8 +133,10 @@ class CheckoutFenceTests(TestCase):
             with patch("teatree.core.worktree.checkout_fence.notify_user") as notice:
                 assert claim_task_checkout_or_park(self.task) is not None
 
-        notice.assert_called_once()
+        notice.assert_not_called()
         assert self.task.deferred_questions.count() == 1
+        self.task.refresh_from_db()
+        assert self.task.not_before is not None
 
     def test_next_writer_reattests_after_an_interrupted_holder(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
@@ -366,6 +368,17 @@ class CheckoutFenceTests(TestCase):
         ask.assert_called_once()
         notice.assert_not_called()
         walk.assert_called_once()
+
+    def test_declined_checkout_does_not_send_fallback_owner_notice(self) -> None:
+        attestation = CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=False)
+        card = ask_owner_to_attest(self.task, attestation)
+        assert card is not None
+        card.apply_answer("Decline", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+
+        with patch("teatree.core.worktree.checkout_fence.notify_user") as notice:
+            park_task_checkout(self.task, reason="unattested checkout", attestable=attestation)
+
+        notice.assert_not_called()
 
     def test_one_page_per_episode_until_a_run_succeeds(self) -> None:
         with patch("teatree.core.worktree.checkout_fence.notify_user") as page:

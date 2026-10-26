@@ -143,6 +143,7 @@ class CardEvidence(TypedDict):
     blocker: str
     why: str
     quoted: NotRequired[str]
+    subject: NotRequired[str]
     action: NotRequired[ActionRequest]
 
 
@@ -320,6 +321,7 @@ class QuestionCard:
     why: str
     options: tuple[CardOption, ...] = ()
     quoted: str = ""
+    subject: str = ""
     action: ActionRequest | None = None
 
     def __post_init__(self) -> None:
@@ -369,6 +371,8 @@ class QuestionCard:
         )
         if self.quoted:
             evidence["quoted"] = self.quoted
+        if self.subject:
+            evidence["subject"] = self.subject
         if self.action is not None:
             evidence["action"] = self.action
         return evidence
@@ -393,6 +397,7 @@ class QuestionCard:
             why=str(evidence["why"]),
             options=CardOption.parse_all(options_json),
             quoted=str(evidence.get("quoted", "")),
+            subject=str(evidence.get("subject", "")),
             action=read_action(evidence),
         )
 

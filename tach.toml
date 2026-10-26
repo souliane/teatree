@@ -1018,7 +1018,7 @@ depends_on = [
 [[modules]]
 path = "teatree.loop.preset_resolution"
 layer = "domain"
-depends_on = ["teatree.core.models"]
+depends_on = ["teatree.core.models", "teatree.core.modelkit"]
 
 [[modules]]
 path = "teatree.loop.scanners"
