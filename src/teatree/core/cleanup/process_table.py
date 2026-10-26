@@ -159,14 +159,18 @@ def current_pid_namespace() -> str:
 
 
 def pid_namespace_depth(pid_dir: Path) -> int:
+    return len(namespace_pids(pid_dir))
+
+
+def namespace_pids(pid_dir: Path) -> tuple[str, ...]:
     try:
         status = (pid_dir / "status").read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return 0
+        return ()
     for line in status.splitlines():
         if line.startswith("NSpid:"):
-            return len(line.split()) - 1
-    return 0
+            return tuple(line.split()[1:])
+    return ()
 
 
 def nested_pid_namespace() -> str:

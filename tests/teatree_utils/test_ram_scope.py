@@ -42,6 +42,35 @@ _WORKER_SLAB_RECLAIMABLE_BYTES = 268435456
 _HOST_AVAILABLE_MIB = 22557
 
 
+@pytest.mark.parametrize(
+    ("limit", "headroom", "host", "expected"),
+    [
+        (16384, 4096, 12288, "cgroup"),
+        (16384, 14336, 12288, "host"),
+        (2048, 1024, 12288, "host"),
+        (None, None, 12288, "host"),
+    ],
+)
+def test_binding_scope_names_the_scope_used_by_the_box_watermark(
+    limit: int | None, headroom: int | None, host: int, expected: str
+) -> None:
+    candidates = [value for value in (headroom, host) if value is not None]
+    reading = RamHeadroom(
+        available_mib=min(candidates),
+        cgroup_limit_mib=limit,
+        host_available_mib=host,
+        cgroup_headroom_mib=headroom,
+    )
+    assert reading.binding_scope == expected
+
+
+def test_reclaimable_memory_stat_preserves_duplicate_key_totals(tmp_path: Path) -> None:
+    stat = tmp_path / "memory.stat"
+    stat.write_text(f"inactive_file {_MIB}\ninactive_file {_MIB}\nslab_reclaimable {_MIB}\n")
+    with patch("teatree.utils.ram_scope.cgroup_file", return_value=stat):
+        assert cgroup_v2_reclaimable_mib() == 3
+
+
 def test_cgroup_cap_unreadable_is_inert_even_when_host_memory_is_readable(tmp_path: Path) -> None:
     with (
         patch("teatree.utils.ram_scope.platform.system", return_value="Linux"),

@@ -59,16 +59,21 @@ def cgroup_v2_reclaimable_mib() -> int:
     nobody measured — under-reporting headroom is the safe direction.
     """
     try:
-        raw = cgroup_file("memory.stat").read_text(encoding="utf-8")
+        stat = read_cgroup_memory_stat()
     except OSError:
         return 0
-    total = 0
+    return sum(stat.get(key, 0) for key in _RECLAIMABLE_STAT_KEYS) // _BYTES_PER_MIB
+
+
+def read_cgroup_memory_stat() -> dict[str, int]:
+    raw = cgroup_file("memory.stat").read_text(encoding="utf-8")
+    values: dict[str, int] = {}
     for line in raw.splitlines():
         key, _, value = line.partition(" ")
         stripped = value.strip()
-        if key in _RECLAIMABLE_STAT_KEYS and stripped.isdigit():
-            total += int(stripped)
-    return total // _BYTES_PER_MIB
+        if stripped.isdigit():
+            values[key] = values.get(key, 0) + int(stripped)
+    return values
 
 
 def cgroup_v2_oom_kills() -> int | None:
@@ -161,6 +166,17 @@ class RamHeadroom:
     available_mib: int | None
     cgroup_limit_mib: int | None
     host_available_mib: int | None
+    cgroup_headroom_mib: int | None = None
+
+    @property
+    def binding_scope(self) -> str:
+        if (
+            self.cgroup_is_box_scoped
+            and self.cgroup_headroom_mib is not None
+            and (self.host_available_mib is None or self.cgroup_headroom_mib < self.host_available_mib)
+        ):
+            return "cgroup"
+        return "host"
 
     @property
     def cgroup_is_box_scoped(self) -> bool:
@@ -220,6 +236,7 @@ def read_ram_headroom() -> RamHeadroom:
         available_mib=min(candidates) if candidates else None,
         cgroup_limit_mib=limit_mib,
         host_available_mib=host_mib,
+        cgroup_headroom_mib=headroom_mib,
     )
 
 
@@ -232,5 +249,6 @@ __all__ = [
     "cgroup_memory_probe_inert",
     "cgroup_v2_oom_kills",
     "cgroup_v2_reclaimable_mib",
+    "read_cgroup_memory_stat",
     "read_ram_headroom",
 ]
