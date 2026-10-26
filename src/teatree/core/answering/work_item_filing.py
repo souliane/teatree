@@ -182,14 +182,15 @@ def _file_new(
     title = str(envelope.get("title") or "").strip()
     body = str(envelope.get("body") or "").strip()
     repo = repo_for(title, body)
+    host_forge = getattr(host, "forge", "")
+    forge = normalize_forge(host_forge) if isinstance(host_forge, str) else ""
+    if not forge:
+        raise UnknownForgeError(repo)
     fingerprint = _fingerprint(ticket)
     already = _existing_by_fingerprint(host, repo=repo, fingerprint=fingerprint)
     if already:
         return _attach(ticket, already)
     stamped = f"{body}\n\n<!-- {_marker(fingerprint)} -->"
-    forge = normalize_forge(getattr(host, "forge", ""))
-    if not forge:
-        raise UnknownForgeError(repo)
     try:
         clean_title = route_forge_write(forge=forge, repo=repo, text=title, action=_ACTION, target=repo)
         clean_body = route_forge_write(forge=forge, repo=repo, text=stamped, action=_ACTION, target=repo)

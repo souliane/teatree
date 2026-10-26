@@ -12,6 +12,7 @@ caller reads as "there was nothing to file".
 """
 
 from dataclasses import dataclass, field
+from typing import cast
 
 import pytest
 
@@ -127,6 +128,28 @@ class TestANewRequestBecomesAnAdmissibleIssue:
             pytest.fail("an unknown forge reached the outbound send")
 
         monkeypatch.setattr("teatree.core.answering.work_item_filing.route_forge_write", unexpected_write)
+        with pytest.raises(UnknownForgeError, match=f"forge for {_REPO} could not be determined"):
+            file_work_item(_conversation_ticket(), {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
+
+        assert host.created == []
+
+    def test_an_unknown_host_forge_does_not_attach_a_fingerprint_match(self) -> None:
+        host = RecordingHost(forge="")
+        matching_url = f"https://github.com/{_REPO}/issues/99"
+        host.open_issues.append({"html_url": matching_url, "body": "<!-- slack-request-fingerprint:fp-bottleneck -->"})
+        ticket = _conversation_ticket()
+
+        with pytest.raises(UnknownForgeError, match=f"forge for {_REPO} could not be determined"):
+            file_work_item(ticket, {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
+
+        assert not Ticket.objects.filter(issue_url=matching_url).exists()
+        ticket.refresh_from_db()
+        assert "work_issue_url" not in ticket.extra["slack_answer"]
+
+    @pytest.mark.parametrize("forge", [None, 17])
+    def test_a_non_string_host_forge_is_a_filing_refusal(self, forge: object) -> None:
+        host = RecordingHost(forge=cast("str", forge))
+
         with pytest.raises(UnknownForgeError, match=f"forge for {_REPO} could not be determined"):
             file_work_item(_conversation_ticket(), {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
 
