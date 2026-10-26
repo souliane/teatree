@@ -9,7 +9,6 @@ human report) or executes the two scoped sweeps (``--run``, the driver
 """
 
 import json
-import os
 from pathlib import Path
 
 import typer
@@ -19,12 +18,8 @@ from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_brief_cons
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import CommandFailedError
 
-BRIEF_ENV = "T3_PUSH_GATE_BRIEF"
 
-
-def brief_for_worktree(repo_root: Path) -> str:
-    if BRIEF_ENV in os.environ:
-        return os.environ[BRIEF_ENV]
+def _brief_for_worktree(repo_root: Path) -> str:
     ensure_django()
     from teatree.core.models import PlanArtifact, Task, Worktree  # noqa: PLC0415 — Django is set up at call time
 
@@ -92,7 +87,7 @@ def push_gate_command(
         return
     if run:
         try:
-            violations = run_brief_constraints(cwd, base_ref=base, brief=brief_for_worktree(cwd))
+            violations = run_brief_constraints(cwd, base_ref=base, brief=_brief_for_worktree(cwd))
         except (ChangedSetError, CommandFailedError, OSError) as exc:
             typer.echo(f"brief constraints could not be verified: {exc}", err=True)
             raise typer.Exit(code=1) from exc

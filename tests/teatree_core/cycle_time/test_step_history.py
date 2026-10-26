@@ -24,8 +24,11 @@ def _run(*, minutes: int, ended_hours_ago: int = 0, error: str = "", status: str
 
 
 class TestStepHistory(TestCase):
-    def test_public_package_exports_step_history(self) -> None:
-        assert cycle_time.StepHistory is StepHistory
+    def test_step_history_is_not_reexported_by_the_package(self) -> None:
+        assert "StepHistory" not in cycle_time.__all__
+        assert "StepEstimate" not in cycle_time.__all__
+        assert not hasattr(cycle_time, "StepHistory")
+        assert not hasattr(cycle_time, "StepEstimate")
 
     def test_history_uses_last_real_completed_run_and_widens_window(self) -> None:
         for minutes in (10, 20, 30, 40):

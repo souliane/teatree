@@ -10,7 +10,7 @@ tests never touch the real DATA_DIR.
 
 import json
 from contextlib import AbstractContextManager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -143,6 +143,53 @@ def _merged_ticket(*, number: int = 42, pr_id: int = 7) -> Ticket:
     )
     MergeAudit.objects.create(clear=clear, merged_sha=_SHA, required_checks_status="success")
     return ticket
+
+
+def _task(ticket: Ticket, phase: str, *, status: str = Task.Status.PENDING, **fields: Any) -> Task:
+    return Task.objects.create(
+        ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase, status=status, **fields
+    )
+
+
+def _completed_history(phase: str, durations: tuple[int, ...], *, ended_hours_ago: int = 0) -> None:
+    ended = timezone.now() - timedelta(hours=ended_hours_ago, minutes=1)
+    for index, minutes in enumerate(durations):
+        ticket = Ticket.objects.create(
+            overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{phase}-{Task.objects.count()}-{index}"
+        )
+        task = _task(ticket, phase, status=Task.Status.COMPLETED)
+        Task.objects.filter(pk=task.pk).update(admitted_at=ended - timedelta(minutes=minutes))
+        TaskAttempt.objects.create(task=task, ended_at=ended, exit_code=0)
+
+
+def _review_verdict(
+    ticket: Ticket, verdict: str, *, sha: str = _SHA, recorded_at: datetime | None = None
+) -> ReviewVerdict:
+    fields = {"recorded_at": recorded_at} if recorded_at is not None else {}
+    return ReviewVerdict.objects.create(
+        ticket=ticket,
+        pr_id=601,
+        slug="acme/widgets",
+        reviewed_sha=sha,
+        verdict=verdict,
+        reviewer_identity="reviewer",
+        blast_class=MergeClear.BlastClass.LOGIC,
+        gh_verify_result=MergeClear.VerifyResult.GREEN,
+        **fields,
+    )
+
+
+def _show_json(*, all_overlays: bool = False) -> dict[str, Any]:
+    flags = () if all_overlays else ("--this-overlay",)
+    return json.loads(_call("checking", "show", *flags, "--no-advance", "--json"))
+
+
+def _remaining_item(payload: dict[str, Any], label: str) -> dict[str, Any]:
+    return next(row for row in payload["remaining"]["items"] if row["label"] == label)
+
+
+def _lane_width_patch(widths: MagicMock) -> AbstractContextManager[Any]:
+    return patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths)
 
 
 class TestCheckingShow:
@@ -296,7 +343,7 @@ class TestCheckingRemaining:
 
     def test_open_pr_has_steps_and_unknown_eta_without_history(self, checkpoint_file: Path) -> None:
         self._open_pr()
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         remaining = payload["remaining"]
         assert remaining["title"] == "Remaining"
         assert remaining["items"][2]["steps"] == ["independent review", "merge", "deploy"]
@@ -307,7 +354,7 @@ class TestCheckingRemaining:
 
     def test_empty_remaining_has_no_current_work_basis(self, checkpoint_file: Path) -> None:
         with patch("teatree.core.checking_remaining.StepHistory.measure") as measure:
-            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+            payload = _show_json()
         measure.assert_not_called()
         assert payload["remaining"]["eta"]["basis"] == "no current work in scope"
 
@@ -315,7 +362,7 @@ class TestCheckingRemaining:
         Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/604", state=Ticket.State.CODED
         )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         assert payload["remaining"]["holds"]["dormant"] == 1
         assert payload["remaining"]["items"] == []
 
@@ -328,12 +375,12 @@ class TestCheckingRemaining:
     def test_finished_ticket_with_live_pr_is_excluded(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
         Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.DELIVERED)
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         assert payload["remaining"]["total"] == 0
 
     def test_no_history_omits_empty_legend_rows_and_formats_queue(self, checkpoint_file: Path) -> None:
         self._open_pr()
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         detail = " ".join(row["detail"] for row in payload["remaining"]["items"][:2])
         assert "None\u2013None" not in detail
         assert "n=0" not in detail
@@ -349,7 +396,7 @@ class TestCheckingRemaining:
             repo="acme/widgets",
             iid="602",
         )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         assert payload["remaining"]["total"] == 2
         assert payload["remaining"]["eta"]["unknown"] == 1
 
@@ -362,32 +409,11 @@ class TestCheckingRemaining:
             repo="acme/widgets",
             iid="602",
         )
-        ReviewVerdict.objects.create(
-            ticket=ticket,
-            pr_id=601,
-            slug="acme/widgets",
-            reviewed_sha=_SHA,
-            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
-            reviewer_identity="reviewer",
-            blast_class=MergeClear.BlastClass.LOGIC,
-            gh_verify_result=MergeClear.VerifyResult.GREEN,
-        )
-        ended = timezone.now() - timedelta(minutes=1)
-        for index in range(5):
-            sample_ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{610 + index}"
-            )
-            sample = Task.objects.create(
-                ticket=sample_ticket,
-                session=Session.objects.create(ticket=sample_ticket),
-                phase="coding",
-                status=Task.Status.COMPLETED,
-            )
-            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=10))
-            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
+        _review_verdict(ticket, ReviewVerdict.Verdict.MERGE_SAFE)
+        _completed_history("coding", (10,) * 5)
         widths = MagicMock(expensive=1, review=0, retiring=1)
-        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
-            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        with _lane_width_patch(widths):
+            payload = _show_json()
         assert payload["remaining"]["eta"]["unknown"] == 1
         assert payload["remaining"]["eta"]["known"] == 0
         assert payload["remaining"]["eta"]["median_minutes"] is None
@@ -395,25 +421,13 @@ class TestCheckingRemaining:
     def test_pr_scope_uses_owning_ticket_when_legacy_overlay_is_blank(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
         PullRequest.objects.filter(ticket=ticket).update(overlay="")
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         assert any(item["label"] == "acme/widgets#601" for item in payload["remaining"]["items"])
 
     def test_completed_tasks_measure_from_admission(self, checkpoint_file: Path) -> None:
         self._open_pr()
-        ended = timezone.now() - timedelta(minutes=1)
-        for duration in (10, 20, 30, 40, 50):
-            ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{700 + duration}"
-            )
-            task = Task.objects.create(
-                ticket=ticket,
-                session=Session.objects.create(ticket=ticket),
-                phase="reviewing",
-                status=Task.Status.COMPLETED,
-            )
-            Task.objects.filter(pk=task.pk).update(admitted_at=ended - timedelta(minutes=duration))
-            TaskAttempt.objects.create(task=task, ended_at=ended, exit_code=0)
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        _completed_history("reviewing", (10, 20, 30, 40, 50))
+        payload = _show_json()
         review = next(row for row in payload["remaining"]["durations"] if row["step"] == "reviewing")
         assert review["median_minutes"] == pytest.approx(30.0)
         assert review["p80_minutes"] == pytest.approx(42.0)
@@ -423,19 +437,7 @@ class TestCheckingRemaining:
     def test_measured_pr_eta_range_and_sources(self, checkpoint_file: Path) -> None:
         self._open_pr()
         now = timezone.now()
-        for index, duration in enumerate((10, 20, 30, 40, 200)):
-            ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{810 + index}"
-            )
-            task = Task.objects.create(
-                ticket=ticket,
-                session=Session.objects.create(ticket=ticket),
-                phase="reviewing",
-                status=Task.Status.COMPLETED,
-            )
-            ended = now - timedelta(minutes=1)
-            Task.objects.filter(pk=task.pk).update(admitted_at=ended - timedelta(minutes=duration))
-            TaskAttempt.objects.create(task=task, ended_at=ended, exit_code=0)
+        _completed_history("reviewing", (10, 20, 30, 40, 200))
         for index, (merge_minutes, deploy_minutes) in enumerate(
             zip((1, 2, 3, 4, 5), (10, 20, 30, 40, 50), strict=True)
         ):
@@ -469,7 +471,7 @@ class TestCheckingRemaining:
             TicketTransition.objects.filter(pk=transition.pk).update(
                 created_at=merged + timedelta(minutes=deploy_minutes)
             )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         remaining = payload["remaining"]
         assert remaining["eta"]["median_minutes"] == pytest.approx(63)
         assert remaining["eta"]["p80_minutes"] == pytest.approx(118.2)
@@ -491,7 +493,7 @@ class TestCheckingRemaining:
                 issue_url=f"https://github.com/acme/widgets/issues/{number}",
                 short_description=str(number),
             )
-            task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+            task = _task(ticket, "coding")
             TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error=error, result=result)
         for flags in (("--this-overlay",), ()):
             with _two_overlay_patch():
@@ -505,8 +507,10 @@ class TestCheckingRemaining:
     def test_remaining_alone_does_not_notify(self, checkpoint_file: Path) -> None:
         self._open_pr()
         with patch("teatree.core.management.commands.checking.notify_user") as notify:
-            _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
-        notify.assert_not_called()
+            for flags in (("--this-overlay",), ()):
+                with _two_overlay_patch():
+                    _call("checking", "show", *flags, "--no-advance", "--notify")
+                notify.assert_not_called()
 
     def test_queue_shows_counts_age_and_seats(self, checkpoint_file: Path) -> None:
         ticket = Ticket.objects.create(
@@ -516,11 +520,11 @@ class TestCheckingRemaining:
             state=Ticket.State.PLAN_RECORDED,
         )
         for index in range(4):
-            task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="code")
+            task = _task(ticket, "code")
             Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(minutes=80 - index))
         widths = MagicMock(expensive=2, review=1, retiring=1)
-        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
-            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        with _lane_width_patch(widths):
+            payload = _show_json()
         queue = payload["remaining"]["queue"]
         assert queue["pending"] == {"coding": 4}
         assert queue["claimed"] == {}
@@ -528,22 +532,10 @@ class TestCheckingRemaining:
         assert queue["oldest_pending_phase"] == "coding"
         assert queue["seats"] == {"expensive": 2, "review": 1, "retiring": 1}
         assert "queued, 0 ahead" in payload["remaining"]["items"][2]["detail"]
-        ended = timezone.now() - timedelta(minutes=1)
-        for index in range(5):
-            sample_ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{980 + index}"
-            )
-            sample = Task.objects.create(
-                ticket=sample_ticket,
-                session=Session.objects.create(ticket=sample_ticket),
-                phase="coding",
-                status=Task.Status.COMPLETED,
-            )
-            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=30))
-            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
+        _completed_history("coding", (30,) * 5)
         widths.expensive = 0
-        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
-            disabled = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        with _lane_width_patch(widths):
+            disabled = _show_json()
         item = next(row for row in disabled["remaining"]["items"] if row["label"] == "#850")
         assert item["eta"]["median_minutes"] is None
         assert "no seats for expensive lane" in item["detail"]
@@ -553,29 +545,17 @@ class TestCheckingRemaining:
         older = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/851", state=Ticket.State.NOT_STARTED
         )
-        old_task = Task.objects.create(ticket=older, session=Session.objects.create(ticket=older), phase="planning")
+        old_task = _task(older, "planning")
         Task.objects.filter(pk=old_task.pk).update(created_at=now - timedelta(hours=2))
         started = self._open_pr()
-        pr_task = Task.objects.create(ticket=started, session=Session.objects.create(ticket=started), phase="coding")
+        pr_task = _task(started, "coding")
         Task.objects.filter(pk=pr_task.pk).update(created_at=now - timedelta(hours=1))
-        for index in range(5):
-            ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{852 + index}"
-            )
-            sample = Task.objects.create(
-                ticket=ticket,
-                session=Session.objects.create(ticket=ticket),
-                phase="coding",
-                status=Task.Status.COMPLETED,
-            )
-            ended = now - timedelta(minutes=1)
-            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=10))
-            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
+        _completed_history("coding", (10,) * 5)
         widths = MagicMock(expensive=1, review=1, retiring=1)
-        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
-            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        with _lane_width_patch(widths):
+            payload = _show_json()
             Task.objects.filter(pk=old_task.pk).update(status=Task.Status.COMPLETED)
-            without_old = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+            without_old = _show_json()
         items = {row["label"]: row for row in payload["remaining"]["items"]}
         pr_without_old = next(row for row in without_old["remaining"]["items"] if row["label"] == "acme/widgets#601")
         assert "queued, 0 ahead" in items["acme/widgets#601"]["detail"]
@@ -585,85 +565,60 @@ class TestCheckingRemaining:
     def test_admitted_pending_task_does_not_wait_behind_its_own_seat(self, checkpoint_file: Path) -> None:
         now = timezone.now()
         ticket = self._open_pr()
-        seated = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        seated = _task(ticket, "coding")
         Task.objects.filter(pk=seated.pk).update(admitted_at=now - timedelta(seconds=30))
         for index in range(2):
             waiting_ticket = Ticket.objects.create(
                 overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{860 + index}"
             )
-            Task.objects.create(
-                ticket=waiting_ticket, session=Session.objects.create(ticket=waiting_ticket), phase="coding"
-            )
-        for index in range(5):
-            sample_ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{870 + index}"
-            )
-            sample = Task.objects.create(
-                ticket=sample_ticket,
-                session=Session.objects.create(ticket=sample_ticket),
-                phase="coding",
-                status=Task.Status.COMPLETED,
-            )
-            ended = now - timedelta(minutes=1)
-            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=10))
-            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
+            _task(waiting_ticket, "coding")
+        _completed_history("coding", (10,) * 5)
         widths = MagicMock(expensive=1, review=1, retiring=1)
-        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
-            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        with _lane_width_patch(widths):
+            payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert "queued, 0 ahead" in item["detail"]
         assert item["eta"]["median_minutes"] == 60
 
-    def test_unknown_pr_task_phase_uses_ladder_step_history(self, checkpoint_file: Path) -> None:
+    @pytest.mark.parametrize(
+        "case",
+        [
+            ("answering", 5, 50, "independent review", 150),
+            ("codex_reviewing", 10, 30, "factory review", 100),
+        ],
+    )
+    def test_task_phase_uses_its_own_ladder_history(
+        self, checkpoint_file: Path, case: tuple[str, int, int, str, int]
+    ) -> None:
+        phase, phase_minutes, review_minutes, expected_step, expected_eta = case
         ticket = self._open_pr()
-        Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="answering")
-        now = timezone.now()
-        for phase, minutes in (("answering", 5), ("reviewing", 50)):
-            for index in range(5):
-                sample_ticket = Ticket.objects.create(
-                    overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{phase}-{index}"
-                )
-                sample = Task.objects.create(
-                    ticket=sample_ticket,
-                    session=Session.objects.create(ticket=sample_ticket),
-                    phase=phase,
-                    status=Task.Status.COMPLETED,
-                )
-                ended = now - timedelta(minutes=1)
-                Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=minutes))
-                TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
-        assert item["steps"] == ["independent review", "merge", "deploy"]
-        assert item["eta"]["median_minutes"] == 150
-        assert "reviewing" in {row["step"] for row in payload["remaining"]["durations"]}
+        _task(ticket, phase)
+        _completed_history(phase, (phase_minutes,) * 5)
+        _completed_history("reviewing", (review_minutes,) * 5)
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["steps"][0] == expected_step
+        if phase == "answering":
+            assert item["steps"] == ["independent review", "merge", "deploy"]
+        assert item["eta"]["median_minutes"] == expected_eta
+        assert ("reviewing" if phase == "answering" else phase) in {
+            row["step"] for row in payload["remaining"]["durations"]
+        }
 
     def test_unrelated_claimed_phase_does_not_run_the_pr_ladder(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
-        Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="answering",
-            status=Task.Status.CLAIMED,
-            claimed_at=timezone.now() - timedelta(minutes=45),
-        )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        _task(ticket, "answering", status=Task.Status.CLAIMED, claimed_at=timezone.now() - timedelta(minutes=45))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert "now: independent review; then merge, deploy" in item["detail"]
         assert "independent review (running)" not in item["detail"]
 
     @pytest.mark.parametrize("phase", ["coding", "debugging"])
     def test_claimed_rework_phase_runs_the_rework_step(self, checkpoint_file: Path, phase: str) -> None:
         ticket = self._open_pr()
-        Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase=phase,
-            status=Task.Status.CLAIMED,
-            claimed_at=timezone.now() - timedelta(minutes=5),
-        )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        _task(ticket, phase, status=Task.Status.CLAIMED, claimed_at=timezone.now() - timedelta(minutes=5))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert "now: rework (running)" in item["detail"]
 
     def test_the_claimed_task_sets_the_step_even_when_an_older_one_is_pending(self, checkpoint_file: Path) -> None:
@@ -678,58 +633,40 @@ class TestCheckingRemaining:
             status=Task.Status.CLAIMED,
             claimed_at=timezone.now() - timedelta(minutes=5),
         )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert "now: factory review (running)" in item["detail"]
 
     def test_other_overlay_tasks_do_not_fill_this_overlays_remaining(self, checkpoint_file: Path) -> None:
         other = Ticket.objects.create(
             overlay="beta", issue_url="https://github.com/beta/widgets/issues/1507", state=Ticket.State.CODED
         )
-        Task.objects.create(ticket=other, session=Session.objects.create(ticket=other), phase="testing")
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        _task(other, "testing")
+        payload = _show_json()
         assert payload["remaining"]["items"] == []
 
     def test_merge_ready_pr_does_not_wait_for_headless_coding_seats(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
-        ReviewVerdict.objects.create(
-            ticket=ticket,
-            pr_id=601,
-            slug="acme/widgets",
-            reviewed_sha=_SHA,
-            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
-            reviewer_identity="reviewer",
-            blast_class=MergeClear.BlastClass.LOGIC,
-            gh_verify_result=MergeClear.VerifyResult.GREEN,
-        )
+        _review_verdict(ticket, ReviewVerdict.Verdict.MERGE_SAFE)
         ended = timezone.now() - timedelta(minutes=1)
         for index in range(5):
             sample_ticket = Ticket.objects.create(
                 overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{970 + index}"
             )
-            sample = Task.objects.create(
-                ticket=sample_ticket,
-                session=Session.objects.create(ticket=sample_ticket),
-                phase="reviewing",
-                status=Task.Status.COMPLETED,
-            )
+            sample = _task(sample_ticket, "reviewing", status=Task.Status.COMPLETED)
             Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=30))
             TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
-            Task.objects.create(
-                ticket=sample_ticket,
-                session=Session.objects.create(ticket=sample_ticket),
-                phase="coding",
-            )
+            _task(sample_ticket, "coding")
         widths = MagicMock(expensive=2, review=1, retiring=1)
-        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
-            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        with _lane_width_patch(widths):
+            payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert item["steps"] == ["merge", "deploy"]
         assert item["eta"]["median_minutes"] == 60
 
         widths.expensive = 0
-        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
-            partial = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        with _lane_width_patch(widths):
+            partial = _show_json()
         assert partial["remaining"]["eta"]["known"] == 1
         assert partial["remaining"]["eta"]["unknown"] == 5
         assert partial["remaining"]["eta"]["median_minutes"] is None
@@ -742,19 +679,9 @@ class TestCheckingRemaining:
             (ReviewVerdict.Verdict.MERGE_SAFE, timezone.now() - timedelta(minutes=2)),
             (ReviewVerdict.Verdict.HOLD, timezone.now() - timedelta(minutes=1)),
         ):
-            ReviewVerdict.objects.create(
-                ticket=ticket,
-                pr_id=601,
-                slug="acme/widgets",
-                reviewed_sha=_SHA,
-                verdict=verdict,
-                reviewer_identity="reviewer",
-                blast_class=MergeClear.BlastClass.LOGIC,
-                gh_verify_result=MergeClear.VerifyResult.GREEN,
-                recorded_at=recorded_at,
-            )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+            _review_verdict(ticket, verdict, recorded_at=recorded_at)
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert item["steps"] == ["independent review", "merge", "deploy"]
 
     def test_a_pass_at_the_newest_head_supersedes_a_hold_at_an_older_head(self, checkpoint_file: Path) -> None:
@@ -763,107 +690,44 @@ class TestCheckingRemaining:
             (ReviewVerdict.Verdict.HOLD, _SHA, 2),
             (ReviewVerdict.Verdict.MERGE_SAFE, "c" * 40, 1),
         ):
-            ReviewVerdict.objects.create(
-                ticket=ticket,
-                pr_id=601,
-                slug="acme/widgets",
-                reviewed_sha=sha,
-                verdict=verdict,
-                reviewer_identity="reviewer",
-                blast_class=MergeClear.BlastClass.LOGIC,
-                gh_verify_result=MergeClear.VerifyResult.GREEN,
-                recorded_at=timezone.now() - timedelta(minutes=minutes_ago),
-            )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+            _review_verdict(ticket, verdict, sha=sha, recorded_at=timezone.now() - timedelta(minutes=minutes_ago))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert item["steps"] == ["merge", "deploy"]
 
     def test_running_step_uses_elapsed_survivors_and_overdue_is_unknown(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
-        ended = timezone.now() - timedelta(minutes=1)
-        for index, duration in enumerate((30, 40, 50, 60, 70)):
-            sample_ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{900 + index}"
-            )
-            sample = Task.objects.create(
-                ticket=sample_ticket,
-                session=Session.objects.create(ticket=sample_ticket),
-                phase="reviewing",
-                status=Task.Status.COMPLETED,
-            )
-            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=duration))
-            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
-        running = Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="reviewing",
-            status=Task.Status.CLAIMED,
-            lease_expires_at=timezone.now() + timedelta(hours=1),
+        _completed_history("reviewing", (30, 40, 50, 60, 70))
+        running = _task(
+            ticket, "reviewing", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1)
         )
         Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=45))
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         item = payload["remaining"]["items"][2]
         assert item["eta"]["median_minutes"] == 165
         assert item["eta"]["p80_minutes"] == 207
         assert "ETA 2h45m\u20133h27m" in item["detail"]
         Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=71))
-        overdue = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        overdue = _show_json()
         assert overdue["remaining"]["eta"]["unknown"] == 1
         assert "running longer than all 5" in overdue["remaining"]["items"][2]["detail"]
 
     def test_claimed_without_admission_uses_claim_time_not_queue_waves(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
-        Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="reviewing",
-            status=Task.Status.CLAIMED,
-            claimed_at=timezone.now() - timedelta(minutes=45),
-        )
-        ended = timezone.now() - timedelta(minutes=1)
-        for index, duration in enumerate((30, 40, 50, 60, 70)):
-            sample_ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{1400 + index}"
-            )
-            sample = Task.objects.create(
-                ticket=sample_ticket,
-                session=Session.objects.create(ticket=sample_ticket),
-                phase="reviewing",
-                status=Task.Status.COMPLETED,
-            )
-            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=duration))
-            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        _task(ticket, "reviewing", status=Task.Status.CLAIMED, claimed_at=timezone.now() - timedelta(minutes=45))
+        _completed_history("reviewing", (30, 40, 50, 60, 70))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert item["eta"]["median_minutes"] == 165
         assert "ETA 2h45m" in item["detail"]
 
     def test_running_step_uses_seven_day_survivors_after_recent_samples_end(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
-        Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="reviewing",
-            status=Task.Status.CLAIMED,
-            claimed_at=timezone.now() - timedelta(minutes=45),
-        )
-        now = timezone.now()
-        for index in range(10):
-            sample_ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{1450 + index}"
-            )
-            sample = Task.objects.create(
-                ticket=sample_ticket,
-                session=Session.objects.create(ticket=sample_ticket),
-                phase="reviewing",
-                status=Task.Status.COMPLETED,
-            )
-            ended = now - timedelta(hours=1 if index < 5 else 48)
-            duration = 30 if index < 5 else 60
-            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=duration))
-            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        _task(ticket, "reviewing", status=Task.Status.CLAIMED, claimed_at=timezone.now() - timedelta(minutes=45))
+        _completed_history("reviewing", (30,) * 5)
+        _completed_history("reviewing", (60,) * 5, ended_hours_ago=48)
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert item["eta"]["median_minutes"] == pytest.approx(105, abs=1)
         assert "7d elapsed survivors" in item["eta"]["basis"]
         assert payload["remaining"]["eta"]["known"] == 1
@@ -872,15 +736,9 @@ class TestCheckingRemaining:
         ticket = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/1500", state=Ticket.State.CODED
         )
-        Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="testing",
-            status=Task.Status.FAILED,
-            failure_kind="unclassified",
-        )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "#1500")
+        _task(ticket, "testing", status=Task.Status.FAILED, failure_kind="unclassified")
+        payload = _show_json()
+        item = _remaining_item(payload, "#1500")
         assert "halted (unclassified)" in item["detail"]
         assert item["eta"]["median_minutes"] is None
         assert "1 item," in payload["remaining"]["items"][0]["detail"]
@@ -890,12 +748,10 @@ class TestCheckingRemaining:
         ticket = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/1501", state=Ticket.State.CODED
         )
-        task = Task.objects.create(
-            ticket=ticket, session=Session.objects.create(ticket=ticket), phase="testing", status=Task.Status.FAILED
-        )
+        task = _task(ticket, "testing", status=Task.Status.FAILED)
         TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1)
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "#1501")
+        payload = _show_json()
+        item = _remaining_item(payload, "#1501")
         assert "halted · now:" in item["detail"]
         assert "halted ()" not in item["detail"]
 
@@ -903,13 +759,8 @@ class TestCheckingRemaining:
         ticket = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/1502", state=Ticket.State.CODED
         )
-        Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="testing",
-            not_before=timezone.now() + timedelta(hours=1),
-        )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        _task(ticket, "testing", not_before=timezone.now() + timedelta(hours=1))
+        payload = _show_json()
         remaining = payload["remaining"]
         item = next(row for row in remaining["items"] if row["label"] == "#1502")
         assert remaining["queue"]["pending"] == {}
@@ -921,7 +772,7 @@ class TestCheckingRemaining:
             ticket = Ticket.objects.create(
                 overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{number}", state=Ticket.State.CODED
             )
-            Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="testing")
+            _task(ticket, "testing")
         now = timezone.now()
         remaining = gather_checking_report(
             since=now - timedelta(hours=1), now=now, overlay_name="acme", cap=1
@@ -966,75 +817,36 @@ class TestCheckingRemaining:
 
     def test_claimed_shipping_step_uses_shipping_label(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
-        Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="shipping",
-            status=Task.Status.CLAIMED,
-            lease_expires_at=timezone.now() + timedelta(hours=1),
-        )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        _task(ticket, "shipping", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert item["steps"][0] == "shipping"
         assert "now: shipping (running)" in item["detail"]
         assert any(row["step"] == "shipping" for row in payload["remaining"]["durations"])
 
     def test_claimed_shipping_preserves_merge_safe_shortcut(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
-        ReviewVerdict.objects.create(
-            ticket=ticket,
-            pr_id=601,
-            slug="acme/widgets",
-            reviewed_sha=_SHA,
-            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
-            reviewer_identity="reviewer",
-            blast_class=MergeClear.BlastClass.LOGIC,
-            gh_verify_result=MergeClear.VerifyResult.GREEN,
-        )
-        Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="shipping",
-            status=Task.Status.CLAIMED,
-            lease_expires_at=timezone.now() + timedelta(hours=1),
-        )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        _review_verdict(ticket, ReviewVerdict.Verdict.MERGE_SAFE)
+        _task(ticket, "shipping", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert item["steps"] == ["shipping", "merge", "deploy"]
 
     def test_running_default_reselects_slowest_surviving_sources(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
-        ended = timezone.now() - timedelta(minutes=1)
-        histories = (
+        for phase, durations in (
             ("coding", (10,) * 9 + (5000,)),
             ("reviewing", (9,) * 7 + (11, 11, 21)),
             ("debugging", (8,) * 8 + (21, 9000)),
-        )
-        for group_index, (phase, durations) in enumerate(histories):
-            for index, duration in enumerate(durations):
-                sample_ticket = Ticket.objects.create(
-                    overlay="acme",
-                    issue_url=f"https://github.com/acme/widgets/issues/{2000 + group_index * 10 + index}",
-                )
-                sample = Task.objects.create(
-                    ticket=sample_ticket,
-                    session=Session.objects.create(ticket=sample_ticket),
-                    phase=phase,
-                    status=Task.Status.COMPLETED,
-                )
-                Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=duration))
-                TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
-        running = Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="testing",
-            status=Task.Status.CLAIMED,
-            lease_expires_at=timezone.now() + timedelta(hours=1),
+        ):
+            _completed_history(phase, durations)
+        running = _task(
+            ticket, "testing", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1)
         )
         Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=20))
 
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert item["steps"] == ["testing", "factory review", "independent review", "merge", "deploy"]
         assert item["eta"]["median_minutes"] == pytest.approx(5018, abs=0.1)
         assert item["eta"]["p80_minutes"] == pytest.approx(7228.2, abs=0.1)
@@ -1042,7 +854,7 @@ class TestCheckingRemaining:
         assert "testing: default: slowest surviving steps (median coding; p80 debugging)" in item["detail"]
 
         Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=9001))
-        overdue = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        overdue = _show_json()
         overdue_item = next(row for row in overdue["remaining"]["items"] if row["label"] == "acme/widgets#601")
         assert overdue_item["eta"]["median_minutes"] is None
         assert overdue_item["eta"]["basis"] == "running longer than all measured fallback samples"
@@ -1055,10 +867,9 @@ class TestCheckingRemaining:
                 short_description=f"ticket {number}",
                 state=Ticket.State.CODED,
             )
-            task = Task.objects.create(
-                ticket=ticket,
-                session=Session.objects.create(ticket=ticket),
-                phase="testing",
+            task = _task(
+                ticket,
+                "testing",
                 status=status,
                 not_before=timezone.now() + timedelta(hours=1) if number != 860 else None,
             )
@@ -1073,20 +884,10 @@ class TestCheckingRemaining:
             short_description="recovered",
             state=Ticket.State.CODED,
         )
-        old = Task.objects.create(
-            ticket=superseded,
-            session=Session.objects.create(ticket=superseded),
-            phase="coding",
-            status=Task.Status.FAILED,
-        )
+        old = _task(superseded, "coding", status=Task.Status.FAILED)
         TaskAttempt.objects.create(task=old, ended_at=timezone.now(), exit_code=1, error="crash")
-        Task.objects.create(
-            ticket=superseded,
-            session=Session.objects.create(ticket=superseded),
-            phase="coding",
-            status=Task.Status.COMPLETED,
-        )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        _task(superseded, "coding", status=Task.Status.COMPLETED)
+        payload = _show_json()
         remaining = payload["remaining"]
         assert remaining["holds"]["halted"] == 1
         assert remaining["holds"]["blocked"] == 1
@@ -1108,14 +909,12 @@ class TestCheckingRemaining:
             ticket = Ticket.objects.create(
                 overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{number}", state=Ticket.State.CODED
             )
-            task = Task.objects.create(
-                ticket=ticket, session=Session.objects.create(ticket=ticket), phase="testing", status=Task.Status.FAILED
-            )
+            task = _task(ticket, "testing", status=Task.Status.FAILED)
             for days in ended_days_ago:
                 TaskAttempt.objects.create(
                     task=task, ended_at=timezone.now() - timedelta(days=days), exit_code=1, error="agent crashed"
                 )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         remaining = payload["remaining"]
         assert [row["label"] for row in remaining["items"][2:]] == ["#1400"]
         assert remaining["holds"] == {"halted": 1, "blocked": 0, "owner": 0, "dormant": 1}
@@ -1124,15 +923,13 @@ class TestCheckingRemaining:
         ticket = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/1505", state=Ticket.State.CODED
         )
-        task = Task.objects.create(
-            ticket=ticket, session=Session.objects.create(ticket=ticket), phase="testing", status=Task.Status.FAILED
-        )
+        task = _task(ticket, "testing", status=Task.Status.FAILED)
         Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(days=9))
-        remaining = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))["remaining"]
+        remaining = _show_json()["remaining"]
         assert remaining["items"] == []
         assert remaining["holds"] == {"halted": 0, "blocked": 0, "owner": 0, "dormant": 1}
 
-    def test_reviewer_only_work_fills_the_queue_but_lists_no_item(self, checkpoint_file: Path) -> None:
+    def test_reviewer_only_queue_is_visible_in_json_and_human_views(self, checkpoint_file: Path) -> None:
         reviewer = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/1500", role=Ticket.Role.REVIEWER
         )
@@ -1143,64 +940,39 @@ class TestCheckingRemaining:
             repo="acme/widgets",
             iid="1501",
         )
-        Task.objects.create(ticket=reviewer, session=Session.objects.create(ticket=reviewer), phase="reviewing")
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        remaining = payload["remaining"]
-        assert [row["label"] for row in remaining["items"]] == ["Total", "Queue"]
-        assert remaining["queue"]["pending"] == {"reviewing": 1}
-        assert remaining["eta"]["basis"] == "no current work in scope"
-
-    def test_queue_only_remaining_is_not_reported_as_nothing_in_either_scope(self, checkpoint_file: Path) -> None:
-        reviewer = Ticket.objects.create(
-            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1506", role=Ticket.Role.REVIEWER
-        )
-        Task.objects.create(ticket=reviewer, session=Session.objects.create(ticket=reviewer), phase="reviewing")
-        for flags in (("--this-overlay",), ()):
+        _task(reviewer, "reviewing")
+        for all_overlays in (False, True):
             with _two_overlay_patch():
-                terse = json.loads(_call("checking", "show", *flags, "--no-advance", "--json"))["terse"]
-            assert not terse.startswith("Nothing since")
-            assert "Remaining" in terse
-            assert "Queue" in terse
-
-    def test_human_table_shows_reviewer_only_queue(self, checkpoint_file: Path) -> None:
-        reviewer = Ticket.objects.create(
-            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1607", role=Ticket.Role.REVIEWER
-        )
-        Task.objects.create(ticket=reviewer, session=Session.objects.create(ticket=reviewer), phase="reviewing")
-
-        for flags in (("--this-overlay",), ()):
-            with _two_overlay_patch():
+                payload = _show_json(all_overlays=all_overlays)
+                flags = () if all_overlays else ("--this-overlay",)
                 out = _call("checking", "show", *flags, "--no-advance")
+            remaining = payload["remaining"]
+            assert [row["label"] for row in remaining["items"]] == ["Total", "Queue"]
+            assert remaining["queue"]["pending"] == {"reviewing": 1}
+            assert remaining["eta"]["basis"] == "no current work in scope"
+            assert not payload["terse"].startswith("Nothing since")
+            assert "Remaining" in payload["terse"]
+            assert "Queue" in payload["terse"]
             assert not out.startswith("Nothing since")
             assert "Remaining" in out
             assert "Queue" in out
             assert "reviewing" in out
 
-    def test_failed_latest_task_halts_an_open_pr(self, checkpoint_file: Path) -> None:
+    @pytest.mark.parametrize(
+        ("error", "expected_detail"),
+        [("agent crashed", "halted"), ("cancelled: operator", "cancelled by an operator")],
+    )
+    def test_failed_latest_task_halts_an_open_pr(self, checkpoint_file: Path, error: str, expected_detail: str) -> None:
         ticket = self._open_pr()
-        task = Task.objects.create(
-            ticket=ticket,
-            session=Session.objects.create(ticket=ticket),
-            phase="reviewing",
-            status=Task.Status.FAILED,
-        )
-        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error="agent crashed")
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        task = _task(ticket, "reviewing", status=Task.Status.FAILED)
+        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error=error)
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
         assert item["eta"]["basis"] == "halted"
+        assert expected_detail in item["detail"]
         assert payload["remaining"]["holds"]["halted"] == 1
-
-    def test_operator_cancelled_latest_task_is_halted_with_its_reason(self, checkpoint_file: Path) -> None:
-        ticket = self._open_pr()
-        task = Task.objects.create(
-            ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing", status=Task.Status.FAILED
-        )
-        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error="cancelled: operator")
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
-        assert item["eta"]["basis"] == "halted"
-        assert "cancelled by an operator" in item["detail"]
-        assert "#600" not in [row["label"] for row in payload["needs_you"]["items"]]
+        if error == "cancelled: operator":
+            assert "#600" not in [row["label"] for row in payload["needs_you"]["items"]]
 
     def test_owner_holds_only_count_live_parked_tasks_in_scope(self, checkpoint_file: Path) -> None:
         self._open_pr()
@@ -1210,48 +982,31 @@ class TestCheckingRemaining:
                 issue_url=f"https://github.com/{overlay}/widgets/issues/{number}",
                 state=Ticket.State.CODED,
             )
-            task = Task.objects.create(
-                ticket=ticket,
-                session=Session.objects.create(ticket=ticket),
-                phase="testing",
-                status=status,
-                not_before=timezone.now() + timedelta(hours=1),
-            )
+            task = _task(ticket, "testing", status=status, not_before=timezone.now() + timedelta(hours=1))
             DeferredQuestion.objects.create(question="Choose scope?", parked_task=task)
             if overlay == "acme":
-                Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="testing")
+                _task(ticket, "testing")
         reviewer_ticket = Ticket.objects.create(
             overlay="acme",
             issue_url="https://github.com/acme/widgets/issues/1102",
             role=Ticket.Role.REVIEWER,
         )
-        reviewer_task = Task.objects.create(
-            ticket=reviewer_ticket,
-            session=Session.objects.create(ticket=reviewer_ticket),
-            phase="reviewing",
-            not_before=timezone.now() + timedelta(hours=1),
-        )
+        reviewer_task = _task(reviewer_ticket, "reviewing", not_before=timezone.now() + timedelta(hours=1))
         DeferredQuestion.objects.create(question="Review?", parked_task=reviewer_task)
         concurrent_ticket = Ticket.objects.create(
             overlay="acme",
             issue_url="https://github.com/acme/widgets/issues/1103",
             state=Ticket.State.CODED,
         )
-        waiting_task = Task.objects.create(
-            ticket=concurrent_ticket,
-            session=Session.objects.create(ticket=concurrent_ticket),
-            phase="testing",
-            not_before=timezone.now() + timedelta(hours=1),
-        )
+        waiting_task = _task(concurrent_ticket, "testing", not_before=timezone.now() + timedelta(hours=1))
         DeferredQuestion.objects.create(question="Choose approach?", parked_task=waiting_task)
-        Task.objects.create(
-            ticket=concurrent_ticket,
-            session=Session.objects.create(ticket=concurrent_ticket),
-            phase="testing",
+        _task(
+            concurrent_ticket,
+            "testing",
             status=Task.Status.CLAIMED,
             lease_expires_at=timezone.now() + timedelta(hours=1),
         )
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         remaining = payload["remaining"]
         assert remaining["holds"]["owner"] == 0
         item = next(row for row in remaining["items"] if row["label"] == "#1101")
@@ -1273,61 +1028,24 @@ class TestCheckingRemaining:
                 short_description="queue work",
                 state=Ticket.State.PLAN_RECORDED,
             )
-            task = Task.objects.create(
-                ticket=ticket,
-                session=Session.objects.create(ticket=ticket),
-                phase="coding",
+            task = _task(
+                ticket,
+                "coding",
                 status=status,
                 lease_expires_at=now + timedelta(hours=1) if status == Task.Status.CLAIMED else None,
             )
             Task.objects.filter(pk=task.pk).update(created_at=now - timedelta(minutes=1000 - number))
             if number == 993:
                 Task.objects.filter(pk=task.pk).update(admitted_at=now - timedelta(minutes=1))
-        for index in range(5):
-            ticket = Ticket.objects.create(
-                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{995 + index}"
-            )
-            task = Task.objects.create(
-                ticket=ticket,
-                session=Session.objects.create(ticket=ticket),
-                phase="coding",
-                status=Task.Status.COMPLETED,
-            )
-            ended = now - timedelta(minutes=1)
-            Task.objects.filter(pk=task.pk).update(admitted_at=ended - timedelta(minutes=10))
-            TaskAttempt.objects.create(task=task, ended_at=ended, exit_code=0)
+        _completed_history("coding", (10,) * 5)
         widths = MagicMock(expensive=1, review=1, retiring=1)
-        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
-            payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        with _lane_width_patch(widths):
+            payload = _show_json()
         queue = payload["remaining"]["queue"]
         assert queue["claimed"] == {"coding": 1}
         assert queue["pending"] == {"coding": 2}
         assert queue["oldest_pending_phase"] == "coding"
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "#992")
-        assert item["eta"]["median_minutes"] == 100
-
-    def test_review_task_uses_its_own_phase_history(self, checkpoint_file: Path) -> None:
-        ticket = self._open_pr()
-        Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="codex_reviewing")
-        now = timezone.now()
-        for phase, minutes in (("codex_reviewing", 10), ("reviewing", 30)):
-            for index in range(5):
-                sample_ticket = Ticket.objects.create(
-                    overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{phase}-{index}"
-                )
-                sample = Task.objects.create(
-                    ticket=sample_ticket,
-                    session=Session.objects.create(ticket=sample_ticket),
-                    phase=phase,
-                    status=Task.Status.COMPLETED,
-                )
-                ended = now - timedelta(minutes=1)
-                Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=minutes))
-                TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "acme/widgets#601")
-        assert item["steps"][0] == "factory review"
-        assert any(row["step"] == "codex_reviewing" for row in payload["remaining"]["durations"])
+        item = _remaining_item(payload, "#992")
         assert item["eta"]["median_minutes"] == 100
 
     def test_merged_ticket_with_open_task_still_shows_deploy(self, checkpoint_file: Path) -> None:
@@ -1336,9 +1054,9 @@ class TestCheckingRemaining:
             issue_url="https://github.com/acme/widgets/issues/1200",
             state=Ticket.State.MERGED,
         )
-        Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="shipping")
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
-        item = next(row for row in payload["remaining"]["items"] if row["label"] == "#1200")
+        _task(ticket, "shipping")
+        payload = _show_json()
+        item = _remaining_item(payload, "#1200")
         assert item["steps"] == ["deploy"]
         assert "then" not in item["detail"]
 
@@ -1346,16 +1064,14 @@ class TestCheckingRemaining:
         active = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/1300", state=Ticket.State.CODED
         )
-        Task.objects.create(ticket=active, session=Session.objects.create(ticket=active), phase="testing")
+        _task(active, "testing")
         halted = Ticket.objects.create(
             overlay="acme", issue_url="https://github.com/acme/widgets/issues/1301", state=Ticket.State.CODED
         )
-        failed = Task.objects.create(
-            ticket=halted, session=Session.objects.create(ticket=halted), phase="testing", status=Task.Status.FAILED
-        )
+        failed = _task(halted, "testing", status=Task.Status.FAILED)
         TaskAttempt.objects.create(task=failed, ended_at=timezone.now(), exit_code=1, error="agent crashed")
         self._open_pr()
-        payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+        payload = _show_json()
         assert [row["label"] for row in payload["remaining"]["items"][2:]] == ["acme/widgets#601", "#1300", "#1301"]
 
     def test_remaining_read_has_no_sql_writes(self, checkpoint_file: Path) -> None:
@@ -1385,7 +1101,7 @@ class TestCheckingRemaining:
                 url=f"https://github.com/{overlay}/widgets/pull/{930 + index}",
             )
         with _two_overlay_patch():
-            payload = json.loads(_call("checking", "show", "--no-advance", "--json"))
+            payload = _show_json(all_overlays=True)
         remaining = payload["remaining"]
         assert remaining["total"] == 6
         assert len(remaining["items"]) == 7
@@ -1413,12 +1129,12 @@ class TestCheckingRemaining:
 
         def query_count() -> tuple[int, int]:
             with CaptureQueriesContext(connection) as queries:
-                payload = json.loads(_call("checking", "show", "--this-overlay", "--no-advance", "--json"))
+                payload = _show_json()
             return len(queries), payload["remaining"]["total"]
 
         add_prs(0, 3)
         widths = MagicMock(expensive=2, review=1, retiring=1)
-        with patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths):
+        with _lane_width_patch(widths):
             first, first_total = query_count()
             add_prs(3, 9)
             second, second_total = query_count()

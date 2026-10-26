@@ -6,12 +6,6 @@ from :class:`~teatree.core.models.transition.TicketTransition` deltas and from
 at insert, and the insert happens at agent completion.
 """
 
-import importlib
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from teatree.core.cycle_time.step_history import StepEstimate, StepHistory
-
 from teatree.core.cycle_time.distribution import (
     TransitionStat,
     TransitionTrend,
@@ -43,8 +37,6 @@ __all__ = [
     "OpenPullRequestAge",
     "PhaseSegment",
     "PhaseSpan",
-    "StepEstimate",
-    "StepHistory",
     "TicketTimeline",
     "TransitionStat",
     "TransitionTrend",
@@ -62,9 +54,3 @@ __all__ = [
     "transition_distribution",
     "transition_trend",
 ]
-
-
-def __getattr__(name: str) -> object:
-    if name in {"StepEstimate", "StepHistory"}:
-        return getattr(importlib.import_module("teatree.core.cycle_time.step_history"), name)
-    raise AttributeError(name)
