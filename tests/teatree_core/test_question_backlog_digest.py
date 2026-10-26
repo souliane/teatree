@@ -50,6 +50,7 @@ class TestBacklogDigestText(TestCase):
         old = DeferredQuestion.record("Merge it?", **OWNER_DECISION)
         DeferredQuestion.objects.filter(pk=old.pk).update(created_at=timezone.now() - dt.timedelta(days=34))
         old.refresh_from_db()
+        old.slack_ts = str((timezone.now() - dt.timedelta(days=34)).timestamp())
 
         assert "the oldest was asked 34 days ago" in digest_text([old, old], now=timezone.now())
 
