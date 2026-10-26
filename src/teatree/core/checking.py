@@ -5,7 +5,7 @@ from existing rows, with ``to_dict()`` (JSON) and ``to_terse()`` (human)
 renderers. Every query here is read-only — the gatherer never transitions a
 :class:`Ticket` nor writes any row.
 
-Four groups, each scoped to one overlay over the window ``[since, now)``:
+Four delta groups scoped to the window ``[since, now)`` and one live group:
 
 * **Merged** — a :class:`MergeAudit` joined to its :class:`MergeClear`, merged
     inside the window. The clickable reference prefers an exact stored PR URL on
@@ -21,6 +21,8 @@ Four groups, each scoped to one overlay over the window ``[since, now)``:
     richer signals via :meth:`OverlayBase.get_checking_sources`.
 * **Metered** — one row per ticket with metered attempts inside the window,
     showing the attempt count and estimated total cost.
+* **Remaining** — live work, queue, holds, and measured ETA ranges; independent
+    of the delta window and excluded from recap notifications.
 
 Multi-overlay aggregation (``gather_all_overlays_report``):
 
@@ -31,14 +33,16 @@ waiting gather runs exactly once, so a pending question never appears twice.
 """
 
 import operator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TypedDict
 
 from django.db.models import Count, Max, Sum
 
+from teatree.core import checking_types
 from teatree.core._checking_gather import (
     _MergedScope,
+    failed_attempts,
     internal_escalation_count,
     merged_entries_from_qs,
     merged_group_from_qs,
@@ -46,10 +50,20 @@ from teatree.core._checking_gather import (
     owner_wait_items,
     ticket_url,
 )
+from teatree.core.checking_remaining import empty_remaining, gather_remaining
+from teatree.core.checking_types import (
+    DEFAULT_CAP,
+    CheckGroup,
+    CheckGroupDict,
+    CheckItem,
+    RemainingGroup,
+    RemainingGroupDict,
+)
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.reporting.checking_types import DEFAULT_CAP, CheckGroup, CheckGroupDict, CheckItem
+
+CheckItemDict = checking_types.CheckItemDict
 
 
 class CheckingReportDict(TypedDict):
@@ -59,6 +73,7 @@ class CheckingReportDict(TypedDict):
     needs_you: CheckGroupDict
     metered: CheckGroupDict
     internal_escalations: int
+    remaining: RemainingGroupDict
     terse: str
 
 
@@ -70,6 +85,7 @@ class AllOverlaysReportDict(TypedDict):
     needs_you: CheckGroupDict
     metered: CheckGroupDict
     internal_escalations: int
+    remaining: RemainingGroupDict
     terse: str
 
 
@@ -83,9 +99,14 @@ class CheckingReport:
     needs_you: CheckGroup
     metered: CheckGroup
     internal_escalations: int = 0
+    remaining: RemainingGroup = field(default_factory=empty_remaining)
 
     @property
     def groups(self) -> list[CheckGroup]:
+        return [*self.recap_groups, self.remaining]
+
+    @property
+    def recap_groups(self) -> list[CheckGroup]:
         return [self.merged, self.in_flight, self.needs_you, self.metered]
 
     def to_dict(self) -> CheckingReportDict:
@@ -96,6 +117,7 @@ class CheckingReport:
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
             internal_escalations=self.internal_escalations,
+            remaining=self.remaining.to_dict(),
             terse=self.to_terse(),
         )
 
@@ -113,7 +135,7 @@ class CheckingReport:
         local = timezone.localtime(self.since) if timezone.is_aware(self.since) else self.since
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 for group in groups) and not self.internal_escalations:
+        if all(not group.has_table_content() for group in groups) and not self.internal_escalations:
             return f"Nothing since {stamp}."
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
         lines = [header]
@@ -141,9 +163,14 @@ class AllOverlaysReport:
     needs_you: CheckGroup
     metered: CheckGroup
     internal_escalations: int = 0
+    remaining: RemainingGroup = field(default_factory=empty_remaining)
 
     @property
     def groups(self) -> list[CheckGroup]:
+        return [*self.recap_groups, self.remaining]
+
+    @property
+    def recap_groups(self) -> list[CheckGroup]:
         return [self.merged, self.in_flight, self.needs_you, self.metered]
 
     def to_dict(self) -> AllOverlaysReportDict:
@@ -155,6 +182,7 @@ class AllOverlaysReport:
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
             internal_escalations=self.internal_escalations,
+            remaining=self.remaining.to_dict(),
             terse=self.to_terse(),
         )
 
@@ -171,7 +199,7 @@ class AllOverlaysReport:
         )
         stamp = local.strftime("%H:%M")
         groups = self.groups
-        if all(group.total == 0 for group in groups) and not self.internal_escalations:
+        if all(not group.has_table_content() for group in groups) and not self.internal_escalations:
             return f"Nothing since {stamp}."
         lines = [f"Since {stamp} · all overlays"]
         for group in groups:
@@ -253,6 +281,12 @@ def gather_all_overlays_report(
             items=[item for _, item in metered_entries[:cap]],
             total=sum(total for _, total in metered_groups),
         ),
+        remaining=gather_remaining(
+            now=max((window[1] for window in overlay_windows.values()), default=effective_since),
+            overlay_names=list(overlay_windows),
+            tag_overlays=True,
+            cap=cap,
+        ),
     )
 
 
@@ -324,6 +358,9 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         internal_escalations=internal_escalation_count(),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
+        remaining=gather_remaining(
+            now=now, overlay_names=[overlay_name] if overlay_name else None, tag_overlays=False, cap=cap
+        ),
     )
 
 
@@ -404,14 +441,7 @@ def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
     overlay_slug = overlay_name or "<overlay>"
     items: list[CheckItem] = [*owner_wait_items(overlay_slug=overlay_slug, overlay=overlay_name)]
 
-    failed = (
-        TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
-        .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
-        .select_related("task__ticket")
-        .order_by("-ended_at")
-    )
-    if overlay_name:
-        failed = failed.filter(task__ticket__overlay=overlay_name)
+    failed = failed_attempts(since=since, now=now, overlay_name=overlay_name)
     seen_tickets: set[int] = set()
     for attempt in failed:
         tick = attempt.task.ticket

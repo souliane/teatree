@@ -11,7 +11,7 @@ tests never touch the real DATA_DIR.
 import json
 from contextlib import AbstractContextManager
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -19,15 +19,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 import teatree.core.overlay_loader as overlay_loader_mod
+from teatree.core.checking import gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import BotPing, Session, Task, TaskAttempt, WaitingItem
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
+from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.notify import notify_user
@@ -146,6 +151,53 @@ def _merged_ticket(*, number: int = 42, pr_id: int = 7) -> Ticket:
     return ticket
 
 
+def _task(ticket: Ticket, phase: str, *, status: str = Task.Status.PENDING, **fields: Any) -> Task:
+    return Task.objects.create(
+        ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase, status=status, **fields
+    )
+
+
+def _completed_history(phase: str, durations: tuple[int, ...], *, ended_hours_ago: int = 0) -> None:
+    ended = timezone.now() - timedelta(hours=ended_hours_ago, minutes=1)
+    for index, minutes in enumerate(durations):
+        ticket = Ticket.objects.create(
+            overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{phase}-{Task.objects.count()}-{index}"
+        )
+        task = _task(ticket, phase, status=Task.Status.COMPLETED)
+        Task.objects.filter(pk=task.pk).update(admitted_at=ended - timedelta(minutes=minutes))
+        TaskAttempt.objects.create(task=task, ended_at=ended, exit_code=0)
+
+
+def _review_verdict(
+    ticket: Ticket, verdict: str, *, sha: str = _SHA, recorded_at: datetime | None = None
+) -> ReviewVerdict:
+    fields = {"recorded_at": recorded_at} if recorded_at is not None else {}
+    return ReviewVerdict.objects.create(
+        ticket=ticket,
+        pr_id=601,
+        slug="acme/widgets",
+        reviewed_sha=sha,
+        verdict=verdict,
+        reviewer_identity="reviewer",
+        blast_class=MergeClear.BlastClass.LOGIC,
+        gh_verify_result=MergeClear.VerifyResult.GREEN,
+        **fields,
+    )
+
+
+def _show_json(*, all_overlays: bool = False) -> dict[str, Any]:
+    flags = () if all_overlays else ("--this-overlay",)
+    return json.loads(_call("checking", "show", *flags, "--no-advance", "--json"))
+
+
+def _remaining_item(payload: dict[str, Any], label: str) -> dict[str, Any]:
+    return next(row for row in payload["remaining"]["items"] if row["label"] == label)
+
+
+def _lane_width_patch(widths: MagicMock) -> AbstractContextManager[Any]:
+    return patch("teatree.core.checking_remaining.headless_lane_widths", return_value=widths)
+
+
 class TestCheckingShow:
     """Single-overlay path via ``--this-overlay`` (the old default behavior)."""
 
@@ -191,7 +243,16 @@ class TestCheckingShow:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay", "--json")
         payload = json.loads(out)
-        assert set(payload) == {"since", "merged", "in_flight", "needs_you", "metered", "internal_escalations", "terse"}
+        assert set(payload) == {
+            "since",
+            "merged",
+            "in_flight",
+            "needs_you",
+            "metered",
+            "internal_escalations",
+            "remaining",
+            "terse",
+        }
         assert payload["merged"]["items"][0]["label"] == "acme/widgets#7"
 
     def test_json_separates_owner_waits_from_internal_escalations(self, checkpoint_file: Path) -> None:
@@ -268,13 +329,14 @@ class TestCheckingShow:
         labels = [item["label"] for item in json.loads(out)["merged"]["items"]]
         assert labels == ["souliane/teatree#50"]
 
-    def test_second_run_after_advance_reports_nothing(self, checkpoint_file: Path) -> None:
-        """Gather-then-advance: an immediate second run sees an empty window."""
+    def test_second_run_after_advance_keeps_live_remaining(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         first = _call("checking", "show", "--this-overlay")
         assert "Merged" in first
         second = _call("checking", "show", "--this-overlay").strip()
-        assert second.startswith("Nothing since ")
+        assert "Merged" not in second
+        assert "Remaining" in second
+        assert "1 dormant" in second
 
     def test_future_checkpoint_does_not_collapse_window_or_advance_backward(self, checkpoint_file: Path) -> None:
         """A skewed future marker must still report recent events, not collapse.
@@ -300,6 +362,845 @@ def _notify_backend() -> MagicMock:
     b.post_message.return_value = {"ok": True, "ts": "1700000000.000000"}
     b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
     return b
+
+
+class TestCheckingRemaining:
+    def _open_pr(self) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/600",
+            short_description="finish widget",
+            state=Ticket.State.PR_OPENED,
+        )
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://github.com/acme/widgets/pull/601",
+            repo="acme/widgets",
+            iid="601",
+        )
+        return ticket
+
+    def test_open_pr_has_steps_and_unknown_eta_without_history(self, checkpoint_file: Path) -> None:
+        self._open_pr()
+        payload = _show_json()
+        remaining = payload["remaining"]
+        assert remaining["title"] == "Remaining"
+        assert remaining["items"][2]["steps"] == ["independent review", "merge", "deploy"]
+        assert remaining["eta"]["median_minutes"] is None
+        assert "ETA unknown" in remaining["items"][0]["detail"]
+        assert "no default" in remaining["items"][0]["detail"]
+        assert "Remaining" in payload["terse"]
+
+    def test_empty_remaining_has_no_current_work_basis(self, checkpoint_file: Path) -> None:
+        with patch("teatree.core.checking_remaining.StepHistory.measure") as measure:
+            payload = _show_json()
+        measure.assert_not_called()
+        assert payload["remaining"]["eta"]["basis"] == "no current work in scope"
+
+    def test_dormant_only_scope_keeps_its_count_in_both_views(self, checkpoint_file: Path) -> None:
+        Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/604", state=Ticket.State.CODED
+        )
+        payload = _show_json()
+        assert payload["remaining"]["holds"]["dormant"] == 1
+        assert [row["label"] for row in payload["remaining"]["items"]] == ["Total", "Queue"]
+        assert "1 dormant" in payload["terse"]
+
+    def test_blank_overlay_name_scopes_remaining_like_other_groups(self) -> None:
+        self._open_pr()
+        now = timezone.now()
+        report = gather_checking_report(since=now - timedelta(hours=1), now=now)
+        assert report.remaining.total == 1
+
+    def test_finished_ticket_with_live_pr_is_excluded(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.DELIVERED)
+        payload = _show_json()
+        assert payload["remaining"]["total"] == 0
+
+    def test_no_history_omits_empty_legend_rows_and_formats_queue(self, checkpoint_file: Path) -> None:
+        self._open_pr()
+        payload = _show_json()
+        detail = " ".join(row["detail"] for row in payload["remaining"]["items"][:2])
+        assert "None\u2013None" not in detail
+        assert "n=0" not in detail
+        assert "claimed {" not in detail
+        assert "seats {" not in detail
+
+    def test_multiple_prs_count_one_tickets_unknown_eta(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://github.com/acme/widgets/pull/602",
+            repo="acme/widgets",
+            iid="602",
+        )
+        payload = _show_json()
+        assert payload["remaining"]["total"] == 2
+        assert payload["remaining"]["eta"]["unknown"] == 1
+
+    def test_one_unknown_pr_keeps_its_ticket_unknown(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://github.com/acme/widgets/pull/602",
+            repo="acme/widgets",
+            iid="602",
+        )
+        _review_verdict(ticket, ReviewVerdict.Verdict.MERGE_SAFE)
+        _completed_history("coding", (10,) * 5)
+        widths = MagicMock(expensive=1, review=0, retiring=1)
+        with _lane_width_patch(widths):
+            payload = _show_json()
+        assert payload["remaining"]["eta"]["unknown"] == 1
+        assert payload["remaining"]["eta"]["known"] == 0
+        assert payload["remaining"]["eta"]["median_minutes"] is None
+
+    def test_pr_scope_uses_owning_ticket_when_legacy_overlay_is_blank(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        PullRequest.objects.filter(ticket=ticket).update(overlay="")
+        payload = _show_json()
+        assert any(item["label"] == "acme/widgets#601" for item in payload["remaining"]["items"])
+
+    def test_completed_tasks_measure_from_admission(self, checkpoint_file: Path) -> None:
+        self._open_pr()
+        _completed_history("reviewing", (10, 20, 30, 40, 50))
+        payload = _show_json()
+        review = next(row for row in payload["remaining"]["durations"] if row["step"] == "reviewing")
+        assert review["median_minutes"] == pytest.approx(30.0)
+        assert review["p80_minutes"] == pytest.approx(42.0)
+        assert review["n"] == 5
+        assert review["window"] == "24h"
+
+    def test_measured_pr_eta_range_and_sources(self, checkpoint_file: Path) -> None:
+        self._open_pr()
+        now = timezone.now()
+        _completed_history("reviewing", (10, 20, 30, 40, 200))
+        for index, (merge_minutes, deploy_minutes) in enumerate(
+            zip((1, 2, 3, 4, 5), (10, 20, 30, 40, 50), strict=True)
+        ):
+            ticket = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{820 + index}",
+                state=Ticket.State.DELIVERED,
+            )
+            merged = now - timedelta(minutes=55)
+            clear = MergeClear.objects.create(
+                ticket=ticket,
+                pr_id=830 + index,
+                slug="acme/widgets",
+                reviewed_sha=_SHA,
+                reviewer_identity="reviewer",
+                gh_verify_result=MergeClear.VerifyResult.GREEN,
+                blast_class=MergeClear.BlastClass.LOGIC,
+                issued_at=merged - timedelta(minutes=merge_minutes),
+            )
+            MergeAudit.objects.create(
+                clear=clear,
+                merged_sha=_SHA,
+                required_checks_status="success",
+                merged_at=merged,
+            )
+            transition = TicketTransition.objects.create(
+                ticket=ticket,
+                from_state=Ticket.State.MERGED,
+                to_state=Ticket.State.DELIVERED,
+            )
+            TicketTransition.objects.filter(pk=transition.pk).update(
+                created_at=merged + timedelta(minutes=deploy_minutes)
+            )
+        payload = _show_json()
+        remaining = payload["remaining"]
+        assert remaining["eta"]["median_minutes"] == pytest.approx(63)
+        assert remaining["eta"]["p80_minutes"] == pytest.approx(118.2)
+        assert "1h03m\u20131h58m" in remaining["items"][0]["detail"]
+        assert "1h03m\u20131h58m" in payload["terse"]
+        assert all(item["detail"] in payload["terse"] for item in remaining["items"])
+        assert {row["step"] for row in remaining["durations"]} == {"reviewing", "merge", "deploy"}
+        assert all(row["n"] == 5 and row["window"] == "24h" for row in remaining["durations"])
+
+    def test_cancel_is_not_a_failed_run_in_either_scope(self, checkpoint_file: Path) -> None:
+        for number, error, result in (
+            (801, "cancelled: operator", {}),
+            (802, "agent crashed", {}),
+            (803, "ToolError: Operation cancelled: upstream connection reset", {}),
+            (804, "agent crashed", {"cancel_source": "owner"}),
+        ):
+            ticket = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{number}",
+                short_description=str(number),
+            )
+            task = _task(ticket, "coding")
+            TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error=error, result=result)
+        for flags in (("--this-overlay",), ()):
+            with _two_overlay_patch():
+                payload = json.loads(_call("checking", "show", *flags, "--no-advance", "--json"))
+            labels = [item["label"] for item in payload["needs_you"]["items"]]
+            assert "#801" not in labels
+            assert "#802" in labels
+            assert "#803" in labels
+            assert "#804" not in labels
+
+    def test_remaining_alone_does_not_notify(self, checkpoint_file: Path) -> None:
+        self._open_pr()
+        with patch("teatree.core.management.commands.checking.notify_user") as notify:
+            for flags in (("--this-overlay",), ()):
+                with _two_overlay_patch():
+                    _call("checking", "show", *flags, "--no-advance", "--notify")
+                notify.assert_not_called()
+
+    def test_queue_shows_counts_age_and_seats(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/850",
+            short_description="queue work",
+            state=Ticket.State.PLAN_RECORDED,
+        )
+        for index in range(4):
+            task = _task(ticket, "code")
+            Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(minutes=80 - index))
+        widths = MagicMock(expensive=2, review=1, retiring=1)
+        with _lane_width_patch(widths):
+            payload = _show_json()
+        queue = payload["remaining"]["queue"]
+        assert queue["pending"] == {"coding": 4}
+        assert queue["claimed"] == {}
+        assert queue["oldest_pending_minutes"] == pytest.approx(80, abs=1)
+        assert queue["oldest_pending_phase"] == "coding"
+        assert queue["seats"] == {"expensive": 2, "review": 1, "retiring": 1}
+        assert "queued, 0 ahead" in payload["remaining"]["items"][2]["detail"]
+        _completed_history("coding", (30,) * 5)
+        widths.expensive = 0
+        with _lane_width_patch(widths):
+            disabled = _show_json()
+        item = next(row for row in disabled["remaining"]["items"] if row["label"] == "#850")
+        assert item["eta"]["median_minutes"] is None
+        assert "no seats for expensive lane" in item["detail"]
+
+    def test_queue_position_and_seat_wait_follow_admission_priority(self, checkpoint_file: Path) -> None:
+        now = timezone.now()
+        older = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/851", state=Ticket.State.NOT_STARTED
+        )
+        old_task = _task(older, "planning")
+        Task.objects.filter(pk=old_task.pk).update(created_at=now - timedelta(hours=2))
+        started = self._open_pr()
+        pr_task = _task(started, "coding")
+        Task.objects.filter(pk=pr_task.pk).update(created_at=now - timedelta(hours=1))
+        _completed_history("coding", (10,) * 5)
+        widths = MagicMock(expensive=1, review=1, retiring=1)
+        with _lane_width_patch(widths):
+            payload = _show_json()
+            Task.objects.filter(pk=old_task.pk).update(status=Task.Status.COMPLETED)
+            without_old = _show_json()
+        items = {row["label"]: row for row in payload["remaining"]["items"]}
+        pr_without_old = next(row for row in without_old["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert "queued, 0 ahead" in items["acme/widgets#601"]["detail"]
+        assert "queued, 1 ahead" in items["#851"]["detail"]
+        assert items["acme/widgets#601"]["eta"]["median_minutes"] == pr_without_old["eta"]["median_minutes"]
+
+    def test_admitted_pending_task_does_not_wait_behind_its_own_seat(self, checkpoint_file: Path) -> None:
+        now = timezone.now()
+        ticket = self._open_pr()
+        seated = _task(ticket, "coding")
+        Task.objects.filter(pk=seated.pk).update(admitted_at=now - timedelta(seconds=30))
+        for index in range(2):
+            waiting_ticket = Ticket.objects.create(
+                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{860 + index}"
+            )
+            _task(waiting_ticket, "coding")
+        _completed_history("coding", (10,) * 5)
+        widths = MagicMock(expensive=1, review=1, retiring=1)
+        with _lane_width_patch(widths):
+            payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert "queued, 0 ahead" in item["detail"]
+        assert item["eta"]["median_minutes"] == 60
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            ("answering", 5, 50, "independent review", 150),
+            ("codex_reviewing", 10, 30, "factory review", 100),
+        ],
+    )
+    def test_task_phase_uses_its_own_ladder_history(
+        self, checkpoint_file: Path, case: tuple[str, int, int, str, int]
+    ) -> None:
+        phase, phase_minutes, review_minutes, expected_step, expected_eta = case
+        ticket = self._open_pr()
+        _task(ticket, phase)
+        _completed_history(phase, (phase_minutes,) * 5)
+        _completed_history("reviewing", (review_minutes,) * 5)
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["steps"][0] == expected_step
+        if phase == "answering":
+            assert item["steps"] == ["independent review", "merge", "deploy"]
+        assert item["eta"]["median_minutes"] == expected_eta
+        assert ("reviewing" if phase == "answering" else phase) in {
+            row["step"] for row in payload["remaining"]["durations"]
+        }
+
+    def test_unrelated_claimed_phase_does_not_run_the_pr_ladder(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        _task(ticket, "answering", status=Task.Status.CLAIMED, claimed_at=timezone.now() - timedelta(minutes=45))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert "now: independent review; then merge, deploy" in item["detail"]
+        assert "independent review (running)" not in item["detail"]
+
+    @pytest.mark.parametrize("phase", ["coding", "debugging"])
+    def test_claimed_rework_phase_runs_the_rework_step(self, checkpoint_file: Path, phase: str) -> None:
+        ticket = self._open_pr()
+        _task(ticket, phase, status=Task.Status.CLAIMED, claimed_at=timezone.now() - timedelta(minutes=5))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert "now: rework (running)" in item["detail"]
+
+    def test_the_claimed_task_sets_the_step_even_when_an_older_one_is_pending(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        session = Session.objects.create(ticket=ticket)
+        older = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        Task.objects.filter(pk=older.pk).update(created_at=timezone.now() - timedelta(hours=2))
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            status=Task.Status.CLAIMED,
+            claimed_at=timezone.now() - timedelta(minutes=5),
+        )
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert "now: factory review (running)" in item["detail"]
+
+    def test_other_overlay_tasks_do_not_fill_this_overlays_remaining(self, checkpoint_file: Path) -> None:
+        other = Ticket.objects.create(
+            overlay="beta", issue_url="https://github.com/beta/widgets/issues/1507", state=Ticket.State.CODED
+        )
+        _task(other, "testing")
+        payload = _show_json()
+        assert payload["remaining"]["items"] == []
+
+    def test_merge_ready_pr_does_not_wait_for_headless_coding_seats(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        _review_verdict(ticket, ReviewVerdict.Verdict.MERGE_SAFE)
+        ended = timezone.now() - timedelta(minutes=1)
+        for index in range(5):
+            sample_ticket = Ticket.objects.create(
+                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{970 + index}"
+            )
+            sample = _task(sample_ticket, "reviewing", status=Task.Status.COMPLETED)
+            Task.objects.filter(pk=sample.pk).update(admitted_at=ended - timedelta(minutes=30))
+            TaskAttempt.objects.create(task=sample, ended_at=ended, exit_code=0)
+            _task(sample_ticket, "coding")
+        widths = MagicMock(expensive=2, review=1, retiring=1)
+        with _lane_width_patch(widths):
+            payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["steps"] == ["merge", "deploy"]
+        assert item["eta"]["median_minutes"] == 60
+
+        widths.expensive = 0
+        with _lane_width_patch(widths):
+            partial = _show_json()
+        assert partial["remaining"]["eta"]["known"] == 1
+        assert partial["remaining"]["eta"]["unknown"] == 5
+        assert partial["remaining"]["eta"]["median_minutes"] is None
+        assert partial["remaining"]["eta"]["p80_minutes"] is None
+        assert partial["remaining"]["items"][0]["detail"].startswith("ETA unknown")
+
+    def test_latest_hold_overrides_older_merge_safe_verdict(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        for verdict, recorded_at in (
+            (ReviewVerdict.Verdict.MERGE_SAFE, timezone.now() - timedelta(minutes=2)),
+            (ReviewVerdict.Verdict.HOLD, timezone.now() - timedelta(minutes=1)),
+        ):
+            _review_verdict(ticket, verdict, recorded_at=recorded_at)
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["steps"] == ["independent review", "merge", "deploy"]
+
+    def test_a_pass_at_the_newest_head_supersedes_a_hold_at_an_older_head(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        for verdict, sha, minutes_ago in (
+            (ReviewVerdict.Verdict.HOLD, _SHA, 2),
+            (ReviewVerdict.Verdict.MERGE_SAFE, "c" * 40, 1),
+        ):
+            _review_verdict(ticket, verdict, sha=sha, recorded_at=timezone.now() - timedelta(minutes=minutes_ago))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["steps"] == ["merge", "deploy"]
+
+    def test_running_step_uses_elapsed_survivors_and_overdue_is_unknown(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        _completed_history("reviewing", (30, 40, 50, 60, 70))
+        running = _task(
+            ticket, "reviewing", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1)
+        )
+        Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=45))
+        payload = _show_json()
+        item = payload["remaining"]["items"][2]
+        assert item["eta"]["median_minutes"] == 165
+        assert item["eta"]["p80_minutes"] == 207
+        assert "ETA 2h45m\u20133h27m" in item["detail"]
+        Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=71))
+        overdue = _show_json()
+        assert overdue["remaining"]["eta"]["unknown"] == 1
+        assert "running longer than all 5" in overdue["remaining"]["items"][2]["detail"]
+
+    def test_claimed_without_admission_uses_claim_time_not_queue_waves(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        _task(ticket, "reviewing", status=Task.Status.CLAIMED, claimed_at=timezone.now() - timedelta(minutes=45))
+        _completed_history("reviewing", (30, 40, 50, 60, 70))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["eta"]["median_minutes"] == 165
+        assert "ETA 2h45m" in item["detail"]
+
+    def test_running_step_uses_seven_day_survivors_after_recent_samples_end(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        _task(ticket, "reviewing", status=Task.Status.CLAIMED, claimed_at=timezone.now() - timedelta(minutes=45))
+        _completed_history("reviewing", (30,) * 5)
+        _completed_history("reviewing", (60,) * 5, ended_hours_ago=48)
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["eta"]["median_minutes"] == pytest.approx(105, abs=1)
+        assert "7d elapsed survivors" in item["eta"]["basis"]
+        assert payload["remaining"]["eta"]["known"] == 1
+
+    def test_failed_task_without_attempt_is_halted(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1500", state=Ticket.State.CODED
+        )
+        _task(ticket, "testing", status=Task.Status.FAILED, failure_kind="unclassified")
+        payload = _show_json()
+        item = _remaining_item(payload, "#1500")
+        assert "halted (unclassified)" in item["detail"]
+        assert item["eta"]["median_minutes"] is None
+        assert "1 item," in payload["remaining"]["items"][0]["detail"]
+        assert "oldest none; seats" in payload["remaining"]["items"][1]["detail"]
+
+    def test_blank_failure_kind_omits_empty_halt_label(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1501", state=Ticket.State.CODED
+        )
+        task = _task(ticket, "testing", status=Task.Status.FAILED)
+        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1)
+        payload = _show_json()
+        item = _remaining_item(payload, "#1501")
+        assert "halted · now:" in item["detail"]
+        assert "halted ()" not in item["detail"]
+
+    def test_parked_task_is_not_counted_as_waiting_for_admission(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1502", state=Ticket.State.CODED
+        )
+        _task(ticket, "testing", not_before=timezone.now() + timedelta(hours=1))
+        payload = _show_json()
+        remaining = payload["remaining"]
+        item = next(row for row in remaining["items"] if row["label"] == "#1502")
+        assert remaining["queue"]["pending"] == {}
+        assert remaining["queue"]["oldest_pending_minutes"] is None
+        assert "queued" not in item["detail"]
+
+    def test_remaining_cap_applies_to_work_rows_without_counting_meta_rows(self, checkpoint_file: Path) -> None:
+        for number in (1503, 1504):
+            ticket = Ticket.objects.create(
+                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{number}", state=Ticket.State.CODED
+            )
+            _task(ticket, "testing")
+        now = timezone.now()
+        remaining = gather_checking_report(
+            since=now - timedelta(hours=1), now=now, overlay_name="acme", cap=1
+        ).remaining
+        assert remaining.total == 2
+        assert [row.label for row in remaining.items[:2]] == ["Total", "Queue"]
+        assert len(remaining.items) == 3
+        assert "…and 1 more" in "\n".join(remaining.render(cap=1))
+        assert "2 items" in remaining.items[0].detail
+        assert "oldest" in remaining.items[1].detail
+
+    @pytest.mark.parametrize("count", [4, 5, 7])
+    def test_human_table_caps_remaining_work_after_meta_rows(self, checkpoint_file: Path, count: int) -> None:
+        for index in range(count):
+            ticket = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{1600 + index}",
+                short_description=f"item {index}",
+                state=Ticket.State.PR_OPENED,
+            )
+            PullRequest.objects.create(
+                ticket=ticket,
+                overlay="acme",
+                repo="acme/widgets",
+                iid=str(1700 + index),
+                url=f"https://github.com/acme/widgets/pull/{1700 + index}",
+            )
+
+        out = _call("checking", "show", "--this-overlay", "--no-advance")
+
+        assert "Remaining" in out
+        assert "Total" in out
+        assert "Queue" in out
+        shown = [index for index in range(count) if f"acme/widgets#{1700 + index}" in out]
+        assert len(shown) == min(count, 5)
+        if count > 5:
+            assert "Remaining — 7 (top 5)" in out
+            assert "…and 2 more" in out
+        else:
+            assert "(top 5)" not in out
+            assert "…and" not in out
+
+    def test_claimed_shipping_step_uses_shipping_label(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        _task(ticket, "shipping", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["steps"][0] == "shipping"
+        assert "now: shipping (running)" in item["detail"]
+        assert any(row["step"] == "shipping" for row in payload["remaining"]["durations"])
+
+    def test_claimed_shipping_preserves_merge_safe_shortcut(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        _review_verdict(ticket, ReviewVerdict.Verdict.MERGE_SAFE)
+        _task(ticket, "shipping", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1))
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["steps"] == ["shipping", "merge", "deploy"]
+
+    def test_running_default_reselects_slowest_surviving_sources(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        for phase, durations in (
+            ("coding", (10,) * 9 + (5000,)),
+            ("reviewing", (9,) * 7 + (11, 11, 21)),
+            ("debugging", (8,) * 8 + (21, 9000)),
+        ):
+            _completed_history(phase, durations)
+        running = _task(
+            ticket, "testing", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1)
+        )
+        Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=20))
+
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["steps"] == ["testing", "factory review", "independent review", "merge", "deploy"]
+        assert item["eta"]["median_minutes"] == pytest.approx(5018, abs=0.1)
+        assert item["eta"]["p80_minutes"] == pytest.approx(7228.2, abs=0.1)
+        assert "83h38m\u2013120h28m" in item["detail"]
+        assert "testing: default: slowest surviving steps (median coding, 24h; p80 debugging, 24h)" in item["detail"]
+
+        Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=9001))
+        overdue = _show_json()
+        overdue_item = next(row for row in overdue["remaining"]["items"] if row["label"] == "acme/widgets#601")
+        assert overdue_item["eta"]["median_minutes"] is None
+        assert overdue_item["eta"]["basis"] == "running longer than all measured fallback samples"
+
+    def test_running_default_uses_older_survivors_in_public_report(self, checkpoint_file: Path) -> None:
+        ticket = self._open_pr()
+        _completed_history("coding", (30,) * 5)
+        _completed_history("coding", (90,) * 5, ended_hours_ago=48)
+        running = _task(
+            ticket, "testing", status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + timedelta(hours=1)
+        )
+        Task.objects.filter(pk=running.pk).update(admitted_at=timezone.now() - timedelta(minutes=45))
+
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["eta"]["median_minutes"] is not None
+        assert "testing: default: slowest surviving step (coding, 7d)" in item["detail"]
+        assert item["detail"] in payload["terse"]
+
+    def test_halts_blocks_and_owner_waits_are_excluded_from_eta(self, checkpoint_file: Path) -> None:
+        for number, status in ((860, Task.Status.FAILED), (861, Task.Status.PENDING), (862, Task.Status.PENDING)):
+            ticket = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{number}",
+                short_description=f"ticket {number}",
+                state=Ticket.State.CODED,
+            )
+            task = _task(
+                ticket,
+                "testing",
+                status=status,
+                not_before=timezone.now() + timedelta(hours=1) if number != 860 else None,
+            )
+            if number == 860:
+                TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error="crash")
+            if number == 861:
+                DeferredQuestion.objects.create(question="Choose scope?", parked_task=task)
+                DeferredQuestion.objects.create(question="Choose timeline?", parked_task=task)
+        superseded = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/863",
+            short_description="recovered",
+            state=Ticket.State.CODED,
+        )
+        old = _task(superseded, "coding", status=Task.Status.FAILED)
+        TaskAttempt.objects.create(task=old, ended_at=timezone.now(), exit_code=1, error="crash")
+        _task(superseded, "coding", status=Task.Status.COMPLETED)
+        payload = _show_json()
+        remaining = payload["remaining"]
+        assert remaining["holds"]["halted"] == 1
+        assert remaining["holds"]["blocked"] == 1
+        assert remaining["holds"]["owner"] == 1
+        assert remaining["eta"]["known"] == 0
+        assert remaining["eta"]["unknown"] == 0
+        assert remaining["eta"]["basis"] == "all current work is held"
+        assert "1 blocked" in remaining["items"][0]["detail"]
+        assert "#863" not in [item["label"] for item in remaining["items"]]
+        details = " ".join(item["detail"] for item in remaining["items"])
+        assert "waiting on you" in details
+        assert "blocked" in details
+        assert "halted" in details
+        assert "parked until " in details
+        assert "unclassified" in details
+
+    def test_older_halted_is_only_a_dormant_count(self, checkpoint_file: Path) -> None:
+        for number, ended_days_ago in ((1400, (9, 0)), (1401, (8,))):
+            ticket = Ticket.objects.create(
+                overlay="acme", issue_url=f"https://github.com/acme/widgets/issues/{number}", state=Ticket.State.CODED
+            )
+            task = _task(ticket, "testing", status=Task.Status.FAILED)
+            for days in ended_days_ago:
+                TaskAttempt.objects.create(
+                    task=task, ended_at=timezone.now() - timedelta(days=days), exit_code=1, error="agent crashed"
+                )
+        payload = _show_json()
+        remaining = payload["remaining"]
+        assert [row["label"] for row in remaining["items"][2:]] == ["#1400"]
+        assert remaining["holds"] == {"halted": 1, "blocked": 0, "owner": 0, "dormant": 1}
+
+    def test_older_dormant_ticket_is_visible_in_json_and_human_report(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1505", state=Ticket.State.CODED
+        )
+        task = _task(ticket, "testing", status=Task.Status.FAILED)
+        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(days=9))
+        payload = _show_json()
+        remaining = payload["remaining"]
+        human = _call("checking", "show", "--this-overlay", "--no-advance")
+        assert [row["label"] for row in remaining["items"]] == ["Total", "Queue"]
+        assert remaining["holds"] == {"halted": 0, "blocked": 0, "owner": 0, "dormant": 1}
+        assert "1 dormant" in payload["terse"]
+        assert "1 dormant" in human
+        assert "Nothing since" not in human
+
+    def test_reviewer_only_queue_is_visible_in_json_and_human_views(self, checkpoint_file: Path) -> None:
+        reviewer = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1500", role=Ticket.Role.REVIEWER
+        )
+        PullRequest.objects.create(
+            ticket=reviewer,
+            overlay="acme",
+            url="https://github.com/acme/widgets/pull/1501",
+            repo="acme/widgets",
+            iid="1501",
+        )
+        _task(reviewer, "reviewing")
+        for all_overlays in (False, True):
+            with _two_overlay_patch():
+                payload = _show_json(all_overlays=all_overlays)
+                flags = () if all_overlays else ("--this-overlay",)
+                out = _call("checking", "show", *flags, "--no-advance")
+            remaining = payload["remaining"]
+            assert [row["label"] for row in remaining["items"]] == ["Total", "Queue"]
+            assert remaining["queue"]["pending"] == {"reviewing": 1}
+            assert remaining["eta"]["basis"] == "no current work in scope"
+            assert not payload["terse"].startswith("Nothing since")
+            assert "Remaining" in payload["terse"]
+            assert "Queue" in payload["terse"]
+            assert not out.startswith("Nothing since")
+            assert "Remaining" in out
+            assert "Queue" in out
+            assert "reviewing" in out
+
+    @pytest.mark.parametrize(
+        ("error", "expected_detail"),
+        [("agent crashed", "halted"), ("cancelled: operator", "cancelled by an operator")],
+    )
+    def test_failed_latest_task_halts_an_open_pr(self, checkpoint_file: Path, error: str, expected_detail: str) -> None:
+        ticket = self._open_pr()
+        task = _task(ticket, "reviewing", status=Task.Status.FAILED)
+        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error=error)
+        payload = _show_json()
+        item = _remaining_item(payload, "acme/widgets#601")
+        assert item["eta"]["basis"] == "halted"
+        assert expected_detail in item["detail"]
+        assert payload["remaining"]["holds"]["halted"] == 1
+        if error == "cancelled: operator":
+            assert "#600" not in [row["label"] for row in payload["needs_you"]["items"]]
+
+    def test_owner_holds_only_count_live_parked_tasks_in_scope(self, checkpoint_file: Path) -> None:
+        self._open_pr()
+        for number, overlay, status in ((1100, "beta", Task.Status.PENDING), (1101, "acme", Task.Status.FAILED)):
+            ticket = Ticket.objects.create(
+                overlay=overlay,
+                issue_url=f"https://github.com/{overlay}/widgets/issues/{number}",
+                state=Ticket.State.CODED,
+            )
+            task = _task(ticket, "testing", status=status, not_before=timezone.now() + timedelta(hours=1))
+            DeferredQuestion.objects.create(question="Choose scope?", parked_task=task)
+            if overlay == "acme":
+                _task(ticket, "testing")
+        reviewer_ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/1102",
+            role=Ticket.Role.REVIEWER,
+        )
+        reviewer_task = _task(reviewer_ticket, "reviewing", not_before=timezone.now() + timedelta(hours=1))
+        DeferredQuestion.objects.create(question="Review?", parked_task=reviewer_task)
+        concurrent_ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/1103",
+            state=Ticket.State.CODED,
+        )
+        waiting_task = _task(concurrent_ticket, "testing", not_before=timezone.now() + timedelta(hours=1))
+        DeferredQuestion.objects.create(question="Choose approach?", parked_task=waiting_task)
+        _task(
+            concurrent_ticket,
+            "testing",
+            status=Task.Status.CLAIMED,
+            lease_expires_at=timezone.now() + timedelta(hours=1),
+        )
+        payload = _show_json()
+        remaining = payload["remaining"]
+        assert remaining["holds"]["owner"] == 0
+        item = next(row for row in remaining["items"] if row["label"] == "#1101")
+        assert "waiting on you" not in item["detail"]
+        concurrent = next(row for row in remaining["items"] if row["label"] == "#1103")
+        assert "waiting on you" not in concurrent["detail"]
+
+    def test_global_seats_and_older_unadmitted_work_affect_local_eta(self, checkpoint_file: Path) -> None:
+        now = timezone.now()
+        for number, overlay, status in (
+            (990, "beta", Task.Status.CLAIMED),
+            (991, "beta", Task.Status.PENDING),
+            (992, "acme", Task.Status.PENDING),
+            (993, "beta", Task.Status.PENDING),
+        ):
+            ticket = Ticket.objects.create(
+                overlay=overlay,
+                issue_url=f"https://github.com/{overlay}/widgets/issues/{number}",
+                short_description="queue work",
+                state=Ticket.State.PLAN_RECORDED,
+            )
+            task = _task(
+                ticket,
+                "coding",
+                status=status,
+                lease_expires_at=now + timedelta(hours=1) if status == Task.Status.CLAIMED else None,
+            )
+            Task.objects.filter(pk=task.pk).update(created_at=now - timedelta(minutes=1000 - number))
+            if number == 993:
+                Task.objects.filter(pk=task.pk).update(admitted_at=now - timedelta(minutes=1))
+        _completed_history("coding", (10,) * 5)
+        widths = MagicMock(expensive=1, review=1, retiring=1)
+        with _lane_width_patch(widths):
+            payload = _show_json()
+        queue = payload["remaining"]["queue"]
+        assert queue["claimed"] == {"coding": 1}
+        assert queue["pending"] == {"coding": 2}
+        assert queue["oldest_pending_phase"] == "coding"
+        item = _remaining_item(payload, "#992")
+        assert item["eta"]["median_minutes"] == 100
+
+    def test_merged_ticket_with_open_task_still_shows_deploy(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/1200",
+            state=Ticket.State.MERGED,
+        )
+        _task(ticket, "shipping")
+        payload = _show_json()
+        item = _remaining_item(payload, "#1200")
+        assert item["steps"] == ["deploy"]
+        assert "then" not in item["detail"]
+
+    def test_held_work_is_listed_after_active_work(self, checkpoint_file: Path) -> None:
+        active = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1300", state=Ticket.State.CODED
+        )
+        _task(active, "testing")
+        halted = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1301", state=Ticket.State.CODED
+        )
+        failed = _task(halted, "testing", status=Task.Status.FAILED)
+        TaskAttempt.objects.create(task=failed, ended_at=timezone.now(), exit_code=1, error="agent crashed")
+        self._open_pr()
+        payload = _show_json()
+        assert [row["label"] for row in payload["remaining"]["items"][2:]] == ["acme/widgets#601", "#1300", "#1301"]
+
+    def test_remaining_read_has_no_sql_writes(self, checkpoint_file: Path) -> None:
+        self._open_pr()
+        with CaptureQueriesContext(connection) as queries:
+            _call("checking", "show", "--this-overlay", "--no-advance", "--json")
+        assert not [
+            query["sql"]
+            for query in queries
+            if query["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+        ]
+
+    def test_cap_links_and_all_overlay_tags(self, checkpoint_file: Path) -> None:
+        for index in range(6):
+            overlay = "acme" if index < 3 else "beta"
+            ticket = Ticket.objects.create(
+                overlay=overlay,
+                issue_url=f"https://github.com/{overlay}/widgets/issues/{920 + index}",
+                short_description=f"item {index}",
+                state=Ticket.State.PR_OPENED,
+            )
+            PullRequest.objects.create(
+                ticket=ticket,
+                overlay=overlay,
+                repo=f"{overlay}/widgets",
+                iid=str(930 + index),
+                url=f"https://github.com/{overlay}/widgets/pull/{930 + index}",
+            )
+        with _two_overlay_patch():
+            payload = _show_json(all_overlays=True)
+        remaining = payload["remaining"]
+        assert remaining["total"] == 6
+        assert len(remaining["items"]) == 7
+        assert all(row["detail"] in payload["terse"] for row in remaining["items"])
+        assert "…and 1 more" in payload["terse"]
+        assert "[beta]" in payload["terse"]
+        assert "[beta/widgets#935 (item 5)](https://github.com/beta/widgets/pull/935)" in payload["terse"]
+
+    def test_pr_query_count_does_not_grow_with_pr_count(self, checkpoint_file: Path) -> None:
+        def add_prs(start: int, stop: int) -> None:
+            for index in range(start, stop):
+                ticket = Ticket.objects.create(
+                    overlay="acme",
+                    issue_url=f"https://github.com/acme/widgets/issues/{950 + index}",
+                    short_description=f"item {index}",
+                    state=Ticket.State.PR_OPENED,
+                )
+                PullRequest.objects.create(
+                    ticket=ticket,
+                    overlay="acme",
+                    repo="acme/widgets",
+                    iid=str(960 + index),
+                    url=f"https://github.com/acme/widgets/pull/{960 + index}",
+                )
+
+        def query_count() -> tuple[int, int]:
+            with CaptureQueriesContext(connection) as queries:
+                payload = _show_json()
+            return len(queries), payload["remaining"]["total"]
+
+        add_prs(0, 3)
+        widths = MagicMock(expensive=2, review=1, retiring=1)
+        with _lane_width_patch(widths):
+            first, first_total = query_count()
+            add_prs(3, 9)
+            second, second_total = query_count()
+        assert (first_total, second_total) == (3, 9)
+        assert second == first
 
 
 class TestCheckingNotify:
