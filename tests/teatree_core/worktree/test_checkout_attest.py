@@ -348,6 +348,20 @@ class TestCheckoutAttestCard(TestCase):
         assert first.pk == second.pk
         assert DeferredQuestion.owner_pending().filter(evidence__action__target=str(worktree.pk)).count() == 1
 
+    def test_mixed_steps_with_open_pull_request_keep_one_checkout_card(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        PullRequestFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        coding = TaskFactory(ticket=ticket, phase="coding")
+        retro = TaskFactory(ticket=ticket, phase="retro")
+
+        cards = [ask_owner_to_attest(task, attestation) for task in (coding, retro, coding, retro, coding)]
+
+        assert all(card is not None for card in cards)
+        assert len({card.pk for card in cards if card is not None}) == 1
+        assert DeferredQuestion.objects.filter(evidence__action__target=str(worktree.pk)).count() == 1
+
     def test_old_task_specific_card_is_retired_when_shared_card_is_created(self) -> None:
         task = TaskFactory()
         worktree = WorktreeFactory(ticket=task.ticket)

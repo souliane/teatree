@@ -151,6 +151,20 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         assert card.slack_ts
         assert self.backend.post_message.call_count == 1
 
+    def test_manual_resurface_keeps_a_new_attest_card_on_hold(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        card = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert card is not None
+
+        assert drain_deferred_questions(user_id="U_ME", backend=self.backend) == (0, 1)
+        self.backend.post_message.assert_not_called()
+
+        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=timezone.now() - dt.timedelta(minutes=8))
+        assert drain_deferred_questions(user_id="U_ME", backend=self.backend) == (1, 1)
+
     def test_an_hour_of_ticks_over_a_resumed_41_question_backlog_sends_six_pings(self) -> None:
         for index in range(20):
             _backlog(f"Unposted {index}?")
