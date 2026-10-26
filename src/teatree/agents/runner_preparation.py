@@ -118,6 +118,10 @@ def _native_compaction_env(env: dict[str, str] | None, dispatch: DispatchHarness
 def _record_brief_start_head(task: Task, phase: str) -> None:
     if phase not in {"coding", "debugging"} or (state := resolve_head_state(task)) is None:
         return
+    task.ticket.refresh_from_db(fields=["extra"])
+    prior = (task.ticket.extra or {}).get("brief_start_heads") or {}
+    if isinstance(prior, dict) and str(task.pk) in prior:
+        return
     task.ticket.merge_extra(merge_into_dicts={"brief_start_heads": {str(task.pk): state.sha}})
     task.ticket.refresh_from_db(fields=["extra"])
     recorded = (task.ticket.extra or {}).get("brief_start_heads") or {}
