@@ -71,6 +71,8 @@ def _verify_header(request: TicketDmRequest, ticket: Ticket, thread: TicketDmThr
         if exc.error_code in _DELETED_ROOT_CODES:
             _retire(thread)
         return f"ticket header unreadable: {exc}"
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"ticket header unreadable: {exc}"
     root = next((message for message in messages if str(message.get("ts", "")) == thread.root_ts), None)
     if root is None:
         return "ticket header unverified"

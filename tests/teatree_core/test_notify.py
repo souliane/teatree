@@ -189,6 +189,32 @@ class TestNotifyUser(TestCase):
         thread = TicketDmThread.objects.get(ticket=ticket)
         assert (thread.root_ts, thread.generation) == ("1700000000.000001", 0)
 
+    def test_failed_root_read_retries_without_a_second_header(self) -> None:
+        ticket = Ticket.objects.create(short_description="Read failure")
+        backend = _backend()
+        posts: list[tuple[str, str]] = []
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+            posts.append((text, thread_ts))
+            return {"ok": True, "ts": f"1700000000.{len(posts):06d}"}
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = [OSError("read offline"), [{"ts": "1700000000.000001"}]]
+
+        def send() -> bool:
+            return notify_user_outcome(
+                "body",
+                kind=NotifyKind.INFO,
+                idempotency_key="root-read-retry",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            ).sent
+
+        assert not send()
+        assert TicketDmThread.objects.get(ticket=ticket).root_ts == "1700000000.000001"
+        assert send()
+        assert len([thread_ts for _, thread_ts in posts if not thread_ts]) == 1
+
     def test_schedule_anchor_and_explicit_thread_keep_existing_routing(self) -> None:
         ticket = Ticket.objects.create(issue_url="schedule:daily", short_description="Daily")
         backend = _backend()
