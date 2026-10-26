@@ -533,14 +533,12 @@ class TestCheckoutAttestation(TestCase):
         state = checkout_state(self.checkout)
 
         before = ask_owner_to_attest(later, CheckoutAttestation(self.worktree, state, host_evidence=True))
-        assert before is not None
-        assert before.pk == row.pk
+        assert before is None
         assert self._carry_out() == [f"declined {row.pk}"]
         after_outcome = TaskFactory(ticket=self.task.ticket, phase="coding")
         after = ask_owner_to_attest(after_outcome, CheckoutAttestation(self.worktree, state, host_evidence=True))
 
-        assert after is not None
-        assert after.pk == row.pk
+        assert after is None
         assert DeferredQuestion.objects.filter(evidence__action__target=str(self.worktree.pk)).count() == 1
 
     def test_typed_accept_holds_the_card_for_a_new_task_and_never_attests(self) -> None:
