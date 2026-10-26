@@ -52,7 +52,7 @@ DEFAULT_TRIGGER_GLOBS: tuple[str, ...] = (
     "**/static/**",
 )
 
-MAX_PAGES = 12
+MAX_PAGES = 13
 PER_PAGE_TIMEOUT_MS = 10_000
 TOTAL_TIMEOUT_S = 150
 DEFAULT_SCREENSHOT_DIR = ".t3/visual_qa"

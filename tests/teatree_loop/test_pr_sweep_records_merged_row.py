@@ -262,12 +262,12 @@ class TestSoloOverlayBypassRecordsTheMerge:
         row.refresh_from_db()
         assert row.state == PullRequest.State.MERGED
 
-    def test_release_rule_frees_the_budget_slot_for_a_sweep_merged_pr(self) -> None:
-        """The whole point of the row write: intake releases with no operator action."""
+    def test_the_merge_time_record_frees_the_budget_slot_for_a_sweep_merged_pr(self) -> None:
+        """The post hook completes the marker at merge time: intake releases with no operator action."""
         _seed_ledger()
         _record_cold_review()
         marker = ImplementedIssueMarker.objects.create(issue_url=ISSUE_URL, overlay="t3-teatree")
-        assert ImplementedIssueMarker.objects.find_stale("t3-teatree").completed == ()
+        assert marker.state != ImplementedIssueMarker.State.COMPLETED
 
         _sweep(
             _SweepApi(prs=(_open_pr(),)),
@@ -275,7 +275,8 @@ class TestSoloOverlayBypassRecordsTheMerge:
             gh=_GhStub(checks=json.dumps([{"conclusion": "SUCCESS"}])),
         )
 
-        assert ImplementedIssueMarker.objects.find_stale("t3-teatree").completed == (marker.pk,)
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.COMPLETED
 
 
 class TestUvAuditFallbackRecordsTheMerge:

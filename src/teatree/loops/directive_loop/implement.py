@@ -11,6 +11,9 @@ plan gates (PR-3's ``mechanism_placement``) key on it.
 The admission baseline is snapshotted here so VERIFYING's no-collateral-regression evidence has a reference.
 """
 
+import logging
+
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.models import Directive, FactoryScoreSnapshot
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -28,6 +31,7 @@ _DIRECTIVE_KEY = "directive_id"
 
 #: The synthetic mechanism ticket's short-description cap.
 _BRIEF_LEN = 80
+logger = logging.getLogger(__name__)
 
 
 def implementation_brief(directive: Directive) -> str:
@@ -61,6 +65,9 @@ def schedule_directive_implementation(
     already carries a coding task).
     """
     issue_url = f"{umbrella_url}#directive-impl={directive.pk}"
+    if reason := open_pr_start_cap_hold_reason():
+        logger.warning("directive loop is claiming nothing new: %s", reason)
+        return None
     short = implementation_brief(directive)
     ticket, _ = Ticket.objects.get_or_create(
         issue_url=issue_url,

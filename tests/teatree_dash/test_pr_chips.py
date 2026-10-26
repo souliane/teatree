@@ -61,20 +61,20 @@ class ChipStatesReadApartOnTheBoardTestCase(TestCase):
     def test_a_merged_chip_carries_its_state_as_a_class(self) -> None:
         ticket = TicketFactory(state=State.PR_OPENED)
         PullRequestFactory(ticket=ticket, repo="acme-org/backend", iid="7", state=PullRequest.State.MERGED)
-        body = self.client.get(reverse("dash:board"), **_LOOPBACK).content.decode()
+        body = self.client.get(reverse("dash:board_lifecycle"), **_LOOPBACK).content.decode()
         assert 'class="chip pr merged"' in body
         assert "Merged" in body
 
     def test_an_open_chip_carries_its_own_class(self) -> None:
         ticket = TicketFactory(state=State.PR_OPENED)
         PullRequestFactory(ticket=ticket, repo="acme-org/backend", iid="7", state=PullRequest.State.OPEN)
-        body = self.client.get(reverse("dash:board"), **_LOOPBACK).content.decode()
+        body = self.client.get(reverse("dash:board_lifecycle"), **_LOOPBACK).content.decode()
         assert 'class="chip pr open"' in body
 
     def test_the_slug_never_reaches_the_page(self) -> None:
         ticket = TicketFactory(state=State.PR_OPENED)
         PullRequestFactory(ticket=ticket, repo="acme-org/backend", iid="7", state=PullRequest.State.REVIEW_REQUESTED)
-        body = self.client.get(reverse("dash:board"), **_LOOPBACK).content.decode()
+        body = self.client.get(reverse("dash:board_lifecycle"), **_LOOPBACK).content.decode()
         assert "· review_requested" not in body
         assert "· Review requested" in body
 

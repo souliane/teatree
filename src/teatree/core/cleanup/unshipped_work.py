@@ -1,14 +1,11 @@
 """Capture what a checkout holds that exists nowhere else, before anything may reap it.
 
-Every reaping pass already decides correctly whether to KEEP a checkout holding
-work — and a kept checkout is indistinguishable from a busy one, so the work sits
-unobserved until a person notices. This module is the observation: it snapshots
-the staged/unstaged/untracked delta and the commits on no remote into the salvage
+The snapshot reads staged, unstaged, untracked, and ignored files plus commits
+absent from live remote heads. It writes those observations into the salvage
 bundle shape (``<name>.uncommitted.patch`` / ``.commits.patch`` / ``.files`` /
 ``.meta``) and writes a durable :class:`UnshippedWorkRecord`.
 
-It is purely additive — it reads the checkout and writes elsewhere, so no
-disposition changes and no #706/#835 guard is loosened.
+The probe is read-only; removal paths consume its result through one shared proof.
 
 ``git diff`` compares the working tree to the INDEX, so a checkout whose whole
 delta is STAGED reports zero bytes while holding real work. Every probe here is
@@ -21,15 +18,18 @@ honest instead of an operator discovering it mid-recovery.
 """
 
 import logging
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TypedDict
 
+from teatree.core.cleanup.ignored_files import ignored_unregenerable
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models import UnshippedWorkRecord
 from teatree.core.worktree.checkout_liveness import wrong_venue_reason
 from teatree.paths import get_data_dir, isolated_slug
 from teatree.utils import git
+from teatree.utils.git_sync import remote_head_shas
 from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
@@ -38,11 +38,15 @@ ARTIFACT_NAMESPACE = "unshipped-work"
 UNCOMMITTED_SUFFIX = ".uncommitted.patch"
 COMMITS_SUFFIX = ".commits.patch"
 FILES_SUFFIX = ".files"
+PARTIAL_UNCOMMITTED_SUFFIX = ".partial.uncommitted.patch"
+PARTIAL_COMMITS_SUFFIX = ".partial.commits.patch"
 #: The distinct key an unreadable probe writes to, so it never lands on content.
 UNREADABLE_SUFFIX = ".unreadable"
 _INDEX_AWARE_BASE = "HEAD"
 # A porcelain entry whose status is a rename/copy carries a SECOND path field.
 _RENAME_STATUS = frozenset("RC")
+MAX_IGNORED_PATCH_BYTES = 8 * 1024 * 1024
+COMMIT_PATCH_BATCH_SIZE = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +62,10 @@ class UnshippedWork:
     unpushed_commits: list[str] = field(default_factory=list)
     commits_patch: str = ""
     unreadable: str = ""
+    ignored_paths: list[str] = field(default_factory=list)
+    remote_unverified: bool = False
+    live_refs: tuple[str, ...] = ()
+    head_missing: bool = False
 
     @property
     def exists(self) -> bool:
@@ -90,14 +98,25 @@ def _commits_patch(checkout: Path, commits: list[str]) -> str:
     """The full patch of ``commits`` (``"<sha> <subject>"`` lines), oldest first."""
     if not commits:
         return ""
-    shas = [line.split(maxsplit=1)[0] for line in commits]
-    return git.run_strict_verbatim(
-        repo=str(checkout),
-        args=["log", "-p", "--binary", "--no-walk", "--reverse", *shas, "--src-prefix=a/", "--dst-prefix=b/"],
+    shas = [line.split(maxsplit=1)[0] for line in reversed(commits)]
+    return "".join(
+        git.run_strict_verbatim(
+            repo=str(checkout),
+            args=[
+                "log",
+                "-p",
+                "--binary",
+                "--no-walk=unsorted",
+                *shas[start : start + COMMIT_PATCH_BATCH_SIZE],
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+            ],
+        )
+        for start in range(0, len(shas), COMMIT_PATCH_BATCH_SIZE)
     )
 
 
-def _uncommitted_patch(checkout: Path) -> str:
+def _uncommitted_patch(checkout: Path, ignored_paths: list[str], base_ref: str = _INDEX_AWARE_BASE) -> str:
     """The staged + unstaged + untracked delta, as a patch ``git apply`` restores.
 
     Untracked content is IN scope: the bundle is the last copy of the work, and a
@@ -107,15 +126,69 @@ def _uncommitted_patch(checkout: Path) -> str:
     rather than report the whole checkout unreadable.
     """
     try:
-        return git.full_worktree_diff(str(checkout), _INDEX_AWARE_BASE)
+        return git.full_worktree_diff(str(checkout), base_ref, also=ignored_paths)
     except CommandFailedError:
-        return git.run_strict_verbatim(
-            repo=str(checkout),
-            args=["diff", _INDEX_AWARE_BASE, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
-        )
+        if ignored_paths:
+            raise
+        return _tracked_patch(checkout, base_ref)
 
 
-def probe_unshipped_work(checkout: Path) -> UnshippedWork:
+def _capturable_ignored(checkout: Path, paths: list[str]) -> tuple[list[str], list[str]]:
+    included: list[str] = []
+    omitted: list[str] = []
+    total = 0
+    for path in paths:
+        size = (checkout / path).lstat().st_size
+        if total + size > MAX_IGNORED_PATCH_BYTES:
+            omitted.append(path)
+        else:
+            included.append(path)
+            total += size
+    return included, omitted
+
+
+def _tracked_patch(checkout: Path, base_ref: str) -> str:
+    return git.run_strict_verbatim(
+        repo=str(checkout), args=["diff", base_ref, "--binary", "--src-prefix=a/", "--dst-prefix=b/"]
+    )
+
+
+def _ignored_paths_or_error(checkout: Path) -> tuple[list[str], str]:
+    try:
+        return ignored_unregenerable(checkout), ""
+    except OSError as exc:
+        return [], f"{checkout}: could not inspect ignored files ({exc})"
+
+
+def _live_unpushed_commits(
+    checkout: Path, local: list[str], base_ref: str = _INDEX_AWARE_BASE
+) -> tuple[list[str], bool, tuple[str, ...]]:
+    output = git.run_strict(
+        repo=str(checkout), args=["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]
+    )
+    refs: dict[str, list[tuple[str, str, str]]] = {}
+    for line in output.splitlines():
+        ref, sha = line.split(" ", 1)
+        if ref.startswith("refs/remotes/") and "/" in ref[len("refs/remotes/") :]:
+            remote, branch = ref[len("refs/remotes/") :].split("/", 1)
+            if branch != "HEAD":
+                refs.setdefault(remote, []).append((branch, ref, sha))
+    live: list[str] = []
+    answered = False
+    for remote, entries in refs.items():
+        try:
+            present = remote_head_shas(str(checkout), (branch for branch, _, _ in entries), remote=remote)
+        except git.RemoteReadError:
+            continue
+        answered = True
+        live.extend(ref for branch, ref, sha in entries if present.get(branch) == sha)
+    if not answered:
+        return local, True, ()
+    output = git.run_strict(repo=str(checkout), args=["log", base_ref, "--not", *live, "--oneline"])
+    return [line for line in output.splitlines() if line.strip()], False, tuple(live)
+
+
+def probe_unshipped_work(checkout: Path, *, base_ref: str = _INDEX_AWARE_BASE) -> UnshippedWork:
     """Read ``checkout``'s unshipped delta without mutating it.
 
     Read-only on purpose: the checkout may be KEPT and may hold a live agent, so
@@ -136,20 +209,45 @@ def probe_unshipped_work(checkout: Path) -> UnshippedWork:
     venue = wrong_venue_reason(checkout)
     if venue:
         return UnshippedWork(unreadable=venue)
-    if not git.check(repo=str(checkout), args=["rev-parse", "--verify", "--quiet", _INDEX_AWARE_BASE]):
-        return UnshippedWork(unreadable=f"{checkout}: no resolvable HEAD to diff against")
+    if not git.check(repo=str(checkout), args=["rev-parse", "--verify", "--quiet", base_ref]):
+        return UnshippedWork(unreadable=f"{checkout}: no resolvable HEAD to diff against", head_missing=True)
     try:
-        dirty_paths = _porcelain_paths(checkout)
-        uncommitted_patch = _uncommitted_patch(checkout)
-        unpushed_commits = git.commits_absent_from_all_remotes(str(checkout), _INDEX_AWARE_BASE)
+        ignored_paths, partial_error = _ignored_paths_or_error(checkout)
+        if base_ref == _INDEX_AWARE_BASE:
+            dirty_paths = sorted(set(_porcelain_paths(checkout)) | set(ignored_paths))
+        else:
+            changed = git.run_strict(repo=str(checkout), args=["diff", "--name-only", "-z", base_ref])
+            untracked = git.run_strict(repo=str(checkout), args=["ls-files", "-z", "--others", "--exclude-standard"])
+            dirty_paths = sorted((set(changed.split("\0")) | set(untracked.split("\0")) | set(ignored_paths)) - {""})
+        included_ignored, omitted_ignored = _capturable_ignored(checkout, ignored_paths)
+        if omitted_ignored:
+            reason = f"ignored content exceeds {MAX_IGNORED_PATCH_BYTES} bytes: {', '.join(omitted_ignored)}"
+            partial_error = f"{partial_error}; {reason}" if partial_error else reason
+        try:
+            uncommitted_patch = _uncommitted_patch(checkout, included_ignored, base_ref)
+        except (CommandFailedError, OSError) as exc:
+            if not included_ignored:
+                raise
+            reason = f"{checkout}: could not include ignored content ({exc})"
+            partial_error = f"{partial_error}; {reason}" if partial_error else reason
+            try:
+                uncommitted_patch = git.full_worktree_diff(str(checkout), base_ref)
+            except CommandFailedError:
+                uncommitted_patch = _tracked_patch(checkout, base_ref)
+        local_unpushed = git.commits_absent_from_all_remotes(str(checkout), base_ref)
+        unpushed_commits, remote_unverified, live_refs = _live_unpushed_commits(checkout, local_unpushed, base_ref)
         commits_patch = _commits_patch(checkout, unpushed_commits)
-    except CommandFailedError as exc:
+    except (CommandFailedError, OSError) as exc:
         return UnshippedWork(unreadable=f"{checkout}: could not read unshipped work ({exc})")
     return UnshippedWork(
         dirty_paths=dirty_paths,
         uncommitted_patch=uncommitted_patch,
         unpushed_commits=unpushed_commits,
         commits_patch=commits_patch,
+        unreadable=partial_error,
+        ignored_paths=ignored_paths,
+        remote_unverified=remote_unverified,
+        live_refs=live_refs,
     )
 
 
@@ -163,7 +261,7 @@ def bundle_path(artifact_prefix: str, suffix: str) -> Path:
 
 
 def _write_bundle(prefix: Path, checkout: Path, branch: str, work: UnshippedWork) -> None:
-    """Write the bundle — the four content artifacts ONLY when the read succeeded.
+    """Write complete artifacts only after a complete read; keep partial patches separate.
 
     A read this venue could not complete proves nothing about the delta, so its
     empty patches must never land on top of a good capture: the same checkout
@@ -171,10 +269,15 @@ def _write_bundle(prefix: Path, checkout: Path, branch: str, work: UnshippedWork
     152-byte patch with 0 bytes and blank the file list (#4435). The cause goes
     to its own key, which a later successful read clears.
     """
-    prefix.parent.mkdir(parents=True, exist_ok=True)
+    prefix.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    prefix.parent.chmod(0o700)
     marker = bundle_path(str(prefix), UNREADABLE_SUFFIX)
     if work.unreadable:
-        marker.write_text(f"{work.unreadable}\n", encoding="utf-8")
+        _write_private(marker, f"{work.unreadable}\n")
+        if work.uncommitted_patch:
+            _write_private(bundle_path(str(prefix), PARTIAL_UNCOMMITTED_SUFFIX), work.uncommitted_patch)
+        if work.commits_patch:
+            _write_private(bundle_path(str(prefix), PARTIAL_COMMITS_SUFFIX), work.commits_patch)
         return
     meta = f"worktree={checkout}\nbranch={branch}\ndirty={len(work.dirty_paths)} ahead={len(work.unpushed_commits)}\n"
     for suffix, content in (
@@ -183,8 +286,24 @@ def _write_bundle(prefix: Path, checkout: Path, branch: str, work: UnshippedWork
         (FILES_SUFFIX, "".join(f"{path}\n" for path in work.dirty_paths)),
         (".meta", meta),
     ):
-        bundle_path(str(prefix), suffix).write_text(content, encoding="utf-8")
+        _write_private(bundle_path(str(prefix), suffix), content)
     marker.unlink(missing_ok=True)
+    bundle_path(str(prefix), PARTIAL_UNCOMMITTED_SUFFIX).unlink(missing_ok=True)
+    bundle_path(str(prefix), PARTIAL_COMMITS_SUFFIX).unlink(missing_ok=True)
+
+
+def _write_private(path: Path, content: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.ftruncate(fd, 0)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = -1
+            stream.write(content)
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 class RecordDefaults(TypedDict, total=False):
@@ -202,15 +321,17 @@ class RecordDefaults(TypedDict, total=False):
     unreadable: str
 
 
-def _record_defaults(branch: str, overlay: str, prefix: Path, work: UnshippedWork) -> RecordDefaults:
+def _record_defaults(branch: str, overlay: str, prefix: Path | None, work: UnshippedWork) -> RecordDefaults:
     """The row fields to write — an unreadable read updates the cause, never the delta.
 
     Blanking ``dirty_paths``/``unpushed_commits`` because THIS venue could not
     read the checkout discards the last successful capture's account of what is
     in there, which is the only account anything has.
     """
-    if work.unreadable:
-        partial: RecordDefaults = {"artifact_prefix": str(prefix), "unreadable": work.unreadable}
+    if work.unreadable or prefix is None:
+        partial: RecordDefaults = {"unreadable": work.unreadable}
+        if prefix is not None:
+            partial["artifact_prefix"] = str(prefix)
         # A blank branch/overlay is "the caller did not say", not "it has none".
         if branch:
             partial["branch"] = branch
@@ -228,7 +349,7 @@ def _record_defaults(branch: str, overlay: str, prefix: Path, work: UnshippedWor
 
 
 def _record_capture(
-    checkout: Path, branch: str, overlay: str, prefix: Path, work: UnshippedWork
+    checkout: Path, branch: str, overlay: str, prefix: Path | None, work: UnshippedWork
 ) -> UnshippedWorkRecord:
     record, _ = UnshippedWorkRecord.objects.update_or_create(
         checkout_path=str(checkout),
@@ -263,13 +384,17 @@ def _capture(checkout: Path, branch: str, overlay: str, artifact_root: Path | No
         return None
     root = artifact_root if artifact_root is not None else get_data_dir(ARTIFACT_NAMESPACE)
     prefix = _bundle_prefix(root, checkout)
+    bundle_written = True
     try:
         _write_bundle(prefix, checkout, branch, work)
-    except OSError:
+    except OSError as exc:
         logger.exception("unshipped-work: could not write the salvage bundle for %s", checkout)
+        bundle_written = False
+        reason = f"{checkout}: could not write salvage bundle ({exc})"
+        work = replace(work, unreadable=f"{work.unreadable}; {reason}" if work.unreadable else reason)
     # The control DB is file-backed SQLite and the factory writes it from many
     # agents at once, so a momentary lock here is routine, not a failure (#1520).
-    return retry_on_locked(lambda: _record_capture(checkout, branch, overlay, prefix, work))
+    return retry_on_locked(lambda: _record_capture(checkout, branch, overlay, prefix if bundle_written else None, work))
 
 
 def capture_unshipped_work(

@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.loops.dream import destination
-from teatree.loops.dream.destination import classify_destination, points_at_core_fix
+from teatree.loops.dream.destination import classify_destination, evidence_destination, points_at_core_fix
 
 
 @pytest.fixture
@@ -36,6 +36,24 @@ class TestGhostDestinationsAreNotCoreFixes:
 
         assert verdict.in_core_tree is False
         assert "src/teatree/ghost_pkg" in verdict.reason
+
+
+class TestEvidenceDestination:
+    def test_normalizes_a_prefixed_hint_with_a_suffix(self, core_tree: Path) -> None:
+        verdict = evidence_destination("t3:teatree/loops/dream/promote_memory.py - check", root=core_tree)
+        assert verdict.groundable is True
+        assert verdict.rel_path == "src/teatree/loops/dream/promote_memory.py"
+
+    def test_uses_a_cited_path_when_the_hint_is_ungrounded(self, core_tree: Path) -> None:
+        verdict = evidence_destination(
+            "missing/package.py", "Seen at src/teatree/loops/dream/promote_memory.py:52", root=core_tree
+        )
+        assert verdict.groundable is True
+        assert verdict.rel_path == "src/teatree/loops/dream/promote_memory.py"
+
+    def test_without_a_grounded_candidate_stays_ungrounded(self, core_tree: Path) -> None:
+        verdict = evidence_destination("missing/package.py", "No file named here", root=core_tree)
+        assert verdict.groundable is False
 
 
 class TestRealCoreTreePathsAreCoreFixes:

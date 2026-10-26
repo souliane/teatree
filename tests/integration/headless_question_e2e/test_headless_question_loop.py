@@ -81,15 +81,16 @@ class TestHeadlessQuestionLoop:
             session=session,
             phase="coding",
         )
-        result = {
-            "summary": "Blocked on a design decision",
-            **owner_stop(
-                "Which DB host should the new connection pool target?",
-                "architecture",
-                "The settings name no pool host.",
-                "The ticket names no pool host.",
-            ),
-        }
+        stop = owner_stop(
+            "Which DB host should the new connection pool target?",
+            "architecture",
+            "The settings name no pool host.",
+            "The ticket names no pool host.",
+        )
+        card = stop["user_input_card"]
+        assert isinstance(card, dict)
+        card["options"] = []
+        result = {"summary": "Blocked on a design decision", **stop}
         with (
             _fake_sdk(_success_stream(result, session_id=_RESUME_UUID)),
             patch.object(runner_mod, "_provider_child_env", return_value=DispatchCredential()),

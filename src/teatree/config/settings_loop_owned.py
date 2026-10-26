@@ -122,9 +122,6 @@ class _FollowupLoopSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "followup")
 
-    review_nag_max_interval_days: int = setting(
-        30, spec=SettingSpec(help="ceiling on the review nag's widening re-ask interval", parse=_parse_strict_int)
-    )
     review_nag_reask_mention: str = setting(
         "",
         spec=SettingSpec(
@@ -175,7 +172,7 @@ class _InboxLoopSettings:
 
 @dataclass
 class _IssueImplementerLoopSettings:
-    """The intake scanner's own walk budget — the ceilings and labels are kill switches."""
+    """The intake scanner's walk budget and idle-hold window — the ceilings and labels are kill switches."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "issue_implementer")
 
@@ -187,6 +184,13 @@ class _IssueImplementerLoopSettings:
         spec=SettingSpec(
             help="seconds the intake scanner walks candidates before recording a resume point",
             parse=_parse_strict_float,
+        ),
+    )
+    issue_intake_idle_hold_hours: int = setting(
+        0,
+        spec=SettingSpec(
+            help="hours a started ticket may sit idle before intake claims nothing new; 0 is off",
+            parse=_parse_strict_int,
         ),
     )
 
