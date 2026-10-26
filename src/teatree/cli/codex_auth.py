@@ -15,6 +15,7 @@ from teatree.agents.codex_auth_cache import (
 )
 from teatree.agents.codex_read_only_executor import (
     EXECUTOR_LOGIN_ENTRY,
+    EXECUTOR_PHASES,
     ExecutorDocker,
     ExecutorRefusalError,
     Login,
@@ -111,17 +112,26 @@ def import_auth(
 
 
 @codex_auth_app.command("check")
-def check_auth(*, executor: bool = typer.Option(False, "--executor", help=_EXECUTOR_HELP)) -> None:
+def check_auth(
+    *,
+    executor: bool = typer.Option(False, "--executor", help=_EXECUTOR_HELP),
+    phase: str | None = typer.Option(None, "--phase", help="Check a read-only executor phase."),
+) -> None:
     """Run one OK-turn through the stored login; it refreshes only what a real turn would."""
     from teatree.agents.codex_canary import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         canary_failure,
         executor_canary_failure,
     )
 
+    if phase is not None and (not executor or phase not in EXECUTOR_PHASES):
+        message = f"phase {phase!r} requires --executor and one of {', '.join(sorted(EXECUTOR_PHASES))}"
+        raise typer.BadParameter(message, param_hint="--phase")
     if executor:
         _require_worker_route("check")
     typer.echo("Codex canary: starting")
-    if (failure := executor_canary_failure() if executor else canary_failure(resolve_codex_home())) is not None:
+    if (
+        failure := executor_canary_failure(phase or "planning") if executor else canary_failure(resolve_codex_home())
+    ) is not None:
         typer.echo(f"FAIL: {failure}")
         raise typer.Exit(code=1)
     typer.echo("Codex canary: PASS")
