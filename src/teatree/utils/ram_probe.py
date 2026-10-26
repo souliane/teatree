@@ -308,7 +308,11 @@ def cgroup_v1_memory_mib(filename: str, *, trace: "dict[str, int | str] | None" 
         if trace is not None:
             trace[filename] = type(exc).__name__
         return None
-    return value // (1024 * 1024) if 0 <= value < _CGROUP_MEM_V1_UNLIMITED else None
+    if value >= _CGROUP_MEM_V1_UNLIMITED:
+        if trace is not None:
+            trace[filename] = "no cap"
+        return None
+    return value // (1024 * 1024) if value >= 0 else None
 
 
 def _cgroup_v2_cpu_quota() -> "int | None":

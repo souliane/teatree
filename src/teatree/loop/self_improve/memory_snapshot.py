@@ -60,7 +60,12 @@ def _memory_lines() -> list[str]:
     if host is None and isinstance(meminfo := trace.get("meminfo"), int):
         host = meminfo
     cgroup_headroom = _reading(
-        headroom.cgroup_headroom_mib, trace, "memory.max", "memory.current", "memory.usage_in_bytes"
+        headroom.cgroup_headroom_mib,
+        trace,
+        "memory.max",
+        "memory.current",
+        "memory.usage_in_bytes",
+        "memory.limit_in_bytes",
     )
     return [
         f"Judged RAM: {_reading(headroom.box_watermark_mib, trace)} ({headroom.binding_scope} bound)",

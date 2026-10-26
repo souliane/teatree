@@ -321,6 +321,18 @@ class MemorySnapshotTicketTests(TestCase):
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
         assert "Cgroup cap: 16384 MiB; headroom: 3072 MiB; box-scoped: yes" in context
 
+    def test_uncapped_cgroup_v1_reports_no_cap_when_v2_is_absent(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)):
+            cgroup = Path(directory) / "cgroup"
+            (cgroup / "memory.max").unlink()
+            (cgroup / "memory.current").unlink()
+            (cgroup / "memory.limit_in_bytes").write_text("9223372036854771712\n")
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "Judged RAM: 12288 MiB (host bound)" in context
+        assert "Cgroup cap: no cap; headroom: no cap; box-scoped: no" in context
+
     def test_unreadable_cgroup_v1_usage_names_its_error_not_a_stale_v2_error(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):
             cgroup = Path(directory) / "cgroup"

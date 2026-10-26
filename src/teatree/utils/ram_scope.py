@@ -151,6 +151,9 @@ def _cgroup_cap_and_headroom_mib(*, trace: dict[str, int | str] | None = None) -
                 trace.pop("memory.max", None)
                 trace.pop("memory.current", None)
             return v1_limit, max(0, v1_limit - v1_current) if v1_current is not None else None
+        if trace is not None and trace.get("memory.limit_in_bytes") == "no cap":
+            trace.pop("memory.max", None)
+            trace.pop("memory.current", None)
     if limit_mib is None or current_mib is None:
         return limit_mib, None
     return limit_mib, max(0, limit_mib - max(0, current_mib - cgroup_v2_reclaimable_mib()))
