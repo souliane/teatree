@@ -229,6 +229,13 @@ class TestApplyImport(TestCase):
         assert "failed\tteam/github" in out
         assert not SecretCutover.objects.exists()
 
+    def test_an_empty_entry_exits_non_zero_and_writes_no_marker(self) -> None:
+        (self.store_root / "team" / "github.gpg").write_text("\n")
+        out, _, code = self._apply()
+        assert code == 1
+        assert "empty\tteam/github" in out
+        assert not SecretCutover.objects.exists()
+
     def test_a_selector_of_sealed_refuses_before_reading_pass(self) -> None:
         with patch.dict(os.environ, {"T3_SECRET_STORE": "sealed"}):
             _, err, code = self._apply()

@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -210,6 +211,15 @@ class TestSecretsCommandsKeepValuesOffEveryChannel(TestCase):
         assert backups.count() == 1
         assert DbStore(self.source).read(backups.get().name) == CANARY
         assert DbStore(self.source).read("team/token") == "new-value"
+
+    def test_two_rotations_in_one_second_keep_both_previous_values(self) -> None:
+        DbStore(self.source).write("team/token", "first")
+        with patch("teatree.core.management.commands.secrets.timezone.now") as now:
+            now.return_value = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+            self._run("set", "team/token", stdin="second\n")
+            self._run("set", "team/token", stdin="third\n")
+        names = SealedSecret.objects.filter(name__startswith="team/token.bak-").values_list("name", flat=True)
+        assert {DbStore(self.source).read(name) for name in names} == {"first", "second"}
 
     def test_bad_master_key_source_is_a_typed_refusal_for_operator_commands(self) -> None:
         with patch.dict(os.environ, {"T3_MASTER_KEY_SOURCE": "bad"}):

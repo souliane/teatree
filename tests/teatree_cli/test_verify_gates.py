@@ -54,7 +54,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestPrivateGateDatabase(TransactionTestCase):
-    def test_snapshot_preserves_ticket_brief_for_push_hook(self) -> None:
+    def test_private_database_preserves_ticket_brief_for_push_hook(self) -> None:
         with TemporaryDirectory() as temp_root:
             root = Path(temp_root)
             source = root / "live.sqlite3"
@@ -105,7 +105,6 @@ class TestPrivateGateDatabase(TransactionTestCase):
 def _no_external_control_db():
     with (
         patch("teatree.cli.verify_gates.write_gate_receipt"),
-        patch("teatree.cli.verify_gates._brief_for_worktree", return_value=""),
         patch("teatree.cli.verify_gates._snapshot_control_db"),
     ):
         yield
@@ -267,11 +266,11 @@ class TestVerifyGatesRunsBothStages:
         monkeypatch.setenv("T3_CONFIG_DB", str(live / "db.sqlite3"))
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{live / 'db.sqlite3'}")
         monkeypatch.setenv("XDG_DATA_HOME", str(live))
+        monkeypatch.setenv("T3_VERIFY_GATES_BRIEF_FILE", str(live / "forged.json"))
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
-        snapshots: list[dict[str, str]] = []
 
         def stage_run(cmd: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
-            snapshots.append(json.loads(Path(env["T3_VERIFY_GATES_BRIEF_FILE"]).read_text(encoding="utf-8")))
+            assert "T3_VERIFY_GATES_BRIEF_FILE" not in env
             private_db = ControlDb(env, home=tmp_path).for_repo(worktree).path
             with closing(sqlite3.connect(private_db)) as db:
                 assert db.execute("SELECT id FROM teatree_worktree WHERE id=5322").fetchall() == [(5322,)]
@@ -282,16 +281,12 @@ class TestVerifyGatesRunsBothStages:
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
-            patch("teatree.cli.verify_gates._brief_for_worktree", return_value="No migration."),
             patch("teatree.cli.verify_gates._snapshot_control_db", side_effect=_snapshot_control_db),
             patch("teatree.cli.verify_gates.run_streamed", side_effect=stage_run) as run,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0, _text(result)
         assert len(run.call_args_list) >= 2
-        assert snapshots == [
-            {"repo": str(worktree.resolve()), "head_sha": _head_sha(worktree), "brief": "No migration."}
-        ] * len(run.call_args_list)
         for call in run.call_args_list:
             env = call.kwargs["env"]
             private_root = Path(env["XDG_DATA_HOME"])

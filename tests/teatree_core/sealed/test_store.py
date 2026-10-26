@@ -5,8 +5,10 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Generator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +20,7 @@ from teatree.core.models.sealed_secret import SealedSecret
 from teatree.core.sealed.store import DbStore
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.utils.master_key import KeyFileSource
+from teatree.utils.sealing import MasterKey
 from teatree.utils.secrets import (
     PassStore,
     SecretNotFoundError,
@@ -32,6 +35,7 @@ from teatree.utils.secrets import (
     write_pass,
     write_pass_with_backup,
 )
+from teatree.utils.thread_db import close_thread_db_connections
 from tests.db_alias import RouteAllToAlias, register_migrated_sqlite_alias, teardown_sqlite_alias
 from tests.secret_memory_store import MemoryStore
 
@@ -184,6 +188,44 @@ class TestDbStoreIsTheSoleWriter(TestCase):
         assert not self.source.path.exists()
         assert self.store.write("team/one", "v") is True
         assert self.source.path.exists()
+
+
+def test_different_keys_cannot_both_commit_when_table_starts_empty(
+    file_backed_control_db: Path, tmp_path: Path
+) -> None:
+    first = KeyFileSource(tmp_path / "first.key")
+    second = KeyFileSource(tmp_path / "second.key")
+    first_id = first.create().key_id
+    second.create()
+    first_at_store = Event()
+    second_done = Event()
+    original_store = SealedSecret.objects.store
+
+    def slow_first_store(name: str, value: str, key: MasterKey) -> None:
+        if name == "team/first":
+            first_at_store.set()
+            second_done.wait(2)
+        original_store(name, value, key)
+        if name == "team/second":
+            second_done.set()
+
+    def write(source: KeyFileSource, name: str) -> bool:
+        try:
+            return DbStore(source).write(name, "value")
+        except SecretStoreError:
+            return False
+        finally:
+            close_thread_db_connections()
+
+    with (
+        patch.object(SealedSecret.objects, "store", side_effect=slow_first_store),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        first_result = pool.submit(write, first, "team/first")
+        assert first_at_store.wait(10)
+        second_result = pool.submit(write, second, "team/second")
+        assert (first_result.result(timeout=10), second_result.result(timeout=10)) == (True, False)
+    assert set(SealedSecret.objects.key_census()) == {first_id}
 
 
 NOW = dt.datetime(2026, 10, 25, 12, 0, tzinfo=dt.UTC)

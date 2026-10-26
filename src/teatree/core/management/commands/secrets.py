@@ -108,7 +108,7 @@ class Command(TyperCommand):
         outcomes = apply_import(PassStore(), DbStore(), plan, now=timezone.now())
         for outcome in outcomes:
             typer.echo(f"{outcome.status}\t{outcome.name}")
-        if any(outcome.status == "failed" for outcome in outcomes):
+        if any(outcome.status in {"failed", "empty"} for outcome in outcomes):
             raise SystemExit(1)
         SecretCutover.objects.get_or_create(pk=1)
 

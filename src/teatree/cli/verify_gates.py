@@ -46,7 +46,6 @@ from tempfile import TemporaryDirectory
 import typer
 import yaml
 
-from teatree.cli.push_gate_tools import BRIEF_SNAPSHOT_ENV, _brief_for_worktree
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.hooks.banned_term_registry import load_registry
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
@@ -296,7 +295,7 @@ def _run_stages(stages: list[tuple[str, list[str]]], repo: Path, env: dict[str, 
     return failed, incomplete
 
 
-def _stage_env(private_root: str, brief_snapshot: Path | None = None) -> dict[str, str]:
+def _stage_env(private_root: str) -> dict[str, str]:
     env = os.environ.copy()
     if not env.get("TEATREE_TERM_REGISTRY"):
         try:
@@ -307,10 +306,9 @@ def _stage_env(private_root: str, brief_snapshot: Path | None = None) -> dict[st
             env["TEATREE_TERM_REGISTRY"] = json.dumps(registry)
     env.pop("T3_CONFIG_DB", None)
     env.pop("DATABASE_URL", None)
+    env.pop("T3_VERIFY_GATES_BRIEF_FILE", None)
     env["XDG_DATA_HOME"] = private_root
     env["T3_CONTROL_DB_DIR"] = str(Path(private_root) / "control-db")
-    if brief_snapshot is not None:
-        env[BRIEF_SNAPSHOT_ENV] = str(brief_snapshot)
     return env
 
 
@@ -332,19 +330,7 @@ def _snapshot_control_db(repo: Path, env: dict[str, str]) -> None:
 
 def _run_with_private_control_db(repo: Path, stages: list[tuple[str, list[str]]]) -> tuple[list[str], list[str]]:
     with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
-        brief_snapshot = Path(private_root) / "push-gate-brief.json"
-        brief_snapshot.write_text(
-            json.dumps(
-                {
-                    "repo": str(repo.resolve()),
-                    "head_sha": head_sha(str(repo)),
-                    "brief": _brief_for_worktree(repo, allow_snapshot=False),
-                }
-            ),
-            encoding="utf-8",
-        )
-        brief_snapshot.chmod(0o600)
-        env = _stage_env(private_root, brief_snapshot)
+        env = _stage_env(private_root)
         try:
             _snapshot_control_db(repo, env)
         except (OSError, sqlite3.DatabaseError) as exc:

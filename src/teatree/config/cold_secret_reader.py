@@ -64,7 +64,8 @@ def _execute(operation: str, name: str) -> int:
         value = read_sealed(name)
         if value is None:
             return 1
-        first = value.split("\n", 1)[0]
+        lines = value.strip().splitlines()
+        first = lines[0] if lines else ""
         if not first:
             return 1
         sys.stdout.write(first + "\n")

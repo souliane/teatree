@@ -140,8 +140,10 @@ def _stage_reads_secret(words: list[Token]) -> bool:
         words = words[1:]
     while words and words[0].value in {"then", "do", "{"}:
         words = words[1:]
+    words = _unwrap_env(words)
     if len(words) >= _WRAPPED_COMMAND_WORDS and [word.value for word in words[:2]] == ["uv", "run"]:
         words = words[2:]
+    words = _unwrap_env(words)
     if not words:
         return False
     verb = words[0].value
@@ -171,12 +173,28 @@ def _exec_env_variables(options: list[str]) -> list[str]:
     return variables
 
 
+def _unwrap_env(words: list[Token]) -> list[Token]:
+    if not words or words[0].value != "env":
+        return words
+    command = words[1:]
+    while command and (
+        command[0].value in {"-i", "--ignore-environment", "--"} or _ENV_ASSIGNMENT_RE.fullmatch(command[0].value)
+    ):
+        command = command[1:]
+    return command
+
+
 def _t3_stage_reads_secret(words: list[Token]) -> bool:
     values = [word.value for word in words]
     if PurePath(values[0]).name != "t3" or len(values) < _T3_COMMAND_WORDS or values[2] != "secrets":
         return False
     if values[3] == "get":
-        return len(values) >= _T3_GET_WITH_NAME_WORDS and not values[4].startswith("-")
+        name_index = (
+            _T3_GET_WITH_NAME_WORDS
+            if len(values) >= _T3_GET_WITH_NAME_WORDS and values[4] == "--"
+            else _T3_COMMAND_WORDS
+        )
+        return len(values) > name_index and not values[name_index].startswith("-")
     if values[3] == "exec" and "--" in values:
         separator = values.index("--")
         variables = _exec_env_variables(values[4:separator])

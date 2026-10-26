@@ -61,6 +61,21 @@ def test_cold_reader_distinguishes_value_absence_and_unreadable(tmp_path: Path) 
     assert "first-line" not in unreadable.stderr + unreadable.stdout
 
 
+def test_cold_reader_matches_facade_for_leading_whitespace(tmp_path: Path) -> None:
+    db, source = _fixture(tmp_path)
+    name = "team/token"
+    sealed = source.create().seal("  first-line\nsecond-line", aad=aad("instance", name))
+    with closing(sqlite3.connect(db)) as connection:
+        connection.execute(
+            "INSERT INTO teatree_sealed_secret (name, key_id, nonce, ciphertext) VALUES (?, ?, ?, ?)",
+            (name, sealed.key_id, sealed.nonce, sealed.ciphertext),
+        )
+        connection.commit()
+    cold = _run(db, source, "get", name)
+    facade = _facade_run(db, source, name)
+    assert (cold.returncode, cold.stdout) == (facade.returncode, facade.stdout) == (0, "first-line\n")
+
+
 def test_pre_migration_table_is_absent(tmp_path: Path) -> None:
     db, source = _fixture(tmp_path, with_table=False)
     assert _run(db, source, "get", "team/token").returncode == 1

@@ -9,7 +9,6 @@ human report) or executes the two scoped sweeps (``--run``, the driver
 """
 
 import json
-import os
 from pathlib import Path
 
 import typer
@@ -17,28 +16,10 @@ import typer
 from teatree.quality.changed_set import ChangedSetError
 from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_brief_constraints, run_push_gate, sweep_command
 from teatree.utils.django_bootstrap import ensure_django
-from teatree.utils.git_branch import head_sha
 from teatree.utils.run import CommandFailedError
 
-BRIEF_SNAPSHOT_ENV = "T3_VERIFY_GATES_BRIEF_FILE"
 
-
-def _brief_for_worktree(repo_root: Path, *, allow_snapshot: bool = True) -> str:
-    if allow_snapshot and (snapshot_file := os.environ.get(BRIEF_SNAPSHOT_ENV)):
-        snapshot = json.loads(Path(snapshot_file).read_text(encoding="utf-8"))
-        if (
-            not isinstance(snapshot, dict)
-            or snapshot.get("repo") != str(repo_root.resolve())
-            or snapshot.get("head_sha") != head_sha(str(repo_root))
-        ):
-            message = "brief snapshot belongs to a different checkout or HEAD"
-            raise ValueError(message)
-        brief = snapshot.get("brief")
-        if not isinstance(brief, str):
-            message = "brief snapshot has no text"
-            raise ValueError(message)
-        return brief
-
+def _brief_for_worktree(repo_root: Path) -> str:
     ensure_django()
     from teatree.core.models import PlanArtifact, Task, Worktree  # noqa: PLC0415 — Django is set up at call time
 
