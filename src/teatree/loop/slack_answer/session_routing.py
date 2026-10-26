@@ -487,7 +487,7 @@ def _apply_live_session(
 
 def _reject_foreign_unit(backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport") -> bool:
     owner_id = configured_owner_id(backend)
-    if not unit.lead.user_id or (owner_id and unit.lead.user_id == owner_id):
+    if owner_id and unit.lead.user_id == owner_id:
         return False
     if _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.ACK):
         report.acked += 1

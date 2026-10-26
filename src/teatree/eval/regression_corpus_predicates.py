@@ -397,17 +397,18 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
     def _crashing_scanner(*_args: object, **_kwargs: object) -> object:
         raise CommandFailedError(cmd=["check-banned-terms.sh"], returncode=2, stdout="", stderr="boom")
 
-    with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}), tempfile.TemporaryDirectory() as raw:
+    with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
         db = Path(raw) / "config.sqlite3"
         unreadable_db = Path(raw) / "unreadable.sqlite3"
         unset_db = Path(raw) / "unset.sqlite3"
         _seed_config_db(db, "banned_term_registry", {"leak": [], "prose_collider": ["acmecorp"]})
         sqlite3.connect(unreadable_db).close()
         _seed_config_db(unset_db, "unrelated_setting", "present")
-        with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
-            on_crash = scan_text("we ship to acmecorp", config_path=db)
-        on_unreadable_store = scan_text("we ship to acmecorp", config_path=unreadable_db)
-        on_unset_registry = scan_text("we ship to acmecorp", config_path=unset_db)
+        with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
+            with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
+                on_crash = scan_text("we ship to acmecorp", config_path=db)
+            on_unreadable_store = scan_text("we ship to acmecorp", config_path=unreadable_db)
+            on_unset_registry = scan_text("we ship to acmecorp", config_path=unset_db)
     return (
         on_crash == SCANNER_UNAVAILABLE_MARKER
         and on_unreadable_store == STORE_UNREADABLE_MARKER

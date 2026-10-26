@@ -48,6 +48,7 @@ class FakeSlack:
 
     replies: list[tuple[str, str, str]] = field(default_factory=list)
     reactions: list[str] = field(default_factory=list)
+    user_id: str = "U-owner"
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         self.replies.append((channel, ts, text))

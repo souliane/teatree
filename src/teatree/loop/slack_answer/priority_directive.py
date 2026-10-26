@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from html import escape
 from typing import TYPE_CHECKING, Literal
 
 from django.db import transaction
@@ -12,6 +13,7 @@ from teatree.core.models import DeferredQuestion, PendingChatInjection, ThreadBi
 from teatree.loop.question_binding import configured_owner_id
 from teatree.loop.slack_answer.session_routing import _mark_unit_loop_replied, _unmark_unit_loop_replied
 from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.utils.url_slug import is_synthetic_loop_umbrella_url, repo_namespaced_key
 
 if TYPE_CHECKING:
@@ -73,7 +75,8 @@ class PriorityDirective:
 def parse_priority_directive(text: str) -> PriorityDirective | None:
     """Return a directive only when its polarity is unambiguous."""
     body = _URL.sub(" ", _LINK.sub(" ", text))
-    if "?" in body or _QUESTION.search(body) or _BLOCKER_NOUN.search(body):
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", body)
+    if "?" in body or any(_QUESTION.search(sentence) for sentence in sentences) or _BLOCKER_NOUN.search(body):
         return None
     off_spans = list(_OFF.finditer(body))
     without_off = _OFF.sub(" ", body)
@@ -186,8 +189,7 @@ def pending_question_prefix(row: PendingChatInjection, text: str) -> bool:
 
 def apply_priority(ticket: Ticket, row: PendingChatInjection, *, enabled: bool) -> tuple[Ticket, bool]:
     """Apply the newest owner instruction in one conversation and re-read it."""
-    root = row.thread_ts or row.slack_ts
-    key = f"{row.channel}:{root}:{row.user_id}"
+    key = f"{row.channel}:{row.thread_ts}:{row.user_id}"
     with transaction.atomic():
         current = Ticket.objects.select_for_update().get(pk=ticket.pk)
         extra = dict(current.extra or {})
@@ -210,7 +212,7 @@ def apply_priority(ticket: Ticket, row: PendingChatInjection, *, enabled: bool) 
 def priority_reply(tickets: list[Ticket], *, enabled: bool | None = None, superseded: bool = False) -> str:
     lines = []
     for ticket in tickets:
-        title = ticket.short_description or "Ticket"
+        title = escape(ticket.short_description or "Ticket", quote=False).replace("|", "❘")
         reference = f"<{ticket.issue_url}|#{ticket.issue_number} {title}>"
         expedited = ticket.expedited if enabled is None else enabled
         prefix = "Earlier priority instruction superseded; " if superseded else ""
@@ -228,22 +230,30 @@ def confirm_priority_reply(
     backend: MessagingBackend, row: PendingChatInjection, floor: str, reply: str, *, previous_reply: str = ""
 ) -> bool:
     root = row.thread_ts or row.slack_ts
-    expected = ExpectedReply(None, reply)
+    expected = ExpectedReply(None, wrap_slack_message(reply))
     if previous_reply and bot_reply_present_in_thread(
-        backend, channel=row.channel, thread_root=root, after_ts=floor, expected_ts=ExpectedReply(None, previous_reply)
+        backend,
+        channel=row.channel,
+        thread_root=root,
+        after_ts=floor,
+        expected_ts=ExpectedReply(None, wrap_slack_message(previous_reply)),
     ):
         return True
     if bot_reply_present_in_thread(
         backend, channel=row.channel, thread_root=root, after_ts=floor, expected_ts=expected
     ):
         return True
-    post = backend.post_reply(channel=row.channel, ts=row.slack_ts, text=reply)
+    post = backend.post_reply(channel=row.channel, ts=row.slack_ts, text=expected.text)
     posted_ts = post.get("ts")
     return bool(
         post.get("ok") is True
         and isinstance(posted_ts, str)
         and bot_reply_present_in_thread(
-            backend, channel=row.channel, thread_root=root, after_ts=floor, expected_ts=ExpectedReply(posted_ts, reply)
+            backend,
+            channel=row.channel,
+            thread_root=root,
+            after_ts=floor,
+            expected_ts=ExpectedReply(posted_ts, expected.text),
         )
     )
 
@@ -278,7 +288,7 @@ def _confirm_pure_priority(
     *,
     enabled: bool,
 ) -> PriorityOutcome:
-    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE):
+    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.PRIORITY):
         return "retry"
     try:
         outcomes = [apply_priority(ticket, unit.lead, enabled=enabled) for ticket in tickets]

@@ -118,10 +118,11 @@ class PendingChatInjection(models.Model):
         DELEGATED = "delegated", "Delegated"
         QUESTION_REPLY = "question_reply", "Question reply"
         SESSION = "session", "Session"
+        PRIORITY = "priority", "Priority"
 
     question_text_regex: ClassVar[str] = _QUESTION_TEXT_REGEX
     recoverable_answer_kinds: ClassVar[frozenset[str]] = frozenset(
-        {AnswerKind.SIMPLE, AnswerKind.QUESTION_REPLY, AnswerKind.SESSION}
+        {AnswerKind.PRIORITY, AnswerKind.QUESTION_REPLY, AnswerKind.SESSION}
     )
 
     overlay = models.CharField(max_length=64, blank=True, default="")
@@ -286,6 +287,7 @@ class PendingChatInjection(models.Model):
                     self.AnswerKind.QUESTION_REPLY,
                     self.AnswerKind.DELEGATED,
                     self.AnswerKind.SESSION,
+                    self.AnswerKind.PRIORITY,
                 },
             )
             .update(loop_response_confirmed_at=timezone.now())

@@ -10,6 +10,7 @@ from teatree.core.models import DeferredQuestion, DmContext, PendingChatInjectio
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.priority_directive import parse_priority_directive
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import RawAPIDict
 
 
@@ -27,8 +28,8 @@ def _row(text: str, ts: str, *, thread: str = "1.000", user: str = "UUSER") -> P
     return row
 
 
-def _backend() -> RecordingBackend:
-    backend = RecordingBackend()
+def _backend(backend: RecordingBackend | None = None) -> RecordingBackend:
+    backend = backend or RecordingBackend()
     backend.message_meta["1.000"] = {
         "ts": "1.000",
         "text": "<https://github.com/example/project/issues/445|#445 Fix the build>",
@@ -36,6 +37,11 @@ def _backend() -> RecordingBackend:
     backend.message_meta["2.000"] = {"ts": "2.000", "thread_ts": "1.000"}
     backend.message_meta["3.000"] = {"ts": "3.000", "thread_ts": "1.000"}
     return backend
+
+
+class WrappingBackend(RecordingBackend):
+    def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
+        return super().post_reply(channel=channel, ts=ts, text=wrap_slack_message(text))
 
 
 def _ack(_text: str) -> InboundReading:
@@ -49,6 +55,30 @@ def _ack(_text: str) -> InboundReading:
 
 
 class TestPriorityDirective(TestCase):
+    def test_wrapped_replies_are_confirmed_once_with_escaped_ticket_titles(self) -> None:
+        ticket = _ticket()
+        ticket.short_description = "Fix & <broken> | pipeline after a long release blocker report"
+        ticket.save(update_fields=["short_description"])
+        backend = _backend(WrappingBackend())
+        urgent = _row("urgent", "2.000")
+
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+
+        urgent.refresh_from_db()
+        assert urgent.loop_response_confirmed_at is not None
+        assert len(backend.replies) == 1
+        assert "&amp; &lt;broken&gt; ❘" in backend.replies[0][2]
+        assert "\n" in backend.replies[0][2]
+
+        clear = _row("not urgent", "3.000")
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+
+        clear.refresh_from_db()
+        assert clear.loop_response_confirmed_at is not None
+        assert len(backend.replies) == 2
+
     def test_owner_directive_expedites_then_clears_with_verified_replies(self) -> None:
         ticket = _ticket()
         older_ticket = _ticket(446)
@@ -81,7 +111,7 @@ class TestPriorityDirective(TestCase):
         assert len(backend.replies) == 1
         assert "#445" in backend.replies[0][2]
         assert "after reviews" in backend.replies[0][2]
-        assert "No merge gate" in backend.replies[0][2]
+        assert "No merge gate" in " ".join(backend.replies[0][2].split())
         reader.assert_not_called()
 
         _row("not urgent", "3.000")
@@ -124,6 +154,27 @@ class TestPriorityDirective(TestCase):
         assert len(backend.replies) == 2
         assert "superseded" in backend.replies[1][2]
 
+    def test_unthreaded_retry_cannot_reverse_a_later_directive(self) -> None:
+        ticket = _ticket()
+        backend = RecordingBackend()
+        original_post = backend.post_reply
+
+        def post_except_earlier(*, channel: str, ts: str, text: str) -> RawAPIDict:
+            if ts == "2.000":
+                message = "Slack post unavailable"
+                raise RuntimeError(message)
+            return original_post(channel=channel, ts=ts, text=text)
+
+        _row("#445 urgent", "2.000", thread="")
+        _row("#445 not urgent", "3.000", thread="")
+        with patch.object(backend, "post_reply", side_effect=post_except_earlier):
+            run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+
+        ticket.refresh_from_db()
+        assert ticket.expedited is False
+        assert "superseded" in backend.replies[-1][2]
+
     def test_unacknowledged_post_is_found_on_retry_without_a_second_reply(self) -> None:
         ticket = _ticket()
         backend = _backend()
@@ -134,6 +185,7 @@ class TestPriorityDirective(TestCase):
         assert ticket.__class__.objects.get(pk=ticket.pk).expedited is True
         assert row.loop_replied_at is None
         assert len(backend.replies) == 1
+        assert "white_check_mark" not in [reaction[2] for reaction in backend.reactions]
 
         backend.read_after_post = True
         run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
@@ -145,7 +197,7 @@ class TestPriorityDirective(TestCase):
         ticket = _ticket()
         backend = _backend()
         row = _row("urgent", "2.000")
-        assert row.mark_loop_replied(PendingChatInjection.AnswerKind.SIMPLE)
+        assert row.mark_loop_replied(PendingChatInjection.AnswerKind.PRIORITY)
         PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - dt.timedelta(minutes=3))
 
         report = run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
@@ -285,6 +337,7 @@ class TestPriorityDirective(TestCase):
             "the blocker is the flaky test",
             "is #445 urgent",
             "is it urgent",
+            "thanks. is it urgent",
             "is this a hotfix",
             "was it a blocker",
             "why is this a blocker",
