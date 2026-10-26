@@ -199,16 +199,27 @@ class TestVerifyGatesRunsBothStages:
                 "INSERT INTO teatree_config_setting VALUES ('', 'banned_term_registry', ?)",
                 (json.dumps(registry),),
             )
+            db.execute("CREATE TABLE teatree_worktree (id INTEGER)")
+            db.execute("INSERT INTO teatree_worktree VALUES (5322)")
             db.commit()
         monkeypatch.setenv("T3_CONTROL_DB_DIR", str(live))
         monkeypatch.setenv("T3_CONFIG_DB", str(live / "db.sqlite3"))
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{live / 'db.sqlite3'}")
         monkeypatch.setenv("XDG_DATA_HOME", str(live))
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+
+        def stage_run(cmd: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
+            private_db = ControlDb(env, home=tmp_path).for_repo(worktree).path
+            with closing(sqlite3.connect(private_db)) as db:
+                assert db.execute("SELECT id FROM teatree_worktree WHERE id=5322").fetchall() == [(5322,)]
+                db.execute("INSERT INTO teatree_worktree VALUES (5323)")
+                db.commit()
+            return 0
+
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
-            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=stage_run) as run,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0, _text(result)
@@ -224,6 +235,8 @@ class TestVerifyGatesRunsBothStages:
             assert {key: child_registry[key] for key in registry} == registry
             assert ControlDb(env, home=tmp_path).for_repo(worktree).path.is_relative_to(private_root)
             assert not private_root.exists()
+        with closing(sqlite3.connect(live / "db.sqlite3")) as db:
+            assert db.execute("SELECT id FROM teatree_worktree").fetchall() == [(5322,)]
 
     @pytest.mark.parametrize("registry_error", [BannedTermsUnreadableError, BannedTermsUnsetError])
     def test_unavailable_registry_still_isolates_stage(
@@ -245,6 +258,24 @@ class TestVerifyGatesRunsBothStages:
             env = call.kwargs["env"]
             assert Path(env["XDG_DATA_HOME"]) != live_home
             assert "TEATREE_TERM_REGISTRY" not in env
+
+    def test_snapshot_failure_refuses_to_run_stages(
+        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live_db = tmp_path / "live.sqlite3"
+        live_db.touch()
+        monkeypatch.setenv("T3_CONFIG_DB", str(live_db))
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", "{}")
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.cli.verify_gates._sqlite_snapshot", side_effect=sqlite3.OperationalError("busy")),
+            patch("teatree.cli.verify_gates.run_streamed") as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 1
+        assert "control database snapshot failed: busy" in _text(result)
+        run.assert_not_called()
 
     def test_invokes_push_stage_hooks_not_just_commit(self) -> None:
         with (

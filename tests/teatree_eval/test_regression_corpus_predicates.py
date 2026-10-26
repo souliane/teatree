@@ -41,6 +41,11 @@ class TestNonDbPredicatesHoldOnRealCode(TestCase):
     def test_banned_terms_scanner_fails_closed_on_crash(self) -> None:
         assert predicates._check_banned_terms_scanner_fails_closed_on_crash() is True
 
+    def test_banned_terms_predicate_isolates_its_registry_fixture(self) -> None:
+        ambient = '{"leak":[],"prose_collider":["acmecorp"]}'
+        with patch.dict("os.environ", {"TEATREE_TERM_REGISTRY": ambient}):
+            assert predicates._check_banned_terms_scanner_fails_closed_on_crash() is True
+
     def test_forge_resolves_by_host_not_token(self) -> None:
         assert predicates._check_forge_resolves_by_host_not_token() is True
 
