@@ -142,11 +142,15 @@ class TestDuplicateThreads(TestCase):
         assert second is not None
         assert second.mark_mirrored(channel="D0OWNER", slack_ts="1779990002.000001")
 
-        result = run_sweep(seams=SweepSeams(subject_closed=lambda _question: False))
-
-        assert result.resolved == 0
-        assert result.left_open == 2
-        assert set(DeferredQuestion.owner_pending().values_list("pk", flat=True)) == {first.pk, second.pk}
+        for _ in range(4):
+            same_head = ask_owner_to_read(_PR_URL, "A reviewed change", "b" * 40)
+            assert same_head is not None
+            assert same_head.pk == second.pk
+            result = run_sweep(seams=SweepSeams(subject_closed=lambda _question: False))
+            assert result.resolved == 0
+            assert result.left_open == 2
+            assert set(DeferredQuestion.owner_pending().values_list("pk", flat=True)) == {first.pk, second.pk}
+            assert DeferredQuestion.objects.count() == 2
 
     def test_distinct_held_pr_cards_keep_both_owner_threads(self) -> None:
         first = ask_owner_to_read("https://github.com/example/repo/pull/1", "First", "a" * 40)
