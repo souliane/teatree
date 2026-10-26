@@ -48,21 +48,59 @@ from teatree.core._checking_gather import (
     motion_for_overlay,
     ticket_url,
 )
-from teatree.core.checking_owner_waits import internal_escalation_count, owner_wait_items
 from teatree.core.checking_remaining import empty_remaining, gather_remaining
 from teatree.core.checking_types import (
     DEFAULT_CAP,
     CheckGroup,
     CheckGroupDict,
     CheckItem,
+    OwnerWaitItem,
     RemainingGroup,
     RemainingGroupDict,
 )
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.waiting import WaitingKind, format_age, gather_waiting
 
 CheckItemDict = checking_types.CheckItemDict
+
+
+def owner_wait_items(*, overlay_slug: str, overlay: str = "") -> list[OwnerWaitItem]:
+    waits = sorted(gather_waiting(overlay), key=lambda entry: entry.age, reverse=True)
+    items: list[OwnerWaitItem] = []
+    for wait in waits:
+        question = wait.kind == WaitingKind.QUESTION
+        label = f"Q{wait.row_id}: {wait.ref}" if question else wait.ref
+        if not overlay and wait.overlay:
+            label = f"[{wait.overlay}] {label}"
+        detail = (
+            "awaiting your Slack reply"
+            if question and wait.owner_only
+            else (
+                f"answer in its Slack thread, or t3 {overlay_slug} questions dismiss {wait.row_id}"
+                " --reason '<evidence>'"
+            )
+            if question
+            else f"waiting {format_age(wait.age)}"
+        )
+        items.append(
+            OwnerWaitItem(
+                label=label,
+                url=wait.url,
+                detail=detail,
+                kind=wait.kind,
+                age_days=max(0, wait.age.days),
+                row_id=wait.row_id,
+                owner_only=wait.owner_only,
+            )
+        )
+    return items
+
+
+def internal_escalation_count() -> int:
+    return DeferredQuestion.internal_pending().count()
 
 
 class CheckingReportDict(TypedDict):

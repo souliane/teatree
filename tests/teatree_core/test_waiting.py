@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from teatree.core.checking_owner_waits import owner_wait_items
+from teatree.core.checking import owner_wait_items
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
