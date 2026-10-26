@@ -25,6 +25,7 @@ from teatree.agents.result_payloads import (
 )
 from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
+from teatree.agents.result_schema_review import REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY, ReviewHeadMismatch
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
@@ -168,6 +169,7 @@ class AgentResult(OwnerStop, total=False):
     decisions: list[str]
     operator_inputs: list[str]
     review_verdict: ReviewVerdictEnvelope
+    review_head_mismatch: ReviewHeadMismatch
     review_context: ReviewContextEnvelope
     anti_vacuity: AntiVacuityEnvelope
     integration_review: IntegrationReviewEnvelope
@@ -292,6 +294,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "items": {"type": "string"},
             "description": "Accepted live operator directions recorded by the control path.",
         },
+        "review_head_mismatch": REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY,
         "review_verdict": {
             "type": "object",
             "description": "A reviewing-phase agent's typed verdict, recorded server-side (corr-11).",

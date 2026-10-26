@@ -11,6 +11,7 @@ The corpus runs under :class:`~django.test.TestCase` so the DB-backed checks
 (merge precondition, loop-lease, migration graph) execute against the test DB.
 """
 
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from teatree.core.runners import ship as ship_runner
 from teatree.core.worktree import branch_currency
 from teatree.eval import regression_corpus, regression_corpus_schema
 from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus
+from teatree.eval.regression_corpus_predicates import _check_banned_terms_scanner_fails_closed_on_crash
 from teatree.hooks import _private_repo_entries, banned_terms_scanner
 from teatree.utils import forge as forge_util
 
@@ -83,6 +85,11 @@ class TestRegressionCorpusGreen(TestCase):
                 report = run_regression_corpus()
         failures = [(r.check.failure_class, r.detail) for r in report.failures]
         assert report.ok, f"corpus went RED under a hijacked GIT_* env (git-hook context): {failures}"
+
+    def test_banned_terms_pin_uses_its_seeded_store_when_a_deployment_registry_is_set(self) -> None:
+        registry = '{"leak": [], "prose_collider": ["acmecorp"]}'
+        with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": registry}):
+            assert _check_banned_terms_scanner_fails_closed_on_crash()
 
 
 class TestRegressionCorpusAntiVacuous(TestCase):
