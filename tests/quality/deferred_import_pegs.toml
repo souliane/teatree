@@ -118,9 +118,9 @@
 "src/teatree/core/management/commands/loop_dispatch.py" = 3
 "src/teatree/core/management/commands/loop_drain_queue.py" = 1
 "src/teatree/core/management/commands/loop_owner.py" = 4
-# 3: owner-alert egress and active-overlay discovery stay call-time, so command
+# 2: the lease model and active-overlay discovery stay call-time, so command
 # import does not register credential/default providers before Django is ready.
-"src/teatree/core/management/commands/loop_self_improve.py" = 3
+"src/teatree/core/management/commands/loop_self_improve.py" = 2
 "src/teatree/core/management/commands/loop_slack_answer.py" = 1
 # 1: `discharge-pending` resolves `PendingPullRequest` at call time for the same
 # app-registry reason as the rest of this command's ORM reads.

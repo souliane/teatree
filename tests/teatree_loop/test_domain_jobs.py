@@ -5,6 +5,7 @@ from django.test import TestCase
 from teatree.core.models import ScannerFault
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.overlay_followup_jobs import OverlayHookRefusalError
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 
 
@@ -64,3 +65,17 @@ class ScannerFaultRecordingTests(TestCase):
         assert label == job.label
         assert signals == []
         assert error == ""
+
+    def test_overlay_hook_refusal_records_fault_and_preserves_error(self) -> None:
+        class RefusedScanner:
+            name = "refused"
+
+            def scan(self) -> list[ScanSignal]:
+                reason = "invalid hook"
+                raise OverlayHookRefusalError(reason)
+
+        job = _ScannerJob(scanner=RefusedScanner(), overlay="example", overlay_hook=True)
+        label, signals, error = _run_job(job)
+        assert (label, signals, error) == (job.label, [], "invalid hook")
+        fault = ScannerFault.objects.get(scanner=job.label)
+        assert (fault.error_class, fault.detail) == ("OverlayHookRefusalError", "invalid hook")

@@ -21,6 +21,7 @@ from teatree.loop.self_improve import (
     run_tier,
 )
 from teatree.loop.self_improve.budget import DEFAULT_SPAWN_CAP, DEFAULT_SPAWN_CAP_WINDOW_SECONDS
+from teatree.loop.self_improve.repair_first import OwnerAlertDelivery, OwnerWaitChannel
 from teatree.loop.self_improve.schedule import DeliveryRoutes, detectors_for_tier, require_implemented_tier
 
 
@@ -193,6 +194,40 @@ class SchedulerIterationTests(TestCase):
         run_tier(Tier.CHEAP, detectors=[a, b], budget=BudgetVerdict.allow())
         assert a.scan_count == 1
         assert b.scan_count == 1
+
+
+class _RaisingDetector(_CountingDetector):
+    name: ClassVar[str] = "raising"
+
+    def detect(self) -> list[DetectorReport]:
+        message = "source blew up"
+        raise RuntimeError(message)
+
+
+class SchedulerDetectorIsolationTests(TestCase):
+    def test_a_raising_detector_is_degraded_and_later_detectors_and_the_owner_sweep_still_run(self) -> None:
+        sweeps: list[str] = []
+
+        def quiet_now() -> bool:
+            sweeps.append("swept")
+            return True
+
+        channel = OwnerWaitChannel(
+            deliver=lambda text, key: OwnerAlertDelivery(sent=True), quiet_now=quiet_now, wait=dt.timedelta(minutes=60)
+        )
+        after = _StubDetector(detector_name="after_the_raise")
+
+        with self.assertLogs("teatree.loop.self_improve.schedule", level="ERROR"):
+            result = run_tier(
+                Tier.CHEAP,
+                detectors=[_RaisingDetector(), after],
+                budget=BudgetVerdict.allow(),
+                delivery=DeliveryRoutes(owner_wait=channel),
+            )
+
+        assert result.degraded_scans == [("raising", "detector_raised")]
+        assert [report.detector for report in result.reports] == ["after_the_raise"]
+        assert sweeps == ["swept"]
 
 
 @dataclass(slots=True)

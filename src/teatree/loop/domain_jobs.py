@@ -374,6 +374,13 @@ def _jobs_for_overlay_backend(
     return jobs
 
 
+def _record_scanner_fault(label: str, error_class: str, detail: str) -> None:
+    try:
+        ScannerFault.objects.record_failure(label, error_class, detail)
+    except Exception:
+        logger.exception("Could not record scanner fault for %s", label)
+
+
 def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
     label = job.label
     try:
@@ -390,6 +397,7 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
                 for s in signals
             ]
     except OverlayHookRefusalError as exc:
+        _record_scanner_fault(label, type(exc).__name__, str(exc))
         return label, [], str(exc)
     except ScannerError as exc:
         # Auth / rate-limit / missing-scope / network: surface as a
@@ -398,19 +406,13 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
         # spam the channel (#1287). The dispatcher continues with the
         # other scanners — only THIS scanner is skipped for one tick.
         logger.warning("Scanner %s recoverable error: %s", label, exc)
-        try:
-            ScannerFault.objects.record_failure(label, exc.error_class.value, exc.detail or str(exc))
-        except Exception:
-            logger.exception("Could not record scanner fault for %s", label)
+        _record_scanner_fault(label, exc.error_class.value, exc.detail or str(exc))
         notify_scanner_error(label=label, exc=exc, overlay=job.overlay)
         partial = exc.signals if isinstance(exc, PartialScanError) else []
         return label, partial, f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
     except Exception as exc:
         logger.exception("Scanner %s raised", label)
-        try:
-            ScannerFault.objects.record_failure(label, type(exc).__name__, str(exc))
-        except Exception:
-            logger.exception("Could not record scanner fault for %s", label)
+        _record_scanner_fault(label, type(exc).__name__, str(exc))
         return label, [], f"{type(exc).__name__}: {exc}"
     try:
         ScannerFault.objects.heal(label)
