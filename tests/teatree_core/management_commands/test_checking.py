@@ -394,10 +394,11 @@ class TestCheckingNotify:
         backend.post_message.assert_not_called()
         assert BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:").count() == 1
 
-    def test_wait_age_does_not_reissue_unchanged_recap(self, checkpoint_file: Path) -> None:
+    @pytest.mark.parametrize("aged", [timedelta(minutes=5), timedelta(hours=5), timedelta(days=2)])
+    def test_wait_age_does_not_reissue_unchanged_recap(self, checkpoint_file: Path, aged: timedelta) -> None:
         wait = WaitingItem.objects.add("Read the pending review")
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
-        WaitingItem.objects.filter(pk=wait.pk).update(created_at=timezone.now() - timedelta(days=2))
+        WaitingItem.objects.filter(pk=wait.pk).update(created_at=timezone.now() - aged)
 
         _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
 

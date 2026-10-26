@@ -47,7 +47,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from urllib.parse import urlsplit
 
-from django.db.models import Max, Q
+from django.db.models import Max
 from django.utils import timezone
 
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
@@ -56,6 +56,7 @@ from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.question_heal import HEAL_CHECKS
 from teatree.core.review.owner_waits import canonical_wait_subject
 from teatree.loop.question_subjects import SubjectIndex
+from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
 
 #: The pull-request states that are DONE either way — the same partition
@@ -258,26 +259,18 @@ def _settled_pr_subjects(questions: Sequence[DeferredQuestion]) -> dict[str, str
     if not subjects:
         return {}
     refs = {subject: pr_ref_from_url(subject.removesuffix("/files")) for subject in subjects}
-    clauses = [
-        Q(repo__iexact=ref.slug, iid=str(ref.pr_id)) if ref else Q(url__istartswith=subject)
-        for subject, ref in refs.items()
-    ]
-    selector = clauses[0]
-    for clause in clauses[1:]:
-        selector |= clause
+    candidates = PullRequest.objects.none()
+    for subject, ref in refs.items():
+        candidates |= (
+            PullRequest.objects.for_pr(slug=ref.slug, pr_id=ref.pr_id)
+            if ref
+            else PullRequest.objects.filter(url__istartswith=subject)
+        )
     states: dict[str, list[str]] = {}
     urls: dict[str, str] = {}
-    for pr in PullRequest.objects.filter(selector).only("url", "state"):
-        stored_ref = pr_ref_from_url(pr.url)
-        stored_host = (urlsplit(pr.url).hostname or "").removeprefix("www.").casefold()
+    for pr in candidates.only("url", "state"):
         for subject, ref in refs.items():
-            subject_host = (urlsplit(subject).hostname or "").removeprefix("www.").casefold()
-            matches = (
-                ref.same_pr(stored_ref) and subject_host == stored_host
-                if ref and stored_ref
-                else ref is None and canonical_wait_subject(pr.url) == subject
-            )
-            if matches:
+            if _is_same_pull_request(subject, ref, pr.url):
                 states.setdefault(subject, []).append(pr.state)
                 urls[subject] = pr.url
     return {
@@ -285,6 +278,17 @@ def _settled_pr_subjects(questions: Sequence[DeferredQuestion]) -> dict[str, str
         for identity, pr_states in states.items()
         if all(state in _SETTLED_PR_STATES for state in pr_states)
     }
+
+
+def _forge_host(url: str) -> str:
+    return (urlsplit(url).hostname or "").removeprefix("www.").casefold()
+
+
+def _is_same_pull_request(subject: str, ref: PrRef | None, stored_url: str) -> bool:
+    stored_ref = pr_ref_from_url(stored_url)
+    if ref is None or stored_ref is None:
+        return ref is None and canonical_wait_subject(stored_url) == subject
+    return ref.same_pr(stored_ref) and _forge_host(subject) == _forge_host(stored_url)
 
 
 def _subject_pr_settled(question: DeferredQuestion, context: SweepContext) -> Decision | None:

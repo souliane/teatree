@@ -453,6 +453,14 @@ class TestNeedsYouGroup(CheckingTestBase):
         assert [item.url for item in report.needs_you.items[:3]] == ["https://example.com/plan", pr.url, review.mr_url]
         assert report.needs_you.total == 5
 
+    def test_young_wait_age_renders_in_hours_not_zero_days(self) -> None:
+        manual = WaitingItem.objects.add("Read the plan")
+        WaitingItem.objects.filter(pk=manual.pk).update(created_at=self.now - timedelta(hours=3))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert [item.detail for item in report.needs_you.items] == ["waiting 3h"]
+
     def test_kept_decisions_are_owner_only(self) -> None:
         for decision in OwnerDecision:
             DeferredQuestion.record("May I proceed?", card=owner_card(decision))
@@ -734,6 +742,41 @@ class TestAllOverlaysAggregation(CheckingTestBase):
 
         assert f"[{self.OVERLAY}]" in terse
         assert f"[{self.OVERLAY_B}]" in terse
+
+    def test_overlay_scoped_waits_are_tagged_only_in_the_combined_report(self) -> None:
+        pr = PullRequest.objects.create(
+            ticket=self._ticket(),
+            overlay=self.OVERLAY,
+            url="https://github.com/acme/widgets/pull/31",
+            repo="acme/widgets",
+            iid="31",
+        )
+        pr.request_review()
+        pr.approve()
+        pr.save()
+        PullRequest.objects.filter(pk=pr.pk).update(review_requested_at=self.now - timedelta(days=7))
+        review = ReviewAssignment.record(
+            ReviewIntent(
+                mr_url="https://github.com/acme/widgets/pull/32",
+                user_id="u1",
+                channel="C1",
+                slack_ts="1.1",
+                trigger="reaction",
+                overlay=self.OVERLAY,
+            )
+        )
+        ReviewAssignment.objects.filter(pk=review.pk).update(observed_at=self.now - timedelta(days=5))
+        windows = {self.OVERLAY: (self.since, self.now), self.OVERLAY_B: (self.since, self.now)}
+        configs = {self.OVERLAY: ("github", []), self.OVERLAY_B: ("github", [])}
+
+        scoped = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+        combined = gather_all_overlays_report(overlay_windows=windows, overlay_configs=configs)
+
+        assert [item.label for item in scoped.needs_you.items] == ["acme/widgets#31", review.mr_url]
+        assert [item.label for item in combined.needs_you.items] == [
+            f"[{self.OVERLAY}] acme/widgets#31",
+            f"[{self.OVERLAY}] {review.mr_url}",
+        ]
 
     def test_empty_across_all_overlays(self) -> None:
         overlay_windows = {

@@ -50,6 +50,8 @@ from teatree.types import RawAPIDict
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
+_WAIT_AGE = re.compile(r"\bwaiting (?:now|\d+[mhd])\b")
+
 
 @dataclass(frozen=True, slots=True)
 class _ShowFlags:
@@ -123,7 +125,7 @@ def _recap_table_dm(
 def _recap_key(groups: list[CheckGroup], *, scope: str, internal_escalations: int = 0) -> str:
     """Content-hashed idempotency key so an unchanged recap never re-DMs."""
     payload = "\n".join(
-        f"{group.title}|{item.label}|{item.url}|{item.title}|{re.sub(r'\bwaiting \d+d\b', 'waiting', item.detail)}"
+        f"{group.title}|{item.label}|{item.url}|{item.title}|{_WAIT_AGE.sub('waiting', item.detail)}"
         for group in groups
         for item in group.items
     )
