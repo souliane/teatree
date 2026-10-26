@@ -987,6 +987,19 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         assert not stale.exists(), "the work-free leftover worktree was not cleaned up"
         assert self._recorded_path(ticket) == str(wt_path)
 
+    def test_registered_leftover_with_ignored_file_is_kept(self) -> None:
+        clone = self._clone()
+        branch = "3234-ignored-leftover"
+        stale = self._add_worktree(clone, self.tmp / "old-location", branch)
+        (clone / ".git" / "info" / "exclude").write_text("notes.local\n", encoding="utf-8")
+        (stale / "notes.local").write_text("retain\n", encoding="utf-8")
+
+        result, _ticket = self._provision(branch)
+
+        assert not result.ok
+        assert (stale / "notes.local").read_text(encoding="utf-8") == "retain\n"
+        assert not (self.workspace / branch / "repo-a").exists()
+
     def test_worktree_at_the_expected_path_on_the_wrong_branch_is_recreated(self) -> None:
         # A partial prior attempt left a checkout of the WRONG branch exactly where
         # this scope's worktree belongs. It used to be adopted blindly on the strength
@@ -1552,10 +1565,7 @@ class TestWorktreeProvisionerRefusesUnprovenDisposal(TestCase):
         )
         assert result.ok is False
 
-    def test_a_partial_non_checkout_directory_is_still_cleared(self) -> None:
-        # The preserved case the refusal must not swallow: a directory that never
-        # claimed to be a checkout is the one thing a single context CAN prove
-        # disposable, and clearing it is what makes provisioning idempotent.
+    def test_a_nonempty_non_checkout_directory_is_kept(self) -> None:
         self._clone(self.workspace / "repo-a")
         branch = "3967-partial"
         wt_path = self.workspace / branch / "repo-a"
@@ -1564,10 +1574,20 @@ class TestWorktreeProvisionerRefusesUnprovenDisposal(TestCase):
 
         result, _ticket = self._provision(branch)
 
+        assert result.ok is False
+        assert (wt_path / "half-written.txt").read_text(encoding="utf-8") == "from a died-mid-checkout attempt\n"
+        assert not (wt_path / ".git").exists()
+
+    def test_an_empty_non_checkout_directory_is_cleared(self) -> None:
+        self._clone(self.workspace / "repo-a")
+        branch = "3967-empty"
+        wt_path = self.workspace / branch / "repo-a"
+        wt_path.mkdir(parents=True)
+
+        result, _ticket = self._provision(branch)
+
         assert result.ok is True, result.detail
-        assert (wt_path / ".git").exists(), "the worktree was not created over the partial directory"
-        assert git.current_branch(str(wt_path)) == branch
-        assert not (wt_path / "half-written.txt").exists()
+        assert (wt_path / ".git").exists()
 
 
 class TestWorktreeProvisionerKeepsUnreadableRegistrations(TestCase):

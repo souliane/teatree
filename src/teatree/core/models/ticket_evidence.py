@@ -317,6 +317,19 @@ class TicketEvidenceModel(TicketFacet):
                 merge_into_dicts={"anti_vacuity_attestations": cast("JSONObject", by_head)},
             )
 
+    def carry_anti_vacuity_attestation(self, old_head: str, new_head: str) -> bool:
+        """Re-attest *new_head* with the complete attestation bound to *old_head*; ``False`` when none is."""
+        attested = recorded_anti_vacuity_attestation(cast("Ticket", self), old_head)
+        if attested.get("head_sha") != old_head.strip().lower() or not anti_vacuity_is_complete(attested):
+            return False
+        self.record_anti_vacuity_attestation(
+            new_head,
+            attested.get("ac_coverage") or "",
+            attested.get("proven_tests") or [],
+            no_new_tests=attested.get("no_new_tests") is True,
+        )
+        return True
+
     def review_context_satisfied(self) -> bool:
         """Whether the ``-> reviewing`` deep-retrieval precondition is met.
 

@@ -433,6 +433,27 @@ class DreamGapLedgerTriggerTests(TestCase):
         assert "77c1aa" in task.execution_reason
         assert "ticket attach-gaps" in task.execution_reason
 
+    def test_offered_window_rotates_before_reoffering_old_gaps(self) -> None:
+        umbrella = _umbrella_with_pending(*(f"g{i:02}" for i in range(14)))
+        scanner = self._gap_scanner()
+
+        scanner.scan_dream_gaps()
+        first = _last_sweep_task()
+        assert first is not None
+        assert "g00" in first.execution_reason
+        assert "g11" in first.execution_reason
+        assert "g12" not in first.execution_reason
+        assert "2 more" in first.execution_reason
+        umbrella.refresh_from_db()
+        assert sum(bool(item.get("offered_at")) for item in umbrella.extra["dream_gap_pending"]) == 12
+
+        Task.objects.filter(pk=first.pk).update(status=Task.Status.COMPLETED)
+        scanner.scan_dream_gaps()
+        second = _last_sweep_task()
+        assert second is not None
+        assert "g12" in second.execution_reason
+        assert "g13" in second.execution_reason
+
     def test_an_in_flight_sweep_is_the_lock(self) -> None:
         _umbrella_with_pending("3a9f11")
         self._gap_scanner().scan_dream_gaps()

@@ -520,6 +520,11 @@ class MergeClear(models.Model):
         self.save(update_fields=["ticket"])
         return ticket
 
+    def rebind_head(self, head_sha: str) -> None:
+        """Move this clearance to *head_sha*; an expedite waiver stays bound to the head it attested."""
+        self.reviewed_sha = head_sha.strip().lower()
+        self.save(update_fields=["reviewed_sha"])
+
     def bind_merge_mode(self, *, squash: bool) -> None:
         """Record the requested merge mode before the irreversible forge call, so a reconcile reuses it."""
         self.merged_without_squash = not squash
