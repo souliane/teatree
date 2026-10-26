@@ -179,7 +179,7 @@ _CHECKS: tuple[RegressionCheck, ...] = (
     RegressionCheck(
         failure_class="banned-terms scanner fail-closed on crash (security, #1954)",
         origin="https://github.com/souliane/teatree/pull/2079",
-        invariant="a crashing scanner returns SCANNER_UNAVAILABLE_MARKER and an unset registry fails closed",
+        invariant="a crashing scanner, unreadable store, and unset registry each fail closed",
         predicate=_check_banned_terms_scanner_fails_closed_on_crash,
     ),
     RegressionCheck(
