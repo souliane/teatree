@@ -11,6 +11,9 @@ resolver and cost accounting keep seeing only values they already handle.
 one of :data:`EXHAUSTION_CAUSES` and whose reset is still ahead. A transient 429 records
 ``rate_limit``, which is deliberately absent from that set — a throttle waits out its five
 minutes on the plan instead of moving the whole factory onto the meter.
+
+A metered key the provider refuses for credit is spent for ``HEALTH_TTL`` (:func:`spend_metered_key`):
+the next dispatch rotates to another key, and with none left the task waits for the plan window's reset.
 """
 
 import logging
@@ -18,9 +21,9 @@ from datetime import datetime
 
 from django.utils import timezone
 
-from teatree.config import AgentHarnessProvider
+from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import TaskAttempt, UsageWindowState
-from teatree.credential_config import api_key_lane_available
+from teatree.credential_config import api_key_lane_available, record_api_key_exhausted
 from teatree.llm.anthropic_limits import LimitCause
 
 logger = logging.getLogger(__name__)
@@ -43,11 +46,38 @@ EXHAUSTION_CAUSES: frozenset[str] = frozenset(
 )
 
 
-def subscription_lane_exhausted(*, now: datetime | None = None) -> bool:
-    """True while an uncleared plan-exhaustion window still covers the subscription lane."""
+def open_plan_window(now: datetime | None = None) -> UsageWindowState | None:
+    """The uncleared plan-exhaustion window still covering the subscription lane, or ``None``."""
     moment = now or timezone.now()
     window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
-    return window is not None and window.cause in EXHAUSTION_CAUSES and not window.should_clear(moment)
+    return (
+        window if window is not None and window.cause in EXHAUSTION_CAUSES and not window.should_clear(moment) else None
+    )
+
+
+def subscription_lane_exhausted(*, now: datetime | None = None) -> bool:
+    """True while an uncleared plan-exhaustion window still covers the subscription lane."""
+    return open_plan_window(now) is not None
+
+
+def spend_metered_key(*, scope: str, lane: str, signer: str, moment: datetime) -> datetime | None:
+    """Mark the metered key behind a credit refusal spent, and say when the task may run again.
+
+    Called once a dispatch was refused for credit. ``None`` leaves the refusal to today's flow:
+    any lane but the metered one, any provider but the composite, or an ambient key (no
+    *signer*) with no open plan window. *moment* means a key or the plans can serve now; a later
+    instant is the open plan window's reset, the earliest anything can. The signer is the key
+    the dispatch signed with, never the scope's shared active pick, which may name a bystander.
+    """
+    configured = get_effective_settings(scope or None).agent_harness_provider
+    if lane != TaskAttempt.Lane.METERED or configured is not AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY:
+        return None
+    window = open_plan_window(moment)
+    reset = window.resets_at if window is not None else None
+    if not signer:
+        return reset
+    record_api_key_exhausted(signer, now=moment)
+    return moment if reset is None or api_key_lane_available(scope=scope) else reset
 
 
 def resolve_credential_provider(

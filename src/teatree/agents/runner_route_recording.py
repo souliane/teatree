@@ -2,7 +2,7 @@
 
 import traceback
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.utils import timezone
 
@@ -20,6 +20,7 @@ from teatree.agents.skill_routing import (
 from teatree.config.agent_spawn import AgentRouteCandidate
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.checkout_exit import attest_checkout_on_park
+from teatree.llm.anthropic_limits import LimitCause
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,11 @@ class RouteFailureRecord:
     fallback: RouteFallback = NO_ROUTE_FALLBACK
     agent_session_id: str = ""
     kind: HarnessFallbackKind | None = None
+    account: str = ""
+
+    @property
+    def refused_for_credit(self) -> bool:
+        return self.reason.startswith(f"{LimitCause.API_CREDIT.value}:")
 
     @property
     def hold(self) -> timedelta | None:
@@ -130,8 +136,12 @@ def park_after_route_failure(task: Task, dispatch: DispatchHarness, record: Rout
     """Park *task* behind a failure that already ran side effects; a quota or auth one holds the candidate too."""
     if record.hold is not None:
         learn_route_failure(task, dispatch, record, phase=phase)
+    park_until(task, timezone.now() + (record.hold or timedelta()))
+
+
+def park_until(task: Task, not_before: datetime) -> None:
     attest_checkout_on_park()
-    task.park(not_before=timezone.now() + (record.hold or timedelta()))
+    task.park(not_before=not_before)
 
 
 def fallback_reason_for_outcome(outcome: HarnessOutcome, *, metered_transport: bool) -> str | None:
