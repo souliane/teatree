@@ -162,6 +162,7 @@ from hooks.scripts.raw_review_post_guard import handle_block_raw_review_post
 from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
+from hooks.scripts.remote_factory_target import remote_factory_target_active
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.router_args import parse_args as _parse_args
 from hooks.scripts.router_args import read_input as _read_input
@@ -444,21 +445,8 @@ def _teatree_engaged(session_id: str) -> bool:
 
 
 def _loop_auto_load_active(session_id: str) -> bool:
-    """Whether this session may take the attended loop slot and show the loop statusline (#256).
-
-    The gate the loop-slot bootstrap (:func:`handle_session_start_bootstrap`)
-    applies. Two conditions must BOTH hold:
-
-    - the session opted into teatree (:func:`_teatree_active` — a teatree
-        skill was loaded), AND
-    - the operator enabled autoload (:func:`_autoload_enabled`).
-
-    ``autoload`` is the ONE owner flag (``[teatree] autoload = true``, or the
-    ``T3_AUTOLOAD`` env): it both ENGAGES the session and elects it for the
-    loop slot. It defaults OFF so a colleague who merely clones the repo (and
-    even loads a teatree skill) never takes the slot or sees the loop statusline.
-    """
-    return _teatree_active(session_id) and _autoload_enabled()
+    """The attended slot needs engagement, autoload, and a local factory target."""
+    return _teatree_active(session_id) and _autoload_enabled() and not remote_factory_target_active()
 
 
 _read_lines = read_lines
@@ -2566,10 +2554,10 @@ def handle_session_start_bootstrap(data: dict) -> None:
     The read → decide → write stays one flock-guarded transaction so two
     fresh sessions in the same window cannot both claim (TOCTOU).
 
-    Gated on :func:`_loop_auto_load_active` (#256): a session only claims the
-    tick-owner record / emits the bootstrap directive when it both opted into
-    teatree AND the operator enabled session-start auto-load. Default OFF, so a
-    colleague cloning the repo never silently becomes the loop owner.
+    Gated on :func:`_loop_auto_load_active` (#256): only an opted-in session
+    with operator autoload and a local factory target claims the tick-owner
+    record / emits the bootstrap directive. Default OFF, so a colleague
+    cloning the repo never silently becomes the loop owner.
 
     Default-off engagement (#256): when ``[teatree] autoload`` is set the owner
     default flips the session ``teatree-active`` BEFORE the loop gate, so today's
