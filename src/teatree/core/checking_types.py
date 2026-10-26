@@ -22,6 +22,13 @@ class CheckGroupDict(TypedDict):
     total: int
 
 
+class OwnerWaitItemDict(CheckItemDict):
+    kind: str
+    age_days: int
+    row_id: int | None
+    owner_only: bool
+
+
 class RemainingItemDict(CheckItemDict):
     kind: str
     steps: list[str]
@@ -58,6 +65,26 @@ class CheckItem:
     def render(self) -> str:
         ref = render_ref(self.label, title=self.title, url=self.url)
         return f"  - {ref} — {self.detail}" if self.detail else f"  - {ref}"
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerWaitItem(CheckItem):
+    kind: str = ""
+    age_days: int = 0
+    row_id: int | None = None
+    owner_only: bool = False
+
+    def to_dict(self) -> OwnerWaitItemDict:
+        return OwnerWaitItemDict(
+            label=self.label,
+            url=self.url,
+            detail=self.detail,
+            title=self.title,
+            kind=self.kind,
+            age_days=self.age_days,
+            row_id=self.row_id,
+            owner_only=self.owner_only,
+        )
 
 
 @dataclass(frozen=True, slots=True)

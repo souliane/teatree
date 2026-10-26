@@ -12,7 +12,6 @@ from django.db import models
 from django.db.models import F, OuterRef, Q, Subquery
 
 from teatree.core.checking_types import CheckItem
-from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import ReviewVerdict
@@ -177,7 +176,7 @@ def merged_entries_from_qs(
     now: datetime,
     scope: _MergedScope,
     overlay_tag: str = "",
-) -> "list[tuple[datetime, CheckItem]]":
+) -> list[tuple[datetime, CheckItem]]:
     """Every scoped merge in the window as ``(merged_at, item)``, newest first.
 
     The timestamp travels with the item so a caller spanning several overlays can
@@ -289,23 +288,3 @@ def failed_attempts(*, since: datetime, now: datetime, overlay_name: str) -> mod
         .order_by("-ended_at")
     )
     return attempts.filter(task__ticket__overlay=overlay_name) if overlay_name else attempts
-
-
-def deferred_questions(*, overlay_slug: str) -> list:
-    """Pending owner questions as :class:`CheckItem` rows, plus one line counting the internal escalations."""
-    items: list = []
-    for question in DeferredQuestion.owner_pending():
-        snippet = question.question.strip().replace("\n", " ")[:60]
-        items.append(
-            CheckItem(
-                label=f"Q{question.pk}: {snippet}",
-                url="",
-                detail=(
-                    f"answer in its Slack thread, or t3 {overlay_slug} questions dismiss {question.pk} "
-                    "--reason '<evidence>'"
-                ),
-            )
-        )
-    if internal := DeferredQuestion.internal_pending().count():
-        items.append(CheckItem(label=f"{internal} internal escalations: factory work, not questions", url=""))
-    return items
