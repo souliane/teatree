@@ -305,8 +305,8 @@ def test_an_empty_source_git_subpath_means_no_source_clone(fake: FakeExecutor, m
     fake.probe["mounts"] = [item for item in fake.probe["mounts"] if item["target"] != CODEX_SOURCE_GIT]
     fake.probe["writes"].pop(CODEX_SOURCE_GIT)
     fake.probe["scan"].pop(CODEX_SOURCE_GIT)
-    _applied(fake, monkeypatch)
     monkeypatch.setattr("teatree.agents.codex_read_only_verdict._CODEX_SOURCE_GIT_SUBPATH", "")
+    _applied(fake, monkeypatch)
 
     assert read_only_executor_refusal(HarnessBuildContext(phase="planning")) is None
 
