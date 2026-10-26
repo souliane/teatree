@@ -30,7 +30,9 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.notify import notify_user
 from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
+from teatree.core.review.owner_waits import ask_owner_to_read
 from tests._owner_channel import owner_card
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -329,6 +331,26 @@ class TestCheckingNotify:
         assert row.audience == NotifyAudience.OWNER_DELIVERY.value
         assert "```" in row.text
         assert "acme/widgets#7" in row.text
+
+    def test_owner_cards_keep_distinct_subjects_in_native_recap_rows(self, checkpoint_file: Path) -> None:
+        subjects = [f"https://github.com/acme/widgets/pull/{number}" for number in (8, 9)]
+        for number, subject in zip((8, 9), subjects, strict=True):
+            assert ask_owner_to_read(subject, f"review {number}", f"{number:040x}") is not None
+
+        with patch("teatree.core.management.commands.checking.notify_user", wraps=notify_user) as send:
+            _call("checking", "show", "--this-overlay", "--notify", "--no-advance")
+
+        blocks = send.call_args.kwargs["blocks"]
+        for subject in subjects:
+            assert subject in str(blocks)
+        links = {
+            cell["elements"][0]["elements"][0].get("style", {}).get("link")
+            for block in blocks
+            if block["type"] == "table"
+            for row in block["rows"][1:]
+            for cell in row
+        }
+        assert set(subjects) <= links
 
     def test_internal_only_report_is_visible_in_human_view_and_recap(self, checkpoint_file: Path) -> None:
         DeferredQuestion.record("repair-halt on coding: investigate?")

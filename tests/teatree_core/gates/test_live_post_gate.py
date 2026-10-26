@@ -118,8 +118,8 @@ class TestGateBehaviourNotJustWording(TestCase):
         seed_forbidding_posture()
         OnBehalfApproval.record(_MR, "post_comment", "owner")
 
-        with patch("teatree.cli.review.on_behalf.LivePostBlockedError", lambda _ref: "other wording", create=True):
-            _message, code = publish_or_blocked(
+        with patch.object(LivePostBlockedError, "__str__", return_value="different refusal wording"):
+            message, code = publish_or_blocked(
                 "acme-internal/widget",
                 42,
                 "post_comment",
@@ -127,6 +127,7 @@ class TestGateBehaviourNotJustWording(TestCase):
             )
 
         assert code == 1
+        assert message == "different refusal wording"
         assert DeferredQuestion.owner_pending().count() == 1
 
     def test_unreadable_review_url_with_underscore_still_records_a_card(self) -> None:

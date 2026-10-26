@@ -308,24 +308,6 @@ def _stage_env(private_root: str) -> dict[str, str]:
     return env
 
 
-def _prepare_isolated_db(repo: Path, env: dict[str, str]) -> None:
-    typer.echo("== verify-gates: isolated control DB ==", err=True)
-    migrate = [
-        "timeout",
-        "--signal=TERM",
-        "--kill-after=15s",
-        f"{_STAGE_DEADLINE_SECONDS}s",
-        "t3",
-        "teatree",
-        "db",
-        "migrate",
-    ]
-    if run_streamed(migrate, check=False, cwd=repo, env=env) != 0:
-        _record(repo, "incomplete", "isolated control DB migration failed")
-        typer.echo("verify-gates: INCOMPLETE — isolated control DB migration failed.", err=True)
-        raise typer.Exit(code=1)
-
-
 def verify_gates(
     expect_sha: str = typer.Option(
         "",
@@ -400,9 +382,7 @@ def verify_gates(
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
     stages = _stage_commands(scope_args, repo, tree.toplevel)
     with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
-        env = _stage_env(private_root)
-        _prepare_isolated_db(repo, env)
-        failed, incomplete = _run_stages(stages, repo, env)
+        failed, incomplete = _run_stages(stages, repo, _stage_env(private_root))
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):

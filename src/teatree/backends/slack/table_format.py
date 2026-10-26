@@ -55,9 +55,11 @@ def _aligns(alignment: list[Align] | None, ncols: int) -> list[Align]:
     return resolved
 
 
-def _rich_text_cell(text: str, *, bold: bool) -> RawAPIDict:
+def _rich_text_cell(text: str, *, bold: bool, link: str = "") -> RawAPIDict:
     """A single Block Kit ``rich_text`` table cell."""
     style: RawAPIDict = {"bold": True} if bold else {}
+    if link:
+        style["link"] = link
     text_element: RawAPIDict = {"type": "text", "text": text}
     if style:
         text_element["style"] = style
@@ -72,6 +74,7 @@ def slack_table_block(
     rows: list[list[str]],
     *,
     alignment: list[Align] | None = None,
+    links: dict[tuple[int, int], str] | None = None,
 ) -> RawAPIDict:
     """Build a Block Kit ``table`` block from *headers* and *rows*.
 
@@ -85,7 +88,13 @@ def slack_table_block(
     ncols = len(capped_headers)
     aligns = _aligns(alignment, ncols)
     block_rows: list[list[RawAPIDict]] = [[_rich_text_cell(h, bold=True) for h in capped_headers]]
-    block_rows.extend([_rich_text_cell(cell, bold=False) for cell in row] for row in capped_rows[:MAX_DATA_ROWS])
+    for row_index, row in enumerate(capped_rows[:MAX_DATA_ROWS]):
+        block_rows.append(
+            [
+                _rich_text_cell(cell, bold=False, link=(links or {}).get((row_index, col_index), ""))
+                for col_index, cell in enumerate(row)
+            ]
+        )
     return {
         "type": "table",
         "column_settings": [{"align": align} for align in aligns],

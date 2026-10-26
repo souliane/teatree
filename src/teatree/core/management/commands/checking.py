@@ -30,7 +30,7 @@ import typer
 from django.utils import timezone
 from django_typer.management import command, initialize
 
-from teatree.backends.slack.table_format import render_table_message
+from teatree.backends.slack.table_format import render_table_message, slack_table_block
 from teatree.core.checking import (
     DEFAULT_CAP,
     AllOverlaysReportDict,
@@ -44,6 +44,7 @@ from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.ref_render import render_ref
+from teatree.core.reporting.checking_types import OwnerWaitItem
 from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict
 
@@ -111,8 +112,18 @@ def _recap_table_dm(
     for group in groups:
         if group.total == 0:
             continue
-        rows = [[item.label, item.title, item.detail] for item in group.items[:cap]]
-        message = render_table_message(["Ref", "Title", "Detail"], rows, title=f"{group.title} ({group.total})")
+        rows = [
+            [
+                f"Q{item.row_id}" if isinstance(item, OwnerWaitItem) and item.row_id is not None else item.label,
+                item.title or item.url,
+                item.detail,
+            ]
+            for item in group.items[:cap]
+        ]
+        links = {(index, 1): item.url for index, item in enumerate(group.items[:cap]) if item.url}
+        headers = ["Ref", "Subject", "Detail"]
+        message = render_table_message(headers, rows, title=f"{group.title} ({group.total})")
+        message.blocks[-1] = slack_table_block(headers, rows, links=links)
         blocks.extend(message.blocks)
         fences.append(message.fence)
     if internal_escalations:
