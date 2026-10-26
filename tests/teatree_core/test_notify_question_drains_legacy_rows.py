@@ -5,6 +5,7 @@ A row that does not read plainly now is withheld: moved to the internal queue, i
 
 import datetime as dt
 from collections.abc import Callable
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
@@ -172,8 +173,14 @@ class TestACleanLegacyRowIsSentThroughTheSameRenderer(TestCase):
 
         backend.post_message.assert_called_once()
         kwargs = backend.post_message.call_args.kwargs
-        assert kwargs["text"] == render_text(row)
-        assert kwargs["blocks"] == render_blocks(row)
+        assert kwargs["text"] == f"<@U0DEMOOWNER> {render_text(row)}"
+        expected_blocks = render_blocks(row)
+        first_text = cast("dict[str, str]", expected_blocks[0]["text"])
+        expected_blocks[0] = {
+            **expected_blocks[0],
+            "text": {**first_text, "text": f"<@U0DEMOOWNER> {first_text['text']}"},
+        }
+        assert kwargs["blocks"] == expected_blocks
         buttons = [e for block in kwargs["blocks"] if block["type"] == "actions" for e in block["elements"]]
         assert [button["text"]["text"] for button in buttons] == ["Yes", "No"]
         assert kwargs["text"].endswith(f"ref: question {row.pk}")
