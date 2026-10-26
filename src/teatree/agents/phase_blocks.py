@@ -24,7 +24,7 @@ from teatree.agents.dispatch_preflight import (
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.gates.fix_dod_gate import is_fix
-from teatree.core.gates.repro_gate import forced_repro_gate_enabled
+from teatree.core.gates.repro_gate import failing_run_required
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
@@ -236,6 +236,9 @@ _FIX_RECORD_FIELD_LINES: tuple[str, ...] = (
     "so omit the key entirely rather than guessing at a field you cannot honestly fill.",
     "A merged manifestation patch with no stated root cause is not done.",
 )
+_FIX_RECORD_NO_RED_FIELD_LINES: tuple[str, ...] = tuple(
+    line.replace("RED-first ", "") for line in _FIX_RECORD_FIELD_LINES if '"observed_red"' not in line
+)
 _FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
     *_FIX_RECORD_FIELD_LINES,
     (
@@ -247,6 +250,7 @@ _FIX_RECORD_REVIEW_LINES: tuple[str, ...] = (
     *_FIX_RECORD_FIELD_LINES,
     "Return it only with merge_safe; observed_red is your own revert-to-RED proof.",
 )
+_FIX_RECORD_REVIEW_NO_RED_LINES: tuple[str, ...] = (*_FIX_RECORD_NO_RED_FIELD_LINES, "Return it only with merge_safe.")
 
 _REVIEWER_LIFECYCLE_SKILL = "t3:review"
 
@@ -529,9 +533,9 @@ _FIXING_PHASES = frozenset({"coding", "debugging"})
 def _fix_record_lines(task: Task, phase: str) -> tuple[str, ...]:
     """The FixRecord return directive for a fixing phase on a fix ticket, or the review of a fix PR, else ``()``."""
     if phase in _FIXING_PHASES and is_fix(task.ticket):
-        return _FIX_RECORD_RETURN_LINES if forced_repro_gate_enabled(task.ticket) else _FIX_RECORD_FIELD_LINES
+        return _FIX_RECORD_RETURN_LINES if failing_run_required(task.ticket) else _FIX_RECORD_NO_RED_FIELD_LINES
     if phase in ENVELOPE_VERDICT_PHASES and (gated := gated_ticket_for_review_task(task)) and is_fix(gated):
-        return _FIX_RECORD_REVIEW_LINES
+        return _FIX_RECORD_REVIEW_LINES if failing_run_required(gated) else _FIX_RECORD_REVIEW_NO_RED_LINES
     return ()
 
 
