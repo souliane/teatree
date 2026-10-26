@@ -213,6 +213,7 @@ class TestVerifyGatesRunsBothStages:
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0, _text(result)
         assert len(run.call_args_list) >= 2
+        assert _calls(run)[0][-4:] == ["t3", "teatree", "db", "migrate"]
         for call in run.call_args_list:
             env = call.kwargs["env"]
             private_root = Path(env["XDG_DATA_HOME"])
@@ -287,7 +288,7 @@ class TestVerifyGatesRunsBothStages:
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0, _text(result)
-        assert len(_calls(run)) == 2
+        assert len(_calls(run)) == 3
         assert not [c for c in _calls(run) if "manual" in c], "no hook declared, so no manual-stage run"
         assert "manual (CI-job hooks) skipped" in _text(result)
         summaries = [line for line in _text(result).splitlines() if "all gate stages green" in line]
@@ -389,7 +390,7 @@ class TestVerifyGatesRunsBothStages:
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0
-        assert all("--all-files" in c for c in _calls(run))
+        assert all("--all-files" in c for c in _calls(run) if "prek" in c)
 
     def test_timeout_is_incomplete_not_green(self) -> None:
         with (
@@ -428,6 +429,8 @@ class TestVerifyGatesRunsBothStages:
         _write_prek_config(worktree, *(_manual_hook(hook) for hook in CI_JOB_MANUAL_HOOKS))
 
         def _rc(cmd: list[str], **_kwargs: object) -> int:
+            if "db" in cmd and "migrate" in cmd:
+                return 0
             stage = cmd[-1] if "--hook-stage" in cmd else "commit"
             return 1 if stage == failing_stage else 0
 
@@ -449,6 +452,16 @@ class TestVerifyGatesRunsBothStages:
         assert result.exit_code == 0
         assert receipt.call_args_list[0].kwargs["state"] == "incomplete"
         assert receipt.call_args_list[-1].kwargs["state"] == "green"
+
+    def test_unmigrated_isolated_db_stops_before_hooks(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.run_streamed", return_value=1) as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 1
+        assert "isolated control DB migration failed" in _text(result)
+        assert len(_calls(run)) == 1
 
     def test_missing_prek_fails_closed(self, worktree: Path) -> None:
         with patch("teatree.cli.verify_gates._prek_available", return_value=False):
@@ -744,7 +757,7 @@ class TestVerifyGatesExpectSha:
         ):
             result = runner.invoke(app, ["tool", "verify-gates", "--expect-sha", _head_sha(worktree)])
         assert result.exit_code == 0
-        assert len(_calls(run)) == 3
+        assert len(_calls(run)) == 4
 
     def test_matching_abbreviated_sha_runs(self, worktree: Path) -> None:
         with (
