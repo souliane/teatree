@@ -16,6 +16,10 @@ runner = CliRunner()
 
 
 class TestWorktreeBrief(TestCase):
+    def test_inherited_brief_avoids_the_isolated_gate_database(self) -> None:
+        with patch.dict("os.environ", {"T3_PUSH_GATE_BRIEF": "No migration."}):
+            assert _brief_for_worktree(Path("/tmp/unregistered-worktree")) == "No migration."
+
     def test_pending_future_coding_task_does_not_constrain_the_current_push(self) -> None:
         ticket = Ticket.objects.create()
         Worktree.objects.create(

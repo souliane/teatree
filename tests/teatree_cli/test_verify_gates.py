@@ -208,6 +208,7 @@ class TestVerifyGatesRunsBothStages:
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.cli.verify_gates._brief_for_worktree", return_value="No migration."),
             patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
@@ -220,6 +221,7 @@ class TestVerifyGatesRunsBothStages:
             assert Path(env["T3_CONTROL_DB_DIR"]).is_relative_to(private_root)
             assert "T3_CONFIG_DB" not in env
             assert "DATABASE_URL" not in env
+            assert env["T3_PUSH_GATE_BRIEF"] == "No migration."
             child_registry = json.loads(env["TEATREE_TERM_REGISTRY"])
             assert {key: child_registry[key] for key in registry} == registry
             assert ControlDb(env, home=tmp_path).for_repo(worktree).path.is_relative_to(private_root)

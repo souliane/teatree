@@ -9,6 +9,7 @@ human report) or executes the two scoped sweeps (``--run``, the driver
 """
 
 import json
+import os
 from pathlib import Path
 
 import typer
@@ -18,8 +19,12 @@ from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_brief_cons
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import CommandFailedError
 
+BRIEF_ENV = "T3_PUSH_GATE_BRIEF"
+
 
 def _brief_for_worktree(repo_root: Path) -> str:
+    if BRIEF_ENV in os.environ:
+        return os.environ[BRIEF_ENV]
     ensure_django()
     from teatree.core.models import PlanArtifact, Task, Worktree  # noqa: PLC0415 — Django is set up at call time
 
