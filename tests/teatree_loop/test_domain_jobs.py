@@ -1,6 +1,8 @@
 from unittest.mock import patch
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from teatree.core.models import ScannerFault
 from teatree.loop.domain_jobs import _run_job
@@ -32,11 +34,13 @@ class ScannerFaultRecordingTests(TestCase):
         _run_job(job)
         assert ScannerFault.objects.get(scanner=job.label).healed_at is not None
 
-    def test_healthy_unknown_scanner_writes_no_fault(self) -> None:
+    def test_healthy_scanner_with_nothing_open_issues_no_write(self) -> None:
         scanner = _SwitchingScanner()
         scanner.failing = False
-        _run_job(_ScannerJob(scanner=scanner, overlay=""))
+        with CaptureQueriesContext(connection) as queries:
+            _run_job(_ScannerJob(scanner=scanner, overlay=""))
         assert ScannerFault.objects.count() == 0
+        assert [q["sql"] for q in queries if q["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))] == []
 
     def test_generic_failure_is_durable_and_database_failure_does_not_raise(self) -> None:
         class BrokenScanner:
