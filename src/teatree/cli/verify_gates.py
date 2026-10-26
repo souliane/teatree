@@ -48,8 +48,10 @@ import yaml
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.hooks.banned_term_registry import load_registry
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
+from teatree.paths import ControlDb
 from teatree.quality.changed_set import ChangedSetError, changed_paths
 from teatree.quality.gate_receipt import write_gate_receipt
+from teatree.sqlite_snapshot import _sqlite_snapshot
 from teatree.utils.git_branch import current_branch, head_sha
 from teatree.utils.git_remote_ops import config_value
 from teatree.utils.git_run import run, run_strict
@@ -292,7 +294,7 @@ def _run_stages(stages: list[tuple[str, list[str]]], repo: Path, env: dict[str, 
     return failed, incomplete
 
 
-def _stage_env(private_root: str) -> dict[str, str]:
+def _stage_env(private_root: str, repo: Path) -> dict[str, str]:
     env = os.environ.copy()
     if not env.get("TEATREE_TERM_REGISTRY"):
         try:
@@ -305,6 +307,11 @@ def _stage_env(private_root: str) -> dict[str, str]:
     env.pop("DATABASE_URL", None)
     env["XDG_DATA_HOME"] = private_root
     env["T3_CONTROL_DB_DIR"] = str(Path(private_root) / "control-db")
+    live_db = ControlDb(os.environ).for_repo(repo).path
+    if live_db.exists():
+        private_db = ControlDb(env).for_repo(repo).path
+        private_db.parent.mkdir(parents=True, exist_ok=True)
+        _sqlite_snapshot(live_db, private_db)
     return env
 
 
@@ -382,7 +389,7 @@ def verify_gates(
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
     stages = _stage_commands(scope_args, repo, tree.toplevel)
     with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
-        failed, incomplete = _run_stages(stages, repo, _stage_env(private_root))
+        failed, incomplete = _run_stages(stages, repo, _stage_env(private_root, repo))
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):

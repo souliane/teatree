@@ -225,6 +225,31 @@ class TestVerifyGatesRunsBothStages:
             assert ControlDb(env, home=tmp_path).for_repo(worktree).path.is_relative_to(private_root)
             assert not private_root.exists()
 
+    def test_stage_children_receive_the_live_brief_in_a_private_database(
+        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live = tmp_path / "live-control"
+        live.mkdir()
+        with closing(sqlite3.connect(live / "db.sqlite3")) as db:
+            db.execute("CREATE TABLE teatree_worktree (id INTEGER, brief TEXT)")
+            db.execute("INSERT INTO teatree_worktree VALUES (1, 'No new setting.')")
+            db.commit()
+        monkeypatch.setenv("T3_CONFIG_DB", str(live / "db.sqlite3"))
+
+        def inspect_stage(_cmd: list[str], *, cwd: Path, env: dict[str, str], check: bool) -> int:
+            private_db = ControlDb(env, home=tmp_path).for_repo(cwd).path
+            with closing(sqlite3.connect(f"{private_db.as_uri()}?mode=ro", uri=True)) as db:
+                assert db.execute("SELECT brief FROM teatree_worktree").fetchone() == ("No new setting.",)
+            return 0
+
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=inspect_stage),
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 0, _text(result)
+
     @pytest.mark.parametrize("registry_error", [BannedTermsUnreadableError, BannedTermsUnsetError])
     def test_unavailable_registry_still_isolates_stage(
         self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry_error: type[Exception]
