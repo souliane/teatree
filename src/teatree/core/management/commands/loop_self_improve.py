@@ -23,7 +23,7 @@ from teatree.core.gates.t3_master_gate import t3_master_verdict
 from teatree.core.machine_output import emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify_question_drains import owner_quiet_now
-from teatree.core.notify_types import NotifyKind, NotifyOptions, NotifyReason
+from teatree.core.notify_types import NotifyKind, NotifyOptions, NotifyOutcome, NotifyReason
 from teatree.loop.self_improve.repair_first import OwnerAlertDelivery, OwnerWaitChannel
 from teatree.loops.loop_staleness import loop_health
 
@@ -34,6 +34,13 @@ if TYPE_CHECKING:
 
 type ReportDict = dict[str, Any]
 logger = logging.getLogger(__name__)
+
+
+def _delivery(outcome: NotifyOutcome) -> OwnerAlertDelivery:
+    return OwnerAlertDelivery(
+        sent=outcome.sent or outcome.reason is NotifyReason.ALREADY_SENT,
+        pulled=outcome.reason is NotifyReason.ROUTED_TO_PULL,
+    )
 
 
 def _deliver_owner_alert(report: "DetectorReport", existing: "SelfImproveFiring | None") -> "OwnerAlertDelivery":
@@ -51,10 +58,7 @@ def _deliver_owner_alert(report: "DetectorReport", existing: "SelfImproveFiring 
     )
     if not outcome.sent and outcome.reason not in {NotifyReason.ROUTED_TO_PULL, NotifyReason.ALREADY_SENT}:
         logger.warning("self-improve owner alert not delivered: %s (%s)", report.dedup_key, outcome.reason)
-    return OwnerAlertDelivery(
-        sent=outcome.sent or outcome.reason is NotifyReason.ALREADY_SENT,
-        pulled=outcome.reason is NotifyReason.ROUTED_TO_PULL,
-    )
+    return _delivery(outcome)
 
 
 def _owner_wait(raw: object) -> dt.timedelta:
@@ -69,10 +73,7 @@ def _deliver_owner_wait(text: str, key: str) -> "OwnerAlertDelivery":
         audience=NotifyAudience.OWNER_ESCALATION,
         options=NotifyOptions(as_thread_root=True),
     )
-    return OwnerAlertDelivery(
-        sent=outcome.sent or outcome.reason is NotifyReason.ALREADY_SENT,
-        pulled=outcome.reason is NotifyReason.ROUTED_TO_PULL,
-    )
+    return _delivery(outcome)
 
 
 def _result_to_dict(result: "TierResult") -> ReportDict:

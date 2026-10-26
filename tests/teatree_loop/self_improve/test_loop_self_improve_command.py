@@ -28,13 +28,15 @@ from django.utils import timezone
 from teatree.core import notify as notify_module
 from teatree.core.gates.t3_master_gate import T3MasterGate
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
-from teatree.core.models import LoopLease, MergeClear, SelfImproveFiring, Task, Ticket
+from teatree.core.management.commands.loop_self_improve import _deliver_owner_alert
+from teatree.core.models import ConfigSetting, LoopLease, MergeClear, SelfImproveFiring, Task, Ticket
 from teatree.core.models.merge_clear import ClearRequest
 from teatree.core.models.pull_request import PullRequest
-from teatree.core.notify_types import NotifyOutcome
+from teatree.core.notify_types import NotifyOutcome, NotifyReason
 from teatree.loop.self_improve import schedule as schedule_mod
 from teatree.loop.self_improve.actions import ActionResult
 from teatree.loop.self_improve.budget import BudgetVerdict
+from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.schedule import TierResult
 from tests._loop_principal_env import pinned_loop_principal
 from tests._t3_master_env import worker_owns_t3_master
@@ -198,6 +200,34 @@ class LoopSelfImproveCommandTests(TestCase):
         held = self._stalled_loop_cycle(start + dt.timedelta(minutes=61), quiet=True)
 
         assert held.call_count == 0
+
+    def test_configured_wait_minutes_decide_when_the_owner_hears(self) -> None:
+        ConfigSetting.objects.set_value("self_improve_owner_wait_minutes", 30)
+        start = timezone.now()
+
+        self._stalled_loop_cycle(start, quiet=False)
+        before = self._stalled_loop_cycle(start + dt.timedelta(minutes=29), quiet=False)
+        due = self._stalled_loop_cycle(start + dt.timedelta(minutes=31), quiet=False)
+
+        assert [before.call_count, due.call_count] == [0, 1]
+
+    def test_an_alert_the_ledger_already_delivered_counts_as_sent(self) -> None:
+        report = DetectorReport(
+            detector="pressure_incident",
+            dedup_key="pressure_incident::ram",
+            state_hash="h1",
+            severity="warn",
+            max_rung=ActionRung.SLACK,
+            summary="ram probe inert",
+            payload={"kind": "ram_probe_inert"},
+        )
+        already = NotifyOutcome(sent=False, reason=NotifyReason.ALREADY_SENT)
+
+        with patch.object(notify_module, "notify_user_outcome", return_value=already):
+            delivery = _deliver_owner_alert(report, None)
+
+        assert delivery.sent is True
+        assert delivery.pulled is False
 
     def test_unknown_scan_is_visible_in_json_and_human_output(self) -> None:
         result = TierResult(

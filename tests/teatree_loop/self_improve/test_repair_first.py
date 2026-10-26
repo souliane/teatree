@@ -1,5 +1,5 @@
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from teatree.core import notify as notify_module
 from teatree.core.management.commands.loop_self_improve import _deliver_owner_wait, _owner_wait
-from teatree.core.models import BotPing, SelfImproveFiring, Task, Ticket
+from teatree.core.models import BotPing, IncomingEvent, SelfImproveFiring, Task, Ticket
 from teatree.core.notify_types import NotifyOutcome, NotifyReason
 from teatree.loop.self_improve import (
     ActionRung,
@@ -46,6 +46,12 @@ class _Detector:
 
 class _AlwaysOnDetector(_Detector):
     always_on: ClassVar[bool] = True
+
+
+class _TwoIncidentDetector(_Detector):
+    def detect_checked(self) -> DetectorScan:
+        assert self.report is not None
+        return DetectorScan([self.report, replace(self.report, dedup_key="repair_first_test::other")])
 
 
 def _incident(kind: str = "repairable_incident", *, state_hash: str = "first") -> DetectorReport:
@@ -119,6 +125,12 @@ class RepairFirstTests(TestCase):
         backend.open_dm.return_value = "D-OWNER"
         backend.post_message.return_value = {"ok": True, "ts": "1700000000.000001"}
         backend.get_permalink.return_value = "https://example.slack.com/archives/D-OWNER/p1700000000000001"
+        IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            channel_ref="D-OWNER",
+            thread_ref="1699999999.000001",
+            idempotency_key="slack:active-owner-thread",
+        )
         start = timezone.now()
         routes = DeliveryRoutes(
             overlay_name="t3-teatree",
@@ -225,6 +237,45 @@ class RepairFirstTests(TestCase):
         assert early.owner_waits == []
         assert len(due.owner_waits) == 1
         assert len(deliveries) == 1
+
+    def test_reopened_incident_after_a_message_gets_a_second_message_under_a_new_key(self) -> None:
+        start = timezone.now()
+        keys: list[str] = []
+        routes = DeliveryRoutes(
+            overlay_name="t3-teatree",
+            owner_wait=OwnerWaitChannel(
+                deliver=lambda _text, key: (keys.append(key), OwnerAlertDelivery(sent=True))[1],
+                quiet_now=lambda: False,
+                wait=dt.timedelta(minutes=30),
+            ),
+        )
+        for minutes, report in ((0, _incident()), (30, _incident()), (40, None), (50, _incident()), (80, _incident())):
+            with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=minutes)):
+                run_tier(Tier.CHEAP, detectors=[_Detector(report)], budget=BudgetVerdict.allow(), delivery=routes)
+        assert len(keys) == 2
+        assert keys[0] != keys[1]
+
+    def test_incidents_begun_together_get_distinct_message_keys(self) -> None:
+        start = timezone.now()
+        keys: list[str] = []
+        routes = DeliveryRoutes(
+            overlay_name="t3-teatree",
+            owner_wait=OwnerWaitChannel(
+                deliver=lambda _text, key: (keys.append(key), OwnerAlertDelivery(sent=True))[1],
+                quiet_now=lambda: False,
+                wait=dt.timedelta(minutes=30),
+            ),
+        )
+        for minutes in (0, 30):
+            with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=minutes)):
+                run_tier(
+                    Tier.CHEAP,
+                    detectors=[_TwoIncidentDetector(_incident())],
+                    budget=BudgetVerdict.allow(),
+                    delivery=routes,
+                )
+        assert len(keys) == 2
+        assert len(set(keys)) == 2
 
     def test_red_budget_still_sweeps_confirmed_always_on_incident(self) -> None:
         start = timezone.now()
