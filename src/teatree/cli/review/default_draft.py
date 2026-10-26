@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from teatree.backends.gitlab.inline_position import fetch_diff_refs
+from teatree.cli.review.on_behalf import LivePostBlockedResult
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabAPI
@@ -65,7 +66,6 @@ def publish_live_post(
     from teatree.cli.review.forge_target import resolve_base_url  # noqa: PLC0415 — lazy refusal link
     from teatree.core.gates.live_post_gate import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         LivePostBlockedError,
-        LivePostBlockedResult,
         require_live_post_approval,
     )
 

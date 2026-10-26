@@ -22,17 +22,21 @@ discovery, by a privacy-scan subprocess, etc.) before
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import typer
 
 from teatree.cli.review.audit import ReviewArtifactNotVerifiedError, gitlab_mr_url
 from teatree.cli.review.forge_target import owning_overlay_name, resolve_base_url
-from teatree.core.gates.live_post_gate import LivePostBlockedResult
 from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:
     from teatree.on_behalf_gate import OnBehalfContext
+
+
+class LivePostBlockedResult(NamedTuple):
+    message: str
+    exit_code: int
 
 
 def target_overlay(repo: str) -> str | None:
