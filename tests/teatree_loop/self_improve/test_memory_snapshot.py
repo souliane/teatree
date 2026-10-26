@@ -157,15 +157,12 @@ class MemorySnapshotTicketTests(TestCase):
         rows = process_rows(context)
         assert rows["pid=51"].endswith(" detached")
 
-    def test_unknown_own_pid_namespace_never_matches_a_worker(self) -> None:
+    def test_unknown_own_pid_namespace_never_matches_a_proven_worker(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
             stage_process(proc, 10, ppid=1, rss_pages=256, comm="worker")
             (proc / "10" / "status").write_text("NSpid:\t10\t7\n")
             stage_process(proc, 11, ppid=10, rss_pages=1024, comm="python")
-            with (
-                patch.object(memory_snapshot, "current_pid_namespace", return_value=""),
-                patch("teatree.core.loop_lease_liveness.reader_pid_namespace", return_value=""),
-            ):
+            with patch.object(memory_snapshot, "current_pid_namespace", return_value=""):
                 result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context

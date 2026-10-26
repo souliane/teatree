@@ -117,6 +117,8 @@ def _worker_host_pid(root: Path, stats: dict[int, ProcStat]) -> tuple[int | None
     if record is None:
         return None, error
     own_namespace = current_pid_namespace()
+    if not own_namespace:
+        return None, None
     for pid in stats:
         pid_dir = root / str(pid)
         if namespace_pids(pid_dir)[-1:] == (str(record.pid),) and pid_namespace_of(pid_dir) == own_namespace:
