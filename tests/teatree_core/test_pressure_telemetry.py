@@ -16,6 +16,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from teatree.core.admission_governor import SupplementalAdmissionSignals, YieldSignal, decide_admission, pressure_for
 from teatree.core.admission_pressure import (
     UNREAD_QUOTA,
+    MachineBrake,
     MachineSignal,
     MeteredSignal,
     QuotaSignal,
@@ -124,6 +125,40 @@ def test_metered_denial_is_exported_with_its_safe_cause_and_reason(
     assert len(rows) == 1
     assert rows[0]["cause"] == cause
     assert rows[0]["reason"] == pressure.reason
+
+
+class MemoryCauseTelemetryTests(TestCase):
+    def test_braked_memory_refusal_reaches_span_and_incident(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider = TracerProvider()
+            provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=root)))
+            machine = MachineSignal(cores=4, load1=13.0, ram_available_gb=5.0)
+            brake = MachineBrake(braked=True)
+            with patch("teatree.core.admission_governor._shed_at", return_value=0.9):
+                decision = decide_admission(quota=UNREAD_QUOTA, machine=machine, load_brake=brake)
+                pressure = pressure_for(quota=UNREAD_QUOTA, machine=machine, load_brake=brake)
+
+            assert pressure.value == pytest.approx(1.5)
+            assert pressure.band.value == "halt"
+            assert decision.admit is False
+            assert decision.cause == "memory"
+            assert decision.reason == pressure.reason
+            assert decision.reason == "5.0 GB available at/under the 6 GB watermark"
+
+            with patch("teatree.core.telemetry.admission._provider", return_value=provider):
+                for _ in range(3):
+                    record_admission_decision(decision=decision, pressure=pressure, lane="headless")
+
+            now = dt.datetime.now(tz=dt.UTC)
+            rows = recent_pressure_observations(directory=root, now=now)
+            assert len(rows) == 3
+            assert {row["cause"] for row in rows} == {"memory"}
+            reports = _detector(root, now=now).detect()
+            assert len(reports) == 1
+            assert reports[0].dedup_key == "pressure_incident::memory"
+            assert reports[0].payload["suggested_action"].startswith("Inspect box-scoped RAM")
+            provider.shutdown()
 
 
 def test_numeric_prefix_quota_cause_is_not_dropped(tmp_path, now: dt.datetime) -> None:
