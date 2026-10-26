@@ -311,7 +311,7 @@ def _stage_env(private_root: str) -> dict[str, str]:
 
 
 def _snapshot_stage_db(repo: Path, env: dict[str, str]) -> None:
-    source = ControlDb(os.environ).for_repo(repo).path
+    source = ControlDb(os.environ).primary()
     if source.is_file():
         destination = ControlDb(env).for_repo(repo).path
         destination.parent.mkdir(parents=True, exist_ok=True)

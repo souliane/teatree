@@ -264,6 +264,42 @@ class TestVerifyGatesRunsBothStages:
             assert db.execute("SELECT brief FROM teatree_worktree").fetchone() == ("No migration.",)
         assert not snapshots[0].exists()
 
+    def test_stage_snapshot_reads_the_primary_db_when_the_worktree_db_is_empty(
+        self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        resolver = ControlDb({}, home=tmp_path)
+        primary = resolver.primary()
+        isolated = resolver.for_repo(worktree).path
+        assert primary != isolated
+        primary.parent.mkdir(parents=True)
+        isolated.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(primary)) as db:
+            db.execute("CREATE TABLE teatree_worktree (brief TEXT)")
+            db.execute("INSERT INTO teatree_worktree VALUES ('Primary plan.')")
+            db.commit()
+        with closing(sqlite3.connect(isolated)):
+            pass
+
+        def inspect_stage(_command: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
+            assert not check
+            assert cwd == worktree
+            snapshot = ControlDb(env, home=tmp_path).for_repo(worktree).path
+            with closing(sqlite3.connect(snapshot)) as db:
+                assert db.execute("SELECT brief FROM teatree_worktree").fetchone() == ("Primary plan.",)
+            return 0
+
+        with (
+            patch("teatree.cli.verify_gates.ControlDb", side_effect=lambda env: ControlDb(env, home=tmp_path)),
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=inspect_stage),
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+
+        assert result.exit_code == 0, _text(result)
+
     @pytest.mark.parametrize("registry_error", [BannedTermsUnreadableError, BannedTermsUnsetError])
     def test_unavailable_registry_still_isolates_stage(
         self, worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry_error: type[Exception]
