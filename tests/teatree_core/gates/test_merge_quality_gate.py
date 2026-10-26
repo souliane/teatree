@@ -18,6 +18,8 @@ critic, so the gate is satisfiable.
 """
 
 import contextlib
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -43,6 +45,8 @@ from teatree.core.models import (
     MergeClear,
     PlanArtifact,
     PullRequest,
+    Session,
+    Task,
     Ticket,
 )
 from teatree.core.models.mechanism_sketch import MechanismSketch
@@ -52,6 +56,7 @@ from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.review.nit_lane import NitPoint, nit_point_marker
 from teatree.quality.brief_constraints import ConstraintViolation
 from tests._forge_stub import merge_path_stdout
+from tests._git_repo import make_git_repo, run_git
 from tests.factories import waive_rubric
 
 _FORTY_HEX = "a" * 40
@@ -129,6 +134,92 @@ class TestDirectiveDetection(TestCase):
 
 class TestVerdictGate(TestCase):
     """The fail-closed row-check — no verdict / any unmet item refuses; a clean verdict passes."""
+
+    def _constraint_ticket(self, *, task_text: str, start_sha: str) -> Ticket:
+        ticket = _ordinary_ticket()
+        _record_merge_verdict(ticket, items=_clean_verdict_items())
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="coding",
+            status=Task.Status.COMPLETED,
+            execution_reason=task_text,
+        )
+        ticket.merge_extra(merge_into_dicts={"brief_start_heads": {str(task.pk): start_sha}})
+        return ticket
+
+    def test_quoted_other_issue_constraint_does_not_block_a_planned_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            source = repo / "src/teatree/config/settings.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("class AppSettings:\n    old: int = 1\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-qm", "baseline")
+            base = run_git(repo, "rev-parse", "HEAD")
+            source.write_text("class AppSettings:\n    old: int = 1\n    new: int = 2\n")
+            ticket = self._constraint_ticket(
+                task_text='Issue #42 says "No new setting"; add it here.',
+                start_sha=base,
+            )
+            with (
+                patch(
+                    "teatree.core.gates.merge_quality_gate.latest_plan_artifact",
+                    return_value=SimpleNamespace(plan_text="Add a new setting."),
+                ),
+                patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value=str(repo)),
+                patch("teatree.core.gates.merge_quality_gate.resolve_target_branch", return_value=base),
+            ):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_own_task_constraint_still_blocks_a_new_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            source = repo / "src/teatree/config/settings.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("class AppSettings:\n    old: int = 1\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-qm", "baseline")
+            base = run_git(repo, "rev-parse", "HEAD")
+            source.write_text("class AppSettings:\n    old: int = 1\n    new: int = 2\n")
+            ticket = self._constraint_ticket(task_text="No new setting.", start_sha=base)
+            with (
+                patch(
+                    "teatree.core.gates.merge_quality_gate.latest_plan_artifact",
+                    return_value=SimpleNamespace(plan_text="Add a new setting."),
+                ),
+                patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value=str(repo)),
+                patch("teatree.core.gates.merge_quality_gate.resolve_target_branch", return_value=base),
+                pytest.raises(MergeQualityVerdictError, match="brief constraint failed"),
+            ):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_prior_planned_migration_does_not_violate_later_round_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            base = run_git(repo, "rev-parse", "HEAD")
+            migration = repo / "src/teatree/core/migrations/0002_prior.py"
+            migration.parent.mkdir(parents=True)
+            migration.write_text("# prior migration\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-qm", "prior migration")
+            round_start = run_git(repo, "rev-parse", "HEAD")
+            (repo / "README.md").write_text("later round\n")
+            ticket = self._constraint_ticket(task_text="No migration this round.", start_sha=round_start)
+            with (
+                patch(
+                    "teatree.core.gates.merge_quality_gate.latest_plan_artifact",
+                    return_value=SimpleNamespace(plan_text="Add a migration."),
+                ),
+                patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value=str(repo)),
+                patch("teatree.core.gates.merge_quality_gate.resolve_target_branch", return_value=base),
+            ):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+                later = repo / "src/teatree/core/migrations/0003_later.py"
+                later.write_text("# later migration\n")
+                run_git(repo, "add", "src/teatree/core/migrations/0003_later.py")
+                with pytest.raises(MergeQualityVerdictError, match=r"migration changed: .*0003_later\.py"):
+                    check_merge_quality_verdict(ticket, _FORTY_HEX)
 
     def test_merge_rechecks_brief_constraints_after_the_push_gate(self) -> None:
         ticket = _ordinary_ticket()

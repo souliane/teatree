@@ -29,6 +29,7 @@ chokepoint BOTH autonomous merge paths cross, mirroring ``assert_review_verdict_
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -47,9 +48,10 @@ from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_i
 from teatree.core.review.finding_standard import FINDING_STANDARD
 from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, publish_nits, review_nits
 from teatree.core.worktree.target_branch import resolve_target_branch
-from teatree.quality.brief_constraints import extract_constraints
+from teatree.quality.brief_constraints import ConstraintViolation, extract_constraints
 from teatree.quality.changed_set import ChangedSetError
 from teatree.quality.push_gate import run_brief_constraints
+from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held
 
@@ -290,26 +292,54 @@ def check_merge_quality_verdict(
         _assert_nit_receipts(evidence_ticket, head, verdict)
 
 
+def ticket_brief_constraint_violations(
+    ticket: "Ticket", *, worktree: Path, base_ref: str, include_claimed: bool = False
+) -> tuple[ConstraintViolation, ...]:
+    plan = latest_plan_artifact(ticket)
+    plan_text = plan.plan_text if plan is not None else ""
+    violations = run_brief_constraints(worktree, base_ref=base_ref, brief=plan_text)
+    if violations:
+        return violations
+    statuses = (Task.Status.COMPLETED, Task.Status.CLAIMED) if include_claimed else (Task.Status.COMPLETED,)
+    task = (
+        Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging"), status__in=statuses)
+        .order_by("-created_at", "-pk")
+        .first()
+    )
+    if task is None or not extract_constraints(task.execution_reason):
+        return violations
+    extra = type(ticket).objects.values_list("extra", flat=True).get(pk=ticket.pk) or {}
+    starts = extra.get("brief_start_heads") or {}
+    start = starts.get(str(task.pk)) if isinstance(starts, dict) else None
+    if not start:
+        return violations
+    if not isinstance(start, str) or re.fullmatch(r"[0-9a-fA-F]{40}", start) is None:
+        message = "recorded task brief start head is invalid"
+        raise ChangedSetError(message)
+    if not git.check(repo=str(worktree), args=["merge-base", "--is-ancestor", start, "HEAD"]):
+        message = "recorded task brief start head is not an ancestor of HEAD"
+        raise ChangedSetError(message)
+    return (*violations, *run_brief_constraints(worktree, base_ref=start, brief=task.execution_reason))
+
+
 def _check_brief_constraints(ticket: "Ticket") -> None:
     plan = latest_plan_artifact(ticket)
-    task = Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging")).order_by("-created_at", "-pk").first()
-    brief = "\n".join(
-        part
-        for part in (
-            plan.plan_text if plan is not None else "",
-            task.execution_reason if task is not None else "",
-        )
-        if part
+    task = (
+        Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging"), status=Task.Status.COMPLETED)
+        .order_by("-created_at", "-pk")
+        .first()
     )
-    if not extract_constraints(brief):
+    if not extract_constraints(plan.plan_text if plan is not None else "") and not (
+        task and extract_constraints(task.execution_reason)
+    ):
         return
     worktree = dispatch_worktree_path(ticket)
     if not worktree:
         message = "brief constraints cannot be verified: ticket worktree is missing"
         raise MergeQualityVerdictError(message)
     try:
-        violations = run_brief_constraints(
-            Path(worktree), base_ref=resolve_target_branch(ticket, worktree), brief=brief
+        violations = ticket_brief_constraint_violations(
+            ticket, worktree=Path(worktree), base_ref=resolve_target_branch(ticket, worktree)
         )
     except (ChangedSetError, CommandFailedError, OSError) as exc:
         message = f"brief constraints could not be verified: {exc}"

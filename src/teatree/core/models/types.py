@@ -140,6 +140,7 @@ class PlanningHandoff(TypedDict, total=False):
 
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
+    brief_start_heads: dict[str, str]
     nit_follow_up: bool
     nit_lane_receipts: dict[str, JSONObject]
     nit_publication: dict[str, JSONObject]

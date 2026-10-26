@@ -27,6 +27,12 @@ class ConstraintViolation:
 
 _NEGATIVE = re.compile(r"\b(?:no|do\s+not|don't|must\s+not|without)\b([^.;\n]{0,120})", re.IGNORECASE)
 _EXAMPLE_GROUP = re.compile(r"\b(?:closed\s+grammar|for\s+example|e\.g\.|such\s+as)\s*\([^()\n]*\)", re.IGNORECASE)
+_BLOCK_QUOTE = re.compile(r"^[ \t]*>[^\n]*$", re.MULTILINE)
+_QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|(?<!\w)\'[^\'\n]*\'|\u2018[^\u2019\n]*\u2019')
+_ATTRIBUTED = re.compile(
+    r"\b(?:issue|pull\s+request|pr|mr)\b[^.;\n]{0,100}?\b(?:says?|said|states?|asks?|requires?|quotes?)\b[^.;\n]*",
+    re.IGNORECASE,
+)
 _PATH = r"([\w./-]+\.(?:py|md|toml|yaml|yml|json|cfg|ini))"
 _KEEP = re.compile(rf"\b(?:keep|leave)\s+{_PATH}\s+unchanged\b", re.IGNORECASE)
 _STAYS = re.compile(rf"\b{_PATH}\s+(?:stays?|must\s+remain)\s+unchanged\b", re.IGNORECASE)
@@ -35,6 +41,9 @@ _DO_NOT_TOUCH = re.compile(rf"\b(?:do\s+not|don't)\s+(?:change|touch|edit)\s+{_P
 
 def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
     text = _EXAMPLE_GROUP.sub("", text)
+    text = _BLOCK_QUOTE.sub("", text)
+    text = _QUOTED.sub(".", text)
+    text = _ATTRIBUTED.sub("", text)
     found: dict[tuple[ConstraintKind, str], BriefConstraint] = {}
     for match in _NEGATIVE.finditer(text):
         scope = match.group(1).lower()

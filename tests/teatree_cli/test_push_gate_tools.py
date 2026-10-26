@@ -1,5 +1,6 @@
 """Tests for cli/push_gate_tools.py — the ``t3 tool push-gate`` surface (#122)."""
 
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from teatree.cli.push_gate_tools import _brief_for_worktree
 from teatree.core.models import PlanArtifact, Session, Task, Ticket, Worktree
 from teatree.quality.brief_constraints import ConstraintViolation
 from teatree.quality.push_gate import PushGatePlan, PushGateResult
+from tests._git_repo import make_git_repo, run_git
 
 runner = CliRunner()
 
@@ -63,6 +65,41 @@ class TestWorktreeBrief(TestCase):
             execution_reason="No extra migration.",
         )
         assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo extra migration."
+
+    def test_push_checks_later_task_limit_against_its_own_round(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            base = run_git(repo, "rev-parse", "HEAD")
+            migration = repo / "src/teatree/core/migrations/0002_prior.py"
+            migration.parent.mkdir(parents=True)
+            migration.write_text("# prior migration\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-qm", "prior migration")
+            round_start = run_git(repo, "rev-parse", "HEAD")
+            (repo / "README.md").write_text("later round\n")
+            ticket = Ticket.objects.create()
+            Worktree.objects.create(
+                ticket=ticket, repo_path=str(repo), branch="main", extra={"worktree_path": str(repo)}
+            )
+            PlanArtifact.objects.create(ticket=ticket, plan_text="Add a migration.")
+            task = Task.objects.create(
+                ticket=ticket,
+                session=Session.objects.create(ticket=ticket),
+                phase="coding",
+                status=Task.Status.COMPLETED,
+                execution_reason="No migration this round.",
+            )
+            ticket.merge_extra(merge_into_dicts={"brief_start_heads": {str(task.pk): round_start}})
+            clean = PushGateResult(
+                ok=True, doctest_ok=True, astgrep_findings=(), astgrep_deferred=False, notes=(), exit_code=0
+            )
+            with (
+                patch("pathlib.Path.cwd", return_value=repo),
+                patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
+                patch("teatree.cli.push_gate_tools.run_push_gate", return_value=clean),
+            ):
+                result = runner.invoke(app, ["tool", "push-gate", "--run", "--base", base])
+            assert result.exit_code == 0, result.output
 
 
 _SCOPED = PushGatePlan(
@@ -124,9 +161,8 @@ class TestRunMode:
     def test_plain_word_constraint_refuses_before_doctest(self) -> None:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
-            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value="No migration."),
             patch(
-                "teatree.cli.push_gate_tools.run_brief_constraints",
+                "teatree.cli.push_gate_tools._constraint_violations",
                 return_value=(ConstraintViolation("no_migration", "0002.py", "migration changed: 0002.py"),),
             ),
             patch("teatree.cli.push_gate_tools.run_push_gate") as sweep,
@@ -148,7 +184,7 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=ok),
-            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
+            patch("teatree.cli.push_gate_tools._constraint_violations", return_value=()),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
         assert result.exit_code == 0
@@ -167,7 +203,7 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=no_rules),
-            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
+            patch("teatree.cli.push_gate_tools._constraint_violations", return_value=()),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
         assert result.exit_code == 1
@@ -186,7 +222,7 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=bad),
-            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
+            patch("teatree.cli.push_gate_tools._constraint_violations", return_value=()),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
         assert result.exit_code == 1
@@ -204,7 +240,7 @@ class TestRunMode:
         with (
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=aborted),
-            patch("teatree.cli.push_gate_tools._brief_for_worktree", return_value=""),
+            patch("teatree.cli.push_gate_tools._constraint_violations", return_value=()),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
 

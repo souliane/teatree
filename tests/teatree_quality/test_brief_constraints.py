@@ -32,6 +32,21 @@ def test_do_not_forget_is_not_a_negative_setting_constraint() -> None:
     assert extract_constraints("Do not forget to update the settings docs.") == ()
 
 
+def test_quoted_external_issue_limit_is_not_an_instruction() -> None:
+    text = (
+        'Issue #42 says "No new setting or flag"; this plan permits a setting.\n'
+        "> No migration.\n"
+        "Another pull request states No new public name.\n"
+    )
+    assert extract_constraints(text) == ()
+
+
+def test_own_instruction_after_a_quote_still_applies() -> None:
+    assert {item.kind for item in extract_constraints('Issue #42 says "No new setting." Do not add a migration.')} == {
+        "no_migration"
+    }
+
+
 def test_an_import_is_not_a_new_public_definition() -> None:
     path = "src/teatree/core/example.py"
     changes = ChangedSet((ChangeEntry("M", path),), "origin/main")
