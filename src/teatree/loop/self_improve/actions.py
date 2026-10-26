@@ -192,6 +192,12 @@ def _require_ticket_owner(ticket: Ticket, overlay_name: str) -> None:
         raise ImproperlyConfigured(msg)
 
 
+def _opens_ticket(linked_ticket: Ticket | None) -> bool:
+    return (
+        linked_ticket is None or Ticket.objects.filter(pk=linked_ticket.pk, state__in=Ticket.finished_states()).exists()
+    )
+
+
 def _record_ticket_followup(report: DetectorReport, *, overlay_name: str, snapshot: str = "") -> SelfImproveFiring:
     """Create one internal fix ticket and a pending planning task for a ticket-rung smell.
 
@@ -286,11 +292,8 @@ def run_action_ladder(
             auto_fix_callable(report)
             auto_fix_executed = True
 
-    if (
-        rung == ActionRung.TICKET
-        and (linked_ticket is None or linked_ticket.state in Ticket.finished_states())
-        and (reason := open_pr_start_cap_hold_reason())
-    ):
+    opens_ticket = rung == ActionRung.TICKET and _opens_ticket(linked_ticket)
+    if opens_ticket and (reason := open_pr_start_cap_hold_reason()):
         logger.warning("self-improve is claiming nothing new: %s", reason)
         return None
 
@@ -298,7 +301,7 @@ def run_action_ladder(
         _record_ticket_followup(
             report,
             overlay_name=resolved_overlay or _repair_overlay_name(overlay_name),
-            snapshot=box_memory_snapshot(report),
+            snapshot=box_memory_snapshot(report) if opens_ticket else "",
         )
         if rung == ActionRung.TICKET
         else record_firing(report, action=rung)

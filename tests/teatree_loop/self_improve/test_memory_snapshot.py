@@ -121,7 +121,7 @@ class MemorySnapshotTicketTests(TestCase):
             linked_root.symlink_to(root, target_is_directory=True)
             stage_worker_tree(proc)
             (proc / "11" / "cwd").symlink_to(root / "ticket-5321" / "repo")
-            stage_process(proc, 20, ppid=1, rss_pages=768, comm="other")
+            stage_process(proc, 20, ppid=1, rss_pages=768, comm="other/side")
             stage_process(proc, 30, ppid=1, rss_pages=128, comm="claude")
             stage_process(proc, 31, ppid=30, rss_pages=512, comm="shell")
             stage_process(proc, 40, ppid=1, rss_pages=128, comm="2.1.300")
@@ -130,6 +130,12 @@ class MemorySnapshotTicketTests(TestCase):
                 result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert context.splitlines()[:3] == [
+            "Self-improvement finding: staged pressure",
+            "Dedup key: pressure_incident::memory",
+            "Suggested action: Inspect the box",
+        ]
+        assert context.splitlines()[3].startswith("Box memory snapshot (")
         assert "Judged RAM: 4096 MiB (cgroup bound)" in context, context
         assert "Host MemAvailable: 12288 MiB" in context
         assert "Cgroup cap: 16384 MiB; headroom: 4096 MiB; box-scoped: yes" in context
@@ -146,6 +152,12 @@ class MemorySnapshotTicketTests(TestCase):
         assert "pid=31 ppid=30" in context
         assert "pid=41 ppid=40" in context
         rows = process_rows(context)
+        age = int(1000 - 10000 / memory_snapshot.CLOCK_TICKS_PER_SECOND)
+        rss = 1024 * os.sysconf("SC_PAGE_SIZE") // _MIB
+        assert rows["pid=11"] == (
+            f"pid=11 ppid=10 age={age}s rss={rss} MiB comm=python ticket-dir=ticket-5321 attached"
+        )
+        assert "comm=other_side " in rows["pid=20"]
         assert rows["pid=31"].endswith(" attached")
         assert rows["pid=41"].endswith(" attached")
         assert "attached = ancestry reaches the worker or an agent CLI" in context
@@ -239,7 +251,9 @@ class MemorySnapshotTicketTests(TestCase):
             assert first is not None
             initial = Ticket.objects.get(pk=first.firing.ticket_id).context
             stage_process(proc, 21, ppid=1, rss_pages=1024, comm="second")
-            second = run_action_ladder(report("memory", state_hash="second"))
+            with patch.object(memory_snapshot, "host_proc_root", wraps=memory_snapshot.host_proc_root) as root_probe:
+                second = run_action_ladder(report("memory", state_hash="second"))
+            root_probe.assert_not_called()
             assert second is not None
             assert Ticket.objects.get(pk=second.firing.ticket_id).context == initial
             assert Ticket.objects.count() == 1
