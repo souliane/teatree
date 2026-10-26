@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from teatree.paths import DATA_DIR
+from teatree.paths import CANONICAL_DB, DATA_DIR, ControlDb, canonical_db_in
 
 #: The #1796 :class:`~teatree.loops.worker.LoopWorker` flock singleton name — at most
 #: one worker drains the shared queue per box. Homed here, next to the singleton
@@ -52,6 +52,26 @@ from teatree.paths import DATA_DIR
 #: (PR-28 completed the #5 deprecation: the pre-#1796 ``teatree-worker`` singleton is
 #: gone), so at most one worker of ANY kind drains the shared queue.
 WORKER_SINGLETON = "worker"
+
+
+def _worker_control_database(*, primary: bool = False) -> Path:
+    if primary:
+        home = Path.home()
+        return canonical_db_in(ControlDb(env=os.environ, home=home).primary_data_dir(), env=os.environ, home=home)
+    return CANONICAL_DB
+
+
+def worker_control_lock_path(*, primary: bool = False) -> Path:
+    database = _worker_control_database(primary=primary).resolve()
+    return database.with_name(f"{database.name}.worker.pid")
+
+
+def worker_lock_is_held() -> bool:
+    if flock_is_held(WORKER_SINGLETON):
+        return True
+    lock_path = worker_control_lock_path(primary=True)
+    return lock_path.is_file() and flock_is_held(WORKER_SINGLETON, pid_path=lock_path)
+
 
 #: The ``TEATREE_ROLE`` a containerized deployment gives the service that is SUPPOSED
 #: to hold :data:`WORKER_SINGLETON`. A bare-host process has no role at all, which is
@@ -224,6 +244,7 @@ class AlreadyRunningError(RuntimeError):
                 holder_context.hostname if holder_context else "",
                 mine.pid_namespace,
                 mine.role,
+                str(pid_path.resolve()),
             )
         )
 

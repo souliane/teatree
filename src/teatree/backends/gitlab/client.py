@@ -77,6 +77,8 @@ def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBackend Protocol surface, not poor encapsulation.
+    forge: str = "gitlab"
+
     def __init__(
         self,
         *,
