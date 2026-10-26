@@ -144,16 +144,12 @@ def test_exit_69_for_a_wedged_container_secret_store(tmp_path: Path) -> None:
 
 
 def test_exit_69_for_an_unavailable_container_secret_reader(tmp_path: Path) -> None:
-    bin_dir = tmp_path / "bin"
-    for tool in ("head", "timeout"):
-        (bin_dir / tool).symlink_to(shutil.which(tool) or tool)
-
     proc = subprocess.run(
         [shutil.which("sh") or "sh", "-c", container_credential_prologue(), "t3-in-container", "true"],
         capture_output=True,
         text=True,
         env={
-            "PATH": str(bin_dir),
+            "PATH": str(tmp_path),
             "T3_SECRET_READER": str(tmp_path / "missing-reader"),
             "TEATREE_DEPLOY_CHECKOUT": str(tmp_path / "missing-checkout"),
             "TEATREE_GITLAB_TOKEN_PASS_PATH": "gitlab/pat",
