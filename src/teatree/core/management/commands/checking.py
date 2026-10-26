@@ -21,7 +21,6 @@ human view on stderr — and returned as the typed payload.
 import hashlib
 import io
 import os
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import IO, TYPE_CHECKING, Annotated, cast
@@ -44,14 +43,12 @@ from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.ref_render import render_ref
-from teatree.core.reporting.checking_types import OwnerWaitItem
+from teatree.core.reporting.checking_types import CheckItem, OwnerWaitItem
 from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
-
-_WAIT_AGE = re.compile(r"\bwaiting (?:now|\d+[mhd])\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,19 +124,22 @@ def _recap_table_dm(
         blocks.extend(message.blocks)
         fences.append(message.fence)
     if internal_escalations:
-        fences.append(f"{internal_escalations} internal escalations: factory work, not questions")
+        line = f"{internal_escalations} internal escalations: factory work, not questions"
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": line}})
+        fences.append(line)
     if not fences:
         return [], ""
     return blocks, f"{header}\n" + "\n".join(fences)
 
 
+def _item_identity(item: CheckItem) -> str:
+    detail = f"{item.kind}:{item.row_id}:{item.owner_only}" if isinstance(item, OwnerWaitItem) else item.detail
+    return f"{item.label}|{item.url}|{item.title}|{detail}"
+
+
 def _recap_key(groups: list[CheckGroup], *, scope: str, internal_escalations: int = 0) -> str:
     """Content-hashed idempotency key so an unchanged recap never re-DMs."""
-    payload = "\n".join(
-        f"{group.title}|{item.label}|{item.url}|{item.title}|{_WAIT_AGE.sub('waiting', item.detail)}"
-        for group in groups
-        for item in group.items
-    )
+    payload = "\n".join(f"{group.title}|{_item_identity(item)}" for group in groups for item in group.items)
     payload += f"\ninternal_escalations:{internal_escalations}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     return f"checking_recap:{scope}:{digest}"

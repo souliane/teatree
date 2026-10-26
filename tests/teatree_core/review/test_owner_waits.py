@@ -55,6 +55,16 @@ class TestOwnerWaitCards(TestCase):
         assert second.pk != first.pk
         assert list(DeferredQuestion.owner_pending().values_list("pk", flat=True)) == [second.pk]
 
+    def test_new_head_leaves_a_mirrored_card_pending_for_its_in_flight_reply(self) -> None:
+        first = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
+        assert first is not None
+        assert first.mark_mirrored(channel="D1", slack_ts="1700000000.000100")
+
+        second = ask_owner_to_read(PR_URL, "A reviewed change", "b" * 40)
+
+        assert second is not None
+        assert set(DeferredQuestion.owner_pending().values_list("pk", flat=True)) == {first.pk, second.pk}
+
     def test_held_pr_card_reopens_when_head_returns(self) -> None:
         first = ask_owner_to_read(PR_URL, "A reviewed change", "a" * 40)
         second = ask_owner_to_read(PR_URL, "A reviewed change", "b" * 40)

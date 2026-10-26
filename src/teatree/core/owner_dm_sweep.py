@@ -29,7 +29,7 @@ from datetime import datetime
 from teatree.core.managers_issue_match import reference_issue_q
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.owner_threads import OwnerThread, open_owner_threads, resolve_owner_thread
-from teatree.core.review.owner_waits import canonical_wait_subject
+from teatree.core.review.owner_waits import LIVE_POST_MARKER_PREFIX, canonical_wait_subject
 from teatree.url_classify import find_forge_refs
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ def _resolution_reason(
 
 def _thread_fingerprint(thread: OwnerThread) -> tuple[str, str]:
     subject = thread.question.evidence.get("subject")
-    if not subject and thread.question.dedupe_marker.startswith("owner-wait:post:"):
+    if not subject and thread.question.dedupe_marker.startswith(LIVE_POST_MARKER_PREFIX):
         subject = thread.question.dedupe_marker.rpartition(":")[0]
     return (
         question_fingerprint(thread.question.question),

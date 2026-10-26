@@ -7,18 +7,14 @@ All functions here are implementation details — callers import from
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.reporting.checking_types import OwnerWaitItem
+from teatree.core.reporting.checking_types import CheckItem, OwnerWaitItem
 from teatree.core.waiting import WaitingKind, format_age, gather_waiting
-
-if TYPE_CHECKING:
-    from teatree.core.checking import CheckItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,14 +127,13 @@ def merged_entries_from_qs(
     now: datetime,
     scope: _MergedScope,
     overlay_tag: str = "",
-) -> "list[tuple[datetime, CheckItem]]":
+) -> list[tuple[datetime, CheckItem]]:
     """Every scoped merge in the window as ``(merged_at, item)``, newest first.
 
     The timestamp travels with the item so a caller spanning several overlays can
     order the union before capping it — capping each overlay's slice first let one
     overlay's older merges displace another's newer ones.
     """
-    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
     from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
 
     qs = (
@@ -189,8 +184,6 @@ def motion_for_overlay(
     seen_failed: set[int],
 ) -> tuple[list, list]:
     """Query ticket transitions and failed attempts for one overlay."""
-    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
-
     since, now = window
     in_flight: list = []
     failed: list = []

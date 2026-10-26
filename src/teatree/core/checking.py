@@ -49,10 +49,7 @@ from teatree.core._checking_gather import (
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.reporting import checking_types
 from teatree.core.reporting.checking_types import DEFAULT_CAP, CheckGroup, CheckGroupDict, CheckItem
-
-CheckItemDict = checking_types.CheckItemDict
 
 
 class CheckingReportDict(TypedDict):

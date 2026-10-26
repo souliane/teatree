@@ -11,7 +11,8 @@ from teatree.core.models.deferred_question import DeferredQuestion, DeferredQues
 from teatree.core.models.live_post_approval import canonical_mr_scope
 
 logger = logging.getLogger(__name__)
-_HELD_PR_MARKER_PREFIX = "owner-wait:held-pr:"
+HELD_PR_MARKER_PREFIX = "owner-wait:held-pr:"
+LIVE_POST_MARKER_PREFIX = "owner-wait:post:"
 
 
 def canonical_wait_subject(subject: str) -> str:
@@ -53,7 +54,7 @@ def ask_owner_to_read(pr_url: str, title: str, head_sha: str) -> DeferredQuestio
         return None
     question = "What do you want to do with this pull request after reviewing it?"
     card = _held_card(subject, title)
-    prefix = f"{_HELD_PR_MARKER_PREFIX}{_subject_key(subject)}:"
+    prefix = f"{HELD_PR_MARKER_PREFIX}{_subject_key(subject)}:"
     head_prefix = f"{prefix}{head[:16]}"
     latest = DeferredQuestion.objects.filter(dedupe_marker__startswith=head_prefix).order_by("-pk").first()
     marker = f"{prefix}{head[:20]}" if latest is None else latest.dedupe_marker
@@ -64,7 +65,7 @@ def ask_owner_to_read(pr_url: str, title: str, head_sha: str) -> DeferredQuestio
     except DeferredQuestionError:
         logger.exception("held PR card refused for %s", subject)
         return None
-    for previous in DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=prefix).exclude(pk=row.pk):
+    for previous in DeferredQuestion.unmirrored_pending().filter(dedupe_marker__startswith=prefix).exclude(pk=row.pk):
         previous.mark_stale(f"the reviewed head changed for {subject}", resolver_id="held_pr_new_head")
     return row
 
@@ -73,7 +74,7 @@ def owner_kept_wait(question: DeferredQuestion, card: QuestionCard | None) -> bo
     return (
         card is None
         or card.decision in OWNER_KEPT_DECISIONS
-        or question.dedupe_marker.startswith(_HELD_PR_MARKER_PREFIX)
+        or question.dedupe_marker.startswith(HELD_PR_MARKER_PREFIX)
     )
 
 
@@ -107,7 +108,7 @@ def ask_owner_to_approve_post(mr_url: str, *, review_url: str = "") -> DeferredQ
     subject = canonical_wait_subject(review_url or mr_url) if "://" in (review_url or mr_url) else ""
     question = "Will you send a separate approval message before a live review comment?"
     card = _post_card(subject)
-    prefix = f"owner-wait:post:{_subject_key(scope)}:"
+    prefix = f"{LIVE_POST_MARKER_PREFIX}{_subject_key(scope)}:"
     resolved = (
         DeferredQuestion.objects.filter(dedupe_marker__startswith=prefix)
         .exclude(answered_at__isnull=True, dismissed_at__isnull=True)
@@ -141,6 +142,6 @@ def settle_live_post_wait(mr_url: str) -> None:
     subject = canonical_mr_scope(mr_url)
     if not subject:
         return
-    prefix = f"owner-wait:post:{_subject_key(subject)}:"
+    prefix = f"{LIVE_POST_MARKER_PREFIX}{_subject_key(subject)}:"
     for row in DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=prefix):
         row.mark_stale(f"the live post was approved for {subject}", resolver_id="live_post_approved")

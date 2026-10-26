@@ -352,6 +352,17 @@ class TestCheckingNotify:
         }
         assert set(subjects) <= links
 
+    def test_internal_escalation_count_reaches_the_native_blocks_beside_owner_waits(
+        self, checkpoint_file: Path
+    ) -> None:
+        assert ask_owner_to_read("https://github.com/acme/widgets/pull/8", "review 8", "8" * 40) is not None
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+
+        with patch("teatree.core.management.commands.checking.notify_user", wraps=notify_user) as send:
+            _call("checking", "show", "--this-overlay", "--notify", "--no-advance")
+
+        assert "1 internal escalations" in str(send.call_args.kwargs["blocks"])
+
     def test_internal_only_report_is_visible_in_human_view_and_recap(self, checkpoint_file: Path) -> None:
         DeferredQuestion.record("repair-halt on coding: investigate?")
 
