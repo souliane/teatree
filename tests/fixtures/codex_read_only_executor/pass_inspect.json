@@ -134,6 +134,15 @@
       "RW": false,
       "Source": "/home/<user>/teatree-deploy/.git",
       "Type": "bind"
+    },
+    {
+      "Destination": "/opt/teatree/codex-source-git",
+      "Mode": "ro",
+      "Name": "example_codex_home",
+      "Propagation": "",
+      "RW": false,
+      "Source": "/var/lib/docker/volumes/example_codex_home/_data/workspace/example/project/.git",
+      "Type": "volume"
     }
   ]
 }

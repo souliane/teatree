@@ -1,0 +1,9 @@
+services:
+  teatree-ro-executor:
+    volumes:
+      - type: volume
+        source: teatree_codex_home
+        target: /opt/teatree/codex-source-git
+        read_only: true
+        volume:
+          subpath: ${TEATREE_CODEX_SOURCE_GIT_SUBPATH:?set by deploy.sh}

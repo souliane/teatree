@@ -14,7 +14,7 @@ from teatree.agents.codex_read_only_executor import ExecutorAttestation
 from teatree.agents.codex_sandbox import CONTAINER_IS_SANDBOX_ENV, container_is_the_sandbox
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.live_delivery import MAILBOX_PHASE_ENV
-from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
+from teatree.agents.sdk_tool_map import CODEX_WORKER_EXECUTION_PHASES, sdk_disallowed_tools_for_phase
 from teatree.utils.ports import running_in_container
 
 if TYPE_CHECKING:
@@ -138,6 +138,13 @@ def codex_phase_policy_unavailable_reason(disallowed_tools: Iterable[str]) -> st
     return None
 
 
+def codex_worker_denials(disallowed_tools: Iterable[str], phase: str) -> tuple[str, ...]:
+    denied = set(disallowed_tools)
+    if phase in CODEX_WORKER_EXECUTION_PHASES and container_is_the_sandbox():
+        denied -= _MUTATION_TOOLS
+    return tuple(sorted(denied))
+
+
 def codex_login_unavailable_reason(code_home: Path) -> str | None:
     """Stat the private home's ``auth.json`` without opening it; ``t3 codex auth check`` is what creates it."""
     if (code_home / "auth.json").is_file():
@@ -163,7 +170,9 @@ def codex_model_unavailable_reason(code_home: Path, model: str) -> str | None:
 
 def codex_worker_unavailable_reason(context: "HarnessBuildContext") -> str | None:
     if context.phase and (
-        reason := codex_phase_policy_unavailable_reason(sdk_disallowed_tools_for_phase(context.phase))
+        reason := codex_phase_policy_unavailable_reason(
+            codex_worker_denials(sdk_disallowed_tools_for_phase(context.phase), context.phase)
+        )
     ):
         return f"phase {context.phase!r} {reason.lower()}"
     if container_is_the_sandbox() and (rules := sorted((resolve_codex_home() / "rules").glob("*.rules"))):

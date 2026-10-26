@@ -3,6 +3,7 @@
 import errno
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -177,6 +178,16 @@ def _readable(path: str) -> bool:
 def _secret_file(name: str, path: str) -> bool:
     if secret_name(name):
         return _readable(path)
+    if name in {"config", "config.worktree"} and "/.git/" in path:
+        content = _head(path, KEY_READ_BYTES + 1)
+        normalized = re.sub(rb"\\\r?\n\s*", b"", content) if content is not None else None
+        if content is not None and (
+            len(content) > KEY_READ_BYTES
+            or re.search(
+                rb"https?://[^\s/@]+@|^\s*(?:extraheader|password)\s*=", normalized or b"", re.IGNORECASE | re.MULTILINE
+            )
+        ):
+            return True
     head = _head(path, KEY_READ_BYTES) if key_name(name) else None
     return head is not None and any(marker in head for marker in PRIVATE_KEY_MARKERS)
 

@@ -30,6 +30,17 @@ def test_zero_route_lists_preserve_legacy_routing() -> None:
     assert resolve_skill_route({"code": None}, ["code"], phase_candidates=[]) is None
 
 
+def test_runtime_fallback_requires_a_failure_signal_not_narration() -> None:
+    assert routing_mod.runtime_fallback_reason("the process finished") is None
+    assert routing_mod.runtime_fallback_reason("failed to start") == "failed to start"
+    assert routing_mod.runtime_fallback_reason("spawn x ENOENT") == "spawn x ENOENT"
+    assert (
+        routing_mod.runtime_fallback_reason("agent could not be spawned: E2BIG") == "agent could not be spawned: E2BIG"
+    )
+    assert routing_mod.runtime_fallback_reason("ProcessError: the agent process exited with code 1") is not None
+    assert routing_mod.runtime_fallback_reason("Failed to spawn: pytest") == "Failed to spawn: pytest"
+
+
 def test_one_loaded_skill_owns_ordered_route() -> None:
     route = _routes("opus", "sonnet")
 

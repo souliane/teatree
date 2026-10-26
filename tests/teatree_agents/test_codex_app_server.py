@@ -31,7 +31,7 @@ from teatree.agents.codex_app_server import (
     codex_app_server_spec,
     codex_process_env,
 )
-from teatree.agents.codex_app_server_messages import tool_blocks, translate_usage
+from teatree.agents.codex_app_server_messages import CodexEventTranslator, tool_blocks, translate_usage
 from teatree.agents.codex_app_server_options import CONTAINER_IS_SANDBOX_ENV
 from teatree.agents.codex_auth_cache import CODEX_AUTH_PASS_ENTRY, CodexAuthCache, CodexAuthCacheError
 from teatree.agents.harness_registry import (
@@ -48,6 +48,23 @@ from tests.teatree_agents._codex_command_shape import codex_wrapped
 from tests.teatree_agents._route_fakes import write_codex_login
 
 _THREAD_ID = "0197e1d4-1f5f-7b00-8000-000000000001"
+
+
+def test_failed_turn_result_does_not_reclassify_agent_narration_as_transport_error() -> None:
+    translator = CodexEventTranslator()
+    translator._text.append("The process finished and I checked credentials in the docs.")
+
+    failed = translator._result_message({"status": "failed"}, _THREAD_ID, "gpt-test")
+    quota = translator._result_message(
+        {"status": "failed", "error": {"message": "429 quota exhausted"}}, _THREAD_ID, "gpt-test"
+    )
+    completed = translator._result_message({"status": "completed"}, _THREAD_ID, "gpt-test")
+
+    assert failed.result == "turn failed"
+    assert quota.result == "429 quota exhausted"
+    assert completed.result == "The process finished and I checked credentials in the docs."
+
+
 _PROTOCOL_CONTRACT = Path(__file__).parents[1] / "fixtures" / "codex_app_server" / "0.155.1-contract.json"
 _FAKE_SERVER = r"""
 import json
@@ -128,6 +145,9 @@ for raw in sys.stdin:
         if account_type == "chatgpt":
             account |= {"email": "operator@example.test", "planType": "pro"}
         emit({"id": request_id, "result": {"account": account, "requiresOpenaiAuth": True}})
+        continue
+    if method == "mcpServerStatus/list":
+        emit({"id": request_id, "result": {"data": [], "nextCursor": None}})
         continue
     if method in {"thread/start", "thread/resume", "turn/start"} and refuse_ungated_experimental_field(
         method, request_id, request["params"]
@@ -544,6 +564,44 @@ def test_default_code_home_is_private_teatree_data_not_ambient_codex_home(
     monkeypatch.setattr("teatree.agents.codex_auth_cache.data_dir_root", lambda: tmp_path / "data")
 
     assert CodexAppServerHarness(refusal=None).code_home == tmp_path / "data" / "codex-home"
+
+
+@pytest.mark.parametrize("phase", ["bughunt", "dogfood_smoke", "eval_local"])
+def test_execution_phase_uses_the_current_worker_write_policy(
+    phase: str, fake_codex: tuple[tuple[str, ...], Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    command, log = fake_codex
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+    harness = CodexAppServerHarness(
+        refusal=None, code_home=tmp_path / "home", command=command, worker_execution_phase=phase
+    )
+    options = ClaudeAgentOptions(
+        cwd="/work",
+        permission_mode="bypassPermissions",
+        disallowed_tools=["Write", "Edit", "NotebookEdit", "Agent", "Task"],
+        env={"FAKE_CODEX_LOG": str(log)},
+    )
+
+    async def run() -> None:
+        with (
+            patch.object(CodexAuthCache, "hydrate", return_value=tmp_path / "home" / "auth.json"),
+            patch.object(CodexAuthCache, "persist", return_value=None),
+        ):
+            async with harness.open(options) as session:
+                await session.query("run the phase")
+                _ = [message async for message in session.receive_response()]
+
+    asyncio.run(run())
+
+    requests = _requests(log)
+    start = next(request for request in requests if request.get("method") == "thread/start")
+    params = start["params"]
+    assert isinstance(params, dict)
+    config = params["config"]
+    assert isinstance(config, dict)
+    assert params["sandbox"] == "danger-full-access"
+    assert config["projects"] == {"/work": {"trust_level": "untrusted"}}
+    assert harness.capabilities.read_only_venue is False
 
 
 def test_configured_private_home_overrides_ambient_codex_home_in_the_child(

@@ -1,13 +1,19 @@
 """What the read-only executor must look like, judged from its live probe and docker inspect."""
 
+import os
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 EXECUTOR_HOME_ROOT: Final = "/run/t3-ro"
 SCRATCH_ROOT: Final = "/run/t3-tmp"
 CLONE_ROOT: Final = "/home/teatree/workspace"  # privacy-scan:allow — the box's public, documented deploy home
 WORKTREE_ROOT: Final = f"{CLONE_ROOT}/t3-workspaces"
+CODEX_HOME_ROOT: Final = os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
+CODEX_SOURCE_GIT: Final = "/opt/teatree/codex-source-git"
+_CODEX_SOURCE_GIT_SUBPATH: Final = os.environ.get("TEATREE_CODEX_SOURCE_GIT_SUBPATH", "workspace/example/project/.git")
 DECLARED_TMPFS: Final = frozenset({EXECUTOR_HOME_ROOT, SCRATCH_ROOT})
 KERNEL_ROOTS: Final = ("/proc", "/sys")
 DEVICE_ROOT: Final = "/dev"
@@ -50,6 +56,20 @@ _NO_NEW_PRIVILEGES: Final = ("no-new-privileges:true",)
 
 class MalformedAnswerError(ValueError):
     pass
+
+
+def codex_source_git_subpath() -> str:
+    value = _CODEX_SOURCE_GIT_SUBPATH
+    parts = PurePosixPath(value).parts
+    if (
+        len(parts) != len(("workspace", "owner", "repo", ".git"))
+        or parts[0] != "workspace"
+        or parts[3] != ".git"
+        or not all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", part) for part in parts[1:3])
+    ):
+        message = "TEATREE_CODEX_SOURCE_GIT_SUBPATH"
+        raise MalformedAnswerError(message)
+    return value
 
 
 def _require(field: str, *, holds: bool) -> None:
@@ -236,17 +256,36 @@ def _host_config_refusal(host: Mapping[str, object], project: str) -> str | None
     return next((reason for passed, reason in checks if not passed), None)
 
 
-def _expected_mounts(worker: Mapping[str, _DockerMount], checkout: str) -> dict[str, _DockerMount | None]:
-    """The worker's clone and worktree mounts as they are, and only the .git of its deploy checkout."""
+def _expected_mounts(
+    worker: Mapping[str, _DockerMount], checkout: str, *, codex_source_git_present: bool
+) -> dict[str, _DockerMount | None]:
+    """The worker's checkout mounts and the two .git trees its worktrees can point into."""
     whole = worker.get(checkout)
     git = None if whole is None else _DockerMount(whole.kind, f"{whole.source}/.git", whole.name, read_write=False)
-    return {CLONE_ROOT: worker.get(CLONE_ROOT), WORKTREE_ROOT: worker.get(WORKTREE_ROOT), f"{checkout}/.git": git}
+    codex = worker.get(CODEX_HOME_ROOT) if codex_source_git_present else None
+    source_git = (
+        None
+        if codex is None
+        else _DockerMount(codex.kind, f"{codex.source}/{codex_source_git_subpath()}", codex.name, read_write=False)
+    )
+    expected = {
+        CLONE_ROOT: worker.get(CLONE_ROOT),
+        WORKTREE_ROOT: worker.get(WORKTREE_ROOT),
+        f"{checkout}/.git": git,
+    }
+    if codex_source_git_present:
+        expected[CODEX_SOURCE_GIT] = source_git
+    return expected
 
 
 def _docker_mount_refusal(
-    executor: Mapping[str, object], worker_mounts: Mapping[str, _DockerMount], checkout: str
+    executor: Mapping[str, object],
+    worker_mounts: Mapping[str, _DockerMount],
+    checkout: str,
+    *,
+    codex_source_git_present: bool,
 ) -> str | None:
-    expected = _expected_mounts(worker_mounts, checkout)
+    expected = _expected_mounts(worker_mounts, checkout, codex_source_git_present=codex_source_git_present)
     for destination, mount in _DockerMount.by_destination(executor["Mounts"], "Mounts").items():
         if destination not in expected:
             return f"it mounts {destination}, which is not a declared read-only mount"
@@ -320,13 +359,21 @@ def _process_refusal(probe: _Probe) -> str | None:
 def _root_refusal(probe: _Probe) -> str | None:
     for root, answer in sorted(probe.roots.items()):
         if not (answer.exists and answer.is_dir) or answer.write != "EROFS":
-            return f"the checkout {root} is not a directory on a read-only mount there ({answer.write})"
+            remedy = f"; re-home a legacy worktree under {WORKTREE_ROOT}" if not _under(root, CLONE_ROOT) else ""
+            return f"the checkout {root} is not a directory on a read-only mount there ({answer.write}){remedy}"
         if answer.git != "OK":
             return f"git cannot read the checkout {root} there ({answer.git})"
     return None
 
 
-def evaluate(observation: object, executor: object, worker: object, roots: Sequence[str]) -> str | None:
+def evaluate(
+    observation: object,
+    executor: object,
+    worker: object,
+    roots: Sequence[str],
+    *,
+    codex_source_git_present: bool = True,
+) -> str | None:
     try:
         worker_answer = _exact(worker, "worker", frozenset({"Id", "Project", "Mounts", "CheckoutEnv"}))
         executor_answer = _exact(executor, "executor", frozenset({"Id", "Mounts", "HostConfig"}))
@@ -334,11 +381,16 @@ def evaluate(observation: object, executor: object, worker: object, roots: Seque
         probe = _Probe.parse(observation, roots)
         mounts = {mount.target: mount for mount in probe.mounts}
         read_only = {"/", CLONE_ROOT, WORKTREE_ROOT, f"{checkout}/.git"}
+        if codex_source_git_present:
+            read_only.add(CODEX_SOURCE_GIT)
         project = _text(worker_answer["Project"], "worker")
         return (
             _host_config_refusal(_mapping(executor_answer["HostConfig"], "HostConfig"), project)
             or _docker_mount_refusal(
-                executor_answer, _DockerMount.by_destination(worker_answer["Mounts"], "worker"), checkout
+                executor_answer,
+                _DockerMount.by_destination(worker_answer["Mounts"], "worker"),
+                checkout,
+                codex_source_git_present=codex_source_git_present,
             )
             or _mount_set_refusal(mounts, read_only)
             or _write_refusal(probe, mounts, read_only)

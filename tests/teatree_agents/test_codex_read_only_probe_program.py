@@ -13,6 +13,7 @@ import pytest
 
 from teatree.agents import codex_read_only_executor, codex_read_only_probe_program
 from teatree.agents.codex_read_only_probe_program import (
+    KEY_READ_BYTES,
     ProbeRequest,
     git_readable,
     observe,
@@ -155,6 +156,32 @@ def test_every_readable_env_or_credential_file_under_a_mount_is_reported(layout:
     assert observed["scan"] == {
         str(root): {"owner": os.getuid(), "secrets": sorted(str(root / relative) for relative in _SECRETS)}
     }
+
+
+def test_git_config_with_embedded_http_credential_is_a_secret(layout: Path) -> None:
+    git = layout / "root" / ".git"
+    git.mkdir()
+    config = git / "config"
+    config.write_text('[remote "origin"]\n    url = https://token@example.test/org/repo.git\n', encoding="utf-8")
+    proc = _fake_proc(layout, [(str(layout / "root"), "ext4")])
+
+    observed = observe(_request(layout), proc)
+
+    assert str(config) in observed["scan"][str(layout / "root")]["secrets"]
+
+    config.write_text('[remote "origin"]\n    url = https://example.test/org/repo.git\n', encoding="utf-8")
+    assert str(config) not in observe(_request(layout), proc)["scan"][str(layout / "root")]["secrets"]
+
+    config.write_text("x" * (KEY_READ_BYTES + 1), encoding="utf-8")
+    assert str(config) in observe(_request(layout), proc)["scan"][str(layout / "root")]["secrets"]
+
+    config.write_text("[http]\n    extraheader = Authorization: Bearer placeholder\n", encoding="utf-8")
+    assert str(config) in observe(_request(layout), proc)["scan"][str(layout / "root")]["secrets"]
+
+    config.write_text(
+        '[remote "origin"]\n    url = https://token\\\n      @example.test/org/repo.git\n', encoding="utf-8"
+    )
+    assert str(config) in observe(_request(layout), proc)["scan"][str(layout / "root")]["secrets"]
 
 
 def test_a_readable_private_key_is_found_by_its_content_under_any_key_name(layout: Path) -> None:
