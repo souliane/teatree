@@ -460,6 +460,14 @@ class TestAnsweringWorkItemBlock(TestCase):
         assert "Offer the optional routing key." in extended
         assert "Offer the optional routing key." not in ordinary
 
+    def test_empty_ticket_overlay_keeps_base_work_item_lines_without_loading_overlay(self) -> None:
+        task = self._answering_task(implies_work=True)
+        assert task.ticket.overlay == ""
+        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket") as resolve:
+            lines = phase_specific_lines(task, [])
+        resolve.assert_not_called()
+        assert any("work_item" in line for line in lines)
+
     def test_raising_overlay_hook_keeps_the_base_brief(self) -> None:
         class RaisingMetadata(OverlayMetadata):
             def work_item_return_lines(self) -> tuple[str, ...]:

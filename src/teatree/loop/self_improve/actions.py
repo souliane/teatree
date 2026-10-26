@@ -37,7 +37,14 @@ from teatree.loop.self_improve.persistence import (
     recent_slack_firings_within,
     record_firing,
 )
-from teatree.loop.self_improve.repair_first import OwnerAlertDelivery, marked_report, probe_inert, repair_kind
+from teatree.loop.self_improve.repair_first import (
+    OwnerAlertDelivery,
+    RepairMarker,
+    carry_open_marker,
+    marked_report,
+    probe_inert,
+    repair_kind,
+)
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -188,6 +195,13 @@ def _require_ticket_owner(ticket: Ticket, overlay_name: str) -> None:
         raise ForeignOverlayEvidenceError(msg)
 
 
+def _require_report_overlay(report: DetectorReport, overlay_name: str | None) -> None:
+    source_overlay = report.payload.get("overlay_name")
+    if source_overlay is not None and source_overlay != _repair_overlay_name(overlay_name):
+        msg = f"Self-improve evidence belongs to overlay {source_overlay!r}, not {overlay_name!r}"
+        raise ForeignOverlayEvidenceError(msg)
+
+
 def _opens_ticket(linked_ticket: Ticket | None) -> bool:
     return (
         linked_ticket is None or Ticket.objects.filter(pk=linked_ticket.pk, state__in=Ticket.finished_states()).exists()
@@ -237,10 +251,52 @@ def _record_ticket_followup(report: DetectorReport, *, overlay_name: str, snapsh
 def _repair_first_report(
     report: DetectorReport, existing: SelfImproveFiring | None, rung: str
 ) -> tuple[DetectorReport, str]:
+    report = carry_open_marker(report, existing)
     if rung not in {ActionRung.SLACK, ActionRung.TICKET} or probe_inert(report):
         return report, rung
     marked = marked_report(report, existing)
     return marked, ActionRung.STATUSLINE if repair_kind(marked) else ActionRung.TICKET
+
+
+def _retry_deferred_repair(report: DetectorReport, existing: SelfImproveFiring | None) -> bool:
+    return (
+        existing is not None
+        and existing.resolved_at is None
+        and existing.ticket is None
+        and existing.last_action == ActionRung.STATUSLINE
+        and RepairMarker.from_payload(existing.payload) is not None
+        and not repair_kind(report)
+        and not probe_inert(report)
+    )
+
+
+def _record_ticket_or_defer(
+    report: DetectorReport,
+    *,
+    overlay_name: str | None,
+    linked_ticket: Ticket | None,
+    source_rung: str,
+) -> tuple[SelfImproveFiring, str] | None:
+    opens_ticket = _opens_ticket(linked_ticket)
+    if opens_ticket and (reason := open_pr_start_cap_hold_reason()):
+        logger.warning("self-improve is claiming nothing new: %s", reason)
+        if source_rung != ActionRung.SLACK:
+            return None
+        return record_firing(report, action=ActionRung.STATUSLINE), ActionRung.STATUSLINE
+    try:
+        firing = _record_ticket_followup(
+            report,
+            overlay_name=_repair_overlay_name(overlay_name),
+            snapshot=box_memory_snapshot(report) if opens_ticket else "",
+        )
+    except ForeignOverlayEvidenceError:
+        raise
+    except Exception:
+        if RepairMarker.from_payload(report.payload) is None:
+            raise
+        logger.exception("self-improve repair ticket creation failed for %s", report.dedup_key)
+        return record_firing(report, action=ActionRung.STATUSLINE), ActionRung.STATUSLINE
+    return firing, ActionRung.TICKET
 
 
 def run_action_ladder(
@@ -262,17 +318,14 @@ def run_action_ladder(
     cap is hit the rung is downgraded to ``statusline`` and the firing
     row records ``slack_capped=True`` via ``last_action="statusline"``.
     """
-    source_overlay = report.payload.get("overlay_name")
-    if source_overlay is not None and source_overlay != _repair_overlay_name(overlay_name):
-        msg = f"Self-improve evidence belongs to overlay {source_overlay!r}, not {overlay_name!r}"
-        raise ForeignOverlayEvidenceError(msg)
+    _require_report_overlay(report, overlay_name)
     existing = latest_firing(report.detector, report.dedup_key)
     resolved_overlay = None
     linked_ticket = existing.ticket if existing is not None else None
     if isinstance(linked_ticket, Ticket):
         resolved_overlay = _repair_overlay_name(overlay_name)
         _require_ticket_owner(linked_ticket, resolved_overlay)
-    if not fresh_or_escalated(report, existing):
+    if not fresh_or_escalated(report, existing) and not _retry_deferred_repair(report, existing):
         return None
 
     ceiling_index = _ceiling_index(report)
@@ -298,20 +351,18 @@ def run_action_ladder(
             auto_fix_callable(report)
             auto_fix_executed = True
 
-    opens_ticket = rung == ActionRung.TICKET and _opens_ticket(linked_ticket)
-    if opens_ticket and (reason := open_pr_start_cap_hold_reason()):
-        logger.warning("self-improve is claiming nothing new: %s", reason)
-        return None
-
-    firing = (
-        _record_ticket_followup(
+    if rung == ActionRung.TICKET:
+        recorded = _record_ticket_or_defer(
             report,
-            overlay_name=resolved_overlay or _repair_overlay_name(overlay_name),
-            snapshot=box_memory_snapshot(report) if opens_ticket else "",
+            overlay_name=resolved_overlay or overlay_name,
+            linked_ticket=linked_ticket,
+            source_rung=_LADDER_ORDER[rung_index],
         )
-        if rung == ActionRung.TICKET
-        else record_firing(report, action=rung)
-    )
+        if recorded is None:
+            return None
+        firing, rung = recorded
+    else:
+        firing = record_firing(report, action=rung)
     return ActionResult(
         rung=rung,
         firing=firing,

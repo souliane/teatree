@@ -3,12 +3,14 @@ from dataclasses import dataclass, replace
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core import notify as notify_module
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
 from teatree.core.management.commands.loop_self_improve import _deliver_owner_wait, _owner_wait
-from teatree.core.models import BotPing, IncomingEvent, SelfImproveFiring, Task, Ticket
+from teatree.core.models import BotPing, IncomingEvent, PullRequest, SelfImproveFiring, Task, Ticket
 from teatree.core.notify_types import NotifyOutcome, NotifyReason
 from teatree.loop.self_improve import (
     ActionRung,
@@ -19,9 +21,12 @@ from teatree.loop.self_improve import (
     run_action_ladder,
     run_tier,
 )
+from teatree.loop.self_improve import actions as actions_module
 from teatree.loop.self_improve.detectors.base import DetectorScan
+from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.self_improve.repair_first import OwnerAlertDelivery, OwnerWaitChannel, RepairMarker
 from teatree.loop.self_improve.schedule import DeliveryRoutes
+from tests.factories import TaskFactory
 
 
 @dataclass
@@ -68,6 +73,103 @@ def _incident(kind: str = "repairable_incident", *, state_hash: str = "first") -
 
 
 class RepairFirstTests(TestCase):
+    def test_real_lifecycle_incident_alerts_after_wait_while_pr_cap_holds(self) -> None:
+        task = TaskFactory()
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
+        for index in range(OPEN_PR_START_CAP):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 1600}",
+            )
+        start = timezone.now()
+        messages: list[str] = []
+        routes = DeliveryRoutes(
+            overlay_name="t3-teatree",
+            owner_wait=OwnerWaitChannel(
+                deliver=lambda text, _key: (messages.append(text), OwnerAlertDelivery(sent=True))[1],
+                quiet_now=lambda: False,
+                wait=dt.timedelta(minutes=60),
+            ),
+        )
+        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        outcomes = []
+        for minutes in (0, 31, 60, 90):
+            with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=minutes)):
+                outcomes.append(
+                    run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=routes)
+                )
+        firing = SelfImproveFiring.objects.get(detector="lifecycle_incident")
+        assert firing.ticket is None
+        assert RepairMarker.from_payload(firing.payload) is not None
+        assert [len(result.owner_waits) for result in outcomes] == [0, 0, 1, 0]
+        assert len(messages) == 1
+        assert "ticket deferred" in messages[0]
+        pr = PullRequest.objects.order_by("pk").first()
+        assert pr is not None
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
+        with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=91)):
+            resumed = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=routes)
+        assert resumed.actions[0].firing.ticket_id is not None
+        assert resumed.owner_waits == []
+
+    def test_ticket_creation_failure_records_waiting_incident_and_alerts_once(self) -> None:
+        start = timezone.now()
+        messages: list[str] = []
+        routes = DeliveryRoutes(
+            overlay_name="t3-teatree",
+            owner_wait=OwnerWaitChannel(
+                deliver=lambda text, _key: (messages.append(text), OwnerAlertDelivery(sent=True))[1],
+                quiet_now=lambda: False,
+                wait=dt.timedelta(minutes=30),
+            ),
+        )
+        with patch.object(
+            actions_module, "_record_ticket_followup", side_effect=ImproperlyConfigured("owner unavailable")
+        ):
+            outcomes = []
+            for minutes in (0, 30, 60):
+                with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=minutes)):
+                    outcomes.append(
+                        run_tier(
+                            Tier.CHEAP,
+                            detectors=[_Detector(_incident())],
+                            budget=BudgetVerdict.allow(),
+                            delivery=routes,
+                        )
+                    )
+        firing = SelfImproveFiring.objects.get(detector="repair_first_test")
+        assert firing.ticket is None
+        assert RepairMarker.from_payload(firing.payload) is not None
+        assert [len(result.owner_waits) for result in outcomes] == [0, 1, 0]
+        assert len(messages) == 1
+
+    def test_open_repair_incident_keeps_first_wait_start_on_statusline_rerecord(self) -> None:
+        repair_ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
+        repair_task = TaskFactory(ticket=repair_ticket)
+        repair_task.fail(reason="ProcessError: repair worker exited", by_holder=True)
+        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        start = timezone.now()
+        messages: list[str] = []
+        routes = DeliveryRoutes(
+            overlay_name="t3-teatree",
+            owner_wait=OwnerWaitChannel(
+                deliver=lambda text, _key: (messages.append(text), OwnerAlertDelivery(sent=True))[1],
+                quiet_now=lambda: False,
+                wait=dt.timedelta(minutes=60),
+            ),
+        )
+        for minutes in (0, 5, 31, 60):
+            with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=minutes)):
+                result = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=routes)
+            if minutes == 5:
+                marker = RepairMarker.from_payload(SelfImproveFiring.objects.get().payload)
+                assert marker is not None
+                assert marker.began_at == start
+            if minutes == 60:
+                assert len(result.owner_waits) == 1
+        assert len(messages) == 1
+
     def test_wait_setting_rejects_invalid_values(self) -> None:
         assert _owner_wait(30) == dt.timedelta(minutes=30)
         for invalid in (True, "30", 0, -1, 2.5, None):

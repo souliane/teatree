@@ -63,6 +63,11 @@ def marked_report(report: DetectorReport, existing: SelfImproveFiring | None) ->
     return replace(report, payload={**report.payload, "repair_first": marker.as_payload()})
 
 
+def carry_open_marker(report: DetectorReport, existing: SelfImproveFiring | None) -> DetectorReport:
+    marker = RepairMarker.from_payload(existing.payload) if existing and existing.resolved_at is None else None
+    return replace(report, payload={**report.payload, "repair_first": marker.as_payload()}) if marker else report
+
+
 @dataclass(frozen=True, slots=True)
 class OwnerWaitChannel:
     deliver: Callable[[str, str], OwnerAlertDelivery]
@@ -94,8 +99,10 @@ def wait_message(firing: SelfImproveFiring, marker: RepairMarker, wait: dt.timed
                 f"Tried: {', '.join(phases) if phases else 'no task yet'}",
             )
         )
-    else:
+    elif str(firing.payload.get("kind", "")).startswith("repair_"):
         lines.extend(("Repair: no second ticket for a repair incident", "Tried: repair-of-repair deferred"))
+    else:
+        lines.extend(("Repair: ticket deferred", "Tried: ticket creation pending"))
     return "\n".join(lines)
 
 
