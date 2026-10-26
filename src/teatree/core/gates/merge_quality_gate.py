@@ -17,9 +17,9 @@ The judge (async)
 
 The gate (deterministic)
     a pure row-check at merge time: a verdict covering the EXACT shipped head must
-    exist AND affirmatively PASS every merge rubric item (a FAIL, an uncited pass
-    downgraded to ``instrumentation_gap``, or an OMITTED item all block — the
-    anti-vacuity floor). Fail-closed, exactly like "CI must be green".
+    exist AND affirmatively PASS every unwaived merge rubric item (a FAIL, an uncited
+    pass downgraded to ``instrumentation_gap``, or an OMITTED item blocks unless the
+    owner waived that LLM item). Fail-closed, exactly like "CI must be green".
 
 Every ticket requires a verdict at the shipped head, including ordinary and
 directive tickets.
@@ -29,6 +29,7 @@ chokepoint BOTH autonomous merge paths cross, mirroring ``assert_review_verdict_
 """
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -138,7 +139,7 @@ def _test_strategy_section(adequacy: object) -> str:
     return ""
 
 
-def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
+def build_merge_quality_contract(ticket: "Ticket", head_sha: str, *, changed_tests: Sequence[str] = ()) -> str:
     """The dispatch contract for the headless merge-quality critic (the merge rubric injected).
 
     Names the merge LLM items from the registry (a forgotten item would never be
@@ -148,12 +149,19 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
     """
     item_slugs = ", ".join(item.slug for item in llm_items(_MERGE_TRANSITION))
     strategy = ratified_test_strategy(ticket)
+    changed_tests_context = (
+        "Tests changed since the last passing head (caller supplied; inspect each one):\n"
+        + "\n".join(f"- {node}" for node in changed_tests)
+        if changed_tests
+        else ""
+    )
     context = "\n\n".join(
         part
         for part in (
             merge_critic_continuity(ticket, head_sha),
             merge_verdict_history(ticket),
             review_evidence_contract(ticket, head_sha),
+            changed_tests_context,
         )
         if part
     )
@@ -199,11 +207,10 @@ def covering_verdict(ticket: "Ticket", head_sha: str) -> "CriticVerdict | None":
 def unmet_items(verdict: "CriticVerdict") -> list[str]:
     """Merge rubric slugs the *verdict* does not affirmatively PASS (the anti-vacuity floor).
 
-    A slug is met only by an OK item WITH a citation (``CriticItemVerdict.coerce``
-    downgrades an uncited pass to ``instrumentation_gap``, which ``is_fail``).
-    A FAIL, an uncited pass, OR an OMITTED item is unmet — a critic cannot wave a
-    merge through by staying silent on an item. An item the owner waived for the ticket
-    counts as met.
+    An unwaived slug is met only by an OK item WITH a citation
+    (``CriticItemVerdict.coerce`` downgrades an uncited pass to
+    ``instrumentation_gap``). A FAIL, an uncited pass, OR an OMITTED item is unmet
+    unless the owner waived it for the ticket.
     """
     passed = {item.slug for item in verdict.item_verdicts() if item.status == item.OK and item.verified}
     passed |= waived_merge_items(verdict.ticket)
@@ -247,7 +254,7 @@ def record_merge_quality_findings(verdict: "CriticVerdict", *, ticket: "Ticket",
         CriticFinding.record(ticket=ticket, transition=_MERGE_TRANSITION, spec=spec)
 
 
-def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str) -> None:
+def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str, *, changed_tests: Sequence[str] = ()) -> None:
     """Arm the async merge-quality critic when no verdict covers the head (best-effort, idempotent)."""
     if covering_verdict(ticket, head_sha) is not None:
         return
@@ -256,24 +263,24 @@ def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str) -> None:
             ticket=ticket,
             transition=_MERGE_TRANSITION,
             head_sha=head_sha,
-            contract=build_merge_quality_contract(ticket, head_sha),
+            contract=build_merge_quality_contract(ticket, head_sha, changed_tests=changed_tests),
         )
     except Exception as exc:  # noqa: BLE001 — self-healing enqueue; a failure re-arms next attempt, never crashes the merge.
         logger.warning("merge-quality critic dispatch enqueue failed for ticket %s: %s", ticket.pk, exc)
 
 
-def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
+def check_merge_quality_verdict(ticket: "Ticket", head_sha: str, *, changed_tests: Sequence[str] = ()) -> None:
     """Refuse the merge unless a clean merge-quality verdict covers *head_sha*.
 
     For every ticket, fail closed: no covering verdict → arm the async critic and refuse; a verdict
     with any unmet merge item → record the FAIL findings and refuse; every item
-    affirmatively passed → proceed.
+    passed or waived → proceed.
     """
     head = head_sha.strip().lower()
     _check_brief_constraints(ticket)
     verdict = covering_verdict(ticket, head)
     if verdict is None:
-        _arm_merge_quality_critic(ticket, head)
+        _arm_merge_quality_critic(ticket, head, changed_tests=changed_tests)
         from teatree.config.resolution import worker_is_quiescing  # noqa: PLC0415 — deferred: reads live worker config
 
         if CriticDispatch.saturated().filter(ticket=ticket, transition=_MERGE_TRANSITION, head_sha=head).exists():
@@ -363,7 +370,7 @@ def _assert_nit_receipts(ticket: "Ticket", head_sha: str, verdict: "CriticVerdic
         raise MergeQualityVerdictError(message)
 
 
-def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str) -> None:
+def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str, changed_tests: Sequence[str] = ()) -> None:
     """The ``execute_bound_merge`` chokepoint entry — resolve the ticket then run the gate.
 
     Resolves the gated ticket from the PR ``(repo, iid)`` ledger (case-insensitive)
@@ -376,4 +383,4 @@ def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str) -> Non
     ticket = resolve_gated_ticket(slug=slug, pr_id=pr_id)
     if ticket is None:
         return
-    check_merge_quality_verdict(ticket, head_sha)
+    check_merge_quality_verdict(ticket, head_sha, changed_tests=changed_tests)

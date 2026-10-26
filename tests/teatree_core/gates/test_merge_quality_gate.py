@@ -333,6 +333,15 @@ class TestRatifiedTestStrategyAnchor(TestCase):
 
 
 class TestTheContractIsExhaustiveAndRemembersEveryRound(TestCase):
+    def test_supplied_changed_tests_are_named_as_current_head_context(self) -> None:
+        changed = ["tests/alpha.py::test_edge", "tests/beta.py::TestFlow::test_retry"]
+
+        contract = build_merge_quality_contract(_ordinary_ticket(), _FORTY_HEX, changed_tests=changed)
+
+        assert "Tests changed since the last passing head" in contract
+        assert "- tests/alpha.py::test_edge" in contract
+        assert "- tests/beta.py::TestFlow::test_retry" in contract
+
     def test_it_requires_every_redundant_or_vacuous_test_in_one_citation(self) -> None:
         contract = build_merge_quality_contract(_ordinary_ticket(), _FORTY_HEX)
 
@@ -374,6 +383,16 @@ class TestTheContractIsExhaustiveAndRemembersEveryRound(TestCase):
 
 
 class TestArming(TestCase):
+    def test_supplied_changed_tests_reach_the_armed_critic_task(self) -> None:
+        ticket = _ordinary_ticket()
+
+        with pytest.raises(MergeQualityVerdictError):
+            check_merge_quality_verdict(ticket, _FORTY_HEX, changed_tests=["tests/alpha.py::test_edge"])
+
+        dispatch = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+        assert dispatch.task is not None
+        assert "- tests/alpha.py::test_edge" in dispatch.task.execution_reason
+
     def test_no_verdict_arms_the_async_critic_at_the_head(self) -> None:
         ticket = _directive_ticket()
         with contextlib.suppress(MergeQualityVerdictError):

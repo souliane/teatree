@@ -23,13 +23,15 @@ from django.db import OperationalError, connection, transaction
 from django.test import TransactionTestCase
 
 from teatree.agents import runner
-from teatree.agents.attempt_recorder import record_result_envelope
+from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
+from teatree.agents.result_schema import AgentResultBlob
 from teatree.core.modelkit import db_retry
 from teatree.core.modelkit.db_retry import retry_on_locked, wait_out_locked_writes
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.worktree.occupancy import occupancy_holder
 from tests._file_backed_db import file_backed_default_database, writer_holding_the_lock
 from tests.factories import SessionFactory, TicketFactory, WorktreeFactory
+from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
 
 class _Flaky:
@@ -165,6 +167,37 @@ class TestWaitOutLockedWrites(TransactionTestCase):
         assert bracketed[0] is not None
         assert Task.objects.get(pk=self.task.pk).owner_driving_since is None
         assert occupancy_holder(Worktree.objects.get(pk=worktree.pk)) is None
+
+    def test_a_finished_run_records_through_one_nested_lock_wait_scope(self) -> None:
+        self.task.phase = "scoping"
+        self.task.save(update_fields=["phase"])
+        outside = len(connection.execute_wrappers)
+        wrappers_at_recorder: list[int] = []
+
+        def observe_record(
+            task: Task,
+            result: AgentResultBlob,
+            *,
+            phase: str = "",
+            usage: AttemptUsage | None = None,
+            envelope_parsed: bool = True,
+        ) -> TaskAttempt:
+            wrappers_at_recorder.append(len(connection.execute_wrappers))
+            with writer_holding_the_lock(self.database, seconds=0.4):
+                return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
+
+        with (
+            fake_sdk(success_stream({"summary": "finished while the database was locked"})),
+            mock.patch("teatree.agents.attempt_recorder.record_result_envelope", side_effect=observe_record),
+        ):
+            attempt = runner.run_agent(self.task, phase="scoping", overlay_skill_metadata={})
+
+        self.task.refresh_from_db()
+        assert attempt.exit_code == 0
+        assert self.task.status == Task.Status.COMPLETED
+        assert TaskAttempt.objects.filter(task=self.task).count() == 1
+        assert wrappers_at_recorder == [outside + 1]
+        assert len(connection.execute_wrappers) == outside
 
     def test_a_lock_error_is_retried_until_it_clears(self) -> None:
         locked = _LockedStatement(times=2)

@@ -226,7 +226,7 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
     # The merge-quality critic (north-star PR-4): two LLM items judged at
     # ``transition="merge"`` (the same registry, selected by transition — PR-1's
     # seam). They make "clean + tested-enough WITHOUT bloat" a real merge gate: a
-    # verdict covering the shipped head must carry zero FAILs before
+    # verdict covering the shipped head must carry zero unwaived FAILs before
     # ``execute_bound_merge`` lets a directive keystone through. The full judging
     # rubric — the ratified ``test_strategy`` anchor, the both-directions
     # anti-vacuity/anti-bloat wording, the CLAUDE.md cleanliness bar — lives in

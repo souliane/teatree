@@ -168,6 +168,7 @@ class TestCriticRetryTransaction(TransactionTestCase):
         with (
             patch.object(CriticDispatch, "spend_reopen", side_effect=spend),
             patch("teatree.loop.transient_requeue._reopen", side_effect=reopen),
+            patch("teatree.core.managers_task_claim.claim_admission_block_reason", return_value=""),
         ):
             assert requeue_transient_failed() == 1
 
