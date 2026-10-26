@@ -13,6 +13,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.core.modelkit.notify_policy import CHECKOUT_ATTEST_HOLD
+from teatree.core.modelkit.reask_cadence import owner_quiet_at
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
@@ -193,6 +194,18 @@ class LifecycleIncidentTests(TestCase):
 
         assert "outbound_unposted" not in kinds
         assert quiet.call_args.args[0] == check_at.astimezone(owner_zone()).time()
+
+    def test_delivery_incident_waits_ten_minutes_after_quiet_hours(self) -> None:
+        check_at = timezone.now().astimezone(owner_zone()).replace(hour=8, minute=5, second=0, microsecond=0)
+        question = DeferredQuestion.record("Which option?", session_id="s", **OWNER_DECISION)
+        DeferredQuestion.objects.filter(pk=question.pk).update(created_at=check_at - timedelta(hours=2))
+
+        with patch("teatree.core.modelkit.reask_cadence.owner_quiet_at", side_effect=owner_quiet_at):
+            early = LifecycleIncidentDetector(now=lambda: check_at).detect()
+            later = LifecycleIncidentDetector(now=lambda: check_at + timedelta(minutes=6)).detect()
+
+        assert "outbound_unposted" not in {report.payload["kind"] for report in early}
+        assert "outbound_unposted" in {report.payload["kind"] for report in later}
 
     def test_attest_hold_ends_before_unposted_incident_wait(self) -> None:
         assert CHECKOUT_ATTEST_HOLD < _POST_WAIT

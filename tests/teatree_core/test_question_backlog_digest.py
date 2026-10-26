@@ -87,6 +87,7 @@ class TestResurfaceQuestionBacklog(TestCase):
         DeferredQuestion.record("First?", **OWNER_DECISION)
         DeferredQuestion.record("Second?", **OWNER_DECISION)
         DeferredQuestion.record("Third?", **OWNER_DECISION)
+        DeferredQuestion.objects.update(created_at=timezone.now() - dt.timedelta(hours=2))
 
         with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
             posted, pending = resurface_question_backlog()
@@ -100,6 +101,15 @@ class TestResurfaceQuestionBacklog(TestCase):
 
         with patch("teatree.core.notify_question_drains.notify_user") as notify:
             result = resurface_question_backlog(now=now)
+
+        assert result == (False, 1)
+        notify.assert_not_called()
+
+    def test_fresh_unposted_question_does_not_trigger_a_digest(self) -> None:
+        DeferredQuestion.record("Which option?", **OWNER_DECISION)
+
+        with patch("teatree.core.notify_question_drains.notify_user") as notify:
+            result = resurface_question_backlog(now=timezone.now())
 
         assert result == (False, 1)
         notify.assert_not_called()
@@ -121,6 +131,7 @@ class TestResurfaceQuestionBacklog(TestCase):
     def test_the_interval_bucket_is_the_idempotency_key(self) -> None:
         DeferredQuestion.record("Merge it?", **OWNER_DECISION)
         now = dt.datetime(2026, 10, 10, 12, tzinfo=dt.UTC)
+        DeferredQuestion.objects.update(created_at=now - dt.timedelta(hours=2))
 
         with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
             resurface_question_backlog(now=now)
@@ -137,6 +148,7 @@ class TestResurfaceQuestionBacklog(TestCase):
     def test_the_interval_bucket_rotates_at_utc_midnight(self) -> None:
         DeferredQuestion.record("Merge it?", **OWNER_DECISION)
         before_midnight = dt.datetime(2026, 10, 10, 23, 58, tzinfo=dt.UTC)
+        DeferredQuestion.objects.update(created_at=before_midnight - dt.timedelta(hours=2))
 
         with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
             resurface_question_backlog(now=before_midnight)

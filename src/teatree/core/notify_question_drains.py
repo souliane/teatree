@@ -49,6 +49,7 @@ from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.reask_cadence import (
     REASK_KEY_PREFIX,
+    REASK_UNIT,
     RESURFACE_INTERVAL_HOURS,
     bump_due,
     first_posted_at,
@@ -281,10 +282,7 @@ def resurface_question_backlog(
         eligible = [row for row in rows if row.slack_ts or row.pk in unmirrored_ids]
     if not eligible:
         return False, len(rows)
-    if all(
-        row.slack_ts and first_posted_at(row.slack_ts, row.created_at) > stamped_at - dt.timedelta(hours=1)
-        for row in eligible
-    ):
+    if all(first_posted_at(row.slack_ts, row.created_at) > stamped_at - REASK_UNIT for row in eligible):
         return False, len(rows)
     bucket = int(stamped_at.timestamp()) // (RESURFACE_INTERVAL_HOURS * 3600)
     previous_overlay = _scoped_overlay_env(overlay)

@@ -139,14 +139,14 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         assert not card.slack_ts
         self.backend.post_message.assert_not_called()
 
-        DeferredQuestion.objects.filter(pk=card.pk).update(
-            created_at=timezone.now() - dt.timedelta(minutes=7, seconds=59)
-        )
-        self._poster()
-        self.backend.post_message.assert_not_called()
+        clock = timezone.now()
+        with patch.object(timezone, "now", return_value=clock):
+            DeferredQuestion.objects.filter(pk=card.pk).update(created_at=clock - dt.timedelta(minutes=7, seconds=59))
+            self._poster()
+            self.backend.post_message.assert_not_called()
 
-        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=timezone.now() - dt.timedelta(minutes=8))
-        self._poster()
+            DeferredQuestion.objects.filter(pk=card.pk).update(created_at=clock - dt.timedelta(minutes=8))
+            self._poster()
         card.refresh_from_db()
         assert card.slack_ts
         assert self.backend.post_message.call_count == 1

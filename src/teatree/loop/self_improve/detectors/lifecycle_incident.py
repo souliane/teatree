@@ -408,9 +408,13 @@ class LifecycleIncidentDetector:
 
     def _outbound_questions(self, now: datetime) -> list[DetectorReport]:
         pending = DeferredQuestion.owner_pending()
+        zone = owner_zone()
+        quiet = reask_cadence.owner_quiet_at(now.astimezone(zone).time()) or reask_cadence.owner_quiet_at(
+            (now - _POST_WAIT).astimezone(zone).time()
+        )
         unposted = (
             []
-            if reask_cadence.owner_quiet_at(now.astimezone(owner_zone()).time())
+            if quiet
             else list(pending.filter(slack_ts="", created_at__lt=now - _POST_WAIT).values_list("pk", flat=True)[:100])
         )
         unanswered = list(
