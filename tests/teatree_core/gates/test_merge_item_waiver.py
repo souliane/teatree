@@ -82,6 +82,18 @@ class TestAWaivedItemIsNotUnmet(_ConfiguredOwner):
 
         assert unmet_items(_fresh(self.verdict)) == ["test_value"]
 
+    def test_the_ticket_overlay_owns_the_identity_scope(self) -> None:
+        def owner_settings(overlay: str | None = None) -> SimpleNamespace:
+            aliases = ["overlay-owner"] if overlay == self.ticket.overlay else ["global-owner"]
+            return SimpleNamespace(user_identity_aliases=aliases)
+
+        with patch("teatree.config.get_effective_settings", side_effect=owner_settings):
+            with pytest.raises(MergeItemWaiverError):
+                waive_merge_item(self.ticket, slug="test_value", waived_by="global-owner", reason="wrong owner")
+            waive_merge_item(self.ticket, slug="test_value", waived_by="overlay-owner", reason="accepted")
+
+        assert unmet_items(_fresh(self.verdict)) == []
+
 
 class TestAWaiverIsRefused(_ConfiguredOwner):
     def setUp(self) -> None:

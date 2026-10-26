@@ -32,7 +32,8 @@ def waive_merge_item(ticket: Ticket, *, slug: str, waived_by: str, reason: str) 
         raise MergeItemWaiverError(msg)
     try:
         owner_aliases = {
-            normalize_reviewer_identity(alias) for alias in config.get_effective_settings().user_identity_aliases
+            normalize_reviewer_identity(alias)
+            for alias in config.get_effective_settings(ticket.overlay or None).user_identity_aliases
         }
     except Exception as exc:
         msg = "owner identities could not be read; no merge item was waived"
