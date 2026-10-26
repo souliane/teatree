@@ -68,21 +68,26 @@ def _stamp(when: datetime) -> str:
 def _render_groups_tables(groups: list[CheckGroup], *, header: str, stamp: str, cap: int = DEFAULT_CAP) -> str:
     """Render each non-empty group as a table under *header*.
 
-    Empty report (every group at ``total == 0``) collapses to the single
+    Empty report (every group has no table content) collapses to the single
     ``Nothing since <stamp>.`` line the terse view uses, so a no-change run
     stays one line. A capped group notes the pre-cap total in its title.
     """
-    if all(group.total == 0 for group in groups):
+    if all(not group.has_table_content() for group in groups):
         return f"Nothing since {stamp}."
     buffer = io.StringIO()
     buffer.write(header + "\n")
     for group in groups:
-        if group.total == 0:
+        if not group.has_table_content():
             continue
         title = group.title if group.total <= cap else f"{group.title} — {group.total} (top {cap})"
+        rows = [
+            [render_ref(item.label, title=item.title, url=item.url), item.detail] for item in group.table_items(cap=cap)
+        ]
+        if group.total > cap:
+            rows.append(["", f"…and {group.total - cap} more"])
         print_table(
             ["Ref", "Detail"],
-            [[render_ref(item.label, title=item.title, url=item.url), item.detail] for item in group.items[:cap]],
+            rows,
             title=title,
             stream=buffer,
         )

@@ -79,6 +79,12 @@ class CheckGroup:
             total=self.total,
         )
 
+    def has_table_content(self) -> bool:
+        return self.total > 0
+
+    def table_items(self, *, cap: int) -> list[CheckItem]:
+        return self.items[: max(0, cap)]
+
     def render(self, *, cap: int = DEFAULT_CAP) -> list[str]:
         """Render the group header + capped items, or ``[]`` when empty.
 
@@ -116,6 +122,12 @@ class RemainingGroup(CheckGroup):
     queue: dict = field(default_factory=dict)
     durations: list[dict] = field(default_factory=list)
     holds: dict = field(default_factory=dict)
+
+    def has_table_content(self) -> bool:
+        return bool(self.items)
+
+    def table_items(self, *, cap: int) -> list[CheckItem]:
+        return [*self.items[:2], *self.items[2 : 2 + max(0, cap)]]
 
     def render(self, *, cap: int = DEFAULT_CAP) -> list[str]:
         if not self.items:

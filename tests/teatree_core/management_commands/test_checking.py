@@ -933,6 +933,37 @@ class TestCheckingRemaining:
         assert "2 items" in remaining.items[0].detail
         assert "oldest" in remaining.items[1].detail
 
+    @pytest.mark.parametrize("count", [4, 5, 7])
+    def test_human_table_caps_remaining_work_after_meta_rows(self, checkpoint_file: Path, count: int) -> None:
+        for index in range(count):
+            ticket = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://github.com/acme/widgets/issues/{1600 + index}",
+                short_description=f"item {index}",
+                state=Ticket.State.PR_OPENED,
+            )
+            PullRequest.objects.create(
+                ticket=ticket,
+                overlay="acme",
+                repo="acme/widgets",
+                iid=str(1700 + index),
+                url=f"https://github.com/acme/widgets/pull/{1700 + index}",
+            )
+
+        out = _call("checking", "show", "--this-overlay", "--no-advance")
+
+        assert "Remaining" in out
+        assert "Total" in out
+        assert "Queue" in out
+        shown = [index for index in range(count) if f"acme/widgets#{1700 + index}" in out]
+        assert len(shown) == min(count, 5)
+        if count > 5:
+            assert "Remaining — 7 (top 5)" in out
+            assert "…and 2 more" in out
+        else:
+            assert "(top 5)" not in out
+            assert "…and" not in out
+
     def test_claimed_shipping_step_uses_shipping_label(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
         Task.objects.create(
@@ -1130,6 +1161,20 @@ class TestCheckingRemaining:
             assert not terse.startswith("Nothing since")
             assert "Remaining" in terse
             assert "Queue" in terse
+
+    def test_human_table_shows_reviewer_only_queue(self, checkpoint_file: Path) -> None:
+        reviewer = Ticket.objects.create(
+            overlay="acme", issue_url="https://github.com/acme/widgets/issues/1607", role=Ticket.Role.REVIEWER
+        )
+        Task.objects.create(ticket=reviewer, session=Session.objects.create(ticket=reviewer), phase="reviewing")
+
+        for flags in (("--this-overlay",), ()):
+            with _two_overlay_patch():
+                out = _call("checking", "show", *flags, "--no-advance")
+            assert not out.startswith("Nothing since")
+            assert "Remaining" in out
+            assert "Queue" in out
+            assert "reviewing" in out
 
     def test_failed_latest_task_halts_an_open_pr(self, checkpoint_file: Path) -> None:
         ticket = self._open_pr()
