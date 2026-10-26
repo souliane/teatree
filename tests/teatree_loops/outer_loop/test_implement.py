@@ -16,6 +16,7 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.loops.outer_loop.implement import schedule_experiment_fix
+from tests.loop_ticket_git import installed_checkout_owner
 
 
 class TestScheduleExperimentFix(TestCase):
@@ -52,16 +53,8 @@ class TestScheduleExperimentFix(TestCase):
         assert task.ticket.overlay == "another-overlay"
 
     def test_blank_overlay_uses_only_the_unique_installed_checkout_owner(self) -> None:
-        overlays = {
-            "umbrella-owner": SimpleNamespace(get_workspace_repos=lambda: ["souliane/teatree"]),
-            "factory-owner": SimpleNamespace(get_workspace_repos=lambda: ["vendor/factory"]),
-        }
-        for slug, expected in (("vendor/factory", "factory-owner"), ("unclaimed/repo", "")):
-            with (
-                self.subTest(slug=slug),
-                patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays),
-                patch("teatree.utils.git.remote_slug", return_value=slug),
-            ):
+        for claimed in (True, False):
+            with self.subTest(claimed=claimed), installed_checkout_owner(claimed=claimed) as expected:
                 task = schedule_experiment_fix(self._admitted())
                 assert task is not None
                 assert task.ticket.overlay == expected

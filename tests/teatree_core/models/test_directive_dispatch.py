@@ -6,7 +6,6 @@ generation returns ``None`` (no second interpreter); a bumped generation arms a 
 one. The interpret task needs a ``Ticket``, so the dispatch anchors a synthetic one.
 """
 
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -16,11 +15,11 @@ from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
-import teatree
 from teatree.core.models import Directive, DirectiveDispatch, Task
 from teatree.core.models.directive_dispatch import INTERPRET_PHASE, MAX_INTERPRET_ATTEMPTS
 from teatree.core.models.task_handoff import schedule_resume
 from teatree.core.overlay_loader import get_overlay_for_ticket
+from tests.loop_ticket_git import installed_checkout_owner
 
 
 def _directive(scope_overlay: str = "") -> Directive:
@@ -41,26 +40,12 @@ class TestDirectiveDispatchEnqueue(TestCase):
             get_overlay_for_ticket(row.task.ticket)
 
     def test_blank_scope_uses_only_the_unique_installed_checkout_owner(self) -> None:
-        overlays = {
-            "umbrella-owner": SimpleNamespace(get_workspace_repos=lambda: ["souliane/teatree"]),
-            "factory-owner": SimpleNamespace(get_workspace_repos=lambda: ["vendor/factory"]),
-        }
-        ambiguous = overlays | {"second-owner": SimpleNamespace(get_workspace_repos=lambda: ["vendor/factory"])}
-        for slug, expected, owners in (
-            ("vendor/factory", "factory-owner", overlays),
-            ("unclaimed/repo", "", overlays),
-            ("vendor/factory", "", ambiguous),
-        ):
-            with (
-                self.subTest(slug=slug),
-                patch("teatree.core.overlay_loader.get_all_overlays", return_value=owners),
-                patch("teatree.utils.git.remote_slug", return_value=slug) as remote_slug,
-            ):
+        for claimed in (True, False):
+            with self.subTest(claimed=claimed), installed_checkout_owner(claimed=claimed) as expected:
                 row = DirectiveDispatch.enqueue(directive=_directive(), contract="c")
                 assert row is not None
                 assert row.task is not None
                 assert row.task.ticket.overlay == expected
-                remote_slug.assert_any_call(repo=str(Path(teatree.__file__).resolve().parents[2]))
 
     def test_redispatch_preserves_the_first_scope(self) -> None:
         directive = _directive("first-scope")
