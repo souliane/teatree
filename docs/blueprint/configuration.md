@@ -348,6 +348,7 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | `require_human_approval_to_answer` | Training-wheel for `t3:answerer`: drafts + DMs, posts only on confirm |
 | `on_behalf_auto_actions` | Allowlist of on-behalf actions that PROCEED even under a forbidding egress posture (default `["post_e2e_evidence"]`): the user's own-ticket self-documentation, not a colleague-facing voice, so they never need per-post approval. Clear to `[]` to re-gate test plan; env `T3_ON_BEHALF_AUTO_ACTIONS` (comma-separated) wins |
 | `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
+| `issue_intake_repos` | Full `owner/repo` or nested group slugs replacing the intake scope, including repos the overlay does not declare. Malformed entries are dropped with a warning; empty or all-malformed lists use all overlay-owned repos. Common branch prefixes such as `fix/` are rejected. Affects intake only. DB-home precedence: overlay row, global row, declared default; no `T3_*` env override. |
 | `architectural_review_skill` | Override which skill the scanner dispatches (default `architectural-review`) |
 | `architectural_review_cadence_hours` | Per-overlay success-cadence floor (age of the last COMPLETED review) for the architectural-review scanner (default 168) |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |

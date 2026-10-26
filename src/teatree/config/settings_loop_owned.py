@@ -21,7 +21,13 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from teatree.config.declaration import Category, SettingSpec, setting
-from teatree.config.setting_parsers import _parse_strict_bool, _parse_strict_float, _parse_strict_int, _parse_strict_str
+from teatree.config.setting_parsers import (
+    _parse_str_list,
+    _parse_strict_bool,
+    _parse_strict_float,
+    _parse_strict_int,
+    _parse_strict_str,
+)
 
 
 @dataclass
@@ -172,9 +178,20 @@ class _InboxLoopSettings:
 
 @dataclass
 class _IssueImplementerLoopSettings:
-    """The intake scanner's walk budget and idle-hold window — the ceilings and labels are kill switches."""
+    """The intake scanner's repo scope, walk budget, and idle-hold window; ceilings and labels are kill switches."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "issue_implementer")
+
+    issue_intake_repos: list[str] = setting(
+        default_factory=list,
+        spec=SettingSpec(
+            help=(
+                "Repo slugs replacing the overlay-owned intake scope; undeclared repos allowed; "
+                "branch-like prefixes rejected; empty or all-invalid uses owned repos"
+            ),
+            parse=_parse_str_list,
+        ),
+    )
 
     # Below the scan phase's 60s pool deadline on purpose: past that one the thread is
     # abandoned rather than stopped, so it keeps mutating rows after the tick ended and

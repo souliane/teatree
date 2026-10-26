@@ -587,8 +587,8 @@ class TestTheReadOnlyVenueBrief(TestCase):
         context = self._system_context(prepared)
         delivered = f"{context}\n{prepared.prompt}"
         assert len(context.encode()) <= MAX_APPEND_BYTES
-        assert "Any other head is REFUSED and records nothing" in context
-        assert "OMITTING `reviewed_sha` is REFUSED too" in context
+        assert "A verdict for another head is REFUSED" in context
+        assert "Missing `reviewed_sha` is REFUSED" in context
         assert "required-review-rule " * 3800 in delivered
         assert "--- SKILL: review ---" in delivered
         assert "+review-evidence " * 7000 in prepared.prompt

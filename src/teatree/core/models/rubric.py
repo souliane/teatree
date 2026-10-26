@@ -199,6 +199,25 @@ class Rubric(models.Model):
         return cls.add_criteria(ticket, [text])
 
     @staticmethod
+    def carry_grades(ticket: Ticket, *, from_head: str, to_head: str) -> int:
+        """Re-record the grades bound to *from_head* at *to_head*, keeping every grader and rationale.
+
+        A criterion already graded at *to_head* keeps its own grade; the count is the grades added.
+        """
+        by_head = (Ticket.objects.get(pk=ticket.pk).extra or {}).get("rubric_grades_by_head")
+        if not isinstance(by_head, dict):
+            return 0
+        target = to_head.strip().lower()
+        carried = by_head.get(from_head.strip().lower())
+        at_target = by_head.get(target) or {}
+        if not isinstance(carried, dict) or not isinstance(at_target, dict):
+            return 0
+        added = {key: grade for key, grade in carried.items() if key not in at_target}
+        if added:
+            ticket.merge_extra(merge_into_dicts={"rubric_grades_by_head": {target: {**at_target, **added}}})
+        return len(added)
+
+    @staticmethod
     def normalize_grades(payload: object) -> list[RubricGrade]:
         """Every item of *payload* in the :class:`RubricGrade` shape, or a refusal.
 

@@ -15,9 +15,11 @@ if TYPE_CHECKING:
     from teatree.core.models.critic_verdict import CriticItemVerdict
     from teatree.core.models.review_verdict import Finding
     from teatree.core.models.ticket import Ticket
+    from teatree.core.models.types import JSONObject
 
 
 _RECEIPTS_KEY = "nit_lane_receipts"
+_PUBLICATION_KEY = "nit_publication"
 
 
 def review_nits(findings: Iterable["Finding"]) -> tuple[NitPoint, ...]:
@@ -102,3 +104,34 @@ def publish_nits(ticket: "Ticket", pr_url: str, head_sha: str, points: tuple[Nit
             }
         }
     )
+
+
+def carry_nit_publication(
+    ticket: "Ticket", *, pr_url: str, from_head: str, to_head: str, points: tuple[NitPoint, ...]
+) -> int:
+    """Re-key the receipts of *points* and the publication marker from *from_head* to *to_head*.
+
+    The forge threads and follow-up issue are unchanged, so the receipt moves with its head stamp rewritten;
+    a pending or failed marker moves too, so the merge retries the publication at the new head. Returns the
+    receipts moved.
+    """
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    receipts = extra.get(_RECEIPTS_KEY)
+    publication = extra.get(_PUBLICATION_KEY)
+    receipts = receipts if isinstance(receipts, dict) else {}
+    publication = publication if isinstance(publication, dict) else {}
+    moved: JSONObject = {}
+    for point in points:
+        receipt = receipts.get(nit_point_marker(pr_url, from_head, point))
+        target = nit_point_marker(pr_url, to_head, point)
+        if isinstance(receipt, dict) and target not in receipts:
+            moved[target] = {**receipt, "head_sha": to_head}
+    marker = publication.get(from_head)
+    updates: dict[str, JSONObject] = {}
+    if moved:
+        updates[_RECEIPTS_KEY] = moved
+    if marker and to_head not in publication:
+        updates[_PUBLICATION_KEY] = {to_head: marker}
+    if updates:
+        ticket.merge_extra(merge_into_dicts=updates)
+    return len(moved)
