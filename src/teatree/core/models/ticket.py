@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from teatree.core.managers import TaskQuerySet
     from teatree.core.models.merge_void import MergeVoid
     from teatree.core.models.task import Task
-    from teatree.core.models.transition import TicketTransition
+    from teatree.core.models.transition import TicketTransitionQuerySet
     from teatree.core.models.types import TicketExtra, TicketSiblingFields
     from teatree.core.models.worktree import Worktree
 
@@ -106,7 +106,7 @@ class Ticket(
         # exposes exactly this queryset's methods, which is what callers use.
         tasks: "TaskQuerySet"
         worktrees: "models.Manager[Worktree]"
-        transitions: "models.Manager[TicketTransition]"
+        transitions: "TicketTransitionQuerySet"
         merge_voids: "models.Manager[MergeVoid]"
 
     class State(models.TextChoices):
