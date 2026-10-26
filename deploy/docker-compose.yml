@@ -391,6 +391,7 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      TEATREE_CODEX_SOURCE_GIT_SUBPATH: ${TEATREE_CODEX_SOURCE_GIT_SUBPATH:-}
       # The service `deploy/t3` execs into, so this is the fallback for a
       # `t3 setup` dispatched at it; the wrapper's own `--env` carries the
       # CURRENT checkout and wins, which is what repairs a relocation. It is also
@@ -636,6 +637,7 @@ services:
       TEATREE_HOST_HOME: ${TEATREE_HOST_HOME:-/home/teatree}
       TEATREE_SOURCE_MOUNT: ${TEATREE_SOURCE_MOUNT:-teatree_src}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      TEATREE_CODEX_SOURCE_GIT_SUBPATH: ${TEATREE_CODEX_SOURCE_GIT_SUBPATH:-}
       TEATREE_UID: ${TEATREE_UID:-1001}
       TEATREE_IMAGE: ${TEATREE_IMAGE:-teatree-headless:latest}
       TEATREE_DOCKER_SOCKET_GID: ${TEATREE_DOCKER_SOCKET_GID:-0}

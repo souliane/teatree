@@ -1,10 +1,14 @@
 from datetime import datetime
+from itertools import starmap
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
+
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
 
 
 class TicketTransitionQuerySet(models.QuerySet):
@@ -30,6 +34,11 @@ class TicketTransitionQuerySet(models.QuerySet):
         cost nothing; nothing prunes them.
         """
         return self.exclude(from_state=models.F("to_state"))
+
+    def moved_back_over(self, task: "Task") -> bool:
+        started = task.attempts.order_by("-started_at", "-pk").values("started_at")[:1]
+        edges = self.state_edges().filter(ticket_id=task.ticket_id, created_at__gt=models.Subquery(started))
+        return any(starmap(Ticket.state_retreats, edges.values_list("from_state", "to_state")))
 
     def merge_entry(self) -> "TicketTransition | None":
         """The newest edge that brought a ticket INTO merged from a pre-merged state."""
