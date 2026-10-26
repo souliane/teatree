@@ -56,6 +56,7 @@ from teatree.quality.pytest_resource_contract import (
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
+from teatree.utils.master_key import reset_master_key_volume_warnings
 from teatree.utils.ram_probe import available_cpu_count
 from teatree.utils.secrets import PassStore, use_store
 from teatree.utils.work_tree import reset_cwd_cache
@@ -257,12 +258,14 @@ def _clear_backend_caches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> It
     reset_backend_caches()
     reset_overlay_cache()
     reset_sealed_key_health_cache()
+    reset_master_key_volume_warnings()
     monkeypatch.setenv("T3_MASTER_KEY_SOURCE", f"file:{tmp_path / 'master.key'}")
     with use_store(MemoryStore()):
         yield
     reset_backend_caches()
     reset_overlay_cache()
     reset_sealed_key_health_cache()
+    reset_master_key_volume_warnings()
 
 
 @pytest.fixture

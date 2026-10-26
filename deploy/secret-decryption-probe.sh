@@ -93,7 +93,7 @@ note() { printf '%s\n' "$1"; }
 # The rc is captured from `pass` DIRECTLY rather than through a pipe: POSIX sh has no
 # PIPESTATUS, and a pipeline would report `wc`'s success as the store's.
 in_container_program='
-out=$(timeout "$2" pass show "$1" 2>/dev/null); rc=$?
+out=$(timeout "$2" /usr/local/bin/secret-read.sh get "$1" 2>/dev/null); rc=$?
 printf "%s|%s|%s|%s\n" "${GNUPGHOME:-<unset>}" "${TEATREE_HOST_GNUPG_DIR:-<unset>}" "$rc" \
     "$(printf %s "$out" | head -n1 | tr -d "\n" | wc -c | tr -d " ")"
 '
@@ -120,7 +120,7 @@ check_bare_shape() {
     # container's CREATE-TIME environment — the venue the fault topology breaks first.
     # Proved by exit status with stdout discarded; see the header on why not by length.
     home="$(docker exec "$1" printenv GNUPGHOME 2>/dev/null)" || home="<unset>"
-    docker exec "$1" timeout "$deadline" pass show "$pass_path" >/dev/null 2>&1
+    docker exec "$1" timeout "$deadline" /usr/local/bin/secret-read.sh get "$pass_path" >/dev/null 2>&1
     printf '%s|?|%s|-\n' "${home:-<unset>}" "$?"
 }
 
@@ -254,7 +254,7 @@ elapsed=$(($(date -u +%s) - started_epoch))
 
 note "secret-decryption probe — measured $stamp .. $finished (${elapsed}s, host: $host)"
 note "  scope: $(echo "$probed" | wc -w | tr -d ' ') of $(echo "$containers" | wc -w | tr -d ' ') container(s) from $source_label carry a credential plane"
-note "  proof: \`pass show $pass_path\` per container per invocation shape, reported by"
+note "  proof: \`secret-read.sh get $pass_path\` per container per invocation shape, reported by"
 note "         byte length / exit status only — never by value."
 note ""
 printf '%-32s %-21s %-13s %-13s %-9s %s\n' \
