@@ -66,7 +66,7 @@ class LifecycleIncidentTests(TestCase):
 
         assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
 
-    def test_newer_pending_same_phase_task_does_not_recover_failure(self) -> None:
+    def test_newer_same_phase_task_supersedes_historical_failure(self) -> None:
         old = TaskFactory()
         old.fail(reason="result_error: old attempt", by_holder=True)
         TaskFactory(ticket=old.ticket, phase=old.phase)
@@ -74,7 +74,8 @@ class LifecycleIncidentTests(TestCase):
         other_phase.fail(reason="result_error: current attempt", by_holder=True)
 
         reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
-        assert {task_id for report in reports for task_id in report.payload["ids"]} == {old.pk, other_phase.pk}
+        assert len(reports) == 1
+        assert reports[0].payload["ids"] == [other_phase.pk]
 
     def test_administrative_newer_failure_does_not_hide_old_failure(self) -> None:
         for reason in ("cancelled: operator stopped", "superseded: rework", "plan_stale: base moved"):
@@ -94,6 +95,25 @@ class LifecycleIncidentTests(TestCase):
             TaskFactory(ticket=failed.ticket, phase=completed_phase, status=Task.Status.COMPLETED)
 
         assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+    def test_later_completed_same_phase_recovers_failure_with_pending_question(self) -> None:
+        failed = TaskFactory(phase="coding")
+        failed.fail(reason="ProcessError: worker exited", by_holder=True)
+        successor = TaskFactory(ticket=failed.ticket, phase="coding", status=Task.Status.COMPLETED)
+        question = DeferredQuestion.record("Which path?", parked_task=successor, **OWNER_DECISION)
+
+        assert question.answered_at is None
+        assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+    def test_failure_after_completion_remains_current(self) -> None:
+        old = TaskFactory(phase="coding")
+        old.fail(reason="ProcessError: worker exited", by_holder=True)
+        TaskFactory(ticket=old.ticket, phase="coding", status=Task.Status.COMPLETED)
+        current = TaskFactory(ticket=old.ticket, phase="coding")
+        current.fail(reason="ProcessError: worker exited", by_holder=True)
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+        assert [task_id for report in reports for task_id in report.payload["ids"]] == [current.pk]
 
     def test_only_later_same_ticket_same_nonblank_phase_recovers_failure(self) -> None:
         older_completion = TaskFactory(status=Task.Status.COMPLETED)
@@ -120,7 +140,7 @@ class LifecycleIncidentTests(TestCase):
             blank_phase.pk,
         }
 
-    def test_newer_claimed_and_substantive_failed_tasks_do_not_recover_old_failure(self) -> None:
+    def test_newer_claimed_and_substantive_failed_tasks_supersede_old_failure(self) -> None:
         claimed_old = TaskFactory()
         claimed_old.fail(reason="ProcessError: worker exited", by_holder=True)
         TaskFactory(ticket=claimed_old.ticket, status=Task.Status.CLAIMED)
@@ -131,11 +151,7 @@ class LifecycleIncidentTests(TestCase):
         failed_new.fail(reason="ProcessError: worker exited", by_holder=True)
 
         reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
-        assert {task_id for report in reports for task_id in report.payload["ids"]} == {
-            claimed_old.pk,
-            failed_old.pk,
-            failed_new.pk,
-        }
+        assert {task_id for report in reports for task_id in report.payload["ids"]} == {failed_new.pk}
 
     def test_later_completion_resolves_task_failed_firing(self) -> None:
         failed = TaskFactory(phase="testing")

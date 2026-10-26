@@ -257,14 +257,18 @@ class LifecycleIncidentDetector:
         failed_rows = list(tasks.values_list("pk", "ticket_id", "phase", "failure_kind", "ticket__extra__source"))
         newest: dict[tuple[int, str], int] = {}
         if failed_rows:
-            successors = Task.objects.filter(
-                ticket_id__in={ticket_id for _, ticket_id, _, _, _ in failed_rows},
-                pk__gt=min(task_id for task_id, _, _, _, _ in failed_rows),
-                status=Task.Status.COMPLETED,
-            ).values_list("pk", "ticket_id", "phase")
+            successors = (
+                Task.objects.filter(
+                    ticket_id__in={ticket_id for _, ticket_id, _, _, _ in failed_rows},
+                )
+                .exclude(status=Task.Status.FAILED, failure_kind__in=NON_REPAIR_KINDS)
+                .order_by("-pk")
+                .values_list("pk", "ticket_id", "phase")
+            )
             for successor_id, ticket_id, phase in successors.iterator():
-                key = (ticket_id, normalize_phase(phase))
-                newest[key] = max(newest.get(key, 0), successor_id)
+                canonical_phase = normalize_phase(phase)
+                if canonical_phase:
+                    newest.setdefault((ticket_id, canonical_phase), successor_id)
         for task_id, ticket_id, phase, failure_kind, source in failed_rows:
             canonical_phase = normalize_phase(phase)
             if canonical_phase and newest.get((ticket_id, canonical_phase), 0) > task_id:

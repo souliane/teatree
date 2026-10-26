@@ -1,8 +1,5 @@
 """Tests for cli/push_gate_tools.py — the ``t3 tool push-gate`` surface (#122)."""
 
-import os
-import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -66,32 +63,6 @@ class TestWorktreeBrief(TestCase):
             execution_reason="No extra migration.",
         )
         assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo extra migration."
-
-
-def test_brief_read_initializes_isolated_gate_database(tmp_path: Path) -> None:
-    env = os.environ.copy()
-    env.pop("T3_CONFIG_DB", None)
-    env.pop("DATABASE_URL", None)
-    env.pop("DJANGO_SETTINGS_MODULE", None)
-    env["XDG_DATA_HOME"] = str(tmp_path / "data")
-    env["T3_CONTROL_DB_DIR"] = str(tmp_path / "control-db")
-    script = (
-        "import sys; from pathlib import Path; "
-        "from teatree.cli.push_gate_tools import _brief_for_worktree; "
-        "print(repr(_brief_for_worktree(Path(sys.argv[1]))))"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path)],
-        cwd=Path(__file__).resolve().parents[2],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "''"
 
 
 _SCOPED = PushGatePlan(

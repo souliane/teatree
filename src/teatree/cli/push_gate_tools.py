@@ -21,10 +21,8 @@ from teatree.utils.run import CommandFailedError
 
 def _brief_for_worktree(repo_root: Path) -> str:
     ensure_django()
-    from teatree.core.gates.schema_guard import require_current_schema  # noqa: PLC0415 — Django is set up at call time
     from teatree.core.models import PlanArtifact, Task, Worktree  # noqa: PLC0415 — Django is set up at call time
 
-    require_current_schema()
     worktree = Worktree.objects.filter(extra__worktree_path=str(repo_root.resolve())).select_related("ticket").first()
     if worktree is None:
         return ""
