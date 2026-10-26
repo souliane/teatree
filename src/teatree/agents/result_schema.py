@@ -30,7 +30,13 @@ from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPER
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, RubricGrade
+from teatree.core.models.types import (
+    FIX_RECORD_FIELDS,
+    FixRecord,
+    PlanAdequacy,
+    RubricGrade,
+    fix_record_required_fields,
+)
 
 
 class FileChange(TypedDict, total=False):
@@ -467,10 +473,11 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                 "A fix-ticket's Definition-of-Done record, recorded server-side onto ticket.extra "
                 "(#4520). Required on a kind=fix ticket — the DoD gate refuses DELIVERED without "
                 "one — and ignored on any other. Omit the key entirely rather than returning a "
-                "partial object: a partial record is refused, an absent one is a no-op."
+                "partial object: a partial record is refused, an absent one is a no-op. "
+                "observed_red is required when the forced-repro gate is on."
             ),
             "properties": {field: {"type": "string"} for field in FIX_RECORD_FIELDS},
-            "required": list(FIX_RECORD_FIELDS),
+            "required": list(fix_record_required_fields(red_required=False)),
         },
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
         **OWNER_STOP_SCHEMA_PROPERTIES,
