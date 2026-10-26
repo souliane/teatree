@@ -146,6 +146,7 @@ class FakeHarnessSession:
 
     last_options: Any = None
     last_prompt: str = ""
+    streamed_messages = 0
 
     def __init__(self, messages: list[Any], *, delay: float = 0.0) -> None:
         self._messages = iter(messages)
@@ -172,6 +173,7 @@ class FakeHarnessSession:
                 return
             if self._delay:
                 await asyncio.sleep(self._delay)
+            type(self).streamed_messages += 1
             yield message
             if isinstance(message, ResultMessage):
                 return
@@ -257,6 +259,7 @@ def fake_sdk(
     """
     FakeHarnessSession.last_options = None
     FakeHarnessSession.last_prompt = ""
+    FakeHarnessSession.streamed_messages = 0
 
     def _make_client(*, options: Any = None, **_: object) -> FakeHarnessSession:
         FakeHarnessSession.last_options = options

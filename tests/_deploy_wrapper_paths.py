@@ -22,6 +22,7 @@ def copy_wrapper(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
     shutil.copy2(source.parent / "generation-topology.sh", destination.parent / "generation-topology.sh")
     shutil.copy2(source.parent / "install-host-pressure.zsh", destination.parent / "install-host-pressure.zsh")
+    shutil.copy2(source.parent / "secret-read.sh", destination.parent / "secret-read.sh")
 
 
 _SOURCE_DIR_PATTERN = r"^CONTAINER_SOURCE_DIR=(\S+)"
