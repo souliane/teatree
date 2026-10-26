@@ -162,6 +162,40 @@ class TestNotifyUser(TestCase):
         assert thread.generation == 1
         assert len([entry for entry in posted if not entry[1]]) == 2
 
+    def test_tombstoned_root_reopens_after_refusing_the_current_message(self) -> None:
+        ticket = Ticket.objects.create(short_description="Tombstone")
+        backend = _backend()
+        posts: list[tuple[str, str]] = []
+        tombstoned = False
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+            posts.append((text, thread_ts))
+            return {"ok": True, "ts": f"1700000000.{len(posts):06d}"}
+
+        def fetch(*, channel: str, thread_ts: str) -> list[RawAPIDict]:
+            return [{"ts": thread_ts, "subtype": "tombstone" if tombstoned else ""}]
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = fetch
+
+        def send(body: str) -> bool:
+            return notify_user_outcome(
+                body,
+                kind=NotifyKind.INFO,
+                idempotency_key=f"tombstoned-{body}",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            ).sent
+
+        assert send("first")
+        tombstoned = True
+        assert not send("second")
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.root_ts, thread.generation) == ("", 1)
+        tombstoned = False
+        assert send("third")
+        assert len([thread_ts for _, thread_ts in posts if not thread_ts]) == 2
+
     def test_refused_root_read_preserves_generation_and_blocks_body(self) -> None:
         ticket = Ticket.objects.create(short_description="Read refusal")
         backend = _backend()
@@ -236,6 +270,22 @@ class TestNotifyUser(TestCase):
         assert first.sent
         assert second.sent
         assert [call.kwargs["thread_ts"] for call in backend.post_message.call_args_list] == ["", "9.0"]
+        assert not TicketDmThread.objects.filter(ticket=ticket).exists()
+
+    def test_ticket_without_issue_or_title_stays_at_dm_root(self) -> None:
+        ticket = Ticket.objects.create(short_description="")
+        backend = _backend()
+
+        outcome = notify_user_outcome(
+            "untitled note",
+            kind=NotifyKind.INFO,
+            idempotency_key="untitled-ticket",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert outcome.sent
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
         assert not TicketDmThread.objects.filter(ticket=ticket).exists()
 
     def test_happy_path_posts_dm_and_records_audit_with_permalink(self) -> None:
