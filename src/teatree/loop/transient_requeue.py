@@ -109,13 +109,6 @@ from functools import partial
 from django.db import transaction
 from django.utils import timezone
 
-from teatree.agents.envelope_refusal import (
-    corrective_instruction,
-    is_no_envelope_refusal,
-    is_recorder_refusal,
-    is_review_shape_refusal,
-    refused_envelope_instruction,
-)
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.forge_url import is_synthetic_ticket_url
@@ -132,7 +125,11 @@ from teatree.core.modelkit.task_failure_taxonomy import (
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.models.review_target import review_target_for_task
+from teatree.core.models.review_target import (
+    MOVED_REVIEW_RETRY_HEADS_KEY,
+    REVIEW_RETRY_HEAD_KEY,
+    review_target_for_task,
+)
 from teatree.core.models.task_repair_queries import adjacent_work_attempts, phase_attempts, ticket_phase_observations
 from teatree.core.repair_loop import (
     IterationStalled,
@@ -143,6 +140,8 @@ from teatree.core.repair_loop import (
 from teatree.failure_signatures import is_spawn_failure
 from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
 from teatree.loop.config_self_repair import repair_for_error
+from teatree.loop.transient_requeue_correction import CORRECTIVE_MARKER as _CORRECTIVE_MARKER
+from teatree.loop.transient_requeue_correction import corrective_note, retry_review_contract, wrong_head_retry_head
 from teatree.loop.transient_requeue_disposal import (
     LIVE_SUCCESSOR_STAMP,
     MOVED_TARGET_KINDS,
@@ -159,12 +158,6 @@ logger = logging.getLogger(__name__)
 #: is excluded from every future scan — bounds per-tick work and makes the escalation
 #: durably once-per-task regardless of whether the question is later answered.
 HALT_STAMP = "[repair-halt-parked]"
-#: Phases whose RECORDER-side envelope refusal earns the one-shot corrective retry.
-#: The RUNNER-side ``no_result_envelope`` is NOT gated on it (:func:`_corrective_note`).
-_CORRECTIVE_PHASES = frozenset({"coding", "debugging"})
-#: Idempotency stamp appended to ``execution_reason`` when the corrective retry
-#: fires — its presence means the one retry was already spent (escalate next time).
-_CORRECTIVE_MARKER = "[auto-corrective-retry]"
 
 
 def requeue_transient_failed() -> int:
@@ -364,29 +357,18 @@ def _self_repair_reopen(task: Task) -> int | None:
 
 
 def _corrective_note(task: Task) -> str | None:
-    """The emit-the-envelope instruction *task* earns, or ``None`` if it must escalate.
-
-    The RUNNER-side ``no_result_envelope`` refusal is a pure output-FORMAT failure, so
-    it is corrective on ANY phase where ``ProseSummaryPolicy.allowed`` is False:
-    ``debugging`` (already in :data:`_CORRECTIVE_PHASES`) plus every no-evidence,
-    non-prose-exempt phase outside it (``architectural_review``, ``bughunt``, ``e2e``,
-    ``codex_*``) — which the old gate left paging a human on the first prose-only run.
-    A RECORDER-side refusal stays gated on the set, except that a ``reviewing`` run whose
-    verdict envelope was refused for a misnamed, misplaced or malformed key is told that
-    refusal once — the reopened row resumes its own conversation, so the reviewer fixes
-    the keys without repeating the review. A withheld verdict is still a judgement to
-    surface. ``None`` for a genuine defect, and for a task whose one corrective retry is
-    already spent.
-    """
-    if _CORRECTIVE_MARKER in task.execution_reason:
-        return None
     error = _latest_error(task)
-    phase = normalize_phase(task.phase)
-    if is_no_envelope_refusal(error) or (phase in _CORRECTIVE_PHASES and is_recorder_refusal(error)):
-        return corrective_instruction(task.phase)
-    if phase == "reviewing" and is_review_shape_refusal(error):
-        return refused_envelope_instruction(error)
-    return None
+    if head := wrong_head_retry_head(error):
+        dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+        retried_heads = task.ticket.extra.get(MOVED_REVIEW_RETRY_HEADS_KEY, {})
+        if (
+            dispatch is not None
+            and dispatch.head_sha == head
+            and isinstance(retried_heads, dict)
+            and head in retried_heads
+        ):
+            return None
+    return corrective_note(task, error)
 
 
 def _corrective_reopen(task: Task, note: str) -> int:
@@ -397,13 +379,19 @@ def _corrective_reopen(task: Task, note: str) -> int:
     rows and does not re-append the note.
     """
     stamped = f"{_CORRECTIVE_MARKER} {note}"
-    new_reason = f"{task.execution_reason}\n{stamped}".strip() if task.execution_reason else stamped
-    return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
-        status=Task.Status.PENDING,
-        session_continuation=task.continuation_on_requeue(),
-        **RELEASED_CLAIM,
-        execution_reason=new_reason,
-    )
+    head = wrong_head_retry_head(_latest_error(task))
+    reason = retry_review_contract(task, head) if head else task.execution_reason
+    new_reason = f"{reason}\n{stamped}".strip() if reason else stamped
+    with transaction.atomic():
+        reopened = Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
+            status=Task.Status.PENDING,
+            session_continuation=task.continuation_on_requeue(),
+            **RELEASED_CLAIM,
+            execution_reason=new_reason,
+        )
+        if reopened and head:
+            task.ticket.merge_extra(merge_into_dicts={REVIEW_RETRY_HEAD_KEY: {str(task.pk): head}})
+    return reopened
 
 
 def _latest_attempt(task: Task) -> TaskAttempt | None:

@@ -222,6 +222,7 @@ class TeatreeReview(OverlayReview):
             return []
         return [
             "/dash/board/",
+            "/dash/board/lifecycle/",
             "/dash/live/",
             "/dash/cycle-time/",
             "/dash/health/",

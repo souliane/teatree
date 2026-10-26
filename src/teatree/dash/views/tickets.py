@@ -20,7 +20,10 @@ from django.views.decorators.http import require_GET, require_POST
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.intake.task_enqueue import TaskEnqueueError, enqueue_phase_task_once
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.plan_decision import plan_missing_refusal
+from teatree.core.models.task_enqueue import phase_eligible
 from teatree.core.models.ticket import Ticket
 from teatree.dash import audit
 from teatree.dash.task_actions import ENQUEUEABLE_PHASES
@@ -129,6 +132,9 @@ def task_action(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     phase = request.POST.get("phase", "").strip()
     if phase not in ENQUEUEABLE_PHASES:
         return _refused(request, ticket_id, f"phase {phase!r} is not one of {', '.join(ENQUEUEABLE_PHASES)}")
+    if not phase_eligible(ticket, phase):
+        reason = plan_missing_refusal(ticket, phase=phase) if normalize_phase(phase) == "coding" else None
+        return _refused(request, ticket_id, reason or f"{phase} is not available from {ticket.state}")
 
     who = actor(request)
     reason = request.POST.get("reason", "").strip() or f"Enqueued from the dashboard by {who}: run the {phase} phase."

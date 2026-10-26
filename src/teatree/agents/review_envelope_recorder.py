@@ -23,7 +23,7 @@ from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX, WRONG_HEAD_RETRY_PREFIX
 from teatree.core.models import (
     ChecksContradictionError,
     DeferredQuestion,
@@ -39,6 +39,7 @@ from teatree.core.models import (
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
 from teatree.core.models.review_evidence import ReviewEvidenceError
 from teatree.core.models.review_target import (
+    MOVED_REVIEW_RETRY_HEADS_KEY,
     ReviewTarget,
     review_target_for_task,
     unattachable_verdict_refusal,
@@ -51,10 +52,31 @@ from teatree.core.models.reviewer_identity import (
 )
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
+from teatree.core.review.live_head import live_head_at
 from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
 from teatree.core.review.nit_publish import pr_url_for_nits, publish_nits, review_nits
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
+
+
+def review_head_mismatch_refusal(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+    if "review_head_mismatch" not in result:
+        return ""
+    if normalize_phase(phase or task.phase) not in ENVELOPE_VERDICT_PHASES or "review_verdict" in result:
+        return "review_head_mismatch requires a reviewing phase without a verdict"
+    mismatch = result["review_head_mismatch"]
+    if not isinstance(mismatch, dict) or not all(
+        isinstance(mismatch.get(key), str) and mismatch[key].strip() for key in ("observed_sha", "reason")
+    ):
+        return "review_head_mismatch requires observed_sha and reason"
+    target = review_target_for_task(task)
+    if target is None:
+        return unattachable_verdict_refusal(task)
+    live = live_head_at(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind)
+    if live.unreadable or not live.sha:
+        return "outage_death: review head mismatch; live pull request head could not be read"
+    return f"{WRONG_HEAD_RETRY_PREFIX}{live.sha}; checkout resolved to {mismatch['observed_sha']}: {mismatch['reason']}"
+
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -179,7 +201,14 @@ def _bound_review_target(task: Task, envelope: ReviewVerdictEnvelope) -> tuple[R
     )
     if binding.error:
         if binding.superseded:
-            _supersede_moved_head(target)
+            with transaction.atomic():
+                _supersede_moved_head(target)
+                if binding.retry_head and target.armed_by is AutoReviewDispatch:
+                    task.ticket.merge_extra(
+                        merge_into_dicts={MOVED_REVIEW_RETRY_HEADS_KEY: {binding.retry_head: str(task.pk)}}
+                    )
+        elif binding.retry_head:
+            return None, f"{WRONG_HEAD_RETRY_PREFIX}{binding.retry_head}; {binding.error}"
         return None, binding.error
     return dataclasses.replace(target, head_sha=binding.head), ""
 

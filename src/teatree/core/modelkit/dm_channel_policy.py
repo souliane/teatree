@@ -70,6 +70,8 @@ PUSH_SIGNALS: frozenset[str] = frozenset(
         "self-improve:disk-probe-inert",
         # An owner question has remained undelivered despite the poster's retries.
         "self-improve:outbound-unposted",
+        # A merge reached the default branch with no audit row; the owner decides whether to revert it.
+        "unaudited-merge",
     }
 )
 
