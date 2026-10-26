@@ -187,7 +187,7 @@ def _file_new(
     if already:
         return _attach(ticket, already)
     stamped = f"{body}\n\n<!-- {_marker(fingerprint)} -->"
-    forge = normalize_forge(host.forge)
+    forge = normalize_forge(getattr(host, "forge", ""))
     if not forge:
         raise UnknownForgeError(repo)
     try:

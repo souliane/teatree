@@ -142,6 +142,24 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         assert "Tracking as" not in reply
         assert list(Ticket.objects.values_list("pk", flat=True)) == [task.ticket_id]
 
+    def test_a_host_without_forge_keeps_the_reply_and_files_nothing(self) -> None:
+        host = mock.Mock(spec=["create_issue", "search_open_issues"])
+        host.search_open_issues.return_value = []
+        with mock.patch("teatree.core.backend_factory.code_host_from_overlay", return_value=host):
+            task = self._record(
+                {
+                    "answer": {"text": "On it."},
+                    "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."},
+                }
+            )
+
+        host.create_issue.assert_not_called()
+        assert list(Ticket.objects.values_list("pk", flat=True)) == [task.ticket_id]
+        reply = self.backend.replies[0][2]
+        assert "On it." in reply
+        assert f"forge for {_REPO_A} could not be determined" in reply
+        assert "Tracking as" not in reply
+
     def test_the_request_is_filed_as_a_real_issue(self) -> None:
         self._record(
             {
