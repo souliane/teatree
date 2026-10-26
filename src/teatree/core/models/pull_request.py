@@ -69,6 +69,17 @@ class PullRequestQuerySet(models.QuerySet):
         """
         return self.filter(repo__iexact=slug, iid=str(pr_id))
 
+    def gated_ticket(self, *, slug: str, pr_id: int) -> "Ticket | None":
+        row = self.for_pr(slug=slug, pr_id=pr_id).select_related("ticket").order_by("-id").first()
+        if row is not None and row.ticket is not None:
+            return row.ticket
+        from teatree.core.models.merge_clear import MergeClear  # noqa: PLC0415 — model registration cycle
+
+        clear = (
+            MergeClear.objects.filter(slug__iexact=slug, pr_id=pr_id).select_related("ticket").order_by("-id").first()
+        )
+        return clear.ticket if clear is not None else None
+
     def owning_ticket(self, *, slug: str, pr_id: int, pr_url: str = "") -> "Ticket | None":
         """The delivery ticket that owns *(slug, pr_id)*, or ``None``.
 

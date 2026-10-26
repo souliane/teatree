@@ -17,13 +17,13 @@ from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
 from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
-from teatree.agents.review_nit_policy import normalize_review_envelope
+from teatree.agents.review_nit_policy import normalize_review_envelope, publish_review_nits_with_recovery
 from teatree.agents.review_rubric_recorder import ReviewGrading, merge_safe_over_fail_error, rubric_coverage_error
 from teatree.core.gates.integration_review_gate import distinct_repos
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import REVIEW_VERDICT_PHASES, normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import (
     REVIEW_UNRECORDABLE_PREFIX,
     VENUE_LIMIT_PREFIX,
@@ -59,8 +59,10 @@ from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import live_head_at
 from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
-from teatree.core.review.nit_publish import pr_url_for_nits, publish_nits, review_nits
+from teatree.core.review.nit_publish import pr_url_for_nits, review_nits
 from teatree.core.review.review_plan import plan_for_task
+from teatree.core.review.verdict_findings import FindingsRenderError
+from teatree.core.review.verdict_findings_publish import FindingsPublishError, publish_verdict_findings
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
 
@@ -117,28 +119,14 @@ if TYPE_CHECKING:
     from teatree.core.models.types import FixRecord, RubricGrade
 
 
-#: Reviewing phases whose returned ``review_verdict`` the orchestrator records
-#: server-side (corr-11) — the shell-free envelope seam. Both members now ALSO
-#: carry the shell (``phase_tools.VERDICT_REVIEW_PHASES``). ``reviewing`` still
-#: hands the verdict back through this seam: its headless brief
-#: (``phase_blocks._review_verdict_return_lines``) returns the envelope rather than
-#: shelling out. ``e2e_reviewing``'s live recording path is instead the shell
-#: ``t3 <overlay> review record`` from its ``/t3:e2e-review`` skill; its envelope
-#: membership here is currently dormant (nothing in production returns an
-#: ``e2e_reviewing`` verdict), so exactly one recording path fires per run and no
-#: double-record occurs. The
-#: ``codex_*`` variants are deliberately absent: no server-side envelope seam,
-#: shell-only.
-_REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
+#: Every schema-required review verdict returns through this recorder. E2E review
+#: normally records through its shell command, but a returned envelope is accepted too.
+_REVIEW_VERDICT_PHASES = REVIEW_VERDICT_PHASES | {"e2e_reviewing"}
 
 #: Verdict-recording phases that also OWE rubric coverage — the ones whose brief carries
 #: the checklist (``phase_blocks._reviewing_phase_lines`` injects ``rubric_brief_lines``).
-#: Narrower than :data:`_REVIEW_VERDICT_PHASES` on purpose: ``e2e_reviewing`` is shown no
-#: criteria, so demanding coverage there would refuse a checklist its agent never saw, and
-#: briefing it instead would arm a second recording path beside its shell
-#: ``t3 <overlay> review record``. That is the SAME set, for the same reason, as the phases
-#: whose brief returns the envelope at all, so it IS that set rather than a second spelling
-#: of it. Pinned against the brief by ``tests/teatree_agents/test_phase_blocks.py``.
+#: Only the headless reviewing brief supplies rubric criteria; other review phases
+#: may return a verdict but cannot be required to grade criteria they never saw.
 _RUBRIC_GRADED_PHASES = ENVELOPE_VERDICT_PHASES
 _MIN_INTEGRATION_REPOS = 2
 
@@ -273,32 +261,6 @@ def _recorded_reviewer_identity(target: ReviewTarget, envelope: "ReviewVerdictEn
     return assigned_reviewer_identity(target.pr_id)
 
 
-def _publish_review_nits(ticket: "Ticket", target: ReviewTarget, findings: list[Finding]) -> None:
-    points = review_nits(findings)
-    if not points:
-        return
-    pr_url = pr_url_for_nits(ticket, target.head_sha)
-    if not pr_url:
-        message = "review NIT has no attributable pull request URL"
-        raise NitLaneError(message)
-    publish_nits(ticket, pr_url, target.head_sha, points)
-
-
-def _publish_review_nits_with_recovery(ticket: "Ticket", target: ReviewTarget, findings: list[Finding]) -> str:
-    if not review_nits(findings):
-        return ""
-    ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "pending"}}})
-    try:
-        _publish_review_nits(ticket, target, findings)
-    except NitLaneError as exc:
-        ticket.merge_extra(
-            merge_into_dicts={"nit_publication": {target.head_sha: {"status": "failed", "error": str(exc)}}}
-        )
-        return f"review NIT publication refused: {exc}"
-    ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "published"}}})
-    return ""
-
-
 def _record_verdict_and_grades(
     task: Task,
     result: AgentResultBlob,
@@ -344,7 +306,7 @@ def _record_verdict_and_grades(
                 )
             if ticket is not None and merge_safe and fix_record is not None:
                 ticket.record_fix_record(cast("FixRecord", fix_record))
-            ReviewVerdict.record(
+            recorded = ReviewVerdict.record(
                 pr_id=target.pr_id,
                 slug=target.slug,
                 reviewed_sha=target.head_sha,
@@ -385,7 +347,26 @@ def _record_verdict_and_grades(
         return f"{MALFORMED_RUBRIC_GRADES_PREFIX}{exc}"
     except ReviewEvidenceError as exc:
         return f"integration review recording refused: {exc}"
-    return _publish_review_nits_with_recovery(ticket or task.ticket, target, findings)
+    return _publish_recorded_findings(ticket or task.ticket, target, recorded, findings)
+
+
+def _publish_recorded_findings(
+    ticket: "Ticket", target: ReviewTarget, recorded: ReviewVerdict, findings: list[Finding]
+) -> str:
+    nit_error = publish_review_nits_with_recovery(ticket, target, findings)
+    if nit_error:
+        return nit_error
+    if recorded.verdict == ReviewVerdict.Verdict.HOLD and findings:
+        pr_url = pr_url_for_nits(ticket, target.head_sha)
+        if not pr_url:
+            return "review HOLD publication blocked: no attributable pull request URL"
+        try:
+            outcome = publish_verdict_findings(recorded, pr_url=pr_url)
+        except (FindingsRenderError, FindingsPublishError, RuntimeError, OSError) as exc:
+            return f"review HOLD publication blocked: {exc}"
+        if outcome.blocked_reason:
+            return f"review HOLD publication blocked: {outcome.blocked_reason}"
+    return ""
 
 
 def _nit_comment_error(envelope: ReviewVerdictEnvelope) -> str:

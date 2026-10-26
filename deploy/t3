@@ -700,6 +700,8 @@ FORWARD_ENV_NAMES=(
     PYTEST_XDIST_AUTO_NUM_WORKERS
     GITLAB_TOKEN
     GITLAB_URL
+    GH_TOKEN
+    GITHUB_TOKEN
     # The launcher `t3 setup` writes through the host-bin mount execs THIS
     # checkout's deploy/t3. An `exec` inherits the environment the stack came up
     # with, so without forwarding it a relocated checkout would repair itself to

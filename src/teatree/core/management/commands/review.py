@@ -15,9 +15,9 @@ required-checks rollup is green), ``stale`` (a verdict exists but the head moved
 off the reviewed tree, so a re-review is needed), or ``no recorded verdict``.
 
 A forge that could not be READ gets its own two words — ``head unreadable`` and
-``checks unreadable`` — rather than borrowing ``stale``. The recorded verdict STANDS:
-nothing about the PR changed, only our ability to look at it, so the answer is to
-retry the read, never to spend a cold re-review on an untouched tree.
+``checks unreadable`` — rather than borrowing ``stale``. An unreadable head proves
+nothing about the current tree; the caller retries the read before deciding whether
+the recorded verdict still applies.
 
 Forge calls (``CodeHostQuery.live_head_read`` / ``CodeHostQuery.required_checks_status``)
 are the only external boundary; the rest is a DB read.

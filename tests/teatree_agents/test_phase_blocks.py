@@ -9,6 +9,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents.phase_blocks import (
+    _reviewing_phase_lines,
     build_reviewer_dispatch_prompt,
     embedded_intake_survey_json,
     intake_survey_json,
@@ -41,6 +42,25 @@ def _task(phase: str, *, kind: Ticket.Kind = Ticket.Kind.FEATURE) -> Task:
     ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, kind=kind)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase)
+
+
+class TestReviewerMissingLiveHead(TestCase):
+    def test_missing_live_head_never_injects_a_local_full_diff(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example/repo/pull/8",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "a" * 40},
+        )
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+
+        with (
+            patch("teatree.agents.phase_blocks.plan_for_task", return_value=None),
+            patch("teatree.agents.phase_blocks._green_proof_binding_lines", return_value=()),
+            patch("teatree.agents.phase_blocks.review_diff_brief_lines", side_effect=AssertionError("local diff")),
+        ):
+            lines = _reviewing_phase_lines(task)
+
+        assert any("review_venue_limit" in line and "live head" in line for line in lines)
 
 
 class TestPhaseSpecificLinesDispatch(TestCase):

@@ -4,7 +4,9 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.models import PullRequest, ReviewVerdict, RoundMetric, Rubric, RubricCriterion, Session, Task, Ticket
+from teatree.core.review.review_delta import ReviewDelta
 from teatree.core.review.review_plan import plan_for_task
 from tests._git_repo import make_git_repo, run_git
 
@@ -68,6 +70,7 @@ class TestReviewPlan(TestCase):
             with (
                 patch("teatree.core.review.review_plan.matching_clone", return_value=repo),
                 patch("teatree.core.review.review_plan.resolve_target_branch", return_value="main"),
+                patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of(head)),
             ):
                 plan = plan_for_task(task)
                 repeated = plan_for_task(task)
@@ -80,3 +83,41 @@ class TestReviewPlan(TestCase):
             assert "fix the branch" in "\n".join(plan.brief_lines())
             assert repeated == plan
             assert RoundMetric.objects.filter(ticket=owner, kind="review", subject=head).count() == 1
+
+            reviewer.merge_extra(set_keys={"reviewed_sha": "f" * 40})
+            with (
+                patch("teatree.core.review.review_plan.matching_clone", return_value=repo),
+                patch("teatree.core.review.review_plan.resolve_target_branch", return_value="main"),
+                patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of("f" * 40)),
+                patch(
+                    "teatree.core.review.review_plan.resolve_delta",
+                    return_value=ReviewDelta("full", "base changed", prior_head=prior),
+                ),
+            ):
+                fallback = plan_for_task(task)
+            assert fallback is not None
+            assert fallback.delta.case == "full"
+            assert "Prior reviewed head: " + prior in "\n".join(fallback.brief_lines())
+            assert "fix the branch" in "\n".join(fallback.brief_lines())
+
+            with (
+                patch("teatree.core.review.review_plan.dispatch_worktree_path", return_value=None),
+                patch("teatree.core.review.review_plan.matching_clone", return_value=None),
+                patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of("e" * 40)),
+            ):
+                no_clone = plan_for_task(task)
+            assert no_clone is not None
+            assert no_clone.delta.reason == "git clone unavailable"
+            assert "Prior reviewed head: " + prior in "\n".join(no_clone.brief_lines())
+
+            with patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of(head)):
+                rebound = plan_for_task(task, create=False)
+            assert rebound is not None
+            assert rebound.head == head
+
+            with (
+                patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead(sha="", unreadable=True)),
+                patch("teatree.core.review.review_plan.matching_clone", return_value=repo),
+            ):
+                unreadable = plan_for_task(task)
+            assert unreadable is None

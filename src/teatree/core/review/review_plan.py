@@ -13,10 +13,10 @@ from teatree.core.models.round_metric import RoundMetric
 from teatree.core.models.rubric import Rubric
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.review.live_head import dispatch_review_target
 from teatree.core.review.review_delta import BRIEF_PATCH_CHARS, ReviewDelta, resolve_delta
 from teatree.core.worktree.clone_paths import matching_clone
 from teatree.core.worktree.target_branch import resolve_target_branch
-from teatree.utils import git
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -55,7 +55,7 @@ class ReviewPlan:
             else f"REVIEW CASE: full - {self.delta.reason}"
         )
         lines = ["", case]
-        if self.delta.case == "delta":
+        if self.delta.prior_head:
             lines.extend(
                 (
                     f"Prior reviewed head: {self.delta.prior_head}",
@@ -65,10 +65,15 @@ class ReviewPlan:
                     *(self.prior_decisions or ("  (none)",)),
                     "Prior rubric grades:",
                     *(self.prior_grades or ("  (none)",)),
+                    "Do not reopen settled calls without new evidence; restate every unfixed prior finding.",
+                )
+            )
+        if self.delta.case == "delta":
+            lines.extend(
+                (
                     "CARRIED: " + (", ".join(f"#{n}" for n in sorted(self.carried)) or "none"),
                     "RE-GRADE: " + (", ".join(f"#{n}" for n in sorted(self.all_ordinals - self.carried)) or "none"),
                     "Re-grade any carried row the delta can affect.",
-                    "Do not reopen settled calls without new evidence; restate every unfixed prior finding.",
                     "Run only tests the delta can reach; CI owns the full-tree run.",
                 )
             )
@@ -150,10 +155,12 @@ def _prior_lines(task: "Task", prior: str) -> tuple[tuple[str, ...], tuple[str, 
 def _open_plan(task: "Task", ticket: "Ticket", target: ReviewTarget, head: str, repo: Path | str | None) -> RoundMetric:
     repo = repo or dispatch_worktree_path(ticket) or matching_clone(target.slug)
     prior_heads = list(
-        ReviewVerdict.objects.for_pr(target.slug, target.pr_id)
-        .exclude(reviewed_sha=head)
-        .values_list("reviewed_sha", flat=True)
-        .distinct()
+        dict.fromkeys(
+            ReviewVerdict.objects.for_pr(target.slug, target.pr_id)
+            .exclude(reviewed_sha=head)
+            .order_by("-recorded_at", "-pk")
+            .values_list("reviewed_sha", flat=True)
+        )
     )
     previous = RoundMetric.objects.filter(kind=RoundMetric.Kind.REVIEW, ticket=ticket).order_by("-round_number").first()
     base = resolve_target_branch(ticket, str(repo)) if repo is not None else ""
@@ -161,7 +168,7 @@ def _open_plan(task: "Task", ticket: "Ticket", target: ReviewTarget, head: str, 
     delta = (
         resolve_delta(Path(repo), prior_heads, head, base, prior_base)
         if repo is not None
-        else ReviewDelta("full", "git clone unavailable")
+        else ReviewDelta("full", "git clone unavailable", prior_head=prior_heads[0] if prior_heads else "")
     )
     carried = _carry_ordinals(task, delta.prior_head, delta.files) if delta.case == "delta" else frozenset()
     return RoundMetric.objects.open(
@@ -183,18 +190,14 @@ def _open_plan(task: "Task", ticket: "Ticket", target: ReviewTarget, head: str, 
 
 
 def plan_for_task(task: "Task", *, create: bool = True) -> ReviewPlan | None:
-    target = review_target_for_task(task)
+    target = dispatch_review_target(task)
     if target is None:
         return None
     ticket = gated_ticket_for_review_task(task) or task.ticket
     head = target.head_sha.strip().lower()
-    repo = None
-    if not head and create:
-        repo = dispatch_worktree_path(ticket) or matching_clone(target.slug)
-        if repo is not None:
-            head = git.head_sha(str(repo)).strip().lower()
     if not head:
         return None
+    repo = None
     row = RoundMetric.objects.filter(kind=RoundMetric.Kind.REVIEW, ticket=ticket, subject=head).first()
     if row is None:
         if not create:

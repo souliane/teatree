@@ -30,9 +30,9 @@ from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
-from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
+from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
-from teatree.core.review.live_head import live_head_at
+from teatree.core.review.live_head import dispatch_review_target, live_head_at
 from teatree.core.review.review_plan import plan_for_task
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
@@ -370,9 +370,15 @@ def _scanning_news_phase_lines() -> tuple[str, ...]:
 def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tuple[str, ...]:
     """The ``PHASE: reviewing`` block and its review evidence instructions."""
     plan = plan_for_task(task)
+    reviewer_head_unverified = task.ticket.role == task.ticket.Role.REVIEWER and plan is None
+    unverified_line = (
+        "No verified live head is available for this PR. Do not review a stamped SHA or local diff; "
+        "return review_venue_limit naming the live head read failure."
+    )
     lines = [
         "",
         "PHASE: reviewing",
+        *((unverified_line,) if reviewer_head_unverified else ()),
         (
             (
                 "1. Review the DIFF UNDER REVIEW at the dispatched head; hold if it is absent or incomplete."
@@ -402,7 +408,7 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
         *(plan.brief_lines() if plan is not None and not read_only_venue else ()),
         *(
             ()
-            if read_only_venue or (plan is not None and plan.delta.case == "delta")
+            if read_only_venue or reviewer_head_unverified or (plan is not None and plan.delta.case == "delta")
             else review_diff_brief_lines(task)
         ),
     ]
@@ -417,7 +423,7 @@ def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
     ``origin/main`` and exited 0 while the reviewed head carried six failing
     check-runs, across eight consecutive reviews of one PR.
     """
-    target = review_target_for_task(task)
+    target = dispatch_review_target(task)
     if target is None:
         return ()
     head = target.head_sha

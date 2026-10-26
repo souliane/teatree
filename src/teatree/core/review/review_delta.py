@@ -9,6 +9,7 @@ from teatree.utils.git_run import run_with_status
 from teatree.utils.run import CommandFailedError
 
 DELTA_FILE_SHARE = 0.5
+MIN_SHARE_PR_FILES = 3
 BRIEF_PATCH_CHARS = 24_000
 _DIFF_PATH_FIELDS = 2
 
@@ -40,9 +41,11 @@ def _patch_files(patch: str) -> frozenset[str]:
     return frozenset(paths)
 
 
-def _base_fallback(prior_heads: list[str], base_ref: str, recorded_base_ref: str) -> str:
+def _base_fallback(prior_heads: list[str], head: str, base_ref: str, recorded_base_ref: str) -> str:
     if not prior_heads:
         return "no prior verdict"
+    if prior_heads[0] == head:
+        return "latest verdict already covers this head"
     if recorded_base_ref and base_ref != recorded_base_ref:
         return "base changed since the prior review"
     return ""
@@ -51,22 +54,16 @@ def _base_fallback(prior_heads: list[str], base_ref: str, recorded_base_ref: str
 def resolve_delta(
     repo: Path | str, prior_heads: list[str], head: str, base_ref: str, recorded_base_ref: str
 ) -> ReviewDelta:
-    if reason := _base_fallback(prior_heads, base_ref, recorded_base_ref):
-        return ReviewDelta("full", reason)
+    if reason := _base_fallback(prior_heads, head, base_ref, recorded_base_ref):
+        return ReviewDelta("full", reason, prior_head=prior_heads[0] if prior_heads else "")
     root = str(repo)
     try:
-        prior = ""
-        for sha in prior_heads:
-            if sha == head:
-                continue
-            check = run_with_status(repo=root, args=["merge-base", "--is-ancestor", sha, head])
-            if check.returncode == 0:
-                prior = sha
-                break
-            if check.returncode != 1:
-                return ReviewDelta("full", "git could not read the prior head")
-        if not prior:
-            return ReviewDelta("full", "prior head is not an ancestor")
+        prior = prior_heads[0]
+        check = run_with_status(repo=root, args=["merge-base", "--is-ancestor", prior, head])
+        if check.returncode == 1:
+            return ReviewDelta("full", "prior head is not an ancestor", prior_head=prior)
+        if check.returncode != 0:
+            return ReviewDelta("full", "git could not read the prior head", prior_head=prior)
         patch = git.run_strict_verbatim(
             repo=root,
             args=["log", "--first-parent", "--reverse", "-p", "--remerge-diff", "--format=", f"{prior}..{head}"],
@@ -79,8 +76,8 @@ def resolve_delta(
             ).split("\0")
             if path
         )
-        if pr_files and len(files) / len(pr_files) > DELTA_FILE_SHARE:
+        if len(pr_files) >= MIN_SHARE_PR_FILES and len(files) / len(pr_files) > DELTA_FILE_SHARE:
             return ReviewDelta("full", "delta touches more than 50% of PR files", prior_head=prior)
         return ReviewDelta("delta", prior_head=prior, patch=patch, files=files, pr_files=pr_files)
     except (OSError, CommandFailedError) as exc:
-        return ReviewDelta("full", f"git could not produce the delta ({type(exc).__name__})")
+        return ReviewDelta("full", f"git could not produce the delta ({type(exc).__name__})", prior_head=prior_heads[0])

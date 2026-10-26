@@ -12,12 +12,26 @@ is": the first supersedes the claim, the second must leave it alone and retry.
 """
 
 import logging
-from typing import Protocol
+from dataclasses import replace
+from typing import TYPE_CHECKING, Protocol
 
 from teatree.core.modelkit.forge_readability import LiveHeadRead
+from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
+from teatree.core.models.review_target import ReviewTarget, review_target_for_task
 from teatree.utils.pr_ref import PrRef
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
+
+
+def dispatch_review_target(task: "Task") -> ReviewTarget | None:
+    target = review_target_for_task(task)
+    if target is None or target.armed_by is AutoReviewDispatch or task.ticket.role != task.ticket.Role.REVIEWER:
+        return target
+    live = live_head_at(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind)
+    return replace(target, head_sha="" if live.unreadable else live.sha)
 
 
 class LiveHeadProbe(Protocol):

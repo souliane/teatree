@@ -12,3 +12,12 @@ def test_deploy_wrapper_forwards_the_xdist_worker_ceiling() -> None:
     forwarded_names = source[start : source.index("\n)\n", start)].splitlines()
 
     assert "    PYTEST_XDIST_AUTO_NUM_WORKERS" in forwarded_names
+
+
+def test_deploy_wrapper_forwards_host_github_credentials() -> None:
+    source = _WRAPPER.read_text(encoding="utf-8")
+    start = source.index("FORWARD_ENV_NAMES=(")
+    forwarded_names = source[start : source.index("\n)\n", start)].splitlines()
+
+    assert "    GH_TOKEN" in forwarded_names
+    assert "    GITHUB_TOKEN" in forwarded_names

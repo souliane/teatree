@@ -33,7 +33,7 @@ from teatree.agents.result_schema_review import (
     ReviewVenueLimit,
 )
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import REVIEW_VERDICT_PHASES, normalize_phase
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
 from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, RubricGrade
 
@@ -480,9 +480,7 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "planning": ("plan_text",),
     "coding": ("files_modified",),
     "testing": ("tests_run", "tests_passed"),
-    "reviewing": ("review_verdict",),
-    "codex_reviewing": ("review_verdict",),
-    "codex_adversarial_reviewing": ("review_verdict",),
+    **dict.fromkeys(REVIEW_VERDICT_PHASES, ("review_verdict",)),
     "critic_reviewing": ("critic_verdict",),
     "directive_interpreting": ("directive_interpretation",),
     "shipping": ("commands_executed",),

@@ -3,7 +3,7 @@
 from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import DeferredQuestion, ReviewVerdict, Session, Task, Ticket
 from teatree.core.models.ticket_external_review import (
     ReviewDeclined,
     reviewer_dispatch_decline,
@@ -121,6 +121,29 @@ class TestUnreviewableStateSkipsTheForge(TestCase):
 
 
 class TestOpenPrStillGetsItsReview(TestCase):
+    def test_three_recorded_heads_cap_external_review_mint(self) -> None:
+        ticket = _reviewer()
+        for index in range(3):
+            ReviewVerdict.objects.create(
+                ticket=ticket,
+                slug="org/app",
+                pr_id=7,
+                reviewed_sha=f"{index:040x}",
+                verdict="hold",
+                reviewer_identity="cold-reviewer-7",
+                reviewer_identity_normalized="cold-reviewer-7",
+                blast_class="logic",
+                gh_verify_result="green",
+                findings=[],
+            )
+
+        with pr_open_state(PrOpenState.OPEN):
+            result = schedule_external_review(ticket)
+
+        assert result is ReviewDeclined.REVIEW_LIMIT
+        assert not Task.objects.filter(ticket=ticket).exists()
+        assert DeferredQuestion.objects.filter(dedupe_marker="review-cap:org/app:7").exists()
+
     def test_an_open_pr_mints_the_reviewing_task(self) -> None:
         ticket = _reviewer()
 

@@ -28,12 +28,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: SELF-NAMING surfaces: the agent declares its OWN identity here, so a concrete copyable
 #: example is right. `agents/reviewer.md` IS the reviewer sub-agent's system prompt.
-_SELF_NAMING_MARKDOWN = ("agents/reviewer.md",)
+_SELF_NAMING_MARKDOWN = ("agents/reviewer.md", "skills/e2e-review/SKILL.md")
 
 #: CITING surfaces: the agent names ANOTHER actor's identity in a CLI recipe. A template
 #: here is actively wrong — it overrides the real reviewer's name, which is what the
 #: keystone_merge_reviewer_is_independent eval caught. They carry the constraint, not an example.
-_CITING_MARKDOWN = ("skills/ship/SKILL.md", "skills/sweeping-prs/SKILL.md", "skills/e2e-review/SKILL.md")
+_CITING_MARKDOWN = ("skills/ship/SKILL.md", "skills/sweeping-prs/SKILL.md")
 
 
 def _rendered_surfaces() -> dict[str, str]:

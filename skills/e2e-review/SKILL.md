@@ -178,15 +178,19 @@ HEAD_SHA="$(git rev-parse HEAD)"   # the full hex commit you reviewed; never a s
 
 **Clean spec → `merge_safe`.** When the spec clears all hard gates and `score ≥ threshold`, record a `merge_safe` verdict. It resolves the per-MR review lock and lets the sweep merge; it does NOT re-open another author round:
 
+Name your own reviewer identity: `cold-reviewer-<pr-or-task-id> (must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker)`. Pass only the identity, without the parenthetical instruction.
+
 ```bash
 t3 <overlay> review record <pr_id> <slug> \
   --reviewed-sha "$HEAD_SHA" \
   --verdict merge_safe \
-  --reviewer-identity "<the independent reviewer's id, e.g. codex — must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker>" \
+  --reviewer-identity "cold-reviewer-<pr-or-task-id>" \
   --gh-verify-result green
 ```
 
 **Real defect → `hold` with the punch-list (feeds back, is NOT an approval).** When a hard gate failed or the score is below threshold, record a `hold` and pass the findings as JSON via `--findings-json`. A HOLD re-arms a fresh author leg carrying your punch-list for the next round. The contrast that keeps a HOLD honest:
+
+Name your own reviewer identity: `cold-reviewer-<pr-or-task-id> (must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker)`. Pass only the identity, without the parenthetical instruction.
 
 - The findings written to a JSON file and passed via `--findings-json <path>` ARE the punch-list the author leg works through — that file is the whole point of a HOLD.
 - A HOLD is the opposite of an approval, so an approving call (`gh pr approve`, `gh pr review --approve`, `glab mr approve`) is wrong here — it merges an unverified spec. The only action a HOLD takes is the `review record --verdict hold` below.
@@ -203,7 +207,7 @@ JSON
 t3 <overlay> review record <pr_id> <slug> \
   --reviewed-sha "$HEAD_SHA" \
   --verdict hold \
-  --reviewer-identity "<the independent reviewer's id, e.g. codex — must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker>" \
+  --reviewer-identity "cold-reviewer-<pr-or-task-id>" \
   --findings-json /tmp/findings.json
 ```
 

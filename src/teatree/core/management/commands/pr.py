@@ -515,7 +515,9 @@ class Command(VoidMergeCommands, PendingPrCommands, RefusalExitTyperCommand):
             f"validation / SHA-binding / audit / mark_merged). Use the sanctioned keystone: "
             f"`t3 <overlay> ticket clear {pr} {slug} --reviewed-sha <sha> --reviewer-identity "
             f"<independent-reviewer> --blast-class <substrate|logic|docs>` then `t3 <overlay> "
-            f"ticket merge <clear_id>` (substrate adds `--human-authorized <id>`). §17.1 inv 8 / §17.4."
+            f"ticket merge <clear_id>` (substrate adds `--human-authorized <id>`). "
+            f"Use the actual independent reviewer's identity: it must contain a reviewer role "
+            f"(adjudicator/checker/codex/cold/cr/critic/reviewer), never coding/loop/maker. §17.1 inv 8 / §17.4."
         )
         raise SystemExit(1)
 

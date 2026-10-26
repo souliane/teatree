@@ -44,6 +44,7 @@ _ALIAS_TO_CANONICAL: dict[str, str] = {
 #: hand-maintained set (``Session._REQUIRED_PHASES``) must be validated
 #: against so the two cannot drift silently (#782).
 CANONICAL_PHASES: frozenset[str] = frozenset(_PHASE_ALIASES)
+REVIEW_VERDICT_PHASES: frozenset[str] = frozenset({"reviewing", "codex_reviewing", "codex_adversarial_reviewing"})
 
 # Canonical phase -> the ``Ticket`` FSM transition method that records it.
 _CANONICAL_TO_TRANSITION: dict[str, str] = {

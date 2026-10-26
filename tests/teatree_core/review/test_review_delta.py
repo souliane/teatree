@@ -66,6 +66,58 @@ def test_rewritten_history_falls_back_to_full_review(tmp_path: Path) -> None:
     assert not delta.patch
 
 
+def test_latest_verdict_rewritten_history_does_not_reuse_an_older_ancestor(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "commit", "--allow-empty", "-m", "base")
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "file.txt").write_text("first pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "first")
+    older = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-b", "abandoned")
+    (repo / "file.txt").write_text("latest held pass\n")
+    _git(repo, "commit", "-am", "held")
+    latest = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "feature")
+    (repo / "file.txt").write_text("rewritten fix\n")
+    _git(repo, "commit", "-am", "fix")
+    head = _git(repo, "rev-parse", "HEAD")
+
+    delta = resolve_delta(repo, [latest, older], head, "main", "main")
+
+    assert delta.case == "full"
+    assert delta.prior_head == latest
+    assert delta.reason == "prior head is not an ancestor"
+
+
+def test_one_file_pr_keeps_only_new_hunks_on_second_pass(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "commit", "--allow-empty", "-m", "base")
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "only.txt").write_text("first pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "first pass")
+    prior = _git(repo, "rev-parse", "HEAD")
+    (repo / "only.txt").write_text("first pass\nsecond pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "second pass")
+    head = _git(repo, "rev-parse", "HEAD")
+
+    delta = resolve_delta(repo, [prior], head, "main", "main")
+
+    assert delta.case == "delta"
+    assert "+second pass" in delta.patch
+    assert "+first pass" not in delta.patch
+
+
 def test_full_review_fallbacks_name_the_reason(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -86,6 +138,7 @@ def test_full_review_fallbacks_name_the_reason(tmp_path: Path) -> None:
     head = _git(repo, "rev-parse", "HEAD")
 
     assert resolve_delta(repo, [], head, "main", "main").reason == "no prior verdict"
+    assert resolve_delta(repo, [head], head, "main", "main").reason == "latest verdict already covers this head"
     assert resolve_delta(repo, [prior], head, "main", "").reason == "delta touches more than 50% of PR files"
     assert resolve_delta(repo, [prior], head, "main", "release").reason == "base changed since the prior review"
     large = resolve_delta(repo, [prior], head, "main", "main")

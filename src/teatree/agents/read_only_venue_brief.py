@@ -14,11 +14,10 @@ from teatree.agents.phase_blocks import intake_survey_json
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.intake.landscape_persist import ensure_planning_landscape
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models.review_target import review_target_for_task
 from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.head_workflow_runs import live_checks_at
-from teatree.core.review.live_head import live_head_at
+from teatree.core.review.live_head import dispatch_review_target, live_head_at
 from teatree.core.review.review_plan import plan_for_task
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils.git_sync import fetch_branch
@@ -207,7 +206,7 @@ def _comment_block(comment: object) -> str:
 def _review_diff(task: "Task") -> tuple[str, str, str]:
     if normalize_phase(task.phase) != "reviewing" or task.ticket.role != task.ticket.Role.REVIEWER:
         return "", "", ""
-    target = review_target_for_task(task)
+    target = dispatch_review_target(task)
     if target is None or not target.head_sha:
         reason = "the review has no dispatched pull request head"
         raise _refused(reason)

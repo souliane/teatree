@@ -12,7 +12,7 @@ package just unified got built in the first place.
 
 from typing import TYPE_CHECKING
 
-from teatree.core.models import MergeClear, PullRequest
+from teatree.core.models import PullRequest
 from teatree.core.models.review_target import review_target_for_task
 
 if TYPE_CHECKING:
@@ -31,13 +31,7 @@ def resolve_gated_ticket(*, slug: str, pr_id: int) -> "Ticket | None":
     row is missing or mis-cased no longer skips the PR-4 gate, because its CLEAR's
     ticket still resolves and the (fail-closed) gate runs.
     """
-    pr = PullRequest.objects.filter(repo__iexact=slug, iid=str(pr_id)).select_related("ticket").order_by("-id").first()
-    if pr is not None and pr.ticket is not None:
-        return pr.ticket
-    clear = MergeClear.objects.filter(slug__iexact=slug, pr_id=pr_id).select_related("ticket").order_by("-id").first()
-    if clear is not None and clear.ticket is not None:
-        return clear.ticket
-    return None
+    return PullRequest.objects.gated_ticket(slug=slug, pr_id=pr_id)
 
 
 def gated_ticket_for_review_task(task: "Task") -> "Ticket | None":

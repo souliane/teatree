@@ -329,12 +329,12 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
     # retry the READ. `live_head_sha()` flattens both to "", which is why this reads the
     # richer `live_head_read()` instead.
     head = query.live_head_read()
-    stands = f"the recorded {recorded.verdict} at {recorded.reviewed_sha[:8]} STANDS — retry, do NOT re-review"
     if head.unreadable:
         # Naming only the symptom cost a differential test across three PRs to diagnose (#83):
         # "the forge named no head" reads as a fact about the PR, not about this venue's auth.
         human = (
-            f"  head unreadable: the forge named no head for {ref.slug}#{ref.pr_id} — {stands}\n"
+            f"  head unreadable: cannot verify the current code for {ref.slug}#{ref.pr_id}; "
+            f"the last recorded {recorded.verdict} was at {recorded.reviewed_sha[:8]} and may be stale\n"
             f"    why: {read_credential_state(ref.host_kind)}"
         )
         return {"state": "head_unreadable", "slug": ref.slug, "pr_id": ref.pr_id, "verdict": recorded.verdict}, human
@@ -355,7 +355,8 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
     live_checks = query.required_checks_status()
     if live_checks == CHECKS_UNREADABLE:
         human = (
-            f"  checks unreadable: the forge named no verdict for {ref.slug}#{ref.pr_id} — {stands}\n"
+            f"  checks unreadable: cannot verify approval for {ref.slug}#{ref.pr_id}; "
+            f"the last recorded {recorded.verdict} was at {recorded.reviewed_sha[:8]} — retry the check read\n"
             f"    why: {read_credential_state(ref.host_kind)}"
         )
         return {"state": "checks_unreadable", "slug": ref.slug, "pr_id": ref.pr_id, "verdict": recorded.verdict}, human

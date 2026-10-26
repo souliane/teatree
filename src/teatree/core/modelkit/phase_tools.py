@@ -20,7 +20,7 @@ with any accepted alias.
 
 from typing import Final
 
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import REVIEW_VERDICT_PHASES, normalize_phase
 
 #: Grants the teatree MCP server's write tools; a phase without it gets ``t3 mcp serve --read-only``.
 MCP_WRITE: Final = "mcp_write"
@@ -71,8 +71,7 @@ _REVIEW_WITH_SHELL: Final[frozenset[str]] = _READ_ONLY | _WEB | {"shell"}
 
 #: Every review phase whose DELIVERABLE is a recorded verdict. All four share one
 #: read-mostly-with-shell grant (:data:`_REVIEW_WITH_SHELL`), applied from this set
-#: so the entries cannot drift apart, and all four are in
-#: ``review_envelope_recorder._REVIEW_VERDICT_PHASES`` — one evidence contract, one seam.
+#: so the entries cannot drift apart; returned verdicts use the shared recorder.
 #: The shell stays load-bearing for the ``codex_*`` variants: the MCP post path
 #: (:class:`teatree.cli.review.service.ReviewService`) is GitLab-only, so on a
 #: GitHub PR the shell (``t3 <overlay> review record`` / ``t3 review
@@ -81,17 +80,14 @@ _REVIEW_WITH_SHELL: Final[frozenset[str]] = _READ_ONLY | _WEB | {"shell"}
 #: reads the diff but never delivers, stalling and leaking an "I have no
 #: Bash/git/gh" question to the owner. ``requesting_review`` is deliberately NOT a
 #: member: it records no verdict and stays shell-less.
-VERDICT_REVIEW_PHASES: Final[frozenset[str]] = frozenset(
-    {"reviewing", "codex_reviewing", "codex_adversarial_reviewing", "e2e_reviewing"}
-)
+VERDICT_REVIEW_PHASES: Final[frozenset[str]] = REVIEW_VERDICT_PHASES | {"e2e_reviewing"}
 
 #: The phases whose HEADLESS BRIEF returns a ``review_verdict`` envelope the orchestrator
 #: records through ``review_target_for_task`` — so the head must be resolvable from the DB
 #: for the verdict to bind to anything. Deliberately narrower than
-#: :data:`VERDICT_REVIEW_PHASES`: the ``codex_*`` and ``e2e_reviewing`` lanes record through
-#: the SHELL (``t3 <overlay> review record --reviewed-sha <sha>``), which takes the head from
-#: the reviewer's own checkout and never consults ``ticket.extra``, so gating them would
-#: refuse runs that record fine. Pinned against the brief that injects the envelope-return
+#: :data:`VERDICT_REVIEW_PHASES`: the ``codex_*`` and ``e2e_reviewing`` briefs do not
+#: promise a DB-bound head and may record through the shell. A returned Codex envelope
+#: is still persisted by the recorder. Pinned against the brief that injects the envelope-return
 #: directive by ``tests/teatree_agents/test_phase_blocks.py``.
 ENVELOPE_VERDICT_PHASES: Final[frozenset[str]] = frozenset({"reviewing"})
 

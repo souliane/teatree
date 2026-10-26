@@ -24,10 +24,12 @@ from django.db import transaction
 from django_fsm import can_proceed
 
 from teatree.core.modelkit.gate_registry import get_resolver
+from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
+from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ class ReviewDeclined(StrEnum):
     PR_STATE_UNKNOWN = "pr_state_unknown"
     NOTHING_OWED = "nothing_owed"
     RETIRED = "retired"
+    REVIEW_LIMIT = "review_limit"
 
 
 def schedule_external_review(ticket: Ticket, *, parent_task: Task | None = None) -> Task | ReviewDeclined:
@@ -68,6 +71,11 @@ def schedule_external_review(ticket: Ticket, *, parent_task: Task | None = None)
         in_flight = _in_flight_review(ticket)
         if in_flight is not None:
             return in_flight
+        ref = pr_ref_from_url(ticket.issue_url)
+        if ref is not None and AutoReviewDispatch.review_cap_reached(
+            slug=ref.slug, pr_id=ref.pr_id, pr_url=ticket.issue_url
+        ):
+            return ReviewDeclined.REVIEW_LIMIT
         session = Session.objects.create(ticket=ticket, agent_id="external-review")
         return Task.objects.create(
             ticket=ticket,
