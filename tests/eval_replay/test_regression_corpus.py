@@ -84,6 +84,13 @@ class TestRegressionCorpusGreen(TestCase):
         failures = [(r.check.failure_class, r.detail) for r in report.failures]
         assert report.ok, f"corpus went RED under a hijacked GIT_* env (git-hook context): {failures}"
 
+    def test_corpus_stays_green_with_a_term_registry_in_the_hook_environment(self) -> None:
+        with patch.dict("os.environ", {"TEATREE_TERM_REGISTRY": '{"leak":["fixtureterm"]}'}):
+            report = run_regression_corpus()
+
+        failures = [(r.check.failure_class, r.detail) for r in report.failures]
+        assert report.ok, f"corpus went RED with a hook registry: {failures}"
+
 
 class TestRegressionCorpusAntiVacuous(TestCase):
     def test_branch_currency_check_fails_when_it_blocks_a_clean_branch(self) -> None:
