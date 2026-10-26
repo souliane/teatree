@@ -20,6 +20,7 @@ from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.round_ceiling import PUSHED_ROUND_CEILING, ROUND_STARTED, ROUND_TOOL_MATCHER, RoundCeiling
 from teatree.agents.runner import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat
 from teatree.agents.runner_outcomes import outcome_failure
+from teatree.agents.runner_route_recording import fallback_reason_for_outcome
 from teatree.agents.runner_stream import HarnessOutcome
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket
 from tests.factories import planned_ticket
@@ -102,6 +103,28 @@ class TestTheDriverHoldsTheCeilingOnEveryRuntime(TestCase):
 
 
 class TestTheHandoffParksTheTask(TestCase):
+    def test_driver_ended_outcomes_never_become_route_failures(self) -> None:
+        terminal = result_message(
+            subtype="error_during_execution",
+            is_error=True,
+            result="The process timed out while discussing authorization and credentials.",
+        )
+        outcomes = (
+            HarnessOutcome("work done", terminal, None, round_handoff="round ceiling"),
+            HarnessOutcome("work done", terminal, "deploy", checkpointed=True),
+            HarnessOutcome("work done", terminal, "lease reclaimed", lease_lost=True),
+            HarnessOutcome("work done", terminal, "operator pause", paused=True),
+        )
+        for outcome in outcomes:
+            with self.subTest(outcome=outcome):
+                assert fallback_reason_for_outcome(outcome, metered_transport=False) is None
+        assert (
+            fallback_reason_for_outcome(
+                HarnessOutcome("work done", terminal, "watchdog timeout"), metered_transport=False
+            )
+            is not None
+        )
+
     def test_the_interrupted_run_is_recorded_as_needs_user_input(self) -> None:
         task = _task()
         outcome = HarnessOutcome(

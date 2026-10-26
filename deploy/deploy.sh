@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 HOST_IDENTITY_FILE="$SCRIPT_DIR/docker-compose.host-identity.yml"
+CODEX_SOURCE_GIT_FILE="$SCRIPT_DIR/docker-compose.codex-source-git.yml"
 ENV_FILE="$SCRIPT_DIR/teatree.env"
 
 # The container's fixed HOME, which every mount TARGET in docker-compose.yml is
@@ -45,6 +46,28 @@ compose() {
     else
         docker compose -f "$COMPOSE_FILE" -f "$HOST_IDENTITY_FILE" "$@"
     fi
+}
+
+compose_executor() {
+    local files=(-f "$COMPOSE_FILE")
+    if [ "${TEATREE_HOST_HOME:-$CONTAINER_HOME}" != "$CONTAINER_HOME" ]; then
+        files+=(-f "$HOST_IDENTITY_FILE")
+    fi
+    local check_status=1
+    if [ -n "$TEATREE_CODEX_SOURCE_GIT_SUBPATH" ]; then
+        if ! compose exec -T teatree-worker true; then
+            echo "deploy: teatree-worker could not answer the executor mount check" >&2
+            return 1
+        fi
+        check_status=0
+        compose exec -T teatree-worker test -d "$CONTAINER_HOME/.codex/$TEATREE_CODEX_SOURCE_GIT_SUBPATH" || check_status=$?
+    fi
+    case "$check_status" in
+        0) files+=(-f "$CODEX_SOURCE_GIT_FILE") ;;
+        1) ;;
+        *) echo "deploy: Codex source Git path could not be checked" >&2; return 1 ;;
+    esac
+    docker compose "${files[@]}" "$@"
 }
 
 # Single-convergence invariant (host flock). GitHub's `concurrency: deploy` group
@@ -347,6 +370,23 @@ echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(g
 # user's home is `/home/teatree`, so this equals the compose default and every
 # mount keeps path identity with the container's `/home/teatree/...` targets.
 export TEATREE_HOST_HOME="$HOME"
+
+source_origin="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+source_repo="${source_origin##*/}"
+source_repo="${source_repo%.git}"
+source_owner="${source_origin%/*}"
+source_owner="${source_owner##*/}"
+source_owner="${source_owner##*:}"
+TEATREE_CODEX_SOURCE_GIT_SUBPATH=""
+TEATREE_CODEX_SOURCE_GIT_TARGET=""
+if [[ "$source_owner" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ && "$source_repo" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    TEATREE_CODEX_SOURCE_GIT_SUBPATH="workspace/$source_owner/$source_repo/.git"
+    TEATREE_CODEX_SOURCE_GIT_TARGET="$CONTAINER_HOME/.codex/$TEATREE_CODEX_SOURCE_GIT_SUBPATH"
+else
+    echo "deploy: no Codex source Git path derivable from origin; the read-only executor keeps its original mounts" >&2
+fi
+export TEATREE_CODEX_SOURCE_GIT_SUBPATH
+export TEATREE_CODEX_SOURCE_GIT_TARGET
 
 # The checkout this deploy runs out of — the directory holding `deploy/`. The
 # watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs
@@ -672,7 +712,7 @@ recreate_ro_executor() {
         return 0
     fi
     archive_service_logs "$EXECUTOR_SERVICE"
-    if ! compose up -d --no-deps "$EXECUTOR_SERVICE"; then
+    if ! compose_executor up -d --no-deps "$EXECUTOR_SERVICE"; then
         _EXECUTOR_FAILURE="its container did not start"
         echo "deploy: $EXECUTOR_SERVICE did not start (the cause is above); deploying everything else and failing at the end." >&2
     fi
