@@ -12,10 +12,19 @@ itself lives in :mod:`teatree.loop.preset_resolution`; this module is the durabl
 shape only, referencing presets **by name** so a deleted preset fails open.
 """
 
+import datetime as dt
+import logging
+import zoneinfo
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 from django.utils import timezone as django_timezone
+
+from teatree.core.models.config_setting import ConfigSetting
+
+logger = logging.getLogger(__name__)
+ACTIVE_SCHEDULE_SETTING = "active_loop_schedule"
+OWNER_FALLBACK_ZONE = "Europe/Paris"
 
 
 class ModeSchedule(models.Model):
@@ -49,6 +58,35 @@ class ModeSchedule(models.Model):
         seeded without a timezone fire in ``settings.TIME_ZONE``.
         """
         return self.timezone or f"{django_timezone.get_current_timezone_name()} (default)"
+
+
+def active_schedule_name() -> str:
+    raw = ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING)
+    return raw.strip() if isinstance(raw, str) and raw.strip() else ""
+
+
+def schedule_by_name(name: str) -> ModeSchedule | None:
+    schedule = ModeSchedule.objects.filter(name=name).first()
+    if schedule is None:
+        logger.warning("active_loop_schedule names unknown schedule %r — failing open to base config", name)
+    return schedule
+
+
+def active_schedule() -> ModeSchedule | None:
+    name = active_schedule_name()
+    return schedule_by_name(name) if name else None
+
+
+def owner_zone() -> dt.tzinfo:
+    schedule = active_schedule()
+    if schedule is not None:
+        try:
+            return zoneinfo.ZoneInfo(schedule.timezone)
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            logger.warning(
+                "schedule %r timezone %r invalid — using %s", schedule.name, schedule.timezone, OWNER_FALLBACK_ZONE
+            )
+    return zoneinfo.ZoneInfo(OWNER_FALLBACK_ZONE)
 
 
 _MAX_WEEKDAY = 6  # Python weekday(): Sunday

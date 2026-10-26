@@ -17,11 +17,11 @@ from teatree.core.modelkit import reask_cadence
 from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind, is_causeless
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
+from teatree.core.models.loop_schedule import owner_zone
 from teatree.core.models.question_withheld import WITHHELD_ACTION
 from teatree.core.models.task_phase_disposition import PHASE_WEDGE_MARKER_RE
 from teatree.core.telemetry.admission import checked_lifecycle_observations
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
-from teatree.loop.preset_resolution import owner_zone
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan

@@ -199,7 +199,7 @@ class TestCheckoutAttestCard(TestCase):
         }
         declines = {
             True: "The step stays stuck until the folder changes or the factory can check it safely; "
-            "the pull request may wait.",
+            "the pull request remains open.",
             False: "The step stays stuck until the folder changes or the factory can check it safely; "
             "no pull request waits.",
         }

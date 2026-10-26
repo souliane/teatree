@@ -260,12 +260,12 @@ def _pull_request_words(url: str, *, may_block: bool) -> tuple[str, str]:
     if url and may_block:
         return (
             f"it may hold up <{url}|this pull request> while open",
-            f"{_DECLINE_PREFIX}; the pull request may wait.",
+            f"{_DECLINE_PREFIX}; the pull request remains open.",
         )
     if url:
         return (
             f"this ticket also has <{url}|an open pull request>",
-            f"{_DECLINE_PREFIX}; that pull request was open when asked.",
+            f"{_DECLINE_PREFIX}; the pull request remains open.",
         )
     return (
         "no pull request for this folder was open when asked",

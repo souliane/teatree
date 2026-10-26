@@ -427,7 +427,6 @@ graph TD
     teatree.loop.self_improve --> teatree.core.telemetry
     teatree.loop.self_improve --> teatree.core.modelkit
     teatree.loop.self_improve --> teatree.loop.persistence_phase_task
-    teatree.loop.self_improve --> teatree.loop.preset_resolution
     teatree.loop.rendering_items --> teatree.url_classify
     teatree.loop.rendering_dms --> teatree.loop.dispatch
     teatree.loop.rendering_classification --> teatree.loop.dispatch

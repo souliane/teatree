@@ -11,6 +11,7 @@ RESURFACE_INTERVAL_HOURS = 24
 
 #: The unit of the per-question bump schedule: 1, 2, 4, 7, 12 … hours after the first post.
 REASK_UNIT = dt.timedelta(hours=1)
+CHECKOUT_ATTEST_HOLD = dt.timedelta(minutes=8)
 
 #: The owner is never pinged from 22:00 until 08:00 in their own zone.
 OWNER_QUIET_FROM = dt.time(22, 0)

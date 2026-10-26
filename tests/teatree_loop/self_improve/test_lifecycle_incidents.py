@@ -12,13 +12,14 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from teatree.core.modelkit.reask_cadence import CHECKOUT_ATTEST_HOLD
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
 from teatree.loop.preset_resolution import owner_zone
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
-from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
+from teatree.loop.self_improve.detectors.lifecycle_incident import _POST_WAIT, LifecycleIncidentDetector
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.self_improve.schedule import DeliveryRoutes, Tier, TierResult, detectors_for_tier, run_tier
 from tests._owner_channel import OWNER_DECISION
@@ -192,6 +193,9 @@ class LifecycleIncidentTests(TestCase):
 
         assert "outbound_unposted" not in kinds
         assert quiet.call_args.args[0] == check_at.astimezone(owner_zone()).time()
+
+    def test_attest_hold_ends_before_unposted_incident_wait(self) -> None:
+        assert CHECKOUT_ATTEST_HOLD < _POST_WAIT
 
     def test_growing_unposted_count_does_not_send_another_alert(self) -> None:
         first = DeferredQuestion.record("First?", session_id="s", **OWNER_DECISION)

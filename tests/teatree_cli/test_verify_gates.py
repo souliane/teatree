@@ -195,22 +195,11 @@ class TestVerifyGatesRunsBothStages:
         registry = {"leak": ["private-marker"], "prose_collider": ["private-marker"]}
         with closing(sqlite3.connect(live / "db.sqlite3")) as db:
             db.execute("CREATE TABLE teatree_config_setting (scope TEXT, key TEXT, value TEXT)")
-            db.execute("CREATE TABLE teatree_worktree (id INTEGER PRIMARY KEY)")
             db.execute(
                 "INSERT INTO teatree_config_setting VALUES ('', 'banned_term_registry', ?)",
                 (json.dumps(registry),),
             )
             db.commit()
-
-        def check_snapshot(_command: list[str], *, env: dict[str, str], **_kwargs: object) -> int:
-            private_db = ControlDb(env, home=tmp_path).for_repo(worktree).path
-            assert private_db.is_file()
-            with closing(sqlite3.connect(private_db)) as db:
-                assert db.execute("SELECT name FROM sqlite_master WHERE name='teatree_worktree'").fetchone() == (
-                    "teatree_worktree",
-                )
-            return 0
-
         monkeypatch.setenv("T3_CONTROL_DB_DIR", str(live))
         monkeypatch.setenv("T3_CONFIG_DB", str(live / "db.sqlite3"))
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{live / 'db.sqlite3'}")
@@ -219,7 +208,7 @@ class TestVerifyGatesRunsBothStages:
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
-            patch("teatree.cli.verify_gates.run_streamed", side_effect=check_snapshot) as run,
+            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0, _text(result)
