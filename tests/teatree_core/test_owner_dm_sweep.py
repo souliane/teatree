@@ -134,6 +134,20 @@ class TestFragmentQualifiedSubject(TestCase):
 
 
 class TestDuplicateThreads(TestCase):
+    def test_distinct_reviewed_heads_keep_their_mirrored_threads(self) -> None:
+        first = ask_owner_to_read(_PR_URL, "A reviewed change", "a" * 40)
+        assert first is not None
+        assert first.mark_mirrored(channel="D0OWNER", slack_ts="1779990001.000001")
+        second = ask_owner_to_read(_PR_URL, "A reviewed change", "b" * 40)
+        assert second is not None
+        assert second.mark_mirrored(channel="D0OWNER", slack_ts="1779990002.000001")
+
+        result = run_sweep(seams=SweepSeams(subject_closed=lambda _question: False))
+
+        assert result.resolved == 0
+        assert result.left_open == 2
+        assert set(DeferredQuestion.owner_pending().values_list("pk", flat=True)) == {first.pk, second.pk}
+
     def test_distinct_held_pr_cards_keep_both_owner_threads(self) -> None:
         first = ask_owner_to_read("https://github.com/example/repo/pull/1", "First", "a" * 40)
         second = ask_owner_to_read("https://github.com/example/repo/pull/2", "Second", "b" * 40)

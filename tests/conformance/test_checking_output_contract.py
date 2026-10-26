@@ -18,7 +18,7 @@ SKILL = Path(__file__).resolve().parents[2] / "skills/checking/SKILL.md"
         ("complete non-row list", "caps its rows at five", "exclude its `question` entries"),
         ("re-read the facts", "dismiss with evidence", "earlier answer"),
         ("owner-kept decision", "spending money", "irreversible deletion", "credential use", "colleague-visible posts"),
-        ("report each automatic resolution", "overrule it"),
+        ("report each automatic resolution", "in one line", "overrule it"),
         ("awaiting your slack reply", "question_answer", "refuse it"),
         ("zero **untriaged** waits", "name each still-open card"),
     ],
