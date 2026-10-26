@@ -691,6 +691,45 @@ class TestHaltTriggerCleared(TestCase):
         assert reach.decisions["halt_trigger_cleared"] == Verdict.DRAIN
 
 
+class TestHaltAndStallNoticeExpiry(TestCase):
+    def test_merged_and_superseded_subjects_drain_with_terminal_audit(self) -> None:
+        merged = _ticket(Ticket.State.MERGED)
+        ignored = _ticket(Ticket.State.IGNORED)
+        notices = (
+            _halt_question(merged.pk),
+            DeferredQuestion.record("Repair-loop stall", dedupe_marker=f"repair-stall:{ignored.pk}:coding"),
+        )
+
+        assert drain_pending_questions().drained == 2
+        for notice in notices:
+            assert DeferredQuestionAudit.objects.get(question=notice).resolver_id == "subject_terminal"
+
+    def test_closed_pull_request_drains_a_stall_notice(self) -> None:
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
+        _pull_request(ticket, state=PullRequest.State.CLOSED)
+        notice = DeferredQuestion.record("Repair-loop stall", dedupe_marker=f"repair-stall:{ticket.pk}:coding")
+
+        assert drain_pending_questions().drained == 1
+        assert DeferredQuestionAudit.objects.get(question=notice).resolver_id == "pr_terminal"
+
+    def test_both_live_notices_expire_at_the_age_bound_with_audit(self) -> None:
+        first = _ticket()
+        second = _ticket()
+        notices = (
+            _halt_question(first.pk),
+            DeferredQuestion.record("Repair-loop stall", dedupe_marker=f"repair-stall:{second.pk}:coding"),
+        )
+        for notice in notices:
+            _age(notice, days=41)
+            _part_way_up_the_ladder(notice, count=3, days_ago=4)
+
+        assert drain_pending_questions().expired == 2
+        for notice in notices:
+            audit = DeferredQuestionAudit.objects.get(question=notice, action="dismissed")
+            assert audit.resolver_id == "age_ceiling"
+            assert "3 escalations" in audit.dismissed_reason
+
+
 class TestProvisionHealedDrain(TestCase):
     """A provision-failure question already mirrored is drained once its ticket provisions (#4904)."""
 

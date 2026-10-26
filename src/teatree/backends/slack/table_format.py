@@ -57,12 +57,9 @@ def _aligns(alignment: list[Align] | None, ncols: int) -> list[Align]:
 
 def _rich_text_cell(text: str, *, bold: bool, link: str = "") -> RawAPIDict:
     """A single Block Kit ``rich_text`` table cell."""
-    style: RawAPIDict = {"bold": True} if bold else {}
-    if link:
-        style["link"] = link
-    text_element: RawAPIDict = {"type": "text", "text": text}
-    if style:
-        text_element["style"] = style
+    text_element: RawAPIDict = {"type": "link", "url": link, "text": text} if link else {"type": "text", "text": text}
+    if bold:
+        text_element["style"] = {"bold": True}
     return {
         "type": "rich_text",
         "elements": [{"type": "rich_text_section", "elements": [text_element]}],

@@ -344,13 +344,23 @@ class TestCheckingNotify:
         for subject in subjects:
             assert subject in str(blocks)
         links = {
-            cell["elements"][0]["elements"][0].get("style", {}).get("link")
+            cell["elements"][0]["elements"][0].get("url")
             for block in blocks
             if block["type"] == "table"
             for row in block["rows"][1:]
             for cell in row
         }
         assert set(subjects) <= links
+
+    def test_owner_question_without_subject_url_keeps_its_text_in_recap(self, checkpoint_file: Path) -> None:
+        DeferredQuestion.record("May I publish this?", card=owner_card(OwnerDecision.PUBLIC_POST))
+
+        with patch("teatree.core.management.commands.checking.notify_user", wraps=notify_user) as send:
+            _call("checking", "show", "--this-overlay", "--notify", "--no-advance")
+
+        blocks = send.call_args.kwargs["blocks"]
+        assert "May I publish this?" in str(blocks)
+        assert "May I publish this?" in send.call_args.args[0]
 
     def test_internal_escalation_count_reaches_the_native_blocks_beside_owner_waits(
         self, checkpoint_file: Path

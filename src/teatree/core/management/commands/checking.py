@@ -112,7 +112,7 @@ def _recap_table_dm(
         rows = [
             [
                 f"Q{item.row_id}" if isinstance(item, OwnerWaitItem) and item.row_id is not None else item.label,
-                item.title or item.url,
+                item.title or item.url or item.label.partition(": ")[2] or item.label,
                 item.detail,
             ]
             for item in group.items[:cap]

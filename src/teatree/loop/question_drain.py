@@ -56,6 +56,7 @@ from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.question_heal import HEAL_CHECKS
 from teatree.core.review.owner_waits import canonical_wait_subject
 from teatree.loop.question_subjects import SubjectIndex
+from teatree.loop.recovered_repair_halts import REPAIR_HALT_RECOVERED, recovered_repair_halts
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -125,7 +126,7 @@ class SweepContext:
     superseded_parked: frozenset[int]
     #: pks of the halt rows whose ticket has since run a phase to success.
     cleared_halts: frozenset[int]
-    #: Per ``HEAL_CHECKS`` name, the rows it proved healed and why.
+    #: Per healing resolver (``HEAL_CHECKS`` plus ``repair_halt_recovered``), the rows it proved healed and why.
     healed: Mapping[str, Mapping[int, str]]
     settled_pr_subjects: Mapping[str, str]
 
@@ -137,7 +138,10 @@ class SweepContext:
             now=timezone.now(),
             superseded_parked=_superseded_parked_questions(questions),
             cleared_halts=_cleared_halt_questions(questions, index),
-            healed={name: check(questions) for name, check in HEAL_CHECKS},
+            healed={
+                **{name: check(questions) for name, check in HEAL_CHECKS},
+                REPAIR_HALT_RECOVERED: recovered_repair_halts(questions, index),
+            },
             settled_pr_subjects=_settled_pr_subjects(questions),
         )
 
@@ -390,6 +394,7 @@ def _lane_moved_on(
 SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (
     *((name, _heal_resolver(name)) for name, _check in HEAL_CHECKS),
     ("halt_trigger_cleared", _halt_trigger_cleared),
+    (REPAIR_HALT_RECOVERED, _heal_resolver(REPAIR_HALT_RECOVERED)),
     ("parked_task_superseded", _parked_task_superseded),
     ("subject_pr_settled", _subject_pr_settled),
     ("pr_terminal", _pr_terminal),

@@ -55,7 +55,7 @@ class TestSlackTableBlock:
         url = "https://github.com/acme/widgets/pull/8"
         block = slack_table_block(["Ref", "Subject"], [["Q8", url]], links={(0, 1): url})
         cell = _rows(block)[1][1]["elements"][0]["elements"][0]
-        assert cell == {"type": "text", "text": url, "style": {"link": url}}
+        assert cell == {"type": "link", "text": url, "url": url}
 
     def test_alignment_rides_column_settings(self) -> None:
         block = slack_table_block(["A", "B"], [["1", "2"]], alignment=["right", "center"])

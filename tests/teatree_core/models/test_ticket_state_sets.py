@@ -62,3 +62,32 @@ class TestAdvanceToDelivered(TestCase):
         assert result == AdvanceResult(from_state="scoped", to_state="scoped")
         assert not result.advanced
         assert not result.refused
+
+
+class TestStateRetreatOrder(TestCase):
+    def test_ladder_matches_the_declared_state_order(self) -> None:
+        expected = (
+            Ticket.State.NOT_STARTED,
+            Ticket.State.SCOPED,
+            Ticket.State.WORK_STARTED,
+            Ticket.State.PLAN_RECORDED,
+            Ticket.State.CODED,
+            Ticket.State.TESTED,
+            Ticket.State.SELF_REVIEWED,
+            Ticket.State.PR_OPENED,
+            Ticket.State.REVIEW_REQUESTED,
+            Ticket.State.MERGED,
+            Ticket.State.RETRO_RECORDED,
+            Ticket.State.DELIVERED,
+        )
+        assert tuple(state for state in Ticket.State.values if state not in Ticket.off_ladder_states()) == expected
+
+    def test_only_earlier_on_ladder_targets_are_retreats(self) -> None:
+        assert Ticket.state_retreats(Ticket.State.CODED, Ticket.State.WORK_STARTED)
+        assert Ticket.state_retreats(Ticket.State.TESTED, Ticket.State.CODED)
+        assert not Ticket.state_retreats(Ticket.State.WORK_STARTED, Ticket.State.CODED)
+        assert not Ticket.state_retreats(Ticket.State.CODED, Ticket.State.CODED)
+        for terminal in (Ticket.State.IGNORED, Ticket.State.REVIEW_DELIVERED):
+            assert not Ticket.state_retreats(terminal, Ticket.State.NOT_STARTED)
+            assert not Ticket.state_retreats(Ticket.State.CODED, terminal)
+        assert not Ticket.state_retreats("retired_state", Ticket.State.NOT_STARTED)
