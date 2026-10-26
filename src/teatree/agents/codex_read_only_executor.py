@@ -21,6 +21,7 @@ from teatree.agents.codex_read_only_verdict import (
     FORBIDDEN_TOOLS,
     KERNEL_ROOTS,
     WORKTREE_ROOT,
+    MalformedAnswerError,
     codex_source_git_subpath,
     evaluate,
     planted_home,
@@ -128,7 +129,12 @@ class ExecutorDocker:
         return answer
 
     def codex_source_git_present(self, worker_id: str) -> bool:
-        result = self.run(self.exec_argv(worker_id, ["test", "-d", f"{CODEX_HOME_ROOT}/{codex_source_git_subpath()}"]))
+        try:
+            subpath = codex_source_git_subpath()
+        except MalformedAnswerError as exc:
+            msg = f"the worker's Codex source Git path is malformed ({exc})"
+            raise ExecutorRefusalError(msg) from exc
+        result = self.run(self.exec_argv(worker_id, ["test", "-d", f"{CODEX_HOME_ROOT}/{subpath}"]))
         if result.returncode not in {0, 1} or result.stderr.strip():
             msg = "the worker's Codex source Git path could not be checked"
             raise ExecutorRefusalError(msg)

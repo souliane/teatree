@@ -299,6 +299,27 @@ def test_source_git_subpath_cannot_escape_the_codex_workspace(monkeypatch: pytes
         codex_source_git_subpath()
 
 
+def test_an_empty_source_git_subpath_means_no_source_clone(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake.codex_source_git_present = False
+    fake.executor["Mounts"] = [item for item in fake.executor["Mounts"] if item["Destination"] != CODEX_SOURCE_GIT]
+    fake.probe["mounts"] = [item for item in fake.probe["mounts"] if item["target"] != CODEX_SOURCE_GIT]
+    fake.probe["writes"].pop(CODEX_SOURCE_GIT)
+    fake.probe["scan"].pop(CODEX_SOURCE_GIT)
+    _applied(fake, monkeypatch)
+    monkeypatch.setattr("teatree.agents.codex_read_only_verdict._CODEX_SOURCE_GIT_SUBPATH", "")
+
+    assert read_only_executor_refusal(HarnessBuildContext(phase="planning")) is None
+
+
+def test_a_malformed_source_git_subpath_refuses_instead_of_raising(
+    fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _applied(fake, monkeypatch)
+    monkeypatch.setattr("teatree.agents.codex_read_only_verdict._CODEX_SOURCE_GIT_SUBPATH", "../private/.git")
+
+    assert "TEATREE_CODEX_SOURCE_GIT_SUBPATH" in str(read_only_executor_refusal(HarnessBuildContext(phase="planning")))
+
+
 def test_worker_git_check_failure_is_not_treated_as_an_absent_clone(
     fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
