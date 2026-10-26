@@ -13284,6 +13284,8 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ```
 Usage: t3 teatree ticket settle-holds [OPTIONS]
 
+ Check held no-diff reviews; --dry-run reads without writing.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dry-run                                                                    │
 │ --json                                                                       │

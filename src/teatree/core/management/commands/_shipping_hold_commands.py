@@ -23,6 +23,7 @@ class ShippingHoldCommands(TyperCommand):
         dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
         json_output: Annotated[bool, typer.Option("--json")] = False,
     ) -> list[SettlementRow]:
+        """Check held no-diff reviews; --dry-run reads without writing."""
         rows: list[SettlementRow] = [
             {"ticket_id": result.ticket_pk, "action": result.action, "reason": result.reason}
             for result in settle_held_tickets(dry_run=dry_run)

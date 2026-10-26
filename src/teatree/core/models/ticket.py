@@ -402,6 +402,9 @@ class Ticket(
         """Land the rework of a held self-review at CODED so it is re-tested and re-reviewed."""
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
+        extra = self._extra()
+        extra.pop("shipping_hold", None)
+        self.extra = extra
         self.schedule_testing(parent_task=parent_task)
 
     @transition(
@@ -530,6 +533,7 @@ class Ticket(
         extra = self._extra()
         extra.pop("tests_passed", None)
         extra.pop(PLANNING_HANDOFF_KEY, None)
+        extra.pop("shipping_hold", None)
         self.extra = extra
         self._cancel_pending_tasks()
 

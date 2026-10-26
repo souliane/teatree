@@ -385,6 +385,19 @@ class TestTicketTransitions(TestCase):
         assert ticket.state == Ticket.State.WORK_STARTED
         assert "tests_passed" not in ticket.extra
 
+    def test_rework_from_held_review_clears_shipping_hold(self) -> None:
+        ticket = Ticket.objects.create(
+            state=Ticket.State.SELF_REVIEWED,
+            extra={"shipping_hold": {"reason": "awaiting evidence"}, "branch": "5346-work"},
+        )
+
+        ticket.rework()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert ticket.extra == {"branch": "5346-work"}
+
     def test_ignore_hides_ticket_from_in_flight(self) -> None:
         ticket = Ticket.objects.create()
         ticket.scope()

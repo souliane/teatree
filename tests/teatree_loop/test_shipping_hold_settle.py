@@ -115,6 +115,31 @@ class TestShippingHoldSettlement(TestCase):
         assert results[0].action == "hold"
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
+    def test_recorded_branch_changed_during_forge_scan_stays_held(self) -> None:
+        ticket = self._ticket()
+        ticket.merge_extra(set_keys={"branch": "old-branch"})
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-empty")
+        host = _Host(["late-work"])
+
+        def change_recorded_branch(*, repo: str, prefix: str) -> list[str]:
+            Ticket.objects.get(pk=ticket.pk).merge_extra(set_keys={"branch": "late-work"})
+            return []
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(host, "list_unshipped_branches", side_effect=change_recorded_branch),
+        ):
+            results = self._run(Path(directory), host)
+        ticket.refresh_from_db()
+        assert results[0].action == "hold"
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert ticket.extra["branch"] == "late-work"
+
+        with TemporaryDirectory() as directory:
+            followup = self._run(Path(directory), host, now=timezone.now() + timedelta(minutes=16))
+        assert followup[0].action == "hold"
+        assert followup[0].reason == "branch late-work"
+
     def test_row_checkout_path_changed_after_scan_stays_held(self) -> None:
         ticket = self._ticket()
         row = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-empty")

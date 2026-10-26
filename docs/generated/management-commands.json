@@ -1267,7 +1267,7 @@
           "name": "clear"
         },
         {
-          "help": "",
+          "help": "Check held no-diff reviews; --dry-run reads without writing",
           "name": "settle-holds"
         },
         {

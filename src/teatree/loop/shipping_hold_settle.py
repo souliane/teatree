@@ -25,6 +25,7 @@ class Settlement:
     action: str
     reason: str
     observed_worktrees: frozenset[tuple[int, str, str, str]] = frozenset()
+    observed_branch: str = ""
 
 
 def _worktree_snapshot(rows: list[Worktree]) -> frozenset[tuple[int, str, str, str]]:
@@ -44,6 +45,7 @@ def _checked_at(ticket: Ticket) -> datetime | None:
 
 def _decide(ticket: Ticket) -> Settlement:
     unknown = ""
+    observed_branch = str((ticket.extra or {}).get("branch") or "")
     rows = list(ticket.worktrees.all())
     for row in rows:
         try:
@@ -62,7 +64,7 @@ def _decide(ticket: Ticket) -> Settlement:
         return Settlement(ticket.pk, "hold", f"unverified: {unknown}")
     if not rows:
         return Settlement(ticket.pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
-    return Settlement(ticket.pk, "ignore", "every source verified empty", _worktree_snapshot(rows))
+    return Settlement(ticket.pk, "ignore", "every source verified empty", _worktree_snapshot(rows), observed_branch)
 
 
 def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> Settlement | None:
@@ -81,6 +83,8 @@ def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> S
                 result = Settlement(ticket_pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
             elif _worktree_snapshot(current_rows) != result.observed_worktrees:
                 result = Settlement(ticket_pk, "hold", "worktree rows changed; awaiting the workspace and forge check")
+            elif str((ticket.extra or {}).get("branch") or "") != result.observed_branch:
+                result = Settlement(ticket_pk, "hold", "recorded branch changed; awaiting the forge check")
         if result.action == "release":
             ticket.merge_extra(pop_keys=["shipping_hold"])
             ticket.schedule_shipping()
