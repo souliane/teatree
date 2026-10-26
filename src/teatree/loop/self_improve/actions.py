@@ -303,12 +303,11 @@ def run_action_ladder(
         logger.warning("self-improve is claiming nothing new: %s", reason)
         return None
 
-    snapshot = box_memory_snapshot(report) if opens_ticket else ""
     firing = (
         _record_ticket_followup(
             report,
             overlay_name=resolved_overlay or _repair_overlay_name(overlay_name),
-            snapshot=snapshot,
+            snapshot=box_memory_snapshot(report) if opens_ticket else "",
         )
         if rung == ActionRung.TICKET
         else record_firing(report, action=rung)
