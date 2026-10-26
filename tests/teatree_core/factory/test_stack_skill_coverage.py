@@ -23,7 +23,7 @@ class TestStackSkillCoverageSignal(TestCase):
         (self.package / "manage.py").write_text("# django project\n")
         product = workspace / "acme" / "api"
         (product / ".git").mkdir(parents=True)
-        (product / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi"]\n')
+        (product / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi>=0.115"]\n')
         django_clone = workspace / "souliane" / "teatree"
         (django_clone / ".git").mkdir(parents=True)
         (django_clone / "manage.py").write_text("# django project\n", encoding="utf-8")

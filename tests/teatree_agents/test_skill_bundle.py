@@ -126,9 +126,9 @@ class TestSelfImproveSkillBundle(TestCase):
     def _repos(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         workspace = tmp_path / "clones"
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
-        product = workspace / "acme" / "api"
-        (product / ".git").mkdir(parents=True)
-        (product / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi"]\n')
+        self.product = workspace / "acme" / "api"
+        (self.product / ".git").mkdir(parents=True)
+        (self.product / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi>=0.115"]\n')
         self.package = tmp_path / "overlay-package"
         self.package.mkdir()
         (self.package / "manage.py").write_text("# django project\n")
@@ -141,6 +141,10 @@ class TestSelfImproveSkillBundle(TestCase):
             patch("teatree.core.worktree.clone_paths.get_overlay_for_ticket") as overlay,
         ):
             overlay.return_value.get_workspace_repos.return_value = ["acme/api"]
+            product_bundle = resolve_skill_bundle(
+                phase="planning", overlay_skill_metadata={}, detection_root=self.product
+            )
+            assert "fastapi" in product_bundle
             root = dispatch_detection_root(ticket)
             for phase in ("planning", "coding"):
                 bundle = resolve_skill_bundle(phase=phase, overlay_skill_metadata={}, detection_root=root)

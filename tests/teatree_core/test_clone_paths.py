@@ -412,7 +412,7 @@ class TestSelfImproveDispatchDetectionRoot(TestCase):
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(self.workspace))
         self.product = self.workspace / "acme" / "api"
         (self.product / ".git").mkdir(parents=True)
-        (self.product / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi"]\n')
+        (self.product / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi>=0.115"]\n')
         self.package = tmp_path / "overlay-package"
         self.package.mkdir()
         (self.package / "manage.py").write_text("# django project\n")
