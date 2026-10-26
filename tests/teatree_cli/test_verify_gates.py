@@ -208,7 +208,7 @@ class TestVerifyGatesRunsBothStages:
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
-            patch("teatree.cli.verify_gates._brief_for_worktree", return_value="No migration."),
+            patch("teatree.cli.push_gate_tools.brief_for_worktree", return_value="No migration."),
             patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])

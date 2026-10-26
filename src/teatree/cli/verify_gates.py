@@ -34,6 +34,7 @@ a clean main clone on its default branch is refused, and a green run names the
 CI jobs no local hook covers so exit 0 cannot be read as "CI will be green".
 """
 
+import importlib
 import json
 import os
 import shutil
@@ -45,7 +46,6 @@ from tempfile import TemporaryDirectory
 import typer
 import yaml
 
-from teatree.cli.push_gate_tools import BRIEF_ENV, _brief_for_worktree
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.hooks.banned_term_registry import load_registry
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
@@ -296,11 +296,12 @@ def _run_stages(stages: list[tuple[str, list[str]]], repo: Path, env: dict[str, 
 
 def _stage_env(private_root: str, repo: Path) -> dict[str, str]:
     env = os.environ.copy()
+    push_gate = importlib.import_module("teatree.cli.push_gate_tools")
     db_path = ControlDb(env).for_repo(repo).path
     if db_path.is_file():
-        env[BRIEF_ENV] = _brief_for_worktree(repo)
+        env[push_gate.BRIEF_ENV] = push_gate.brief_for_worktree(repo)
     else:
-        env[BRIEF_ENV] = ""
+        env[push_gate.BRIEF_ENV] = ""
         typer.echo(f"verify-gates: no control DB at {db_path}; no worktree brief available", err=True)
     if not env.get("TEATREE_TERM_REGISTRY"):
         try:
