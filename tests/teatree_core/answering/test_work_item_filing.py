@@ -15,11 +15,11 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.core.answering.work_item_filing import WorkItemFilingError, file_work_item
+from teatree.core.answering.work_item_filing import UnknownForgeError, WorkItemFilingError, file_work_item
 from teatree.core.models import ThreadBinding, Ticket
 from teatree.core.send_proxy import OutboundBlockedError
 from teatree.types import RawAPIDict
-from tests._send_gate import allow_forge_repos
+from tests._send_gate import allow_github_repos
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("configured_banned_term_registry")]
@@ -31,7 +31,7 @@ _ANCHOR = "https://github.com/souliane/teatree/issues/3009#slack=D-owner/1.0/dm"
 
 @pytest.fixture(autouse=True)
 def _allow_filing_repo() -> None:
-    allow_forge_repos(_REPO)
+    allow_github_repos(_REPO)
 
 
 @dataclass
@@ -127,7 +127,7 @@ class TestANewRequestBecomesAnAdmissibleIssue:
             pytest.fail("an unknown forge reached the outbound send")
 
         monkeypatch.setattr("teatree.core.answering.work_item_filing.route_forge_write", unexpected_write)
-        with pytest.raises(WorkItemFilingError, match=f"forge for {_REPO} could not be determined"):
+        with pytest.raises(UnknownForgeError, match=f"forge for {_REPO} could not be determined"):
             file_work_item(_conversation_ticket(), {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
 
         assert host.created == []

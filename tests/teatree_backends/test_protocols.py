@@ -387,6 +387,15 @@ def test_code_host_backend_protocol_is_structural() -> None:
     assert isinstance(_FakeCodeHost(), CodeHostBackend)
 
 
+def test_code_host_without_forge_is_not_backend() -> None:
+    methods = {
+        name: value for name, value in vars(_FakeCodeHost).items() if not name.startswith("__") and name != "forge"
+    }
+    host_without_forge = type("HostWithoutForge", (), methods)()
+
+    assert not isinstance(host_without_forge, CodeHostBackend)
+
+
 def test_messaging_backend_protocol_is_structural() -> None:
     assert isinstance(_FakeMessaging(), MessagingBackend)
 

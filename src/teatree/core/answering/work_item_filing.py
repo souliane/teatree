@@ -102,9 +102,12 @@ class UnresolvableFilingRepoError(WorkItemFilingError):
 
 
 class UnknownForgeError(WorkItemFilingError):
+    """The selected host cannot name a forge for this filing destination."""
+
     def __init__(self, repo: str) -> None:
         super().__init__(
-            f"the forge for {repo} could not be determined from the code host; no send-proxy destination exists"
+            f"the forge for {repo} could not be determined from the code host, "
+            "so there was no destination to check and nothing was filed"
         )
 
 
@@ -303,6 +306,7 @@ __all__ = [
     "ForgeRefusedError",
     "NoCodeHostError",
     "NoFilingRepoError",
+    "UnknownForgeError",
     "UnresolvableFilingRepoError",
     "UnresolvableIssueRefError",
     "UntrackableIssueError",

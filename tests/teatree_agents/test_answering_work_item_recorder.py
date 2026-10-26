@@ -23,7 +23,7 @@ from teatree.core.send_proxy import route_forge_write
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError
 from teatree.utils.url_slug import slack_conversation_anchor
-from tests._send_gate import allow_forge_repos
+from tests._send_gate import allow_github_repos
 
 pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 
@@ -93,7 +93,7 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        allow_forge_repos("souliane/teatree")
+        allow_github_repos("souliane/teatree")
         self.backend = RecordingBackend()
         self.host = RecordingHost()
         patches = (
@@ -138,7 +138,9 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         assert self.host.created == []
         reply = self.backend.replies[0][2]
         assert f"forge for {_REPO_A} could not be determined" in reply
+        assert "nothing was filed" in reply
         assert "Tracking as" not in reply
+        assert not Ticket.objects.filter(issue_url=_FILED).exists()
 
     def test_the_request_is_filed_as_a_real_issue(self) -> None:
         self._record(
@@ -252,7 +254,7 @@ class TestAnOverlayChoosesTheRepoAWorkItemIsFiledIn(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        allow_forge_repos(_REPO_A, _REPO_B)
+        allow_github_repos(_REPO_A, _REPO_B)
         self.backend = RecordingBackend()
         self.host = RecordingHost()
         self.metadata = _TwoRepoMetadata(_pick_by_slug)
