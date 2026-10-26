@@ -56,12 +56,6 @@ _DEFAULT_PAGE_SIZE = 4096
 _MEMINFO_PATH = "/proc/meminfo"
 
 
-class RamProbePaths:
-    @staticmethod
-    def meminfo() -> "Path":
-        return Path(_MEMINFO_PATH)
-
-
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _CGROUP_MEM_V1_UNLIMITED = 9223372036854771712
 _CGROUP_V2 = 2
@@ -154,7 +148,7 @@ def _linux_ram_used_percent() -> float:
     return max(0.0, min(100.0, used * 100.0 / total))
 
 
-def _linux_meminfo(path: "str | None" = None) -> "dict[str, int]":
+def _linux_meminfo(path: "str | None" = None, *, trace: "dict[str, int | str] | None" = None) -> "dict[str, int]":
     """Parse ``/proc/meminfo`` into ``{key: kB}``; empty on any read failure.
 
     ``path`` resolves against :data:`_MEMINFO_PATH` at CALL time, not def time, so a
@@ -163,7 +157,9 @@ def _linux_meminfo(path: "str | None" = None) -> "dict[str, int]":
     try:
         with open(path or _MEMINFO_PATH, encoding="utf-8") as handle:  # noqa: PTH123 — builtin open on a device/proc path; Path.open adds nothing here
             lines = handle.readlines()
-    except OSError:
+    except (OSError, UnicodeError) as exc:
+        if trace is not None:
+            trace["meminfo"] = type(exc).__name__
         return {}
     info: dict[str, int] = {}
     for line in lines:
@@ -248,7 +244,7 @@ def _macos_total_ram_mib() -> int:
     return max(0, total // (1024 * 1024))
 
 
-def host_available_ram_mib() -> int:
+def host_available_ram_mib(*, trace: "dict[str, int | str] | None" = None) -> int:
     """RAM the HOST could hand out right now, in whole MiB, or ``0`` when unreadable.
 
     Linux reads ``/proc/meminfo``'s ``MemAvailable`` (the kernel's own estimate, which
@@ -259,7 +255,13 @@ def host_available_ram_mib() -> int:
     """
     system = platform.system()
     if system == "Linux":
-        return _linux_meminfo().get("MemAvailable", 0) // 1024
+        info = _linux_meminfo(trace=trace)
+        if trace is not None and "meminfo" not in trace:
+            try:
+                trace["meminfo"] = info["MemAvailable"] // 1024
+            except KeyError as exc:
+                trace["meminfo"] = type(exc).__name__
+        return info.get("MemAvailable", 0) // 1024
     if system == "Darwin":
         return _macos_available_ram_mib()
     return 0
@@ -287,16 +289,25 @@ def _macos_available_ram_mib() -> int:
     return max(0, pages * page_size // (1024 * 1024))
 
 
-def cgroup_v2_memory_mib(filename: str) -> "int | None":
+def cgroup_v2_memory_mib(filename: str, *, trace: "dict[str, int | str] | None" = None) -> "int | None":
     """A cgroup-v2 memory file as whole MiB, or ``None`` when absent/unlimited/unreadable."""
     try:
         raw = cgroup_file(filename).read_text(encoding="utf-8").strip()
         if raw == "max":
+            if trace is not None:
+                trace[filename] = "no cap"
             return None
         value = int(raw)
-    except (OSError, ValueError):
+    except (OSError, UnicodeError, ValueError) as exc:
+        if trace is not None:
+            trace[filename] = type(exc).__name__
         return None
-    return value // (1024 * 1024) if value >= 0 else None
+    if value < 0:
+        return None
+    mib = value // (1024 * 1024)
+    if trace is not None:
+        trace[filename] = mib
+    return mib
 
 
 def cgroup_v1_memory_mib(filename: str) -> "int | None":

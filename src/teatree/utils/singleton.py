@@ -133,7 +133,7 @@ def current_context(env: dict[str, str] | None = None) -> ExecutionContext:
     )
 
 
-def read_holder(pid_path: Path) -> HolderRecord | None:
+def read_holder(pid_path: Path, *, errors: list[Exception] | None = None) -> HolderRecord | None:
     """The holder record at ``pid_path``, or ``None`` when it is absent or unreadable.
 
     ``None`` is the honest answer for a legacy one-line lock file and for a garbled
@@ -142,13 +142,17 @@ def read_holder(pid_path: Path) -> HolderRecord | None:
     """
     try:
         lines = pid_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+    except (OSError, UnicodeError) as exc:
+        if errors is not None:
+            errors.append(exc)
         return None
     if len(lines) < _RECORDED_LINES or not lines[0].strip().isdigit():
         return None
     try:
         payload = json.loads(lines[1])
-    except ValueError:
+    except ValueError as exc:
+        if errors is not None:
+            errors.append(exc)
         return None
     if not isinstance(payload, dict):
         return None

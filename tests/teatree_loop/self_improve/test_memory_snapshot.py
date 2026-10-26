@@ -1,5 +1,6 @@
 """Memory and swap repair tickets retain the box state observed at firing."""
 
+import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -10,9 +11,9 @@ from django.db import connection
 from django.test import TestCase, TransactionTestCase
 
 from teatree.config.checkout_roots import CheckoutRoots
-from teatree.core.cleanup.orphan_process_groups import ProcStat
 from teatree.core.models import SelfImproveFiring, Ticket
 from teatree.loop.self_improve import ActionRung, DetectorReport, actions, memory_snapshot, run_action_ladder
+from teatree.utils.ram_probe import host_available_ram_mib as actual_host_available_ram_mib
 from teatree.utils.ram_scope import read_ram_headroom as actual_read_ram_headroom
 
 _MIB = 1024 * 1024
@@ -61,15 +62,20 @@ def staged_box(base: Path) -> Generator[Path]:
     meminfo.write_text("MemAvailable: 12582912 kB\n")
     root = base / "worktrees"
     root.mkdir()
+    worker_file = base / "worker.pid"
+    worker_file.write_text(
+        "7\n" + json.dumps({"pid_namespace": _OWN_NAMESPACE, "hostname": "box", "role": "worker"}) + "\n"
+    )
     with (
         patch.object(memory_snapshot, "host_proc_root", return_value=(proc, "")),
         patch.object(memory_snapshot, "checkout_roots", return_value=CheckoutRoots((root,), (), ())),
         patch.object(memory_snapshot, "discover_overlays", return_value=[]),
-        patch.object(memory_snapshot, "read_pid", return_value=7),
+        patch.object(memory_snapshot, "default_pid_path", return_value=worker_file),
+        patch("teatree.utils.singleton.pid_alive", return_value=True),
         patch.object(memory_snapshot, "current_pid_namespace", return_value=_OWN_NAMESPACE),
         patch("teatree.utils.ram_scope.cgroup_file", side_effect=lambda name, **_kwargs: cgroup / name),
         patch("teatree.utils.ram_probe.cgroup_file", side_effect=lambda name, **_kwargs: cgroup / name),
-        patch("teatree.utils.ram_scope.host_available_ram_mib", return_value=12 * 1024),
+        patch("teatree.utils.ram_scope.host_available_ram_mib", actual_host_available_ram_mib),
         patch("teatree.utils.ram_scope.read_ram_headroom", actual_read_ram_headroom),
         patch("teatree.utils.ram_probe._MEMINFO_PATH", str(meminfo)),
     ):
@@ -90,12 +96,6 @@ def report(cause: str, *, state_hash: str = "first") -> DetectorReport:
 
 
 class MemorySnapshotTicketTests(TestCase):
-    def test_memory_ticket_records_host_available_memory(self) -> None:
-        result = run_action_ladder(report("memory"))
-        assert result is not None
-        ticket = Ticket.objects.get(pk=result.firing.ticket_id)
-        assert "MemAvailable" in ticket.context
-
     def test_memory_ticket_carries_scopes_and_ranked_processes(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
             root = Path(directory) / "worktrees"
@@ -156,14 +156,53 @@ class MemorySnapshotTicketTests(TestCase):
         rows = {line.split()[0]: line for line in context.splitlines() if line.startswith("pid=")}
         assert rows["pid=11"].endswith(" detached")
 
-    def test_unreadable_own_namespace_does_not_fall_back_to_a_matching_host_pid(self) -> None:
-        worker = ProcStat(pid=7, comm="python", state="S", ppid=1, pgid=7, cpu_ticks=0, start_ticks=0)
-        with (
-            patch.object(memory_snapshot, "read_pid", return_value=7),
-            patch.object(memory_snapshot, "current_pid_namespace", return_value=""),
-            patch.object(memory_snapshot, "namespace_pids", return_value=()),
-        ):
-            assert memory_snapshot._worker_host_pid(Path("/proc"), {7: worker}) is None
+    def test_foreign_holder_namespace_never_attributes_matching_pid(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            worker_file = Path(directory) / "worker.pid"
+            worker_file.write_text('7\n{"pid_namespace": "pid:[999]", "hostname": "other", "role": "worker"}\n')
+            stage_process(proc, 7, ppid=1, rss_pages=256, comm="worker")
+            stage_pid_namespace(proc, 7, _OWN_NAMESPACE)
+            stage_process(proc, 8, ppid=7, rss_pages=1024, comm="python")
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        row = next(line for line in context.splitlines() if line.startswith("pid=8 "))
+        assert row.endswith(" detached")
+
+    def test_unreadable_worker_file_keeps_the_ticket_and_names_the_error(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            stage_process(proc, 8, ppid=1, rss_pages=1024, comm="python")
+            worker_file = Path(directory) / "worker.pid"
+            original_read_text = Path.read_text
+
+            def unreadable_worker(path: Path, *args: object, **kwargs: object) -> str:
+                if path == worker_file:
+                    raise PermissionError
+                return original_read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", unreadable_worker):
+                result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "Worker attribution: unreadable (PermissionError)" in context
+
+    def test_garbled_worker_file_keeps_the_ticket_and_names_the_error(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            stage_process(proc, 8, ppid=1, rss_pages=1024, comm="python")
+            (Path(directory) / "worker.pid").write_bytes(b"7\n\xff\n")
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "Worker attribution: unreadable (UnicodeDecodeError)" in context
+
+    def test_invalid_holder_record_names_the_parse_error(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
+            stage_process(proc, 8, ppid=1, rss_pages=1024, comm="python")
+            (Path(directory) / "worker.pid").write_text("7\n{\n")
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "Worker attribution: unreadable (JSONDecodeError)" in context
 
     def test_swap_gets_snapshot_but_load_keeps_three_lines(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):
@@ -248,11 +287,19 @@ class MemorySnapshotTicketTests(TestCase):
             meminfo = Path(directory) / "meminfo"
             meminfo.unlink()
             meminfo.mkdir()
-            with patch("teatree.utils.ram_scope.host_available_ram_mib", return_value=0):
-                result = run_action_ladder(report("memory"))
+            result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
             assert "Host MemAvailable: unreadable (IsADirectoryError)" in context
+
+    def test_readable_zero_memavailable_is_not_an_error(self) -> None:
+        with TemporaryDirectory() as directory, staged_box(Path(directory)):
+            (Path(directory) / "meminfo").write_text("MemAvailable: 0 kB\n")
+            result = run_action_ladder(report("memory"))
+            assert result is not None
+            context = Ticket.objects.get(pk=result.firing.ticket_id).context
+        assert "Host MemAvailable: 0 MiB" in context
+        assert "unreadable (ValueError)" not in context
 
     def test_failed_memory_probe_still_creates_the_ticket(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):

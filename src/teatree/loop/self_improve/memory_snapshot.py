@@ -10,8 +10,8 @@ from teatree.config.checkout_roots import checkout_roots
 from teatree.core.cleanup.orphan_process_groups import CLOCK_TICKS_PER_SECOND, ProcStat, read_stat, read_uptime
 from teatree.core.cleanup.process_table import current_pid_namespace, host_proc_root, namespace_pids, pid_namespace_of
 from teatree.loop.self_improve.detectors.base import DetectorReport
-from teatree.utils import ram_probe, ram_scope
-from teatree.utils.singleton import WORKER_SINGLETON, default_pid_path, read_pid
+from teatree.utils import ram_scope, singleton
+from teatree.utils.singleton import WORKER_SINGLETON, default_pid_path
 
 _MIB = 1024 * 1024
 _TOP_PROCESSES = 10
@@ -26,32 +26,28 @@ def _safe_label(value: str) -> str:
     return re.sub(r"[^\w .-]", "_", value)[:80]
 
 
-def _reading(value: int | None, filename: str, *, no_cap: bool = False) -> str:
+def _reading(value: int | None, key: str, trace: dict[str, int | str]) -> str:
     if value is not None:
         return f"{value} MiB"
-    try:
-        if filename == "meminfo":
-            ram_probe.RamProbePaths.meminfo().read_text(encoding="utf-8")
-        else:
-            raw = ram_scope.cgroup_file(filename).read_text(encoding="utf-8").strip()
-            if no_cap and raw == "max":
-                return "no cap"
-    except OSError as exc:
-        return _unreadable(exc)
-    return "unreadable (ValueError)"
+    observed = trace.get(key)
+    if key == "meminfo" and isinstance(observed, int):
+        return f"{observed} MiB"
+    if observed == "no cap":
+        return "no cap"
+    if isinstance(observed, str):
+        return f"unreadable ({observed})"
+    return "unavailable"
 
 
 def _memory_lines() -> list[str]:
-    try:
-        headroom = ram_scope.read_ram_headroom()
-    except OSError as exc:
-        return [f"Memory scopes: {_unreadable(exc)}"]
-    judged = _reading(headroom.box_watermark_mib, "meminfo")
-    cap = _reading(headroom.cgroup_limit_mib, "memory.max", no_cap=True)
-    cgroup_headroom = "no cap" if cap == "no cap" else _reading(headroom.cgroup_headroom_mib, "memory.current")
+    trace: dict[str, int | str] = {}
+    headroom = ram_scope.read_ram_headroom(trace=trace)
+    judged = _reading(headroom.box_watermark_mib, "judged", trace)
+    cap = _reading(headroom.cgroup_limit_mib, "memory.max", trace)
+    cgroup_headroom = "no cap" if cap == "no cap" else _reading(headroom.cgroup_headroom_mib, "memory.current", trace)
     lines = [
         f"Judged RAM: {judged} ({headroom.binding_scope} bound)",
-        f"Host MemAvailable: {_reading(headroom.host_available_mib, 'meminfo')}",
+        f"Host MemAvailable: {_reading(headroom.host_available_mib, 'meminfo', trace)}",
         (
             f"Cgroup cap: {cap}; "
             f"headroom: {cgroup_headroom}; "
@@ -60,7 +56,7 @@ def _memory_lines() -> list[str]:
     ]
     try:
         stat = ram_scope.read_cgroup_memory_stat()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         lines.append(f"memory.stat: {_unreadable(exc)}")
     else:
         parts = [
@@ -101,18 +97,24 @@ def _resident_pages(pid_dir: Path) -> int | None:
         return None
 
 
-def _worker_host_pid(root: Path, stats: dict[int, ProcStat]) -> int | None:
-    worker_pid = read_pid(default_pid_path(WORKER_SINGLETON))
-    if worker_pid is None:
-        return None
+def _worker_host_pid(root: Path, stats: dict[int, ProcStat]) -> tuple[int | None, str | None]:
+    errors: list[Exception] = []
+    record = singleton.read_holder(default_pid_path(WORKER_SINGLETON), errors=errors)
+    if errors:
+        return None, _unreadable(errors[0])
+    if record is None or not singleton.pid_alive(record.pid):
+        return None, None
     own_namespace = current_pid_namespace()
+    context = singleton.ExecutionContext(pid_namespace=own_namespace, hostname="", role="")
+    if singleton.holder_verdict(record, context) is not singleton.HolderVerdict.SAME_CONTEXT:
+        return None, None
     for pid in stats:
         pid_dir = root / str(pid)
-        if namespace_pids(pid_dir)[-1:] != (str(worker_pid),):
+        if namespace_pids(pid_dir)[-1:] != (str(record.pid),):
             continue
         if own_namespace and pid_namespace_of(pid_dir) == own_namespace:
-            return pid
-    return None
+            return pid, None
+    return None, None
 
 
 def _attached(pid: int, stats: dict[int, ProcStat], worker_pid: int | None) -> bool:
@@ -146,8 +148,10 @@ def _process_lines() -> list[str]:
         return ["Top processes by RSS: scan unavailable (no process table)"]
     ranked.sort(key=lambda row: (-row[0], row[1].pid))
     roots = _ticket_roots()
-    worker_pid = _worker_host_pid(root, stats)
+    worker_pid, worker_error = _worker_host_pid(root, stats)
     lines = [f"Top processes by RSS (up to {_TOP_PROCESSES}):"]
+    if worker_error:
+        lines.append(f"Worker attribution: {worker_error}")
     for pages, stat in ranked[:_TOP_PROCESSES]:
         age = max(0, int(uptime - stat.start_ticks / CLOCK_TICKS_PER_SECOND))
         comm = _safe_label(stat.comm)
@@ -163,6 +167,9 @@ def box_memory_snapshot(report: DetectorReport) -> str:
     if report.detector != "pressure_incident" or report.payload.get("cause") not in {"memory", "swap"}:
         return ""
     lines = [f"Box memory snapshot ({datetime.now(UTC).isoformat(timespec='seconds')}):"]
-    lines.extend(_memory_lines())
-    lines.extend(_process_lines())
+    for heading, read in (("Memory scopes", _memory_lines), ("Top processes by RSS", _process_lines)):
+        try:
+            lines.extend(read())
+        except (OSError, UnicodeError, ValueError) as exc:
+            lines.append(f"{heading}: {_unreadable(exc)}")
     return "\n".join(lines)

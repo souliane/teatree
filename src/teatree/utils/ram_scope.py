@@ -134,18 +134,28 @@ def _cgroup_memory_cap_invalid(version: int, controller: str, limit: str, curren
     return not current.isdecimal()
 
 
-def _cgroup_cap_and_headroom_mib() -> tuple[int | None, int | None]:
+def _cgroup_cap_and_headroom_mib(*, trace: dict[str, int | str] | None = None) -> tuple[int | None, int | None]:
     """This cgroup's ``memory.max`` and its remaining headroom, both in whole MiB.
 
     Read together because :func:`read_ram_headroom` needs both, and a second read of
     ``memory.max`` would let the cap and the headroom describe different instants.
     """
-    limit_mib = cgroup_v2_memory_mib("memory.max")
-    current_mib = cgroup_v2_memory_mib("memory.current")
+    limit_mib = (
+        cgroup_v2_memory_mib("memory.max", trace=trace) if trace is not None else cgroup_v2_memory_mib("memory.max")
+    )
+    current_mib = (
+        cgroup_v2_memory_mib("memory.current", trace=trace)
+        if trace is not None
+        else cgroup_v2_memory_mib("memory.current")
+    )
     if limit_mib is None:
         v1_limit = cgroup_v1_memory_mib("memory.limit_in_bytes")
         if v1_limit is not None:
             v1_current = cgroup_v1_memory_mib("memory.usage_in_bytes")
+            if trace is not None:
+                trace["memory.max"] = v1_limit
+                if v1_current is not None:
+                    trace["memory.current"] = v1_current
             return v1_limit, max(0, v1_limit - v1_current) if v1_current is not None else None
     if limit_mib is None or current_mib is None:
         return limit_mib, None
@@ -217,7 +227,7 @@ class RamHeadroom:
         return self.cgroup_limit_mib / _MIB_PER_GIB
 
 
-def read_ram_headroom() -> RamHeadroom:
+def read_ram_headroom(*, trace: dict[str, int | str] | None = None) -> RamHeadroom:
     """RAM available to THIS process — the minimum of every scope that can answer (#3992).
 
     ``/proc/meminfo`` inside a container reports the HOST's memory, so a capped worker
@@ -228,8 +238,8 @@ def read_ram_headroom() -> RamHeadroom:
     ``None`` (nothing readable) stays a different answer from ``0`` (readable, nothing
     left): a caller falls back on the first and tightens on the second.
     """
-    limit_mib, headroom_mib = _cgroup_cap_and_headroom_mib()
-    host = host_available_ram_mib()
+    limit_mib, headroom_mib = _cgroup_cap_and_headroom_mib(trace=trace)
+    host = host_available_ram_mib(trace=trace) if trace is not None else host_available_ram_mib()
     host_mib = host if host > 0 else None
     candidates = [mib for mib in (host_mib, headroom_mib) if mib is not None]
     return RamHeadroom(
