@@ -57,7 +57,6 @@ from teatree.loops.outer_loop.keep import ask_keep
 from teatree.loops.outer_loop.ratify import ask_ratification, try_admit
 from teatree.loops.outer_loop.revert import ask_revert as ask_experiment_revert
 from teatree.loops.outer_loop.tick import run_tick
-from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 from tests._owner_channel import owner_card
 from tests.conformance._src_tree import REPO_ROOT
 from tests.conformance.test_owner_decision_allowlist import _calls
@@ -151,15 +150,6 @@ def _deny_a_loop_driven_ask() -> None:
         contextlib.redirect_stdout(io.StringIO()),
     ):
         router.handle_mirror_question_to_slack(payload)
-
-
-def _record_a_news_batch() -> None:
-    task = _task("scanning_news", ticket=Ticket.objects.create(state=Ticket.State.WORK_STARTED, overlay="acme"))
-    task.claim(claimed_by="loop-slot")
-    reachable = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
-    suggestion = {"title": "Agent evals", "url": "https://example.com/a", "rationale": "why"}
-    with patch("teatree.core.models.pending_article_suggestion.check_url", return_value=reachable):
-        record_result_envelope(task, {"summary": "1 candidate", "article_suggestions": [suggestion]})
 
 
 def _latch_a_spent_review_head() -> None:
@@ -361,7 +351,6 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
     ),
     ("src/teatree/loops/outer_loop/tick.py", "_park_converged"): _park_a_converged_outer_loop,
     ("hooks/scripts/hook_router.py", "_capture_and_defer_question"): _deny_a_loop_driven_ask,
-    ("src/teatree/agents/reactive_envelope_recorders.py", "_maybe_record_article_suggestions"): _record_a_news_batch,
     ("src/teatree/agents/review_envelope_recorder.py", "_latch_checks_contradiction"): _latch_a_spent_review_head,
     ("src/teatree/agents/own_pr_review_head.py", "_record_hold"): _hold_a_dirty_own_pr_review,
     ("src/teatree/core/models/task_phase_disposition.py", "_record_hold_cap"): _hold_past_the_rework_cap,

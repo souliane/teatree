@@ -77,12 +77,9 @@ def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, ph
     source URL (a re-scan never duplicates) and behind the same ask-gate the
     scanner used to enqueue directly — the shell-denied agent hands the batch
     back, the server persists it. After at least one NEW candidate is recorded,
-    ONE :class:`DeferredQuestion` DMs the user the batch for approval, deduped per
-    task so a re-run never re-asks — the approval surface the shell-denied agent
-    cannot post itself. Unlike the triage batch it carries no ``parked_task``: an
-    approval reply records the decision, it must NOT re-queue a headless re-scan
-    of a shell-denied phase that cannot file the issue anyway. A non-scanning_news
-    phase or a result with no ``article_suggestions`` list is a no-op.
+    the press-review digest delivers the read. The pending row is the ask-gate;
+    a batch question has no reader. A non-scanning_news phase or a result with
+    no ``article_suggestions`` list is a no-op.
     """
     if normalize_phase(phase or task.phase) != _SCANNING_NEWS_PHASE:
         return
@@ -106,21 +103,15 @@ def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, ph
             recorded.append(row)
     if not recorded:
         return
-    DeferredQuestion.record(
-        question=_article_batch_question(recorded),
-        dedupe_marker=f"news-batch-{task.pk}",
-    )
     _post_press_review_digest(task, recorded)
 
 
 def _post_press_review_digest(task: Task, rows: "list[PendingArticleSuggestion]") -> None:
-    """DM the owner the Slack-formatted press review for this scan (#3669).
+    """Deliver the Slack-formatted press review for this scan (#3669).
 
-    The digest is the DELIVERY the merged press-review sources feed; the
-    ``DeferredQuestion`` above remains the ask-gate record. Both exist because
-    they answer different questions — the question is the approval surface, the
-    digest is the read. Deduped per task by ``notify_user``'s idempotency key, so
-    a re-recorded envelope never re-posts.
+    The digest is the delivery the merged press-review sources feed. The
+    ``PendingArticleSuggestion`` row is the ask-gate record. ``notify_user``'s
+    idempotency key dedupes delivery per task.
 
     Record-and-proceed: a Slack failure is logged and swallowed. The candidates
     are already persisted, and losing the read must never lose the backlog.
@@ -141,18 +132,6 @@ def _post_press_review_digest(task: Task, rows: "list[PendingArticleSuggestion]"
         )
     except Exception:
         logger.warning("press-review digest post failed — candidates are recorded regardless", exc_info=True)
-
-
-def _article_batch_question(rows: "list[PendingArticleSuggestion]") -> str:
-    """The batch-approval DM listing each queued news candidate, one per line."""
-    lines = [
-        (
-            f"Scanned AI news: {len(rows)} new candidate(s) queued behind the ask-gate. "
-            "Nothing is filed as an issue until you approve — review and approve/reject each:"
-        ),
-    ]
-    lines.extend(f"• {row.title or row.url} — {row.url}" for row in rows)
-    return "\n".join(lines)
 
 
 def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *, phase: str) -> None:

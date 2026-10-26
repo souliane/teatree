@@ -1,6 +1,6 @@
 ---
 name: scanning-news
-description: Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, and hands each concrete t3-improvement candidate back through the result envelope's article_suggestions field. The loop queues each behind the ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and DMs the batch to the user. Use when user says "scan news", "scanning news", "ai newsletter scan", "improvement scan", "tldr scan", or runs the daily improvement routine.
+description: Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, and hands each concrete t3-improvement candidate back through the result envelope's article_suggestions field. The loop queues each behind the ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and delivers the press-review digest to the owner. Use when user says "scan news", "scanning news", "ai newsletter scan", "improvement scan", "tldr scan", or runs the daily improvement routine.
 compatibility: macOS/Linux, WebFetch. Runs shell-denied — no git/gh/CLI.
 requires:
   - workspace
@@ -41,11 +41,9 @@ the loop persists and surfaces them for you:
 - **Record + dedupe:** each `{title, url, rationale}` you return becomes one
   `PENDING` `PendingArticleSuggestion`, idempotent by source-URL hash.
 - **URL verification:** the recorder drops an `UNRESOLVED` URL (Non-Negotiable 7).
-- **Batch-approval DM:** after it records the batch, the loop DMs the user ONE
-  approval message listing each candidate. You do NOT post any Slack DM yourself.
-- **Slack press-review digest:** the loop also DMs the rendered digest — one clickable
-  link per candidate, code symbols and file paths in monospace. Deduped per task, and
-  never posted for an empty scan.
+- **Slack press-review digest:** after recording new candidates, the loop delivers
+  one rendered digest with a clickable link per candidate and code symbols and file
+  paths in monospace. Deduped per task; an empty scan produces no digest.
 - **Filing:** only the user, on approval, files a `from-news-scan` issue — never
   the scan.
 
@@ -135,7 +133,7 @@ The dispatched task's `execution_reason` carries the gate directive (the `ASK-GA
 1. Put every surviving candidate (after the URL pass) in the envelope's
    `article_suggestions` list — one `{title, url, rationale}` per candidate. The
    loop records each as a `PENDING` `PendingArticleSuggestion` (idempotent by URL).
-2. The loop DMs the user the batch for approval — one line per candidate.
+2. The loop delivers one press-review digest listing the new candidates.
 3. **Default = no-op.** With no approval, the row stays `PENDING` and no issue is filed.
 4. On approval, the user (not the scan) files the `from-news-scan` issue. One issue
    per *idea*, not per article — three articles inspiring one idea collapse to one
@@ -144,8 +142,8 @@ The dispatched task's `execution_reason` carries the gate directive (the `ASK-GA
 
 ### 8. Hand back the envelope
 
-You do NOT post a Slack DM — the loop posts both the batch-approval DM and the Slack
-**press-review digest** after it records your candidates. Return the envelope (see "How
+You do NOT post a Slack DM — the loop delivers the **press-review digest** after it
+records your candidates. Return the envelope (see "How
 candidates are recorded" above) with a one-line `summary` and every candidate in
 `article_suggestions`. Fold the step-6b drop count into the `summary`.
 
@@ -159,8 +157,8 @@ puts paths/symbols in monospace, per the owner's standing Slack-formatting direc
 When invoked with `--periodic` (from the teatree loop's periodic dispatcher, or cron):
 
 - Non-interactive — no blocking confirmation prompts mid-scan.
-- **Filing is gated, never automatic.** Return `article_suggestions`; the loop queues them behind the ask-gate and DMs the batch. No approval → no ticket.
-- The loop posts the DM — you do not.
+- **Filing is gated, never automatic.** Return `article_suggestions`; the loop queues them behind the ask-gate and delivers the digest. No approval → no ticket.
+- The loop delivers the digest — you do not.
 - Print a summary to stdout for log capture.
 
 ## Scheduling via the teatree main loop
