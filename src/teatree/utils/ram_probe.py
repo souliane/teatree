@@ -300,11 +300,13 @@ def cgroup_v2_memory_mib(filename: str, *, trace: "dict[str, int | str] | None" 
     return value // (1024 * 1024) if value >= 0 else None
 
 
-def cgroup_v1_memory_mib(filename: str) -> "int | None":
+def cgroup_v1_memory_mib(filename: str, *, trace: "dict[str, int | str] | None" = None) -> "int | None":
     """A cgroup-v1 memory cap/usage, with its unlimited sentinel excluded."""
     try:
         value = int(cgroup_file(filename, version=1, controller="memory").read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        if trace is not None:
+            trace[filename] = type(exc).__name__
         return None
     return value // (1024 * 1024) if 0 <= value < _CGROUP_MEM_V1_UNLIMITED else None
 

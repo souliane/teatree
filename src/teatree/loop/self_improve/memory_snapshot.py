@@ -59,12 +59,15 @@ def _memory_lines() -> list[str]:
     host = headroom.host_available_mib
     if host is None and isinstance(meminfo := trace.get("meminfo"), int):
         host = meminfo
+    cgroup_headroom = _reading(
+        headroom.cgroup_headroom_mib, trace, "memory.max", "memory.current", "memory.usage_in_bytes"
+    )
     return [
         f"Judged RAM: {_reading(headroom.box_watermark_mib, trace)} ({headroom.binding_scope} bound)",
         f"Host MemAvailable: {_reading(host, trace, 'meminfo')}",
         (
-            f"Cgroup cap: {_reading(headroom.cgroup_limit_mib, trace, 'memory.max')}; "
-            f"headroom: {_reading(headroom.cgroup_headroom_mib, trace, 'memory.max', 'memory.current')}; "
+            f"Cgroup cap: {_reading(headroom.cgroup_limit_mib, trace, 'memory.max', 'memory.limit_in_bytes')}; "
+            f"headroom: {cgroup_headroom}; "
             f"box-scoped: {'yes' if headroom.cgroup_is_box_scoped else 'no'}"
         ),
         _memory_stat_line(),
@@ -72,7 +75,7 @@ def _memory_lines() -> list[str]:
 
 
 def _ticket_roots() -> tuple[Path, ...]:
-    return tuple(dict.fromkeys(worktree_root(overlay=overlay.name) for overlay in discover_overlays()))
+    return tuple(dict.fromkeys(worktree_root(overlay=overlay.name).resolve() for overlay in discover_overlays()))
 
 
 def _ticket_dir(pid_dir: Path, roots: tuple[Path, ...]) -> str:
@@ -100,14 +103,19 @@ def _resident_pages(pid_dir: Path) -> int | None:
 
 def _live_worker_record() -> tuple[singleton.HolderRecord | None, str | None]:
     errors: list[Exception] = []
-    record = singleton.read_holder(default_pid_path(WORKER_SINGLETON), errors=errors)
+    path = default_pid_path(WORKER_SINGLETON)
+    record = singleton.read_holder(path, errors=errors)
     if errors:
         return None, _unreadable(errors[0])
     if record is not None and not namespace_is_proven(record.context.pid_namespace):
         return None, None
     try:
-        alive = record is not None and singleton.pid_alive(record.pid)
-    except OverflowError as exc:
+        alive = (
+            record is not None
+            and singleton.flock_is_held(WORKER_SINGLETON, pid_path=path)
+            and singleton.pid_alive(record.pid)
+        )
+    except (OSError, OverflowError) as exc:
         return None, _unreadable(exc)
     return (record if alive else None), None
 

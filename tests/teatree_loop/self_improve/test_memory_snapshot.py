@@ -1,5 +1,6 @@
 """Memory and swap repair tickets retain the box state observed at firing."""
 
+import fcntl
 import json
 import os
 from collections.abc import Generator
@@ -81,6 +82,7 @@ def staged_box(base: Path) -> Generator[Path]:
         "7\n" + json.dumps({"pid_namespace": _OWN_NAMESPACE, "hostname": "box", "role": "worker"}) + "\n"
     )
     with (
+        worker_file.open("r+") as worker_lock,
         patch.object(memory_snapshot, "host_proc_root", return_value=(proc, "")),
         patch.object(memory_snapshot, "discover_overlays", return_value=[SimpleNamespace(name="acme")]),
         patch.object(memory_snapshot, "worktree_root", return_value=root),
@@ -94,6 +96,7 @@ def staged_box(base: Path) -> Generator[Path]:
         patch("teatree.utils.ram_scope.read_ram_headroom", actual_read_ram_headroom),
         patch("teatree.utils.ram_probe._MEMINFO_PATH", str(meminfo)),
     ):
+        fcntl.flock(worker_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield proc
 
 
@@ -114,6 +117,8 @@ class MemorySnapshotTicketTests(TestCase):
     def test_memory_ticket_carries_scopes_and_ranked_processes(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
             root = Path(directory) / "worktrees"
+            linked_root = Path(directory) / "linked-worktrees"
+            linked_root.symlink_to(root, target_is_directory=True)
             stage_worker_tree(proc)
             (proc / "11" / "cwd").symlink_to(root / "ticket-5321" / "repo")
             stage_process(proc, 20, ppid=1, rss_pages=768, comm="other")
@@ -121,7 +126,8 @@ class MemorySnapshotTicketTests(TestCase):
             stage_process(proc, 31, ppid=30, rss_pages=512, comm="shell")
             stage_process(proc, 40, ppid=1, rss_pages=128, comm="2.1.300")
             stage_process(proc, 41, ppid=40, rss_pages=256, comm="shell")
-            result = run_action_ladder(report("memory"))
+            with patch.object(memory_snapshot, "worktree_root", return_value=linked_root):
+                result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
         assert "Judged RAM: 4096 MiB (cgroup bound)" in context, context
@@ -315,16 +321,17 @@ class MemorySnapshotTicketTests(TestCase):
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
         assert "Cgroup cap: 16384 MiB; headroom: 3072 MiB; box-scoped: yes" in context
 
-    def test_unreadable_cgroup_v1_usage_is_unavailable_not_a_stale_v2_error(self) -> None:
+    def test_unreadable_cgroup_v1_usage_names_its_error_not_a_stale_v2_error(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):
             cgroup = Path(directory) / "cgroup"
             (cgroup / "memory.max").unlink()
             (cgroup / "memory.current").unlink()
             (cgroup / "memory.limit_in_bytes").write_text(str(16 * 1024 * _MIB))
+            (cgroup / "memory.usage_in_bytes").mkdir()
             result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
-        assert "Cgroup cap: 16384 MiB; headroom: unavailable" in context
+        assert "Cgroup cap: 16384 MiB; headroom: unreadable (IsADirectoryError)" in context
 
     def test_uncapped_cgroup_names_no_cap_for_headroom(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):
@@ -378,13 +385,20 @@ class MemorySnapshotTicketTests(TestCase):
 
     def test_absent_worker_file_is_reported_and_attributes_nothing(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:
-            (Path(directory) / "worker.pid").unlink()
+            worker_file = Path(directory) / "worker.pid"
+            record = worker_file.read_text()
+            worker_file.unlink()
             stage_worker_tree(proc)
             result = run_action_ladder(report("memory"))
             assert result is not None
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
+            worker_file.write_text(record)
+            stale = run_action_ladder(report("swap"))
+            assert stale is not None
+            stale_context = Ticket.objects.get(pk=stale.firing.ticket_id).context
         assert process_rows(context)["pid=11"].endswith(" detached")
         assert "Worker attribution: unreadable (FileNotFoundError)" in context
+        assert process_rows(stale_context)["pid=11"].endswith(" detached")
 
     def test_legacy_worker_file_without_a_namespace_attributes_nothing(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)) as proc:

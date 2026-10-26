@@ -144,9 +144,9 @@ def _cgroup_cap_and_headroom_mib(*, trace: dict[str, int | str] | None = None) -
     limit_mib = cgroup_v2_memory_mib("memory.max", trace=trace)
     current_mib = cgroup_v2_memory_mib("memory.current", trace=trace)
     if limit_mib is None:
-        v1_limit = cgroup_v1_memory_mib("memory.limit_in_bytes")
+        v1_limit = cgroup_v1_memory_mib("memory.limit_in_bytes", trace=trace)
         if v1_limit is not None:
-            v1_current = cgroup_v1_memory_mib("memory.usage_in_bytes")
+            v1_current = cgroup_v1_memory_mib("memory.usage_in_bytes", trace=trace)
             if trace is not None:
                 trace.pop("memory.max", None)
                 trace.pop("memory.current", None)
