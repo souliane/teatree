@@ -76,7 +76,7 @@ def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> S
         if (checked := _checked_at(ticket)) is not None and now - checked < RECHECK_INTERVAL:
             return None
         if result.action == "ignore":
-            current_rows = list(ticket.worktrees.select_for_update())
+            current_rows = list(ticket.worktrees.select_for_update())  # select-for-update: caller-atomic
             if not current_rows:
                 result = Settlement(ticket_pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
             elif _worktree_snapshot(current_rows) != result.observed_worktrees:
