@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from teatree import paths
+from teatree.utils import singleton as singleton_module
 from teatree.utils.singleton import (
     AlreadyRunningError,
     ExecutionContext,
@@ -20,7 +22,24 @@ from teatree.utils.singleton import (
     read_holder,
     read_pid,
     singleton,
+    worker_control_lock_path,
 )
+
+
+def test_worker_lock_follows_the_control_database_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(singleton_module, "CODE_REPO_ROOT", tmp_path / "primary")
+    monkeypatch.setattr(paths, "_TRUE_CANONICAL_DATA_DIR", Path.home() / ".local" / "share" / "teatree")
+    monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(tmp_path / "control"))
+    assert worker_control_lock_path() == tmp_path / "control" / "db.sqlite3.worker.pid"
+
+
+def test_worker_lock_keeps_distinct_database_names_distinct(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "first.sqlite3"))
+    first = worker_control_lock_path()
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "second.sqlite3"))
+    second = worker_control_lock_path()
+    assert first != second
 
 
 def _hold_lock(lock_path: str, ready_path: str, release_path: str) -> None:

@@ -39,11 +39,15 @@ class Command(TyperCommand):
 
     def handle(self) -> None:
         from teatree.loops.worker import LoopWorker  # noqa: PLC0415 — deferred: pulls the timer machinery
-        from teatree.utils.singleton import WORKER_SINGLETON, singleton  # noqa: PLC0415 — deferred with LoopWorker
+        from teatree.utils.singleton import (  # noqa: PLC0415 — deferred with LoopWorker
+            WORKER_SINGLETON,
+            singleton,
+            worker_control_lock_path,
+        )
         from teatree.utils.singleton_refusals import clear_refusals  # noqa: PLC0415 — deferred with LoopWorker
 
         try:
-            with singleton(WORKER_SINGLETON):
+            with singleton(WORKER_SINGLETON), singleton(WORKER_SINGLETON, pid_path=worker_control_lock_path()):
                 # The private probe sees only its dedicated health-state volume.
                 # Python's O_CLOEXEC descriptors keep this liveness lock out of
                 # spawned tick/agent children, so a dead worker cannot look live.

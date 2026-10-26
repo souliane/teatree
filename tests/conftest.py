@@ -4,11 +4,13 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import time
 import types
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -89,6 +91,24 @@ os.environ["TEATREE_HOST_OS"] = "Linux"
 def _no_idle_window_in_existing_tests() -> Iterator[None]:
     with patch("teatree.agents.runner.DEFAULT_IDLE_WINDOW_SECONDS", 0.0):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_real_worker_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_init = subprocess.Popen.__init__
+
+    def guarded_init(self: subprocess.Popen[Any], args: Any, *pargs: Any, **kwargs: Any) -> None:
+        if (
+            isinstance(args, (list, tuple))
+            and len(args) >= 2
+            and isinstance(args[0], (str, bytes, os.PathLike))
+            and Path(os.fsdecode(args[0])).name == "t3"
+            and args[1] == "worker"
+        ):
+            pytest.fail("test attempted to spawn a real t3 worker", pytrace=False)
+        original_init(self, args, *pargs, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", guarded_init)
 
 
 # Guard against import-time side effects in script modules that call _init.init()
@@ -933,6 +953,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # so a cold reader resolves under the isolated ``$HOME`` (no DB → defaults) and
     # never reads a host DB.
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    monkeypatch.delenv("T3_CONTROL_DB_DIR", raising=False)
+    monkeypatch.delenv("T3_DATA_DIR", raising=False)
+    monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     # Resolve test registry paths under the isolated HOME.
     monkeypatch.delenv("T3_LOOP_REGISTRY_DIR", raising=False)

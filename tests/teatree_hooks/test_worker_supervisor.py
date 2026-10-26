@@ -10,11 +10,13 @@ error. ``main`` never raises into the SessionStart hook.
 
 import io
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from hooks.scripts import worker_supervisor as supervisor
+from teatree import paths
 from teatree.utils import singleton
 
 
@@ -63,6 +65,32 @@ def test_an_unreadable_flock_reads_as_held_so_no_duplicate_spawns(monkeypatch: p
 
     monkeypatch.setattr(singleton, "flock_is_held", boom)
     assert supervisor._flock_is_free() is False
+
+
+def test_database_lock_blocks_resurrection_under_another_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    database = tmp_path / "control" / "db.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(database))
+    monkeypatch.setenv("HOME", str(tmp_path / "other-home"))
+    db_lock = database.with_name(f"{database.name}.worker.pid")
+    with singleton.singleton(singleton.WORKER_SINGLETON, pid_path=db_lock):
+        assert supervisor._flock_is_free() is False
+
+
+def test_resurrection_from_worktree_probes_spawned_workers_primary_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "other-home"
+    home.mkdir()
+    control = tmp_path / "control"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control))
+    monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(paths, "_TRUE_CANONICAL_DATA_DIR", home / ".local" / "share" / "teatree")
+    monkeypatch.setattr(singleton, "DATA_DIR", tmp_path / "host-lock")
+    primary_lock = control / "db.sqlite3.worker.pid"
+    with singleton.singleton(singleton.WORKER_SINGLETON, pid_path=primary_lock):
+        assert supervisor._flock_is_free() is False
 
 
 def test_main_drains_stdin_and_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:

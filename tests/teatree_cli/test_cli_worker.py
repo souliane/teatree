@@ -299,6 +299,32 @@ class TestWorkerStatusShowsTheDeployDrain(django.test.TestCase):
         assert "deploy drain:" not in self._status()
 
 
+def test_database_lock_blocks_ensure_across_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    database = tmp_path / "control" / "db.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(database))
+    monkeypatch.setenv("HOME", str(tmp_path / "other-home"))
+    db_lock = database.with_name(f"{database.name}.worker.pid")
+    with (
+        singleton_mod.singleton(singleton_mod.WORKER_SINGLETON, pid_path=db_lock),
+        mock.patch("teatree.utils.worker_spawn.spawn_detached_worker") as spawn,
+    ):
+        result = runner.invoke(worker_app, ["ensure", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["action"] == "already-running"
+    spawn.assert_not_called()
+
+
+def test_worker_run_refuses_pytest_home_with_external_control_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "pytest-of-test" / "pytest-1" / "home"))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", "/var/lib/teatree/control-db")
+    with mock.patch("teatree.utils.django_bootstrap.ensure_django", side_effect=AssertionError("DB opened")):
+        result = runner.invoke(worker_app, ["run"])
+    assert result.exit_code != 0
+    assert "pytest HOME" in str(result.exception)
+
+
 class TestWorkerEnsure(django.test.TestCase):
     def test_ensure_reports_already_running(self) -> None:
         with mock.patch("teatree.utils.singleton.flock_is_held", return_value=True):

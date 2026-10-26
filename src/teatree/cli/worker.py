@@ -15,6 +15,8 @@ discover.
 """
 
 import json
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 import typer
@@ -63,6 +65,15 @@ _QUIESCED_NOTICE = (
 
 def _run_worker() -> None:
     """Run the singleton loop-timer worker in the foreground (the cadence owner)."""
+    home = Path.home().resolve()
+    pytest_root = next(
+        (Path(*home.parts[: index + 1]) for index, part in enumerate(home.parts) if part.startswith("pytest-of-")),
+        None,
+    )
+    configured_db = os.environ.get("T3_CONFIG_DB") or os.environ.get("T3_CONTROL_DB_DIR")
+    if pytest_root is not None and configured_db and not Path(configured_db).resolve().is_relative_to(pytest_root):
+        message = f"refusing t3 worker: pytest HOME {home} points at external control database {configured_db}"
+        raise RuntimeError(message)
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
     ensure_django()
@@ -208,13 +219,10 @@ def _ensure_worker() -> tuple[str, str]:
     a worker whose preset admits nothing parks with its executors stopped and its process
     alive, which is exactly what has to be running for the next schedule boundary to land.
     """
-    from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
-        WORKER_SINGLETON,
-        flock_is_held,
-    )
+    from teatree.utils.singleton import worker_lock_is_held  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
     from teatree.utils.worker_spawn import spawn_detached_worker  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
-    if flock_is_held(WORKER_SINGLETON):
+    if worker_lock_is_held():
         return "already-running", "a worker already holds the flock"
     if not spawn_detached_worker():
         return "error", "`t3` not found on PATH"

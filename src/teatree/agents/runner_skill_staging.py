@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from teatree.agents.runner_budget import TicketBudget
 from teatree.agents.runner_interruption import _record_failure
+from teatree.agents.skill_assurance import SkillDispatchError
 from teatree.agents.skill_bundle import (
     ArchitecturalReviewSkillMissingError,
     resolve_skill_bundle,
@@ -16,12 +17,29 @@ from teatree.agents.skill_bundle import (
 from teatree.agents.usage_window import record_park
 from teatree.core.models import LIMIT_PARKED_PREFIX, Task, TaskAttempt
 from teatree.core.worktree.clone_paths import dispatch_detection_root
+from teatree.skill_support.index import install_roots
 from teatree.skill_support.pin_shadow import SkillPinRefusalError, SkillPinsUnreadableError
 from teatree.types import SkillMetadata
 
 logger = logging.getLogger("teatree.agents.runner")
 
 _UNREADABLE_PINS_RECHECK = timedelta(seconds=300)
+
+
+def park_if_worker_skill_roots_empty(task: Task, exc: SkillDispatchError) -> TaskAttempt | None:
+    if not exc.assurance["missing"]:
+        return None
+    roots = install_roots()
+    if any(root.exists() and (not root.is_dir() or any(root.iterdir())) for root in roots):
+        return None
+    attempt = record_park(
+        task,
+        reason=f"{LIMIT_PARKED_PREFIX}{exc}",
+        not_before=timezone.now() + _UNREADABLE_PINS_RECHECK,
+    )
+    attempt.result = {**(attempt.result or {}), "skill_assurance": exc.assurance}
+    attempt.save(update_fields=["result"])
+    return attempt
 
 
 def staged_skills_or_refusal(

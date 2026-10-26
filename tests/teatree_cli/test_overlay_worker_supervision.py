@@ -9,8 +9,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from typer.testing import CliRunner
 
-from teatree.cli.overlay import _run_workers
+from teatree.cli.overlay import OverlayAppBuilder, _run_workers
+from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held
 
 
 def _processes(*codes: int) -> list[MagicMock]:
@@ -32,3 +34,22 @@ class TestWorkerExitCodesAreCounted:
         with patch("teatree.cli.overlay.spawn", return_value=process):
             assert _run_workers(tmp_path, "acme", 1, 1.0) == 0
         process.terminate.assert_called_once()
+
+
+def test_overlay_worker_holds_the_control_database_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    database = tmp_path / "control" / "db.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(database))
+    lock = database.with_name(f"{database.name}.worker.pid")
+    app = OverlayAppBuilder(overlay_name="acme", project_path=tmp_path).build()
+
+    def check_running(_project: Path, _name: str, _count: int, _interval: float) -> int:
+        assert flock_is_held(WORKER_SINGLETON, pid_path=lock)
+        return 0
+
+    with (
+        patch("teatree.cli.overlay.project_env_is_drivable", return_value=True),
+        patch("teatree.cli.overlay._run_workers", side_effect=check_running),
+    ):
+        result = CliRunner().invoke(app, ["worker", "--count", "1"])
+    assert result.exit_code == 0
+    assert not flock_is_held(WORKER_SINGLETON, pid_path=lock)

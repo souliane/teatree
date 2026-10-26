@@ -109,6 +109,7 @@ class TestRunHeadless(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
+            task.claim(claimed_by="test-worker")
             attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
@@ -116,13 +117,30 @@ class TestRunHeadless(TestCase):
         assert attempt.result["skill_assurance"]["status"] == "missing"
         assert "code" in attempt.result["skill_assurance"]["missing"]
         assert attempt.input_tokens is None
-        assert task.status == Task.Status.FAILED
+        assert task.status == Task.Status.PENDING
+        assert task.claimed_by == ""
+        assert task.not_before is not None
+        assert str(Path.home()) in attempt.error
         record_skill_assurance.assert_called_once_with(
             task_id=task.pk,
             ticket_id=self.ticket.pk,
             attempt_id=attempt.pk,
             assurance=attempt.result["skill_assurance"],
         )
+
+    def test_missing_skill_with_a_populated_install_root_still_fails(self) -> None:
+        root = Path.home() / ".agents" / "skills"
+        (root / "unrelated").mkdir(parents=True)
+        (root / "unrelated" / "SKILL.md").write_text("# unrelated\n", encoding="utf-8")
+        with (
+            _fake_sdk(_success_stream({"summary": "should not run"})),
+            patch("teatree.agents.skill_assurance.harness_skills_dirs", return_value=[]),
+        ):
+            task = Task.objects.create(ticket=self.ticket, session=Session.objects.create(ticket=self.ticket))
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.result["skill_assurance"]["status"] == "missing"
 
     def test_real_coding_phase_records_full_body_or_explicit_load_per_required_skill(self) -> None:
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}

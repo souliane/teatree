@@ -53,6 +53,23 @@ def test_runs_the_worker_under_the_singleton_and_installs_signals() -> None:
     assert signal_signal.call_count == 2  # SIGTERM + SIGINT
 
 
+def test_worker_holds_the_control_database_lock_while_running(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    database = tmp_path / "control" / "db.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(database))
+    db_lock = database.with_name(f"{database.name}.worker.pid")
+
+    def check_running() -> None:
+        assert flock_is_held(WORKER_SINGLETON, pid_path=db_lock)
+
+    with (
+        patch("teatree.loops.worker.LoopWorker") as worker_cls,
+        patch("teatree.core.management.commands.worker.signal.signal"),
+    ):
+        worker_cls.return_value.run.side_effect = check_running
+        call_command("worker")
+    assert not flock_is_held(WORKER_SINGLETON, pid_path=db_lock)
+
+
 def test_deployed_worker_holds_a_separate_health_lock_only_while_running(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
