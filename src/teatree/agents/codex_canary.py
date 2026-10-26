@@ -10,9 +10,9 @@ from teatree.agents.codex_app_server import CodexAppServerSession
 from teatree.agents.codex_app_server_lifecycle import opened_session
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
 from teatree.agents.codex_auth_cache import CodexAuthCache, CodexAuthCacheError
-from teatree.agents.codex_read_only_executor import EXECUTOR_PHASES, ExecutorRefusalError, attest
+from teatree.agents.codex_read_only_executor import ExecutorRefusalError, PlantedHomeError, attest
 from teatree.agents.codex_read_only_server import ExecutorCodexAppServer
-from teatree.agents.codex_read_only_verdict import WORKTREE_ROOT
+from teatree.agents.codex_read_only_verdict import WORKTREE_ROOT, planted_home
 from teatree.agents.codex_shared_app_server import SharedCodexSession
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessFallbackError
@@ -49,8 +49,8 @@ def canary_failure(code_home: Path) -> str | None:
     return None if answered else "Codex finished the turn without an assistant message"
 
 
-async def _executor_answered() -> bool:
-    attestation = await asyncio.to_thread(attest, min(EXECUTOR_PHASES), ())
+async def _executor_answered(phase: str) -> bool:
+    attestation = await asyncio.to_thread(attest, phase, ())
     options = CodexAppServerOptions(
         core=HarnessOptions(cwd=WORKTREE_ROOT),
         runtime_workspace_roots=(),
@@ -67,15 +67,19 @@ async def _executor_answered() -> bool:
     try:
         async with opened_session(session):
             await session.query(_PROMPT)
-            return any([isinstance(message, AssistantMessage) async for message in session.receive_response()])
+            answered = any([isinstance(message, AssistantMessage) async for message in session.receive_response()])
+            observation = await asyncio.to_thread(manager.docker.probe, attestation.container_id, (), manager.home)
+            if planted := planted_home(observation):
+                raise PlantedHomeError(planted)
+            return answered
     finally:
         await asyncio.to_thread(manager.close)
 
 
-def executor_canary_failure() -> str | None:
+def executor_canary_failure(phase: str = "planning") -> str | None:
     """The same OK-turn through the read-only executor's own login, from a fresh home it removes after."""
     try:
-        answered = asyncio.run(_executor_answered())
+        answered = asyncio.run(_executor_answered(phase))
     except (ExecutorRefusalError, CodexAuthCacheError, CodexAppServerError, HarnessFallbackError) as exc:
         return str(exc)
     return None if answered else "Codex finished the turn without an assistant message"

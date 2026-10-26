@@ -194,6 +194,10 @@
           "name": "compliance"
         },
         {
+          "help": "Report the daily dream funnel and whether a recurring question class has stopped",
+          "name": "funnel"
+        },
+        {
           "help": "Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap",
           "name": "gap-coverage"
         },

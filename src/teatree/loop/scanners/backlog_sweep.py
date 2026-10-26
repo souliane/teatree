@@ -39,13 +39,15 @@ Other invariants mirror the family:
 import logging
 from dataclasses import dataclass
 
+from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE
 from teatree.core.models.consolidated_memory import ConsolidatedMemory
 from teatree.core.models.dream_gap_ledger import pending_entries, umbrella_ticket
-from teatree.core.models.types import DreamGapEntry
+from teatree.core.models.dream_gap_offer import mark_offered
+from teatree.core.models.dream_gap_types import DreamGapEntry
 from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
@@ -72,8 +74,10 @@ DREAM_GAP_DIRECTIVE = (
     "Group them like tickets — fold each into the best EXISTING open host (oldest / most-discussed covering "
     "its scope, never a new row) with `t3 <overlay> ticket attach-gaps <host-ticket-id> --sweep-run-id <run> "
     '--manifest \'<json list of gap keys or {"gap_key": ..., "theme": ...} objects>\'`; a gap no host fits goes '
-    "to the umbrella ticket itself. Pending:"
+    "to the umbrella ticket itself. Use `t3 dream gap-disposition <host> <gap> --misfit <reason>` "
+    "when a folded gap does not fit its host; at most three open gaps fit one host. Pending:"
 )
+SWEEP_GAP_LIMIT = 12
 
 
 def _gap_detail_lines(row: ConsolidatedMemory | None) -> list[str]:
@@ -154,12 +158,21 @@ class BacklogSweepScanner:
         if reason := open_pr_start_cap_hold_reason():
             logger.warning("backlog sweep is claiming nothing new: %s", reason)
             return []
-        task = cadence.queue_task(
-            placeholder_issue_url=f"backlog-sweep://{self.overlay_name}",
-            agent_id=f"backlog-sweep-{self.overlay_name}",
-            execution_reason=self._execution_reason(trigger) + self._dream_gap_section(pending),
-            log_label="BacklogSweepScanner",
-        )
+        least_recent = sorted(enumerate(pending), key=lambda pair: (pair[1].get("offered_at") or "", pair[0]))
+        selected_keys = {entry["gap_key"] for _, entry in least_recent[:SWEEP_GAP_LIMIT] if entry.get("gap_key")}
+        window = [entry for entry in pending if entry.get("gap_key") in selected_keys]
+        with transaction.atomic():
+            task = cadence.queue_task(
+                placeholder_issue_url=f"backlog-sweep://{self.overlay_name}",
+                agent_id=f"backlog-sweep-{self.overlay_name}",
+                execution_reason=self._execution_reason(trigger)
+                + self._dream_gap_section(window, total_pending=len(pending)),
+                log_label="BacklogSweepScanner",
+            )
+            if task is not None and selected_keys:
+                umbrella = umbrella_ticket(self.dream_umbrella_url)
+                if umbrella is not None:
+                    mark_offered(umbrella, selected_keys, at=timezone.now())
         if task is None:
             return []
         return [
@@ -205,7 +218,7 @@ class BacklogSweepScanner:
             )
         return base
 
-    def _dream_gap_section(self, pending: list[DreamGapEntry]) -> str:
+    def _dream_gap_section(self, pending: list[DreamGapEntry], *, total_pending: int | None = None) -> str:
         """Name every gap a dream pass left pending, and the one verb that folds them into a host."""
         if not pending:
             return ""
@@ -216,8 +229,10 @@ class BacklogSweepScanner:
             lines.append(f"- {entry.get('gap_key', '')}: {entry.get('title', '')}")
             lines.extend(_gap_detail_lines(by_cluster.get(entry.get("cluster_key", ""))))
         detail_lines = "\n".join(lines)
+        remaining = max(0, (total_pending if total_pending is not None else len(pending)) - len(pending))
+        wait_clause = f" {remaining} more gap(s) wait for a later sweep." if remaining else ""
         return (
-            f" | DREAM GAPS: {len(pending)} gap(s) wait on {self.dream_umbrella_url}. "
+            f" | DREAM GAPS: {len(pending)} gap(s) offered on {self.dream_umbrella_url}.{wait_clause} "
             f"{DREAM_GAP_DIRECTIVE}\n{DREAM_BATCH_MANIFEST_HEADER}\n{detail_lines}"
         )
 

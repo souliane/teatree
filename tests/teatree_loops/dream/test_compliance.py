@@ -22,6 +22,7 @@ from teatree.loops.dream import batch_promote as bp_module
 from teatree.loops.dream.batch_promote import PromotionBatch
 from teatree.loops.dream.compliance import (
     ComplianceFinding,
+    _recurring_rule_slugs,
     build_compliance_snapshot,
     detect_compliance_failures,
     escalate_recurrences,
@@ -126,6 +127,16 @@ class DetectComplianceFailuresTestCase(TestCase):
         )
         findings = detect_compliance_failures(extract)
         assert findings == []
+
+    def test_historical_harness_recurrence_does_not_keep_rule_live(self) -> None:
+        persist_compliance_pass(
+            [
+                _recurrence("harness", evidence='{"role": "user"} Call mcp__status and do not stop'),
+                _recurrence("owner", evidence='{"role": "user"} Please stop asking me again'),
+            ],
+            instructions_observed=2,
+        )
+        assert _recurring_rule_slugs() == {"owner"}
 
     def test_single_incidental_shared_token_is_not_a_recurrence(self) -> None:
         # F6.5: one shared token is noise. Requiring >=2 distinctive shared tokens

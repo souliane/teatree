@@ -1,15 +1,17 @@
 """``t3 dream gap-coverage`` / ``gap-disposition`` — read-only proof and the per-gap record."""
 
 import json
+from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.config import UserSettings
-from teatree.core.models import ConsolidatedMemory, Ticket
+from teatree.core.models import ConsolidatedMemory, DeferredQuestion, Ticket
 
 UMBRELLA = "https://gitlab.com/o/factory/-/work_items/249"
 
@@ -120,6 +122,18 @@ class TestGapCoverage(_UmbrellaSettingCase):
 
 
 class TestGapDisposition(_UmbrellaSettingCase):
+    def test_misfit_returns_the_gap_and_keeps_coverage_flat(self) -> None:
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
+        host = _host(56, "a")
+
+        call_command("dream", "gap-disposition", str(host.pk), "a", "--misfit", "wrong host", stdout=StringIO())
+
+        umbrella.refresh_from_db()
+        host.refresh_from_db()
+        assert [entry["gap_key"] for entry in umbrella.extra["dream_gap_pending"]] == ["a"]
+        assert host.extra["dream_gap_batch"] == []
+        assert _coverage()[0] == 0
+
     def test_a_disposition_without_exactly_one_of_citation_or_reject_exits_one(self) -> None:
         host = _host(56, "a")
         with pytest.raises(SystemExit) as exc:
@@ -130,3 +144,47 @@ class TestGapDisposition(_UmbrellaSettingCase):
         with pytest.raises(SystemExit) as exc:
             call_command("dream", "gap-disposition", "9999", "a", "--reject", "x", stdout=StringIO(), stderr=StringIO())
         assert exc.value.code == 1
+
+
+class TestFunnel(_UmbrellaSettingCase):
+    def test_json_reports_the_latest_daily_snapshot(self) -> None:
+        Ticket.objects.create(
+            issue_url=UMBRELLA,
+            extra={"dream_funnel": [{"at": "2026-10-25T09:00:00+00:00", "rows": 4, "core_gaps": 2}]},
+        )
+        output = StringIO()
+
+        call_command("dream", "funnel", "--json", stdout=output)
+
+        payload = json.loads(output.getvalue())
+        assert payload["daily"][-1]["rows"] == 4
+        assert payload["daily"][-1]["core_gaps"] == 2
+
+    def test_unknown_question_class_exits_one(self) -> None:
+        Ticket.objects.create(issue_url=UMBRELLA)
+
+        with pytest.raises(SystemExit) as exc:
+            call_command("dream", "funnel", "--class", "unseen", stdout=StringIO(), stderr=StringIO())
+
+        assert exc.value.code == 1
+
+    def test_open_question_class_exits_one_after_emitting_status(self) -> None:
+        Ticket.objects.create(issue_url=UMBRELLA)
+        DeferredQuestion.objects.create(question="May I continue?", dedupe_marker="repair-loop:one")
+        output = StringIO()
+
+        with pytest.raises(SystemExit) as exc:
+            call_command("dream", "funnel", "--class", "repair-loop", "--json", stdout=output)
+
+        assert exc.value.code == 1
+        assert json.loads(output.getvalue())["classes"][0]["fixed"] is False
+
+    def test_cleared_question_class_exits_zero(self) -> None:
+        Ticket.objects.create(issue_url=UMBRELLA)
+        question = DeferredQuestion.objects.create(question="May I continue?", dedupe_marker="repair-loop:one")
+        DeferredQuestion.objects.filter(pk=question.pk).update(created_at=timezone.now() - timedelta(days=8))
+        output = StringIO()
+
+        call_command("dream", "funnel", "--class", "repair-loop", "--json", stdout=output)
+
+        assert json.loads(output.getvalue())["classes"][0]["fixed"] is True

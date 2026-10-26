@@ -789,9 +789,10 @@ Usage: t3 codex auth check [OPTIONS]
  would.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --executor          Act on the read-only executor's own login; only          │
-│                     teatree-worker reaches it.                               │
-│ --help              Show this message and exit.                              │
+│ --executor              Act on the read-only executor's own login; only      │
+│                         teatree-worker reaches it.                           │
+│ --phase           TEXT  Check a read-only executor phase.                    │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7015,6 +7016,8 @@ Usage: t3 dream [OPTIONS] COMMAND [ARGS]...
 │                  (cron entry).                                               │
 │ gap-coverage     Prove every dream gap has exactly one owner; exit 1 on an   │
 │                  orphan, duplicate, bad link or open gap.                    │
+│ funnel           Show the daily dream funnel and whether a recurring         │
+│                  question class has stopped.                                 │
 │ gap-disposition  Record a folded dream gap's ADDRESS (with its citation) or  │
 │                  reasoned REJECT on its host.                                │
 │ compliance       Inspect the instruction-compliance accountant (#2663) — the │
@@ -7069,6 +7072,21 @@ Usage: t3 dream gap-coverage [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 dream funnel`
+
+```
+Usage: t3 dream funnel [OPTIONS]
+
+ Show the daily dream funnel and whether a recurring question class has
+ stopped.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --class        TEXT  Inspect one recurring question class.                   │
+│ --json               Emit the daily funnel as JSON.                          │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 dream gap-disposition`
 
 ```
@@ -7085,6 +7103,7 @@ Usage: t3 dream gap-disposition [OPTIONS] TICKET GAP_KEY
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --citation        TEXT  ADDRESS: the evidence that verifies the gap.         │
 │ --reject          TEXT  REJECT: why the gap is not worth addressing.         │
+│ --misfit          TEXT  RETURN: why this host cannot address the gap.        │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

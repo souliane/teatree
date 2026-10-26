@@ -49,6 +49,17 @@ class TestPhaseSpecificLinesDispatch(TestCase):
         assert "PHASE: bughunt" in lines
         assert any("find-then-verify" in line and "N=3" in line for line in lines)
 
+    def test_execution_phases_name_the_current_worker_and_their_command(self) -> None:
+        for phase, command in (
+            ("bughunt", "reproduce"),
+            ("dogfood_smoke", "t3 dogfood overlay-provision-smoke"),
+            ("eval_local", "t3 eval run"),
+        ):
+            with self.subTest(phase=phase):
+                brief = "\n".join(phase_specific_lines(_task(phase), []))
+                assert "current worker" in brief
+                assert command in brief
+
 
 class TestTheReviewerIsToldToGradeTheRubric(TestCase):
     """Nothing else grades the rubric, so an unbriefed reviewer leaves every merge refused.
@@ -366,12 +377,13 @@ class TestEnvelopeVerdictPhasesIsExactlyWhatTheBriefTeaches(TestCase):
     #: asks for the envelope the orchestrator must record server-side.
     _RETURN_DIRECTIVE = "RECORD YOUR VERDICT BY RETURNING IT"
 
-    def test_reviewer_brief_keeps_full_dispatched_head_refusal(self) -> None:
+    def test_reviewer_brief_keeps_head_refusal_and_one_live_head_retry(self) -> None:
         brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
-        assert "Any other head is REFUSED and records nothing" in brief
-        assert "one or return needs_user_input" in brief
-        assert "OMITTING `reviewed_sha` is REFUSED too" in brief
-        assert "dispatched one, so a verdict that names no head records nothing at all" in brief
+        assert "A verdict for another head is REFUSED" in brief
+        assert '"review_head_mismatch": {"observed_sha":' in brief
+        assert "without review_verdict or owner question" in brief
+        assert "Factory retries once at the live head" in brief
+        assert "Missing `reviewed_sha` is REFUSED" in brief
 
     def _phases_briefed_for_the_envelope(self) -> set[str]:
         return {

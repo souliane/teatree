@@ -92,6 +92,12 @@ def test_a_planning_turn_runs_unsandboxed_inside_the_executor(fake: FakeExecutor
     assert thread_start["config"]["projects"] == {EXAMPLE_ROOT: {"trust_level": "untrusted"}}
 
 
+def test_executor_turn_does_not_create_a_plugin_scaffold(fake: FakeExecutor) -> None:
+    assert asyncio.run(_turn()) == "OK"
+    (home,) = fake.homes()
+    assert not (home / "plugins").exists()
+
+
 def test_executor_home_is_fresh_per_server_start(fake: FakeExecutor) -> None:
     asyncio.run(_turn())
     codex_read_only_server.reset_executor_app_servers()

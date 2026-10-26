@@ -66,7 +66,6 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
     return (
         "",
         "RECORD YOUR VERDICT BY RETURNING IT in final JSON; maker≠checker: do NOT try `t3 <overlay> review record`.",
-        "The orchestrator records it and releases the review lock:",
         '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
         f'                     "reviewer_identity": "{identity or REVIEWER_IDENTITY_INSTRUCTION}",',
         '                     "gh_verify_result": "green"|"pending"|"failed",',
@@ -85,16 +84,12 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
                 else "Use `git rev-parse HEAD` in the mounted checkout as the full 40-char `reviewed_sha`."
             )
             if read_only_venue
-            else (
-                "`reviewed_sha` MUST be the full 40-char SHA of the head you were DISPATCHED for "
-                "(`git rev-parse HEAD`):"
-            )
+            else ("`reviewed_sha` MUST be the full 40-char SHA you reviewed (`git rev-parse HEAD`):")
         ),
-        "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
-        "Any other head is REFUSED and records nothing — if the head moved under you, review the dispatched",
-        "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
-        "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
-        "dispatched one, so a verdict that names no head records nothing at all.",
+        "A verdict for another head is REFUSED. On checkout mismatch, return",
+        '  "review_head_mismatch": {"observed_sha": "<40-char SHA>", "reason": "<why>"}',
+        "without review_verdict or owner question. Factory retries once at the live head; a repeat records a card.",
+        "Missing `reviewed_sha` is REFUSED; never infer it from dispatch.",
         "A blocking finding (blocker/major/high/critical) outside PR-changed files is REFUSED and records nothing.",
         "Branch-only probes may blame main; recheck on the MERGE RESULT.",
         *(
@@ -519,6 +514,13 @@ def phase_specific_lines(
     else:
         builder = (read_only_venue and _READ_ONLY_PHASE_BLOCK_BUILDERS.get(phase)) or _PHASE_BLOCK_BUILDERS.get(phase)
         block = builder(task) if builder is not None else ()
+        if phase in _WORKER_EXECUTION_COMMANDS:
+            block = (
+                *block,
+                "",
+                f"PHASE: {phase} — execute on the current worker under its existing write approval policy.",
+                _WORKER_EXECUTION_COMMANDS[phase],
+            )
         if phase == "debugging":
             block = (*block, *round_brief_lines(task))
     if fanout := _phase_fanout_directive(task):
@@ -527,8 +529,14 @@ def phase_specific_lines(
 
 
 #: Phases whose agent is the one FIXING the defect, so it is the actor that can state
-#: the root cause. Mirrors ``transient_requeue._CORRECTIVE_PHASES``.
+#: the root cause. Mirrors ``transient_requeue_correction.CORRECTIVE_PHASES``.
 _FIXING_PHASES = frozenset({"coding", "debugging"})
+
+_WORKER_EXECUTION_COMMANDS = {
+    "bughunt": "Inspect and reproduce candidates before reporting each finding.",
+    "dogfood_smoke": "Run `t3 dogfood overlay-provision-smoke` for the configured overlay and report its result.",
+    "eval_local": "Run `t3 eval run` for the configured local evaluation and report its result.",
+}
 
 
 def _fix_record_lines(task: Task, phase: str) -> tuple[str, ...]:

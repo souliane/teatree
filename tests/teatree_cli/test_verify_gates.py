@@ -14,16 +14,22 @@ local hook covers.
 """
 
 import json
+import os
 import re
 import sqlite3
+import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import yaml
+from django.db import connection
+from django.test import TransactionTestCase
 from typer.testing import CliRunner
 
 from teatree.cli import app
@@ -33,7 +39,10 @@ from teatree.cli.verify_gates import (
     _declared_manual_hooks,
     _prek_config,
     _resource_refusal,
+    _snapshot_control_db,
+    _stage_env,
 )
+from teatree.core.models import PlanArtifact, Ticket, Worktree
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.paths import ControlDb
 from teatree.quality.changed_set import ChangedSet, ChangeEntry
@@ -44,9 +53,60 @@ runner = CliRunner()
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+class TestPrivateGateDatabase(TransactionTestCase):
+    def test_snapshot_preserves_ticket_brief_for_push_hook(self) -> None:
+        with TemporaryDirectory() as temp_root:
+            root = Path(temp_root)
+            source = root / "live.sqlite3"
+            ticket = Ticket.objects.create()
+            checkout = root / "checkout"
+            checkout.mkdir()
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="teatree",
+                repo_path="souliane/teatree",
+                branch="feature",
+                extra={"worktree_path": str(checkout)},
+            )
+            PlanArtifact.objects.create(ticket=ticket, plan_text="No migration.")
+            connection.ensure_connection()
+            with closing(sqlite3.connect(source)) as destination:
+                connection.connection.backup(destination)
+
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(source)}):
+                private_root = root / "private"
+                private_root.mkdir()
+                env = _stage_env(str(private_root))
+                _snapshot_control_db(checkout, env)
+
+            program = (
+                "from pathlib import Path; from teatree.cli.push_gate_tools import _brief_for_worktree; "
+                "import sys; print(_brief_for_worktree(Path(sys.argv[1])))"
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    program,
+                    str(checkout),
+                ],
+                cwd=REPO_ROOT,
+                env={**env, "DJANGO_SETTINGS_MODULE": "teatree.settings"},
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == "No migration."
+
+
 @pytest.fixture(autouse=True)
 def _no_real_gate_receipt():
-    with patch("teatree.cli.verify_gates.write_gate_receipt"):
+    with (
+        patch("teatree.cli.verify_gates.write_gate_receipt"),
+        patch("teatree.cli.verify_gates._snapshot_control_db"),
+    ):
         yield
 
 
