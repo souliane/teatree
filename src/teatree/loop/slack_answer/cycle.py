@@ -67,7 +67,7 @@ from teatree.loop.slack_answer.session_routing import (
     _live_receipt,
     _mark_unit_loop_replied,
     _post_live_reply,
-    _reject_foreign_bound_unit,
+    _reject_foreign_unit,
     _uncertain_question_reply,
     _unmark_unit_loop_replied,
 )
@@ -430,16 +430,15 @@ def _process_unit(
     report: SlackAnswerReport,
     reader: InboundReader,
 ) -> None:
-    if _react_eyes_once(backend, unit):
-        report.eyes_reacted += 1
-
     binding = (
         ThreadBinding.objects.filter(overlay=unit.overlay, channel=unit.channel, thread_ts=unit.lead.thread_ts).first()
         if unit.lead.thread_ts
         else None
     )
-    if _reject_foreign_bound_unit(backend, unit, report, binding):
+    if _reject_foreign_unit(backend, unit, report):
         return
+    if _react_eyes_once(backend, unit):
+        report.eyes_reacted += 1
 
     read = memoized_reader(reader)
     priority_outcome = handle_priority_directive(backend, unit, report, read, binding)

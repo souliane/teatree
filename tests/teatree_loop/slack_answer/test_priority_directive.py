@@ -157,14 +157,16 @@ class TestPriorityDirective(TestCase):
     def test_non_owner_cannot_expedite(self) -> None:
         ticket = _ticket()
         backend = _backend()
+        reader = Mock(side_effect=_ack)
         _row("urgent", "2.000", user="UOTHER")
 
-        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=reader)
 
         ticket.refresh_from_db()
         assert ticket.expedited is False
         assert backend.replies == []
-        assert "zap" not in [reaction[2] for reaction in backend.reactions]
+        assert backend.reactions == []
+        reader.assert_not_called()
 
     def test_explicit_issue_reference_expedites_only_unique_unsettled_issue(self) -> None:
         selected = _ticket()
