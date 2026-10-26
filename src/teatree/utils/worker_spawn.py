@@ -13,13 +13,32 @@ otherwise leave nothing at all to read. The log is TRUNCATED on every spawn, so 
 holds exactly one worker's output and cannot grow across restarts.
 """
 
+import os
 import shutil
+from pathlib import Path
 
 from teatree.paths import DATA_DIR
 from teatree.utils.run import DEVNULL, spawn_session_leader
+from teatree.utils.singleton import _worker_control_database
 
 SPAWN_LOG_PATH = DATA_DIR / "worker-spawn.log"
 _SPAWN_LOG_TAIL_LINES = 20
+
+
+def refuse_external_database_under_pytest_home() -> None:
+    home = Path.home().resolve()
+    pytest_root = next(
+        (Path(*home.parts[: index + 1]) for index, part in enumerate(home.parts) if part.startswith("pytest-of-")),
+        None,
+    )
+    if pytest_root is None:
+        return
+    databases = [_worker_control_database(primary=True)]
+    databases.extend(Path(path) for key in ("T3_CONFIG_DB", "T3_CONTROL_DB_DIR") if (path := os.environ.get(key)))
+    external = next((path for path in databases if not path.resolve().is_relative_to(pytest_root)), None)
+    if external is not None:
+        message = f"refusing t3 worker: pytest HOME {home} points at external control database {external}"
+        raise RuntimeError(message)
 
 
 def read_spawn_log_tail(*, lines: int = _SPAWN_LOG_TAIL_LINES) -> str:

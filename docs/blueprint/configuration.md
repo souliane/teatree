@@ -135,16 +135,26 @@ a less-safe mode.
 
 ### 10.1.0 Staged sealed credential store
 
-The `teatree.utils.secrets` facade now has one swappable `SecretStore` slot.
-`PassStore` remains the production default while the migration is staged; tests
-install `MemoryStore` so they cannot read an operator's `pass` store. The new
-`DbStore` keeps AES-256-GCM sealed values in `SealedSecret` rows on the control
-DB, with the installation master key in a mode-0600 file beside that database.
-`T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override;
-it is never a `ConfigSetting` row. `t3 <overlay> secrets status`, `ls` and
-`import-pass` provide read-only key-health diagnostics and a names-only import
-inventory; `secrets status` exits 1 on any key verdict other than OK. No production reader or writer reaches the sealed rows: `DbStore` is
-not installed, and `import-pass` copies nothing.
+The `teatree.utils.secrets` facade has one swappable `SecretStore` slot, resolved at first use.
+`T3_SECRET_STORE` (`pass` by default, or `sealed`; environment-only, never a `ConfigSetting` row) selects it:
+`sealed` reads and writes `SealedSecret` rows with no fallback to `pass`, an unknown value raises naming the
+variable, and a store installed in code (tests install `MemoryStore`) always wins.
+
+`DbStore` keeps AES-256-GCM sealed values in `SealedSecret` rows on the control DB, with the installation master
+key in a mode-0600 file. `T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override. In a
+deployed container (`TEATREE_ROLE` set) a key path inside the control-DB directory is refused for creation and
+warned for loads, and the deployment mounts the key directory read-only from the host into the services that
+mount the password store.
+
+`t3 <overlay> secrets status`, `ls` and `import-pass` are read-only diagnostics (`status` prints the selected
+store and exits 1 on any key verdict other than OK; `import-pass` prints a names-only inventory). `set|rm|verify`
+act on sealed rows directly; `get|exec` read through the active store, `get` refuses a terminal, and the
+secret-print detector denies an unredirected `get`. `import-pass --apply` copies the `row` entries from `pass`
+into sealed rows (names and statuses only), writes the `SecretCutover` marker after a second full read-back, and
+refuses when the selector is `sealed` or the key sits inside the control-DB volume.
+Deploy shell readers use `deploy/secret-read.sh` for the same selector. In sealed mode, its Django-free
+reader opens the canonical control DB read-only and returns 0 for a value, 1 for absence, or 2 for an unreadable
+row; host-only readers leave the value for the container, which mounts the DB and key.
 
 ### 10.1.1 Per-Overlay Setting Overrides
 

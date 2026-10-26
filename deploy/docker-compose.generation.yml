@@ -47,6 +47,10 @@ x-generation-volumes: &generation-volumes !override
   - type: bind
     source: ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg
     target: /home/teatree/.gnupg
+  - type: bind
+    source: ${TEATREE_HOST_HOME:-/home/teatree}/.config/teatree-master-key  # privacy-scan:allow — documented container home
+    target: /home/teatree/.config/teatree-master-key  # privacy-scan:allow — documented container home
+    read_only: true
   - teatree_claude_home:/home/teatree/.claude
   - teatree_codex_home:/home/teatree/.codex
   - teatree_agents_home:/home/teatree/.agents
@@ -103,6 +107,7 @@ services:
       - teatree_control_db:/var/lib/teatree/control-db
       - ${TEATREE_HOST_HOME:-/home/teatree}/.password-store:/home/teatree/.password-store  # privacy-scan:allow — the box's public, documented deploy home
       - ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg:/home/teatree/.gnupg  # privacy-scan:allow — the box's public, documented deploy home
+      - ${TEATREE_HOST_HOME:-/home/teatree}/.config/teatree-master-key:/home/teatree/.config/teatree-master-key:ro  # privacy-scan:allow — documented container home
   teatree-watchdog:
     image: ${TEATREE_IMAGE:-teatree-headless:latest}
     pull_policy: never
