@@ -46,13 +46,14 @@ round-trip; it does not make it zero.
 
 import hashlib
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
 from teatree.core.backend_protocols import CodeHostBackend, IssueResolutionSpec
+from teatree.core.issue_writes.backlog_snapshot import appeared_since_snapshot
 from teatree.core.issue_writes.issue_judgment_audit import record_issue_judgment
 from teatree.core.issue_writes.section_removal import DescriptionRemoval
 from teatree.core.issue_writes.section_removal import remove_description_section as _remove_description_section
@@ -409,11 +410,7 @@ def create_or_extend(
     live = open_candidates(host=host, repo=draft.repo)
     if snapshot_token is not None:
         judged_urls = {decision.candidate_url for decision in decisions}
-        if snapshot_token != snapshot_token_for_urls(judged_urls):
-            msg = "snapshot_token does not match the judged candidates; judge the full snapshot again"
-            raise ValueError(msg)
-        appeared = tuple(sorted(set(live) - judged_urls))
-        if appeared:
+        if appeared := appeared_since_snapshot(snapshot_token, judged_urls=judged_urls, live_urls=live):
             return CreateOutcome(kind="stale_snapshot", unjudged=appeared)
     return _commit(host=host, draft=draft, live=live, decisions=decisions, sweep_run_id=sweep_run_id)
 
@@ -457,10 +454,6 @@ def open_candidates(*, host: CodeHostBackend, repo: str) -> dict[str, RawAPIDict
     be stale, and a stale backlog is how two lanes file the same ticket.
     """
     return {url: issue for issue in host.list_repo_open_issues(repo=repo) if (url := _issue_url_of(issue))}
-
-
-def snapshot_token_for_urls(urls: Iterable[str]) -> str:
-    return hashlib.sha256("\n".join(sorted(set(urls))).encode()).hexdigest()[:16]
 
 
 def _commit(

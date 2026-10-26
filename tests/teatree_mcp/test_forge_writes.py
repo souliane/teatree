@@ -22,7 +22,7 @@ from asgiref.sync import async_to_sync
 from django.test import TestCase
 
 from teatree.backends.types import Service
-from teatree.core.issue_hygiene import snapshot_token_for_urls
+from teatree.core.issue_writes.backlog_snapshot import snapshot_token_for_urls
 from teatree.core.models import SendAudit
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp.server import build_server

@@ -35,6 +35,7 @@ from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.core.backend_protocols import CodeHostBackend, PrMessage, PrOpenState, rollup_query_failed
+from teatree.core.issue_writes.backlog_snapshot import snapshot_token_for_urls
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.core.overlays.repo_ownership import owning_overlay_for_repo
 from teatree.core.send_proxy import route_forge_write
@@ -268,10 +269,7 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
         """
 
         def _prepare() -> dict[str, Any]:
-            from teatree.core.issue_hygiene import (  # noqa: PLC0415 — deferred: ORM-adjacent import
-                open_candidates,
-                snapshot_token_for_urls,
-            )
+            from teatree.core.issue_hygiene import open_candidates  # noqa: PLC0415 — deferred: ORM-adjacent import
 
             live = open_candidates(host=_forge_client(service), repo=repo)
             return {

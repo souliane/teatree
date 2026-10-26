@@ -34,8 +34,8 @@ from teatree.core.issue_hygiene import (
     create_or_extend_by_marker,
     record_issue_note,
     section_marker,
-    snapshot_token_for_urls,
 )
+from teatree.core.issue_writes.backlog_snapshot import snapshot_token_for_urls
 from teatree.core.models import ConfigSetting, SendAudit, TicketSweepRun
 from teatree.core.self_forge_identities import ExternalIssueRefusedError
 
