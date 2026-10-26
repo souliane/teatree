@@ -43,13 +43,12 @@ from teatree.core import checking_types
 from teatree.core._checking_gather import (
     _MergedScope,
     failed_attempts,
-    internal_escalation_count,
     merged_entries_from_qs,
     merged_group_from_qs,
     motion_for_overlay,
-    owner_wait_items,
     ticket_url,
 )
+from teatree.core.checking_owner_waits import internal_escalation_count, owner_wait_items
 from teatree.core.checking_remaining import empty_remaining, gather_remaining
 from teatree.core.checking_types import (
     DEFAULT_CAP,

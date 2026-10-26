@@ -15,7 +15,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from teatree.cli.django_groups import DJANGO_GROUPS
-from teatree.core._checking_gather import owner_wait_items
+from teatree.core.checking_owner_waits import owner_wait_items
 from teatree.core.models import DeferredQuestion
 from teatree.core.owner_question_message import (
     answered_line,
