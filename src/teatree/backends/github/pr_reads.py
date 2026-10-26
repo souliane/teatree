@@ -16,7 +16,7 @@ import logging
 import re
 from collections.abc import Sequence
 from typing import cast
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _run_gh
 from teatree.backends.github.api import gh_api_get as _gh_api_get
@@ -56,6 +56,48 @@ query {{
 _REVIEW_THREADS_MAX_PAGES = 20
 
 _ENGAGED_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"})
+_STANDING_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
+
+
+def approval_count(reviews: object) -> int | None:
+    if not isinstance(reviews, list):
+        return None
+    standing: dict[str, str] = {}
+    for review in reviews:
+        if not isinstance(review, dict):
+            return None
+        author = review.get("author")
+        login = author.get("login") if isinstance(author, dict) else None
+        if not isinstance(login, str) or not login:
+            return None
+        state = str(review.get("state") or "").upper()
+        if state in _STANDING_REVIEW_STATES:
+            standing[login] = state
+    return sum(state == "APPROVED" for state in standing.values())
+
+
+def _required_approval_count(*, repo: str, base_ref: str, token: str) -> int | None:
+    if not base_ref:
+        return None
+    try:
+        rules = _gh_api_get(f"repos/{repo}/rules/branches/{quote(base_ref, safe='')}", token=token)
+    except CommandFailedError:
+        warn_throttled(
+            logger,
+            f"github-review-rules-unreadable:{repo}:{base_ref}",
+            "GitHub review rules unreadable for %s %s",
+            repo,
+            base_ref,
+        )
+        return None
+    if not isinstance(rules, list):
+        return None
+    counts = [
+        rule.get("parameters", {}).get("required_approving_review_count")
+        for rule in rules
+        if isinstance(rule, dict) and rule.get("type") == "pull_request" and isinstance(rule.get("parameters"), dict)
+    ]
+    return max(counts) if counts and all(type(count) is int and count >= 0 for count in counts) else None
 
 
 class ReviewerReads:
@@ -387,7 +429,7 @@ def approval_state(*, repo: str, pr_iid: int, token: str) -> ApprovalState:
         "--repo",
         repo,
         "--json",
-        "reviewDecision",
+        "reviewDecision,reviews,baseRefName",
         token=token,
         timeout=_FORGE_READ_TIMEOUT_SECONDS,
     )
@@ -396,6 +438,11 @@ def approval_state(*, repo: str, pr_iid: int, token: str) -> ApprovalState:
     except json.JSONDecodeError:
         data = {}
     decision = str(data.get("reviewDecision") or "").upper() if isinstance(data, dict) else ""
+    count = approval_count(data.get("reviews")) if isinstance(data, dict) else None
+    base_ref = data.get("baseRefName") if isinstance(data, dict) else None
+    required = (
+        _required_approval_count(repo=repo, base_ref=base_ref, token=token) if isinstance(base_ref, str) else None
+    )
     unresolved = count_unresolved_review_threads(repo=repo, pr_iid=pr_iid, token=token)
     if unresolved is None:
         warn_throttled(
@@ -405,8 +452,13 @@ def approval_state(*, repo: str, pr_iid: int, token: str) -> ApprovalState:
             repo,
             pr_iid,
         )
-    return ApprovalState(
+    state = ApprovalState(
         approvals_left=0 if decision == "APPROVED" else 1,
         approved_by=[],
         unresolved_resolvable=1 if unresolved is None else unresolved,
     )
+    if count is not None:
+        state["count"] = count
+    if required is not None:
+        state["required"] = required
+    return state
