@@ -112,7 +112,7 @@ def _worker_host_pid(root: Path, stats: dict[int, ProcStat]) -> int | None:
             continue
         if own_namespace and pid_namespace_of(pid_dir) == own_namespace:
             return pid
-    return worker_pid if root == Path("/proc") and worker_pid in stats else None
+    return None
 
 
 def _attached(pid: int, stats: dict[int, ProcStat], worker_pid: int | None) -> bool:

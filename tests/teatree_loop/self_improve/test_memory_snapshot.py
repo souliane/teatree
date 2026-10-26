@@ -10,6 +10,7 @@ from django.db import connection
 from django.test import TestCase, TransactionTestCase
 
 from teatree.config.checkout_roots import CheckoutRoots
+from teatree.core.cleanup.orphan_process_groups import ProcStat
 from teatree.core.models import SelfImproveFiring, Ticket
 from teatree.loop.self_improve import ActionRung, DetectorReport, actions, memory_snapshot, run_action_ladder
 from teatree.utils.ram_scope import read_ram_headroom as actual_read_ram_headroom
@@ -154,6 +155,15 @@ class MemorySnapshotTicketTests(TestCase):
             context = Ticket.objects.get(pk=result.firing.ticket_id).context
         rows = {line.split()[0]: line for line in context.splitlines() if line.startswith("pid=")}
         assert rows["pid=11"].endswith(" detached")
+
+    def test_unreadable_own_namespace_does_not_fall_back_to_a_matching_host_pid(self) -> None:
+        worker = ProcStat(pid=7, comm="python", state="S", ppid=1, pgid=7, cpu_ticks=0, start_ticks=0)
+        with (
+            patch.object(memory_snapshot, "read_pid", return_value=7),
+            patch.object(memory_snapshot, "current_pid_namespace", return_value=""),
+            patch.object(memory_snapshot, "namespace_pids", return_value=()),
+        ):
+            assert memory_snapshot._worker_host_pid(Path("/proc"), {7: worker}) is None
 
     def test_swap_gets_snapshot_but_load_keeps_three_lines(self) -> None:
         with TemporaryDirectory() as directory, staged_box(Path(directory)):
