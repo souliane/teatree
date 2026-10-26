@@ -28,7 +28,7 @@ _OUTSIDE_HOLDER = ExecutionContext(pid_namespace="pid:[1]", hostname="box", role
 
 @pytest.fixture(autouse=True)
 def _singleton_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Point the lock file AND the refusal ledger at a per-test dir.
+    """Point both worker locks and the refusal ledger at a per-test dir.
 
     The tests that let the command really acquire the singleton would otherwise all
     race on one shared lock file, so two xdist workers refuse each other.
@@ -36,6 +36,7 @@ def _singleton_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     data = tmp_path / "data"
     data.mkdir()
     monkeypatch.setattr("teatree.utils.singleton.DATA_DIR", data)
+    monkeypatch.setattr(singleton_mod, "CANONICAL_DB", data / "db.sqlite3")
     monkeypatch.setattr("teatree.utils.singleton_refusals.DATA_DIR", data)
     return data
 
@@ -52,6 +53,21 @@ def test_runs_the_worker_under_the_singleton_and_installs_signals() -> None:
         call_command("worker")
     worker_cls.return_value.run.assert_called_once_with()
     assert signal_signal.call_count == 2  # SIGTERM + SIGINT
+
+
+def test_worker_holds_the_isolated_control_database_lock(tmp_path: Path) -> None:
+    lock_path = tmp_path / "data" / "db.sqlite3.worker.pid"
+
+    def check_running() -> None:
+        assert flock_is_held(WORKER_SINGLETON, pid_path=lock_path)
+
+    with (
+        patch("teatree.loops.worker.LoopWorker") as worker_cls,
+        patch("teatree.core.management.commands.worker.signal.signal"),
+    ):
+        worker_cls.return_value.run.side_effect = check_running
+        call_command("worker")
+    assert not flock_is_held(WORKER_SINGLETON, pid_path=lock_path)
 
 
 def test_worker_holds_the_control_database_lock_while_running(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
