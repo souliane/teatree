@@ -120,6 +120,9 @@ class PendingChatInjection(models.Model):
         SESSION = "session", "Session"
 
     question_text_regex: ClassVar[str] = _QUESTION_TEXT_REGEX
+    recoverable_answer_kinds: ClassVar[frozenset[str]] = frozenset(
+        {AnswerKind.SIMPLE, AnswerKind.QUESTION_REPLY, AnswerKind.SESSION}
+    )
 
     overlay = models.CharField(max_length=64, blank=True, default="")
     channel = models.CharField(max_length=64)
@@ -227,7 +230,7 @@ class PendingChatInjection(models.Model):
         overlay path uses ``overlay=""`` consistently).
         """
         stale_delivery = models.Q(
-            answer_kind__in={cls.AnswerKind.SESSION, cls.AnswerKind.QUESTION_REPLY},
+            answer_kind__in=cls.recoverable_answer_kinds,
             loop_response_confirmed_at__isnull=True,
             loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
         )
@@ -260,7 +263,7 @@ class PendingChatInjection(models.Model):
             type(self)
             .objects.filter(
                 pk=self.pk,
-                answer_kind__in={self.AnswerKind.SESSION, self.AnswerKind.QUESTION_REPLY},
+                answer_kind__in=self.recoverable_answer_kinds,
                 loop_response_confirmed_at__isnull=True,
                 loop_replied_at__lte=timezone.now() - _SESSION_CLAIM_RECOVERY_AFTER,
             )

@@ -1,3 +1,4 @@
+import datetime as dt
 from unittest.mock import Mock, patch
 
 from django.test import TestCase
@@ -138,6 +139,22 @@ class TestPriorityDirective(TestCase):
         run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
         row.refresh_from_db()
         assert row.loop_replied_at is not None
+        assert len(backend.replies) == 1
+
+    def test_stale_priority_claim_reenters_cycle(self) -> None:
+        ticket = _ticket()
+        backend = _backend()
+        row = _row("urgent", "2.000")
+        assert row.mark_loop_replied(PendingChatInjection.AnswerKind.SIMPLE)
+        PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - dt.timedelta(minutes=3))
+
+        report = run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+
+        ticket.refresh_from_db()
+        row.refresh_from_db()
+        assert report.answered_simple == 1
+        assert ticket.expedited is True
+        assert row.loop_response_confirmed_at is not None
         assert len(backend.replies) == 1
 
     def test_ambiguous_message_keeps_priority_and_routes_normally(self) -> None:
