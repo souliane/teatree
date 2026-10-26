@@ -20,11 +20,10 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models
 from django.utils import timezone as django_timezone
 
+from teatree.core.modelkit.reask_cadence import ACTIVE_SCHEDULE_SETTING, OWNER_FALLBACK_ZONE
 from teatree.core.models.config_setting import ConfigSetting
 
 logger = logging.getLogger(__name__)
-ACTIVE_SCHEDULE_SETTING = "active_loop_schedule"
-OWNER_FALLBACK_ZONE = "Europe/Paris"
 
 
 class ModeSchedule(models.Model):

@@ -8,6 +8,8 @@ here too: no override + no active schedule ⇒ ``None`` for every loop.
 """
 
 import datetime as dt
+import subprocess
+import sys
 import zoneinfo
 
 import django.test
@@ -22,6 +24,16 @@ from teatree.loop.preset_resolution import (
     resolve_preset_state,
 )
 from teatree.request_cache import invalidate, request_scope
+
+
+def test_preset_module_imports_before_django_apps_are_ready() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "import teatree.loop.preset_resolution"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _preset(name: str, entries: dict[str, bool], **kwargs: object) -> Mode:

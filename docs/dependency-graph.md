@@ -373,6 +373,7 @@ graph TD
     teatree.core.mode_resolution --> teatree.loop.preset_resolution
     teatree.core.mode_resolution --> teatree.core.session_identity
     teatree.loop.preset_resolution --> teatree.core.models
+    teatree.loop.preset_resolution --> teatree.core.modelkit
     teatree.loop.scanners --> teatree.core.admission.pr_start_cap
     teatree.loop.scanners --> teatree.loop.inbound_reading
     teatree.loop.scanners --> teatree.loop.question_binding

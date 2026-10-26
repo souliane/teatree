@@ -38,16 +38,37 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
-from teatree.core.models.loop_schedule import ACTIVE_SCHEDULE_SETTING, OWNER_FALLBACK_ZONE, owner_zone
-from teatree.core.models.loop_schedule import active_schedule as _active_schedule
-from teatree.core.models.loop_schedule import active_schedule_name as _active_schedule_name
-from teatree.core.models.loop_schedule import schedule_by_name as _schedule_by_name
+from teatree.core.modelkit.reask_cadence import ACTIVE_SCHEDULE_SETTING, OWNER_FALLBACK_ZONE
 from teatree.request_cache import cached_per_request
 
 if TYPE_CHECKING:
     from teatree.core.models import Mode, ModeSchedule, ModeScheduleSlot
 
 logger = logging.getLogger(__name__)
+
+
+def _active_schedule_name() -> str:
+    from teatree.core.models.loop_schedule import active_schedule_name  # noqa: PLC0415 — models load after app setup
+
+    return active_schedule_name()
+
+
+def _schedule_by_name(name: str) -> "ModeSchedule | None":
+    from teatree.core.models.loop_schedule import schedule_by_name  # noqa: PLC0415 — models load after app setup
+
+    return schedule_by_name(name)
+
+
+def _active_schedule() -> "ModeSchedule | None":
+    from teatree.core.models.loop_schedule import active_schedule  # noqa: PLC0415 — models load after app setup
+
+    return active_schedule()
+
+
+def owner_zone() -> dt.tzinfo:
+    from teatree.core.models.loop_schedule import owner_zone as model_owner_zone  # noqa: PLC0415 — app setup first
+
+    return model_owner_zone()
 
 
 # How far back a governing slot start may be — one full week covers the coverage
