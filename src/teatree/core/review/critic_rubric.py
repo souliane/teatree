@@ -312,3 +312,14 @@ def llm_items(transition: str = DEFAULT_TRANSITION) -> tuple[CriticRubricItem, .
 
 def item_for(slug: str, transition: str = DEFAULT_TRANSITION) -> "CriticRubricItem | None":
     return next((item for item in CRITIC_RUBRIC if item.slug == slug and item.transition == transition), None)
+
+
+EXHAUSTIVE_TEST_VALUE_RULE = (
+    "List EVERY redundant or vacuous test in ONE `test_value` citation, one per line, never only the first "
+    "found: `REDUNDANT <test node> — pinned by <test node>` or `VACUOUS <test node> — <why>`."
+)
+
+
+def merge_item_questions() -> str:
+    """The merge critic's questions, one line per LLM item — the source the contract and the coding directive share."""
+    return "\n".join(f"  - {item.slug}: {item.adversarial_question}" for item in llm_items(_MERGE_TRANSITION))

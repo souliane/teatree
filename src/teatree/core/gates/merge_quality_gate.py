@@ -42,8 +42,18 @@ from teatree.core.models.directive import Directive
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.task import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.review.critic_continuity import merge_critic_continuity, review_evidence_contract
-from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
+from teatree.core.review.critic_continuity import (
+    merge_critic_continuity,
+    merge_verdict_history,
+    review_evidence_contract,
+)
+from teatree.core.review.critic_rubric import (
+    _MERGE_TRANSITION,
+    EXHAUSTIVE_TEST_VALUE_RULE,
+    item_for,
+    llm_items,
+    merge_item_questions,
+)
 from teatree.core.review.finding_standard import FINDING_STANDARD
 from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, publish_nits, review_nits
 from teatree.core.worktree.target_branch import resolve_target_branch
@@ -135,11 +145,17 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
     the critic to RETURN a ``critic_verdict`` envelope — the same corr-11 shape the
     ``mark_delivered`` critic returns, judged at the shared ``critic_reviewing`` phase.
     """
-    questions = "\n".join(f"  - {item.slug}: {item.adversarial_question}" for item in llm_items(_MERGE_TRANSITION))
     item_slugs = ", ".join(item.slug for item in llm_items(_MERGE_TRANSITION))
     strategy = ratified_test_strategy(ticket)
-    continuity = merge_critic_continuity(ticket, head_sha)
-    evidence = review_evidence_contract(ticket, head_sha)
+    context = "\n\n".join(
+        part
+        for part in (
+            merge_critic_continuity(ticket, head_sha),
+            merge_verdict_history(ticket),
+            review_evidence_contract(ticket, head_sha),
+        )
+        if part
+    )
     return (
         f"You are the merge-quality CRITIC deciding whether the shipped change on ticket {ticket.pk} at head "
         f"{head_sha[:8] or '<unknown>'} is not merely green but WELL-ENGINEERED — clean and tested-enough WITHOUT "
@@ -150,17 +166,19 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
         f'"kind": "blocking"|"nit". A NIT alone cannot fail an item.\n\n'
         f"A redundant_with row needs a blocking test_value point citing its test node; a duplicate definition "
         f"needs a blocking cleanliness point citing its file:line. An ignored row is refused and re-armed.\n\n"
-        f"{continuity}\n\n{evidence}\n\nAnchor for `test_value` — {strategy}\n\n"
+        f"{context}\n\nAnchor for `test_value` — {strategy}\n\n"
         f"On a later head, each item's resolutions array must name every prior finding ID under that item, "
         f"state fixed or not_fixed, and cite the current artifact. "
         f"A not_fixed BLOCKING point keeps its item failed.\n\n"
         f"`test_value` is BOTH directions: a VACUOUS test (asserts nothing that could fail — a tautology, the "
         f"framework, a mock talking to a mock) FAILS, AND a BLOATED test set (redundant permutations beyond the "
         f"ratified strategy, same behavior/same failure mode in different dressing) FAILS; the coverage-that-matters "
-        f"from the strategy must be present with no undeclared redundant tests. `cleanliness` is the CLAUDE.md bar: "
+        f"from the strategy must be present with no undeclared redundant tests. {EXHAUSTIVE_TEST_VALUE_RULE} "
+        f"`cleanliness` is the CLAUDE.md bar: "
         f"full typing (no smuggled Any), composition over inheritance, Django conventions, self-documenting names, "
         f"no parallel mechanism where a substrate convention exists, docs/BLUEPRINT left consistent.\n\n"
-        f"Questions:\n{questions}\n\nRETURN your judgment in the result envelope (the phase has no shell — the "
+        f"Questions:\n{merge_item_questions()}\n\n"
+        f"RETURN your judgment in the result envelope (the phase has no shell — the "
         f'orchestrator records it): `"critic_verdict": {{"grader_identity": "<your-critic-id>", "items": '
         f'[{{"slug": "<one of {item_slugs}>", "status": "pass"|"fail"|"unverified", "verified": true|false, '
         f'"citation": "<test node id or file:line naming WHY — an uncited pass records as a FAIL>", '

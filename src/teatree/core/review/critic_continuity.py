@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 
 _MAX_DELTA_CHARS = 24000
+_MAX_HISTORY_CHARS = 6000
 
 
 def review_evidence_contract(ticket: "Ticket", head_sha: str) -> str:
@@ -79,4 +80,26 @@ def merge_critic_continuity(ticket: "Ticket", head_sha: str) -> str:
         "passes for unchanged lines; a formerly passed item can fail only for a changed-line defect. "
         "An unavailable delta leaves every item unverified.\n"
         f"Prior judgment:\n{prior}\nChanged-line delta to {head_sha}:\n{delta or '(no changed lines)'}"
+    )
+
+
+def merge_verdict_history(ticket: "Ticket") -> str:
+    """Every merge verdict of *ticket*, oldest first, one line per item; the newest are kept when over the bound."""
+    lines = [
+        f"- {verdict.head_sha} {item.slug}: {item.status}; {item.citation}"
+        for verdict in CriticVerdict.objects.filter(ticket=ticket, transition="merge").order_by("recorded_at", "pk")
+        for item in verdict.item_verdicts()
+    ]
+    kept: list[str] = []
+    size = 0
+    for line in reversed(lines):
+        if kept and size + len(line) > _MAX_HISTORY_CHARS:
+            break
+        kept.append(line)
+        size += len(line) + 1
+    if not kept:
+        return ""
+    return (
+        "EARLIER MERGE VERDICTS (oldest first) — stay consistent with these earlier verdicts; a new finding on a "
+        "test already judged must say what changed since it was judged:\n" + "\n".join(reversed(kept))
     )

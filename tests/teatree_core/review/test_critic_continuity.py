@@ -5,7 +5,11 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.models import CriticVerdict, Ticket
-from teatree.core.review.critic_continuity import merge_critic_continuity, review_evidence_contract
+from teatree.core.review.critic_continuity import (
+    merge_critic_continuity,
+    merge_verdict_history,
+    review_evidence_contract,
+)
 from teatree.quality.kill_matrix import KillMatrix, KillRow
 from teatree.quality.review_evidence import ReviewEvidence
 from teatree.utils.run import CommandFailedError
@@ -113,3 +117,41 @@ class TestCriticContinuity(TestCase):
             ),
         ):
             assert "UNAVAILABLE" in merge_critic_continuity(ticket, "a" * 40)
+
+
+def _merge_verdict(ticket: Ticket, *, head: str, citation: str, transition: str = "merge") -> None:
+    CriticVerdict.objects.create(
+        ticket=ticket,
+        transition=transition,
+        head_sha=head,
+        grader_identity="critic-agent-7",
+        items=[{"slug": "test_value", "status": "fail", "citation": citation}],
+    )
+
+
+class TestMergeVerdictHistory(TestCase):
+    def test_a_ticket_with_no_merge_verdict_has_no_history(self) -> None:
+        assert merge_verdict_history(Ticket.objects.create(overlay="t3-teatree")) == ""
+
+    def test_every_merge_verdict_is_listed_oldest_first_and_other_transitions_are_not(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        _merge_verdict(ticket, head="a" * 40, citation="first round")
+        _merge_verdict(ticket, head="b" * 40, citation="second round")
+        _merge_verdict(ticket, head="c" * 40, citation="other", transition="mark_delivered")
+
+        history = merge_verdict_history(ticket)
+
+        assert history.index("first round") < history.index("second round")
+        assert f"{'a' * 40} test_value: fail; first round" in history
+        assert "other" not in history
+
+    def test_an_over_long_history_keeps_the_newest_verdicts(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        for round_number in range(40):
+            _merge_verdict(ticket, head=f"{round_number:040x}", citation=f"round-{round_number:02d} " + "x" * 400)
+
+        history = merge_verdict_history(ticket)
+
+        assert "round-39" in history
+        assert "round-00" not in history
+        assert len(history) < 8000

@@ -11,6 +11,7 @@ from here; nothing here imports ``prompt``.
 """
 
 from teatree.agents.skill_injection import _ALWAYS_FULL_SKILLS, _explicit_load_name
+from teatree.core.review.critic_rubric import EXHAUSTIVE_TEST_VALUE_RULE, merge_item_questions
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _VERIFY_GATES_COMMAND = "t3 tool verify-gates"
@@ -134,6 +135,11 @@ def _coding_phase_directive(
         "OPEN QUESTIONS & ASSUMPTIONS: list every open question (solved or not) and every assumption not",
         "explicit from the spec in an 'Open questions & assumptions' section in BOTH the commit message",
         "body AND the PR description (status: decided-by-user / assumed / open). See skills/ship § 5.",
+        "",
+        "MERGE-QUALITY SELF-CHECK (before the final push): a critic grades the PR on these questions —",
+        "answer each against your own diff first, so a failing verdict never costs a round.",
+        *merge_item_questions().splitlines(),
+        EXHAUSTIVE_TEST_VALUE_RULE,
         "",
         f"VERIFY (CI-parity): before declaring done, run `{_VERIFY_GATES_COMMAND}`. It runs the",
         "commit-stage, push-stage and manual CI-job hooks; a bare `prek run --all-files` SKIPS the push-stage",
