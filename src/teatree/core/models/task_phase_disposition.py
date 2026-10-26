@@ -51,23 +51,6 @@ _PHASE_TARGET_STATE: dict[str, str] = {
     "reviewing": Ticket.State.SELF_REVIEWED,
     "shipping": Ticket.State.PR_OPENED,
 }
-#: Lifecycle order used to compare a ticket's position to a phase's target.
-#: The off-ladder terminals IGNORED and REVIEW_DELIVERED are intentionally absent —
-#: a settled ticket is never a wedge (guarded via ``is_settled`` before the lookup).
-_STATE_ORDER: list[str] = [
-    Ticket.State.NOT_STARTED,
-    Ticket.State.SCOPED,
-    Ticket.State.WORK_STARTED,
-    Ticket.State.PLAN_RECORDED,
-    Ticket.State.CODED,
-    Ticket.State.TESTED,
-    Ticket.State.SELF_REVIEWED,
-    Ticket.State.PR_OPENED,
-    Ticket.State.REVIEW_REQUESTED,
-    Ticket.State.MERGED,
-    Ticket.State.RETRO_RECORDED,
-    Ticket.State.DELIVERED,
-]
 
 
 def transition_source_states(name: str) -> set[str]:
@@ -259,11 +242,11 @@ def phase_output_reached(ticket: Ticket, phase: str) -> bool:
     position to compare, so both answer ``False``.
     """
     target = _PHASE_TARGET_STATE.get(normalize_phase(phase))
-    if target is None or ticket.state not in _STATE_ORDER:
+    if target is None or ticket.state not in Ticket.State.values or ticket.state in Ticket.off_ladder_states():
         return False
     if target == Ticket.State.CODED and ticket.owes_self_review_rework():
         return False
-    return _STATE_ORDER.index(ticket.state) >= _STATE_ORDER.index(target)
+    return Ticket.state_index(ticket.state) >= Ticket.state_index(target)
 
 
 def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Ticket) -> None:
@@ -333,7 +316,7 @@ def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket:
 
 
 def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, str]:
-    """Question pk -> reason, for each wedge row whose ticket went terminal or moved past it.
+    """Question pk -> reason, for each wedge row whose task was moved back over or ticket settled or advanced.
 
     Positive-only. "Moved past" needs the phase's output reached AND a task newer than the
     wedged one, so a refusal recorded on a ticket already past the phase stays pending
@@ -352,7 +335,15 @@ def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, st
         ticket = tickets.get(int(match["ticket"]))
         if ticket is None:
             continue
-        if ticket.state in Ticket.marker_release_states():
+        if (
+            (task_pk := _wedged_task_pk(match))
+            and (task := ticket.tasks.filter(pk=task_pk).first())
+            and ticket.transitions.moved_back_over(task)
+        ):
+            healed[question_pk] = (
+                f"ticket {ticket.pk} was moved back over the {match['phase']} wedge task {task.pk} ({ticket.state})"
+            )
+        elif ticket.state in Ticket.marker_release_states():
             healed[question_pk] = f"ticket {ticket.pk} is terminal ({ticket.state})"
         elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task_pk or 0) > _wedged_task_pk(match):
             healed[question_pk] = f"ticket {ticket.pk} moved past the {match['phase']} wedge ({ticket.state})"
