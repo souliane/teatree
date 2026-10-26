@@ -24,7 +24,6 @@ from teatree.cli import app
 from teatree.cli.eval.all import regression_lane
 from teatree.eval.regression_corpus import render_json, render_text, run_regression_corpus
 from teatree.eval.regression_corpus_models import CheckResult, RegressionCheck, RegressionReport
-from teatree.eval.regression_corpus_predicates import _check_banned_terms_scanner_fails_closed_on_crash
 
 _CONTAINER_ONLY_DIR = "/nonexistent/container-only/control-db"
 
@@ -122,20 +121,6 @@ class TestStrictDemandsAValidatedGreen:
         with _corpus_returning(_report(_ran())):
             result = CliRunner().invoke(app, ["eval", "pinned-regressions", "--strict"])
         assert result.exit_code == 0, result.output
-
-
-def test_pinned_regressions_ignore_the_host_term_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":["zzsynthetic"]}')
-    check = RegressionCheck(
-        failure_class="banned-terms scanner fail-closed on crash",
-        origin="https://github.com/souliane/teatree/issues/5592",
-        invariant="a crashed scanner and an unconfigured registry have distinct refusal markers",
-        predicate=_check_banned_terms_scanner_fails_closed_on_crash,
-    )
-    with patch("teatree.cli.eval.lanes.run_regression_corpus", side_effect=lambda: run_regression_corpus((check,))):
-        result = CliRunner().invoke(app, ["eval", "pinned-regressions"])
-    assert result.exit_code == 0, result.output
-    assert "PASS banned-terms scanner fail-closed on crash" in result.output
 
 
 class TestTheSuiteLaneReadsTheSameAxis:

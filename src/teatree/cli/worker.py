@@ -63,22 +63,27 @@ _QUIESCED_NOTICE = (
 )
 
 
-def _run_worker() -> None:
-    """Run the singleton loop-timer worker in the foreground (the cadence owner)."""
+def _refuse_external_database_under_pytest_home() -> None:
     home = Path.home().resolve()
     pytest_root = next(
         (Path(*home.parts[: index + 1]) for index, part in enumerate(home.parts) if part.startswith("pytest-of-")),
         None,
     )
-    if pytest_root is not None:
-        from teatree.utils.singleton import _worker_control_database  # noqa: PLC0415 (deferred: no DB at CLI import)
+    if pytest_root is None:
+        return
+    from teatree.utils.singleton import _worker_control_database  # noqa: PLC0415 (deferred: no DB at CLI import)
 
-        databases = [_worker_control_database(primary=True)]
-        databases.extend(Path(path) for key in ("T3_CONFIG_DB", "T3_CONTROL_DB_DIR") if (path := os.environ.get(key)))
-        external = next((path for path in databases if not path.resolve().is_relative_to(pytest_root)), None)
-        if external is not None:
-            message = f"refusing t3 worker: pytest HOME {home} points at external control database {external}"
-            raise RuntimeError(message)
+    databases = [_worker_control_database(primary=True)]
+    databases.extend(Path(path) for key in ("T3_CONFIG_DB", "T3_CONTROL_DB_DIR") if (path := os.environ.get(key)))
+    external = next((path for path in databases if not path.resolve().is_relative_to(pytest_root)), None)
+    if external is not None:
+        message = f"refusing t3 worker: pytest HOME {home} points at external control database {external}"
+        raise RuntimeError(message)
+
+
+def _run_worker() -> None:
+    """Run the singleton loop-timer worker in the foreground (the cadence owner)."""
+    _refuse_external_database_under_pytest_home()
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
     ensure_django()

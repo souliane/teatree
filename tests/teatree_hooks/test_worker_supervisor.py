@@ -74,6 +74,7 @@ def test_database_lock_blocks_resurrection_under_another_home(monkeypatch: pytes
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(database.parent))
     monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(singleton, "DATA_DIR", tmp_path / "host-lock")
     db_lock = database.with_name(f"{database.name}.worker.pid")
     with singleton.singleton(singleton.WORKER_SINGLETON, pid_path=db_lock):
         assert supervisor._flock_is_free() is False

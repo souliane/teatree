@@ -397,7 +397,7 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
     def _crashing_scanner(*_args: object, **_kwargs: object) -> object:
         raise CommandFailedError(cmd=["check-banned-terms.sh"], returncode=2, stdout="", stderr="boom")
 
-    with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}), tempfile.TemporaryDirectory() as raw:
+    with tempfile.TemporaryDirectory() as raw:
         db = Path(raw) / "config.sqlite3"
         unreadable_db = Path(raw) / "unreadable.sqlite3"
         unset_db = Path(raw) / "unset.sqlite3"

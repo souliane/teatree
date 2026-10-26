@@ -307,6 +307,7 @@ def test_database_lock_blocks_ensure_across_homes(tmp_path: Path, monkeypatch: p
     monkeypatch.setenv("T3_CONTROL_DB_DIR", str(database.parent))
     monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path / "host-lock")
     db_lock = database.with_name(f"{database.name}.worker.pid")
     with (
         singleton_mod.singleton(singleton_mod.WORKER_SINGLETON, pid_path=db_lock),
