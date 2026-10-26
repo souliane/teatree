@@ -404,7 +404,9 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
         unset_db = Path(raw) / "unset.sqlite3"
         _seed_config_db(unset_db, "unrelated_setting", "present")
         on_no_config = scan_text("we ship to acmecorp", config_path=unset_db)
-        on_unreadable = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
+        unreadable_db = Path(raw) / "unreadable.sqlite3"
+        unreadable_db.touch()
+        on_unreadable = scan_text("we ship to acmecorp", config_path=unreadable_db)
     return (
         on_crash == SCANNER_UNAVAILABLE_MARKER
         and on_no_config == TERMS_UNSET_MARKER
