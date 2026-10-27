@@ -24,16 +24,20 @@ Two reliability invariants govern every request:
 import logging
 import time
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
+from urllib.parse import unquote
 
 import httpx
 
 from teatree.backends.http_retry import BoundedRetryTransport, SleepFn, env_float
+from teatree.config import cold_reader
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlays.overlay_credentials import overlay_pass_key
 from teatree.llm.credentials import Credential, CredentialError, CredentialSpec
+from teatree.utils import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,41 @@ _UPLOAD_TIMEOUT_SECONDS = 30.0
 # Statuses at or above which a write is a failure the caller may drop on the floor;
 # the transport logs it so a failed MR update / note post never vanishes silently.
 _HTTP_ERROR_FLOOR = 400
+
+
+def _normalise_project(value: str) -> str:
+    return unquote(value).casefold()
+
+
+def _project_from_endpoint(endpoint: str) -> str:
+    prefix, separator, rest = endpoint.lstrip("/").partition("/")
+    if prefix != "projects" or not separator:
+        return ""
+    return _normalise_project(rest.partition("/")[0].partition("?")[0])
+
+
+def _configured_read_token(project: str, token_cache: dict[str, str]) -> str | None:
+    setting = cold_reader.read_setting_confirmed("gitlab_read_token_pass_paths")
+    if not setting.readable or (setting.value is not None and not isinstance(setting.value, dict)):
+        raise ValueError
+    if setting.value is None:
+        return None
+    entry = next(
+        (value for key, value in setting.value.items() if isinstance(key, str) and _normalise_project(key) == project),
+        None,
+    )
+    if entry is None:
+        return None
+    if not isinstance(entry, str) or not entry:
+        raise ValueError
+    token = token_cache.get(entry)
+    if token is None:
+        token = secrets.read_pass(entry)
+        if token:
+            token_cache[entry] = token
+    if not token:
+        raise ValueError
+    return token
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +158,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         self.token = token or _resolve_token()
         self.base_url = base_url.rstrip("/")
         self._response_cache: dict[str, tuple[float, object]] = {}
+        self._read_token_cache: dict[str, str] = {}
         self._timeout = env_float("T3_GITLAB_HTTP_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS)
         self._configure_retry(
             env_prefix="T3_GITLAB_HTTP", max_retries=max_retries, backoff_base=backoff_base, sleep=sleep
@@ -144,6 +184,15 @@ class GitLabHTTPClient(BoundedRetryTransport):
 
     def _headers(self) -> dict[str, str]:
         return {"PRIVATE-TOKEN": self.token}
+
+    def _read_token_for(self, endpoint: str) -> str:
+        project = _project_from_endpoint(endpoint)
+        if not project:
+            return self.token
+        with suppress(Exception):
+            return _configured_read_token(project, self._read_token_cache) or self.token
+        logger.warning("GitLab read-token lookup failed for project %s; using client token", project)
+        return self.token
 
     def _require_token(self) -> None:
         """Raise :class:`BackendResolutionError` when no GitLab credential resolved.
@@ -180,7 +229,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         request_timeout = timeout if timeout is not None else self._timeout
 
         def attempt() -> httpx.Response:
-            return httpx.get(url, headers=self._headers(), timeout=request_timeout)
+            return httpx.get(url, headers={"PRIVATE-TOKEN": self._read_token_for(endpoint)}, timeout=request_timeout)
 
         return self._run(attempt, idempotent=True)
 
