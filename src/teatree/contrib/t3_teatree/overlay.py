@@ -211,6 +211,10 @@ class TeatreeRuntime(OverlayRuntime):
 
 class TeatreeReview(OverlayReview):
     @override
+    def repo_project_paths(self) -> dict[str, str]:
+        return {"teatree": "souliane/teatree"}
+
+    @override
     def visual_qa_targets(self, changed_files: list[str]) -> list[str]:
         teatree_globs = (
             "src/teatree/**/templates/**",

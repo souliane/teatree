@@ -25,6 +25,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from teatree.core.modelkit.gate_registry import register_gate
+from teatree.core.modelkit.project_repo_identity import ProjectRepoIdentity, project_repo_identity_for_ticket
 from teatree.core.models import ReviewEvidence
 from teatree.core.models.errors import InvalidTransitionError
 
@@ -48,12 +49,8 @@ class IntegrationReviewError(InvalidTransitionError):
 
 def distinct_repos(ticket: "Ticket") -> list[str]:
     """The ticket's distinct, non-blank repo identifiers, first-seen order."""
-    seen: dict[str, None] = {}
-    for repo in ticket.repos or []:
-        cleaned = str(repo).strip()
-        if cleaned and cleaned not in seen:
-            seen[cleaned] = None
-    return list(seen)
+    raw_repos = ProjectRepoIdentity({}).distinct(ticket.repos)
+    return project_repo_identity_for_ticket(ticket).distinct(raw_repos) if raw_repos else raw_repos
 
 
 def override_reason(ticket: "Ticket") -> str:

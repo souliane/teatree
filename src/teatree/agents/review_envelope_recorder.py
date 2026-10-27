@@ -23,6 +23,7 @@ from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.project_repo_identity import project_repo_identity_for_ticket
 from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
 from teatree.core.models import (
     ChecksContradictionError,
@@ -102,7 +103,7 @@ def _additional_evidence_error(
     if (
         not isinstance(covered, list)
         or not all(isinstance(repo, str) for repo in covered)
-        or not set(repos) <= set(covered)
+        or not project_repo_identity_for_ticket(ticket).covers(repos, covered)
     ):
         return (
             "integration review recording refused: review the combined changeset and return "
