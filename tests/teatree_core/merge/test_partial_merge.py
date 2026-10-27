@@ -49,7 +49,9 @@ _BOILERPLATE = (
     "- Related issue: Part of #4242 (a merge never closes an issue).\n"
 )
 _OTHER_ISSUE_STAYS = "Part of #4242\n\nThe second step stays on #9999.\n"
-_NOTHING_OPEN = "Part of #4242\n\nopen: none\n"
+_NOTHING_OPEN = "Part of #4242\n\nUnmet: none.\n"
+_OPEN_CAVEAT = "Part of #4242\n\nopen: independent review still needs completion before merge.\n"
+_KEEPS_ISSUE_OPEN = "Part of #4242\n\nThis change keeps the issue open: the link rules need a separate path.\n"
 
 _ISSUE_WITH_BOXES = (
     "Intro\n\n## Acceptance\n- [x] done thing\n- [ ] route the retro rows\n- [ ] measure live\n\n"
@@ -71,12 +73,20 @@ def _ticket() -> Ticket:
     ("body", "unmet"),
     [
         (_STATUS_TABLE, ("1. Route rows for the three phases", "2b. Mount of the checkouts")),
-        (_OPEN_LINE, ("items 1, 2h, 3 and 4 above are not delivered here; they stay on #4242.",)),
+        (_OPEN_LINE, ("open: items 1, 2h, 3 and 4 above are not delivered here; they stay on #4242.",)),
         (_REMAINING_AFTER, ("the retro route rows and the live measurement.",)),
         (_ISSUE_REMAINS_OPEN, ("The issue remains open: step two is still to do.",)),
         (_STAYS_ON_THIS_ISSUE, ("The live measurement stays on #4242.",)),
+        (_KEEPS_ISSUE_OPEN, ("This change keeps the issue open: the link rules need a separate path.",)),
     ],
-    ids=["status-table", "open-line", "remaining-after", "issue-remains-open", "stays-on-this-issue"],
+    ids=[
+        "status-table",
+        "open-line",
+        "remaining-after",
+        "issue-remains-open",
+        "stays-on-this-issue",
+        "keeps-issue-open",
+    ],
 )
 def test_a_declared_remainder_is_named_from_the_body(body: str, unmet: tuple[str, ...]) -> None:
     reading = MergedPrReading.parse(body, _ticket())
@@ -87,7 +97,9 @@ def test_a_declared_remainder_is_named_from_the_body(body: str, unmet: tuple[str
 
 
 @pytest.mark.parametrize(
-    "body", [_BOILERPLATE, _OTHER_ISSUE_STAYS, _NOTHING_OPEN], ids=["boilerplate", "other-issue", "none"]
+    "body",
+    [_BOILERPLATE, _OTHER_ISSUE_STAYS, _NOTHING_OPEN, _OPEN_CAVEAT],
+    ids=["boilerplate", "other-issue", "unmet-none", "open-caveat"],
 )
 def test_a_part_of_link_with_no_declared_remainder_leaves_none(body: str) -> None:
     reading = MergedPrReading.parse(body, _ticket())

@@ -37,14 +37,16 @@ _PARTIAL = re.compile(rf"\b(?:part\s+of|relates?\s+to|related\s+to)(?::\s*|\s+){
 # The remainder markers — every phrase that declares work left over, in one place.
 _STATUS_UNMET = ("unmet", "not met", "partly met", "partially met")
 _REMAINDER_LINE = re.compile(
-    r"^\W*(?:open|unmet|remaining after this (?:pr|pull request))\W*:\s*(?P<item>\S.*)$", re.IGNORECASE
+    r"^\W*(?:unmet|remaining after this (?:pr|pull request))\W*:\s*(?P<item>\S.*)$", re.IGNORECASE
 )
 _STAYS_ON = re.compile(rf"\b(?:stays?|remains?)\s+on\s+{_ISSUE_REF}", re.IGNORECASE)
 _DECLARES_OPEN = re.compile(
-    r"\b(?:does\s*n[o']t|will\s*n[o']t|won't)\s+close\b|\b(?:issue|ticket)\s+(?:remains|stays)\s+open\b",
+    r"\b(?:does\s*n[o']t|will\s*n[o']t|won't)\s+close\b"
+    r"|\b(?:issue|ticket)\s+(?:remains|stays)\s+open\b"
+    r"|\b(?:keeps?|leaves?)\s+(?:the\s+)?(?:issue|ticket)\s+open\b",
     re.IGNORECASE,
 )
-_NOTHING_LEFT = frozenset({"none", "n/a", "nothing", "no", "-", "nil"})
+_NOTHING_LEFT = frozenset({"none", "n/a", "nothing", "no", "nil"})
 
 _ACCEPTANCE_HEADING = re.compile(r"^#{1,6}\s*(?:acceptance|definition of done|done when)\b", re.IGNORECASE)
 _HEADING = re.compile(r"^#{1,6}\s")
@@ -63,6 +65,11 @@ class PrLink(StrEnum):
 
 def _plain(text: str) -> str:
     return re.sub(r"[\s*_`]+", " ", text).strip().casefold()
+
+
+def _says_nothing_left(item: str) -> bool:
+    words = re.sub(r"[^\w/ ]+", " ", _plain(item)).split()
+    return not words or words[0] in _NOTHING_LEFT
 
 
 def _names_ticket(ref: str, ticket: Ticket) -> bool:
@@ -97,7 +104,7 @@ def _marker_line_items(lines: list[str], ticket: Ticket) -> "Iterator[str]":
         line = raw.strip().lstrip("-*• ").strip()
         if not line or raw.lstrip().startswith("|"):
             continue
-        if (match := _REMAINDER_LINE.match(line)) and _plain(match.group("item")) not in _NOTHING_LEFT:
+        if (match := _REMAINDER_LINE.match(line)) and not _says_nothing_left(match.group("item")):
             yield match.group("item")
         elif _DECLARES_OPEN.search(line) or any(
             _names_ticket(m.group("ref"), ticket) for m in _STAYS_ON.finditer(line)
