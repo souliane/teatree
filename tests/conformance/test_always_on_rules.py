@@ -89,9 +89,10 @@ def test_the_rules_are_numbered_from_zero_by_importance() -> None:
         (
             6,
             (
-                "6. **Fix and consolidate before adding:** fixing what the system does today comes before new "
+                "6. **Fix and consolidate before adding:** fixing what the system does comes before new "
                 "features. A feature starts only once the behaviour it touches is correct, clean, maintainable, "
-                "robust, sustainable and guarded as the Test-Writing Doctrine asks. Open defects, red or flaky "
+                "robust, reliable, sustainable and guarded as the Test-Writing Doctrine asks. "
+                "Open defects, red or flaky "
                 "gates, stuck tickets and unguarded behaviour there come first, after started pull requests "
                 "(Rule 5); the feature waits or is split. The owner can lift this per item."
             ),
