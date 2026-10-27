@@ -65,7 +65,7 @@ def _coalesce(rows: list[PendingChatInjection]) -> list[_Unit]:
 
 
 def _continues(prev: PendingChatInjection, nxt: PendingChatInjection) -> bool:
-    """True iff *nxt* is a follow-up of *prev* (same actor, same thread, within window)."""
+    """True iff *nxt* continues *prev* (same actor, same thread, within window)."""
     if (prev.overlay, prev.channel, prev.user_id) != (nxt.overlay, nxt.channel, nxt.user_id):
         return False
     if parse_priority_directive(prev.text) is not None or parse_priority_directive(nxt.text) is not None:
