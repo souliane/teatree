@@ -13732,11 +13732,9 @@ Usage: t3 teatree ticket merge-item-waive [OPTIONS] TICKET_ID
 │ *    ticket_id      INTEGER  [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --item             TEXT  The LLM merge item: test_value or cleanliness.      │
-│ --waived-by        TEXT  Legacy hint; the owner answer supplies the          │
-│                          identity.                                           │
-│ --reason           TEXT  Why this item is waived.                            │
-│ --help                   Show this message and exit.                         │
+│ --item          TEXT  The LLM merge item: test_value or cleanliness.         │
+│ --reason        TEXT  Why this item is waived.                               │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -16,7 +16,7 @@ from teatree.agents.dispatch_preflight import (
     rubric_brief_lines,
 )
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
-from teatree.core.models import AutoReviewDispatch, PullRequest, Session, Task, Ticket, Worktree
+from teatree.core.models import AutoReviewDispatch, CriticVerdict, PullRequest, Session, Task, Ticket, Worktree
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 from tests._git_repo import make_git_repo, run_git
@@ -62,6 +62,29 @@ class TestResolveHeadState(TestCase):
 
 
 class TestHeadStateBriefLines(TestCase):
+    def test_waived_merge_item_is_not_sent_as_a_coder_finding(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/issues/5330",
+            extra={"merge_item_waivers": {"test_value": {"waived_by": "slack:owner", "reason": "accepted"}}},
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        CriticVerdict.objects.create(
+            ticket=ticket,
+            transition="merge",
+            head_sha="a" * 40,
+            grader_identity="critic",
+            items=[
+                {"slug": "test_value", "status": "fail", "citation": "waived test"},
+                {"slug": "cleanliness", "status": "fail", "citation": "live finding"},
+            ],
+        )
+
+        block = "\n".join(round_brief_lines(task))
+
+        assert "waived test" not in block
+        assert "live finding" in block
+
     def test_coding_round_names_standard_and_missing_measured_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = _worktree_with_commit(Path(tmp), subject="fix: prior round")

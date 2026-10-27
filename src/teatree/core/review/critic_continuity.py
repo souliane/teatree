@@ -83,11 +83,12 @@ def merge_critic_continuity(ticket: "Ticket", head_sha: str) -> str:
 
 
 def merge_verdict_history(ticket: "Ticket") -> str:
-    """Every merge verdict of *ticket*, oldest first, one line per item."""
+    """Every merge verdict of *ticket*, oldest first, one line per citation entry."""
     lines = [
-        f"- {verdict.head_sha} {item.slug}: {item.status}; {item.citation}"
+        f"- {verdict.head_sha} {item.slug}: {item.status}; {citation}"
         for verdict in CriticVerdict.objects.filter(ticket=ticket, transition="merge").order_by("recorded_at", "pk")
         for item in verdict.item_verdicts()
+        for citation in item.citation.splitlines() or [""]
     ]
     if not lines:
         return ""

@@ -39,7 +39,7 @@ def _validated_item(slug: str, reason: str) -> str:
 def request_merge_item_waiver(ticket: Ticket, *, slug: str, reason: str) -> DeferredQuestion:
     """Queue the owner decision that can authorize one item waiver."""
     slug = _validated_item(slug, reason)
-    label = {"test_value": "test evidence", "cleanliness": "code cleanliness"}[slug]
+    label = slug.replace("_", " ")
     action = ActionRequest(
         kind=OwnerActionKind.MERGE_ITEM_WAIVER, target=str(ticket.pk), binding=slug, note=reason.strip()
     )
@@ -119,4 +119,4 @@ def waive_merge_item(
 
 
 def waived_merge_items(ticket: Ticket) -> frozenset[str]:
-    return frozenset(ticket.extra.get(_WAIVERS_KEY) or {})
+    return frozenset(slug for slug, waiver in (ticket.extra.get(_WAIVERS_KEY) or {}).items() if waiver)

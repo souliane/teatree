@@ -154,3 +154,12 @@ class TestMergeVerdictHistory(TestCase):
 
         for round_number in range(40):
             assert f"round-{round_number:02d}" in history
+
+    def test_each_citation_line_is_prefixed_with_its_verdict(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        _merge_verdict(ticket, head="a" * 40, citation="VACUOUS tests/a.py::test_a\nREDUNDANT tests/b.py::test_b")
+
+        history = merge_verdict_history(ticket)
+
+        assert f"- {'a' * 40} test_value: fail; VACUOUS tests/a.py::test_a" in history
+        assert f"- {'a' * 40} test_value: fail; REDUNDANT tests/b.py::test_b" in history

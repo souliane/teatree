@@ -1,5 +1,6 @@
 """An owner's recorded waiver turns one LLM merge item from unmet to met, for that ticket only."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -63,6 +64,15 @@ class TestAWaivedItemIsNotUnmet(TestCase):
 
     def test_without_a_waiver_the_failed_item_is_unmet(self) -> None:
         assert unmet_items(_fresh(self.verdict)) == ["test_value"]
+
+    def test_empty_waiver_entry_does_not_clear_a_failed_item(self) -> None:
+        self.ticket.merge_extra(merge_into_dicts={"merge_item_waivers": {"test_value": {}}})
+        assert unmet_items(_fresh(self.verdict)) == ["test_value"]
+
+    def test_new_registered_merge_item_can_be_requested(self) -> None:
+        with patch("teatree.core.gates.merge_item_waiver.llm_items", return_value=[SimpleNamespace(slug="new_item")]):
+            question = request_merge_item_waiver(self.ticket, slug="new_item", reason="accepted after review")
+        assert "new item" in question.question
 
     def test_an_owner_waiver_makes_it_met(self) -> None:
         _waive_as_owner(self.ticket, slug="test_value", reason="three rounds on the same test")
@@ -211,8 +221,6 @@ class TestTheMergeItemWaiveCommand(TestCase):
                 str(ticket.pk),
                 "--item",
                 "test_value",
-                "--waived-by",
-                "owner",
                 "--reason",
                 "three rounds on the same test",
             )
@@ -228,8 +236,6 @@ class TestTheMergeItemWaiveCommand(TestCase):
             str(ticket.pk),
             "--item",
             "test_value",
-            "--waived-by",
-            "owner",
             "--reason",
             "three rounds on the same test",
         )
@@ -262,8 +268,6 @@ class TestTheMergeItemWaiveCommand(TestCase):
                 str(ticket.pk),
                 "--item",
                 "done_not_done",
-                "--waived-by",
-                "owner",
                 "--reason",
                 "accepted",
             )

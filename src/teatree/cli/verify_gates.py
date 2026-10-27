@@ -71,8 +71,7 @@ _MIN_DISK_MIB = 4096
 _MIN_MEMORY_MIB = 2048
 _BYTES_PER_MIB = 1024 * 1024
 _STAGE_DEADLINE_SECONDS = 600
-# dev/lib/gate-lock.sh allows 1500 seconds before the push checks start.
-_PUSH_STAGE_DEADLINE_SECONDS = 1500 + _STAGE_DEADLINE_SECONDS
+_DEFAULT_PUSH_GATE_LOCK_WAIT_SECONDS = 1500
 _MAX_SCOPED_FILES = 500
 # prek's own precedence when one directory holds several (measured on prek 0.4.10 and 0.5.3).
 _PREK_CONFIG_NAMES = ("prek.toml", ".pre-commit-config.yaml", ".pre-commit-config.yml")
@@ -264,7 +263,12 @@ def _declared_manual_hooks(config: Path) -> tuple[str, ...]:
 
 def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[tuple[str, list[str]]]:
     deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
-    push_deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_PUSH_STAGE_DEADLINE_SECONDS}s"]
+    lock_wait = os.environ.get("T3_PUSH_GATE_LOCK_WAIT_SECONDS", str(_DEFAULT_PUSH_GATE_LOCK_WAIT_SECONDS))
+    try:
+        push_seconds = max(0, int(lock_wait)) + _STAGE_DEADLINE_SECONDS
+    except ValueError:
+        push_seconds = _DEFAULT_PUSH_GATE_LOCK_WAIT_SECONDS + _STAGE_DEADLINE_SECONDS
+    push_deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{push_seconds}s"]
     stages = [
         ("commit", [*deadline, "prek", "run", *scope_args]),
         ("pre-push (CI-parity gates)", [*push_deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),

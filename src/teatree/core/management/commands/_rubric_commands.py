@@ -149,9 +149,6 @@ class RubricCommands(TyperCommand):
         ticket_id: int,
         *,
         item: Annotated[str, typer.Option("--item", help="The LLM merge item: test_value or cleanliness.")] = "",
-        _waived_by: Annotated[
-            str, typer.Option("--waived-by", help="Legacy hint; the owner answer supplies the identity.")
-        ] = "",
         reason: Annotated[str, typer.Option("--reason", help="Why this item is waived.")] = "",
     ) -> None:
         """Request an owner button answer for one LLM merge item."""

@@ -40,6 +40,7 @@ from teatree.cli.verify_gates import (
     _prek_config,
     _resource_refusal,
     _snapshot_control_db,
+    _stage_commands,
     _stage_env,
 )
 from teatree.core.models import PlanArtifact, Ticket, Worktree
@@ -51,6 +52,21 @@ from tests._git_repo import make_git_repo, run_git
 runner = CliRunner()
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_push_stage_deadline_uses_configured_lock_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("T3_PUSH_GATE_LOCK_WAIT_SECONDS", "2400")
+    push = _stage_commands([], tmp_path, tmp_path)[1][1]
+    assert "3000s" in push
+
+
+@pytest.mark.parametrize(("setting", "expected"), [("-1", "600s"), ("invalid", "2100s")])
+def test_push_stage_deadline_handles_invalid_lock_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setting: str, expected: str
+) -> None:
+    monkeypatch.setenv("T3_PUSH_GATE_LOCK_WAIT_SECONDS", setting)
+    push = _stage_commands([], tmp_path, tmp_path)[1][1]
+    assert expected in push
 
 
 class TestPrivateGateDatabase(TransactionTestCase):

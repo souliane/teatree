@@ -20,9 +20,10 @@ post hook re-reads the CLEAR ``select_for_update``-locked and re-asserts the
 single-use guard, so re-running it consumes the CLEAR exactly once.
 
 :func:`wait_out_locked_writes` is the connection-level twin for a finished run that must
-not be lost to a lock: a scope (or decorator) re-issuing one statement at a time, so it
-covers every ORM write inside without re-running any block. Use it where the code is not
-idempotent as a whole; use :func:`retry_on_locked` where the callable owns its transaction.
+not be lost to a lock: a scope (or decorator) re-issuing one cursor statement at a time
+outside a transaction, including transaction entry. It does not retry a locked COMMIT.
+Use it where the code is not idempotent as a whole; use :func:`retry_on_locked` where
+the callable owns its transaction.
 """
 
 import logging
