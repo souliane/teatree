@@ -444,9 +444,10 @@ def test_a_readable_secret_file_under_a_mount_is_refused(fake: FakeExecutor, mon
 
     secret = f"{CLONE_ROOT}/example/.env"
 
-    assert f"it can read {secret}, a secret file under {CLONE_ROOT}; fix: chmod 600 {secret} in the worker" in str(
-        _refusal(fake, monkeypatch)
-    )
+    assert (
+        f"it can read {secret}, a secret file under {CLONE_ROOT}; "
+        f"fix: chmod o-rwx {secret} in the worker, or move it out of {CLONE_ROOT}"
+    ) in str(_refusal(fake, monkeypatch))
 
 
 @pytest.mark.parametrize("target", ["/", _CHECKOUT_GIT, CLONE_ROOT, WORKTREE_ROOT])
