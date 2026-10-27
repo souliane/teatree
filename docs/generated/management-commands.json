@@ -1078,8 +1078,28 @@
           "name": "ls"
         },
         {
-          "help": "Classify password-store names without copying their values",
+          "help": "Remove NAME from the sealed store",
+          "name": "rm"
+        },
+        {
+          "help": "Print ok|absent|unreadable per referenced entry, never a value; exit 1 if any is unreadable",
+          "name": "verify"
+        },
+        {
+          "help": "Print the first line of NAME from the active store; exit 1 absent, 2 unreadable, 3 on a terminal",
+          "name": "get"
+        },
+        {
+          "help": "Classify password-store names; with --apply copy them into sealed rows and print names and statuses only",
           "name": "import-pass"
+        },
+        {
+          "help": "Seal a value read from stdin (or a hidden prompt) under NAME in the sealed store",
+          "name": "set"
+        },
+        {
+          "help": "Run COMMAND with each --env VAR=<entry> value in the child's environment only",
+          "name": "exec"
         }
       ]
     },

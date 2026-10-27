@@ -1,6 +1,7 @@
 """Checkout owner cards show the evidence that their approval binds."""
 
 import re
+from dataclasses import replace
 from itertools import product
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,6 +12,7 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.cleanup.process_table import ProcessTable
+from teatree.core.modelkit.owner_action import ActionRequest, action_marker
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, KNOWN_PHASES
 from teatree.core.modelkit.question_card import MAX_WORDS, QuestionCard, plain_text, word_count
@@ -21,6 +23,7 @@ from teatree.core.worktree.checkout_attest import (
     CheckoutAttestation,
     ask_owner_to_attest,
     attest_card,
+    declined_attest_tasks,
     read_attestation,
 )
 from teatree.core.worktree.checkout_fence import writes_checkout
@@ -190,13 +193,14 @@ class TestCheckoutAttestCard(TestCase):
 
     def test_accept_and_decline_say_what_they_do_and_risk(self) -> None:
         accepts = {
-            False: "The step runs once on the folder as it is; "
-            "edits the factory did not make, even unfinished ones, become part of its work.",
-            True: "The step resumes on the folder as it is; changes the factory did not make become part of its work.",
+            False: "All eligible waiting steps for this folder resume; "
+            "edits the factory did not make, even unfinished ones, become part of their work.",
+            True: "All eligible waiting steps for this folder resume; "
+            "changes the factory did not make become part of their work.",
         }
         declines = {
             True: "The step stays stuck until the folder changes or the factory can check it safely; "
-            "the pull request may wait.",
+            "the pull request remains open.",
             False: "The step stays stuck until the folder changes or the factory can check it safely; "
             "no pull request waits.",
         }
@@ -309,7 +313,7 @@ class TestCheckoutAttestCard(TestCase):
         assert row is None
         assert not DeferredQuestion.objects.filter(parked_task=task).exists()
 
-    def test_a_new_step_replaces_the_held_card_for_the_same_state(self) -> None:
+    def test_a_new_step_reuses_the_held_card_for_the_same_state(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
         worktree = WorktreeFactory(ticket=ticket)
         attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
@@ -322,13 +326,12 @@ class TestCheckoutAttestCard(TestCase):
         second = ask_owner_to_attest(task, attestation)
 
         assert second is not None
-        assert second.pk != first.pk
+        assert second.pk == first.pk
         first.refresh_from_db()
-        assert not first.is_pending
-        assert "debugging step" in second.question
-        assert "coding step" not in second.question
+        assert first.is_pending
+        assert "coding step" in second.question
 
-    def test_two_waiting_steps_do_not_repeatedly_replace_each_other(self) -> None:
+    def test_two_waiting_steps_share_one_checkout_card(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")
         worktree = WorktreeFactory(ticket=ticket)
         attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
@@ -343,8 +346,84 @@ class TestCheckoutAttestCard(TestCase):
         assert second is not None
         assert repeated is not None
         assert repeated.pk == first.pk
-        assert first.pk != second.pk
-        assert DeferredQuestion.owner_pending().filter(evidence__action__target=str(worktree.pk)).count() == 2
+        assert first.pk == second.pk
+        assert DeferredQuestion.owner_pending().filter(evidence__action__target=str(worktree.pk)).count() == 1
+
+    def test_mixed_steps_with_open_pull_request_keep_one_checkout_card(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        PullRequestFactory(ticket=ticket)
+        worktree = WorktreeFactory(ticket=ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        coding = TaskFactory(ticket=ticket, phase="coding")
+        retro = TaskFactory(ticket=ticket, phase="retro")
+
+        cards = [ask_owner_to_attest(task, attestation) for task in (coding, retro, coding, retro, coding)]
+
+        assert all(card is not None for card in cards)
+        assert len({card.pk for card in cards if card is not None}) == 1
+        assert DeferredQuestion.objects.filter(evidence__action__target=str(worktree.pk)).count() == 1
+
+    def test_old_task_specific_card_is_retired_when_shared_card_is_created(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        other = TaskFactory(ticket=task.ticket, phase="retro")
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        question, card = attest_card(task, attestation)
+        assert card.action is not None
+        legacy_action = ActionRequest(**card.action, task_id=task.pk)
+        legacy = DeferredQuestion.record(
+            question,
+            dedupe_marker=action_marker(legacy_action),
+            parked_task=task,
+            card=replace(card, action=legacy_action),
+        )
+
+        shared = ask_owner_to_attest(other, attestation)
+
+        assert shared is not None
+        legacy.refresh_from_db()
+        assert not legacy.is_pending
+        assert DeferredQuestion.owner_pending().filter(evidence__action__target=str(worktree.pk)).count() == 1
+
+    def test_decline_on_shared_card_blocks_another_step_of_same_checkout_state(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        other = TaskFactory(ticket=task.ticket, phase="retro")
+        state = CheckoutState("d" * 64, 1, 1)
+        card = ask_owner_to_attest(task, CheckoutAttestation(worktree, state, host_evidence=False))
+        assert card is not None
+        card.apply_answer("Decline", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+
+        assert declined_attest_tasks(worktree, state.digest, task_id=other.pk) == {other.pk}
+        again = ask_owner_to_attest(other, CheckoutAttestation(worktree, state, host_evidence=False))
+        assert again is None
+
+        changed_host_evidence = ask_owner_to_attest(other, CheckoutAttestation(worktree, state, host_evidence=True))
+        assert changed_host_evidence is None
+        assert DeferredQuestion.objects.filter(evidence__action__target=str(worktree.pk)).count() == 1
+
+    def test_changed_step_and_pull_request_link_replace_the_held_card(self) -> None:
+        ticket = TicketFactory(short_description="Fix the login page")
+        old_pr = PullRequestFactory(ticket=ticket)
+        task = TaskFactory(ticket=ticket, phase="coding")
+        worktree = WorktreeFactory(ticket=ticket)
+        attestation = CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        first = ask_owner_to_attest(task, attestation)
+        assert first is not None
+
+        old_pr.state = PullRequest.State.MERGED
+        old_pr.save(update_fields=["state"])
+        new_pr = PullRequestFactory(ticket=ticket)
+        task.phase = "debugging"
+        task.save(update_fields=["phase"])
+
+        second = ask_owner_to_attest(task, attestation)
+
+        assert second is not None
+        assert second.pk != first.pk
+        assert new_pr.url in render_text(second)
+        first.refresh_from_db()
+        assert not first.is_pending
 
     def test_a_changed_pull_request_state_replaces_the_held_card(self) -> None:
         ticket = TicketFactory(short_description="Fix the login page")

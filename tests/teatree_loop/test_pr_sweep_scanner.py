@@ -37,6 +37,7 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS, record_sweep_outcomes
@@ -2216,6 +2217,9 @@ class TestSubstrateHoldPing:
         text, key = pinger.calls[0]
         assert key == f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
         assert f"{SLUG}#6230" in text
+        rows = list(DeferredQuestion.owner_pending())
+        assert len(rows) == 1
+        assert rows[0].evidence["decision"] == "architecture"
 
     def test_non_substrate_block_does_not_ping(self) -> None:
         # The anti-vacuity twin (b-adjacent): a NON-substrate keystone refusal
@@ -2239,6 +2243,23 @@ class TestSubstrateHoldPing:
         signals = scanner.scan()
 
         assert signals[0].payload["decision"] == "blocked"
+        rows = list(DeferredQuestion.owner_pending())
+        assert len(rows) == 1
+        assert rows[0].evidence["decision"] == "architecture"
+        assert rows[0].evidence["subject"] == f"https://github.com/{SLUG}/pull/6230"
+
+        scanner.scan()
+        assert DeferredQuestion.owner_pending().count() == 1
+
+    def test_draft_substrate_pr_opens_no_owner_card(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(is_draft=True)]})
+        keystone = FakeKeystone(merged=False, error="held", escalation_kind="substrate")
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=None)
+
+        scanner.scan()
+
+        assert not DeferredQuestion.owner_pending().exists()
 
     def test_substrate_clear_in_uv_audit_fallback_holds_and_pings_no_raw_merge(self) -> None:
         # Finding 1 (fail-open): a SUBSTRATE CLEAR whose only red check is uv-audit

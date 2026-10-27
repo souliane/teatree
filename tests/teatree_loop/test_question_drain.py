@@ -13,6 +13,7 @@ The over-resolve guard is pinned throughout: a live or undeterminable subject is
 """
 
 import tempfile
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -24,9 +25,11 @@ from django.utils import timezone
 from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.provision.failure_question import record_provision_failure_question
+from teatree.core.review.owner_waits import ask_owner_to_read
 from teatree.loop.question_drain import (
     DrainReport,
     Verdict,
+    _settled_pr_subjects,
     drain_pending_questions,
     question_reachability,
     sweep_owner_questions,
@@ -34,7 +37,7 @@ from teatree.loop.question_drain import (
 from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from tests._git_repo import make_git_repo
-from tests._owner_channel import OWNER_DECISION
+from tests._owner_channel import OWNER_DECISION, owner_card
 
 
 def _ticket(state: str = Ticket.State.WORK_STARTED) -> Ticket:
@@ -424,6 +427,111 @@ class TestSettledPullRequestsDrain(TestCase):
         assert drain_pending_questions().drained == 0
         question.refresh_from_db()
         assert question.status == DeferredQuestion.STATUS_PENDING
+
+
+class TestHeldPrSubjectDrain(TestCase):
+    def test_unparsed_subject_keeps_exact_recorded_url_behavior(self) -> None:
+        subject = "https://forge.example/reviews/7"
+        question = ask_owner_to_read(subject, "A reviewed change", "a" * 40)
+        assert question is not None
+        pr = PullRequest.objects.create(
+            ticket=_ticket(Ticket.State.SELF_REVIEWED), url=subject, repo="example/repo", iid="7"
+        )
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
+
+        assert sweep_owner_questions().drained == 1
+
+    def test_equivalent_review_url_retires_with_recorded_pr(self) -> None:
+        subject = "http://www.github.com/acme/repo/pull/12/files"
+        question = ask_owner_to_read(subject, "A reviewed change", "a" * 40)
+        assert question is not None
+        pr = PullRequest.objects.create(
+            ticket=_ticket(Ticket.State.SELF_REVIEWED),
+            url="https://github.com/acme/repo/pull/12",
+            repo="acme/repo",
+            iid="12",
+        )
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
+
+        assert sweep_owner_questions().drained == 1
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_DISMISSED
+
+    def test_blank_subject_skips_the_pull_request_query(self) -> None:
+        question = DeferredQuestion.record("Review it?", card=replace(owner_card(), subject="   "))
+
+        with CaptureQueriesContext(connection) as queries:
+            settled = _settled_pr_subjects([question])
+
+        assert settled == {}
+        assert len(queries) == 0
+
+    def test_only_a_recorded_settled_pr_closes_its_owner_card(self) -> None:
+        url = "https://github.com/acme/repo/pull/12"
+        question = ask_owner_to_read(url, "A reviewed change", "a" * 40)
+        assert question is not None
+        assert sweep_owner_questions().drained == 0
+
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
+        pr = PullRequest.objects.create(ticket=ticket, url=url, repo="acme/repo", iid="12")
+        assert sweep_owner_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+        pr.mark_merged()
+        pr.save(update_fields=["state"])
+        assert sweep_owner_questions().drained == 1
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_DISMISSED
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+        assert url in question.dismissed_reason
+
+    def test_closed_pr_closes_its_owner_card(self) -> None:
+        url = "https://github.com/acme/repo/pull/13"
+        question = ask_owner_to_read(url, "A reviewed change", "a" * 40)
+        assert question is not None
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
+        pr = PullRequest.objects.create(ticket=ticket, url=url, repo="acme/repo", iid="13")
+
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
+
+        assert sweep_owner_questions().drained == 1
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_DISMISSED
+
+    def test_subject_identity_ignores_a_stored_trailing_slash(self) -> None:
+        url = "https://github.com/acme/repo/pull/14"
+        question = ask_owner_to_read(url, "A reviewed change", "a" * 40)
+        assert question is not None
+        pr = PullRequest.objects.create(
+            ticket=_ticket(Ticket.State.SELF_REVIEWED), url=f"{url}/", repo="acme/repo", iid="14"
+        )
+        pr.mark_closed()
+        pr.save(update_fields=["state"])
+
+        assert sweep_owner_questions().drained == 1
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_DISMISSED
+
+    def test_an_open_variant_keeps_a_settled_subject_pending(self) -> None:
+        url = "https://github.com/acme/repo/pull/15"
+        question = ask_owner_to_read(url, "A reviewed change", "a" * 40)
+        assert question is not None
+        closed = PullRequest.objects.create(
+            ticket=_ticket(Ticket.State.SELF_REVIEWED), url=url, repo="acme/repo", iid="15"
+        )
+        closed.mark_closed()
+        closed.save(update_fields=["state"])
+        PullRequest.objects.create(
+            ticket=_ticket(Ticket.State.SELF_REVIEWED), url=f"{url}/", repo="acme/repo", iid="15"
+        )
+
+        assert sweep_owner_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
 
 
 class TestTheAgeLadderTerminates(TestCase):
