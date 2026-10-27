@@ -159,6 +159,15 @@ Generate the skills catalogue from skills/*/SKILL.md frontmatter.
 
 Generate deterministic TeaTree skill delegation documentation.
 
+## `github_webhook`
+
+Create or remove a signed GitHub repository webhook.
+
+| Subcommand | Description |
+| --- | --- |
+| `connect` |  |
+| `disconnect` |  |
+
 ## `handover`
 
 Hand all current work from this session to another session.
