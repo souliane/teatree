@@ -21,6 +21,7 @@ from teatree.core.models.ticket_phase_sessions import TicketPhaseSessionModel
 from teatree.core.models.ticket_scheduling import PLANNING_HANDOFF_KEY, TicketSchedulingModel
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_status import TicketStatusModel
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 from teatree.utils.url_slug import repo_namespaced_key as compute_repo_namespaced_key
 
 logger = logging.getLogger(__name__)
@@ -269,7 +270,7 @@ class Ticket(
         using: str | None = None,
         update_fields: "Iterable[str] | None" = None,
     ) -> None:
-        if not self.overlay and self.issue_url:
+        if not self.overlay and self.issue_url and not is_synthetic_loop_umbrella_url(self.issue_url):
             self.overlay = self._infer_overlay()
         if not self.repo_namespaced_key and self.issue_url:
             self.repo_namespaced_key = compute_repo_namespaced_key(self.issue_url)

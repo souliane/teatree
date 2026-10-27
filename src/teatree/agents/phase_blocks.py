@@ -30,9 +30,10 @@ from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
-from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
+from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
-from teatree.core.review.live_head import live_head_at
+from teatree.core.review.live_head import dispatch_review_target, live_head_at
+from teatree.core.review.review_plan import plan_for_task
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
 # first, then grade every quality dimension.
@@ -89,11 +90,14 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         "A verdict for another head is REFUSED. On checkout mismatch, return",
         '  "review_head_mismatch": {"observed_sha": "<40-char SHA>", "reason": "<why>"}',
         "without review_verdict or owner question. Factory retries once at the live head; a repeat records a card.",
+        'If CI, tests, or the plan cannot be read here, return "review_venue_limit":',
+        '  {"limits": ["<limit>"]} without review_verdict; the factory retries elsewhere.',
+        "HOLD needs an observed code or check blocker, never a venue limit.",
         "Missing `reviewed_sha` is REFUSED; never infer it from dispatch.",
         "A blocking finding (blocker/major/high/critical) outside PR-changed files is REFUSED and records nothing.",
         "Branch-only probes may blame main; recheck on the MERGE RESULT.",
         *(
-            ("This venue cannot build it; return `hold` with the unverified concern.",)
+            ("If the merge result cannot be built here, report review_venue_limit.",)
             if read_only_venue
             else (
                 "Use `t3 review merge-tree` (plain directory, never a git worktree),",
@@ -104,7 +108,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             (
                 (
                     "Set gh_verify_result green only when WORKER CI says green at the dispatched head; "
-                    "otherwise set pending or failed and return hold."
+                    "otherwise report the observed status and judge only confirmed blockers."
                     if identity
                     else (
                         "Pre-PR self-review may return merge_safe with gh_verify_result pending; "
@@ -115,7 +119,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             if read_only_venue
             else ()
         ),
-        "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
+        "No review_verdict fails unless review_venue_limit or review_head_mismatch is returned.",
         *(_ASSIGNED_IDENTITY_LINES if identity else ()),
         "",
         "RUBRIC: grade here; independent verifier != maker:",
@@ -123,7 +127,8 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             '  "rubric_grades": [{"ordinal": 0, "text_hash": "<hash from brief>", '
             '"status": "pass"|"fail", "rationale": "<what proves it>"}, ...]'
         ),
-        "Grade EVERY criterion or verdict records nothing. A PASS cites a test; a FAIL needs none.",
+        "Grade every row except CARRIED; grade to override a carry.",
+        "An ungraded RE-GRADE row records nothing. A PASS cites a test; a FAIL needs none.",
         "FAIL is a finding; no bypass overrides it. do NOT run `ticket rubric-grade`.",
     )
 
@@ -368,9 +373,16 @@ def _scanning_news_phase_lines() -> tuple[str, ...]:
 
 def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tuple[str, ...]:
     """The ``PHASE: reviewing`` block and its review evidence instructions."""
+    plan = plan_for_task(task)
+    reviewer_head_unverified = task.ticket.role == task.ticket.Role.REVIEWER and plan is None
+    unverified_line = (
+        "No verified live head is available for this PR. Do not review a stamped SHA or local diff; "
+        "return review_venue_limit naming the live head read failure."
+    )
     lines = [
         "",
         "PHASE: reviewing",
+        *((unverified_line,) if reviewer_head_unverified else ()),
         (
             (
                 "1. Review the DIFF UNDER REVIEW at the dispatched head; hold if it is absent or incomplete."
@@ -395,9 +407,14 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
         *_VERIFICATION_BRIEF_LINES,
         *(() if read_only_venue else _green_proof_binding_lines(task)),
         *_review_verdict_return_lines(assigned_reviewer_identity_for(task), read_only_venue=read_only_venue),
-        *(() if read_only_venue else rubric_brief_lines(task)),
+        *(() if read_only_venue else rubric_brief_lines(task, plan=plan)),
         *(() if read_only_venue else declared_seams_brief_lines(task)),
-        *(() if read_only_venue else review_diff_brief_lines(task)),
+        *(plan.brief_lines() if plan is not None and not read_only_venue else ()),
+        *(
+            ()
+            if read_only_venue or reviewer_head_unverified or (plan is not None and plan.delta.case == "delta")
+            else review_diff_brief_lines(task)
+        ),
     ]
     return tuple(lines)
 
@@ -410,7 +427,7 @@ def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
     ``origin/main`` and exited 0 while the reviewed head carried six failing
     check-runs, across eight consecutive reviews of one PR.
     """
-    target = review_target_for_task(task)
+    target = dispatch_review_target(task)
     if target is None:
         return ()
     head = target.head_sha

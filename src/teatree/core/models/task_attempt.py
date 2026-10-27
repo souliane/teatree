@@ -7,7 +7,7 @@ from django.db import models, transaction
 from django.db.models.functions import Coalesce
 
 from teatree.core.modelkit.gate_registry import get
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
+from teatree.core.modelkit.task_failure_taxonomy import VENUE_LIMIT_PREFIX, FailureKind, classify_failure
 from teatree.core.models.task import Task
 from teatree.core.models.task_repair_queries import next_repair_iteration
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, PARK_ERROR_PREFIXES
@@ -103,10 +103,16 @@ class TaskAttemptQuerySet(models.QuerySet):
 
     def refused_brief_candidates(self, source_skill: str) -> dict[int, str]:
         """Route candidate index -> the reason its read-only brief was last refused, since the task's last park."""
-        refused = self._since_last_park().filter(
-            route_source_skill=source_skill,
-            route_candidate_index__isnull=False,
-            error__startswith=READ_ONLY_BRIEF_REFUSED_PREFIX,
+        refused = (
+            self._since_last_park()
+            .filter(
+                route_source_skill=source_skill,
+                route_candidate_index__isnull=False,
+            )
+            .filter(
+                models.Q(error__startswith=READ_ONLY_BRIEF_REFUSED_PREFIX)
+                | models.Q(error__startswith=VENUE_LIMIT_PREFIX)
+            )
         )
         return dict(refused.order_by("pk").values_list("route_candidate_index", "error"))
 
