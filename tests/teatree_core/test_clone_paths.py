@@ -15,11 +15,12 @@ judgment skill reads as safe to delete.
 
 from pathlib import Path
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
 
+from teatree.config.settings import OverlayEntry
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import effective_default_target, reset_single_branch_cache
 from teatree.core.worktree.clone_paths import (
@@ -402,3 +403,94 @@ class TestDispatchDetectionRoot(TestCase):
         with self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING") as logs:
             assert dispatch_detection_root(ticket) is None
         assert "names no repo" in logs.output[0]
+
+
+class TestSelfImproveDispatchDetectionRoot(TestCase):
+    @pytest.fixture(autouse=True)
+    def _repos(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.workspace = tmp_path / "clones"
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(self.workspace))
+        self.product = self.workspace / "acme" / "api"
+        (self.product / ".git").mkdir(parents=True)
+        (self.product / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi>=0.115"]\n')
+        self.package = tmp_path / "overlay-package"
+        self.package.mkdir()
+        (self.package / "manage.py").write_text("# django project\n")
+
+    def _root(self, ticket: Ticket) -> Path | None:
+        entries = [
+            OverlayEntry(name="other", overlay_class="", project_path=self.product),
+            OverlayEntry(name="t3-teatree", overlay_class="", project_path=self.package),
+        ]
+        with (
+            patch("teatree.config.discover_overlays", return_value=entries),
+            patch("teatree.core.worktree.clone_paths.get_overlay_for_ticket") as overlay,
+        ):
+            overlay.return_value.get_workspace_repos.return_value = ["acme/api"]
+            return dispatch_detection_root(ticket)
+
+    def test_repo_less_self_improve_uses_its_own_package_checkout(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
+
+        assert self._root(ticket) == self.package
+
+    def test_pathless_registry_entry_uses_installed_checkout_only_for_dispatch(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
+        other_ep = MagicMock()
+        other_ep.name = "other"
+        other_ep.value = "other:Overlay"
+        ep = MagicMock()
+        ep.name = "t3-teatree"
+        ep.value = "installed:Overlay"
+
+        with (
+            patch("teatree.config.discover_overlays", return_value=[OverlayEntry("t3-teatree", "")]),
+            patch("teatree.core.worktree.clone_paths.entry_points", return_value=[other_ep, ep]),
+            patch(
+                "teatree.core.worktree.clone_paths.resolve_ep_project_path",
+                side_effect=lambda locator: self.product if locator == other_ep.value else self.package,
+            ),
+        ):
+            assert dispatch_detection_root(ticket) == self.package
+
+        with (
+            patch("teatree.config.discover_overlays", return_value=[OverlayEntry("t3-teatree", "")]),
+            patch("teatree.core.worktree.clone_paths.entry_points", return_value=[other_ep, ep]),
+            patch("teatree.core.worktree.clone_paths.resolve_ep_project_path", return_value=None),
+            self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING"),
+        ):
+            assert dispatch_detection_root(ticket) is None
+
+    def test_missing_package_checkout_never_falls_back_to_product(self) -> None:
+        for entries in ([], [OverlayEntry("t3-teatree", "")], [OverlayEntry("t3-teatree", "", self.package / "gone")]):
+            ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
+            with (
+                patch("teatree.config.discover_overlays", return_value=entries),
+                patch("teatree.core.worktree.clone_paths.entry_points", return_value=[]),
+                patch("teatree.core.worktree.clone_paths.get_overlay_for_ticket") as overlay,
+                self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING") as logs,
+            ):
+                overlay.return_value.get_workspace_repos.return_value = ["acme/api"]
+                assert dispatch_detection_root(ticket) is None
+            assert "t3-teatree" in logs.output[0]
+
+    def test_other_sources_keep_the_product_repo_fallback(self) -> None:
+        for extra in ({}, {"source": "intake"}, [], {"source": ["self_improve"]}):
+            ticket = Ticket.objects.create(overlay="t3-teatree", extra=extra)
+            assert self._root(ticket) == self.product
+
+    def test_own_repo_issue_url_and_worktree_keep_precedence(self) -> None:
+        repo = Ticket.objects.create(overlay="t3-teatree", repos=["acme/api"], extra={"source": "self_improve"})
+        issue = Ticket.objects.create(
+            overlay="t3-teatree", issue_url="https://github.com/acme/api/issues/1", extra={"source": "self_improve"}
+        )
+        worktree = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
+        checkout = self.workspace / "ticket-worktree"
+        checkout.mkdir()
+        Worktree.objects.create(
+            overlay="t3-teatree", ticket=worktree, repo_path="acme/api", extra={"worktree_path": str(checkout)}
+        )
+
+        assert self._root(repo) == self.product
+        assert self._root(issue) == self.product
+        assert self._root(worktree) == checkout
