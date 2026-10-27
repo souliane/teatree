@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from teatree.eval.green_proof import BASELINE_MAX_AGE, BaselineState, evaluate_baseline
+from teatree.eval.green_proof import BASELINE_MAX_AGE, CLOCK_SKEW_TOLERANCE, BaselineState, evaluate_baseline
 from teatree.eval.parallel import usage_limit_skip
 
 _NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
@@ -132,7 +132,37 @@ def test_a_proof_stamped_in_the_future_is_stale() -> None:
     status = evaluate_baseline([_payload(age=timedelta(days=-2))], expected=_EXPECTED, now=_NOW)
 
     assert status.state is BaselineState.STALE
-    assert "future" in status.detail
+    assert "2 day(s) in the future" in status.detail
+
+
+@pytest.mark.parametrize(
+    ("ahead", "named"),
+    [
+        (timedelta(minutes=10), "10 minute(s) in the future"),
+        (timedelta(hours=3), "3 hour(s) in the future"),
+        (timedelta(days=1, hours=5), "1 day(s) in the future"),
+    ],
+    ids=["minutes", "hours", "days"],
+)
+def test_a_future_stamp_beyond_the_skew_allowance_names_its_real_offset(ahead: timedelta, named: str) -> None:
+    status = evaluate_baseline([_payload(age=-ahead)], expected=_EXPECTED, now=_NOW)
+
+    assert status.state is BaselineState.STALE
+    assert named in status.detail
+
+
+@pytest.mark.parametrize("ahead", [timedelta(seconds=30), CLOCK_SKEW_TOLERANCE])
+def test_a_stamp_a_few_minutes_ahead_is_clock_skew_not_stale(ahead: timedelta) -> None:
+    status = evaluate_baseline([_payload(age=-ahead)], expected=_EXPECTED, now=_NOW)
+
+    assert status.state is BaselineState.GREEN
+    assert status.detail.endswith("0 day(s) old")
+
+
+def test_a_stamp_just_past_the_skew_allowance_is_stale() -> None:
+    ahead = CLOCK_SKEW_TOLERANCE + timedelta(seconds=1)
+
+    assert _state(_payload(age=-ahead)) is BaselineState.STALE
 
 
 def _skipped(name: str, version: str) -> dict[str, object]:

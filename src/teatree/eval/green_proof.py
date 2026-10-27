@@ -25,6 +25,10 @@ UNCLASSIFIED = "unclassified"
 #: How old the newest full-suite proof may be before the baseline reads STALE.
 BASELINE_MAX_AGE = timedelta(days=7)
 
+#: How far ahead of the judging clock a proof's stamp may sit before it reads STALE; the machine that
+#: stamped it and the one judging it do not share a clock, so a few minutes ahead is skew, not a future proof.
+CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
+
 
 @dataclasses.dataclass(frozen=True)
 class RedScenario:
@@ -271,7 +275,7 @@ def evaluate_baseline(
             f"so it does not cover the catalog as it stands now{_after(proof, '; ')}",
         )
     generated_at = _instant(payload.get("generated_at"))
-    age = None if generated_at is None else now - generated_at
+    age = _age_at(generated_at, now)
     if age is None or age < timedelta(0) or age > max_age:
         return BaselineStatus(BaselineState.STALE, _age_detail(sha, age, max_age))
     if not proof.is_green:
@@ -285,11 +289,31 @@ def evaluate_baseline(
     )
 
 
+def _age_at(generated_at: datetime | None, now: datetime) -> timedelta | None:
+    """How old a proof is at *now*; a stamp within the clock-skew allowance ahead of *now* counts as brand new."""
+    if generated_at is None:
+        return None
+    age = now - generated_at
+    return timedelta(0) if -CLOCK_SKEW_TOLERANCE <= age < timedelta(0) else age
+
+
+def _span(delta: timedelta) -> str:
+    """*delta* in its largest whole unit, so a ten-minute offset reads minutes rather than ``0 day(s)``."""
+    seconds = int(delta.total_seconds())
+    for unit_seconds, unit in ((86400, "day"), (3600, "hour"), (60, "minute")):
+        if seconds >= unit_seconds:
+            return f"{seconds // unit_seconds} {unit}(s)"
+    return f"{seconds} second(s)"
+
+
 def _age_detail(sha: str, age: timedelta | None, max_age: timedelta) -> str:
     if age is None:
         return f"the newest proof ({sha[:9]}) carries no readable generated_at"
     if age < timedelta(0):
-        return f"the newest proof ({sha[:9]}) is stamped {-age.days} day(s) in the future"
+        return (
+            f"the newest proof ({sha[:9]}) is stamped {_span(-age)} in the future, "
+            f"beyond the {_span(CLOCK_SKEW_TOLERANCE)} clock-skew allowance"
+        )
     return f"the newest full-suite proof ({sha[:9]}) is {age.days} day(s) old, limit {max_age.days}"
 
 
