@@ -421,7 +421,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 
 **Skills are in this repo.** When `/t3:retro` identifies a skill gap, improvements go directly into `skills/*/`.
 
-After modifying skills: `t3 tool verify-gates` (commit, push-stage and manual CI-job hooks — a bare `prek run --all-files` skips the push-stage and manual gates CI re-runs) then `bash dev/test-affected.sh` then commit. Report the SHA it says it measured alongside its exit code — the command takes no target, so the exit code alone does not say which tree earned it.
+After modifying skills: inspect `t3 tool affected-tests`; run `bash dev/test-affected.sh` only on SCOPED, otherwise run changed test files or pinned node ids locally and let CI prove the whole tree. Commit, then run `t3 tool verify-gates --expect-sha <head>` and report the measured SHA with its exit code.
 
 ## Abstraction Boundaries
 

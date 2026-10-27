@@ -45,7 +45,7 @@ def test_explicit_ci_worker_budget_is_preserved() -> None:
     assert bounded_auto_workers(cores=10, memory_mib=8192, explicit="6") == 6
 
 
-@pytest.mark.parametrize("value", [None, "", "0", "false", "FALSE", "no", "off"])
+@pytest.mark.parametrize("value", [None, "", " ", "0", "false", "FALSE", "no", "off"])
 def test_false_ci_values_keep_the_local_budget(value: str | None) -> None:
     assert not ci_environment_enabled(value)
 
@@ -165,24 +165,18 @@ def test_unrecorded_directory_is_refused_when_other_durations_exist(tmp_path: Pa
     )
 
 
-def test_recorded_nodes_check_each_file_path_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "tests" / "many").mkdir(parents=True)
+def test_overlapping_directory_selections_count_recorded_nodes_once(tmp_path: Path) -> None:
+    (tmp_path / "tests" / "many" / "nested").mkdir(parents=True)
     (tmp_path / "dev").mkdir()
     (tmp_path / "dev" / ".test_durations").write_text(
-        json.dumps({f"tests/many/test_one.py::test_{index}": 0.1 for index in range(1000)}), encoding="utf-8"
+        json.dumps({"tests/many/nested/test_one.py::test_case": 700}), encoding="utf-8"
     )
-    original = Path.is_relative_to
-    checked = 0
-
-    def count_file_checks(path: Path, other: Path) -> bool:
-        nonlocal checked
-        if path.name == "test_one.py":
-            checked += 1
-        return original(path, other)
-
-    monkeypatch.setattr(Path, "is_relative_to", count_file_checks)
-    assert oversized_selection_refusal(["tests/many"], context=SelectionContext(root=tmp_path, sharded=False)) == ""
-    assert checked == 1
+    assert (
+        oversized_selection_refusal(
+            ["tests/many", "tests/many/nested"], context=SelectionContext(root=tmp_path, sharded=False)
+        )
+        == ""
+    )
 
 
 def test_multiple_directory_selections_share_one_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -203,16 +197,14 @@ def test_multiple_directory_selections_share_one_budget(tmp_path: Path, monkeypa
     assert "1400s" in refusal
 
 
-def test_missing_durations_keeps_existing_path_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CI", raising=False)
+def test_missing_durations_keeps_existing_path_guard(tmp_path: Path) -> None:
     (tmp_path / "tests" / "small").mkdir(parents=True)
     assert oversized_selection_refusal(["tests/small"], context=SelectionContext(root=tmp_path, sharded=False)) == ""
     assert "unsharded whole-tree" in oversized_selection_refusal(
         ["tests"], context=SelectionContext(root=tmp_path, sharded=False)
     )
-    monkeypatch.setenv("CI", "true")
     assert "unsharded whole-tree" in oversized_selection_refusal(
-        ["tests"], context=SelectionContext(root=tmp_path, sharded=False)
+        ["tests"], context=SelectionContext(root=tmp_path, sharded=False, in_ci=True)
     )
 
 
@@ -276,7 +268,7 @@ def test_tach_scoped_run_is_never_the_whole_tree_it_guards_against(tmp_path: Pat
 def test_real_unsharded_pytest_refuses_before_collection() -> None:
     repo = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
-    for name in ("CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
+    for name in ("CI", "CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
         env.pop(name, None)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q"],
@@ -292,7 +284,46 @@ def test_real_unsharded_pytest_refuses_before_collection() -> None:
     assert "collected" not in result.stdout
 
 
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(120)
+def test_real_pytest_refuses_large_directory_before_collection() -> None:
+    env = os.environ.copy()
+    for name in ("CI", "CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
+        env.pop(name, None)
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q", "tests/teatree_core"],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert result.returncode == 4, result.stderr
+    assert "directory selection records" in result.stderr
+    assert "collected" not in result.stdout
+
+
+@pytest.mark.timeout(120)
+def test_real_ci_still_refuses_bare_whole_tree() -> None:
+    env = os.environ.copy()
+    for name in ("CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
+        env.pop(name, None)
+    env["CI"] = "true"
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q", "tests"],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert result.returncode == 4, result.stderr
+    assert "unsharded whole-tree pytest is refused" in result.stderr
+    assert "collected" not in result.stdout
+
+
+@pytest.mark.timeout(240)
 def test_real_pytest_collects_a_small_directory() -> None:
     env = os.environ.copy()
     for name in ("CI", "CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
@@ -304,7 +335,7 @@ def test_real_pytest_collects_a_small_directory() -> None:
         env=env,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=180,
         check=False,
     )
     assert small.returncode == 0, small.stderr

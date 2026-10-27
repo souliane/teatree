@@ -237,11 +237,14 @@ class TestPhaseTestSelection(TestCase):
         assert "TEST SELECTION" in brief
         assert "t3 tool affected-tests" in brief
         assert "bash dev/test-affected.sh" in brief
+        assert "For overlay repos, use their playbook's wired runner" in brief
+        assert "PHASE: testing — test selection" in brief
 
     def test_reviewing_scopes_mutation_and_reads_ci_at_the_head(self) -> None:
         brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
         assert "t3 tool affected-tests" in brief
         assert "bash dev/test-affected.sh" in brief
+        assert "For overlay repos, use their playbook's wired runner" in brief
         assert "node ids" in brief
         assert "check-runs" in brief
 

@@ -467,7 +467,7 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
 
 
 def _testing_phase_lines(task: Task) -> tuple[str, ...]:
-    """The ``PHASE: testing`` block — the dispatch-time branch-currency verdict (#2663).
+    """The ``PHASE: testing`` block — branch currency and local test selection.
 
     ``t3 tool verify-gates`` judges the worktree against ITSELF, so a branch can
     pass every local gate and still not merge. The verdict is read at prompt-build
@@ -478,6 +478,8 @@ def _testing_phase_lines(task: Task) -> tuple[str, ...]:
         "",
         "PHASE: testing — branch-currency preflight",
         *branch_currency_brief_lines(task),
+        "",
+        "PHASE: testing — test selection",
         *_TEST_SELECTION_LINES,
     )
 

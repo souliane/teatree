@@ -2,9 +2,9 @@
 
 CI's deliberately sharded lanes provide their own explicit xdist budget. A local
 ``uv run pytest <paths>`` uses this small memory-aware pool, while an unsharded
-whole-tree call is refused before collection can burn the machine. Every run then
-leases its xdist workers from one host-wide file-lock pool, so concurrent runs share
-the cores instead of each taking them all.
+whole-tree or oversized-directory call is refused before collection can burn the
+machine. Every run then leases its xdist workers from one host-wide file-lock pool,
+so concurrent runs share the cores instead of each taking them all.
 """
 
 import errno
@@ -32,7 +32,8 @@ _WORKER_MIB = 768
 
 
 def ci_environment_enabled(value: str | None) -> bool:
-    return bool(value and value.strip().lower() not in {"0", "false", "no", "off"})
+    token = value.strip().lower() if value else ""
+    return bool(token and token not in {"0", "false", "no", "off"})
 
 
 def bounded_auto_workers(*, cores: int, memory_mib: int | None, explicit: str | None) -> int:
@@ -291,12 +292,15 @@ def worker_pool_root() -> Path:
 
 __all__ = [
     "INHERITED_LEASE_ENV",
+    "LOCAL_DIRECTORY_BUDGET_SECONDS",
     "POOL_ROOT_ENV",
     "TOTAL_TEST_WORKERS_PER_CORE",
     "PoolUnavailableError",
+    "SelectionContext",
     "SlotLease",
     "WorkerSlotPool",
     "bounded_auto_workers",
+    "ci_environment_enabled",
     "oversized_selection_refusal",
     "worker_pool_root",
 ]
