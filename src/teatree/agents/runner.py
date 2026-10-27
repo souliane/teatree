@@ -85,7 +85,6 @@ from teatree.agents.usage_window import park_on_timed_rejections
 from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.cleanup.process_table import nested_pid_namespace
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.modelkit.phases import PhaseCost, phase_cost
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.notify import NotifyKind, notify_user
@@ -548,7 +547,6 @@ async def _drive_with_heartbeat(
             sample_usage=_sample_usage_closing_connection,
             renew_lease=_renew_lease_closing_connection,
             drain_reason=drain_reason_closing_connection,
-            # An owner answer ends with its answer: the window would hold the posted reply for its whole length.
-            idle_window_seconds=0.0 if phase_cost(task.phase) is PhaseCost.ANSWERING else DEFAULT_IDLE_WINDOW_SECONDS,
+            idle_window_seconds=DEFAULT_IDLE_WINDOW_SECONDS,
         ),
     )
