@@ -91,7 +91,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         '                                   "basis": "executed"|"documentation"|"venue_limit",',
         '                                   "summary": "...", "file": "...", "line": 0,',
         '                                   "citation": "...", "reproduction": "<run and result, if executed>"}]}',
-        "BLOCKING: wrong behaviour, false claim, untested behaviour, vacuous or redundant test,",
+        "BLOCKING: wrong behaviour, false claim, untested behaviour, vacuous test or redundant test,",
         "duplicate definition, or red check. NIT: wording, naming, style, placement.",
         "Only BLOCKING may hold; NITs need merge_safe and follow-up.",
         ENVELOPE_FINDINGS_RULE,
@@ -113,13 +113,13 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             if read_only_venue
             else ("`reviewed_sha` MUST be the full 40-char SHA you reviewed (`git rev-parse HEAD`):")
         ),
-        "Wrong-head verdict refused; on checkout mismatch return",
+        "A verdict for another head is REFUSED; on checkout mismatch return",
         '  "review_head_mismatch": {"observed_sha": "<40-char SHA>", "reason": "<why>"}',
         "without review_verdict or owner question. Factory retries once at the live head; a repeat records a card.",
         'If CI, tests, or the plan cannot be read here, return "review_venue_limit":',
         '  {"limits": ["<limit>"]} without review_verdict; the factory retries elsewhere.',
         "HOLD needs observed code/check blocker, not a venue limit.",
-        "Missing `reviewed_sha` is refused.",
+        "Missing `reviewed_sha` is REFUSED.",
         "Out-of-diff blocking findings are refused without recording.",
         "Branch-only probes may blame main; recheck on the MERGE RESULT.",
         *(
