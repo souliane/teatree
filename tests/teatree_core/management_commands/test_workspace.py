@@ -65,7 +65,7 @@ from tests.teatree_core.management_commands._overlays import (
 )
 
 if TYPE_CHECKING:
-    from teatree.core.models.types import RepoExpansion
+    from teatree.core.models.repo_expansion import RepoExpansion
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
