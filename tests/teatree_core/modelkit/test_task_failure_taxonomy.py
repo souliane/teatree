@@ -248,14 +248,17 @@ class TestCorrectableFailures:
         assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
         assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.CORRECTIVE_RETRY
 
-    def test_a_refused_owner_card_quoting_another_matchers_phrase_is_still_a_schema_error(self) -> None:
+    @pytest.mark.parametrize("quoted_prefix", ["limit_parked:", PLAN_STALE_PREFIX])
+    def test_a_refused_owner_card_quoting_another_matchers_phrase_is_still_a_schema_error(
+        self, quoted_prefix: str
+    ) -> None:
         options = [
-            {"label": f"limit_parked: {'x' * 40}", "description": "I go ahead.", "recommended": True},
+            {"label": f"{quoted_prefix}{'x' * 40}", "description": "I go ahead.", "recommended": True},
             {"label": "No", "description": "I leave it as it is."},
         ]
         card = {"why": OWNER_CARD.why, "blocker": OWNER_CARD.blocker, "options": options}
         error = validate_result_keys(owner_stop("Is the budget approved?") | {"user_input_card": card, "summary": "x"})
-        assert "limit_parked:" in error
+        assert quoted_prefix in error
         assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
 
     @pytest.mark.parametrize(
@@ -338,6 +341,9 @@ class TestAStalePlanRefusalIsNamed:
 
     def test_the_recorders_prefix_classifies_as_plan_stale_ahead_of_the_traceback(self) -> None:
         assert classify_failure(f"{PLAN_STALE_PREFIX}{self._REFUSAL}") == FailureKind.PLAN_STALE
+
+    def test_the_plan_gate_keeps_priority_when_its_error_quotes_an_owner_stop_refusal(self) -> None:
+        assert classify_failure(f"{PLAN_STALE_PREFIX}{OWNER_STOP_REFUSAL_PREFIX}quoted") == FailureKind.PLAN_STALE
 
     def test_the_same_traceback_without_the_prefix_is_still_a_harness_crash(self) -> None:
         assert classify_failure(self._REFUSAL) == FailureKind.HARNESS_CRASH

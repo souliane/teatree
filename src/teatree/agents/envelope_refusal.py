@@ -105,7 +105,7 @@ def is_review_shape_refusal(error: str) -> bool:
 
 
 def is_owner_stop_refusal(error: str) -> bool:
-    return OWNER_STOP_REFUSAL_PREFIX.casefold() in error.casefold()
+    return error.casefold().startswith(OWNER_STOP_REFUSAL_PREFIX.casefold())
 
 
 def is_rubric_grades_refusal(error: str) -> bool:

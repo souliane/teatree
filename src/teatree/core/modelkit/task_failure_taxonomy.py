@@ -302,8 +302,6 @@ _UNNAMED: frozenset[str] = frozenset(
 _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # First: the recorder stamps it ahead of a NoCurrentPlanError message that may quote any other phrase.
     (FailureKind.PLAN_STALE, (PLAN_STALE_PREFIX,)),
-    # Also ahead of the rest: a refused card quotes the agent's own words, which can hold any other phrase.
-    (FailureKind.RESULT_SCHEMA_INVALID, (OWNER_STOP_REFUSAL_PREFIX,)),
     (FailureKind.RECORDING_REFUSED, (WRONG_HEAD_RETRY_PREFIX, VENUE_LIMIT_PREFIX)),
     (FailureKind.LEASE_EXPIRED, (LEASE_EXPIRED_PREFIX,)),
     (FailureKind.CANCELLED, (CANCELLED_PREFIX,)),
@@ -376,6 +374,8 @@ def classify_failure(error: str) -> str:
     haystack = error.casefold().strip()
     if not haystack:
         return FailureKind.UNRECORDED
+    if haystack.startswith(OWNER_STOP_REFUSAL_PREFIX.casefold()):
+        return FailureKind.RESULT_SCHEMA_INVALID
     for kind, needles in _MATCHERS:
         if (
             kind == FailureKind.RESULT_ERROR
