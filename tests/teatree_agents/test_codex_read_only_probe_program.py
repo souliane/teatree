@@ -21,6 +21,7 @@ from teatree.agents.codex_read_only_probe_program import (
     write_result,
 )
 from teatree.agents.codex_read_only_verdict import WORKTREE_ROOT, codex_source_git_subpath, evaluate
+from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from tests.teatree_agents._executor_fakes import EXAMPLE_ROOT, executor_fixture, probe_fixture, worker_fixture
 
 _STATUS = "Name:\tpython3\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n"
@@ -241,16 +242,112 @@ def test_a_secret_in_a_directory_that_cannot_be_listed_is_still_found(layout: Pa
     assert observed["scan"][str(layout / "root")]["secrets"] == [str(hidden / ".env")]
 
 
-def test_a_planted_placeholder_env_file_refuses_the_executor(layout: Path) -> None:
+def test_a_planted_placeholder_env_file_refuses_the_executor_and_names_the_fix(layout: Path) -> None:
     worktrees = layout / "ws"
     _plant(worktrees, "example/teatree/.env")
     observed = observe(_request(layout), _fake_proc(layout, [(str(worktrees), "ext4")]))
     answer = probe_fixture("pass")
     answer["scan"][WORKTREE_ROOT] = observed["scan"][str(worktrees)]
+    secret = f"{worktrees}/example/teatree/.env"
 
     assert evaluate(answer, executor_fixture("pass"), worker_fixture(), (EXAMPLE_ROOT,)) == (
-        f"it can read {worktrees}/example/teatree/.env, a secret file under {WORKTREE_ROOT}"
+        f"it can read {secret}, a secret file under {WORKTREE_ROOT}; "
+        f"fix: chmod 600 {secret} in the worker, or delete it"
     )
+
+
+_POINTER = f"dotenv ../{CACHE_DIRNAME}/app/{CACHE_FILENAME}\n"
+
+
+def _scanned_secrets(layout: Path) -> list[str]:
+    observed = observe(_request(layout), _fake_proc(layout, [(str(layout / "root"), "ext4")]))
+    return observed["scan"][str(layout / "root")]["secrets"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        _POINTER,
+        f"\n{_POINTER}\n\n",
+        _POINTER.replace("\n", "\r\n"),
+        f"{_POINTER}dotenv ../{CACHE_DIRNAME}/app/other.cache\n",
+        f"  \t{_POINTER}",
+    ],
+    ids=["bare", "blank-lines", "crlf", "two-pointers", "indented"],
+)
+def test_a_bare_dotenv_pointer_envrc_does_not_refuse_the_executor(layout: Path, content: str) -> None:
+    worktrees = layout / "ws"
+    _plant(worktrees, "example/teatree/.envrc", text=content)
+    observed = observe(_request(layout), _fake_proc(layout, [(str(worktrees), "ext4")]))
+    answer = probe_fixture("pass")
+    answer["scan"][WORKTREE_ROOT] = observed["scan"][str(worktrees)]
+
+    assert observed["scan"][str(worktrees)]["secrets"] == []
+    assert evaluate(answer, executor_fixture("pass"), worker_fixture(), (EXAMPLE_ROOT,)) is None
+
+
+def test_a_bare_dotenv_pointer_envrc_in_a_directory_that_cannot_be_listed_is_not_a_secret(layout: Path) -> None:
+    hidden = layout / "root" / "hidden"
+    _plant(hidden, ".envrc", text=_POINTER)
+    _plant(hidden, ".env")
+    hidden.chmod(0o111)
+    try:
+        secrets = _scanned_secrets(layout)
+    finally:
+        hidden.chmod(0o755)
+
+    assert secrets == [str(hidden / ".env")]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "EXAMPLE_TOKEN=placeholder\n",
+        "export EXAMPLE_TOKEN=placeholder\n",
+        f"{_POINTER}export EXAMPLE_TOKEN=placeholder\n",
+        f"export EXAMPLE_TOKEN=placeholder\n{_POINTER}",
+        "dotenv /srv/app/.t3-env.cache\n",
+        "dotenv ~/.t3-env.cache\n",
+        "dotenv $HOME/.t3-env.cache\n",
+        "dotenv ../app/.t3-env.cache; export EXAMPLE_TOKEN=placeholder\n",
+        "dotenv ../app/`id`\n",
+        "dotenv ../app/a ../app/b\n",
+        "dotenv ../app/a \\\n  ../app/b\n",
+        "dotenv_if_exists ../app/.t3-env.cache\n",
+        "# dotenv ../app/.t3-env.cache\n",
+        "dotenv\n",
+        "  \n",
+        "\n" * (KEY_READ_BYTES + 1) + _POINTER,
+    ],
+    ids=[
+        "assignment",
+        "export",
+        "pointer-then-export",
+        "export-then-pointer",
+        "absolute-path",
+        "home-path",
+        "expanded-path",
+        "chained-command",
+        "command-substitution",
+        "two-arguments",
+        "continuation",
+        "other-directive",
+        "comment",
+        "no-path",
+        "whitespace-only",
+        "oversize",
+    ],
+)
+def test_an_envrc_with_any_other_content_still_refuses_the_executor(layout: Path, content: str) -> None:
+    _plant(layout / "root", "app/.envrc", text=content)
+
+    assert _scanned_secrets(layout) == [str(layout / "root" / "app" / ".envrc")]
+
+
+def test_a_pointer_in_any_other_secret_file_is_still_a_secret(layout: Path) -> None:
+    _plant(layout / "root", "app/.env", "app/.netrc", text=_POINTER)
+
+    assert _scanned_secrets(layout) == [str(layout / "root" / "app" / ".env"), str(layout / "root" / "app" / ".netrc")]
 
 
 def test_requested_roots_and_the_live_home_are_reported(layout: Path) -> None:

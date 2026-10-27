@@ -16,6 +16,7 @@ SECRET_NAMES = frozenset(
 TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
 KEY_SUFFIXES = (".pem", ".key", ".p8", ".ppk")
 PRIVATE_KEY_MARKERS = (b"PRIVATE KEY-----", b"PuTTY-User-Key-File")
+DOTENV_POINTER = re.compile(rb"dotenv[ \t]+[A-Za-z0-9_.][A-Za-z0-9_./-]*")
 KEY_READ_BYTES = 64 * 1024
 
 
@@ -176,9 +177,22 @@ def _readable(path: str) -> bool:
     return _head(path, 0) is not None
 
 
+def _dotenv_pointer(path: str) -> bool:
+    """Every non-blank line is ``dotenv <relative path>``, so the file names another file and holds no value."""
+    content = _head(path, KEY_READ_BYTES + 1)
+    if content is None or len(content) > KEY_READ_BYTES:
+        return False
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    return bool(lines) and all(DOTENV_POINTER.fullmatch(line) for line in lines)
+
+
+def _named_secret(name: str, path: str) -> bool:
+    return _readable(path) and not (name == ".envrc" and _dotenv_pointer(path))
+
+
 def _secret_file(name: str, path: str, git_mounts: set[str]) -> bool:
     if secret_name(name):
-        return _readable(path)
+        return _named_secret(name, path)
     if name in {"config", "config.worktree"} and (
         "/.git/" in path or any(_under(path, target) for target in git_mounts)
     ):
@@ -205,7 +219,7 @@ def _secrets(top: str, mounted: set[str], git_mounts: set[str]) -> list[str]:
             entries = list(os.scandir(directory))
         except PermissionError:
             # Listing denied, yet a known name inside may still open.
-            found.extend(path for name in SECRET_NAMES if _readable(path := str(Path(directory, name))))
+            found.extend(path for name in SECRET_NAMES if _named_secret(name, path := str(Path(directory, name))))
             continue
         except OSError:
             continue

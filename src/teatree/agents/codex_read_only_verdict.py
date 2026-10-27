@@ -343,7 +343,11 @@ def _exposure_refusal(probe: _Probe, read_only: set[str]) -> str | None:
         if scan.owner == probe.uid:
             return f"it runs as uid {probe.uid}, which owns {target}"
         if scan.secrets:
-            return f"it can read {scan.secrets[0]}, a secret file under {target}"
+            secret = scan.secrets[0]
+            return (
+                f"it can read {secret}, a secret file under {target}; "
+                f"fix: chmod 600 {secret} in the worker, or delete it"
+            )
     return None
 
 
