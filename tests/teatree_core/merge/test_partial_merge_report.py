@@ -9,8 +9,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.backends import forge_merge_rpc
+from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.github import client as github_client
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Ticket
+from teatree.utils.run import CommandFailedError
 
 
 def _merged_pr(ticket: Ticket, number: int, *, minutes_ago: int) -> None:
@@ -127,3 +129,45 @@ class TestPartialMergeReport(TestCase):
             "matches": [],
             "unreadable": [{"ticket_id": ticket.pk, "reason": "last merged pull request unknown"}],
         }
+
+    def test_a_forge_error_on_one_ticket_is_one_unreadable_row_not_a_failed_report(self) -> None:
+        missing = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4241",
+            state=Ticket.State.MERGED,
+        )
+        _merged_pr(missing, 858, minutes_ago=30)
+        failing = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4242",
+            state=Ticket.State.MERGED,
+        )
+        _merged_pr(failing, 859, minutes_ago=20)
+        partial = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4243",
+            state=Ticket.State.MERGED,
+        )
+        _merged_pr(partial, 860, minutes_ago=10)
+
+        def run(argv: list[str]) -> tuple[int, str, str]:
+            return 0, json.dumps({"title": "A change", "body": "Part of #4243\n\nUnmet: finish the report"}), ""
+
+        def issue(url: str) -> dict[str, str]:
+            if url.endswith("4241"):
+                raise IssueNotFoundError(url)
+            if url.endswith("4242"):
+                raise CommandFailedError(["gh", "issue", "view"], 1, "", "boom")
+            return {"state": "open", "body": ""}
+
+        with (
+            patch.object(forge_merge_rpc, "gh_runner", return_value=run),
+            patch.object(github_client.GitHubCodeHost, "get_issue", side_effect=issue),
+        ):
+            result = cast("dict[str, list[dict[str, object]]]", call_command("ticket", "partial-merge-report"))
+
+        assert result["unreadable"] == [
+            {"ticket_id": missing.pk, "reason": "issue unreadable on the forge"},
+            {"ticket_id": failing.pk, "reason": "issue unreadable on the forge"},
+        ]
+        assert [row["ticket_id"] for row in result["matches"]] == [partial.pk]

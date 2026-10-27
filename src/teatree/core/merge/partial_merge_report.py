@@ -1,5 +1,6 @@
 """Read-only inventory of merged tickets whose open issue still has a declared remainder."""
 
+import logging
 from typing import TypedDict
 
 from teatree.core.merge.ci_rollup import CodeHostQuery
@@ -7,6 +8,8 @@ from teatree.core.merge.partial_merge import MergedPrReading
 from teatree.core.models import MergeAudit, PullRequest, Ticket
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
+
+logger = logging.getLogger(__name__)
 
 
 class PartialMergeMatch(TypedDict):
@@ -65,7 +68,12 @@ def find_partial_merges(*, overlay: str = "") -> PartialMergeReport:
             continue
         pr, ref = latest
         query = CodeHostQuery.for_ref(ref)
-        issue = query.backend.get_issue(ticket.issue_url)
+        try:
+            issue = query.backend.get_issue(ticket.issue_url)
+        except Exception:  # core never imports backends (§17.6.2), so a 404 or forge error cannot be named
+            logger.warning("partial merge report: could not read %s", ticket.issue_url, exc_info=True)
+            report["unreadable"].append({"ticket_id": ticket.pk, "reason": "issue unreadable on the forge"})
+            continue
         state = issue.get("state")
         if state not in {"open", "opened", "closed"}:
             report["unreadable"].append({"ticket_id": ticket.pk, "reason": "issue state unreadable"})
