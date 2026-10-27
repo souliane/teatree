@@ -54,7 +54,7 @@ Use the active overlay's `validate_pr(title, description)` policy for title and 
    glab issue list --search '<keywords>'                 # CLI fallback (GitLab)
    ```
 
-   The MCP search returns at most ten linked open issues (number, title, url, state, updated_at) and `truncated`; narrow the query when true.
+   MCP search returns at most ten linked open issues; narrow the query if `truncated` is true.
 
    If you find it, **use that reference** — it is the canonical one. Do not open a new issue that duplicates an existing one.
 
