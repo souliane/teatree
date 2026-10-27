@@ -125,6 +125,13 @@ class PlanningHandoff(TypedDict, total=False):
     reason: str
 
 
+class ShippingHold(TypedDict):
+    reason: str
+    skipped: str
+    held_at: str
+    checked_at: str
+
+
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     nit_follow_up: bool
@@ -181,6 +188,7 @@ class TicketExtra(TypedDict, total=False):
     description: str
     provision: dict[str, str]
     shipping_skipped: str
+    shipping_hold: ShippingHold
     tracker_status: str
     # Notion status-sync: the tracked page URL (input) and the last status read
     # from it via the direct Notion API (``core.sync.fetch_notion_statuses``).
@@ -327,6 +335,7 @@ class TicketExtra(TypedDict, total=False):
     # the answering phase. Undeclared, the first transition stripped it — taking the
     # question text and the work-placed stamp with it on 50 live rows.
     slack_answer: SlackAnswerContext
+    slack_priority_receipts: dict[str, str]
     # Project-board provenance, re-stamped through ``merge_extra`` on every board sync.
     board_position: int
     board_status: str
@@ -402,7 +411,7 @@ class PlanAdequacy(TypedDict, total=False):
     ``acceptance_criteria.content`` is the ticket's acceptance-criteria list, which
     ``PlanArtifact.record`` turns into the ticket's ``core.Rubric`` rows — the plan is
     the one home for it, and a reasoned negative there writes no rows and waives nothing
-    (the rubric gate's one waiver is the human-authorized ``ticket plan-bypass``).
+    (a reasoned negative does not grant the human-authorized plan bypass).
     """
 
     design: AdequacySection

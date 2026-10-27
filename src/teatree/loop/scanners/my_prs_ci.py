@@ -48,10 +48,8 @@ _STATUS_BY_VERDICT: dict[str, str] = {
     CHECKS_UNREADABLE: "",
 }
 
-#: Per tick, per overlay. Small because the enrichment only has to reach the MRs the
-#: operator actually has open — a backlog larger than this drains over a few ticks,
-#: and the memo means it stays drained.
-DEFAULT_MAX_PER_TICK = 6
+# 12 reads at the slowest measured 2.68 s take 32 s of the 60 s scan deadline.
+MAX_READS_PER_TICK = 12
 
 #: The whole point of keying on the head SHA: an unchanged MR is never re-read. Bounded
 #: so a long-lived loop process cannot grow it without limit.
@@ -80,7 +78,7 @@ class BoundedCiEnricher:
     """At most *max_per_tick* live CI reads, each memoised against its head SHA."""
 
     resolve: Callable[[str], str] = field(default=_required_checks_status)
-    max_per_tick: int = DEFAULT_MAX_PER_TICK
+    max_per_tick: int = MAX_READS_PER_TICK
     _spent: int = 0
 
     def status_for(self, *, url: str, head_sha: str) -> str:
@@ -118,4 +116,4 @@ class BoundedCiEnricher:
         _MEMO[key] = status
 
 
-__all__ = ["DEFAULT_MAX_PER_TICK", "BoundedCiEnricher", "reset_ci_memo"]
+__all__ = ["MAX_READS_PER_TICK", "BoundedCiEnricher", "reset_ci_memo"]

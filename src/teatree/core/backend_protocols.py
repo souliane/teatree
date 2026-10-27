@@ -383,6 +383,8 @@ class CodeHostBackend(Protocol):
 
     def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_unshipped_branches(self, *, repo: str, prefix: str) -> list[str]: ...  # pragma: no branch
+
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> Mapping[str, str | None]:  # pragma: no branch

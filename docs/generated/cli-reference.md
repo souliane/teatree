@@ -12772,6 +12772,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
+│ settle-holds                 Check held no-diff reviews; --dry-run reads     │
+│                              without changing tickets.                       │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
 │                              no-bulk-close guard.                            │
 │ fold                         Merge a member ticket's body into its host's,   │
@@ -12902,8 +12904,9 @@ Usage: t3 teatree ticket skip-planning [OPTIONS] TICKET_ID
  ``trivial_plan_skip`` marker (NO ``PlanArtifact``, no ``--human-authorize``)
  that ``check_plan_artifact`` accepts and ``execute_provision`` reads to
  skip the auto-planner. It escapes the PLAN gate ONLY — the rubric done-gate
- still grades whatever criteria the ticket carries, and the one waiver for that
- is ``plan-bypass``. ``--reason`` is mandatory — an unreasoned skip is refused
+ still grades whatever criteria the ticket carries; ``plan-bypass`` is its
+ human-authorized plan waiver. ``--reason`` is mandatory — an unreasoned skip
+ is refused
  and records nothing. See ``models.trivial_plan_skip``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
@@ -13360,6 +13363,20 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree ticket settle-holds`
+
+```
+Usage: t3 teatree ticket settle-holds [OPTIONS]
+
+ Check held no-diff reviews; --dry-run reads without writing.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run                                                                    │
+│ --json                                                                       │
+│ --help             Show this message and exit.                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree ticket bulk-close`
 
 ```
@@ -13485,7 +13502,8 @@ Usage: t3 teatree ticket reconcile-overlay [OPTIONS]
  Walks every ticket with an ``issue_url`` and re-runs overlay
  inference (now routed through ``get_workspace_repos()``). Rows whose
  stored overlay differs from a *conclusive* inference are corrected;
- an inconclusive (empty) inference never blanks an existing value.
+ synthetic umbrella tickets retain their creation overlay, including blank.
+ An inconclusive (empty) inference never blanks an existing value.
  Use ``--dry-run`` to preview.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮

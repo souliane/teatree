@@ -18,16 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict, cast
 
-from teatree.config import clone_root
 from teatree.core.merge.head_carry_over import SUPPORTED_HOST, LineageReader, PatchLineage, carry_over_head
 from teatree.core.models import HeadCarryOver
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.core.worktree.clone_paths import unambiguous_clone_path
+from teatree.core.worktree.clone_paths import matching_clone
 from teatree.loop.scanners.base import run_gh_for_slug
-from teatree.project import find_project_root
-from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
-from teatree.utils.run import SUBPROCESS_UNREACHABLE, CommandFailedError, CompletedProcess, run_allowed_to_fail
+from teatree.utils.run import SUBPROCESS_UNREACHABLE, CompletedProcess, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -138,15 +135,7 @@ class GhLineageReader:
     def _repo_for(self, slug: str) -> Path | None:
         if self.repo is not None:
             return self.repo
-        candidates = (find_project_root(), unambiguous_clone_path(clone_root(), slug))
-        for repo in candidates:
-            if repo is not None:
-                try:
-                    if git.remote_slug(repo=str(repo)).casefold() == slug.casefold():
-                        return repo
-                except (CommandFailedError, *SUBPROCESS_UNREACHABLE):
-                    continue
-        return None
+        return matching_clone(slug)
 
     def _auto_merge_refusal(self, slug: str, new_head: str, added: dict[str, tuple[str, ...]]) -> str:
         repo = self._repo_for(slug)

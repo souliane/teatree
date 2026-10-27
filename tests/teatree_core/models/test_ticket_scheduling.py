@@ -11,9 +11,11 @@ collapses; a terminal sibling is a finished attempt and the next call is legitim
 re-work that must still mint.
 """
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.errors import InvalidTransitionError
 from tests.factories import planned_ticket
 
 
@@ -76,6 +78,20 @@ class TestScheduleHeadlessCollapsesDuplicates(TestCase):
         assert second.pk == first.pk
         assert Task.objects.filter(ticket=ticket, phase="shipping").count() == 1
         assert Session.objects.filter(ticket=ticket, agent_id="shipping").count() == 1
+
+    def test_held_ticket_cannot_schedule_shipping_directly(self) -> None:
+        ticket = self._author()
+        ticket.merge_extra(
+            set_keys={"shipping_hold": {"reason": "awaiting evidence", "skipped": "", "held_at": "", "checked_at": ""}}
+        )
+        ticket.extra = {}
+
+        with pytest.raises(InvalidTransitionError, match="shipping held"):
+            ticket.schedule_shipping()
+
+        assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
+        ticket.merge_extra(pop_keys=["shipping_hold"])
+        assert ticket.schedule_shipping().phase == "shipping"
 
 
 class TestScheduleHeadlessStillMintsLegitimateRework(TestCase):

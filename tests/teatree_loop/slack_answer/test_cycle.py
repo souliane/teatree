@@ -15,6 +15,7 @@ load-bearing assertions:
 """
 
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -228,7 +229,9 @@ class TestTicketThreadStatus:
 
 
 def _row(text: str, ts: str = "1.0", overlay: str = "") -> PendingChatInjection:
-    row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text, overlay=overlay)
+    row = PendingChatInjection.record(
+        channel="C1", slack_ts=ts, text=text, overlay=overlay, context=DmContext(user_id=_USER_UID)
+    )
     assert row is not None
     return row
 
@@ -475,6 +478,7 @@ class TestRowIsolation:
     def test_one_bad_row_does_not_block_others(self, monkeypatch: pytest.MonkeyPatch) -> None:
         bad = _row("thanks", ts="1.0")
         good = _row("ok", ts="2.0")
+        PendingChatInjection.objects.filter(pk=good.pk).update(received_at=bad.received_at + timedelta(minutes=2))
         backend = RecordingBackend()
 
         # Make the first row's react raise, the rest must still process.

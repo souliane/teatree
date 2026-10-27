@@ -491,11 +491,7 @@ def _apply_live_session(
     return True
 
 
-def _reject_foreign_bound_unit(
-    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding | None
-) -> bool:
-    if binding is None:
-        return False
+def _reject_foreign_unit(backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport") -> bool:
     owner_id = configured_owner_id(backend)
     if owner_id and unit.lead.user_id == owner_id:
         return False

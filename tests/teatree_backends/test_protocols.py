@@ -82,6 +82,10 @@ class _FakeCodeHost:
         _ = (repo, since)
         return []
 
+    def list_unshipped_branches(self, *, repo: str, prefix: str) -> list[str]:
+        _ = (repo, prefix)
+        return []
+
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
         _ = (repo, pr_iid)
         return []

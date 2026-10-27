@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.models import PendingChatInjection, Task
+from teatree.core.models import DmContext, PendingChatInjection, Task
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import (
     SlackAnswerReport,
@@ -56,6 +56,7 @@ class RecordingBackend:
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
     thread_replies: dict[str, list[RawAPIDict]] = field(default_factory=dict)
+    user_id: str = "UUSER"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -109,7 +110,7 @@ class FailingReactBackend(RecordingBackend):
 
 
 def _row(text: str, ts: str = "1.0") -> PendingChatInjection:
-    row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text)
+    row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text, context=DmContext(user_id="UUSER"))
     assert row is not None
     return row
 

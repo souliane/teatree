@@ -67,13 +67,14 @@ from teatree.loop.question_binding import (
 )
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
+from teatree.loop.slack_answer.priority_directive import handle_priority_directive
 from teatree.loop.slack_answer.session_routing import (
     _card_result_reply,
     _command_reply,
     _live_receipt,
     _mark_unit_loop_replied,
     _post_live_reply,
-    _reject_foreign_bound_unit,
+    _reject_foreign_unit,
     _uncertain_question_reply,
     _unmark_unit_loop_replied,
 )
@@ -417,22 +418,39 @@ def _answer_or_acknowledge_question(
     return False
 
 
+def _handle_priority(
+    backend: MessagingBackend,
+    unit: _Unit,
+    report: SlackAnswerReport,
+    binding: ThreadBinding | None,
+    *,
+    eligible: bool,
+) -> bool:
+    outcome = handle_priority_directive(backend, unit, report, binding) if eligible else "none"
+    if outcome in {"confirmed", "retry"}:
+        if outcome == "confirmed":
+            _react_done(backend, unit)
+        return True
+    if outcome in {"mixed_on", "mixed_off"}:
+        backend.react(channel=unit.channel, ts=unit.slack_ts, emoji="zap" if outcome == "mixed_on" else "sleeping")
+    return False
+
+
 def _process_unit(
     backend: MessagingBackend,
     unit: _Unit,
     report: SlackAnswerReport,
     reader: InboundReader,
 ) -> None:
-    if _react_eyes_once(backend, unit):
-        report.eyes_reacted += 1
-
     binding = (
         ThreadBinding.objects.filter(overlay=unit.overlay, channel=unit.channel, thread_ts=unit.lead.thread_ts).first()
         if unit.lead.thread_ts
         else None
     )
-    if _reject_foreign_bound_unit(backend, unit, report, binding):
+    if _reject_foreign_unit(backend, unit, report):
         return
+    if _react_eyes_once(backend, unit):
+        report.eyes_reacted += 1
 
     status_request = binding is not None and is_status_question(unit.text)
     read = memoized_reader(reader)
@@ -447,11 +465,15 @@ def _process_unit(
         return
     if isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result):
         return
+    if _handle_priority(
+        backend, unit, report, binding, eligible=bound is None and not isinstance(result, AmbiguousCards)
+    ):
+        return
     if binding is not None and _live_receipt(backend, unit, report, binding, (read, bound)):
         return
-    if _card_result_reply(backend, unit, report, result):
-        return
-    if _answer_or_acknowledge_question(backend, unit, report, bound):
+    if _card_result_reply(backend, unit, report, result) or _answer_or_acknowledge_question(
+        backend, unit, report, bound
+    ):
         return
 
     _route_unbound(backend, unit, report, read, binding)

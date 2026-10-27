@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from teatree.core.models import PendingChatInjection
 from teatree.loop.question_binding import _addressed
+from teatree.loop.slack_answer.priority_directive import parse_priority_directive
 
 # Consecutive messages from the same user on the same channel, with no
 # bot reply between them and received within this window, are one logical
@@ -69,6 +70,8 @@ def _coalesce(rows: list[PendingChatInjection]) -> list[_Unit]:
 def _continues(prev: PendingChatInjection, nxt: PendingChatInjection) -> bool:
     """True iff *nxt* continues *prev* (same actor, same thread, within window)."""
     if (prev.overlay, prev.channel, prev.user_id) != (nxt.overlay, nxt.channel, nxt.user_id):
+        return False
+    if parse_priority_directive(prev.text) is not None or parse_priority_directive(nxt.text) is not None:
         return False
     if prev.thread_ts != nxt.thread_ts:
         # Two threads are two conversations: a unit binds on its LEAD's thread,
