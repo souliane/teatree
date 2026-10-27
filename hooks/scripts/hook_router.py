@@ -122,6 +122,7 @@ from hooks.scripts.merged_detection_probe_gate import handle_warn_merged_detecti
 from hooks.scripts.mr_cli_fields import extract_api_mr_fields, extract_cli_mr_fields
 from hooks.scripts.mr_validator import handle_validate_mr_metadata
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
+from hooks.scripts.notion_mcp_boundary import handle_block_notion_write_boundary, handle_track_notion_pages
 from hooks.scripts.orchestration_boundary_signals import COMMAND_HEAD as _COMMAND_HEAD
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import RUNNER_PREFIX as _RUNNER_PREFIX
@@ -167,6 +168,7 @@ from hooks.scripts.raw_review_post_guard import handle_block_raw_review_post
 from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
+from hooks.scripts.read_dedup import handle_read_dedup
 from hooks.scripts.remote_factory_target import remote_factory_target_active
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.router_args import parse_args as _parse_args
@@ -1081,7 +1083,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
 
     result = quote_scanner.scan_text(payload)
     if result.has_high:
-        command = tool_input.get("command", "")
+        command = tool_input.get("command", "") if tool_name == "Bash" else ""
         verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
         block_message = _quote_high_block_message(quote_scanner, quote_gate_messages, tool_name, result, verdict)
         return emit_pretooluse_deny(block_message, gate_id="quote_scanner") if block_message is not None else False
@@ -1901,51 +1903,6 @@ def handle_track_skill_usage(data: dict) -> None:
     if _skill_load_activates_teatree(loaded):
         engage(session_id)
     _maybe_engage_t3(session_id, loaded)
-
-
-# ── PostToolUse: read-dedup ────────────────────────────────────────
-
-
-def handle_read_dedup(data: dict) -> None:
-    """Warn when a file is re-read without having changed since last read."""
-    if data.get("tool_name") != "Read":
-        return
-
-    session_id = data.get("session_id", "")
-    file_path = data.get("tool_input", {}).get("file_path", "")
-    if not session_id or not file_path:
-        return
-
-    _ensure_state_dir()
-    reads_file = _state_file(session_id, "reads")
-
-    # Load existing reads: each line is "mtime\tpath"
-    reads: dict[str, str] = {}
-    for line in _read_lines(reads_file):
-        parts = line.split("\t", 1)
-        if len(parts) == 2:  # noqa: PLR2004 — self-documenting literal in this context
-            reads[parts[1]] = parts[0]
-
-    # Get current mtime
-    try:
-        current_mtime = str(Path(file_path).stat().st_mtime)
-    except OSError:
-        return
-
-    prev_mtime = reads.get(file_path)
-    if prev_mtime == current_mtime:
-        print(  # noqa: T201 — hook writes its protocol output to stdout
-            f"TOKEN SAVINGS HINT: {file_path} was already read this session "
-            "and hasn't changed. Use your cached knowledge of its contents "
-            "instead of re-reading."
-        )
-
-    # Update the reads file (overwrite to keep latest mtime per path)
-    reads[file_path] = current_mtime
-    reads_file.write_text(
-        "\n".join(f"{mtime}\t{path}" for path, mtime in reads.items()) + "\n",
-        encoding="utf-8",
-    )
 
 
 # ``handle_track_agents`` (+ its ``_agent_id_from_response`` /
@@ -3287,6 +3244,7 @@ _HANDLERS: dict[str, list] = {
         handle_validate_mr_metadata,
         handle_block_glab_stale_base_remote,
         handle_block_self_reviewer_assign,
+        handle_block_notion_write_boundary,
         handle_block_ai_signature,
         # AFTER handle_block_ai_signature: a raw create carrying a banned trailer
         # must surface the leak-class refusal first (fail-closed-always per
@@ -3310,6 +3268,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_skill_usage,
         handle_track_cron_jobs,
         handle_read_dedup,
+        handle_track_notion_pages,
         handle_track_agents,
     ],
     # Nothing registered here can block — see ``_NEVER_BLOCKING_EVENTS``. The

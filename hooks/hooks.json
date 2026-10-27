@@ -63,6 +63,16 @@
         ]
       },
       {
+        "matcher": "mcp__.*[Nn]otion.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "timeout": 30
+          }
+        ]
+      },
+      {
         "matcher": "mcp__glab__glab_mr_.*",
         "hooks": [
           {
@@ -96,6 +106,16 @@
     "PostToolUse": [
       {
         "matcher": "Bash|Write|Edit|Read|Grep|Glob|TodoWrite|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*[Nn]otion.*",
         "hooks": [
           {
             "type": "command",

@@ -762,6 +762,33 @@ def _mcp_slack_write_allow(ctx: GateContext) -> dict:
     }
 
 
+# notion-write-boundary (#5023): a Notion connector write to a page this session never read denies;
+# the connector's own read of that page allows. The liveness probe is pinned to "no token" so the row
+# never reaches Notion — the read-this-session check is what denies.
+def _arrange_notion_boundary_gate(ctx: GateContext) -> None:
+    def _no_token(*_args: object, **_kwargs: object) -> object:
+        msg = "no Notion token in the corpus"
+        raise RuntimeError(msg)
+
+    ctx.monkeypatch.setattr("teatree.backends.notion.credentials.build_notion_client", _no_token)
+
+
+def _notion_boundary_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__claude_ai_Notion__notion-update-page",
+        "tool_input": {"page_id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "command": "update_content"},
+    }
+
+
+def _notion_boundary_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__claude_ai_Notion__notion-fetch",
+        "tool_input": {"id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"},
+    }
+
+
 # dispatch-prompt quote-scanner (Agent/Task): a dispatch prompt carrying a
 # verbatim user quote denies; a clean prompt allows. Now REACHABLE — #1646 wired
 # the `Agent` PreToolUse matcher in hooks.json, the only interception point a
@@ -1450,6 +1477,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="mcp__slack__slack_send_message",
         deny_input=_mcp_slack_write_deny,
         allow_input=_mcp_slack_write_allow,
+    ),
+    GateRow(
+        gate_id="notion-write-boundary",
+        handler=router.handle_block_notion_write_boundary,
+        event="PreToolUse",
+        matched="mcp__claude_ai_Notion__notion-update-page",
+        deny_input=_notion_boundary_deny,
+        allow_input=_notion_boundary_allow,
+        arrange=_arrange_notion_boundary_gate,
     ),
     GateRow(
         gate_id="dispatch-prompt-quote-scanner",

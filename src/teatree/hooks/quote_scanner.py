@@ -44,6 +44,7 @@ from teatree.hooks._command_parser import is_publish_command as _is_publish_comm
 from teatree.hooks._hook_state import hook_state_root
 from teatree.hooks._parser_primitives import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._quote_normalize import normalize_quotes as _normalize_quotes
+from teatree.hooks.mcp_publish import extract_mcp_publish_payload
 
 type Severity = Literal["high", "medium"]
 
@@ -354,55 +355,6 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
     return result
 
 
-# ── Slack MCP write-tool body-field allowlist ──────────────────────
-
-# Slack MCP outbound write tools → body-field map. The substring "send"
-# heuristic from round 1 missed ``slack_schedule_message``,
-# ``slack_create_canvas`` and ``slack_update_canvas`` — explicit allowlist
-# replaces it (codex round-2 #6).
-_SLACK_MCP_WRITE_TOOLS: Final[dict[str, tuple[str, ...]]] = {
-    "slack_send_message": ("text", "message"),
-    "slack_send_message_draft": ("text", "message"),
-    "slack_schedule_message": ("text", "message"),
-    "slack_edit_message": ("text", "message"),
-    "slack_create_canvas": ("document_content", "content", "text"),
-    "slack_update_canvas": ("document_content", "content", "text"),
-    "slack_create_conversation": ("name",),
-}
-
-
-def _slack_tool_suffix(tool_name: str) -> str:
-    """Extract the trailing slack tool name (``slack_*``) from an MCP id.
-
-    MCP tool ids are shaped ``mcp__<server>__<tool>`` — we want the
-    ``<tool>`` segment for an exact-match allowlist lookup.
-    """
-    return tool_name.rsplit("__", 1)[-1]
-
-
-def _extract_slack_mcp_payload(tool_name: str, tool_input: ToolInput) -> str | None:
-    """Return body text for a Slack MCP write tool, or ``None`` for read-only tools.
-
-    The Slack MCP carries the body in tool-specific fields beyond what
-    :class:`ToolInput` enumerates (``document_content``, ``content``,
-    ``name``). The actual hook payload is a wider mapping than the
-    typed view — we read each candidate field by name via :meth:`get`.
-    """
-    if not (tool_name.startswith("mcp__") and "slack" in tool_name.lower()):
-        return None
-    suffix = _slack_tool_suffix(tool_name).lower()
-    fields = _SLACK_MCP_WRITE_TOOLS.get(suffix)
-    if fields is None:
-        return None
-    for field_name in fields:
-        value = tool_input.get(field_name)
-        if isinstance(value, str) and value:
-            return value
-    # The tool IS a write surface but no body field was populated — scan
-    # an empty payload (clean by construction) rather than fail-closed.
-    return ""
-
-
 def extract_publish_payload(tool_name: str, tool_input: ToolInput, cwd: Path | None = None) -> str | None:
     """Return the text-to-scan from a tool invocation, or ``None`` if not a publish.
 
@@ -428,7 +380,7 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput, cwd: Path | N
             return None
         return _extract_bash_payload(raw_command, cwd=cwd)
 
-    return _extract_slack_mcp_payload(tool_name, tool_input)
+    return extract_mcp_publish_payload(tool_name, tool_input)
 
 
 # ── Agent/Task dispatch-prompt body extraction (#1401) ──────────────

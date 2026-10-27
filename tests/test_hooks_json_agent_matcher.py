@@ -10,7 +10,10 @@ the (default-ON, #1733) orchestrator-boundary deny genuinely live.
 """
 
 import json
+import re
 from pathlib import Path
+
+import pytest
 
 _HOOKS_JSON = Path(__file__).resolve().parents[1] / "hooks" / "hooks.json"
 
@@ -64,6 +67,7 @@ def test_existing_pretooluse_matchers_preserved() -> None:
         "NotebookEdit",
         "AskUserQuestion",
         "mcp__.*[Ss]lack.*",
+        "mcp__.*[Nn]otion.*",
         "mcp__glab__glab_mr_.*",
     ):
         assert expected in covered, f"existing PreToolUse coverage of {expected!r} must be preserved"
@@ -79,3 +83,48 @@ def test_task_dispatch_reaches_both_router_events_without_taskcreate() -> None:
         ]
         assert any("Task" in tools for tools in routed)
         assert any("Task" in tools and "TaskCreate" not in tools for tools in routed)
+
+
+NOTION_WRITES = (
+    "mcp__claude_ai_Notion__notion-update-page",
+    "mcp__notion__notion-create-pages",
+    "mcp__plugin_notion-workspace_notion__notion-create-comment",
+    "mcp__Notion__API-patch-block-children",
+)
+NOTION_READS = (
+    "mcp__claude_ai_Notion__notion-fetch",
+    "mcp__notion__notion-search",
+    "mcp__Notion__API-retrieve-a-page",
+)
+
+
+def _routes(event: str, tool_name: str) -> bool:
+    config = json.loads(_HOOKS_JSON.read_text(encoding="utf-8"))
+    return any(
+        re.fullmatch(entry["matcher"], tool_name)
+        and any(f"hook_router.py --event {event}" in hook.get("command", "") for hook in entry["hooks"])
+        for entry in config["hooks"][event]
+        if entry.get("matcher") != "*"
+    )
+
+
+@pytest.mark.parametrize("tool_name", NOTION_WRITES)
+def test_notion_connector_write_reaches_the_pretooluse_router(tool_name: str) -> None:
+    assert _routes("PreToolUse", tool_name)
+
+
+@pytest.mark.parametrize("tool_name", NOTION_READS)
+def test_notion_connector_fetch_reaches_the_posttooluse_router(tool_name: str) -> None:
+    assert _routes("PostToolUse", tool_name)
+
+
+@pytest.mark.parametrize("tool_name", NOTION_WRITES)
+def test_notion_connector_write_reaches_the_posttooluse_router_so_a_cached_verdict_can_be_dropped(
+    tool_name: str,
+) -> None:
+    assert _routes("PostToolUse", tool_name)
+
+
+@pytest.mark.parametrize("event", ["PreToolUse", "PostToolUse"])
+def test_the_notion_matcher_does_not_widen_to_unrelated_servers(event: str) -> None:
+    assert not _routes(event, "mcp__other__lookup_page")

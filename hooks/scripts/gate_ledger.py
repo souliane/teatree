@@ -39,6 +39,7 @@ DECLARED_GATES = frozenset(
         "mcp_slack_write",
         "mr_metadata",
         "no_self_reviewer_assign",
+        "notion_boundary",
         "orchestrator_bash",
         "orchestrator_delegation_gate",
         "orchestrator_foreground_dispatch",

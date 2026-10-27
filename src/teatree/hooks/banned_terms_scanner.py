@@ -40,6 +40,7 @@ from teatree.hooks._parser_primitives import NAMED_FAIL_CLOSED_PREFIX
 from teatree.hooks._parser_primitives import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._parser_primitives import is_unavailable_body_source_sentinel as _is_unavailable_body_source_sentinel
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
+from teatree.hooks.mcp_publish import notion_write_text
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 # Marker returned by ``scan_text`` when the body source cannot be resolved
@@ -182,10 +183,11 @@ def secret_scan_text(tool_name: str, tool_input: ToolInput) -> str:
     ``gh api`` field, a ``git -C`` commit subject -- so this widens beyond
     :func:`extract_publish_payload` (body only) and is scanned with
     :func:`publish_surface.contains_secret` BEFORE the destination skip can
-    short-circuit. Empty for a non-Bash tool.
+    short-circuit. A Notion connector write is a surface too: its whole prose
+    is scanned. Empty for any other non-Bash tool.
     """
     if tool_name != "Bash":
-        return ""
+        return notion_write_text(tool_name, tool_input) or ""
     return _extract_secret_scan_text(tool_input.get("command", ""))
 
 

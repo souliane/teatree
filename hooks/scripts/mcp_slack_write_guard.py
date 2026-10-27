@@ -78,11 +78,15 @@ _DENY_REASON = (
 TEATREE_MCP_SERVERS: frozenset[str] = frozenset({"teatree", "plugin_t3_teatree"})
 
 
+def is_teatree_mcp_tool(tool_name: str) -> bool:
+    """Whether *tool_name* is served by teatree's own MCP server."""
+    # Everything before the LAST `__`, so `mcp__teatree__x__send` names server `teatree__x`, never `teatree`.
+    return tool_name.removeprefix("mcp__").rpartition("__")[0] in TEATREE_MCP_SERVERS
+
+
 def is_slack_mcp_tool(tool_name: str) -> bool:
     """Whether *tool_name* is a Slack MCP tool (``mcp__*slack*``) on a server other than teatree's."""
-    # Everything before the LAST `__`, so `mcp__teatree__x__send` names server `teatree__x`, never `teatree`.
-    server = tool_name.removeprefix("mcp__").rpartition("__")[0]
-    return tool_name.startswith("mcp__") and "slack" in tool_name.lower() and server not in TEATREE_MCP_SERVERS
+    return tool_name.startswith("mcp__") and "slack" in tool_name.lower() and not is_teatree_mcp_tool(tool_name)
 
 
 def is_slack_mcp_write(tool_name: str) -> bool:
