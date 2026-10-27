@@ -6,8 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+import httpx
+
 from teatree.backends.loader import get_code_host_for_url
 from teatree.config.loader import worktree_root
+from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError, worktree_has_commits_ahead
 from teatree.core.models.worktree import Worktree
@@ -15,7 +18,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_remote import host_from_remote, slug_from_remote
 from teatree.utils.git_run import run_with_status
-from teatree.utils.run import TimeoutExpired
+from teatree.utils.run import CommandFailedError, TimeoutExpired
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 GIT_READ_TIMEOUT = 5.0
@@ -138,6 +141,14 @@ def forge_evidence(ticket: Ticket) -> Evidence:
                 )
             if branches:
                 return Evidence(found=f"branch {branches[0]}")
-    except Exception as exc:  # noqa: BLE001 — every failed forge read is UNKNOWN, never empty
+    except (
+        BackendResolutionError,
+        CommandFailedError,
+        httpx.HTTPError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         return Evidence(unverified=f"forge ({type(exc).__name__}: {str(exc)[:160]})")
     return Evidence()

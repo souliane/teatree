@@ -1,6 +1,7 @@
 """Advisory scan of every reviewed ticket awaiting shipping evidence."""
 
 import typer
+from django.db import DatabaseError
 
 
 def check_shipping_holds() -> bool:
@@ -13,7 +14,7 @@ def check_shipping_holds() -> bool:
         rows = [
             (ticket.pk, (shipping_hold_of(ticket) or {}).get("reason", "unknown")) for ticket in held_author_tickets()
         ]
-    except Exception as exc:  # noqa: BLE001 — a doctor scan must report any read failure
+    except (DatabaseError, RuntimeError) as exc:
         typer.echo(f"WARN  Shipping-hold scan UNVERIFIED: {exc!r}")
         return True
     for ticket_pk, reason in rows:
