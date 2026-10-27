@@ -38,7 +38,7 @@ _DEAD_PID = 4_100_000
 class _NoInProcessGuard:
     """Separate processes share no in-process lock."""
 
-    def acquire(self, *, blocking: bool = True) -> bool:
+    def acquire(self, *, blocking: bool = True, timeout: float = -1) -> bool:
         return True
 
     def release(self) -> None:
@@ -106,6 +106,27 @@ def _sent_pings() -> int:
     return BotPing.objects.filter(status=BotPing.Status.SENT).count()
 
 
+@contextlib.contextmanager
+def _sibling_holds(guard: threading.Lock) -> Generator[threading.Event]:
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with guard:
+            acquired.set()
+            release.wait(timeout=30)
+
+    sibling = threading.Thread(target=hold)
+    sibling.start()
+    assert acquired.wait(timeout=5)
+    try:
+        yield release
+    finally:
+        release.set()
+        sibling.join(timeout=2)
+        assert not sibling.is_alive()
+
+
 class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
     def setUp(self) -> None:
         self.backend = _backend()
@@ -123,6 +144,46 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         self._poster()
         self._nag()
         _age_the_ledger(minutes=5)
+
+    def test_a_sibling_finishing_mid_send_lets_the_next_drain_post(self) -> None:
+        question = _backlog("Which DB host?")
+        guard = threading.Lock()
+        with (
+            patch.object(drains_module, "_QUESTION_PING_THREAD_GUARD", guard),
+            _sibling_holds(guard) as release,
+        ):
+            threading.Timer(0.05, release.set).start()
+            self._poster()
+
+        question.refresh_from_db()
+        assert question.slack_ts
+        self.backend.post_message.assert_called_once()
+
+    def test_a_sibling_outliving_the_wait_keeps_the_backlog_and_logs_why(self) -> None:
+        question = _backlog("Which DB host?")
+        guard = threading.Lock()
+        with (
+            patch.object(drains_module, "_QUESTION_PING_THREAD_GUARD", guard),
+            patch.object(drains_module, "_QUESTION_PING_THREAD_WAIT_SECONDS", 0.03, create=True),
+            _sibling_holds(guard),
+            self.assertLogs(drains_module.logger, level="INFO") as captured,
+        ):
+            self._poster()
+
+        question.refresh_from_db()
+        assert not question.slack_ts
+        self.backend.post_message.assert_not_called()
+        assert "another drain" in " ".join(captured.output)
+
+    def test_an_uncontended_drain_posts_with_the_bounded_guard(self) -> None:
+        question = _backlog("Which DB host?")
+        guard = MagicMock(wraps=threading.Lock())
+        with patch.object(drains_module, "_QUESTION_PING_THREAD_GUARD", guard):
+            self._poster()
+
+        question.refresh_from_db()
+        assert question.slack_ts
+        guard.acquire.assert_called_once_with(timeout=drains_module._QUESTION_PING_THREAD_WAIT_SECONDS)
 
     def test_an_hour_of_ticks_over_a_resumed_41_question_backlog_sends_six_pings(self) -> None:
         for index in range(20):
