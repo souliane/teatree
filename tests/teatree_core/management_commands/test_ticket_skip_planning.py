@@ -88,7 +88,7 @@ class TicketSkipPlanningCommandTest(TestCase):
 class TestSkipPlanningEscapesThePlanGateOnly(TestCase):
     """It clears the PLAN gate; the rubric done-gate still grades what the ticket carries.
 
-    A trivial skip writes no ``PlanArtifact``, so the done-gate's one waiver — a
+    A trivial skip writes no ``PlanArtifact``, so the done-gate's plan waiver — a
     bypass-shaped latest plan — is absent, while every visited phase with a
     ``PHASE_CRITERIA`` entry has already seeded an ungraded criterion. An unattended
     trivial edit therefore stops short of MERGED and DELIVERED, which is deliberate and
