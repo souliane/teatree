@@ -40,7 +40,8 @@ than core can.
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, override
+from importlib import import_module
+from typing import Any, cast, override
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
@@ -52,17 +53,7 @@ from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
 from teatree.core.overlay import McpToolGroup, OverlayBase
 from teatree.core.overlay_loader import get_all_overlays
-from teatree.mcp import (
-    agent_mailbox,
-    introspection,
-    search,
-    services_forge,
-    services_notion,
-    services_sentry,
-    services_sharepoint,
-    services_slack,
-    write_tools,
-)
+from teatree.mcp import agent_mailbox, introspection, search, write_tools
 
 logger = logging.getLogger(__name__)
 
@@ -133,13 +124,13 @@ class _NoShadowServer(MCPServer):
 
 # Per-service tool groups, registered iff the service is in the union of
 # ``required_third_party_services`` across all registered overlays.
-_SERVICE_GROUPS: dict[Service, Callable[[MCPServer], None]] = {
-    Service.GITHUB: services_forge.register_github,
-    Service.GITLAB: services_forge.register_gitlab,
-    Service.SLACK: services_slack.register,
-    Service.NOTION: services_notion.register,
-    Service.SENTRY: services_sentry.register,
-    Service.SHAREPOINT: services_sharepoint.register,
+_SERVICE_GROUPS: dict[Service, tuple[str, str]] = {
+    Service.GITHUB: ("teatree.mcp.services_forge", "register_github"),
+    Service.GITLAB: ("teatree.mcp.services_forge", "register_gitlab"),
+    Service.SLACK: ("teatree.mcp.services_slack", "register"),
+    Service.NOTION: ("teatree.mcp.services_notion", "register"),
+    Service.SENTRY: ("teatree.mcp.services_sentry", "register"),
+    Service.SHAREPOINT: ("teatree.mcp.services_sharepoint", "register"),
 }
 
 
@@ -527,8 +518,9 @@ def build_server(
     server = _NoShadowServer("teatree", instructions=instructions, read_only=read_only, allowed_writes=allowed_writes)
     for name, handler in _READ_TOOLS.items():
         server.add_tool(handler, name=name, annotations=_READ_ONLY)
-    for service, register_group in sorted(_SERVICE_GROUPS.items()):
+    for service, (module_path, registrar_name) in sorted(_SERVICE_GROUPS.items()):
         if service in declared:
+            register_group = cast("Callable[[MCPServer], None]", getattr(import_module(module_path), registrar_name))
             register_group(server)
     write_tools.register(server)
     agent_mailbox.register(server, client=mailbox_client)

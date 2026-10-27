@@ -36,11 +36,10 @@ from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveChe
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.checks_admission import ReviewVerdictError, assert_checks_admit_merge_safe, live_checks_reader
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.core.models.finding_standard import FindingKind
+from teatree.core.models.finding_standard import Finding, FindingKind
 from teatree.core.models.head_carry_over import HeadCarryOver
 from teatree.core.models.merge_clear import SHA_FULL_LEN, ClearIssuanceError, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
-from teatree.core.models.review_finding import Finding
 from teatree.core.models.review_hold_disposition import ReviewHoldDisposition
 from teatree.core.models.review_verdict_duplicate import refresh_duplicate_verdict
 from teatree.core.models.reviewer_identity import (

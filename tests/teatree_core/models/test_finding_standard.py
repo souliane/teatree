@@ -1,5 +1,4 @@
-from teatree.core.models.finding_standard import FindingKind, normalize_finding_kind
-from teatree.core.models.review_finding import Finding
+from teatree.core.models.finding_standard import Finding, FindingKind, normalize_finding_kind
 
 
 def test_a_blocking_severity_overrides_a_nit_label() -> None:

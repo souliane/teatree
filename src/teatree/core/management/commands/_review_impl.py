@@ -23,7 +23,7 @@ from teatree.core.merge.head_read_diagnosis import read_credential_state
 from teatree.core.merge.host_kind import pr_web_url_for_repo_slug
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
 from teatree.core.models import ReviewVerdict, ReviewVerdictError, Ticket
-from teatree.core.models.review_finding import Finding, FindingDict
+from teatree.core.models.finding_standard import Finding, FindingDict
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.verdict_findings import (

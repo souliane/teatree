@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, cast
 from django.utils import timezone
 
 from teatree.core.models.checks_admission import ReviewVerdictError
-from teatree.core.models.review_finding import Finding
+from teatree.core.models.finding_standard import Finding
 
 if TYPE_CHECKING:
     from teatree.core.models.review_verdict import ReviewVerdict
