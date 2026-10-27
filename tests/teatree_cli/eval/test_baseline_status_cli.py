@@ -15,7 +15,6 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.eval import baseline_status as baseline_status_mod
-from teatree.eval.discovery import CORE_CATALOG_FLOOR, ScenarioCatalog
 from teatree.eval.models import EvalSpec
 from teatree.eval.summary_json import scenario_version
 from teatree.utils.run import CommandFailedError
@@ -34,11 +33,8 @@ def _spec(name: str) -> EvalSpec:
     )
 
 
-def _catalog(*names: str, degraded: dict[str, str] | None = None):
-    catalog = ScenarioCatalog(
-        specs=[_spec(name) for name in names], degraded=degraded or {}, core_count=CORE_CATALOG_FLOOR
-    )
-    return patch("teatree.cli.eval.green_proof.discover_catalog", return_value=catalog)
+def _catalog(*names: str):
+    return patch.object(baseline_status_mod, "discover_core_specs", return_value=[_spec(name) for name in names])
 
 
 def _payload(*names: str, age: timedelta = timedelta(days=1), red: str | None = None, **extra: object) -> dict:
@@ -191,15 +187,6 @@ def test_a_listing_failure_is_reported_not_swallowed() -> None:
 
     assert result.exit_code == 1, result.output
     assert "BASELINE UNKNOWN" in result.output
-
-
-def test_a_degraded_catalog_cannot_be_measured_against() -> None:
-    with _catalog("a", degraded={"overlay-x": "import failed"}):
-        result = _invoke(_FakeClient([], {}))
-
-    assert result.exit_code == 1, result.output
-    assert "BASELINE UNKNOWN" in result.output
-    assert "overlay-x" in result.output
 
 
 @pytest.mark.parametrize("flag", ["--ref", "--repo"])

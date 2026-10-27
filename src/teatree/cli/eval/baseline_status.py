@@ -3,7 +3,8 @@
 A one-shard smoke run stays green without saying anything about the rest of the catalog, so
 this reads the newest completed full-suite ``eval-ci-heal`` runs on a branch, downloads each
 ``eval-heal-<sha>`` summary and judges it with :func:`teatree.eval.green_proof.evaluate_baseline`
-against the catalog as this checkout defines it. Exit 0 only for a recent green proof.
+against the core catalog as this checkout defines it (the catalog CI measures, whatever overlays this host also
+installs). Exit 0 only for a recent green proof.
 """
 
 import json
@@ -19,8 +20,9 @@ from teatree.backends.github.ci_eval_client import (
     GhCiEvalClient,
     build_ci_eval_client,
 )
-from teatree.cli.eval.green_proof import DegradedCatalogError, expected_catalog_versions
+from teatree.eval.discovery import discover_core_specs
 from teatree.eval.green_proof import BASELINE_MAX_AGE, evaluate_baseline
+from teatree.eval.summary_json import scenario_version
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError
 
@@ -62,11 +64,7 @@ def baseline_status(
     repo: str = typer.Option(DEFAULT_CI_EVAL_REPO, "--repo", help="owner/repo the eval-ci-heal workflow lives in."),
 ) -> None:
     """Report whether a recent full-suite green proof over the current catalog is on record."""
-    try:
-        expected = expected_catalog_versions()
-    except DegradedCatalogError as exc:
-        typer.echo(f"BASELINE UNKNOWN: the scenario catalog is DEGRADED, so there is no full count to measure — {exc}")
-        raise typer.Exit(1) from exc
+    expected = {spec.name: scenario_version(spec) for spec in discover_core_specs()}
     try:
         payloads, notes = _newest_payloads(build_ci_eval_client(repo), ref=ref)
     except CommandFailedError as exc:
