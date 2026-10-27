@@ -38,6 +38,7 @@ _METADATA_HOOK_ORDER = (
     "get_e2e_config",
     "detect_variant",
     "get_tool_commands",
+    "get_issue_repos",
     "get_followup_repos",
 )
 
@@ -77,6 +78,7 @@ _METADATA_HOOK_DESCRIPTIONS = {
     ),
     "detect_variant": "Detect the current tenant variant from environment.",
     "get_tool_commands": "Return overlay-specific tool commands for t3 <overlay> tool.",
+    "get_issue_repos": "Return repository names needed by one issue URL; empty means no hint.",
     "get_followup_repos": "Return GitLab project paths to sync MRs from.",
 }
 
