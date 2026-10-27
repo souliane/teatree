@@ -2,9 +2,9 @@
 
 The fixture is the #3967 incident, built with real git: a checkout created by a
 clone this context cannot reach, so its ``.git`` file records an absolute admin
-dir that resolves to nothing here. Git rejects it as an invalid repository,
-as it does for a directory that never held one. The error alone cannot tell
-which case it saw; the fixture-validity test below pins that rejection.
+dir that resolves to nothing here. A bare git probe rejects the pointer; its
+error wording varies by git version. The fixture-validity test below checks
+that the probe fails for this specific reason.
 
 Each entry below is a production decider whose answer can authorise removing or
 re-creating a checkout. Every one of them must decline on this directory: absence

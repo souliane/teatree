@@ -61,6 +61,20 @@ class TestAnchorsClear:
 
 class TestNoFireCorpus:
     @pytest.mark.parametrize(
+        "identifier",
+        [
+            "x/4f861e60",
+            "foo-4f861e60",
+            "name.4f861e60",
+            "4f861e60/x",
+            "4f861e60-foo",
+            "4f861e60.md",
+        ],
+    )
+    def test_each_path_boundary_keeps_a_hex_identifier_out_of_sha_assertions(self, identifier: str) -> None:
+        assert scanner.find_unanchored_assertions(f"Inspect {identifier} and report the result.") is None
+
+    @pytest.mark.parametrize(
         "brief",
         [
             "",
@@ -80,6 +94,57 @@ class TestNoFireCorpus:
 
     def test_a_non_string_payload_is_silent(self) -> None:
         assert scanner.find_unanchored_assertions(None) is None
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/srv/agent/.claude/jobs/4f861e60/tmp/out.md",
+            "/var/tmp/jobs/4f2a9c1e07b3/run.sh",
+            "notes-4f861e60.txt",
+            r"C:\jobs\4f861e60\out.md",
+        ],
+    )
+    def test_a_hex_identifier_inside_a_path_is_not_a_sha(self, path: str) -> None:
+        assert scanner.find_unanchored_assertions(f"Inspect {path} and report the result.") is None
+
+    def test_a_path_identifier_does_not_anchor_a_file_line_assertion(self) -> None:
+        verdict = scanner.find_unanchored_assertions(
+            "Checked at /var/tmp/jobs/4f2a9c1e07b3/run.sh; the guard is in src/a.py:12."
+        )
+        assert verdict is not None
+        assert verdict.kinds == ["file:line"]
+
+
+class TestStandaloneShaForms:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/example/repo/commit/4f861e60/",
+            "https://github.com/example/repo/blob/4f861e60/path.py",
+            "https://github.com/example/repo/tree/4f861e60",
+        ],
+    )
+    def test_forge_url_refs_still_name_a_commit(self, url: str) -> None:
+        verdict = scanner.find_unanchored_assertions(f"The baseline is {url}")
+        assert verdict is not None
+        assert "commit SHA" in verdict.kinds
+
+    @pytest.mark.parametrize(
+        "sha",
+        [
+            "4f861e60",
+            "(4f861e60)",
+            "`4f861e60`",
+            "4f861e60.",
+            "4f861e60:path.py",
+            "4f861e60..a1b2c3d4",
+            "https://github.com/example/repo/commit/4f861e60",
+        ],
+    )
+    def test_standalone_sha_still_fires(self, sha: str) -> None:
+        verdict = scanner.find_unanchored_assertions(f"The baseline is {sha}")
+        assert verdict is not None
+        assert "commit SHA" in verdict.kinds
 
 
 class TestWarningText:
