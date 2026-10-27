@@ -32,6 +32,7 @@ from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
+from teatree.agents.result_schema_draft import executor_draft_evidence_error
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SHAPE
 from teatree.agents.review_context_recorder import record_returned_review_context
 from teatree.agents.review_envelope_recorder import (
@@ -40,6 +41,8 @@ from teatree.agents.review_envelope_recorder import (
     review_venue_limit_refusal,
     settle_review_venue_limit,
 )
+from teatree.agents.review_request_recorder import record_returned_review_request
+from teatree.agents.ship_readiness_recorder import record_returned_ship_readiness
 from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
@@ -389,7 +392,11 @@ def _check_before_recording(
     if action_error:
         return _PreRecordCheck(action_error, result)
 
-    evidence_error = check_evidence(result, phase or task.phase) or _answering_work_item_error(task, result, phase)
+    evidence_error = (
+        check_evidence(result, phase or task.phase)
+        or _answering_work_item_error(task, result, phase)
+        or executor_draft_evidence_error(phase or task.phase, result, selected_harness=usage.selected_harness)
+    )
     if evidence_error:
         salvaged = salvage_coding_result(task, result, phase=phase)
         if salvaged is None:
@@ -428,7 +435,12 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
         return critic_error
     fix_error = record_returned_fix_record(task, result)
     sweep_error = fix_error or verify_returned_ticket_sweep(result)
-    return sweep_error or record_returned_directive_interpretation(task, result)
+    draft_error = (
+        sweep_error
+        or record_returned_review_request(task, result, phase=phase)
+        or record_returned_ship_readiness(task, result, phase=phase)
+    )
+    return draft_error or record_returned_directive_interpretation(task, result)
 
 
 def _record_failure(

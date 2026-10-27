@@ -22,6 +22,7 @@ from teatree.agents.dispatch_preflight import (
     round_brief_lines,
     rubric_brief_lines,
 )
+from teatree.agents.read_only_draft_blocks import REQUESTING_REVIEW_LINES, SHIPPING_LINES
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.gates.fix_dod_gate import is_fix
@@ -452,7 +453,7 @@ def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
     )
 
 
-def _answering_phase_lines(task: Task) -> tuple[str, ...]:
+def _answering_phase_lines(task: Task, *, read_only_venue: bool = False) -> tuple[str, ...]:
     """The ``PHASE: answering`` block — draft, then RETURN the answer envelope.
 
     The shell-denied answerer cannot post the reply itself; it hands the draft
@@ -473,6 +474,10 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
         if question:
             lines.append(f"The user's message: {question}")
     lines.extend(_ANSWER_RETURN_LINES)
+    if read_only_venue:
+        lines.append(
+            "The inbound event is under INBOUND EVENT in the task message; you reach no thread or forge from here."
+        )
     if owes_work_item(task.ticket):
         lines.extend(_WORK_ITEM_RETURN_LINES)
         if task.ticket.overlay:
@@ -594,4 +599,7 @@ _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
 _READ_ONLY_PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
     "planning": lambda _task: _PLAN_RETURN_LINES,
     "reviewing": lambda task: _reviewing_phase_lines(task, read_only_venue=True),
+    "answering": lambda task: _answering_phase_lines(task, read_only_venue=True),
+    "requesting_review": lambda _task: REQUESTING_REVIEW_LINES,
+    "shipping": lambda _task: SHIPPING_LINES,
 }

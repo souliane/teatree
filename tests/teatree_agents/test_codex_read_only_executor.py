@@ -615,7 +615,7 @@ def test_selection_runs_a_live_probe_exec(fake: FakeExecutor, monkeypatch: pytes
     assert [call[2] for call in probes] == [EXECUTOR_ID, EXECUTOR_ID]
 
 
-@pytest.mark.parametrize("phase", ["reviewing", "critic_reviewing"])
+@pytest.mark.parametrize("phase", ["reviewing", "critic_reviewing", "answering", "requesting_review", "shipping"])
 def test_review_phases_are_probed_on_each_selection(
     fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch, managed: str, phase: str
 ) -> None:
@@ -670,7 +670,7 @@ class _BarCase(NamedTuple):
         _BarCase("planning", _two_containers, f"2 running {EXECUTOR_SERVICE} containers"),
         _BarCase("planning", _probe_fails, f"{EXECUTOR_SERVICE} is not read-only: / accepted a write"),
         _BarCase("bughunt", _unchanged, "the read-only executor serves only"),
-        _BarCase("shipping", _unchanged, "the read-only executor serves only"),
+        _BarCase("scanning_news", _unchanged, "the read-only executor serves only"),
     ],
     ids=[
         "no-login",
@@ -679,7 +679,7 @@ class _BarCase(NamedTuple):
         "two-containers",
         "probe-fails",
         "bughunt",
-        "shipping",
+        "scanning-news",
     ],
 )
 def test_barred_without_a_passing_executor(
