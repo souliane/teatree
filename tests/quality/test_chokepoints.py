@@ -317,6 +317,7 @@ _NON_CONTENT_PARAMS = frozenset(
         # (#4515). It is the only ``CodeHostBackend`` parameter of that name — a write
         # that carries a branch does so inside ``PullRequestSpec`` (``spec``).
         "branch",
+        "prefix",
         "state",
         "query",
         "expected_head_oid",

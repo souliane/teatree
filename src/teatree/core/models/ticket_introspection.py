@@ -203,8 +203,8 @@ class TicketIntrospectionModel(TicketFacet):
 
         Used by ``review()`` to skip auto-scheduling shipping when there is
         nothing to ship — typically meta-tracker tickets whose work already
-        landed via sibling PRs. Manual ``schedule_shipping()`` callers are not
-        gated.
+        landed via sibling PRs. A held review refuses auto-scheduling;
+        manual ``ship()`` clears the hold.
         """
         worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
         return any(worktree_has_commits_ahead(wt) for wt in worktree_model.objects.filter(ticket=self))

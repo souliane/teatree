@@ -175,6 +175,7 @@ class TestSafetyAndDarkFlagsPinned:
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
+        "user_identity_aliases": [],
         "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
         "eval_ci_account_allowlist": [],
@@ -197,6 +198,7 @@ class TestSafetyAndDarkFlagsPinned:
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
+        "user_identity_aliases": [],
         "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
         "eval_ci_account_allowlist": [],
@@ -209,7 +211,11 @@ class TestSafetyAndDarkFlagsPinned:
 
     @pytest.mark.parametrize("key", sorted(_PINNED))
     def test_shipped_default_matches_pinned_literal(self, key: str) -> None:
-        assert _toml_teatree()[key] == self._PINNED[key]
+        if setting_meta(key).category is Category.DEFAULT:
+            actual = _toml_teatree()[key]
+        else:
+            actual = TeatreeSettingsSchema.model_fields[key].get_default()
+        assert actual == self._PINNED[key]
 
     def test_every_dark_flag_is_pinned_to_its_own_off_value(self) -> None:
         # A dark flag's literal is not free-form: it must equal the flag's declared
@@ -258,6 +264,7 @@ _FIXTURES: dict[str, tuple[list[Any], list[Any]]] = {
         ["x", [], True, 5, {"a": 1}, {"a": True}],
     ),
     "pos_int": ([3, "3", 0, -1], []),  # fail-SAFE: never raises, degrades to its default
+    "owner_wait_minutes": ([30, 1], [True, "30", 0, -1, 2.5, None]),  # fail-SAFE: degrades to 60 and logs
     "harness": (["claude_sdk", "pydantic_ai", "custom_name"], [5]),
     "speak": ([{}, {"local": "off"}, {"local": "dm", "slack": True}], ["x", [], 5]),
     "mr_reminder": ([{}, {"channels": {}}, {"default_channel": "c"}], ["x", [], 5]),
@@ -284,6 +291,7 @@ _KIND_BY_QUALNAME = {
     "parse_speak_setting": "speak",
     "parse_mr_reminder_setting": "mr_reminder",
     "_parse_harness_skill_exclusions": "harness_skill_exclusions",
+    "parse_self_improve_owner_wait_minutes": "owner_wait_minutes",
 }
 
 

@@ -115,7 +115,10 @@ class TestNeverMovedThroughThisPath:
         emitted = _emitted(plan.toml)
         shipped = _shipped()
         for key in moved:
-            assert emitted[key] == shipped[key]
+            if setting_meta(key).category is Category.DEFAULT:
+                assert emitted[key] == shipped[key]
+            else:
+                assert key not in emitted
 
     def test_the_master_fail_open_switch_is_declined(self) -> None:
         # The documented self-rescue (`t3 review gate fail-open enable`) leaves a live
