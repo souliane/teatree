@@ -15,7 +15,6 @@ from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.merge.errors import MergePreconditionError, MergeReplayError
-from teatree.core.merge.partial_merge import hold_for_remainder, read_merged_pr
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolved_repo_slug
 from teatree.core.models import MergeClear
 
@@ -124,6 +123,10 @@ def record_merge_and_advance(
     irreversible GitHub merge already ran before this hook; only this
     idempotent DB write retries).
     """
+    from teatree.core.merge.partial_merge import (  # noqa: PLC0415 — deferred: off `t3 mcp serve` startup
+        hold_for_remainder,
+        read_merged_pr,
+    )
     from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     stamps = authorizers or MergeAuditStamps()
