@@ -357,6 +357,23 @@ class TestQuotedHeavyPayloads:
     def test_command_head_variants_are_denied(self, command: str) -> None:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'echo "$(make all)"',
+            "x=$(make -j$(nproc) all)",
+            'out="$(cd "$(git rev-parse --show-toplevel)" && make test)"',
+            'ver="$(make -j$(nproc) -s version)"',
+            'echo "$(cd x && (make all))"',
+            'echo "$( (tox) )"',
+            'echo "$(webpack --mode "$(echo production)")"',
+            "echo \"$(printf ')' && make all)\"",
+            'echo "$(echo "(" && tox)"',
+        ],
+    )
+    def test_heavy_word_inside_a_live_substitution_that_nests_parens_is_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
 
 class TestHeavyWordIsNotACommand:
     @pytest.mark.parametrize(
@@ -377,6 +394,9 @@ class TestHeavyWordIsNotACommand:
             "echo 'make all'",
             "echo '$(pytest)' \"$(date)\"",
             "echo '`pytest`' `date`",
+            "echo '$(cd x && (make all))'",
+            'git commit -m "make the gate $(date) narrower"',
+            "git commit -m \"$(cat <<'EOF'\nfix it's (see 1) fine\nEOF\n)\"",
         ],
     )
     def test_identifier_or_argument_passes(self, command: str) -> None:
@@ -469,6 +489,30 @@ class TestHeavyScanStaysBounded:
 
     def test_a_verb_after_a_long_blank_line_run_still_denies(self) -> None:
         command = "echo a" + "\n" * 8000 + "uv run pytest"
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize(
+        ("wrapper", "flag"),
+        [("xargs", "-P1"), ("xargs", "-P 1"), ("sudo", "-u"), ("nice", "-n"), ("env", "-u"), ("env", "-u A=1")],
+    )
+    @pytest.mark.parametrize(("tail", "denied"), [("echo hi", False), ("make", True)])
+    def test_repeated_wrapper_flags_are_judged_in_bounded_time(
+        self, wrapper: str, flag: str, tail: str, *, denied: bool
+    ) -> None:
+        command = f"{wrapper} {(flag + ' ') * 40}{tail}"
+        started = time.process_time()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is denied
+        assert time.process_time() - started < 1.0
+
+    @pytest.mark.parametrize("word", ["a", "'a'"])
+    def test_a_long_run_of_words_is_judged_in_bounded_time(self, word: str) -> None:
+        command = "echo " + (word + " ") * (40_000 // (len(word) + 1))
+        started = time.process_time()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.process_time() - started < 1.0
+
+    def test_deeply_nested_substitutions_are_scanned_to_a_bounded_depth(self) -> None:
+        command = "echo " + "$(" * 2000 + "make all" + ")" * 2000
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
 
