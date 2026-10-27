@@ -34,6 +34,12 @@ from teatree.agents.result_schema import (
     conditional_evidence_for_phase,
     required_evidence_for_phase,
 )
+from teatree.core.modelkit.task_failure_taxonomy import (
+    MALFORMED_FIX_RECORD_PREFIX,
+    MALFORMED_RUBRIC_GRADES_PREFIX,
+    MALFORMED_TICKET_SWEEP_PREFIX,
+    OWNER_STOP_REFUSAL_PREFIX,
+)
 
 #: Prefix the agent runner stamps on a run that emitted no JSON object at all.
 NO_ENVELOPE_PREFIX = "no_result_envelope: "
@@ -48,29 +54,7 @@ NO_ENVELOPE_PREFIX = "no_result_envelope: "
 #: identical fingerprint and halted a phase that was never doomed.
 NO_ENVELOPE_ERROR = f"{NO_ENVELOPE_PREFIX}agent produced no JSON result envelope; refusing to record success"
 
-#: Prefix the recorder stamps on a returned ``fix_record`` that parsed but cannot be
-#: written (#4520) — a non-mapping, or one leaving a required field blank. A CONSTANT
-#: so the refusal classifies stably below rather than varying with the missing fields
-#: it names; the fields themselves are appended for the agent to act on.
-MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
-
-#: Prefix the recorder stamps on returned ``rubric_grades`` it cannot stamp — a
-#: non-list, a batch leaving a criterion ungraded, or a grade the guarded factory
-#: refuses. The mirror of :data:`MALFORMED_FIX_RECORD_PREFIX`: it classifies the
-#: refusal as an ENVELOPE refusal, so the reviewer earns ``transient_requeue``'s
-#: one-shot corrective retry rather than being paged as a genuine defect.
-MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
-
-#: Prefix the recorder stamps on a returned ``ticket_sweep`` that names no persisted
-#: run — an unknown id, a run still open, or a count that disagrees with the URLs the
-#: hygiene facade recorded (#162 Rule 4). Same classification as the two above: a sweep
-#: that mis-cited its run earns the corrective retry rather than paging a human, because
-#: the run it was supposed to name usually exists and it named the wrong thing.
-MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
-
-#: Prefixes the reviewing recorders stamp on a returned ``review_context`` / ``anti_vacuity``
-#: block they cannot record. Their tails name keys, never a phrase ``classify_failure`` reads
-#: as another kind (``unexpected keys``, ``missing required evidence``).
+#: Prefixes on review context blocks. They retain the recording-refused failure kind.
 REVIEW_CONTEXT_REFUSAL_PREFIX = "review context recording refused: "
 ANTI_VACUITY_REFUSAL_PREFIX = "anti-vacuity recording refused: "
 
@@ -87,6 +71,7 @@ _RECORDER_REFUSAL_MARKERS = (
     MALFORMED_TICKET_SWEEP_PREFIX.strip().casefold(),
     REVIEW_CONTEXT_REFUSAL_PREFIX.strip().casefold(),
     ANTI_VACUITY_REFUSAL_PREFIX.strip().casefold(),
+    OWNER_STOP_REFUSAL_PREFIX.strip().casefold(),
 )
 
 #: The recorder refusals a REVIEWER fixes by re-emitting its envelope. ``missing required
@@ -118,6 +103,14 @@ def is_review_shape_refusal(error: str) -> bool:
     """Whether *error* refused a reviewer's envelope for a misnamed, misplaced or malformed key."""
     haystack = error.casefold()
     return any(marker in haystack for marker in _REVIEW_SHAPE_REFUSAL_MARKERS)
+
+
+def is_owner_stop_refusal(error: str) -> bool:
+    return OWNER_STOP_REFUSAL_PREFIX.casefold() in error.casefold()
+
+
+def is_rubric_grades_refusal(error: str) -> bool:
+    return MALFORMED_RUBRIC_GRADES_PREFIX.casefold() in error.casefold()
 
 
 def returned_block_refusal(prefix: str, block: str, raw: Mapping[str, object], problems: Sequence[str]) -> str:

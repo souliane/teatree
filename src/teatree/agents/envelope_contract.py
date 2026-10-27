@@ -25,6 +25,7 @@ from teatree.agents.result_schema import (
     conditional_evidence_for_phase,
     required_evidence_for_phase,
 )
+from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
@@ -188,8 +189,11 @@ def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple
         "- `summary` (string) is required on every phase.",
         "- `needs_user_input` is a boolean; when true, set `user_input_reason` (ONE question ending in `?`) and stop.",
         "  Stop for the owner only with `user_input_kind`, `user_input_checked` (facts you checked), `user_input_card`",
-        '  {"why", "blocker", "options": [{"label", "description", "recommended"}]}; 120 words max, plain English:',
+        '  {"why", "blocker", "options": [{"label", "description", "recommended"}]}; plain English:',
         f"  {', '.join(OwnerDecision)}; an access or permission grant is credentials.",
+        *(f"  {line}" for line in owner_stop_limits_lines()),
+        "  Options: none or 2 to 4; when present, exactly one recommended option first.",
+        "  Option labels must be unique and nonblank, and each option needs a consequence.",
         "  Decide everything else yourself.",
         "- If skills were required for this dispatch, include `skill_application`: one",
         '  `{"skill": "name", "evidence": "short concrete reference"}` per skill.',

@@ -3,10 +3,13 @@
 from teatree.agents.envelope_refusal import (
     corrective_instruction,
     is_no_envelope_refusal,
+    is_owner_stop_refusal,
     is_recorder_refusal,
     is_review_shape_refusal,
+    is_rubric_grades_refusal,
     refused_envelope_instruction,
 )
+from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import WRONG_HEAD_RETRY_PREFIX
 from teatree.core.models import Task
@@ -41,10 +44,27 @@ def corrective_note(task: Task, error: str) -> str | None:
             f"Run `t3 review checkout {task.ticket.issue_url} --sha {head}` and verify HEAD. "
             "If checkout still resolves elsewhere, return review_head_mismatch with the observed SHA."
         )
+    if specific := _specific_refusal_note(phase, error):
+        return specific
     if is_no_envelope_refusal(error) or (phase in CORRECTIVE_PHASES and is_recorder_refusal(error)):
         return corrective_instruction(task.phase)
     if phase == "reviewing" and is_review_shape_refusal(error):
         return refused_envelope_instruction(error)
+    return None
+
+
+def _specific_refusal_note(phase: str, error: str) -> str | None:
+    if is_owner_stop_refusal(error):
+        limits = " ".join(owner_stop_limits_lines())
+        return (
+            f"Your owner decision card was refused ({error}). "
+            f"Correct it once and return the complete result envelope. {limits}"
+        )
+    if phase == "reviewing" and is_rubric_grades_refusal(error):
+        return (
+            f"Your rubric grades were refused ({error}). Grade every criterion listed under TICKET RUBRIC "
+            "as it reads now, then return the whole rubric_grades array and complete result envelope."
+        )
     return None
 
 

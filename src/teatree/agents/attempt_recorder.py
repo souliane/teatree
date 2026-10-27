@@ -24,7 +24,7 @@ from django.utils import timezone
 from teatree.agents.action_verification import action_verification_error
 from teatree.agents.coding_result_salvage import salvage_coding_result
 from teatree.agents.envelope_aliases import normalize_envelope_aliases
-from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, OWNER_STOP_REFUSAL_PREFIX
 from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import blocked_before_edits_error, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
@@ -32,7 +32,7 @@ from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
-from teatree.agents.result_schema_owner_stop import OWNER_STOP_SHAPE
+from teatree.agents.result_schema_owner_stop import OWNER_STOP_SHAPE, owner_stop_limits_lines
 from teatree.agents.review_context_recorder import record_returned_review_context
 from teatree.agents.review_envelope_recorder import record_returned_review_envelope, review_head_mismatch_refusal
 from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
@@ -149,9 +149,11 @@ def validate_result_keys(result: AgentResultBlob) -> str:
         return ""
     if (card := QuestionCard.from_envelope(result)) is None:
         kinds = ", ".join(OwnerDecision)
-        return f"user_input_kind {result['user_input_kind']!r} is none of {kinds}; omit it for factory work"
+        reason = f"user_input_kind {result['user_input_kind']!r} is none of {kinds}; omit it for factory work"
+        return f"{OWNER_STOP_REFUSAL_PREFIX}{reason}"
     if problems := card.problems(str(result.get("user_input_reason", ""))):
-        return f"{'; '.join(problems)}. {OWNER_STOP_SHAPE}"
+        limits = " ".join(owner_stop_limits_lines())
+        return f"{OWNER_STOP_REFUSAL_PREFIX}{'; '.join(problems)}. {OWNER_STOP_SHAPE} {limits}"
     return ""
 
 

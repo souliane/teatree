@@ -123,6 +123,12 @@ PLAN_STALE_PREFIX = "plan_stale: "
 #: A missing push-gate credential is a route failure, not an owner action.
 PUSH_OWNERSHIP_VENUE_FAULT = "result_error: push ownership gate could not authenticate"
 
+#: The producer and the recovery classifier share these prefixes so their wording cannot drift.
+OWNER_STOP_REFUSAL_PREFIX = "owner stop card refused: "
+MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
+MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
+MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
+
 
 class FailureKind(models.TextChoices):
     """The named cause of a FAILED task, stamped on the attempt that failed it."""
@@ -339,7 +345,15 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.EVIDENCE_MISSING, ("missing required evidence",)),
     (
         FailureKind.RESULT_SCHEMA_INVALID,
-        ("unexpected keys", "result is not valid json", "result must be a json object"),
+        (
+            "unexpected keys",
+            "result is not valid json",
+            "result must be a json object",
+            OWNER_STOP_REFUSAL_PREFIX,
+            MALFORMED_FIX_RECORD_PREFIX,
+            MALFORMED_RUBRIC_GRADES_PREFIX,
+            MALFORMED_TICKET_SWEEP_PREFIX,
+        ),
     ),
     (FailureKind.RECORDING_REFUSED, ("recording refused",)),
     (FailureKind.HARNESS_CRASH, HARNESS_CRASH_MARKERS),

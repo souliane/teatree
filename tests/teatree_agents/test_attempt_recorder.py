@@ -14,7 +14,7 @@ from teatree.agents.attempt_recorder import (
     validate_result_keys,
 )
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, FailureKind, classify_failure
 from teatree.core.models import (
     DeferredQuestion,
     Directive,
@@ -108,6 +108,7 @@ class TestValidateResultKeys(TestCase):
         error = validate_result_keys(owner_stop("Rotate the deploy token?", "gate_refusal") | {"summary": "x"})
         assert "user_input_kind" in error
         assert "credentials" in error
+        assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
 
 
 class TestRecordResultEnvelope(TestCase):

@@ -10,6 +10,7 @@ would pass every positive assertion.
 
 from django.test import SimpleTestCase
 
+from teatree.agents.attempt_recorder import validate_result_keys
 from teatree.agents.envelope_refusal import (
     MALFORMED_FIX_RECORD_PREFIX,
     NO_ENVELOPE_ERROR,
@@ -19,6 +20,7 @@ from teatree.agents.envelope_refusal import (
     is_recorder_refusal,
     required_keys_phrase,
 )
+from tests._owner_channel import owner_stop
 
 #: A real recorder-side refusal, as ``result_schema.check_evidence`` phrases it.
 _EVIDENCE_REFUSAL = (
@@ -62,6 +64,11 @@ class TestRecorderRefusal(SimpleTestCase):
         """#4520: it earns the one-shot corrective retry, not a page to a human."""
         assert is_recorder_refusal(f"{MALFORMED_FIX_RECORD_PREFIX}these required field(s) are blank: evidence")
         assert not is_no_envelope_refusal(MALFORMED_FIX_RECORD_PREFIX)
+
+    def test_a_refused_owner_card_is_a_recorder_refusal(self) -> None:
+        error = validate_result_keys(owner_stop("Is widget_count ready for ticket 104?"))
+        assert is_recorder_refusal(error)
+        assert not is_recorder_refusal("the question carries internal shorthand")
 
     def test_the_runner_refusal_is_not_a_recorder_refusal(self) -> None:
         assert not is_recorder_refusal(NO_ENVELOPE_ERROR)

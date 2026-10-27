@@ -10,6 +10,12 @@ string resolves to is the one the deleted text predicate produced.
 
 import pytest
 
+from teatree.agents.attempt_recorder import validate_result_keys
+from teatree.agents.envelope_refusal import (
+    MALFORMED_FIX_RECORD_PREFIX,
+    MALFORMED_RUBRIC_GRADES_PREFIX,
+    MALFORMED_TICKET_SWEEP_PREFIX,
+)
 from teatree.core.gates.closed_issue_dispatch_gate import ISSUE_CLOSED_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import (
     CLI_TOO_OLD_PREFIX,
@@ -34,6 +40,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
 )
 from teatree.core.models.plan_decision import PLAN_MISSING_PREFIX
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
+from tests._owner_channel import owner_stop
 
 #: The environmental set as it stood before the table absorbed it. Spelled out literally rather than
 #: derived, so the refactor cannot silently move the operator's diagnostic axis — which is also
@@ -216,6 +223,37 @@ class TestCorrectableFailures:
         assert classify_failure("review verdict recording refused: reviewer identity is a maker role") == (
             FailureKind.RECORDING_REFUSED
         )
+
+    def test_a_refused_owner_card_is_a_correctable_schema_error(self) -> None:
+        error = validate_result_keys(owner_stop("Is widget_count ready for ticket 104?") | {"summary": "x"})
+        assert "internal shorthand" in error
+        assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
+        assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.CORRECTIVE_RETRY
+        assert classify_failure("") == FailureKind.UNRECORDED
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "criteria 1 of ticket 2 are ungraded",
+            "your verdict is merge_safe but you graded criteria 1 FAIL",
+            "a returned grade is malformed",
+        ],
+    )
+    def test_refused_rubric_grades_are_correctable_schema_errors(self, detail: str) -> None:
+        error = f"{MALFORMED_RUBRIC_GRADES_PREFIX}{detail}"
+        assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
+        assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.CORRECTIVE_RETRY
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            f"{MALFORMED_FIX_RECORD_PREFIX}evidence is blank",
+            f"{MALFORMED_TICKET_SWEEP_PREFIX}no sweep run exists",
+        ],
+    )
+    def test_other_malformed_recorder_blocks_keep_their_corrective_strategy(self, error: str) -> None:
+        assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
+        assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.CORRECTIVE_RETRY
 
 
 class TestAProviderBudgetStopIsNamed:
