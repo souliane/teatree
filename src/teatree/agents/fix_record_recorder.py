@@ -28,10 +28,11 @@ from typing import cast
 
 from teatree.agents.envelope_refusal import MALFORMED_FIX_RECORD_PREFIX
 from teatree.agents.result_schema import AgentResultBlob
+from teatree.core.gates.repro_gate import failing_run_required
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import Task
-from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, fix_record_missing_fields
+from teatree.core.models import Task, Ticket
+from teatree.core.models.types import FixRecord, fix_record_missing_fields, fix_record_required_fields
 
 
 def record_returned_fix_record(task: Task, result: AgentResultBlob) -> str:
@@ -46,20 +47,21 @@ def record_returned_fix_record(task: Task, result: AgentResultBlob) -> str:
     raw = result.get("fix_record")
     if raw is None or normalize_phase(task.phase) in ENVELOPE_VERDICT_PHASES:
         return ""
-    if refusal := fix_record_refusal(raw):
+    if refusal := fix_record_refusal(raw, ticket=task.ticket):
         return refusal
     task.ticket.record_fix_record(cast("FixRecord", raw))
     return ""
 
 
-def fix_record_refusal(raw: object) -> str:
+def fix_record_refusal(raw: object, *, ticket: Ticket | None = None) -> str:
     """The refusal for a present but incomplete ``fix_record``, or ``""`` when it is complete."""
-    missing = fix_record_missing_fields(raw)
+    red_required = ticket is None or failing_run_required(ticket)
+    missing = fix_record_missing_fields(raw, red_required=red_required)
     if not missing:
         return ""
     return (
         f"{MALFORMED_FIX_RECORD_PREFIX}these required field(s) are absent or blank: "
         f"{', '.join(missing)}. The fix-record DoD gate consumes all of "
-        f"{', '.join(FIX_RECORD_FIELDS)}, so a partial record satisfies nothing — "
+        f"{', '.join(fix_record_required_fields(red_required=red_required))}, so a partial record satisfies nothing — "
         f"return the whole object or omit the key entirely."
     )
