@@ -11,6 +11,7 @@ from teatree.core.models.checkout_proof import (
 )
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 from teatree.core.models.repo_expansion import TicketRepoExtra
+from teatree.core.models.visual_qa_types import VisualQASummary
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -41,31 +42,6 @@ class SlackAnswerContext(TypedDict, total=False):
     implies_work: bool
     work_summary: str
     work_issue_url: str
-
-
-class VisualQAPageError(TypedDict):
-    kind: str
-    message: str
-
-
-class VisualQAPageDetail(TypedDict):
-    url: str
-    errors: list[VisualQAPageError]
-
-
-class VisualQASummary(TypedDict, total=False):
-    repo_path: str
-    head_sha: str
-    targets: list[str]
-    skipped_reason: str
-    not_run_reason: str
-    base_url: str
-    pages_checked: int
-    errors: int
-    details: list[VisualQAPageDetail]
-    unchecked_reasons: dict[str, str]
-    report_markdown: str
-    bypass: dict[str, str]
 
 
 class PRApprovalsSerialized(TypedDict, total=False):
