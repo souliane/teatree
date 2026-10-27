@@ -53,9 +53,9 @@ from enum import StrEnum
 from typing import Literal
 
 from teatree.core.backend_protocols import CodeHostBackend, IssueResolutionSpec
+from teatree.core.issue_writes.issue_candidate_selection import OpenCandidates, closest_open_candidates, open_candidates
 from teatree.core.issue_writes.issue_candidate_selection import description_of as _description_of
 from teatree.core.issue_writes.issue_candidate_selection import issue_url_of as _issue_url_of
-from teatree.core.issue_writes.issue_candidate_selection import open_candidates, select_closest
 from teatree.core.issue_writes.issue_judgment_audit import record_issue_judgment
 from teatree.core.issue_writes.section_removal import DescriptionRemoval
 from teatree.core.issue_writes.section_removal import remove_description_section as _remove_description_section
@@ -382,22 +382,23 @@ def create_or_extend(
 ) -> CreateOutcome:
     """File *draft* — but only after its closest open candidates have been judged.
 
-    *decisions* must cover the current closest candidates: one marked ``fits`` folds
-    the request into that ticket's description instead of filing; otherwise every
-    candidate needs a rejection *reason*, and those reasons are stored privately
-    so the dedupe is auditable without adding them to the new ticket.
-
-    *snapshot_urls*, when given, is the candidate set the decisions were made against.
-    A newly selected ticket makes the judgment set incomplete, so the outcome is
-    ``stale_snapshot`` and the caller judges again — the window in which two
-    lanes file the same ticket is exactly this one.
+    Decisions cover the closest set. A fitting open ticket outside it is refused;
+    a fitting ticket in it is extended, and rejections need private audit reasons.
+    A newly selected URL outside *snapshot_urls* returns ``stale_snapshot``.
     """
-    live = select_closest(open_candidates(host=host, repo=draft.repo), draft.title, draft.body)
+    candidates = closest_open_candidates(host=host, repo=draft.repo, title=draft.title, body=draft.body)
+    all_open, live = candidates.all_open, candidates.closest
     if snapshot_urls is not None:
         appeared = tuple(sorted(set(live) - set(snapshot_urls)))
         if appeared:
             return CreateOutcome(kind="stale_snapshot", unjudged=appeared)
-    return _commit(host=host, draft=draft, live=live, decisions=decisions, sweep_run_id=sweep_run_id)
+    outside = [
+        d.candidate_url for d in decisions if d.fits and d.candidate_url in all_open and d.candidate_url not in live
+    ]
+    if outside:
+        msg = f"fitting open ticket outside the judged set: {', '.join(sorted(outside))}"
+        raise ValueError(msg)
+    return _commit(host=host, draft=draft, candidates=candidates, decisions=decisions, sweep_run_id=sweep_run_id)
 
 
 def create_or_extend_by_marker(
@@ -429,18 +430,20 @@ def create_or_extend_by_marker(
         )
         for url, issue in live.items()
     ]
-    return _commit(host=host, draft=draft, live=live, decisions=decisions, sweep_run_id=sweep_run_id)
+    candidates = OpenCandidates(all_open=live, closest=live)
+    return _commit(host=host, draft=draft, candidates=candidates, decisions=decisions, sweep_run_id=sweep_run_id)
 
 
 def _commit(
     *,
     host: CodeHostBackend,
     draft: IssueDraft,
-    live: dict[str, RawAPIDict],
+    candidates: OpenCandidates,
     decisions: Sequence[CreateDecision],
     sweep_run_id: str = "",
 ) -> CreateOutcome:
     """Apply *decisions* to the *live* backlog: extend the fitting ticket, or file once."""
+    live = candidates.closest
     judged = {decision.candidate_url for decision in decisions}
     unjudged = tuple(sorted(set(live) - judged))
     if unjudged:
@@ -457,7 +460,9 @@ def _commit(
             raise ValueError(msg)
         outcome = _create(host=host, draft=draft, sweep_run_id=sweep_run_id)
 
-    record_issue_judgment(draft=draft, outcome=outcome, decisions=decisions, live_urls=live)
+    record_issue_judgment(
+        draft=draft, outcome=outcome, decisions=decisions, live_urls=live, open_count=len(candidates.all_open)
+    )
     return outcome
 
 

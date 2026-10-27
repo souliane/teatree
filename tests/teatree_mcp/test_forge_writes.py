@@ -295,7 +295,7 @@ class TestIssueCreateDedupesFirst(TestCase):
         assert [name for name, _ in _writes(fake)] == ["create_issue"]
         assert result["outcome"] == "created_new"
         audit = SendAudit.objects.get(action="github_issue_create_judgment")
-        assert "20 candidates judged" in audit.payload_summary
+        assert "20 candidates judged of 24 open" in audit.payload_summary
 
     def test_close_ticket_filed_after_preview_makes_snapshot_stale(self) -> None:
         open_issues = [

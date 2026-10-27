@@ -457,6 +457,23 @@ class TestCreateOrExtend(_HygieneTestCase):
         assert len(host.creates) == 1
         assert host.updates == []
 
+    def test_open_fit_outside_closest_set_refuses_create(self) -> None:
+        urls = [f"https://gitlab.com/acme/widgets/-/issues/{number:02}" for number in range(1, 23)]
+        host = _FakeHost({url: _issue(url, title="unrelated") for url in urls})
+        decisions = [CreateDecision(candidate_url=url, reason="different") for url in urls[:20]]
+        decisions.append(CreateDecision(candidate_url=urls[21], fits=True))
+
+        with pytest.raises(ValueError, match="outside the judged set"):
+            create_or_extend(
+                host=host,
+                draft=IssueDraft(repo=_REPO, title="new topic", body="new request"),
+                decisions=decisions,
+                snapshot_urls=urls[:20],
+            )
+
+        assert host.mutations == 0
+        assert SendAudit.objects.count() == 0
+
     def test_an_unjudged_open_candidate_refuses_the_create(self) -> None:
         """Skipping the landscape pass is the failure mode; silence is not a rejection."""
         host = self._landscape()

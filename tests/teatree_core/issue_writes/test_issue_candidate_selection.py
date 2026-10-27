@@ -24,6 +24,7 @@ def test_closest_candidates_use_title_and_body_and_have_stable_url_ties() -> Non
     assert len(first) == 20
     assert list(first) == list(reversed_input)
     assert list(first)[:2] == [title_match, body_match]
+    assert list(first)[2:] == sorted(set(live) - {title_match, body_match})[:18]
     assert set(first) <= set(live)
 
 

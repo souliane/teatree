@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.types import RawAPIDict
@@ -10,7 +11,14 @@ _WORDS = re.compile(r"\w+")
 ISSUE_CREATE_CANDIDATE_LIMIT = 20
 
 
+@dataclass(frozen=True)
+class OpenCandidates:
+    all_open: dict[str, RawAPIDict]
+    closest: dict[str, RawAPIDict]
+
+
 def description_of(issue: RawAPIDict) -> str:
+    """GitLab uses description; GitHub uses body."""
     for key in ("description", "body"):
         value = issue.get(key)
         if isinstance(value, str):
@@ -19,6 +27,7 @@ def description_of(issue: RawAPIDict) -> str:
 
 
 def issue_url_of(issue: RawAPIDict) -> str:
+    """GitLab uses web_url; GitHub uses html_url."""
     for key in ("web_url", "html_url", "url"):
         value = issue.get(key)
         if isinstance(value, str) and value:
@@ -27,7 +36,7 @@ def issue_url_of(issue: RawAPIDict) -> str:
 
 
 def open_candidates(*, host: CodeHostBackend, repo: str) -> dict[str, RawAPIDict]:
-    """Return every URL-addressable open issue from one fresh backend listing."""
+    """Read fresh; ticket-scoped LandscapeArtifact may be stale."""
     return {url: issue for issue in host.list_repo_open_issues(repo=repo) if (url := issue_url_of(issue))}
 
 
@@ -62,3 +71,8 @@ def select_closest(
 
     urls = sorted(live, key=lambda url: (-score(live[url]), url))[:limit]
     return {url: live[url] for url in urls}
+
+
+def closest_open_candidates(*, host: CodeHostBackend, repo: str, title: str, body: str) -> OpenCandidates:
+    all_open = open_candidates(host=host, repo=repo)
+    return OpenCandidates(all_open=all_open, closest=select_closest(all_open, title, body))

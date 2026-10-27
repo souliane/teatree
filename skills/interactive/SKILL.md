@@ -52,7 +52,7 @@ mcp__teatree__github_issue_create(
      "open_count": N, "compared": M}
 ```
 
-Judge every returned candidate, then call again with that same snapshot; `open_count - compared`
+Judge every returned candidate, then call again with that same snapshot, title, and body; `open_count - compared`
 is the number of open tickets outside the closest set:
 
 ```text
