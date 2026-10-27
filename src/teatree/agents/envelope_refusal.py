@@ -78,7 +78,6 @@ _RECORDER_REFUSAL_MARKERS = (
 #: evidence`` is left out: a reviewing run that returned no verdict withheld a judgement.
 _REVIEW_SHAPE_REFUSAL_MARKERS = (
     "unexpected keys",
-    MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
     REVIEW_CONTEXT_REFUSAL_PREFIX.strip().casefold(),
     ANTI_VACUITY_REFUSAL_PREFIX.strip().casefold(),
 )

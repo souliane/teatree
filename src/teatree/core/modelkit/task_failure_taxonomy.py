@@ -302,6 +302,8 @@ _UNNAMED: frozenset[str] = frozenset(
 _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # First: the recorder stamps it ahead of a NoCurrentPlanError message that may quote any other phrase.
     (FailureKind.PLAN_STALE, (PLAN_STALE_PREFIX,)),
+    # Also ahead of the rest: a refused card quotes the agent's own words, which can hold any other phrase.
+    (FailureKind.RESULT_SCHEMA_INVALID, (OWNER_STOP_REFUSAL_PREFIX,)),
     (FailureKind.RECORDING_REFUSED, (WRONG_HEAD_RETRY_PREFIX, VENUE_LIMIT_PREFIX)),
     (FailureKind.LEASE_EXPIRED, (LEASE_EXPIRED_PREFIX,)),
     (FailureKind.CANCELLED, (CANCELLED_PREFIX,)),
@@ -350,7 +352,6 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "unexpected keys",
             "result is not valid json",
             "result must be a json object",
-            OWNER_STOP_REFUSAL_PREFIX,
             MALFORMED_FIX_RECORD_PREFIX,
             MALFORMED_RUBRIC_GRADES_PREFIX,
             MALFORMED_TICKET_SWEEP_PREFIX,

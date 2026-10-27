@@ -9,7 +9,6 @@ from teatree.agents.envelope_refusal import (
     is_rubric_grades_refusal,
     refused_envelope_instruction,
 )
-from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import VENUE_LIMIT_PREFIX, WRONG_HEAD_RETRY_PREFIX
 from teatree.core.models import Task
@@ -53,10 +52,10 @@ def corrective_note(task: Task, error: str) -> str | None:
 
 def _specific_refusal_note(phase: str, error: str) -> str | None:
     if is_owner_stop_refusal(error):
-        limits = " ".join(owner_stop_limits_lines())
         return (
-            f"Your owner decision card was refused ({error}). "
-            f"Correct it once and return the complete result envelope. {limits}"
+            f"Your owner question was refused ({error}). Unless only the owner can make this decision, decide it "
+            "yourself from the standing rules and finish the work; if only the owner can, return the complete "
+            "result envelope with a card within those limits, plain JSON, nothing after it."
         )
     if phase == "reviewing" and is_rubric_grades_refusal(error):
         return (

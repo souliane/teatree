@@ -8,6 +8,7 @@ shape actually satisfies the phase evidence gate.
 """
 
 import json
+import re
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
@@ -38,6 +39,19 @@ def _contract_example(text: str) -> dict[str, object]:
     decoded, _ = json.JSONDecoder().raw_decode(block, start)
     assert isinstance(decoded, dict)
     return decoded
+
+
+#: What the brief states when each question_card limit is patched to 7.
+_SENTINEL_FRAGMENTS = {
+    "MAX_CHECKED_FACTS": "1-7 facts",
+    "MAX_QUESTION_CHARS": "question max 7 chars",
+    "MAX_SENTENCE_CHARS": "max 7 chars, one line",
+    "MAX_WORDS": "max 7 words total",
+    "MAX_LABEL_CHARS": "labels unique/nonblank, max 7 chars",
+    "MAX_CONSEQUENCE_CHARS": "consequences max 7 chars",
+    "MIN_OPTIONS": "0 or 7-4",
+    "MAX_OPTIONS": "0 or 2-7",
+}
 
 
 class TestEnvelopeContractText(SimpleTestCase):
@@ -75,22 +89,20 @@ class TestEnvelopeContractText(SimpleTestCase):
             assert f"max {question_card.MAX_WORDS} words total" in text
             assert f"labels unique/nonblank, max {question_card.MAX_LABEL_CHARS} chars" in text
             assert f"consequences max {question_card.MAX_CONSEQUENCE_CHARS} chars" in text
-            assert "0 or 2-4" in text
+            assert f"0 or {question_card.MIN_OPTIONS}-{question_card.MAX_OPTIONS}" in text
             assert "exactly one recommended first" in text
             assert "no ids, paths, flags or code names" in text
 
     def test_each_owner_stop_limit_is_read_at_render_time(self) -> None:
-        fragments = {
-            "MAX_CHECKED_FACTS": "1-7 facts",
-            "MAX_QUESTION_CHARS": "question max 7 chars",
-            "MAX_SENTENCE_CHARS": "max 7 chars, one line",
-            "MAX_WORDS": "max 7 words total",
-            "MAX_LABEL_CHARS": "labels unique/nonblank, max 7 chars",
-            "MAX_CONSEQUENCE_CHARS": "consequences max 7 chars",
-        }
-        for name, fragment in fragments.items():
-            with self.subTest(name=name), patch.object(question_card, name, 7):
-                assert fragment in "\n".join(envelope_contract_lines("shipping")).casefold()
+        for name, fragment in _SENTINEL_FRAGMENTS.items():
+            for phase in ("coding", "shipping", "reviewing"):
+                with self.subTest(name=name, phase=phase), patch.object(question_card, name, 7):
+                    assert fragment in "\n".join(envelope_contract_lines(phase)).casefold()
+
+    def test_every_question_card_limit_is_stated_or_exempt(self) -> None:
+        limits = {name for name in vars(question_card) if re.fullmatch(r"(?:MAX|MIN)_[A-Z_]+", name)}
+        not_agent_authored = {"MAX_CARD_TITLE_CHARS"}
+        assert limits - not_agent_authored == set(_SENTINEL_FRAGMENTS)
 
     def test_final_output_reminder_names_the_phase_evidence_key(self) -> None:
         line = final_output_reminder_line(_WORK_PHASE)

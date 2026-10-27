@@ -12,9 +12,9 @@ import pytest
 
 from teatree.agents.attempt_recorder import validate_result_keys
 from teatree.agents.envelope_refusal import (
-    MALFORMED_FIX_RECORD_PREFIX,
-    MALFORMED_RUBRIC_GRADES_PREFIX,
-    MALFORMED_TICKET_SWEEP_PREFIX,
+    ANTI_VACUITY_REFUSAL_PREFIX,
+    REVIEW_CONTEXT_REFUSAL_PREFIX,
+    is_recorder_refusal,
 )
 from teatree.core.gates.closed_issue_dispatch_gate import ISSUE_CLOSED_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import (
@@ -22,7 +22,11 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     COMPACTION_BLOCKED_MARKER,
     CONTEXT_EXHAUSTED_MARKER,
     HEAD_SUPERSEDED_PREFIX,
+    MALFORMED_FIX_RECORD_PREFIX,
+    MALFORMED_RUBRIC_GRADES_PREFIX,
+    MALFORMED_TICKET_SWEEP_PREFIX,
     NON_REPAIR_KINDS,
+    OWNER_STOP_REFUSAL_PREFIX,
     PLAN_STALE_PREFIX,
     RECOVERY,
     RESULT_ERROR_MARKER,
@@ -40,7 +44,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
 )
 from teatree.core.models.plan_decision import PLAN_MISSING_PREFIX
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
-from tests._owner_channel import owner_stop
+from tests._owner_channel import OWNER_CARD, owner_stop
 
 #: The environmental set as it stood before the table absorbed it. Spelled out literally rather than
 #: derived, so the refactor cannot silently move the operator's diagnostic axis — which is also
@@ -244,15 +248,30 @@ class TestCorrectableFailures:
         assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
         assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.CORRECTIVE_RETRY
 
+    def test_a_refused_owner_card_quoting_another_matchers_phrase_is_still_a_schema_error(self) -> None:
+        options = [
+            {"label": f"limit_parked: {'x' * 40}", "description": "I go ahead.", "recommended": True},
+            {"label": "No", "description": "I leave it as it is."},
+        ]
+        card = {"why": OWNER_CARD.why, "blocker": OWNER_CARD.blocker, "options": options}
+        error = validate_result_keys(owner_stop("Is the budget approved?") | {"user_input_card": card, "summary": "x"})
+        assert "limit_parked:" in error
+        assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
+
     @pytest.mark.parametrize(
-        "error",
+        "prefix",
         [
-            f"{MALFORMED_FIX_RECORD_PREFIX}evidence is blank",
-            f"{MALFORMED_TICKET_SWEEP_PREFIX}no sweep run exists",
+            OWNER_STOP_REFUSAL_PREFIX,
+            MALFORMED_FIX_RECORD_PREFIX,
+            MALFORMED_RUBRIC_GRADES_PREFIX,
+            MALFORMED_TICKET_SWEEP_PREFIX,
+            REVIEW_CONTEXT_REFUSAL_PREFIX,
+            ANTI_VACUITY_REFUSAL_PREFIX,
         ],
     )
-    def test_other_malformed_recorder_blocks_keep_their_corrective_strategy(self, error: str) -> None:
-        assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
+    def test_every_recorder_refusal_prefix_earns_the_corrective_retry(self, prefix: str) -> None:
+        error = f"{prefix}something is wrong"
+        assert is_recorder_refusal(error)
         assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.CORRECTIVE_RETRY
 
 

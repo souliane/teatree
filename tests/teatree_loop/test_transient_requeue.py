@@ -23,6 +23,7 @@ from django.utils import timezone
 
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX, NO_ENVELOPE_ERROR
+from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.modelkit.task_failure_taxonomy import (
     CANCELLED_PREFIX,
     HEAD_SUPERSEDED_PREFIX,
@@ -344,23 +345,36 @@ class TestTransientRequeue(TestCase):
         assert "tests_run" in task.execution_reason
         assert "envelope" in task.execution_reason.lower()
 
-    def test_refused_owner_card_reopens_once_on_a_non_coding_phase(self) -> None:
+    def test_refused_owner_card_reopens_once_on_every_phase_with_the_limits(self) -> None:
+        error = validate_result_keys(owner_stop("Is widget_count ready for ticket 104?") | {"summary": "x"})
+        for phase in ("coding", "debugging", "testing", "planning", "shipping", "reviewing"):
+            with self.subTest(phase=phase):
+                task = _failed_task(
+                    phase=phase, state=Ticket.State.TESTED if phase == "reviewing" else Ticket.State.WORK_STARTED
+                )
+                _add_failed_attempt(task, error=error)
+
+                assert requeue_transient_failed() == 1
+                task.refresh_from_db()
+                assert task.status == Task.Status.PENDING
+                assert "[auto-corrective-retry]" in task.execution_reason
+                assert "internal shorthand" in task.execution_reason
+                assert "decide it yourself" in task.execution_reason
+                assert all(line in task.execution_reason for line in owner_stop_limits_lines())
+                assert not DeferredQuestion.objects.exists()
+
+    def test_second_refused_owner_card_escalates(self) -> None:
         task = _failed_task(phase="planning")
         error = validate_result_keys(owner_stop("Is widget_count ready for ticket 104?") | {"summary": "x"})
         _add_failed_attempt(task, error=error)
-
         assert requeue_transient_failed() == 1
-        task.refresh_from_db()
-        assert task.status == Task.Status.PENDING
-        assert "internal shorthand" in task.execution_reason
-        assert "120 words" in task.execution_reason
-        assert "160 chars" in task.execution_reason
-        assert "[auto-corrective-retry]" in task.execution_reason
 
         _add_failed_attempt(task, error=error.replace("widget_count", "another_code_name"))
+
         assert requeue_transient_failed() == 0
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+        assert HALT_STAMP in task.execution_reason
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
     def test_refused_rubric_grade_reopens_once_with_a_complete_grading_instruction(self) -> None:
@@ -374,6 +388,7 @@ class TestTransientRequeue(TestCase):
         assert "TICKET RUBRIC" in task.execution_reason
         assert "every criterion" in task.execution_reason
         assert "whole rubric_grades array" in task.execution_reason
+        assert "exactly those keys corrected" not in task.execution_reason
 
         _add_failed_attempt(task, error=f"{MALFORMED_RUBRIC_GRADES_PREFIX}still ungraded")
         assert requeue_transient_failed() == 0

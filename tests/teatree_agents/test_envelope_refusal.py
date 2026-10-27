@@ -13,11 +13,14 @@ from django.test import SimpleTestCase
 from teatree.agents.attempt_recorder import validate_result_keys
 from teatree.agents.envelope_refusal import (
     MALFORMED_FIX_RECORD_PREFIX,
+    MALFORMED_RUBRIC_GRADES_PREFIX,
     NO_ENVELOPE_ERROR,
     NO_ENVELOPE_PREFIX,
     corrective_instruction,
     is_no_envelope_refusal,
     is_recorder_refusal,
+    is_review_shape_refusal,
+    is_rubric_grades_refusal,
     required_keys_phrase,
 )
 from tests._owner_channel import owner_stop
@@ -69,6 +72,11 @@ class TestRecorderRefusal(SimpleTestCase):
         error = validate_result_keys(owner_stop("Is widget_count ready for ticket 104?"))
         assert is_recorder_refusal(error)
         assert not is_recorder_refusal("the question carries internal shorthand")
+
+    def test_a_refused_rubric_grade_is_corrected_by_its_own_note_not_the_key_error_one(self) -> None:
+        error = f"{MALFORMED_RUBRIC_GRADES_PREFIX}criteria 1 of ticket 2 are ungraded"
+        assert is_rubric_grades_refusal(error)
+        assert not is_review_shape_refusal(error)
 
     def test_the_runner_refusal_is_not_a_recorder_refusal(self) -> None:
         assert not is_recorder_refusal(NO_ENVELOPE_ERROR)
