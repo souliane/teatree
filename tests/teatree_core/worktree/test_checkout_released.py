@@ -201,7 +201,8 @@ class ReleasedPrHeadRecoveryTests(TestCase):
 
     def test_released_custody_reads_prior_tasks_once(self) -> None:
         with CaptureQueriesContext(connection) as queries:
-            assert self.claim() is None
+            attempt = self.claim()
+            assert attempt is None, attempt.error
         task_reads = [query for query in queries if "SELECT" in query["sql"] and Task._meta.db_table in query["sql"]]
         assert len(task_reads) == 1
 

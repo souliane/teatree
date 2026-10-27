@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.forge_pr_probe import GithubOpenPrHead
-from teatree.core.models import DeferredQuestion, TaskAttempt, UnshippedWorkRecord
+from teatree.core.models import DeferredQuestion, TaskAttempt, UnshippedWorkRecord, Worktree
 from teatree.core.models.checkout_custody import ABANDONED_EXIT, Custody, Tenure
 from teatree.core.models.worktree_occupancy import task_holder_id
 from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park
@@ -104,14 +104,30 @@ class CheckoutSafetyTests(TestCase):
         assert len(record.unpushed_commits) == 3
         assert Path(f"{record.artifact_prefix}.commits.patch").stat().st_size > 0
 
+    def test_custody_recovery_preserves_unpushed_commits_before_claim(self) -> None:
+        Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
+        self._record_prior_writer()
+
+        assert self._claim(ProcessTable(frozenset(), "/proc")) is None
+        assert UnshippedWorkRecord.objects.filter(checkout_path=str(self.checkout)).exists()
+
     def test_unpushed_commits_without_writer_history_park(self) -> None:
         attempt = self._claim(ProcessTable(frozenset(), "/proc"))
         assert attempt is not None
-        assert "recorded ticket writer" in attempt.error
+        assert "owned pull request" in attempt.error
 
     def test_unwritable_bundle_parks_before_claim(self) -> None:
         self._record_prior_writer()
         with patch("teatree.core.worktree.checkout_safety.capture_unshipped_work", return_value=None):
+            attempt = self._claim(ProcessTable(frozenset(), "/proc"))
+        assert attempt is not None
+        assert "could not be preserved" in attempt.error
+
+    def test_unreadable_bundle_readback_parks_before_claim(self) -> None:
+        self._record_prior_writer()
+        with patch("teatree.core.worktree.checkout_safety.bundle_path") as artifact:
+            artifact.return_value.is_file.return_value = True
+            artifact.return_value.read_text.side_effect = OSError("unreadable")
             attempt = self._claim(ProcessTable(frozenset(), "/proc"))
         assert attempt is not None
         assert "could not be preserved" in attempt.error
@@ -123,6 +139,7 @@ class CheckoutSafetyTests(TestCase):
         assert self.worktree.get_extra()["auto_attestation"]["process_evidence"] == "venue"
 
     def test_foreign_edit_parks_quietly_then_retries(self) -> None:
+        Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
         self._record_prior_writer()
         foreign = self.checkout / "foreign.txt"
         foreign.write_text("unowned")

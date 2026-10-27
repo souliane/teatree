@@ -15,6 +15,7 @@ from teatree.core.cleanup.unshipped_work import (
     probe_unshipped_work,
 )
 from teatree.core.forge_push_refs import head_is_detached, operation_in_progress
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Worktree
 from teatree.core.models.checkout_custody import Custody
 from teatree.core.models.worktree_occupancy import occupancy_holder, task_holder_id
@@ -37,10 +38,26 @@ class _ProcessProof:
 class _Preservation:
     commits: int
     artifact_prefix: str
+    requires_pr: bool = False
 
 
-def _checkout_obstacle(path: Path, state: "CheckoutState") -> str:
-    if state.uncommitted:
+@dataclass(frozen=True)
+class CheckoutSafetyEvidence:
+    process: _ProcessProof
+    preserved: _Preservation
+    recover_crash_dirt: bool
+
+
+def _bundle_matches(prefix: str, expected: str) -> bool:
+    try:
+        bundle = bundle_path(prefix, COMMITS_SUFFIX)
+        return bundle.is_file() and bundle.read_text() == expected
+    except OSError:
+        return False
+
+
+def _checkout_obstacle(path: Path, state: "CheckoutState", *, allow_deferred_dirt: bool) -> str:
+    if state.uncommitted and not allow_deferred_dirt:
         return f"checkout {path} holds {state.uncommitted} uncommitted file(s) the factory did not record"
     if operation := operation_in_progress(str(path)):
         return f"checkout {path} has {operation} in progress"
@@ -71,23 +88,27 @@ def _process_proof(task: Task, worktree: Worktree, table: ProcessTable) -> _Proc
     return _ProcessProof("venue", venue)
 
 
-def _preserve_unpushed(task: Task, worktree: Worktree, branch: str) -> _Preservation | str:
+def _preserve_unpushed(
+    task: Task, worktree: Worktree, state: "CheckoutState", *, trusted_attestation: bool
+) -> _Preservation | str:
     path = Path(worktree.worktree_path)
+    if state.commits_ahead == 0:
+        return _Preservation(0, "")
     observed = probe_unshipped_work(path)
     if observed.unreadable:
         return f"checkout {path} unshipped work could not be read: {observed.unreadable}"
     if not observed.unpushed_commits:
         return _Preservation(0, "")
-    custody = Custody.from_extra(worktree.get_extra())
-    if custody is None or interrupted_writer(task, custody) is None:
-        return f"checkout {path} has unpushed commits without a recorded ticket writer"
-    record = capture_unshipped_work(path, branch=branch, overlay=task.ticket.overlay)
+    if not trusted_attestation:
+        custody = Custody.from_extra(worktree.get_extra())
+        if custody is None or interrupted_writer(task, custody) is None:
+            return _Preservation(0, "", requires_pr=True)
+    record = capture_unshipped_work(path, branch=state.branch, overlay=task.ticket.overlay)
     if (
         record is None
         or record.unreadable
         or record.unpushed_commits != observed.unpushed_commits
-        or not bundle_path(record.artifact_prefix, COMMITS_SUFFIX).is_file()
-        or bundle_path(record.artifact_prefix, COMMITS_SUFFIX).read_text() != observed.commits_patch
+        or not _bundle_matches(record.artifact_prefix, observed.commits_patch)
     ):
         return f"checkout {path} unpushed commits could not be preserved"
     return _Preservation(len(observed.unpushed_commits), record.artifact_prefix)
@@ -107,27 +128,53 @@ def _head_obstacle(task: Task, worktree: Worktree, state: "CheckoutState", prese
     return ""
 
 
-def auto_attest_safe_checkout(task: Task, worktree: Worktree, state: "CheckoutState", table: ProcessTable) -> str:
+def assess_checkout_safety(
+    task: Task,
+    worktree: Worktree,
+    state: "CheckoutState",
+    table: ProcessTable,
+    *,
+    attested: str | None,
+) -> CheckoutSafetyEvidence | str:
     path = Path(worktree.worktree_path)
-    if obstacle := _checkout_obstacle(path, state):
+    deferred = worktree.get_extra().get("deferred_exit")
+    custody = Custody.from_extra(worktree.get_extra()) if state.uncommitted else None
+    prior = interrupted_writer(task, custody) if custody is not None else None
+    recover_crash_dirt = prior is not None and prior.failure_kind == FailureKind.HARNESS_CRASH
+    allow_deferred_dirt = (
+        attested == state.digest
+        or (isinstance(deferred, dict) and deferred.get("digest") == state.digest)
+        or recover_crash_dirt
+    )
+    if obstacle := _checkout_obstacle(path, state, allow_deferred_dirt=allow_deferred_dirt):
         return obstacle
     proof = _process_proof(task, worktree, table)
     if isinstance(proof, str):
         return proof
-    preserved = _preserve_unpushed(task, worktree, state.branch)
+    trusted = attested in {state.digest, f"owner:{state.digest}"} or allow_deferred_dirt
+    preserved = _preserve_unpushed(task, worktree, state, trusted_attestation=trusted)
     if isinstance(preserved, str):
         return preserved
-    if obstacle := _head_obstacle(task, worktree, state, preserved):
+    if not checkout_state_unchanged(task, worktree, state):
+        return f"checkout {path} changed during safety verification"
+    return CheckoutSafetyEvidence(proof, preserved, recover_crash_dirt)
+
+
+def auto_attest_safe_checkout(
+    task: Task, worktree: Worktree, state: "CheckoutState", evidence: CheckoutSafetyEvidence
+) -> str:
+    path = Path(worktree.worktree_path)
+    if obstacle := _head_obstacle(task, worktree, state, evidence.preserved):
         return obstacle
 
     audit: SafeCheckoutAttestation = {
         "at": timezone.now().isoformat(),
         "digest": state.digest,
         "branch": state.branch,
-        "process_evidence": proof.source,
-        "process_table": {"source": proof.table.source, "gaps": list(proof.table.gaps)},
+        "process_evidence": evidence.process.source,
+        "process_table": {"source": evidence.process.table.source, "gaps": list(evidence.process.table.gaps)},
         "holder": {"id": task_holder_id(task), "session": task.claimed_by_session},
-        "preserved": {"commits": preserved.commits, "artifact_prefix": preserved.artifact_prefix},
+        "preserved": {"commits": evidence.preserved.commits, "artifact_prefix": evidence.preserved.artifact_prefix},
     }
     worktree.merge_extra(set_keys={"attested_state": state.digest, "auto_attestation": audit})
     saved = Worktree.objects.get(pk=worktree.pk).get_extra()

@@ -26,7 +26,11 @@ from teatree.core.models.worktree_occupancy import (
 from teatree.core.worktree.checkout_attest import checkout_rows
 from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_released import reattest_released_pr_head
-from teatree.core.worktree.checkout_safety import auto_attest_safe_checkout
+from teatree.core.worktree.checkout_safety import (
+    CheckoutSafetyEvidence,
+    assess_checkout_safety,
+    auto_attest_safe_checkout,
+)
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
 
@@ -91,6 +95,27 @@ def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
     _anchor_verified_checkout(task, worktree, state, namespace=namespace)
 
 
+def _reattest_changed_checkout(
+    task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable, evidence: CheckoutSafetyEvidence
+) -> bool:
+    if evidence.preserved.requires_pr:
+        return reattest_released_pr_head(task, worktree, state, table)
+    return (
+        attest_deferred_exit(task, worktree, state, table)
+        or reattest_on_proof(task, worktree, state, table)
+        or reattest_released_pr_head(task, worktree, state, table)
+    )
+
+
+def _fallback_attestation(
+    task: Task, worktree: Worktree, state: CheckoutState, evidence: CheckoutSafetyEvidence, attested: str | None
+) -> str:
+    custody = Custody.from_extra(worktree.get_extra())
+    if attested != state.digest and custody is not None and custody.tenures and not evidence.preserved.commits:
+        return f"checkout {worktree.worktree_path} prior custody could not be recovered"
+    return auto_attest_safe_checkout(task, worktree, state, evidence)
+
+
 def _accept_changed_checkout(
     task: Task,
     worktree: Worktree,
@@ -100,14 +125,25 @@ def _accept_changed_checkout(
 ) -> None:
     if attested == f"owner:{state.digest}":
         return
+    evidence = assess_checkout_safety(task, worktree, state, table, attested=attested)
+    if isinstance(evidence, str):
+        raise CheckoutFenceError(evidence)
+    if state.uncommitted:
+        if attested == state.digest:
+            return
+        if attest_deferred_exit(task, worktree, state, table):
+            return
+        if evidence.recover_crash_dirt and reattest_on_proof(task, worktree, state, table):
+            return
+        reason = f"checkout {worktree.worktree_path} holds {state.uncommitted} uncommitted file(s)"
+        raise CheckoutFenceError(reason)
+    needs_recovery = (
+        attested != state.digest or not table.usable or table.eviction_gaps or evidence.preserved.requires_pr
+    )
     if (
-        (attested != state.digest or not table.usable or table.eviction_gaps)
-        and not (
-            attest_deferred_exit(task, worktree, state, table)
-            or reattest_on_proof(task, worktree, state, table)
-            or reattest_released_pr_head(task, worktree, state, table)
-        )
-        and (reason := auto_attest_safe_checkout(task, worktree, state, table))
+        needs_recovery
+        and not _reattest_changed_checkout(task, worktree, state, table, evidence)
+        and (reason := _fallback_attestation(task, worktree, state, evidence, attested))
     ):
         raise CheckoutFenceError(reason)
 
