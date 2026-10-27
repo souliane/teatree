@@ -12,7 +12,12 @@ from django.utils import timezone
 
 from teatree.backends.gitlab.http_client import GitLabHTTPClient
 from teatree.config.cold_reader import SettingRead
-from teatree.core.gates.forge_write_guard import WriteRefusedError
+from teatree.core.gates.forge_write_guard import (
+    ForgeWriteGuard,
+    WriteRefusedError,
+    item_key_of_endpoint,
+    item_key_of_url,
+)
 from teatree.core.models.send_audit import SendAudit
 from teatree.core.push.fast_push import GlabForge
 
@@ -127,6 +132,52 @@ class TestGitLabWriteGuard(TestCase):
                         with pytest.raises(WriteRefusedError):
                             client.put_response(endpoint, {})
                         request.assert_not_called()
+
+    def test_own_items_only_refuses_paths_that_do_not_name_one_item(self) -> None:
+        endpoints = (
+            "projects/group%2Frepo/merge_requests/7/../../issues/8",
+            "projects/group%2Frepo/merge_requests/7/%2e%2e/%2e%2e/issues/8",
+            "projects/group%2Frepo/merge_requests/7abc",
+            "projects/group%2Frepo/merge_requests/%37",
+            "projects/group%2Frepo/labels/3",
+            "projects/group/repo/merge_requests/7",
+        )
+        client = GitLabHTTPClient(token="CLIENT")
+        sends = {"put": lambda endpoint: client.put_response(endpoint, {}), "delete": client.delete}
+        for method, send in sends.items():
+            for endpoint in endpoints:
+                with (
+                    self.subTest(method=method, endpoint=endpoint),
+                    self._setting({"own_items_only": True}),
+                    patch("httpx.get", side_effect=self._item_reads(author="me")) as read,
+                    patch(f"httpx.{method}", return_value=_response(method.upper())) as write,
+                    pytest.raises(WriteRefusedError),
+                ):
+                    send(endpoint)
+                read.assert_not_called()
+                write.assert_not_called()
+
+    def test_own_items_only_checks_authorship_on_delete(self) -> None:
+        for author, allowed in (("me", True), ("colleague", False)):
+            with (
+                self.subTest(author=author),
+                self._setting({"own_items_only": True}),
+                patch("httpx.get", side_effect=self._item_reads(author=author)),
+                patch("httpx.delete", return_value=_response("DELETE")) as write,
+            ):
+                client = GitLabHTTPClient(token="CLIENT")
+                if allowed:
+                    client.delete("projects/group%2Frepo/merge_requests/7/notes/5")
+                    write.assert_called_once()
+                else:
+                    with pytest.raises(WriteRefusedError):
+                        client.delete("projects/group%2Frepo/merge_requests/7/notes/5")
+                    write.assert_not_called()
+
+    def test_item_keys_casefold_the_project_and_quick_actions_escape_on_every_line(self) -> None:
+        assert item_key_of_endpoint("projects/Group%2FRepo/merge_requests/7/notes") == "group/repo/merge_requests/7"
+        assert item_key_of_url("https://gitlab.com/Group/Repo/-/merge_requests/7") == "group/repo/merge_requests/7"
+        assert ForgeWriteGuard(escape_quick_actions=True).shape("ok\n/close") == "ok\n\\/close"
 
     def test_hour_window_expires_while_day_window_remains(self) -> None:
         endpoint = "projects/group%2Frepo/issues/7/notes"

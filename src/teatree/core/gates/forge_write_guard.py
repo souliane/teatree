@@ -39,9 +39,14 @@ def item_key_of_endpoint(endpoint: str) -> str:
 
 
 def item_endpoint_of(endpoint: str) -> str:
-    match endpoint.lstrip("/").split("?", 1)[0].split("/"):
-        case ["projects", project, ("issues" | "merge_requests") as kind, iid, *_]:
+    parts = endpoint.lstrip("/").split("?", 1)[0].split("/")
+    if any(unquote(part) in {".", ".."} for part in parts):
+        _refuse("GitLab endpoint path is not canonical")
+    match parts:
+        case ["projects", project, ("issues" | "merge_requests") as kind, iid, *_] if iid.isascii() and iid.isdecimal():
             return f"projects/{project}/{kind}/{iid}"
+        case ["projects", *_]:
+            _refuse("GitLab write target could not be matched to an item")
         case _:
             return ""
 
