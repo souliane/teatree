@@ -342,21 +342,27 @@ def test_real_pytest_collects_a_small_directory() -> None:
     assert "collected" in small.stdout
 
 
-@pytest.mark.timeout(420)
-def test_real_tach_scoped_invocation_is_never_refused() -> None:
+@pytest.mark.timeout(120)
+def test_real_tach_scoped_invocation_is_never_refused(tmp_path: Path) -> None:
     """The exact flags-only shape ``dev/test-affected.sh`` emits on a doc-only diff.
 
     Reproduces souliane/teatree's own local-default lane end to end: no explicit test
     ids, just ``--tach --tach-base <ref> -p force_keep_plugin`` — the shape a diff with
     zero changed src modules always produces (``SelectionResult.pytest_args``). Before
     the ``tach_active`` carve-out this hit the whole-tree guard on EVERY such run.
-    Unlike the refused case above, a real collection runs here (the guard no longer
-    short-circuits it), so this is slower than the default per-test timeout affords.
+    Collection exits immediately after the startup guard accepts the invocation.
     """
     repo = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     for name in ("CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
         env.pop(name, None)
+    (tmp_path / "stop_after_startup_4998.py").write_text(
+        "import pytest\n\n"
+        "def pytest_collection(session: pytest.Session) -> None:\n"
+        "    pytest.exit('startup accepted', returncode=0)\n",
+        encoding="utf-8",
+    )
+    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), env.get("PYTHONPATH", "")))
     result = subprocess.run(
         [
             sys.executable,
@@ -369,6 +375,8 @@ def test_real_tach_scoped_invocation_is_never_refused() -> None:
             "origin/main",
             "-p",
             "teatree.quality.force_keep_plugin",
+            "-p",
+            "stop_after_startup_4998",
             "--collect-only",
             "-q",
         ],
@@ -376,9 +384,11 @@ def test_real_tach_scoped_invocation_is_never_refused() -> None:
         env=env,
         capture_output=True,
         text=True,
-        timeout=360,
+        timeout=90,
         check=False,
     )
+    assert result.returncode == 0, result.stderr
+    assert "startup accepted" in result.stdout
     assert "unsharded whole-tree pytest is refused" not in result.stderr
 
 
