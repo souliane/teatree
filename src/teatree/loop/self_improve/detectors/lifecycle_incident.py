@@ -26,6 +26,7 @@ from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
+from teatree.loop.self_improve.detectors.task_failure_coverage import failures_handled_by_finished_repair
 
 _MESSAGE_WAIT = timedelta(hours=1)
 _POST_WAIT = timedelta(minutes=10)
@@ -80,18 +81,23 @@ class LifecycleIncidentDetector:
         now: datetime,
         ticket_allowed: bool = True,
     ) -> str:
+        firing = None
+        if kind == "task_failed":
+            firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
+            if failures_handled_by_finished_repair(firing, ids):
+                return ActionRung.STATUSLINE
         if ticket_allowed and len(ids) >= _RECURRING_FAILURE:
             return ActionRung.TICKET
-        firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
-        if firing is None or firing.resolved_at is not None:
-            return ActionRung.STATUSLINE
-        if ticket_allowed and firing.last_action == ActionRung.TICKET:
-            return ActionRung.TICKET
-        age = now - firing.first_fired_at
-        if ticket_allowed and age >= self.repair_after:
-            return ActionRung.TICKET
-        if age >= self.owner_alert_after:
-            return ActionRung.SLACK
+        if kind != "task_failed":
+            firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
+        if firing is not None and firing.resolved_at is None:
+            if ticket_allowed and firing.last_action == ActionRung.TICKET:
+                return ActionRung.TICKET
+            age = now - firing.first_fired_at
+            if ticket_allowed and age >= self.repair_after:
+                return ActionRung.TICKET
+            if age >= self.owner_alert_after:
+                return ActionRung.SLACK
         return ActionRung.STATUSLINE
 
     def detect(self) -> list[DetectorReport]:
