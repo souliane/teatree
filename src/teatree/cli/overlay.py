@@ -237,7 +237,7 @@ class OverlayAppBuilder:
             for sub_name, sub_help in dj_group.subcommands:
                 self._bridge_subcommand(
                     group,
-                    group_name,
+                    dj_group.command_name or group_name,
                     sub_name,
                     sub_help,
                     core_dispatch=dj_group.resolve_core_dispatch(

@@ -327,6 +327,20 @@
       "subcommands": []
     },
     {
+      "help": "Create or remove a signed GitHub repository webhook.",
+      "name": "github_webhook",
+      "subcommands": [
+        {
+          "help": "",
+          "name": "connect"
+        },
+        {
+          "help": "",
+          "name": "disconnect"
+        }
+      ]
+    },
+    {
       "help": "Hand all current work from this session to another session.",
       "name": "handover",
       "subcommands": [
