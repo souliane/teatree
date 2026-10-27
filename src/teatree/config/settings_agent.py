@@ -91,6 +91,15 @@ class _ModeHarnessSettings:
         AgentHarness.CLAUDE_SDK,
         spec=SettingSpec(help="which agent CLI teatree drives (claude, codex, ...)", parse=parse_harness_name),
     )
+    agent_advisor_model: str = setting(
+        "",
+        spec=SettingSpec(
+            help="advisor model for headless Claude CLI child spawns",
+            parse=_parse_strict_str,
+            category=Category.PERSONAL,
+            box_global=True,
+        ),
+    )
     # Layer 2 of the two-layer harness config model (#2887): the provider/
     # credential an agent run authenticates with, CONSTRAINED by Layer 1
     # (``AgentHarnessProvider.valid_for(agent_harness)`` — see the enum
@@ -268,7 +277,7 @@ class _ModeHarnessSettings:
     # matching the ceilings above. Per-overlay overridable.
     envelope_stop_gate_refusals: int = setting(
         2,
-        spec=SettingSpec(help="refuse a turn that ends without the required result envelope", parse=_parse_strict_int),
+        spec=SettingSpec(help="envelope-less turn-ends one run may have refused; 0 disables", parse=_parse_strict_int),
     )
     # Per-RUN turn ceiling pinned on the headless ``claude_sdk`` spawn
     # (``ClaudeAgentOptions.max_turns`` via ``agents/_runner_options``). Cache-read

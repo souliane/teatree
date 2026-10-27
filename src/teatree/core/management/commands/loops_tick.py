@@ -31,11 +31,13 @@ its own dedicated ``LoopLease``.
 import datetime as dt
 import os
 import uuid
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 
 import typer
+from django.db import DatabaseError
 from django_typer.management import TyperCommand
 
 from teatree.config.discovery import overlay_entry_points_scanned_once
@@ -44,7 +46,10 @@ from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.machine_output import emit
 from teatree.core.models import LoopLease
+from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.review.pr_inventory import OpenPrRow, open_pr_rows
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
+from teatree.loop.pr_stall import StallRepair, repair_stalled_prs
 from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line_reader
 from teatree.loops.preset_status import overridden_loop_names, preset_line_handles
 from teatree.loops.tick_cost import record_tick_cost
@@ -56,6 +61,7 @@ if TYPE_CHECKING:
     from teatree.loops.base import BuildJobsContext
 
 type ReportDict = dict[str, Any]
+
 
 #: The dedicated lease slot the reinstall drain acquires so parallel per-loop
 #: ticks never both re-anchor the same pending reinstall; its short TTL doubles as
@@ -129,7 +135,33 @@ class _ScopedJobsBuilder:
         return list(outcome.jobs)
 
 
-def _report_to_dict(report: "TickReport", *, blocked_reason: str = "") -> ReportDict:
+def _open_pr_rows(report: "TickReport") -> list[OpenPrRow]:
+    read_errors: list[str] = []
+    try:
+        rows = open_pr_rows(report.started_at, errors=read_errors)
+    except (OSError, ValueError, DatabaseError) as exc:
+        report.errors["open_prs"] = f"open-PR inventory unreadable: {exc}"
+        return []
+    if read_errors:
+        report.errors["open_prs"] = f"{len(read_errors)} PR inventory source(s) unreadable: {'; '.join(read_errors)}"
+    return rows
+
+
+def _stall_repairs(report: "TickReport", rows: Sequence[OpenPrRow]) -> list[StallRepair]:
+    try:
+        return repair_stalled_prs(rows)
+    except (DatabaseError, OSError, ValueError, NoPlanArtifactError) as exc:
+        report.errors["pr_stall"] = f"stall repair failed ({type(exc).__name__}): {exc}"
+        return []
+
+
+def _report_to_dict(
+    report: "TickReport",
+    *,
+    blocked_reason: str = "",
+    open_prs: Sequence[OpenPrRow] = (),
+    stall_repairs: Sequence[StallRepair] = (),
+) -> ReportDict:
     """The structured tick report, carrying any loop-table refusal as a real skip.
 
     A loop the loop-table declined to dispatch is ``skipped`` — NOT a zero-signal
@@ -144,6 +176,11 @@ def _report_to_dict(report: "TickReport", *, blocked_reason: str = "") -> Report
         "actions": [asdict(action) for action in report.actions],
         "skipped": bool(blocked_reason),
         "skipped_reason": blocked_reason,
+        "open_prs": [
+            {key: getattr(row, key) for key in ("ref", "url", "age", "next_task", "started", "stall")}
+            for row in open_prs
+        ],
+        "stall_repairs": [asdict(repair) for repair in stall_repairs],
     }
 
 
@@ -164,6 +201,8 @@ def _skipped_report_dict(started_at: dt.datetime, reason: str) -> ReportDict:
         "actions": [],
         "skipped": True,
         "skipped_reason": reason,
+        "open_prs": [],
+        "stall_repairs": [],
     }
 
 
@@ -233,7 +272,14 @@ class Command(TyperCommand):
             raise SystemExit(2)
         return TickRequest(backends=named)
 
-    def _emit_report(self, report: "TickReport", loop: str, *, blocked_reason: str, json_output: bool) -> None:
+    def _emit_report(
+        self,
+        report: "TickReport",
+        loop: str,
+        *,
+        json_output: bool,
+        blocked_reason: str,
+    ) -> bool:
         """Emit the tick report, leading with a ``ran`` OR a reasoned ``SKIP`` verdict.
 
         A tick used to print NOTHING on the success path (``human`` was ``None``
@@ -249,19 +295,33 @@ class Command(TyperCommand):
         *blocked_reason* is set the verdict is a SKIP naming what refused the
         loop and how to lift it.
         """
+        open_prs = [] if blocked_reason else _open_pr_rows(report)
+        repairs = _stall_repairs(report, open_prs)
         verdict = (
             f"SKIP  loop {loop!r} did not run — {blocked_reason}"
             if blocked_reason
             else f"ran   loop {loop!r} — {report.signal_count} signal(s), {report.action_count} action(s)"
         )
         warnings = [f"WARN  {name}: {message}" for name, message in report.errors.items()]
+        listing = [f"OPEN  {row.ref}  {row.age}  {row.next_task}" for row in open_prs]
+        stalls = [f"STALL {repair.ref}  {repair.cause}  {repair.action}" for repair in repairs]
         emit(
-            _report_to_dict(report, blocked_reason=blocked_reason),
+            _report_to_dict(report, blocked_reason=blocked_reason, open_prs=open_prs, stall_repairs=repairs),
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human="\n".join([verdict, *warnings]),
+            human="\n".join([verdict, *warnings, *listing, *stalls]),
         )
+        return bool(report.signal_count or report.action_count or repairs)
+
+    @staticmethod
+    def _set_statusline_readers(*, active: bool) -> None:
+        from teatree.loop.statusline import set_mini_loop_schedules_reader  # noqa: PLC0415 — lazy command import
+        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415 — deferred: keeps command import light
+
+        set_mini_loop_schedules_reader(mini_loop_schedules if active else None)
+        set_preset_line_reader(preset_line_handles if active else None)
+        set_overridden_loops_reader(overridden_loop_names if active else None)
 
     def _run_followup_dry_run(self, *, overlay: str, json_output: bool) -> None:
         """``--dry-run``: scan built-in follow-up jobs, omit overlay hooks, and report breaches.
@@ -418,9 +478,7 @@ class Command(TyperCommand):
             )
             return
 
-        from teatree.loop.statusline import set_mini_loop_schedules_reader  # noqa: PLC0415 — lazy command import
         from teatree.loop.tick import run_tick  # noqa: PLC0415 — deferred: keeps command import light
-        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415 — deferred: keeps command import light
 
         # The statusline dedicated loop line shows due-soon loops with their own
         # next-tick countdowns (#1400) under the active-preset/schedule handle
@@ -429,24 +487,27 @@ class Command(TyperCommand):
         # it (the overridden-loops reader is what activates the collapse — so it is
         # installed together with the preset segment that represents the folded
         # loops), then reset after the tick so the process-global seams never leak.
-        set_mini_loop_schedules_reader(mini_loop_schedules)
-        set_preset_line_reader(preset_line_handles)
-        set_overridden_loops_reader(overridden_loop_names)
+        self._set_statusline_readers(active=True)
         builder = _ScopedJobsBuilder(loop=loop)
         found_work = False
         try:
-            with overlay_entry_points_scanned_once():
-                request = self._build_request(overlay)
-                report = run_tick(request, statusline_path=statusline_file, jobs_builder=builder)
-                found_work = bool(report.signal_count or report.action_count)
+            try:
+                with overlay_entry_points_scanned_once():
+                    request = self._build_request(overlay)
+                    report = run_tick(request, statusline_path=statusline_file, jobs_builder=builder)
+            finally:
+                self._set_statusline_readers(active=False)
+                LoopLease.objects.release(tick_mutex, owner=owner)
+
+            found_work = self._emit_report(
+                report,
+                loop,
+                json_output=json_output,
+                blocked_reason=builder.blocked_reason,
+            )
         finally:
-            set_mini_loop_schedules_reader(None)
-            set_preset_line_reader(None)
-            set_overridden_loops_reader(None)
-            LoopLease.objects.release(tick_mutex, owner=owner)
             record_tick_cost(loop, found_work=found_work)
 
-        self._emit_report(report, loop, blocked_reason=builder.blocked_reason, json_output=json_output)
         self._hard_exit_if_subprocess()
 
     @staticmethod

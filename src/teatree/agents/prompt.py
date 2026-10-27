@@ -30,9 +30,10 @@ from teatree.agents.skill_injection import (
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import Task, Ticket
+from teatree.core.models import SessionCommand, Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.task_handoff import dispatch_reason
+from teatree.core.review.review_plan import ReviewPlan, plan_for_task
 
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
@@ -158,6 +159,11 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
     lines = _task_header_lines(task, extra)
     lines.extend(_format_pr_context(extra))
     lines.extend(_ticket_context_lines(ticket))
+    queued = list(
+        SessionCommand.objects.filter(task=task, outcome="queued").order_by("pk").values_list("text", flat=True)
+    )
+    if queued:
+        lines.extend(("", "Operator messages queued for this task's next run:", *queued))
 
     lines.extend(
         ("", "Instructions:", *_OWNER_STOP_LINES, *_VERIFY_GATES_LINES, final_output_reminder_line(task.phase))
@@ -180,33 +186,64 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
     return "\n".join(lines)
 
 
+def _read_only_review_diff_lines(task: Task, facts: ReadOnlyFacts, plan: ReviewPlan | None) -> tuple[str, ...]:
+    if facts.review_diff:
+        diff = ("", f"DIFF UNDER REVIEW at dispatched head {facts.review_head}:", facts.review_diff)
+    elif plan is not None and plan.delta.case == "delta":
+        diff = ("", f"DIFF UNDER REVIEW at dispatched head {plan.head}:", plan.delta.patch)
+    elif normalize_phase(task.phase) == "reviewing" and task.ticket.role == Ticket.Role.AUTHOR:
+        diff = review_diff_brief_lines(task)
+    else:
+        diff = ()
+    if facts.review_head:
+        return (*diff, "", f"WORKER CI at dispatched head {facts.review_head}: {facts.review_checks}")
+    return diff
+
+
 def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     """The task message for the read-only executor: every fact inline and in full, and no CLI step."""
     ticket: Ticket = task.ticket
+    review_plan = plan_for_task(task) if normalize_phase(task.phase) == "reviewing" else None
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     lines = _task_header_lines(task, extra)
     lines.extend(_format_pr_context(extra))
-    lines.extend(("", "Issue body (read from the forge for you):", facts.issue_body or "(empty)"))
+    triage = normalize_phase(task.phase) == "triage_assessing"
+    lines.extend(
+        (
+            "",
+            "Listed issues, each under its URL (read from the forge for you):"
+            if triage
+            else "Issue body (read from the forge for you):",
+            facts.issue_body or "(empty)",
+        )
+    )
     if facts.issue_comments:
         lines.extend(("", "Issue comments, oldest first (read from the forge for you):", facts.issue_comments))
     if facts.ticket_context:
         lines.extend(("", "Ticket context (durable knowledge store, in full):", facts.ticket_context))
     if facts.handoff:
         lines.extend(("", "Predecessor result (handoff JSON, in full):", facts.handoff))
-    if facts.review_diff:
-        lines.extend(("", f"DIFF UNDER REVIEW at dispatched head {facts.review_head}:", facts.review_diff))
-        lines.extend(("", f"WORKER CI at dispatched head {facts.review_head}: {facts.review_checks}"))
-    elif normalize_phase(task.phase) == "reviewing" and ticket.role == Ticket.Role.AUTHOR:
-        lines.extend(review_diff_brief_lines(task))
+    lines.extend(_read_only_review_diff_lines(task, facts, review_plan))
     if parent_summary := _parent_result_summary(task):
         lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))
+    if facts.draft_facts:
+        lines.extend(("", facts.draft_facts))
     if normalize_phase(task.phase) == "reviewing":
-        lines.extend(read_only_text(line) for line in (*rubric_brief_lines(task), *declared_seams_brief_lines(task)))
+        lines.extend(
+            read_only_text(line)
+            for line in (
+                *(review_plan.brief_lines(include_patch=False) if review_plan is not None else ()),
+                *rubric_brief_lines(task, plan=review_plan),
+                *declared_seams_brief_lines(task),
+            )
+        )
     lines.extend(("", "Instructions:", *_OWNER_STOP_LINES))
     if normalize_phase(task.phase) == "planning":
         lines.append("5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.")
-    lines.append(final_output_reminder_line(task.phase))
+    if triage:
+        lines.append("5. The listed issues above are the pages to fetch: assess them from this text and fetch nothing.")
+    lines.append(final_output_reminder_line(task.phase, read_only_venue=True))
     return "\n".join(lines)
 
 
@@ -408,7 +445,9 @@ def _render_system_context(request: _ContextRequest, *, handoff: Path | None) ->
                 if read_only_venue
                 else _WRAP_UP_LINES
             ),
-            *envelope_contract_lines(task.phase, reviewer_identity=_assigned_reviewer_identity(task)),
+            *envelope_contract_lines(
+                task.phase, reviewer_identity=_assigned_reviewer_identity(task), read_only_venue=read_only_venue
+            ),
             "",
             "IMPORTANT: If only the owner can decide, STOP immediately and emit:",
             '  {"summary": "...", "needs_user_input": true, "user_input_kind": "<kind>",',

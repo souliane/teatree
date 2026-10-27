@@ -32,9 +32,17 @@ from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
-from teatree.agents.result_schema_owner_stop import OWNER_STOP_SHAPE
+from teatree.agents.result_schema_draft import executor_draft_evidence_error, is_executor_draft_run
+from teatree.agents.result_schema_owner_stop import owner_stop_refusal
 from teatree.agents.review_context_recorder import record_returned_review_context
-from teatree.agents.review_envelope_recorder import record_returned_review_envelope
+from teatree.agents.review_envelope_recorder import (
+    record_returned_review_envelope,
+    review_head_mismatch_refusal,
+    review_venue_limit_refusal,
+    settle_review_venue_limit,
+)
+from teatree.agents.review_request_recorder import record_returned_review_request
+from teatree.agents.ship_readiness_recorder import record_returned_ship_readiness
 from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
@@ -43,7 +51,7 @@ from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, PUSH_OWNERSHIP_VENUE_FAULT
-from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
+from teatree.core.models import NoCurrentPlanError, SessionCommand, Task, TaskAttempt
 from teatree.core.models.critic_dispatch import CriticDispatch as _CriticDispatch
 from teatree.core.models.critic_verdict import CRITIC_EVIDENCE_UNAVAILABLE_PREFIX as _CRITIC_EVIDENCE_UNAVAILABLE_PREFIX
 from teatree.core.models.task_claim import atomic_after_checkout_exit
@@ -105,7 +113,7 @@ class AttemptUsage:
     # The per-request usage records the run's transport measured (``teatree.llm.usage_tee``);
     # empty on a lane that measures none.
     usage_per_request: "list[RequestRecord]" = dataclasses.field(default_factory=list)
-    # The run's tool-call trajectory (``pydantic_ai_session._StreamedToolCapture``); empty when unmeasured.
+    # The run's tool-call trajectory (``pydantic_ai_turn.StreamedToolCapture``); empty when unmeasured.
     trajectory: "list[ToolCallEntry]" = dataclasses.field(default_factory=list)
 
 
@@ -149,9 +157,11 @@ def validate_result_keys(result: AgentResultBlob) -> str:
         return ""
     if (card := QuestionCard.from_envelope(result)) is None:
         kinds = ", ".join(OwnerDecision)
-        return f"user_input_kind {result['user_input_kind']!r} is none of {kinds}; omit it for factory work"
+        return owner_stop_refusal(
+            f"user_input_kind {result['user_input_kind']!r} is none of {kinds}; omit it for factory work"
+        )
     if problems := card.problems(str(result.get("user_input_reason", ""))):
-        return f"{'; '.join(problems)}. {OWNER_STOP_SHAPE}"
+        return owner_stop_refusal("; ".join(problems))
     return ""
 
 
@@ -204,12 +214,21 @@ def record_result_envelope(
     """
     usage = usage or AttemptUsage()
     result = normalize_envelope_aliases(result)
+    operator_inputs = list(
+        SessionCommand.objects.filter(task=task, outcome__in=["accepted_current_turn", "accepted_new_turn", "queued"])
+        .order_by("pk")
+        .values_list("text", flat=True)
+    )
+    if operator_inputs or "operator_inputs" in result:
+        result = {**result, "operator_inputs": operator_inputs}
     checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
     result = checked.result
     if checked.error:
         return _record_failure(task, error=checked.error, result=result, usage=usage)
 
-    server_side_error = _record_returned_envelopes(task, result, phase=phase)
+    server_side_error = _record_returned_envelopes(
+        task, result, phase=phase, executor_draft_run=is_executor_draft_run(phase or task.phase, usage.selected_harness)
+    )
     if server_side_error:
         return _record_failure(task, error=server_side_error, result=result, usage=usage)
 
@@ -234,6 +253,7 @@ def record_result_envelope(
                 result=recorded_result,
                 **usage_fields(usage),
             )
+            SessionCommand.objects.filter(task=task, outcome="queued").update(outcome="accepted_new_turn")
             task.complete(result_artifact_path="")
     except NoCurrentPlanError as exc:
         task.refresh_from_db()
@@ -355,9 +375,12 @@ def _check_before_recording(
     out so that function stays a short record-or-refuse decision over ONE verdict
     rather than a ladder of early returns.
     """
-    schema_error = validate_result_keys(result)
-    if schema_error:
-        return _PreRecordCheck(schema_error, result)
+    if error := (
+        validate_result_keys(result)
+        or review_head_mismatch_refusal(task, result, phase=phase)
+        or review_venue_limit_refusal(task, result, phase=phase)
+    ):
+        return _PreRecordCheck(error, result)
 
     if (
         normalize_phase(phase or task.phase) in {"coding", "debugging"}
@@ -373,7 +396,15 @@ def _check_before_recording(
     if action_error:
         return _PreRecordCheck(action_error, result)
 
-    evidence_error = check_evidence(result, phase or task.phase) or _answering_work_item_error(task, result, phase)
+    evidence_error = (
+        (
+            ""
+            if is_executor_draft_run(phase or task.phase, usage.selected_harness)
+            else check_evidence(result, phase or task.phase)
+        )
+        or _answering_work_item_error(task, result, phase)
+        or executor_draft_evidence_error(phase or task.phase, result, selected_harness=usage.selected_harness)
+    )
     if evidence_error:
         salvaged = salvage_coding_result(task, result, phase=phase)
         if salvaged is None:
@@ -392,7 +423,7 @@ def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) 
     return missing_work_item_error(task, result)
 
 
-def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str, executor_draft_run: bool) -> str:
     """Record every shell-denied hand-back that carries a maker≠checker write, short-circuit.
 
     A headless phase denied the shell RETURNS its typed verdict/sketch instead of
@@ -412,7 +443,14 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
         return critic_error
     fix_error = record_returned_fix_record(task, result)
     sweep_error = fix_error or verify_returned_ticket_sweep(result)
-    return sweep_error or record_returned_directive_interpretation(task, result)
+    draft_error = sweep_error or (
+        executor_draft_run
+        and (
+            record_returned_review_request(task, result, phase=phase)
+            or record_returned_ship_readiness(task, result, phase=phase)
+        )
+    )
+    return draft_error or record_returned_directive_interpretation(task, result)
 
 
 def _record_failure(
@@ -431,6 +469,7 @@ def _record_failure(
         **usage_fields(usage),
     )
     task.fail_claimed(reason=error)
+    settle_review_venue_limit(task, error)
     if error.startswith(_CRITIC_EVIDENCE_UNAVAILABLE_PREFIX):
         _CriticDispatch.rearm_unverified(task)
     return attempt

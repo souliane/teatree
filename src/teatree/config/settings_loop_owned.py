@@ -17,11 +17,28 @@ as declaration bases of ``UserSettings`` — see that module's docstring for why
 are inheritance bases rather than composed attributes.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import ClassVar
 
 from teatree.config.declaration import Category, SettingSpec, setting
-from teatree.config.setting_parsers import _parse_strict_bool, _parse_strict_float, _parse_strict_int, _parse_strict_str
+from teatree.config.setting_parsers import (
+    _parse_str_list,
+    _parse_strict_bool,
+    _parse_strict_float,
+    _parse_strict_int,
+    _parse_strict_str,
+)
+
+logger = logging.getLogger(__name__)
+MAX_SELF_IMPROVE_OWNER_WAIT_MINUTES = 1440
+
+
+def parse_self_improve_owner_wait_minutes(raw: object) -> int:
+    if type(raw) is int and 1 <= raw <= MAX_SELF_IMPROVE_OWNER_WAIT_MINUTES:
+        return raw
+    logger.error("Invalid self_improve_owner_wait_minutes %r; using 60", raw)
+    return 60
 
 
 @dataclass
@@ -122,9 +139,6 @@ class _FollowupLoopSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "followup")
 
-    review_nag_max_interval_days: int = setting(
-        30, spec=SettingSpec(help="ceiling on the review nag's widening re-ask interval", parse=_parse_strict_int)
-    )
     review_nag_reask_mention: str = setting(
         "",
         spec=SettingSpec(
@@ -175,9 +189,20 @@ class _InboxLoopSettings:
 
 @dataclass
 class _IssueImplementerLoopSettings:
-    """The intake scanner's own walk budget — the ceilings and labels are kill switches."""
+    """The intake scanner's repo scope, walk budget, and idle-hold window; ceilings and labels are kill switches."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "issue_implementer")
+
+    issue_intake_repos: list[str] = setting(
+        default_factory=list,
+        spec=SettingSpec(
+            help=(
+                "Repo slugs replacing the overlay-owned intake scope; undeclared repos allowed; "
+                "branch-like prefixes rejected; empty or all-invalid uses owned repos"
+            ),
+            parse=_parse_str_list,
+        ),
+    )
 
     # Below the scan phase's 60s pool deadline on purpose: past that one the thread is
     # abandoned rather than stopped, so it keeps mutating rows after the tick ended and
@@ -187,6 +212,13 @@ class _IssueImplementerLoopSettings:
         spec=SettingSpec(
             help="seconds the intake scanner walks candidates before recording a resume point",
             parse=_parse_strict_float,
+        ),
+    )
+    issue_intake_idle_hold_hours: int = setting(
+        0,
+        spec=SettingSpec(
+            help="hours a started ticket may sit idle before intake claims nothing new; 0 is off",
+            parse=_parse_strict_int,
         ),
     )
 
@@ -263,6 +295,18 @@ class _ReviewLoopSettings:
 
 
 @dataclass
+class _SelfImproveLoopSettings:
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "self_improve")
+
+    self_improve_owner_wait_minutes: int = setting(
+        60,
+        spec=SettingSpec(
+            help="minutes before one still-open repair notice", parse=parse_self_improve_owner_wait_minutes
+        ),
+    )
+
+
+@dataclass
 class _SnapshotWarmerLoopSettings:
     """When a reference-DB snapshot counts as stale enough to re-warm."""
 
@@ -304,6 +348,7 @@ LOOP_OWNED_SETTING_BASES: tuple[type, ...] = (
     _NewsLoopSettings,
     _ResourcePressureLoopSettings,
     _ReviewLoopSettings,
+    _SelfImproveLoopSettings,
     _SnapshotWarmerLoopSettings,
     _TicketsLoopSettings,
 )

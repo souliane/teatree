@@ -3,12 +3,14 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
 from django.test import TestCase
 
 from teatree.agents.phase_blocks import (
+    _reviewing_phase_lines,
     build_reviewer_dispatch_prompt,
     embedded_intake_survey_json,
     intake_survey_json,
@@ -22,9 +24,19 @@ from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import CANONICAL_PHASES
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
-from teatree.core.models import AutoReviewDispatch, ConfigSetting, LandscapeArtifact, PullRequest, Session, Task, Ticket
+from teatree.core.models import (
+    AutoReviewDispatch,
+    ConfigSetting,
+    LandscapeArtifact,
+    PullRequest,
+    RoundMetric,
+    Session,
+    Task,
+    Ticket,
+)
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
+from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 
 
@@ -32,6 +44,25 @@ def _task(phase: str, *, kind: Ticket.Kind = Ticket.Kind.FEATURE) -> Task:
     ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, kind=kind)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase)
+
+
+class TestReviewerMissingLiveHead(TestCase):
+    def test_missing_live_head_never_injects_a_local_full_diff(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example/repo/pull/8",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "a" * 40},
+        )
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+
+        with (
+            patch("teatree.agents.phase_blocks.plan_for_task", return_value=None),
+            patch("teatree.agents.phase_blocks._green_proof_binding_lines", return_value=()),
+            patch("teatree.agents.phase_blocks.review_diff_brief_lines", side_effect=AssertionError("local diff")),
+        ):
+            lines = _reviewing_phase_lines(task)
+
+        assert any("review_venue_limit" in line and "live head" in line for line in lines)
 
 
 class TestPhaseSpecificLinesDispatch(TestCase):
@@ -48,6 +79,17 @@ class TestPhaseSpecificLinesDispatch(TestCase):
         lines = phase_specific_lines(_task("bughunt"), [])
         assert "PHASE: bughunt" in lines
         assert any("find-then-verify" in line and "N=3" in line for line in lines)
+
+    def test_execution_phases_name_the_current_worker_and_their_command(self) -> None:
+        for phase, command in (
+            ("bughunt", "reproduce"),
+            ("dogfood_smoke", "t3 dogfood overlay-provision-smoke"),
+            ("eval_local", "t3 eval run"),
+        ):
+            with self.subTest(phase=phase):
+                brief = "\n".join(phase_specific_lines(_task(phase), []))
+                assert "current worker" in brief
+                assert command in brief
 
 
 class TestTheReviewerIsToldToGradeTheRubric(TestCase):
@@ -66,11 +108,13 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
         brief = self._reviewing_brief()
         assert "rubric_grades" in brief
         assert "ordinal" in brief
+        assert "text_hash" in brief
         assert "rationale" in brief
 
     def test_the_reviewing_brief_requires_every_criterion_graded(self) -> None:
         brief = self._reviewing_brief()
-        assert "EVERY criterion" in brief
+        assert "Grade every row except CARRIED" in brief
+        assert "An ungraded RE-GRADE row records nothing" in brief
         assert "records nothing" in brief
 
     def test_the_reviewing_brief_says_a_pass_cites_a_test_and_a_fail_does_not(self) -> None:
@@ -99,6 +143,39 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
 
     def test_a_non_reviewing_brief_does_not_carry_it(self) -> None:
         assert "rubric_grades" not in "\n".join(phase_specific_lines(_task("coding"), []))
+
+    def test_delta_review_uses_persisted_patch_instead_of_whole_branch_diff(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example/repo/pull/1",
+            overlay="teatree",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewer")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=1,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+fixed line\n",
+                "delta_files": ["src/f.py"],
+                "carried": [],
+            },
+        )
+
+        with (
+            patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of(head)),
+            patch("teatree.agents.phase_blocks.review_diff_brief_lines", side_effect=AssertionError("whole diff")),
+        ):
+            brief = "\n".join(phase_specific_lines(task, []))
+
+        assert "REVIEW CASE: delta since aaaaaaaaaaaa" in brief
+        assert "+fixed line" in brief
 
     def test_every_phase_the_recorder_bills_for_coverage_is_shown_the_checklist(self) -> None:
         # The recorder refuses a verdict leaving a criterion ungraded, so a phase it bills
@@ -179,14 +256,14 @@ class TestFixRecordDirective(TestCase):
     def test_a_fix_coding_brief_asks_for_record_red_by_default(self) -> None:
         assert "repro record-red" in self._brief("coding", Ticket.Kind.FIX)
 
-    def test_a_switched_off_fix_brief_keeps_the_fields_and_drops_record_red(self) -> None:
+    def test_a_switched_off_fix_brief_omits_failing_run_claims(self) -> None:
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
         for phase in ("coding", "debugging"):
             task = _task(phase, kind=Ticket.Kind.FIX)
             brief = "\n".join(phase_specific_lines(task, []))
             assert "THIS IS A FIX TICKET" in brief
-            assert all(field in brief for field in FIX_RECORD_FIELDS)
-            assert "repro record-red" not in brief
+            assert all(field in brief for field in FIX_RECORD_FIELDS if field != "observed_red")
+            assert not any(term in brief for term in ("observed_red", "RED-first", "repro record-red", "revert-to-RED"))
             task.ticket.refresh_from_db()
             assert "forced_repro_disabled_scopes" not in task.ticket.extra
 
@@ -211,6 +288,15 @@ class TestFixRecordDirective(TestCase):
         assert '"fix_record"' in brief
         assert "only with merge_safe" in brief
         assert "repro record-red" not in brief
+        assert '"observed_red"' in brief
+        assert "observed_red is your own revert-to-RED proof" in brief
+
+    def test_the_review_of_a_fix_pr_omits_failing_run_claims_when_switched_off(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        brief = self._review_brief_for_pr_owned_by(Ticket.Kind.FIX)
+        assert "only with merge_safe" in brief
+        assert all(field in brief for field in FIX_RECORD_FIELDS if field != "observed_red")
+        assert not any(term in brief for term in ("observed_red", "RED-first", "repro record-red", "revert-to-RED"))
 
     def test_an_issue_anchored_review_is_told_the_live_head_it_is_checked_against(self) -> None:
         live = "d" * 40
@@ -365,12 +451,13 @@ class TestEnvelopeVerdictPhasesIsExactlyWhatTheBriefTeaches(TestCase):
     #: asks for the envelope the orchestrator must record server-side.
     _RETURN_DIRECTIVE = "RECORD YOUR VERDICT BY RETURNING IT"
 
-    def test_reviewer_brief_keeps_full_dispatched_head_refusal(self) -> None:
+    def test_reviewer_brief_keeps_head_refusal_and_one_live_head_retry(self) -> None:
         brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
-        assert "Any other head is REFUSED and records nothing" in brief
-        assert "one or return needs_user_input" in brief
-        assert "OMITTING `reviewed_sha` is REFUSED too" in brief
-        assert "dispatched one, so a verdict that names no head records nothing at all" in brief
+        assert "A verdict for another head is REFUSED" in brief
+        assert '"review_head_mismatch": {"observed_sha":' in brief
+        assert "without review_verdict or owner question" in brief
+        assert "Factory retries once at the live head" in brief
+        assert "Missing `reviewed_sha` is REFUSED" in brief
 
     def _phases_briefed_for_the_envelope(self) -> set[str]:
         return {
@@ -413,6 +500,49 @@ class TestAnsweringWorkItemBlock(TestCase):
         lines = phase_specific_lines(self._answering_task(implies_work=False), [])
 
         assert not any("work_item" in line for line in lines)
+
+    def test_only_the_ticket_overlay_adds_work_item_lines(self) -> None:
+        class ExtendedMetadata(OverlayMetadata):
+            def work_item_return_lines(self) -> tuple[str, ...]:
+                return ("Offer the optional routing key.",)
+
+        first = self._answering_task(implies_work=True)
+        first.ticket.overlay = "extended"
+        first.ticket.save(update_fields=["overlay"])
+        second = self._answering_task(implies_work=True)
+        second.ticket.overlay = "ordinary"
+        second.ticket.save(update_fields=["overlay"])
+
+        def resolve(ticket: Ticket) -> SimpleNamespace:
+            metadata = ExtendedMetadata() if ticket.overlay == "extended" else OverlayMetadata()
+            return SimpleNamespace(metadata=metadata)
+
+        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket", side_effect=resolve):
+            extended = phase_specific_lines(first, [])
+            ordinary = phase_specific_lines(second, [])
+        assert "Offer the optional routing key." in extended
+        assert "Offer the optional routing key." not in ordinary
+
+    def test_empty_ticket_overlay_keeps_base_work_item_lines_without_loading_overlay(self) -> None:
+        task = self._answering_task(implies_work=True)
+        assert task.ticket.overlay == ""
+        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket") as resolve:
+            lines = phase_specific_lines(task, [])
+        resolve.assert_not_called()
+        assert any("work_item" in line for line in lines)
+
+    def test_raising_overlay_hook_keeps_the_base_brief(self) -> None:
+        class RaisingMetadata(OverlayMetadata):
+            def work_item_return_lines(self) -> tuple[str, ...]:
+                raise RuntimeError
+
+        task = self._answering_task(implies_work=True)
+        task.ticket.overlay = "raising"
+        task.ticket.save(update_fields=["overlay"])
+        overlay = SimpleNamespace(metadata=RaisingMetadata())
+        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket", return_value=overlay):
+            lines = phase_specific_lines(task, [])
+        assert any("work_item" in line for line in lines)
 
 
 class TestReviewingBriefAssignsTheIdentity(TestCase):
@@ -457,7 +587,12 @@ class TestReviewingGreenProofBinding(TestCase):
         return Task.objects.create(ticket=ticket, session=session, phase="reviewing")
 
     def _brief(self, **kwargs: str) -> str:
-        return "\n".join(phase_specific_lines(self._reviewer_task(**kwargs), []))
+        head = kwargs["reviewed_sha"]
+        with (
+            patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of(head)),
+            patch("teatree.agents.phase_blocks.live_head_at", return_value=LiveHeadRead.of(head)),
+        ):
+            return "\n".join(phase_specific_lines(self._reviewer_task(**kwargs), []))
 
     def test_brief_names_the_head_and_the_expect_sha_command(self) -> None:
         brief = self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha=self._HEAD)

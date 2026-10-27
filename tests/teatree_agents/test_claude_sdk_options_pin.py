@@ -67,8 +67,8 @@ from tests._git_repo import make_git_repo, run_git
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
 # Every headless spawn loads only the injected teatree MCP server (strict_mcp_config).
-_OPTIONS_SHA256 = "42c8cf5a49f4f809e574e50e7cb54b67140b89c52d4e0e44b0a7a40a33aa1435"
-_SYSTEM_CONTEXT_SHA256 = "bb04cf62ed0861ea3764880bf25fad8536034fe486e7dc5965f580d2592b41e5"
+_OPTIONS_SHA256 = "d37cd554c7d14544aa6b957c072558cf244028cb69ede2910c455230a07cc49f"
+_SYSTEM_CONTEXT_SHA256 = "c18ec84bdc3f1e8dd6a635f567d09d35e443379cbd08212372e2a417973d406d"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]
 
@@ -186,8 +186,8 @@ def _carries_a_compaction_switch(launch: _Launch) -> bool:
     return any(switch in env or any(switch in arg for arg in argv) for switch in _COMPACTION_SWITCHES)
 
 
-class TestOnlyTheFactoryRunsUncompacted(TestCase):
-    """The compaction switch reaches the factory's ``claude`` child and never an attended session."""
+class TestOnlyABoundedFactoryChildRunsUncompacted(TestCase):
+    """The compaction switch reaches only a bounded factory child that asks for it, never an attended session."""
 
     def setUp(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -435,6 +435,7 @@ class TestInteractiveSessionsArePinned(TestCase):
 
     def test_factory_only_settings_reach_no_attended_session(self) -> None:
         factory_only = {
+            "agent_advisor_model": "advisor-model",
             "agent_phase_models": {"coding": "cheap", "reviewing": "balanced"},
             "agent_skill_models": {"t3:code": [{"floor": "frontier"}]},
             "agent_honesty_model": "balanced",

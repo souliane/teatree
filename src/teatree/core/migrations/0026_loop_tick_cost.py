@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0019_merge_sealedsecret_forge_ingest"),
+        ("core", "0025_ticketdmthread_ticketdmpost"),
     ]
 
     operations = [

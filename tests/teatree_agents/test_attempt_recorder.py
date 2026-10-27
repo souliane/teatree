@@ -13,8 +13,14 @@ from teatree.agents.attempt_recorder import (
     record_result_envelope,
     validate_result_keys,
 )
+from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import (
+    OWNER_STOP_REFUSAL_PREFIX,
+    PLAN_STALE_PREFIX,
+    FailureKind,
+    classify_failure,
+)
 from teatree.core.models import (
     DeferredQuestion,
     Directive,
@@ -24,6 +30,7 @@ from teatree.core.models import (
     PendingTriageRecommendation,
     PlanArtifact,
     Session,
+    SessionCommand,
     Task,
     TaskAttempt,
     Ticket,
@@ -102,11 +109,16 @@ class TestValidateResultKeys(TestCase):
 
         assert "widget_count" in error
         assert "ticket 104" in error
+        assert error.startswith(OWNER_STOP_REFUSAL_PREFIX)
+        assert all(line in error for line in owner_stop_limits_lines())
 
     def test_unknown_user_input_kind_is_refused(self) -> None:
         error = validate_result_keys(owner_stop("Rotate the deploy token?", "gate_refusal") | {"summary": "x"})
         assert "user_input_kind" in error
         assert "credentials" in error
+        assert error.startswith(OWNER_STOP_REFUSAL_PREFIX)
+        assert all(line in error for line in owner_stop_limits_lines())
+        assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
 
 
 class TestRecordResultEnvelope(TestCase):
@@ -116,6 +128,43 @@ class TestRecordResultEnvelope(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         task.claim(claimed_by="loop-slot")
         return task
+
+    def test_accepted_operator_directions_are_carried_into_the_handoff_result(self) -> None:
+        task = self._claimed()
+        SessionCommand.objects.create(
+            command_id="accepted",
+            ticket=task.ticket,
+            task=task,
+            text="Keep the public API",
+            outcome="accepted_current_turn",
+        )
+        SessionCommand.objects.create(
+            command_id="rejected", ticket=task.ticket, task=task, text="Ignore tests", outcome="rejected"
+        )
+
+        attempt = record_result_envelope(task, {"summary": "Work continues", "operator_inputs": ["untrusted"]})
+
+        assert attempt.result["operator_inputs"] == ["Keep the public API"]
+
+    def test_queued_operator_message_is_recorded_only_after_success(self) -> None:
+        task = self._claimed(phase="testing")
+        command = SessionCommand.objects.create(
+            command_id="queued-result", ticket=task.ticket, task=task, text="Preserve the endpoint", outcome="queued"
+        )
+
+        attempt = record_result_envelope(
+            task,
+            {
+                "summary": "Tested",
+                "tests_run": [{"name": "focused", "passed": True}],
+                "tests_passed": 1,
+                "tests_failed": 0,
+            },
+        )
+
+        command.refresh_from_db()
+        assert attempt.result["operator_inputs"] == ["Preserve the endpoint"]
+        assert command.outcome == "accepted_new_turn"
 
     def test_push_ownership_venue_fault_fails_without_an_owner_question(self) -> None:
         task = self._claimed(phase="debugging")

@@ -50,7 +50,7 @@ MAX_INTERPRET_ATTEMPTS = 5
 
 #: The standing north-star self-modification umbrella the directive's synthetic interpret
 #: ticket anchors under; the ``#directive=<pk>`` fragment makes each unique while still
-#: resolving the ``souliane/teatree`` overlay via ``infer_overlay_for_url`` (the interpret
+#: retaining its work's overlay independently of the umbrella URL (the interpret
 #: phase needs a ``Task``, and a ``Task`` needs a ``Ticket``). Single-sourced from
 #: :data:`~teatree.utils.url_slug.SYNTHETIC_LOOP_UMBRELLA_URL` — the ONE anchor the task
 #: sweep recognises so it never artifact-completes a synthetic loop ticket (#3706).
@@ -65,7 +65,11 @@ def synthetic_interpret_ticket(directive: Directive) -> Ticket:
     """
     ticket, _ = Ticket.objects.get_or_create(
         issue_url=f"{DIRECTIVE_UMBRELLA_URL}#directive={directive.pk}",
-        defaults={"role": Ticket.Role.AUTHOR, "short_description": f"interpret directive #{directive.pk}"},
+        defaults={
+            "role": Ticket.Role.AUTHOR,
+            "short_description": f"interpret directive #{directive.pk}",
+            "overlay": lambda: Ticket.creation_overlay(directive.scope_overlay),
+        },
     )
     return ticket
 

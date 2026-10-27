@@ -3,6 +3,7 @@
 import asyncio
 import json
 import multiprocessing
+import os
 import shlex
 import socket
 import sqlite3
@@ -29,7 +30,6 @@ from django.test import TransactionTestCase
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import override_allow_model_requests
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -38,13 +38,13 @@ from typer.testing import CliRunner
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import live_mailbox
-from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.harness import HarnessSession, PydanticAiHarness
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.live_binding import bound_task_mailbox
 from teatree.agents.live_client import LiveClient
 from teatree.agents.live_control import LiveFence, LiveTask, RejectCode, SteerRejectedError
+from teatree.agents.live_ingress import IngressRefusedError, PeerCredentials, PeerRole
 from teatree.agents.live_mailbox import (
     LiveMailboxBroker,
     MailboxIdentity,
@@ -52,8 +52,9 @@ from teatree.agents.live_mailbox import (
     reset_shared_brokers,
     shared_broker,
 )
+from teatree.agents.live_mailbox_client import InteractiveMailboxLease, MailboxError
 from teatree.agents.live_registry import LiveSessionRegistry, shared_registry
-from teatree.agents.pydantic_ai_steering import PeerInputAdmission
+from teatree.agents.pydantic_ai_steering import SteerablePydanticAiSession
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.runner_stream import StreamCapture
 from teatree.cli.mcp import serve
@@ -125,6 +126,106 @@ def test_two_codex_tasks_exchange_messages_without_database(broker: LiveMailboxB
         }
     ]
     assert invoke(first_client, "inbox", after_id=0)["messages"] == []
+
+
+def test_attended_mcp_peer_exchanges_messages_and_disconnect_revokes_identity(
+    broker: LiveMailboxBroker, tmp_path: Path
+) -> None:
+    agent = broker.register(room="ticket-1", harness="claude_sdk", label="agent")
+    agent_client = MailboxClient(agent.socket_path, agent.token)
+    with InteractiveMailboxLease.connect(tmp_path) as attended:
+        with (
+            patch.dict("os.environ", attended.mcp_env()),
+            patch("teatree.mcp.server.get_all_overlays", return_value={}),
+        ):
+            server = build_server()
+        names = {tool.name for tool in asyncio.run(server.list_tools())}
+        assert {f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")} <= names
+
+        async def exchange() -> tuple[SendReceipt, InboxPage, SendReceipt, InboxPage]:
+            outbound = asyncio.create_task(
+                server.call_tool("agent_mailbox_send", {"to": agent.address, "text": "from attended", "key": "a1"})
+            )
+            agent_inbox = await agent_client.wait(timeout_seconds=2)
+            outbound_receipt = structured(await outbound)
+            inbound = asyncio.create_task(agent_client.send(attended.address, "from agent", "a2"))
+            attended_inbox = structured(
+                await server.call_tool("agent_mailbox_wait", {"after_id": 0, "timeout_seconds": 2})
+            )
+            return outbound_receipt, agent_inbox, await inbound, attended_inbox
+
+        outbound, agent_inbox, inbound, attended_inbox = asyncio.run(exchange())
+        assert outbound["outcome"] == inbound["outcome"] == "accepted_inbox_read"
+        assert agent_inbox["messages"][0]["text"] == "from attended"
+        assert attended_inbox["messages"][0]["text"] == "from agent"
+        assert "ticket" not in invoke(MailboxClient(attended.socket_path, attended.token), "self_identity")
+    wait_until(lambda: broker.identity_of(attended.address) is None, "attended peer to disconnect")
+
+
+def test_broker_shutdown_closes_an_attached_attended_lease_and_retires_its_owner(tmp_path: Path) -> None:
+    with LiveMailboxBroker(runtime_dir=tmp_path) as broker, InteractiveMailboxLease.connect(tmp_path):
+        socket_path = broker.socket_path
+        owner_path = socket_path.with_suffix(".owner")
+        assert owner_path.exists()
+
+        started = time.monotonic()
+        broker.close()
+
+        assert time.monotonic() - started < 1
+        assert not socket_path.exists()
+        assert not owner_path.exists()
+
+
+def test_attended_join_is_refused_while_broker_is_stopping(tmp_path: Path) -> None:
+    broker = LiveMailboxBroker(runtime_dir=tmp_path)
+    broker._stop = asyncio.Event()
+    broker._stop.set()
+
+    with pytest.raises(IngressRefusedError, match="stopping"):
+        broker._join(None)
+    assert broker.identities() == []
+
+
+def test_worker_descendant_cannot_join_as_an_attended_peer(broker: LiveMailboxBroker, tmp_path: Path) -> None:
+    with (
+        patch("teatree.agents.live_mailbox.classify_peer", return_value=PeerRole.AGENT),
+        pytest.raises(MailboxError, match="permission_denied"),
+    ):
+        InteractiveMailboxLease.connect(tmp_path)
+    assert broker.identities() == []
+
+
+@pytest.mark.parametrize("case", ["another_uid", "unreadable_credentials"])
+def test_attended_join_refuses_untrusted_peer_credentials(broker: LiveMailboxBroker, tmp_path: Path, case: str) -> None:
+    credentials = PeerCredentials(os.getpid(), os.getuid() + 1) if case == "another_uid" else None
+    with (
+        patch("teatree.agents.live_mailbox.peer_credentials", return_value=credentials),
+        pytest.raises(MailboxError, match="permission_denied"),
+    ):
+        InteractiveMailboxLease.connect(tmp_path)
+    assert broker.identities() == []
+
+
+def test_attended_join_skips_an_untrusted_socket_before_the_live_worker(
+    broker: LiveMailboxBroker, tmp_path: Path
+) -> None:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as untrusted:
+        untrusted.bind(str(tmp_path / "w-0000.sock"))
+        untrusted.listen()
+        with InteractiveMailboxLease.connect(tmp_path) as joined:
+            assert broker.identity_of(joined.address) is not None
+            assert joined.address != "rogue"
+        untrusted.settimeout(2)
+        peer, _ = untrusted.accept()
+        with peer:
+            peer.settimeout(2)
+            assert peer.recv(1024) == b""
+
+
+def test_only_an_attended_identity_may_register_without_a_ticket(broker: LiveMailboxBroker) -> None:
+    with pytest.raises(ValueError, match="room, harness, and label are required"):
+        broker.register(room="", harness="claude_sdk", label="agent")
+    assert broker.identities() == []
 
 
 @pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
@@ -380,11 +481,6 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             )
             pydantic_harness = PydanticAiHarness(model=model, phase="planning")
             original_route = runner_mod.resolve_dispatch_harness
-            self._pydantic_inputs: list[LiveInputQueue] = []
-
-            def capture_admission(inputs: LiveInputQueue) -> PeerInputAdmission:
-                self._pydantic_inputs.append(inputs)
-                return PeerInputAdmission(inputs)
 
             def route(task: Task, *, phase: str | None = None, skills: list[str] | None = None) -> DispatchHarness:
                 if task.pk == recipient_task.pk:
@@ -403,7 +499,6 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
             with (
                 patch.object(harness_mod, "ClaudeSDKClient", self._sdk_client),
                 patch.object(runner_mod, "resolve_dispatch_harness", side_effect=route),
-                patch.object(harness_mod, "PeerInputAdmission", side_effect=capture_admission),
                 patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
                 patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
                 patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False),
@@ -423,7 +518,7 @@ class TwoClaudeRunsAcceptanceTests(TransactionTestCase):
                         recipient.result(timeout=0)
                     sending = _in_background(lambda: asyncio.run(self._send_from_mcp_child(script, recipient_task)))
                     wait_until(
-                        lambda: self._pydantic_inputs and len(self._pydantic_inputs[0]._pending) == 1,
+                        lambda: LiveClient().inspect(recipient_task.pk)["pending_inputs"] == 1,
                         "queued peer input",
                     )
                     assert not sending.done()
@@ -603,6 +698,29 @@ def test_a_timed_out_send_retried_with_its_key_is_accepted_without_a_second_mess
     assert (retried["id"], retried["outcome"]) == (first["id"], "accepted_inbox_read")
 
 
+def test_a_timed_out_claude_push_can_be_accepted_by_a_later_inbox_read(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    sender = routed_broker.register(room="ticket", harness="claude_sdk", label="sender")
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="recipient", task=_TASK)
+    sender_client = MailboxClient(sender.socket_path, sender.token)
+    reader = MailboxClient(recipient.socket_path, recipient.token)
+    session = BoundarySession()
+
+    with OwnerLoop(registry, _TASK, session):
+        first = invoke(sender_client, "send", to=recipient.address, text="review", key="once", timeout_seconds=0.05)
+        page = invoke(reader, "inbox")
+        retried = invoke(sender_client, "send", to=recipient.address, text="review", key="once")
+
+    assert (first["outcome"], first["code"], first["queued_in_inbox"]) == (
+        "rejected",
+        "not_accepted_in_time",
+        True,
+    )
+    assert [row["id"] for row in page["messages"]] == [first["id"]]
+    assert (retried["id"], retried["outcome"]) == (first["id"], "accepted_inbox_read")
+
+
 def test_a_recipient_that_exits_before_reading_rejects_the_pending_send(broker: LiveMailboxBroker) -> None:
     sender = broker.register(room="ticket", harness="claude", label="sender")
     recipient = broker.register(room="ticket", harness="codex", label="recipient")
@@ -616,6 +734,41 @@ def test_a_recipient_that_exits_before_reading_rejects_the_pending_send(broker: 
 
     receipt = asyncio.run(exchange())
     assert receipt == _rejected(receipt["id"], recipient.address, "session_closed", queued=False)
+
+
+def test_a_push_accepted_as_its_recipient_leaves_keeps_the_acceptance(
+    routed_broker: LiveMailboxBroker, registry: LiveSessionRegistry
+) -> None:
+    class DelayedSession:
+        def __init__(self) -> None:
+            self.entered = threading.Event()
+            self.release = asyncio.Event()
+
+        async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+            self.entered.set()
+            await self.release.wait()
+
+        async def interrupt(self) -> None:
+            return None
+
+    sender = routed_broker.register(room="ticket", harness="claude_sdk", label="sender")
+    recipient = routed_broker.register(room="ticket", harness="claude_sdk", label="recipient", task=_TASK)
+    client = MailboxClient(sender.socket_path, sender.token)
+    session = DelayedSession()
+
+    with OwnerLoop(registry, _TASK, session) as owner:
+        sending = _in_background(
+            lambda: invoke(client, "send", to=recipient.address, text="review", key="once", timeout_seconds=2)
+        )
+        assert session.entered.wait(timeout=5)
+        routed_broker.unregister(recipient.address)
+        broker_loop = routed_broker._loop
+        assert broker_loop is not None
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0), broker_loop).result(timeout=2)
+        owner.call_soon(session.release.set)
+        receipt = sending.result(timeout=5)
+
+    assert (receipt["outcome"], receipt["queued_in_inbox"]) == ("accepted_current_turn", False)
 
 
 def test_an_unread_message_evicted_from_a_full_inbox_is_rejected_dropped_unread(broker: LiveMailboxBroker) -> None:
@@ -1246,6 +1399,22 @@ def test_a_pydantic_task_without_mailbox_tools_refuses_peer_delivery(broker: Liv
         )
 
 
+@pytest.mark.parametrize(("phase", "can_receive"), [("scoping", False), ("planning", True), ("coding", True)])
+def test_codex_receipt_reflects_phase_mailbox_grant(
+    broker: LiveMailboxBroker, phase: str, *, can_receive: bool
+) -> None:
+    task = LiveTask(pk=8, ticket=3, phase=phase, harness="codex_app_server", model="m")
+    sender = broker.register(room="3", harness="claude_sdk", label="sender")
+    with bound_task_mailbox(ClaudeAgentOptions(), task, broker=broker) as recipient:
+        assert recipient is not None
+        client = MailboxClient(sender.socket_path, sender.token)
+        peer = next(peer for peer in invoke(client, "peers") if peer["address"] == recipient.address)
+        assert peer["can_receive"] is can_receive
+        if not can_receive:
+            receipt = invoke(client, "send", to=recipient.address, text="hello", key="one", timeout_seconds=0.01)
+            assert (receipt["code"], receipt["queued_in_inbox"]) == ("recipient_cannot_receive", False)
+
+
 class _PydanticHttpScenario:
     def __init__(self, tmp_path: Path, mode: str) -> None:
         self.tmp_path = tmp_path
@@ -1311,7 +1480,7 @@ class _PydanticHttpScenario:
             admission_patch = (
                 nullcontext()
                 if self.admit
-                else patch.object(PeerInputAdmission, "__call__", _bypass_pydantic_admission)
+                else patch.object(SteerablePydanticAiSession, "_observe_input", _ignore_pydantic_enqueue_event)
             )
             with (
                 patch("teatree.agents.lane_b.mcp.mcp_client_available", return_value=False),
@@ -1347,21 +1516,18 @@ class _PydanticHttpScenario:
         return receipt
 
 
-async def _bypass_pydantic_admission(
-    _processor: PeerInputAdmission, messages: list[ModelMessage]
-) -> list[ModelMessage]:
-    await asyncio.sleep(0)
-    return messages
+def _ignore_pydantic_enqueue_event(_session: SteerablePydanticAiSession, _event: object) -> None:
+    pass
 
 
 @pytest.mark.parametrize("mode", ["enabled", "disabled"])
-def test_pydantic_session_accepts_a_peer_before_its_next_request(tmp_path: Path, mode: str) -> None:
+def test_pydantic_session_reports_observed_peer_delivery(tmp_path: Path, mode: str) -> None:
     scenario = _PydanticHttpScenario(tmp_path, mode)
     receipt = scenario.run()
-    expected = ("accepted_current_turn", None, True) if scenario.admit else ("rejected", "not_accepted_in_time", True)
+    expected = ("accepted_current_turn", None, True) if scenario.admit else ("unknown_delivery", None, True)
     assert (receipt["outcome"], receipt["code"], receipt["queued_in_inbox"]) == expected
     assert "peer nonce" not in json.dumps(scenario.requests[0])
-    assert json.dumps(scenario.requests[1]).count("peer nonce") == int(scenario.admit)
+    assert json.dumps(scenario.requests[1]).count("peer nonce") == 1
 
 
 def test_message_retries_and_limits(broker: LiveMailboxBroker) -> None:
@@ -1441,6 +1607,7 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
             "harness": "claude_sdk",
             "label": "coding task 7",
             "ticket": "3",
+            "room": "3",
             "phase": "coding",
             "can_receive": True,
         }
@@ -1520,6 +1687,27 @@ def test_runner_binding_keeps_the_launch_flags(broker: LiveMailboxBroker) -> Non
         assert identity is not None
         assert isinstance(options.mcp_servers, dict)
         assert cast("McpStdioServerConfig", options.mcp_servers["teatree"])["args"] == launch
+
+
+def test_runner_binding_passes_ticket_to_child_and_restores_environment(broker: LiveMailboxBroker) -> None:
+    options = ClaudeAgentOptions(
+        env={"KEEP": "value"},
+        mcp_servers={"teatree": {"type": "stdio", "command": "t3", "args": ["mcp", "serve"]}},
+    )
+    with bound_task_mailbox(options, _TASK, broker=broker):
+        assert options.env["T3_TICKET_ID"] == "3"
+        assert isinstance(options.mcp_servers, dict)
+        teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
+        assert teatree["env"]["T3_TICKET_ID"] == "3"
+    assert options.env == {"KEEP": "value"}
+
+
+def test_runner_without_mailbox_child_restores_environment() -> None:
+    options = ClaudeAgentOptions(env={"KEEP": "value"})
+    with bound_task_mailbox(options, _TASK) as identity:
+        assert identity is None
+        assert options.env["T3_TICKET_ID"] == "3"
+    assert options.env == {"KEEP": "value"}
 
 
 def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytest.LogCaptureFixture) -> None:

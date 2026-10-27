@@ -28,7 +28,7 @@ from teatree.agents.runner_truncation import (
     max_turns_failure_reason,
 )
 from teatree.agents.runner_usage import DispatchProvenance, UsageObservation, _attempt_usage
-from teatree.agents.skill_assurance import assess_skill_application
+from teatree.agents.skill_assurance import assess_skill_application, requested_skill_loads
 from teatree.agents.usage_window import LimitSignal, park_or_rotate_on_limit
 from teatree.config import AgentHarnessProvider
 from teatree.core.admission.dispatch_lane import dispatch_lane
@@ -134,7 +134,16 @@ def _failure_usage(outcome: HarnessOutcome, *, lane: str, transport: Transport) 
         context_tokens=outcome.context_tokens,
         model_fell_back=outcome.model_fell_back,
     )
-    return _attempt_usage(outcome.result_message, observation)
+    usage = _attempt_usage(outcome.result_message, observation)
+    if outcome.session_id and not usage.agent_session_id:
+        usage = replace(usage, agent_session_id=outcome.session_id)
+    receipt = usage.skill_assurance
+    if receipt is None:
+        return usage
+    return replace(
+        usage,
+        skill_assurance={**receipt, "observed_loads": requested_skill_loads(receipt, outcome.observed_skill_loads)},
+    )
 
 
 def failure_reason(outcome: HarnessOutcome) -> str | None:
@@ -224,12 +233,17 @@ def record_success(
     )
     parsed = parse_result(outcome.agent_text)
     if provenance.skill_assurance is not None:
+        prior_loads = (
+            task.attempts.skill_loads_in_session(outcome.result_message.session_id)
+            if outcome.resumed and outcome.result_message is not None and outcome.result_message.session_id
+            else []
+        )
         usage = replace(
             usage,
             skill_assurance=assess_skill_application(
                 provenance.skill_assurance,
                 parsed or {},
-                observed_loads=outcome.observed_skill_loads,
+                observed_loads=(*prior_loads, *outcome.observed_skill_loads),
             ),
         )
     # Application evidence is untrusted agent text. Its bounded assurance

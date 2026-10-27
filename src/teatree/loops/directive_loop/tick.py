@@ -320,6 +320,8 @@ def _advance_admitted(directive: Directive) -> DirectiveTickResult:
         skip_directive_implementation(directive)
         return DirectiveTickResult(action="configuring", directive_id=directive.pk)
     schedule_directive_implementation(directive)
+    if directive.state == Directive.State.ADMITTED:
+        return DirectiveTickResult(action="waiting", reason="open_pr_start_cap", directive_id=directive.pk)
     return DirectiveTickResult(action="implementing", directive_id=directive.pk)
 
 

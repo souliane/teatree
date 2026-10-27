@@ -43,7 +43,7 @@ _MIN_BURN_RATE = 0.05
 #: Kernel states that count toward the load average the admission governor reads.
 _RUNNABLE_STATES = frozenset({"R", "D"})
 
-_CLOCK_TICKS_PER_SECOND = os.sysconf("SC_CLK_TCK")
+CLOCK_TICKS_PER_SECOND = os.sysconf("SC_CLK_TCK")
 _STATE = 0
 _PPID = 1
 _UTIME = 11
@@ -131,7 +131,7 @@ class OrphanSurvey:
 
 
 @dataclass(frozen=True, slots=True)
-class _Stat:
+class ProcStat:
     """The ``/proc/<pid>/stat`` fields this reader needs."""
 
     pid: int
@@ -156,7 +156,7 @@ def min_age_seconds_setting() -> float:
 _DEFAULT_MIN_AGE_HOURS = 6
 
 
-def _read_uptime(root: Path) -> float | None:
+def read_uptime(root: Path) -> float | None:
     """The TABLE's own clock — never this process's, which may be a different namespace."""
     try:
         return float((root / "uptime").read_text(encoding="utf-8").split()[0])
@@ -164,7 +164,7 @@ def _read_uptime(root: Path) -> float | None:
         return None
 
 
-def _read_stat(pid_dir: Path) -> _Stat | None:
+def _read_stat(pid_dir: Path) -> ProcStat | None:
     """Parse one ``stat``, or ``None`` when the pid vanished or the line is malformed."""
     try:
         raw = (pid_dir / "stat").read_text(encoding="utf-8", errors="replace")
@@ -178,7 +178,7 @@ def _read_stat(pid_dir: Path) -> _Stat | None:
         fields = raw[close_paren + 1 :].split()
         if len(fields) < _MIN_STAT_FIELDS:
             return None
-        return _Stat(
+        return ProcStat(
             pid=int(raw[:open_paren].strip()),
             comm=raw[open_paren + 1 : close_paren],
             state=fields[_STATE],
@@ -216,12 +216,12 @@ def scan_orphan_groups(
     exclude_nested_namespaces: bool = False,
 ) -> list[OrphanGroup]:
     """Every leaderless, aged, still-burning group in the table at *root*."""
-    uptime = _read_uptime(root)
+    uptime = read_uptime(root)
     if uptime is None:
         return []
-    stats, opaque_pids = _collect(root, exclude_nested_namespaces=exclude_nested_namespaces)
+    stats, opaque_pids = collect_stats(root, exclude_nested_namespaces=exclude_nested_namespaces)
     live_pids = {stat.pid for stat in stats} | opaque_pids
-    grouped: dict[int, list[_Stat]] = {}
+    grouped: dict[int, list[ProcStat]] = {}
     for stat in stats:
         if stat.pgid > 0 and stat.pgid not in live_pids:
             grouped.setdefault(stat.pgid, []).append(stat)
@@ -232,7 +232,7 @@ def scan_orphan_groups(
     return [group for group in found if group.age_seconds >= min_age_seconds and _is_burning(group)]
 
 
-def _collect(root: Path, *, exclude_nested_namespaces: bool) -> tuple[list[_Stat], set[int]]:
+def collect_stats(root: Path, *, exclude_nested_namespaces: bool) -> tuple[list[ProcStat], set[int]]:
     """Every readable ``stat`` under *root*, and the pids that are there but would not read.
 
     The second set is what keeps the reader from failing OPEN: a pid behind hidepid is ALIVE,
@@ -242,7 +242,7 @@ def _collect(root: Path, *, exclude_nested_namespaces: bool) -> tuple[list[_Stat
         pid_dirs = [entry for entry in root.iterdir() if entry.name.isdigit()]
     except OSError:
         return [], set()
-    collected: list[_Stat] = []
+    collected: list[ProcStat] = []
     opaque: set[int] = set()
     for pid_dir in pid_dirs:
         if exclude_nested_namespaces and _is_nested_namespace(pid_dir):
@@ -262,14 +262,14 @@ def _is_burning(group: OrphanGroup) -> bool:
 
 def _build_group(
     pgid: int,
-    stats: list[_Stat],
+    stats: list[ProcStat],
     *,
     uptime: float,
     signalable: bool,
     source: str,
 ) -> OrphanGroup:
     ordered = sorted(stats, key=lambda stat: stat.start_ticks)
-    oldest_started = ordered[0].start_ticks / _CLOCK_TICKS_PER_SECOND
+    oldest_started = ordered[0].start_ticks / CLOCK_TICKS_PER_SECOND
     return OrphanGroup(
         pgid=pgid,
         members=tuple(
@@ -282,7 +282,7 @@ def _build_group(
             for stat in ordered
         ),
         age_seconds=max(0.0, uptime - oldest_started),
-        cpu_seconds=sum(stat.cpu_ticks for stat in ordered) / _CLOCK_TICKS_PER_SECOND,
+        cpu_seconds=sum(stat.cpu_ticks for stat in ordered) / CLOCK_TICKS_PER_SECOND,
         signalable=signalable,
         source=source,
     )
@@ -301,7 +301,7 @@ def live_group_members(pgid: int) -> tuple[int, ...] | None:
     root = venue_proc_root()
     if root is None:
         return None
-    stats, _ = _collect(root, exclude_nested_namespaces=False)
+    stats, _ = collect_stats(root, exclude_nested_namespaces=False)
     return tuple(sorted(stat.pid for stat in stats if stat.pgid == pgid and stat.state != _ZOMBIE))
 
 
@@ -351,11 +351,15 @@ def survey_orphan_groups(*, min_age_seconds: float) -> OrphanSurvey:
 
 
 __all__ = [
+    "CLOCK_TICKS_PER_SECOND",
     "GroupMember",
     "OrphanGroup",
     "OrphanSurvey",
+    "ProcStat",
+    "collect_stats",
     "live_group_members",
     "min_age_seconds_setting",
+    "read_uptime",
     "scan_orphan_groups",
     "survey_orphan_groups",
     "venue_ancestry_pgids",

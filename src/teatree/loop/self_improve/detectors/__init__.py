@@ -1,15 +1,14 @@
 """Phase 1 self-improve detectors (BLUEPRINT § 5.7).
 
-Only three detectors ship in this phase — the smell catalogue in the
-issue plan defines the full list, but only the items below carry working
-implementations.  Phase 2 / Phase 3 detectors are stubbed in BLUEPRINT
-and intentionally absent from this package.
+The registry lists the shipped detectors. Phase 2 / Phase 3 detectors are
+stubbed in BLUEPRINT and intentionally absent from this package.
 """
 
 from teatree.loop.self_improve.detectors.base import DetectorReport, SelfImproveDetector
 from teatree.loop.self_improve.detectors.dispatch_gap import DispatchGapDetector
 from teatree.loop.self_improve.detectors.forgotten_merge import ForgottenMergeDetector
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
+from teatree.loop.self_improve.detectors.loop_health import LoopHealthDetector
 from teatree.loop.self_improve.detectors.pressure_incident import PressureIncidentDetector
 from teatree.loop.self_improve.detectors.registry import ALL_PHASE_1_DETECTORS
 from teatree.loop.self_improve.detectors.skill_assurance_gap import SkillAssuranceGapDetector
@@ -22,6 +21,7 @@ __all__ = [
     "DispatchGapDetector",
     "ForgottenMergeDetector",
     "LifecycleIncidentDetector",
+    "LoopHealthDetector",
     "PressureIncidentDetector",
     "SelfImproveDetector",
     "SkillAssuranceGapDetector",

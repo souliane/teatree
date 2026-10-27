@@ -22,15 +22,16 @@ from teatree.agents.codex_app_server_errors import (
     transport_error,
 )
 from teatree.agents.codex_app_server_events import CodexToolEvents
+from teatree.agents.codex_app_server_events import thread_params as _thread_params
 from teatree.agents.codex_app_server_lifecycle import chatgpt_authenticated, opened_session, opened_shared_session
 from teatree.agents.codex_app_server_messages import CodexEventTranslator
 from teatree.agents.codex_app_server_options import (
     CodexAppServerError,
     CodexAppServerOptions,
     codex_container_unavailable_reason,
-    codex_login_unavailable_reason,
     codex_model_unavailable_reason,
-    codex_phase_policy_unavailable_reason,
+    codex_worker_denials,
+    codex_worker_unavailable_reason,
     container_is_the_sandbox,
 )
 from teatree.agents.codex_approval_gate import APPROVAL_METHODS, approval_decision
@@ -43,7 +44,7 @@ from teatree.agents.codex_read_only_executor import (
 )
 from teatree.agents.codex_turn_steering import CodexTurnSteering
 from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallbackError, HarnessFallbackKind, HarnessSpec
-from teatree.agents.sdk_tool_map import phase_bars_write_tools, sdk_disallowed_tools_for_phase
+from teatree.agents.sdk_tool_map import CODEX_WORKER_EXECUTION_PHASES, phase_bars_write_tools
 
 if TYPE_CHECKING:
     from teatree.agents.harness import HarnessSession
@@ -157,7 +158,7 @@ class CodexAppServerSession(CodexTurnSteering):
         if not open_thread:
             return
         method = "thread/resume" if self.resume else "thread/start"
-        params = _thread_params(self.options)
+        params = _thread_params(self.options, resuming=bool(self.resume))
         if self.resume:
             params = {"threadId": self.resume, **params}
         response = await self._request(method, params)
@@ -357,7 +358,14 @@ class CodexAppServerSession(CodexTurnSteering):
     def _route_server_request(self, message: dict[str, Any]) -> None:
         method = message["method"]
         is_approval = isinstance(method, str) and method in APPROVAL_METHODS
-        task = asyncio.create_task((self._respond_approval if is_approval else self._refuse_server_request)(message))
+        handler = (
+            self._respond_approval
+            if is_approval
+            else self._respond_mailbox
+            if method == "item/tool/call"
+            else self._refuse_server_request
+        )
+        task = asyncio.create_task(handler(message))
         self._server_request_tasks.add(task)
         task.add_done_callback(self._server_request_done)
 
@@ -371,6 +379,16 @@ class CodexAppServerSession(CodexTurnSteering):
             await self._write(
                 {"id": message["id"], "error": {"code": METHOD_NOT_FOUND, "message": "Unsupported server request."}}
             )
+
+    async def _respond_mailbox(self, message: dict[str, Any]) -> None:
+        result = await codex_app_server_events.mailbox_tool_result(
+            message.get("params"), self._tool_events.approval_options
+        )
+        if result is None:
+            await self._refuse_server_request(message)
+            return
+        if not self._closing:
+            await self._write({"id": message["id"], "result": result})
 
     async def _respond_approval(self, message: dict[str, Any]) -> None:
         params = message.get("params")
@@ -437,6 +455,7 @@ class CodexAppServerHarness:
         code_home: Path | None = None,
         command: Sequence[str] | None = None,
         read_only_phase: str | None = None,
+        worker_execution_phase: str | None = None,
     ) -> None:
         self.capabilities = codex_capabilities()
         if read_only_phase is not None:
@@ -445,6 +464,7 @@ class CodexAppServerHarness:
         self.command = command
         self.refusal = refusal
         self.read_only_phase = read_only_phase
+        self.worker_execution_phase = worker_execution_phase
 
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncGenerator["HarnessSession"]:
@@ -459,6 +479,11 @@ class CodexAppServerHarness:
             async with codex_read_only_server.executor_session(options, self.read_only_phase) as executor_session:
                 yield executor_session
             return
+        if self.worker_execution_phase is not None:
+            options = replace(
+                options,
+                disallowed_tools=list(codex_worker_denials(options.disallowed_tools, self.worker_execution_phase)),
+            )
         translated = CodexAppServerOptions.from_sdk_options(options)
         if self.command is None:
             session = codex_shared_app_server.SharedCodexSession(
@@ -497,7 +522,11 @@ def codex_app_server_spec() -> HarnessSpec:
     return HarnessSpec(
         name="codex_app_server",
         factory=lambda context: CodexAppServerHarness(
-            refusal=_codex_unavailable_reason(context), read_only_phase=_read_only_phase(context)
+            refusal=_codex_unavailable_reason(context),
+            read_only_phase=_read_only_phase(context),
+            worker_execution_phase=(
+                context.phase if context.phase in CODEX_WORKER_EXECUTION_PHASES and container_is_the_sandbox() else None
+            ),
         ),
         capabilities=codex_capabilities(),
         allows_provider=False,
@@ -507,7 +536,12 @@ def codex_app_server_spec() -> HarnessSpec:
 
 
 def _read_only_phase(context: "HarnessBuildContext") -> str | None:
-    if context.phase and container_is_the_sandbox() and phase_bars_write_tools(context.phase):
+    if (
+        context.phase
+        and context.phase not in CODEX_WORKER_EXECUTION_PHASES
+        and container_is_the_sandbox()
+        and phase_bars_write_tools(context.phase)
+    ):
         return context.phase
     return None
 
@@ -521,38 +555,4 @@ def _codex_unavailable_reason(context: "HarnessBuildContext") -> str | None:
         return executor_availability_reason(context.phase) or codex_model_unavailable_reason(
             resolve_codex_home(), context.model
         )
-    return _worker_unavailable_reason(context)
-
-
-def _worker_unavailable_reason(context: "HarnessBuildContext") -> str | None:
-    if context.phase and (
-        reason := codex_phase_policy_unavailable_reason(sdk_disallowed_tools_for_phase(context.phase))
-    ):
-        return f"phase {context.phase!r} {reason.lower()}"
-    if container_is_the_sandbox() and (rules := sorted((resolve_codex_home() / "rules").glob("*.rules"))):
-        # Codex 0.155.1 has no app-server switch to ignore user rules, and an ALLOW skips the approval gate.
-        return f"execpolicy rules would bypass TeaTree approvals: {', '.join(str(rule) for rule in rules)}"
-    if context.phase == "architectural_review" and context.task is not None and container_is_the_sandbox():
-        from teatree.agents.codex_app_server_route import (  # noqa: PLC0415 — Django models are not importable at agents import time
-            starts_in_managed_main_clone,
-        )
-
-        if starts_in_managed_main_clone(context.task):
-            return "architectural_review starts in a managed main clone where the container is Codex's sandbox"
-    home = resolve_codex_home()
-    return codex_login_unavailable_reason(home) or codex_model_unavailable_reason(home, context.model)
-
-
-def _thread_params(options: CodexAppServerOptions) -> dict[str, Any]:
-    params: dict[str, Any] = {
-        "cwd": options.core.cwd,
-        "developerInstructions": options.core.system_prompt,
-        "approvalPolicy": "untrusted" if options.sandbox_mode == "danger-full-access" else "never",
-        "sandbox": options.sandbox_mode,
-        "runtimeWorkspaceRoots": list(options.runtime_workspace_roots),
-    }
-    if options.core.model is not None:
-        params["model"] = options.core.model
-    if options.config:
-        params["config"] = options.config
-    return params
+    return codex_worker_unavailable_reason(context)

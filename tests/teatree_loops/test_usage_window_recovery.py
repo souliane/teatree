@@ -52,6 +52,21 @@ def _due_window() -> UsageWindowState:
     )
 
 
+class TestOperatorPausedTasks(django.test.TestCase):
+    def test_an_operator_paused_task_is_not_released_by_window_recovery(self) -> None:
+        now = timezone.now()
+        task = _parked_task(now + timedelta(days=3650))
+        TaskAttempt.objects.create(task=task, error="operator_paused: paused by the operator")
+        _due_window()
+
+        recover_windows(now + timedelta(days=4000))
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before is not None
+        assert task.not_before > now + timedelta(days=3649)
+
+
 class TestReArmsOnlyAfterReset(django.test.TestCase):
     """The anti-vacuous contract: no clear/release before the reset, both after it."""
 

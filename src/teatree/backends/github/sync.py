@@ -1,18 +1,12 @@
-"""GitHub sync backend — project board issues and reviewer PR discovery."""
+"""GitHub sync backend — project board issues."""
 
-import json
 import logging
-import os
-import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, override
 
-from django.core.cache import cache
-
 from teatree import forge_credentials
 from teatree.core.cleanup.cleanup import WorktreeBusyError, cleanup_worktree
-from teatree.types import PENDING_REVIEWS_CACHE_KEY, RawAPIDict, SyncBackend, SyncResult
-from teatree.utils.run import run_allowed_to_fail
+from teatree.types import SyncBackend, SyncResult
 
 if TYPE_CHECKING:
     from teatree.backends.github import ProjectItem
@@ -126,8 +120,6 @@ class GitHubSyncBackend(SyncBackend):
             else:
                 self._create_ticket_from_board(board, self._overlay_name(overlay), result)
 
-        self._sync_reviewer_prs(token, result)
-
         return result
 
     @classmethod
@@ -215,56 +207,3 @@ class GitHubSyncBackend(SyncBackend):
             except Exception as exc:
                 logger.exception("Failed to clean worktree %s", worktree.repo_path)
                 result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")
-
-    @classmethod
-    def _fetch_reviewer_prs(cls, token: str) -> list[dict[str, str]]:
-        gh_bin = shutil.which("gh")
-        if not gh_bin:
-            return []
-        env: dict[str, str] = dict(os.environ)
-        env["GH_TOKEN"] = token
-        env.pop("GITHUB_TOKEN", None)
-
-        out = run_allowed_to_fail(
-            [
-                gh_bin,
-                "search",
-                "prs",
-                "--review-requested=@me",
-                "--state=open",
-                "--json",
-                "url,title,repository,number,author,isDraft,updatedAt",
-                "--limit",
-                "50",
-            ],
-            env=env,
-            timeout=30,
-        )
-
-        prs: list[RawAPIDict] = json.loads(out.stdout)
-        return [
-            {
-                "url": str(pr.get("url", "")),
-                "title": str(pr.get("title", "")),
-                "repo": repo.get("name", "") if isinstance(repo := pr.get("repository", {}), dict) else "",
-                "iid": str(pr.get("number", "")),
-                "author": author.get("login", "") if isinstance(author := pr.get("author", {}), dict) else "",
-                "draft": str(pr.get("isDraft", False)),
-                "updated_at": str(pr.get("updatedAt", "")),
-            }
-            for pr in prs
-        ]
-
-    @classmethod
-    def _sync_reviewer_prs(cls, token: str, result: SyncResult) -> None:
-        try:
-            reviews = cls._fetch_reviewer_prs(token)
-        except Exception as exc:  # noqa: BLE001 — a reviewer-PR fetch failure is recorded, never crashes the sync
-            result.errors.append(f"GitHub reviewer PR fetch failed: {exc}")
-            return
-
-        existing: list[dict[str, str]] = cache.get(PENDING_REVIEWS_CACHE_KEY) or []
-        existing_urls = {r["url"] for r in existing}
-        merged = [*existing, *(r for r in reviews if r["url"] not in existing_urls)]
-        cache.set(PENDING_REVIEWS_CACHE_KEY, merged, timeout=None)
-        result.reviews_synced += len(reviews)

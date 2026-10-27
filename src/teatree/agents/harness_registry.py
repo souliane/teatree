@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from teatree.agents.sdk_tool_map import phase_bars_write_tools
+from teatree.agents.sdk_tool_map import CODEX_WORKER_EXECUTION_PHASES, phase_bars_write_tools
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -254,6 +254,8 @@ def _barred_reason(spec: HarnessSpec, context: HarnessBuildContext) -> str | Non
     if context.task is not None and (context.task.ticket.extra or {}).get("claude_only"):
         return "ticket is claude_only"
     if context.phase and spec.capabilities.managed_lane and phase_bars_write_tools(context.phase):
+        if spec.name == "codex_app_server" and context.phase in CODEX_WORKER_EXECUTION_PHASES:
+            return None
         if spec.read_only_executor_refusal is None:
             return f"phase {context.phase!r} bars write tools, which a managed-lane harness cannot enforce"
         return spec.read_only_executor_refusal(context)

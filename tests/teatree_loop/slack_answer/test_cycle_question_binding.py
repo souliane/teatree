@@ -114,16 +114,16 @@ class TestCycleClosesTheCardOfATypedAnswer:
         card = DeferredQuestion.record(
             "Can I ship the widgets?", slack_channel=_CHANNEL, slack_ts="100.0", **OWNER_DECISION
         )
-        _reply("tomorrow, please", slack_ts="400.0", thread_ts="100.0")
+        _reply("Yes", slack_ts="400.0", thread_ts="100.0")
         backend = RecordingBackend()
 
         run_slack_answer_cycle(messaging_resolver=lambda _o: backend, reader=CountingReader())
 
         card.refresh_from_db()
-        assert card.answer_text == "tomorrow, please"
+        assert card.answer_text == "Yes"
         [update] = backend.updates
         assert (update["channel"], update["ts"]) == (_CHANNEL, "100.0")
-        assert "You answered: tomorrow, please" in str(update["text"])
+        assert "You chose: Yes" in str(update["text"])
 
     def test_an_internal_row_has_no_card_to_close(self) -> None:
         _question("Ship it?", slack_ts="100.0")

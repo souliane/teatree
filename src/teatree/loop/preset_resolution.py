@@ -25,7 +25,8 @@ treat both as "no preset governs"; publishing under the owner's identity is not,
 bare ``None`` let a failed read reach the permitting configured default indistinguishably
 from a box that simply has no schedule.
 
-A DOMAIN-layer leaf depending only on :mod:`teatree.core.models`, so
+A DOMAIN-layer leaf depending on :mod:`teatree.core.models` and pure
+:mod:`teatree.core.modelkit` policy, so
 :mod:`teatree.loop.loop_state_db` and the ``teatree.loops`` orchestration tick can
 both import it downward.
 """
@@ -38,6 +39,7 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
+from teatree.core.modelkit.notify_policy import ACTIVE_SCHEDULE_SETTING, OWNER_FALLBACK_ZONE
 from teatree.request_cache import cached_per_request
 
 if TYPE_CHECKING:
@@ -45,8 +47,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_SCHEDULE_SETTING = "active_loop_schedule"
-OWNER_FALLBACK_ZONE = "Europe/Paris"
+
+def _active_schedule_name() -> str:
+    from teatree.core.models.loop_schedule import active_schedule_name  # noqa: PLC0415 — models load after app setup
+
+    return active_schedule_name()
+
+
+def _schedule_by_name(name: str) -> "ModeSchedule | None":
+    from teatree.core.models.loop_schedule import schedule_by_name  # noqa: PLC0415 — models load after app setup
+
+    return schedule_by_name(name)
+
+
+def _active_schedule() -> "ModeSchedule | None":
+    from teatree.core.models.loop_schedule import active_schedule  # noqa: PLC0415 — models load after app setup
+
+    return active_schedule()
+
+
+def owner_zone() -> dt.tzinfo:
+    from teatree.core.models.loop_schedule import owner_zone as model_owner_zone  # noqa: PLC0415 — app setup first
+
+    return model_owner_zone()
+
 
 # How far back a governing slot start may be — one full week covers the coverage
 # model's week-wrap (a Sunday-evening slot still governs Monday morning).
@@ -230,30 +254,6 @@ def _schedule_resolution(now: dt.datetime) -> PresetResolution:
     return PresetResolution(active=ActivePreset(preset=preset, layer="schedule", reason=reason, until=boundary))
 
 
-def _active_schedule_name() -> str:
-    """The schedule ``active_loop_schedule`` names, or ``""`` when none is configured."""
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-
-    raw = ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING)
-    return raw.strip() if isinstance(raw, str) and raw.strip() else ""
-
-
-def _schedule_by_name(name: str) -> "ModeSchedule | None":
-    """The named ``ModeSchedule``, or ``None`` when the setting points at a deleted one."""
-    from teatree.core.models import ModeSchedule  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-
-    schedule = ModeSchedule.objects.filter(name=name).first()
-    if schedule is None:
-        logger.warning("active_loop_schedule names unknown schedule %r — failing open to base config", name)
-    return schedule
-
-
-def _active_schedule() -> "ModeSchedule | None":
-    """The ``ModeSchedule`` the ``active_loop_schedule`` setting selects, or ``None``."""
-    name = _active_schedule_name()
-    return _schedule_by_name(name) if name else None
-
-
 def _governing_and_next(
     schedule: "ModeSchedule", now: dt.datetime
 ) -> "tuple[ModeScheduleSlot | None, dt.datetime | None]":
@@ -296,19 +296,6 @@ def _schedule_zone(name: str) -> dt.tzinfo:
         except (zoneinfo.ZoneInfoNotFoundError, ValueError):
             logger.warning("loop schedule timezone %r invalid — using the project timezone", name)
     return timezone.get_current_timezone()
-
-
-def owner_zone() -> dt.tzinfo:
-    """The zone the owner's day runs in: the active schedule's, else Europe/Paris — never the project zone (UTC)."""
-    schedule = _active_schedule()
-    if schedule is not None:
-        try:
-            return zoneinfo.ZoneInfo(schedule.timezone)
-        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
-            logger.warning(
-                "schedule %r timezone %r invalid — using %s", schedule.name, schedule.timezone, OWNER_FALLBACK_ZONE
-            )
-    return zoneinfo.ZoneInfo(OWNER_FALLBACK_ZONE)
 
 
 def _slot_label(slot: "ModeScheduleSlot") -> str:

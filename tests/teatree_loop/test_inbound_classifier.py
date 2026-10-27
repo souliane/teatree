@@ -51,6 +51,8 @@ class TestSimple:
             "status?",
             "what's the digest?",
             "what's blocking us today?",
+            "How is it going?",
+            "How's it going?",
         ],
     )
     def test_db_answerable_questions_route_to_simple(self, text: str) -> None:

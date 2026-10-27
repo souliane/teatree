@@ -29,7 +29,9 @@ from claude_agent_sdk.types import RateLimitInfo
 from django.test import TestCase
 from openai import AsyncOpenAI
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models import override_allow_model_requests
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -39,11 +41,14 @@ from pydantic_ai.usage import RunUsage
 
 import teatree.agents.runner as runner_mod
 from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
+from teatree.agents.lane_b.compaction import LateHistoryCompactor
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
+from teatree.agents.pydantic_ai_resume import rehydrate_thread_for_resume, retain_run_thread
 from teatree.agents.pydantic_ai_session import _turns_made
 from teatree.agents.pydantic_ai_turn import SessionRun
 from teatree.agents.runner import HarnessOutcome, TaskUsage, _record_success, run_agent
 from teatree.agents.runner_failure_taxonomy import limit_match
+from teatree.agents.runner_stream import StreamCapture, drain_turn
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt
 from teatree.llm.anthropic_limits import EgressBlockedError, LimitCause
 from teatree.llm.usage_tee import UsageTee
@@ -339,6 +344,136 @@ class TestATextPreambleDoesNotEndTheRun:
         session = PydanticAiHarnessSession(Agent(_two_request_model("done")), model_name=_MODEL)
 
         assert _terminal(_drive(session)).num_turns == 2
+
+
+class TestInterruptedHistory(TestCase):
+    def test_completed_tool_work_survives_interrupt_and_resume(self) -> None:
+        second_request = asyncio.Event()
+        requests = 0
+
+        def read_issue() -> str:
+            return "issue content"
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                yield {0: DeltaToolCall(name="read_issue", json_args="{}")}
+                return
+            second_request.set()
+            await asyncio.sleep(10)
+            yield "done"
+
+        session = PydanticAiHarnessSession(
+            Agent(FunctionModel(stream_function=stream_fn), tools=[read_issue]),  # ty: ignore[no-matching-overload]
+            model_name=_MODEL,
+        )
+
+        async def drive() -> HarnessOutcome:
+            await session.query("read the issue")
+            consumer = asyncio.create_task(drain_turn(session, StreamCapture()))
+            await second_request.wait()
+            await session.interrupt()
+            return await consumer
+
+        outcome = asyncio.run(drive())
+
+        assert any(
+            isinstance(part, ToolReturnPart) and part.content == "issue content"
+            for message in outcome.thread or []
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        )
+        ticket = planned_ticket()
+        task_session = Session.objects.create(ticket=ticket)
+        parked = Task.objects.create(ticket=ticket, session=task_session)
+        retain_run_thread(parked, outcome.thread)
+        successor = Task.objects.create(
+            ticket=ticket,
+            session=task_session,
+            parent_task=parked,
+            session_continuation=Task.SessionContinuation.PARENT,
+        )
+
+        resumed = rehydrate_thread_for_resume(successor)
+
+        assert resumed is not None
+        assert any(
+            isinstance(part, ToolReturnPart) and part.content == "issue content"
+            for message in resumed.history
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        )
+
+
+class TestContextOverflowRetry:
+    def test_one_overflow_compacts_and_retries_the_same_session(self) -> None:
+        calls = 0
+        summaries: list[str] = []
+
+        async def summarize(text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            summaries.append(text)
+            return "earlier work"
+
+        compactor = LateHistoryCompactor(summarize, reserve_tokens=160, keep_recent_tokens=200)
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="task")]),
+            ModelResponse(parts=[TextPart(content="old work " * 300)]),
+            ModelRequest(parts=[UserPromptPart(content="new direction")]),
+        ]
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            nonlocal calls
+            await asyncio.sleep(0)
+            calls += 1
+            if calls == 1:
+                raise ModelHTTPError(status_code=400, model_name=_MODEL, body="context window exceeded")
+            yield "continued"
+
+        session = PydanticAiHarnessSession(
+            Agent(
+                FunctionModel(stream_function=stream_fn, profile={"context_window": 1_000}),
+                capabilities=[ProcessHistory(compactor)],
+            ),
+            model_name=_MODEL,
+            phase="coding",
+            history=history,
+        )
+        session.set_compactor(compactor)
+
+        terminal = _terminal(_drive(session))
+
+        assert not terminal.is_error
+        assert calls == 2
+        assert summaries
+
+    def test_second_overflow_reports_failure_after_one_retry(self) -> None:
+        calls = 0
+
+        async def summarize(_text: str, _usage: RunUsage) -> str:
+            await asyncio.sleep(0)
+            return "older work"
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            nonlocal calls
+            await asyncio.sleep(0)
+            calls += 1
+            raise ModelHTTPError(status_code=400, model_name=_MODEL, body="context window exceeded")
+            yield "unreachable"
+
+        compactor = LateHistoryCompactor(summarize, reserve_tokens=160, keep_recent_tokens=200)
+        session = PydanticAiHarnessSession(
+            Agent(FunctionModel(stream_function=stream_fn, profile={"context_window": 1_000})),
+            model_name=_MODEL,
+            phase="coding",
+        )
+        session.set_compactor(compactor)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error
+        assert calls == 2
 
 
 class TestTerminalResultCarriesTheRealRunIdentity:

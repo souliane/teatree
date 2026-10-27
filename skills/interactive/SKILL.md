@@ -13,6 +13,16 @@ metadata:
 
 The shared Claude Code and Codex side of teatree: how skills reach an attended agent and the one rule that session must not break. Runtime-specific automation is called out explicitly below; reading this skill in Codex does not activate Claude's plugin hooks or start a loop.
 
+## Answer the owner's cards in his place (attended session only)
+
+This applies only to this attended session, below Rules 0-5. A headless factory run never answers a card addressed to the owner in his place.
+
+Read pending cards with `mcp__teatree__question_list`, then use `t3 <overlay> questions list --all --json` for answered or dismissed cards, which the MCP list omits. Honor a settled card with the same underlying facts; apply the recorded decision from answered cards when action remains, and do not ask again. Changed facts require a fresh read-only investigation.
+
+When the facts settle a card without crossing an owner limit, take the sanctioned action, then record the facts and action with `t3 <overlay> questions dismiss <id> --resolver agent:interactive --reason '<facts read, action taken>'`. Tell the owner what was done in one line. For a checkout card, the owner's standing instruction of 2026-10-22 authorizes this attended session to attest a clean parked checkout after a read-only re-check without asking again. Re-read the Worktree row's expected branch, the checkout's HEAD on that branch, and the ticket-owned open pull request's live forge head. The checkout HEAD is the expected head: it must equal or be an ancestor of the forge head, so a checkout behind the forge is acceptable but one ahead or diverged is not. Confirm the checkout has a clean tree, has no merge in progress, and has no process inside it. A process holds the checkout through a working directory, an open file, a mapped file, or a bound socket within it. When the host process table is unusable, this session's own process check is the only one: the attest command skips its process refusal. Only then run `t3 <overlay> worktree attest <path>` through a pseudo-terminal with a clean environment free of agent and session markers, because the guard accepts only a terminal caller. The audit trail reads as a direct owner command, so plainly report that it ran the command. If any proof fails, leave it on the owner's card and report why.
+
+The owner keeps four decisions: spending money, irreversible deletion of work that exists on no remote, widening a security posture or a credential's use, and anything said to a colleague in the owner's name. Leave those on the owner's card and report them; do not decide, dismiss or act for him.
+
 ## This session does not implement — it files and enqueues (Non-Negotiable)
 
 When the operator asks for something that would change the code, do NOT implement it.
@@ -38,10 +48,12 @@ ticket is a request the factory will work on twice. The first call writes nothin
 ```text
 mcp__teatree__github_issue_create(
   title="<what the operator asked for>", body="<detail>", labels=["t3-auto"])
-  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...]}
+  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...],
+     "open_count": N, "compared": M}
 ```
 
-Judge every candidate, then call again with that same snapshot:
+Judge every returned candidate, then call again with that same snapshot, title, and body; `open_count - compared`
+is the number of open tickets outside the closest set:
 
 ```text
 mcp__teatree__github_issue_create(
@@ -262,6 +274,7 @@ When a running factory task needs something only this session has — a page or 
 2. `t3 <overlay> live inspect <task>` — PASSIVE: state, phase, open tool and progress; the agent is not contacted.
 3. `t3 <overlay> live steer <task> --text "<input>"` — ACTIVE: the text enters the agent's current turn at its next tool boundary or turn end.
 4. `t3 <overlay> live follow-up <task> --text "<input>"` — ACTIVE: an idle `claude_sdk` session takes one new turn during its 60-second window, up to four turns per session.
+5. `t3 <overlay> live pause <task>` — ACTIVE: interrupts the running turn and parks the task with its conversation; the receipt is `paused`, and a Slack `resume` in the ticket's thread releases the same task.
 
 Commands carry the selected session's attempt and worker generation. `stale_command` means that attempt or worker generation changed before delivery; inspect the current live session before sending a new command.
 
@@ -269,10 +282,18 @@ To hand over a resource, paste it (at most 16 KiB) or write it into the task's w
 
 Read the receipt, not the hope. `accepted_current_turn` and `accepted_new_turn` (exit 0) mean the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_idle` (use current-turn steer), `stale_command` (inspect the new attempt), `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task or its session has closed: use the durable route, `mcp__teatree__question_answer` (CLI fallback: `t3 <overlay> questions answer`) or the task list. An idle session lists `steerable: false`; use `live follow-up` while its idle window is open. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
 
-Claude factory agents use five `agent_mailbox_*` tools in their TeaTree-managed
-MCP child. A `pydantic_ai` task gets four native tools and no `agent_mailbox_self`.
-They reach live peers across tickets and same-host workers. `self` (Claude only) and
-`peers` provide addresses and receive status; `send` returns a receipt after a
+The plugin's `t3 mcp serve --interactive` child joins a live worker as this attended
+session's peer. In Claude Code and Codex, use `agent_mailbox_self` for your address,
+`agent_mailbox_peers` to discover running tasks, `agent_mailbox_send` to address one,
+and `agent_mailbox_inbox` or `agent_mailbox_wait` to read a reply. The worker revokes
+this address when the MCP child disconnects; a restarted worker has no old mailbox.
+When no live worker is online, the plugin keeps its other MCP tools but has no mailbox tools.
+
+Claude factory agents use the same five `agent_mailbox_*` tools in their TeaTree-managed
+MCP child. Codex factory agents get up to five dynamic mailbox tools by phase, including
+inside read-only planning and review; a `pydantic_ai` task gets four native tools
+and no `agent_mailbox_self`. They reach live peers across tickets and same-host workers.
+`self` and `peers` provide addresses and receive status; `send` returns a receipt after a
 current-turn push or an acknowledged `inbox`/`wait` read. A `rejected` receipt
 gives the cause and says whether the text remains in the inbox;
 `unknown_delivery` keeps the original message on a same-key retry. Acceptance

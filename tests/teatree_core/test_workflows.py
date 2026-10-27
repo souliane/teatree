@@ -316,7 +316,8 @@ class TestLifecycleProvision(TestCase):
             patch.object(utils_run_mod, "subprocess") as mock_td_sp,
         ):
             mock_td_sp.run.return_value = MagicMock(returncode=0)
-            call_command("worktree", "teardown", path=backend_path)
+            # force: git is mocked wholesale, so the shipped-work proof cannot read this checkout.
+            call_command("worktree", "teardown", path=backend_path, force=True)
 
         # Teardown folds the old `clean` step — the row is deleted, not reset
         assert not Worktree.objects.filter(pk=wt_backend.pk).exists()
@@ -664,6 +665,7 @@ class TestRunBackend(TestCase):
                     "https://gitlab.com/org/repo/-/issues/999",
                     "--variant",
                     "testclient",
+                    repos="backend,frontend",
                 ),
             )
 

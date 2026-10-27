@@ -20,7 +20,16 @@ from teatree.agents.codex_read_only_executor import (
     attest,
     read_only_executor_refusal,
 )
-from teatree.agents.codex_read_only_verdict import CLONE_ROOT, EXECUTOR_HOME_ROOT, WORKTREE_ROOT
+from teatree.agents.codex_read_only_verdict import (
+    CLONE_ROOT,
+    CODEX_HOME_ROOT,
+    CODEX_SOURCE_GIT,
+    EXECUTOR_HOME_ROOT,
+    WORKTREE_ROOT,
+    MalformedAnswerError,
+    codex_source_git_subpath,
+    evaluate,
+)
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
     HarnessCapabilities,
@@ -36,6 +45,7 @@ from tests.teatree_agents._executor_fakes import (
     attested,
     executor_fixture,
     mount,
+    probe_fixture,
     worker_fixture,
 )
 
@@ -62,7 +72,12 @@ def _refusal(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch, phase: str = "
 
 
 def _assert_started_nothing(fake: FakeExecutor) -> None:
-    assert all(call[0] in {"inspect", "ps"} or "/usr/bin/python3" in call for call in fake.calls)
+    assert all(
+        call[0] in {"inspect", "ps"}
+        or "/usr/bin/python3" in call
+        or call[-3:] == ["test", "-d", f"{CODEX_HOME_ROOT}/{codex_source_git_subpath()}"]
+        for call in fake.calls
+    )
 
 
 def test_a_passing_executor_is_attested_for_the_roots_it_was_probed_with(
@@ -121,6 +136,43 @@ def test_checkout_git_repair_requires_matching_clone_and_worktree_mounts(tmp_pat
         executor["Mounts"][-2]["Source"] = str(tmp_path / "other")
         codex_read_only_executor._repair_mounted_git(worker, executor, (str(checkout),))
         repair.assert_not_called()
+
+
+def test_source_git_mount_serves_worktree_git_pointer_at_worker_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subpath = "workspace/example/project/.git"
+    monkeypatch.setenv("TEATREE_CODEX_SOURCE_GIT_SUBPATH", subpath)
+    monkeypatch.setattr("teatree.agents.codex_read_only_verdict._CODEX_SOURCE_GIT_SUBPATH", subpath)
+    codex_home = tmp_path / "codex"
+    source_git = codex_home / subpath
+    linked_git = source_git / "worktrees" / "branch"
+    linked_git.mkdir(parents=True)
+    (linked_git / "commondir").write_text("../..\n", encoding="utf-8")
+    worktrees = tmp_path / "worktrees"
+    checkout = worktrees / "branch"
+    checkout.mkdir(parents=True)
+    (checkout / ".git").write_text(f"gitdir: {linked_git}\n", encoding="utf-8")
+    worker = worker_fixture()
+    executor = executor_fixture("pass")
+    worker["Mounts"].extend(
+        [
+            {"Type": "volume", "Source": str(codex_home), "Destination": str(codex_home), "RW": True},
+            {"Type": "bind", "Source": str(worktrees), "Destination": str(worktrees), "RW": True},
+        ]
+    )
+    executor["Mounts"].extend(
+        [
+            {"Type": "volume", "Source": str(source_git), "Destination": str(source_git), "RW": False},
+            {"Type": "bind", "Source": str(worktrees), "Destination": str(worktrees), "RW": False},
+        ]
+    )
+
+    with (
+        patch.object(codex_read_only_executor, "CODEX_HOME_ROOT", str(codex_home)),
+        patch.object(codex_read_only_executor, "WORKTREE_ROOT", str(worktrees)),
+    ):
+        codex_read_only_executor._repair_mounted_git(worker, executor, (str(checkout),))
 
 
 def test_attest_repairs_mounted_git_before_the_probe(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -262,6 +314,69 @@ def test_rw_inspect_mount_is_refused(fake: FakeExecutor, monkeypatch: pytest.Mon
     assert f"its mount {WORKTREE_ROOT} is read-write" in str(_refusal(fake, monkeypatch))
 
 
+def test_codex_source_git_mount_must_match_the_workers_volume(
+    fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_git = next(item for item in fake.executor["Mounts"] if item["Destination"] == CODEX_SOURCE_GIT)
+    source_git["Source"] = "/srv/unrelated/.git"
+
+    assert f"its mount {CODEX_SOURCE_GIT} is not the worker's {CODEX_SOURCE_GIT}" in str(_refusal(fake, monkeypatch))
+
+
+def test_codex_source_git_mount_is_write_probed(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake.probe["writes"][CODEX_SOURCE_GIT] = "OK"
+
+    assert f"{CODEX_SOURCE_GIT} accepted a write" in str(_refusal(fake, monkeypatch))
+
+
+def test_source_git_subpath_cannot_escape_the_codex_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("teatree.agents.codex_read_only_verdict._CODEX_SOURCE_GIT_SUBPATH", "../private/.git")
+
+    with pytest.raises(MalformedAnswerError, match="TEATREE_CODEX_SOURCE_GIT_SUBPATH"):
+        codex_source_git_subpath()
+
+
+def test_an_empty_source_git_subpath_means_no_source_clone(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake.codex_source_git_present = False
+    fake.executor["Mounts"] = [item for item in fake.executor["Mounts"] if item["Destination"] != CODEX_SOURCE_GIT]
+    fake.probe["mounts"] = [item for item in fake.probe["mounts"] if item["target"] != CODEX_SOURCE_GIT]
+    fake.probe["writes"].pop(CODEX_SOURCE_GIT)
+    fake.probe["scan"].pop(CODEX_SOURCE_GIT)
+    monkeypatch.setattr("teatree.agents.codex_read_only_verdict._CODEX_SOURCE_GIT_SUBPATH", "")
+    _applied(fake, monkeypatch)
+
+    assert read_only_executor_refusal(HarnessBuildContext(phase="planning")) is None
+
+
+def test_a_malformed_source_git_subpath_refuses_instead_of_raising(
+    fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _applied(fake, monkeypatch)
+    monkeypatch.setattr("teatree.agents.codex_read_only_verdict._CODEX_SOURCE_GIT_SUBPATH", "../private/.git")
+
+    assert "TEATREE_CODEX_SOURCE_GIT_SUBPATH" in str(read_only_executor_refusal(HarnessBuildContext(phase="planning")))
+
+
+def test_worker_git_check_failure_is_not_treated_as_an_absent_clone(
+    fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake.codex_source_git_error = True
+    fake.install()
+
+    assert "Codex source Git path could not be checked" in str(_refusal(fake, monkeypatch))
+
+
+def test_executor_without_a_codex_source_clone_keeps_the_original_mount_contract() -> None:
+    executor = executor_fixture("pass")
+    executor["Mounts"] = [mount for mount in executor["Mounts"] if mount["Destination"] != CODEX_SOURCE_GIT]
+    observation = probe_fixture("pass")
+    observation["mounts"] = [mount for mount in observation["mounts"] if mount["target"] != CODEX_SOURCE_GIT]
+    observation["writes"].pop(CODEX_SOURCE_GIT)
+    observation["scan"].pop(CODEX_SOURCE_GIT)
+
+    assert evaluate(observation, executor, worker_fixture(), (EXAMPLE_ROOT,), codex_source_git_present=False) is None
+
+
 def test_undeclared_inspect_mount_is_refused(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
     fake.executor["Mounts"].append({"Type": "bind", "Source": "/srv", "Destination": "/srv", "RW": False})
 
@@ -327,9 +442,12 @@ def test_a_device_mount_outside_the_runtime_set_is_refused(fake: FakeExecutor, m
 def test_a_readable_secret_file_under_a_mount_is_refused(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
     fake.probe["scan"][CLONE_ROOT]["secrets"] = [f"{CLONE_ROOT}/example/.env"]
 
-    assert f"it can read {CLONE_ROOT}/example/.env, a secret file under {CLONE_ROOT}" in str(
-        _refusal(fake, monkeypatch)
-    )
+    secret = f"{CLONE_ROOT}/example/.env"
+
+    assert (
+        f"it can read {secret}, a secret file under {CLONE_ROOT}; "
+        f"fix: chmod o-rwx {secret} in the worker, or move it out of {CLONE_ROOT}"
+    ) in str(_refusal(fake, monkeypatch))
 
 
 @pytest.mark.parametrize("target", ["/", _CHECKOUT_GIT, CLONE_ROOT, WORKTREE_ROOT])
@@ -409,7 +527,9 @@ def test_a_requested_checkout_outside_the_read_only_mounts_is_refused(
 ) -> None:
     _applied(fake, monkeypatch)
 
-    with pytest.raises(ExecutorRefusalError, match="the checkout /srv/elsewhere is not a directory"):
+    with pytest.raises(
+        ExecutorRefusalError, match=f"the checkout /srv/elsewhere is not a directory.*re-home.*{WORKTREE_ROOT}"
+    ):
         attest("planning", ["/srv/elsewhere"])
 
 
@@ -498,8 +618,20 @@ def test_selection_runs_a_live_probe_exec(fake: FakeExecutor, monkeypatch: pytes
     assert [call[2] for call in probes] == [EXECUTOR_ID, EXECUTOR_ID]
 
 
-@pytest.mark.parametrize("phase", ["reviewing", "critic_reviewing"])
-def test_review_phases_are_probed_on_each_selection(
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "reviewing",
+        "critic_reviewing",
+        "scoping",
+        "triage_assessing",
+        "directive_interpreting",
+        "answering",
+        "requesting_review",
+        "shipping",
+    ],
+)
+def test_read_only_phases_are_probed_on_each_selection(
     fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch, managed: str, phase: str
 ) -> None:
     _applied(fake, monkeypatch)
@@ -553,7 +685,7 @@ class _BarCase(NamedTuple):
         _BarCase("planning", _two_containers, f"2 running {EXECUTOR_SERVICE} containers"),
         _BarCase("planning", _probe_fails, f"{EXECUTOR_SERVICE} is not read-only: / accepted a write"),
         _BarCase("bughunt", _unchanged, "the read-only executor serves only"),
-        _BarCase("shipping", _unchanged, "the read-only executor serves only"),
+        _BarCase("scanning_news", _unchanged, "the read-only executor serves only"),
     ],
     ids=[
         "no-login",
@@ -562,7 +694,7 @@ class _BarCase(NamedTuple):
         "two-containers",
         "probe-fails",
         "bughunt",
-        "shipping",
+        "scanning-news",
     ],
 )
 def test_barred_without_a_passing_executor(

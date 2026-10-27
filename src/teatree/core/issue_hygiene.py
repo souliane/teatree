@@ -8,9 +8,9 @@ goes.
 
 Five rules, each enforced here rather than in an agent-authored skill:
 
-1.  **Dedupe before create.** :func:`create_or_extend` refuses to file until every
-    OPEN ticket in the repo has been judged. A fitting ticket is extended; rejected
-    candidates stay in the internal log.
+1.  **Dedupe before create.** :func:`create_or_extend` refuses to file until the
+    closest OPEN tickets in the repo have been judged. A fitting ticket is extended; each
+    completed outcome keeps its live candidate judgments in a private audit row.
 2.  **No requirement comments.** :func:`record_issue_note` takes a closed
     :class:`NotePurpose`. The four normative purposes append a dated description
     section; only ``status`` and ``evidence`` remain comments. There is no untyped
@@ -53,6 +53,10 @@ from enum import StrEnum
 from typing import Literal
 
 from teatree.core.backend_protocols import CodeHostBackend, IssueResolutionSpec
+from teatree.core.issue_writes.issue_candidate_selection import OpenCandidates, closest_open_candidates, open_candidates
+from teatree.core.issue_writes.issue_candidate_selection import description_of as _description_of
+from teatree.core.issue_writes.issue_candidate_selection import issue_url_of as _issue_url_of
+from teatree.core.issue_writes.issue_judgment_audit import record_issue_judgment
 from teatree.core.issue_writes.section_removal import DescriptionRemoval
 from teatree.core.issue_writes.section_removal import remove_description_section as _remove_description_section
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
@@ -64,7 +68,6 @@ logger = logging.getLogger(__name__)
 
 MAX_APPEND_ATTEMPTS = 4
 _MARKER_PREFIX = "<!-- t3-hygiene:"
-_DEDUPE_HEADING = "Dedupe check"
 
 
 class NotePurpose(StrEnum):
@@ -169,7 +172,8 @@ class CreateDecision:
     """One judgment about one open candidate.
 
     ``fits`` marks the candidate the request should be folded into; otherwise
-    *reason* must say why it was rejected; it stays in the internal audit log.
+    *reason* must say why it was rejected, and that reason is written into the
+    private audit row so the judgment remains inspectable without publishing it.
     """
 
     candidate_url: str
@@ -197,23 +201,6 @@ def _digest(*parts: str) -> str:
 
 def _today() -> str:
     return datetime.now(UTC).date().isoformat()
-
-
-def _description_of(issue: RawAPIDict) -> str:
-    """The body, across GitLab (``description``) and GitHub (``body``)."""
-    for key in ("description", "body"):
-        value = issue.get(key)
-        if isinstance(value, str):
-            return value
-    return ""
-
-
-def _issue_url_of(issue: RawAPIDict) -> str:
-    for key in ("web_url", "html_url", "url"):
-        value = issue.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return ""
 
 
 def _scrub(text: str, *, target: str, repo: str, action: str, forge: str = "") -> str:
@@ -393,23 +380,25 @@ def create_or_extend(
     snapshot_urls: Iterable[str] | None = None,
     sweep_run_id: str = "",
 ) -> CreateOutcome:
-    """File *draft* — but only after the open backlog has been judged.
+    """File *draft* — but only after its closest open candidates have been judged.
 
-    *decisions* must cover every currently-open ticket: one marked ``fits`` folds
-    the request into that ticket's description instead of filing; otherwise every
-    candidate needs a rejection *reason*, kept in the internal log.
-
-    *snapshot_urls*, when given, is the backlog the decisions were made against.
-    A ticket filed since then makes the judgment set incomplete, so the outcome is
-    ``stale_snapshot`` and the caller judges again — the window in which two
-    lanes file the same ticket is exactly this one.
+    Decisions cover the closest set. A fitting open ticket outside it is refused;
+    a fitting ticket in it is extended, and rejections need private audit reasons.
+    A newly selected URL outside *snapshot_urls* returns ``stale_snapshot``.
     """
-    live = open_candidates(host=host, repo=draft.repo)
+    candidates = closest_open_candidates(host=host, repo=draft.repo, title=draft.title, body=draft.body)
+    all_open, live = candidates.all_open, candidates.closest
     if snapshot_urls is not None:
         appeared = tuple(sorted(set(live) - set(snapshot_urls)))
         if appeared:
             return CreateOutcome(kind="stale_snapshot", unjudged=appeared)
-    return _commit(host=host, draft=draft, live=live, decisions=decisions, sweep_run_id=sweep_run_id)
+    outside = [
+        d.candidate_url for d in decisions if d.fits and d.candidate_url in all_open and d.candidate_url not in live
+    ]
+    if outside:
+        msg = f"fitting open ticket outside the judged set: {', '.join(sorted(outside))}"
+        raise ValueError(msg)
+    return _commit(host=host, draft=draft, candidates=candidates, decisions=decisions, sweep_run_id=sweep_run_id)
 
 
 def create_or_extend_by_marker(
@@ -437,47 +426,44 @@ def create_or_extend_by_marker(
         CreateDecision(
             candidate_url=url,
             fits=marker in _description_of(issue),
-            reason="" if marker in _description_of(issue) else f"does not carry the marker {marker}",
+            reason=f"marker {marker} {'found' if marker in _description_of(issue) else 'missing'}",
         )
         for url, issue in live.items()
     ]
-    return _commit(host=host, draft=draft, live=live, decisions=decisions, sweep_run_id=sweep_run_id)
-
-
-def open_candidates(*, host: CodeHostBackend, repo: str) -> dict[str, RawAPIDict]:
-    """Every OPEN ticket on *repo*, keyed by URL — the fresh landscape no create may skip.
-
-    Deliberately not backed by ``LandscapeArtifact``: that is ticket-scoped and may
-    be stale, and a stale backlog is how two lanes file the same ticket.
-    """
-    return {url: issue for issue in host.list_repo_open_issues(repo=repo) if (url := _issue_url_of(issue))}
+    candidates = OpenCandidates(all_open=live, closest=live)
+    return _commit(host=host, draft=draft, candidates=candidates, decisions=decisions, sweep_run_id=sweep_run_id)
 
 
 def _commit(
     *,
     host: CodeHostBackend,
     draft: IssueDraft,
-    live: dict[str, RawAPIDict],
+    candidates: OpenCandidates,
     decisions: Sequence[CreateDecision],
     sweep_run_id: str = "",
 ) -> CreateOutcome:
     """Apply *decisions* to the *live* backlog: extend the fitting ticket, or file once."""
+    live = candidates.closest
     judged = {decision.candidate_url for decision in decisions}
     unjudged = tuple(sorted(set(live) - judged))
     if unjudged:
         msg = f"refusing to file on {draft.repo}: {len(unjudged)} open ticket(s) unjudged — {', '.join(unjudged)}"
         raise ValueError(msg)
 
-    fitting = [decision for decision in decisions if decision.fits]
+    fitting = [decision for decision in decisions if decision.fits and decision.candidate_url in live]
     if fitting:
-        return _extend(host=host, target=fitting[0].candidate_url, draft=draft, sweep_run_id=sweep_run_id)
+        outcome = _extend(host=host, target=fitting[0].candidate_url, draft=draft, sweep_run_id=sweep_run_id)
+    else:
+        unexplained = [d.candidate_url for d in decisions if d.candidate_url in live and not d.reason.strip()]
+        if unexplained:
+            msg = f"refusing to file on {draft.repo}: no rejection reason for {', '.join(sorted(unexplained))}"
+            raise ValueError(msg)
+        outcome = _create(host=host, draft=draft, sweep_run_id=sweep_run_id)
 
-    unexplained = [d.candidate_url for d in decisions if d.candidate_url in live and not d.reason.strip()]
-    if unexplained:
-        msg = f"refusing to file on {draft.repo}: no rejection reason for {', '.join(sorted(unexplained))}"
-        raise ValueError(msg)
-
-    return _create(host=host, draft=draft, decisions=decisions, sweep_run_id=sweep_run_id)
+    record_issue_judgment(
+        draft=draft, outcome=outcome, decisions=decisions, live_urls=live, open_count=len(candidates.all_open)
+    )
+    return outcome
 
 
 def _extend(*, host: CodeHostBackend, target: str, draft: IssueDraft, sweep_run_id: str) -> CreateOutcome:
@@ -499,15 +485,12 @@ def _extend(*, host: CodeHostBackend, target: str, draft: IssueDraft, sweep_run_
     return CreateOutcome(kind="extended_existing", issue_url=target)
 
 
-def _create(
-    *, host: CodeHostBackend, draft: IssueDraft, decisions: Sequence[CreateDecision], sweep_run_id: str
-) -> CreateOutcome:
-    """Scrub all published fields, including labels a forge may create."""
+def _create(*, host: CodeHostBackend, draft: IssueDraft, sweep_run_id: str) -> CreateOutcome:
+    """File the new ticket with the caller's scrubbed body and labels."""
     repo, action = draft.repo, draft.action
     clean_title = _scrub(draft.title, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_body = _scrub(draft.body, target=repo, repo=repo, action=action, forge=draft.forge)
     clean_labels = [_scrub(label, target=repo, repo=repo, action=action, forge=draft.forge) for label in draft.labels]
-    logger.info("issue-hygiene: dedupe for %s: %s", repo, _dedupe_audit(decisions))
     if draft.merge_request_to_resolve_discussions_of is not None or draft.discussion_to_resolve:
         created = host.create_issue_resolving_threads(
             IssueResolutionSpec(
@@ -530,14 +513,6 @@ def _create(
     issue_url = _issue_url_of(raw)
     _record_sweep_change(sweep_run_id, issue_url)
     return CreateOutcome(kind="created_new", issue_url=issue_url)
-
-
-def _dedupe_audit(decisions: Sequence[CreateDecision]) -> str:
-    """The searched-and-rejected record for the internal log."""
-    if not decisions:
-        return f"## {_DEDUPE_HEADING} ({_today()})\n\nNo open candidates existed on this repo."
-    lines = [f"- {d.candidate_url} — {d.reason.strip()}" for d in decisions if not d.fits]
-    return f"## {_DEDUPE_HEADING} ({_today()})\n\nRejected candidates:\n" + "\n".join(lines)
 
 
 def _raise_on_transport_error(raw: RawAPIDict) -> RawAPIDict:

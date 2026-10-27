@@ -35,7 +35,7 @@ from collections import defaultdict
 from teatree.core.models import Task, Ticket
 from teatree.loop.transient_requeue import HALT_STAMP, escalation_marker
 
-_HALT_PREFIX = "repair-halt:"
+HALT_MARKER_PREFIX = "repair-halt:"
 _TICKET_KEYED_PREFIXES = ("repair-stall:", "repair-cap:")
 #: A ticket-keyed marker is ``<kind>:<ticket-pk>:<phase>`` — three colon-separated fields.
 _TICKET_KEYED_FIELDS = 3
@@ -53,7 +53,7 @@ def repair_marker_subject_tickets(markers: set[str]) -> dict[str, list[int]]:
     so a caller can read anything the subject ticket carries — its state, or the pull
     requests recorded against it — without a per-row query.
     """
-    resolved = halt_marker_subject_tickets({m for m in markers if m.startswith(_HALT_PREFIX)})
+    resolved = halt_marker_subject_tickets({m for m in markers if m.startswith(HALT_MARKER_PREFIX)})
     keyed = {marker: pk for marker in markers if (pk := _ticket_keyed_pk(marker)) is not None}
     if keyed:
         live = set(Ticket.objects.filter(pk__in=set(keyed.values())).values_list("pk", flat=True))

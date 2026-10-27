@@ -104,6 +104,44 @@ class TestGhConflictState:
         state = GhMergeRpc(lambda _argv: (1, "", "boom")).fetch_pr_merge_state(slug="o/r", pr_id=7)
         assert state.conflict is MergeConflictState.UNKNOWN
 
+    def test_merged_pr_carries_actor_and_time(self) -> None:
+        payload = json.dumps(
+            {
+                "state": "MERGED",
+                "mergeCommit": {"oid": "a" * 40},
+                "mergedBy": {"login": "operator"},
+                "mergedAt": "2026-10-25T12:00:00Z",
+            }
+        )
+        state = GhMergeRpc(lambda _argv: (0, payload, "")).fetch_pr_merge_state(slug="o/r", pr_id=7)
+        assert (state.merged_by, state.merged_at) == ("operator", "2026-10-25T12:00:00Z")
+        assert state.raw_merge_commit_oid == "a" * 40
+
+    def test_the_merge_state_read_requests_actor_and_time(self) -> None:
+        """Mutant: leave mergedBy/mergedAt out of the field list and gh never returns them."""
+        argv_seen: list[list[str]] = []
+
+        def run(argv: list[str]) -> tuple[int, str, str]:
+            argv_seen.append(argv)
+            return 0, '{"state":"MERGED"}', ""
+
+        GhMergeRpc(run).fetch_pr_merge_state(slug="o/r", pr_id=7)
+
+        fields = argv_seen[0][argv_seen[0].index("--json") + 1].split(",")
+        assert {"mergedBy", "mergedAt"} <= set(fields)
+
+    def test_null_actor_and_time_are_empty(self) -> None:
+        state = GhMergeRpc(
+            lambda _argv: (0, '{"state":"MERGED","mergedBy":null,"mergedAt":null}', "")
+        ).fetch_pr_merge_state(slug="o/r", pr_id=7)
+        assert (state.merged_by, state.merged_at) == ("", "")
+
+    def test_non_string_actor_is_not_recorded_as_a_login(self) -> None:
+        state = GhMergeRpc(lambda _argv: (0, '{"state":"MERGED","mergedBy":{"login":42}}', "")).fetch_pr_merge_state(
+            slug="o/r", pr_id=7
+        )
+        assert state.merged_by == ""
+
 
 class TestFetchLiveHeadSha:
     """A failed read and a PR with no head are DIFFERENT facts (the twin of the GitLab case).

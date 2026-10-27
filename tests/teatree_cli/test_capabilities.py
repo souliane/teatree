@@ -75,6 +75,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree tasks list": tasks.Command.list_tasks,
         "teatree followup sync": followup.Command.sync,
         "teatree dream gap-coverage": dream.Command.gap_coverage_report,
+        "teatree dream funnel": dream.Command.funnel_report,
         "teatree worktree status": worktree.Command.status,
         "teatree worktree diagnose": worktree.Command.diagnose,
         "teatree worktree adopt": _worktree_adopt_command.WorktreeAdoptCommands.adopt,
@@ -90,6 +91,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree live inspect": live.Command.inspect,
         "teatree live steer": live.Command.steer,
         "teatree live follow-up": live.Command.follow_up,
+        "teatree live pause": live.Command.pause,
         # ``signals`` is a bare-``handle`` command (no subcommand token): like
         # ``do``, django-typer replaces ``Command.handle`` with a generic wrapper,
         # so its real ``--json`` param lives on the registered typer callback.
@@ -101,6 +103,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree ticket critic-record": ticket.Command.critic_record,
         "teatree ticket list-clears": ticket.Command.list_clears,
         "teatree ticket dead-rows": ticket.Command.dead_rows,
+        "teatree ticket settle-holds": ticket.Command.settle_holds,
         "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,
         "teatree ticket set-target-branch": ticket.Command.set_target_branch,
         "teatree ticket rework-hold": ticket.Command.rework_hold,

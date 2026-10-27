@@ -2,12 +2,13 @@ active_loop_schedule
 admission_pressure_shed_at
 admission_write_concurrency_per_core
 admit_colleague_prs_to_board
-agent_compaction_keep_recent
+agent_advisor_model
 agent_compaction_keep_tool_results
 agent_harness
 agent_harness_provider
 agent_honesty_model
 agent_max_turns
+agent_model_context_windows
 agent_phase_harness
 agent_phase_models
 agent_pydantic_ai_tier_models
@@ -87,6 +88,7 @@ intake_ram_reserve_gb
 issue_implementer_label
 issue_implementer_max_concurrent
 issue_intake_pass_budget_seconds
+issue_intake_repos
 loop_cadence_seconds
 loops
 main_clone_guard_gate_enabled
@@ -193,3 +195,6 @@ worker_quiescing
 workspace_dir
 worktree_containment_gate_enabled
 write_wip
+issue_intake_idle_hold_hours
+RETIRED agent_compaction_keep_recent
+self_improve_owner_wait_minutes

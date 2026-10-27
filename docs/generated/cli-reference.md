@@ -789,9 +789,10 @@ Usage: t3 codex auth check [OPTIONS]
  would.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --executor          Act on the read-only executor's own login; only          │
-│                     teatree-worker reaches it.                               │
-│ --help              Show this message and exit.                              │
+│ --executor              Act on the read-only executor's own login; only      │
+│                         teatree-worker reaches it.                           │
+│ --phase           TEXT  Check a read-only executor phase.                    │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1538,9 +1539,10 @@ Usage: t3 review-request post [OPTIONS]
 │ *  --mr-url           TEXT  Canonical MR/PR URL to post. [required]          │
 │ *  --approver         TEXT  User id that recorded the #960 approval.         │
 │                             [required]                                       │
-│ *  --ticket-id        TEXT  Ticket whose review evidence is checked.         │
-│                             [required]                                       │
-│ *  --head-sha         TEXT  Full reviewed head SHA. [required]               │
+│    --ticket-id        TEXT  Ticket whose review evidence is checked          │
+│                             (default: owner).                                │
+│    --head-sha         TEXT  Full reviewed head SHA (needed when a ticket     │
+│                             owns it).                                        │
 │    --title            TEXT  Review-request subject (recommended).            │
 │    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4358,8 +4360,9 @@ Usage: t3 setup [OPTIONS] [COMMAND] [ARGS]...
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --skip-plugin                  Skip Claude and Codex plugin registration.    │
 │ --strict-agent-skills          Exit non-zero unless required skills,         │
-│                                inventory, and both TeaTree plugins are       │
-│                                ready.                                        │
+│                                inventory, and the TeaTree plugins of the     │
+│                                credentialed agent tools (both when none is)  │
+│                                are ready.                                    │
 │ --write-automode               Deep-merge the committed Claude-settings      │
 │                                template (recommended autoMode grants +       │
 │                                managed keys) into ~/.claude/settings.json.   │
@@ -6032,6 +6035,8 @@ Usage: t3 mcp serve [OPTIONS]
 │                            phase without write access launches).             │
 │ --allow-write        TEXT  A write tool a --read-only server still registers │
 │                            (repeatable).                                     │
+│ --interactive              Join the live peer network as an attended         │
+│                            operator session.                                 │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -7013,6 +7018,8 @@ Usage: t3 dream [OPTIONS] COMMAND [ARGS]...
 │                  (cron entry).                                               │
 │ gap-coverage     Prove every dream gap has exactly one owner; exit 1 on an   │
 │                  orphan, duplicate, bad link or open gap.                    │
+│ funnel           Show the daily dream funnel and whether a recurring         │
+│                  question class has stopped.                                 │
 │ gap-disposition  Record a folded dream gap's ADDRESS (with its citation) or  │
 │                  reasoned REJECT on its host.                                │
 │ compliance       Inspect the instruction-compliance accountant (#2663) — the │
@@ -7067,6 +7074,21 @@ Usage: t3 dream gap-coverage [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 dream funnel`
+
+```
+Usage: t3 dream funnel [OPTIONS]
+
+ Show the daily dream funnel and whether a recurring question class has
+ stopped.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --class        TEXT  Inspect one recurring question class.                   │
+│ --json               Emit the daily funnel as JSON.                          │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 dream gap-disposition`
 
 ```
@@ -7083,6 +7105,7 @@ Usage: t3 dream gap-disposition [OPTIONS] TICKET GAP_KEY
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --citation        TEXT  ADDRESS: the evidence that verifies the gap.         │
 │ --reject          TEXT  REJECT: why the gap is not worth addressing.         │
+│ --misfit          TEXT  RETURN: why this host cannot address the gap.        │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -7566,7 +7589,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
 │ wip             Bounded-WIP throughput dial.                                 │
 │ autonomy        Per-overlay trust switch (collapses the approval gates).     │
-│ secrets         Inspect sealed credentials and plan a password-store import. │
+│ github-webhook  Create or remove a signed GitHub repository webhook.         │
+│ secrets         Inspect, manage and copy sealed credentials.                 │
 │ worktree        Per-worktree FSM operations.                                 │
 │ workspace       Ticket-level workspace operations (every worktree in the     │
 │                 ticket).                                                     │
@@ -7580,8 +7604,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
-│ live            Sessions on this host's workers: inspect passively, steer or │
-│                 follow up actively.                                          │
+│ live            Sessions on this host's workers: inspect passively; steer,   │
+│                 follow up or pause actively.                                 │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
@@ -9296,12 +9320,56 @@ Usage: t3 teatree autonomy set [OPTIONS] LEVEL
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 teatree github-webhook`
+
+```
+Usage: t3 teatree github-webhook [OPTIONS] COMMAND [ARGS]...
+
+ Create or remove a signed GitHub repository webhook.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ connect     Create or reconcile a repository webhook and verify its ping.    │
+│ disconnect  Remove an exact-URL repository webhook and its secret.           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree github-webhook connect`
+
+```
+Usage: t3 teatree github-webhook connect [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo                  TEXT  Repository owner/name.                         │
+│ --url                   TEXT  Public HTTPS URL for /hooks/github/.           │
+│ --replace-secret              Rotate the signing secret.                     │
+│ --disconnect                  Remove the exact-URL hook and its secret.      │
+│ --json                        Emit JSON on stdout.                           │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree github-webhook disconnect`
+
+```
+Usage: t3 teatree github-webhook disconnect [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  Repository owner/name.                                   │
+│ --url         TEXT  Exact webhook URL to remove.                             │
+│ --json              Emit JSON on stdout.                                     │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree secrets`
 
 ```
 Usage: t3 teatree secrets [OPTIONS] COMMAND [ARGS]...
 
- Inspect sealed credentials and plan a password-store import.
+ Inspect, manage and copy sealed credentials.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -9309,7 +9377,12 @@ Usage: t3 teatree secrets [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ status       Show sealed-store key health and key IDs.                       │
 │ ls           List sealed entry names.                                        │
-│ import-pass  Classify password-store entries without copying values.         │
+│ import-pass  Classify password-store entries; --apply copies row entries.    │
+│ set          Seal a value from stdin or a hidden prompt.                     │
+│ rm           Remove a sealed entry.                                          │
+│ verify       Check referenced sealed entries without printing values.        │
+│ get          Print one secret line to a pipe.                                │
+│ exec         Run a command with secrets in its environment.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9345,10 +9418,88 @@ Usage: t3 teatree secrets ls [OPTIONS] [PREFIX]
 ```
 Usage: t3 teatree secrets import-pass [OPTIONS]
 
- Classify password-store names without copying their values.
+ Classify password-store names; with --apply copy them into sealed rows and
+ print names and statuses only.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --apply          Copy the row entries into the sealed store.                 │
+│ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets set`
+
+```
+Usage: t3 teatree secrets set [OPTIONS] [NAME]
+
+ Seal a value read from stdin (or a hidden prompt) under NAME in the sealed
+ store.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Entry name.                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets rm`
+
+```
+Usage: t3 teatree secrets rm [OPTIONS] [NAME]
+
+ Remove NAME from the sealed store.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Entry name.                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets verify`
+
+```
+Usage: t3 teatree secrets verify [OPTIONS]
+
+ Print ok|absent|unreadable per referenced entry, never a value; exit 1 if any
+ is unreadable.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets get`
+
+```
+Usage: t3 teatree secrets get [OPTIONS] [NAME]
+
+ Print the first line of NAME from the active store; exit 1 absent, 2
+ unreadable, 3 on a terminal.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Entry name.                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets exec`
+
+```
+Usage: t3 teatree secrets exec [OPTIONS] [COMMAND]...
+
+ Run COMMAND with each --env VAR=<entry> value in the child's environment only.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   command      [COMMAND]...  Command to run after --.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --env         TEXT  VAR=<entry name>; repeatable.                            │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9753,6 +9904,8 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 │                             CLOSED/nonexistent target issue/PR URL.          │
 │ --kind                TEXT  Classify: 'fix' or 'feature' (blank infers from  │
 │                             the title, #17).                                 │
+│ --reason              TEXT  Reason for adding repositories to a ticket that  │
+│                             already has repos.                               │
 │ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11837,7 +11990,7 @@ Usage: t3 teatree standup stale [OPTIONS]
 ```
 Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
 
- Sessions on this host's workers: inspect passively, steer or follow up
+ Sessions on this host's workers: inspect passively; steer, follow up or pause
  actively.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
@@ -11850,6 +12003,8 @@ Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
 │ steer      Send input into a running agent's current turn and print its      │
 │            receipt (active).                                                 │
 │ follow-up  Start one new turn in an idle agent session and print its receipt │
+│            (active).                                                         │
+│ pause      Interrupt a running task and park it for an operator resume       │
 │            (active).                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11931,6 +12086,31 @@ Usage: t3 teatree live follow-up [OPTIONS] TASK
 │                            [default: 60.0]                                   │
 │ --json                     Emit JSON on stdout instead of the human view.    │
 │ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live pause`
+
+```
+Usage: t3 teatree live pause [OPTIONS] TASK
+
+ Interrupt a running task and park it for an operator resume.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --command-id        TEXT   Idempotency key; the same command returns the     │
+│                            first receipt.                                    │
+│ --wait              FLOAT  Seconds to wait for the pause receipt (at most    │
+│                            900).                                             │
+│                            [default: 60.0]                                   │
+│ --json                     Emit JSON on stdout instead of the human view.    │
+│ --help                     Show this message and exit.                       │
+│ --attempt           TEXT   Refuse unless the session is this attempt;        │
+│                            defaults to the attempt `live list` shows.        │
+│ --generation        TEXT   Refuse unless the worker runs this generation;    │
+│                            defaults to the located session's.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12642,6 +12822,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
+│ settle-holds                 Check held no-diff reviews; --dry-run reads     │
+│                              without changing tickets.                       │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
 │                              no-bulk-close guard.                            │
 │ fold                         Merge a member ticket's body into its host's,   │
@@ -12673,6 +12855,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              referenced attachments.                         │
 │ rubric-set                   Restate a ticket's rubric from explicit JSON    │
 │                              criteria (#2241).                               │
+│ rubric-waive                 Record an owner's waiver of one rubric          │
+│                              criterion.                                      │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -12770,8 +12954,9 @@ Usage: t3 teatree ticket skip-planning [OPTIONS] TICKET_ID
  ``trivial_plan_skip`` marker (NO ``PlanArtifact``, no ``--human-authorize``)
  that ``check_plan_artifact`` accepts and ``execute_provision`` reads to
  skip the auto-planner. It escapes the PLAN gate ONLY — the rubric done-gate
- still grades whatever criteria the ticket carries, and the one waiver for that
- is ``plan-bypass``. ``--reason`` is mandatory — an unreasoned skip is refused
+ still grades whatever criteria the ticket carries; ``plan-bypass`` is its
+ human-authorized plan waiver. ``--reason`` is mandatory — an unreasoned skip
+ is refused
  and records nothing. See ``models.trivial_plan_skip``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
@@ -13228,6 +13413,20 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree ticket settle-holds`
+
+```
+Usage: t3 teatree ticket settle-holds [OPTIONS]
+
+ Check held no-diff reviews; --dry-run reads without writing.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run                                                                    │
+│ --json                                                                       │
+│ --help             Show this message and exit.                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree ticket bulk-close`
 
 ```
@@ -13353,7 +13552,8 @@ Usage: t3 teatree ticket reconcile-overlay [OPTIONS]
  Walks every ticket with an ``issue_url`` and re-runs overlay
  inference (now routed through ``get_workspace_repos()``). Rows whose
  stored overlay differs from a *conclusive* inference are corrected;
- an inconclusive (empty) inference never blanks an existing value.
+ synthetic umbrella tickets retain their creation overlay, including blank.
+ An inconclusive (empty) inference never blanks an existing value.
  Use ``--dry-run`` to preview.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
@@ -13648,6 +13848,25 @@ Usage: t3 teatree ticket rubric-set [OPTIONS] TICKET_ID
 │ --criteria-json        TEXT  JSON array: '["AC1"]' or '[{"text": "AC1"}]'.   │
 │ --criteria-file        TEXT  Path to a JSON criteria-array file.             │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket rubric-waive`
+
+```
+Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
+
+ Waive one rubric criterion by its text hash; an owner identity and a reason
+ are required.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --text-hash        TEXT  Hash shown beside the criterion.                    │
+│ --waived-by        TEXT  Owner identity recording the waiver.                │
+│ --reason           TEXT  Why this criterion is waived.                       │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

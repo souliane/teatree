@@ -100,6 +100,19 @@ class InboundReading:
 #: can supply a deterministic reading without a model.
 type InboundReader = Callable[[str], InboundReading]
 
+
+def memoized_reader(reader: InboundReader) -> InboundReader:
+    """One reading per text for the binder and router within a single unit."""
+    cache: dict[str, InboundReading] = {}
+
+    def read(text: str) -> InboundReading:
+        if text not in cache:
+            cache[text] = reader(text)
+        return cache[text]
+
+    return read
+
+
 _SYSTEM_PROMPT = (
     "You classify one inbound Slack message sent by the owner of an autonomous "
     "software factory to the factory itself. Reply with ONE JSON object and nothing "

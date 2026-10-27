@@ -40,8 +40,10 @@ from django_typer.management import TyperCommand, command
 from teatree.core.management.commands._dream_gap_commands import DreamGapCommands
 from teatree.core.management.commands._dream_report import TailTimings, _ResultFragments
 from teatree.core.models.dream_gap_ledger import dream_umbrella_url
+from teatree.loops.dream.funnel import record_funnel
 from teatree.loops.dream.loop import DREAM_LOOP_NAME
 from teatree.loops.dream.pass_config import PassBudget
+from teatree.loops.dream.stranded_hosts import release_stranded_hosts
 from teatree.loops.tick_cost import record_tick_cost
 from teatree.token_report import local_eval_reserve_decision
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
@@ -477,9 +479,14 @@ class Command(DreamGapCommands, TyperCommand):
         try:
             umbrella = dream_umbrella_url()
             outcome = batch_promote.promote_batch(umbrella_url=umbrella, batch=batch, dry_run=dry_run)
-            nudged = outcome.queued and nudge_for_dream_gaps()
             host, _repo = self._teatree_backlog_host()
             reconciled = [] if dry_run or host is None else batch_promote.reconcile_batches(host, umbrella_url=umbrella)
+            released = None if dry_run else release_stranded_hosts(umbrella_url=umbrella)
+            nudged = (
+                bool(outcome.queued or (released is not None and released.returned_gaps)) and nudge_for_dream_gaps()
+            )
+            if released is not None:
+                record_funnel(umbrella_url=umbrella, batch=batch)
         except Exception as exc:  # noqa: BLE001 — a batch-promotion failure degrades to a WARN clause
             return batch.summary + f"; WARN batch promotion raised: {type(exc).__name__}: {exc}"
         summary = batch.summary
@@ -491,6 +498,13 @@ class Command(DreamGapCommands, TyperCommand):
             summary += f"; WARN {outcome.reason}"
         if reconciled:
             summary += f", reconciled {len(reconciled)} batch ticket(s)"
+        if released is not None:
+            summary += (
+                f"; returned {released.returned_gaps} gap(s) from {released.released_hosts} stranded host(s), "
+                f"held {released.held_hosts} host(s)"
+            )
+            if released.held_reasons:
+                summary += ": " + ", ".join(f"{pk} {reason}" for pk, reason in released.held_reasons)
         return summary
 
     def _gap_phases(self) -> "GapPromotionPhases":

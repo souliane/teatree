@@ -88,6 +88,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "fold link, a retired owner, a stranded memory row, or (with --ticket) an undispositioned gap",
     ),
     Capability(
+        "teatree dream funnel",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits daily gap counts and recurring question class status; unknown classes exit 1",
+    ),
+    Capability(
         "teatree worktree adopt",
         json_output=True,
         exit_codes=("0", "1"),
@@ -127,6 +133,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0", "2", "3", "4", "5"),
         note="--json emits the steer receipt; active: 0 accepted_current_turn, 3 rejected, 4 unknown_delivery, "
         "5 offline",
+    ),
+    Capability(
+        "teatree live pause",
+        json_output=True,
+        exit_codes=("0", "2", "3", "4", "5"),
+        note="--json emits the pause receipt; active: 0 paused, 3 rejected, 4 unknown_delivery, 5 offline",
     ),
     Capability(
         "teatree live follow-up",
@@ -196,6 +208,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0",),
         note="--json emits every non-terminal ticket intake can never find, with the request text "
         "it is the only surviving record of; read-only (#4527)",
+    ),
+    Capability(
+        "teatree ticket settle-holds",
+        json_output=True,
+        exit_codes=("0",),
+        note="--dry-run reports held reviews without changing them; --json emits every decision",
     ),
     Capability(
         "teatree review apply-reviewer-policy",

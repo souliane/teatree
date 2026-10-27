@@ -9,7 +9,7 @@ thread and the reply scanner binds the answer.
 import dataclasses
 from datetime import timedelta
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 from django.test import TestCase
@@ -19,7 +19,7 @@ from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption
-from teatree.core.models import BotPing, DeferredQuestion
+from teatree.core.models import BotPing, DeferredQuestion, Session, Task, ThreadBinding, Ticket, TicketDmPost
 from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
 from teatree.core.notify_types import DELIVERED
 from teatree.core.owner_question_message import render_blocks, render_text
@@ -93,9 +93,15 @@ class TestTheFirstPostIsTheCardWithButtons(TestCase):
         row = self._post_first(calls)
 
         [(_, payload)] = [call for call in calls if call[0] == "chat.postMessage"]
-        assert payload["text"] == render_text(row)
-        assert payload["blocks"] == render_blocks(row)
-        assert payload["text"].splitlines()[0].startswith(f"Is {self.LINK} ready to be released")
+        assert payload["text"] == f"<@U0DEMOOWNER> {render_text(row)}"
+        expected_blocks = render_blocks(row)
+        first_text = cast("dict[str, str]", expected_blocks[0]["text"])
+        expected_blocks[0] = {
+            **expected_blocks[0],
+            "text": {**first_text, "text": f"<@U0DEMOOWNER> {first_text['text']}"},
+        }
+        assert payload["blocks"] == expected_blocks
+        assert payload["text"].splitlines()[0].startswith(f"<@U0DEMOOWNER> Is {self.LINK} ready to be released")
         assert "thread_ts" not in payload
         assert not payload["text"].startswith(":question:")
         assert "[Yes] (recommended) - I go ahead." in payload["text"]
@@ -108,8 +114,53 @@ class TestTheFirstPostIsTheCardWithButtons(TestCase):
         row = self._post_first(calls)
 
         [(_, payload)] = [call for call in calls if call[0] == "chat.postMessage"]
-        assert payload["text"].splitlines() == render_text(row).splitlines()
+        assert payload["text"].splitlines() == [
+            f"<@U0DEMOOWNER> {render_text(row).splitlines()[0]}",
+            *render_text(row).splitlines()[1:],
+        ]
         assert any(len(line) > WRAP_WIDTH for line in payload["text"].splitlines())
+
+
+class TestTicketQuestionThread(TestCase):
+    def test_failed_header_leaves_card_unmirrored_for_retry(self) -> None:
+        ticket = Ticket.objects.create(short_description="Retry")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        row = DeferredQuestion.record("Which route?", parked_task=task, card=OWNER_CARD)
+        backend = MagicMock()
+        backend.open_dm.return_value = "D-OWNER"
+        backend.post_message.return_value = {"ok": False, "error": "ratelimited"}
+
+        delivered, _total = drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
+
+        row.refresh_from_db()
+        assert delivered == 0
+        assert row.slack_ts == ""
+        assert backend.post_message.call_count == 1
+        assert not TicketDmPost.objects.filter(question=row).exists()
+
+    def test_subject_card_keeps_own_mirror_inside_ticket_root(self) -> None:
+        ticket = Ticket.objects.create(overlay="teatree", short_description="Fix retry")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        row = DeferredQuestion.record("Which route?", parked_task=task, card=OWNER_CARD)
+        backend = MagicMock()
+        backend.open_dm.return_value = "D-OWNER"
+        backend.post_message.side_effect = [
+            {"ok": True, "ts": "1700000000.000001"},
+            {"ok": True, "ts": "1700000000.000002"},
+        ]
+        backend.fetch_thread_replies.return_value = [{"ts": "1700000000.000001", "text": "ticket header"}]
+        backend.get_permalink.return_value = "https://slack.example/archives/D-OWNER/p1700000000000002"
+
+        delivered, _total = drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
+
+        row.refresh_from_db()
+        assert delivered == 1
+        assert row.slack_ts == "1700000000.000002"
+        assert backend.post_message.call_args.kwargs["thread_ts"] == "1700000000.000001"
+        assert TicketDmPost.objects.get(question=row).slack_ts == row.slack_ts
+        assert ThreadBinding.objects.filter(ticket=ticket, thread_ts="1700000000.000001").exists()
+        assert not ThreadBinding.objects.filter(ticket=ticket, thread_ts=row.slack_ts).exists()
 
 
 class TestDrainExcludesInternalAudience(TestCase):

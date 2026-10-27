@@ -37,6 +37,12 @@ _ALLOWED: dict[str, str] = {
     "agents/repro_phase_recorder.py": (
         "proves the recorded RED sha precedes the GREEN run — repro provenance, not branch landed-ness"
     ),
+    "agents/own_pr_review_head.py": (
+        "proves the checkout head precedes the forge PR head before a fast-forward — review currency, not landed-ness"
+    ),
+    "core/review/review_delta.py": (
+        "proves the prior reviewed head precedes the new head — review delta, not landed-ness"
+    ),
     "core/merge/conflict_only.py": "proves a merge's second parent is an ancestor of a FRESH base — review currency",
     "core/management/commands/_workspace/cleanup.py": (
         "the branch-prune pass's plain-merge class; the squash class in the same loop goes through `is_squash_merged`"

@@ -22,6 +22,7 @@ from django.urls import reverse
 
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.ticket import Ticket
 from teatree.dash.task_actions import ENQUEUEABLE_PHASES
 from tests.factories import TicketFactory, record_test_plan
 
@@ -137,9 +138,16 @@ class EnqueueingLeavesEveryOutcomeStoreEmptyTestCase(TestCase):
     """The package walk is static; this is the same claim executed."""
 
     def test_clicking_every_button_records_no_verdict_and_no_clear(self) -> None:
-        ticket = TicketFactory()
-        record_test_plan(ticket)
-        for phase in ENQUEUEABLE_PHASES:
+        states = (
+            Ticket.State.NOT_STARTED,
+            Ticket.State.PLAN_RECORDED,
+            Ticket.State.CODED,
+            Ticket.State.TESTED,
+            Ticket.State.SELF_REVIEWED,
+        )
+        for phase, state in zip(ENQUEUEABLE_PHASES, states, strict=True):
+            ticket = TicketFactory(state=state)
+            record_test_plan(ticket)
             response = self.client.post(
                 reverse("dash:task_action", args=[ticket.pk]), {"phase": phase}, headers={"hx-request": "true"}
             )

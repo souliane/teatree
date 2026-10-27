@@ -2,10 +2,9 @@
 
 The fixture is the #3967 incident, built with real git: a checkout created by a
 clone this context cannot reach, so its ``.git`` file records an absolute admin
-dir that resolves to nothing here. git answers ``fatal: not a git repository``
-there in the same words it uses for a directory that never held one — which is
-the whole trap, and why the fixture-validity test below asserts that naive
-reading is exactly what a bare probe produces.
+dir that resolves to nothing here. A bare git probe rejects the pointer; its
+error wording varies by git version. The fixture-validity test below checks
+that the probe fails for this specific reason.
 
 Each entry below is a production decider whose answer can authorise removing or
 re-creating a checkout. Every one of them must decline on this directory: absence
@@ -25,6 +24,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
+from teatree.core.cleanup.removal_proof import removal_refusal
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.broken_checkout import BrokenCheckout, classify_broken_checkout
 from teatree.core.worktree.checkout_disposal import disposal_refusal
@@ -68,6 +68,7 @@ class TestNoDeciderDisposesOfAForeignViewCheckout(TestCase):
     def _deciders(self) -> dict[str, Callable[[], bool]]:
         """Decider name → does it AUTHORISE removing or re-creating the checkout?"""
         return {
+            "removal_proof.removal_refusal": lambda: removal_refusal(self.checkout, clone=self.acting_clone) == "",
             "checkout_disposal.disposal_refusal": lambda: (
                 disposal_refusal(self.checkout, clone=self.acting_clone) == ""
             ),

@@ -69,6 +69,19 @@ class TestTickCostRecording(django.test.TestCase):
         assert hard_exit.call_count == 1
         assert idle_when_exiting[0] is not None
 
+    def test_the_cost_is_recorded_after_the_report(self) -> None:
+        class ReportOutput(io.StringIO):
+            def write(self, text: str) -> int:
+                if "ran" in text:
+                    assert Loop.objects.get(name="probe").idle_cpu_seconds is None
+                return super().write(text)
+
+        with _worker_tick(TickReport(started_at=dt.datetime.now(dt.UTC))):
+            call_command("loops_tick", loop="probe", stdout=io.StringIO(), stderr=ReportOutput())
+
+        self.loop.refresh_from_db()
+        assert self.loop.idle_cpu_seconds is not None
+
     def test_a_crashed_tick_still_records_its_cpu(self) -> None:
         with (
             _worker_tick(TickReport(started_at=dt.datetime.now(dt.UTC))),

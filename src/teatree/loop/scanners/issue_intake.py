@@ -9,7 +9,7 @@ author-/label-scoped forge queries; the verdict is
 Discovery is scoped so the factory never even fetches work it may not do:
 
 * one author-scoped query per handle in the trusted union, bound to the
-    overlay's own repo slugs — a stranger's issue is never fetched;
+    selected repo slugs — a stranger's issue is never fetched;
 * one label-scoped query for the owner-applied admit label, same repo scope —
     this is the ONLY route by which an untrusted author's issue enters, and it
     requires the owner's explicit label (the admit-label rule).
@@ -59,6 +59,7 @@ from urllib.parse import urlparse
 from django.apps import apps
 from django.db.models import Q
 
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
 from teatree.core.intake.factory_admission import (
@@ -190,7 +191,7 @@ class IssueIntakeScanner:
     trusted_authors: tuple[str, ...] = field(default_factory=tuple)
     identities: tuple[str, ...] = field(default_factory=tuple)
     exclude_labels: tuple[str, ...] = field(default_factory=tuple)
-    #: The overlay's OWN repo slugs (``owner/name``). Every discovery query is
+    #: The selected repo slugs (``owner/name``). Every discovery query is
     #: scoped to them. Empty keeps the pre-scope global search (back-compat).
     repo_slugs: tuple[str, ...] = field(default_factory=tuple)
     name: str = "issue_intake"
@@ -404,6 +405,9 @@ class IssueIntakeScanner:
         Re-read per candidate rather than pre-computed: each successful claim
         records a new in-flight marker, so the live count is the authority.
         """
+        if reason := open_pr_start_cap_hold_reason():
+            logger.warning("IssueIntakeScanner claiming nothing new: %s", reason)
+            return True
         if self.max_concurrent <= 0:
             return False
         active = ImplementedIssueMarker.objects.filter(overlay=self.overlay_name).exclude(

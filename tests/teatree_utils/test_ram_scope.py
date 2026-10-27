@@ -42,6 +42,33 @@ _WORKER_SLAB_RECLAIMABLE_BYTES = 268435456
 _HOST_AVAILABLE_MIB = 22557
 
 
+@pytest.mark.parametrize(
+    ("limit", "available", "host", "expected"),
+    [
+        (16384, 4096, 12288, "cgroup"),
+        (16384, 12288, 12288, "host"),
+        (16384, 8192, None, "cgroup"),
+        (2048, 1024, 12288, "host"),
+        (None, 12288, 12288, "host"),
+        (16384, None, None, "host"),
+    ],
+    ids=["cgroup-smaller", "tie-goes-to-host", "host-unreadable", "sidecar-cgroup", "uncapped", "nothing-readable"],
+)
+def test_binding_scope_names_the_scope_the_box_watermark_judges(
+    limit: int | None, available: int | None, host: int | None, expected: str
+) -> None:
+    reading = RamHeadroom(available_mib=available, cgroup_limit_mib=limit, host_available_mib=host)
+    assert reading.binding_scope == expected
+    assert reading.box_watermark_mib == (available if expected == "cgroup" else host)
+
+
+def test_reclaimable_memory_stat_preserves_duplicate_key_totals(tmp_path: Path) -> None:
+    stat = tmp_path / "memory.stat"
+    stat.write_text(f"inactive_file {_MIB}\ninactive_file {_MIB}\nslab_reclaimable {_MIB}\n")
+    with patch("teatree.utils.ram_scope.cgroup_file", return_value=stat):
+        assert cgroup_v2_reclaimable_mib() == 3
+
+
 def test_cgroup_cap_unreadable_is_inert_even_when_host_memory_is_readable(tmp_path: Path) -> None:
     with (
         patch("teatree.utils.ram_scope.platform.system", return_value="Linux"),
@@ -129,7 +156,7 @@ def _cgroup_reads(values: dict[str, int | None]) -> tuple[AbstractContextManager
     """
     seen: list[str] = []
 
-    def _read(filename: str) -> int | None:
+    def _read(filename: str, **_kwargs: object) -> int | None:
         seen.append(filename)
         return values.get(filename)
 

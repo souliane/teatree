@@ -15,8 +15,8 @@ import json
 import logging
 import re
 from collections.abc import Sequence
-from typing import cast
-from urllib.parse import urlparse
+from typing import TypedDict, cast
+from urllib.parse import quote, urlparse
 
 from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _run_gh
 from teatree.backends.github.api import gh_api_get as _gh_api_get
@@ -56,6 +56,129 @@ query {{
 _REVIEW_THREADS_MAX_PAGES = 20
 
 _ENGAGED_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"})
+_STANDING_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
+
+
+class _BranchOrPullItem(TypedDict, total=False):
+    ref: str
+    object: RawAPIDict
+    merged_at: str | None
+    head: RawAPIDict
+
+
+def _strict_list_pages(endpoint: str, *, token: str) -> list[_BranchOrPullItem]:
+    response = _run_gh(
+        "gh",
+        "api",
+        endpoint,
+        "--paginate",
+        "--slurp",
+        token=token,
+        timeout=_FORGE_READ_TIMEOUT_SECONDS,
+    )
+    pages = json.loads(response.stdout)
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        msg = f"GitHub {endpoint} returned a non-list page"
+        raise TypeError(msg)
+    items = [item for page in pages for item in page]
+    if any(not isinstance(item, dict) for item in items):
+        msg = f"GitHub {endpoint} returned a non-object item"
+        raise TypeError(msg)
+    return cast("list[_BranchOrPullItem]", items)
+
+
+def _matching_merged_head(prs: list[_BranchOrPullItem], *, sha: str, repo: str) -> bool:
+    matched = False
+    for pr in prs:
+        merged_at = pr.get("merged_at")
+        head = pr.get("head")
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        valid_merged_at = merged_at is None or (isinstance(merged_at, str) and bool(merged_at))
+        valid_head = isinstance(head_sha, str) and bool(head_sha)
+        if "merged_at" not in pr or not valid_merged_at or not valid_head:
+            msg = f"GitHub {repo} returned an invalid closed pull request"
+            raise TypeError(msg)
+        matched |= merged_at is not None and head_sha == sha
+    return matched
+
+
+class BranchReads:
+    @staticmethod
+    def list_unshipped_branches(*, repo: str, prefix: str, token: str) -> list[str]:
+        metadata = _gh_api_get(f"repos/{repo}", token=token)
+        default = metadata.get("default_branch") if isinstance(metadata, dict) else None
+        if not isinstance(default, str) or not default:
+            msg = f"GitHub {repo} has no readable default branch"
+            raise TypeError(msg)
+        endpoint = f"repos/{repo}/git/matching-refs/heads/{quote(prefix, safe='')}?per_page=100"
+        refs = _strict_list_pages(endpoint, token=token)
+        owner = repo.split("/", 1)[0]
+        unshipped = []
+        for ref in refs:
+            full_name = ref.get("ref")
+            item = ref.get("object")
+            sha = item.get("sha") if isinstance(item, dict) else None
+            if not isinstance(full_name, str) or not full_name.startswith("refs/heads/") or not isinstance(sha, str):
+                msg = f"GitHub {repo} returned an invalid branch ref"
+                raise TypeError(msg)
+            name = full_name.removeprefix("refs/heads/")
+            if not name.startswith(prefix):
+                continue
+            comparison = _gh_api_get(f"repos/{repo}/compare/{quote(default, safe='')}...{sha}", token=token)
+            ahead = comparison.get("ahead_by") if isinstance(comparison, dict) else None
+            if not isinstance(ahead, int):
+                msg = f"GitHub {repo} returned an invalid branch comparison"
+                raise TypeError(msg)
+            if ahead == 0:
+                continue
+            prs = _strict_list_pages(
+                f"repos/{repo}/pulls?state=closed&head={quote(f'{owner}:{name}', safe='')}&per_page=100",
+                token=token,
+            )
+            if not _matching_merged_head(prs, sha=sha, repo=repo):
+                unshipped.append(name)
+        return unshipped
+
+
+def approval_count(reviews: object) -> int | None:
+    if not isinstance(reviews, list):
+        return None
+    standing: dict[str, str] = {}
+    for review in reviews:
+        if not isinstance(review, dict):
+            return None
+        author = review.get("author")
+        login = author.get("login") if isinstance(author, dict) else None
+        if not isinstance(login, str) or not login:
+            return None
+        state = str(review.get("state") or "").upper()
+        if state in _STANDING_REVIEW_STATES:
+            standing[login] = state
+    return sum(state == "APPROVED" for state in standing.values())
+
+
+def _required_approval_count(*, repo: str, base_ref: str, token: str) -> int | None:
+    if not base_ref:
+        return None
+    try:
+        rules = _gh_api_get(f"repos/{repo}/rules/branches/{quote(base_ref, safe='')}", token=token)
+    except CommandFailedError:
+        warn_throttled(
+            logger,
+            f"github-review-rules-unreadable:{repo}:{base_ref}",
+            "GitHub review rules unreadable for %s %s",
+            repo,
+            base_ref,
+        )
+        return None
+    if not isinstance(rules, list):
+        return None
+    counts = [
+        rule.get("parameters", {}).get("required_approving_review_count")
+        for rule in rules
+        if isinstance(rule, dict) and rule.get("type") == "pull_request" and isinstance(rule.get("parameters"), dict)
+    ]
+    return max(counts) if counts and all(type(count) is int and count >= 0 for count in counts) else None
 
 
 class ReviewerReads:
@@ -387,7 +510,7 @@ def approval_state(*, repo: str, pr_iid: int, token: str) -> ApprovalState:
         "--repo",
         repo,
         "--json",
-        "reviewDecision",
+        "reviewDecision,reviews,baseRefName",
         token=token,
         timeout=_FORGE_READ_TIMEOUT_SECONDS,
     )
@@ -396,6 +519,11 @@ def approval_state(*, repo: str, pr_iid: int, token: str) -> ApprovalState:
     except json.JSONDecodeError:
         data = {}
     decision = str(data.get("reviewDecision") or "").upper() if isinstance(data, dict) else ""
+    count = approval_count(data.get("reviews")) if isinstance(data, dict) else None
+    base_ref = data.get("baseRefName") if isinstance(data, dict) else None
+    required = (
+        _required_approval_count(repo=repo, base_ref=base_ref, token=token) if isinstance(base_ref, str) else None
+    )
     unresolved = count_unresolved_review_threads(repo=repo, pr_iid=pr_iid, token=token)
     if unresolved is None:
         warn_throttled(
@@ -405,8 +533,13 @@ def approval_state(*, repo: str, pr_iid: int, token: str) -> ApprovalState:
             repo,
             pr_iid,
         )
-    return ApprovalState(
+    state = ApprovalState(
         approvals_left=0 if decision == "APPROVED" else 1,
         approved_by=[],
         unresolved_resolvable=1 if unresolved is None else unresolved,
     )
+    if count is not None:
+        state["count"] = count
+    if required is not None:
+        state["required"] = required
+    return state

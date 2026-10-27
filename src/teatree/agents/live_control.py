@@ -8,7 +8,8 @@ import asyncio
 import hashlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -27,12 +28,16 @@ MAX_STEER_WAIT_SECONDS = 900.0
 DEFAULT_IDLE_WINDOW_SECONDS = 60.0
 MAX_FOLLOW_UP_TURNS = 4
 _DRAIN_SECONDS = 5.0
+_RESTATE_WAIT_SECONDS = 5.0
+OPERATOR_INPUT_PREFIX = "[TeaTree operator input id="
+OPERATOR_FOLLOW_UP_PREFIX = "[TeaTree operator follow-up id="
 
 
 class ControlOutcome(StrEnum):
     ACCEPTED_CURRENT_TURN = "accepted_current_turn"
     ACCEPTED_NEW_TURN = "accepted_new_turn"
     ACCEPTED_INBOX_READ = "accepted_inbox_read"
+    PAUSED = "paused"
     REJECTED = "rejected"
     UNKNOWN_DELIVERY = "unknown_delivery"
 
@@ -84,6 +89,7 @@ class StreamFacts(Protocol):
 
     tool_calls: int
     context_tokens: int | None
+    compactions: int
     last_event_at: float | None
 
     @property
@@ -126,6 +132,7 @@ class PeerIdentity(TypedDict):
     harness: str
     label: str
     ticket: NotRequired[str]
+    room: NotRequired[str]
     phase: NotRequired[str]
     can_receive: NotRequired[bool]
 
@@ -182,7 +189,7 @@ class FollowUp:
 
 def frame_operator_input(text: str, command_id: str) -> str:
     return (
-        f"[TeaTree operator input id={command_id}] From the operator supervising this task, delivered mid-run.\n"
+        f"{OPERATOR_INPUT_PREFIX}{command_id}] From the operator supervising this task, delivered mid-run.\n"
         f"{text}\n"
         "[end operator input: continue your task; your final message must still carry your result envelope]"
     )
@@ -190,9 +197,25 @@ def frame_operator_input(text: str, command_id: str) -> str:
 
 def frame_follow_up(text: str, command_id: str) -> str:
     return (
-        f"[TeaTree operator follow-up id={command_id}] From the operator supervising this task; start one new turn.\n"
+        f"{OPERATOR_FOLLOW_UP_PREFIX}{command_id}] From the operator supervising this task; start one new turn.\n"
         f"{text}\n"
         "[end operator follow-up: finish with your complete result envelope as the last plain JSON object]"
+    )
+
+
+def frame_restated_directions(directions: Sequence[str]) -> str:
+    kept: list[str] = []
+    size = 0
+    for direction in reversed(directions):
+        size += len(direction.encode())
+        if size > MAX_INPUT_BYTES:
+            break
+        kept.append(direction)
+    listed = "\n".join(f"- {direction}" for direction in reversed(kept))
+    return (
+        "[TeaTree operator directions restated after context compaction] The operator's earlier directions to this "
+        f"task, still in force:\n{listed}\n"
+        "[end restated directions: continue your task; your final message must still carry your result envelope]"
     )
 
 
@@ -232,10 +255,15 @@ class LiveSessionController:
         self._receipts: dict[str, tuple[str, asyncio.Future[ControlReceipt]]] = {}
         self._in_flight: set[asyncio.Future[ControlReceipt]] = set()
         self._pushing = 0
+        self._pushes_done = asyncio.Event()
+        self._pushes_done.set()
         self._idle: asyncio.Future[FollowUp | None] | None = None
         self._starting: FollowUp | None = None
         self._follow_up_active = False
         self._turn_running = True
+        self._paused = False
+        self._directions: list[str] = []
+        self._restated = 0
         self._claim_live = claim_live
 
     def bind(self, session: InterruptibleSession) -> None:
@@ -255,6 +283,39 @@ class LiveSessionController:
         self.close()
         if self._session is not None and self._turn_running:
             await self._session.interrupt()
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    async def pause(self, text: str, *, command_id: str) -> ControlReceipt:
+        entry = self._receipts.get(command_id)
+        if entry is not None:
+            if entry[0] != _digest(text, "pause"):
+                return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.DUPLICATE_MISMATCH)
+            return await asyncio.shield(entry[1])
+        if self._closed or not self._turn_running:
+            return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.TURN_ENDED)
+        settled: asyncio.Future[ControlReceipt] = asyncio.get_running_loop().create_future()
+        self._receipts[command_id] = (_digest(text, "pause"), settled)
+        self._paused = True
+        try:
+            await self.interrupt()
+            receipt = ControlReceipt(
+                command_id,
+                self.task.pk,
+                ControlOutcome.PAUSED,
+                accepted_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            )
+        except asyncio.CancelledError:
+            settled.set_result(ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY))
+            raise
+        except Exception:
+            self._paused = False
+            logger.warning("Task %s: pause failed", self.task.pk, exc_info=True)
+            receipt = ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
+        settled.set_result(receipt)
+        return receipt
 
     @property
     def idle(self) -> bool:
@@ -344,8 +405,27 @@ class LiveSessionController:
             receipt = unknown
         finally:
             self._in_flight.discard(settled)
+        self._remember(text, receipt)
         settled.set_result(receipt)
         return receipt
+
+    def _remember(self, text: str, receipt: ControlReceipt) -> None:
+        if receipt.outcome in {ControlOutcome.ACCEPTED_CURRENT_TURN, ControlOutcome.ACCEPTED_NEW_TURN}:
+            self._directions.append(text)
+
+    async def restate_after_compaction(self) -> None:
+        """Put the accepted directions back in front of the model once per compaction the CLI reports."""
+        compactions = self._capture.compactions
+        if self._closed or self.idle or compactions <= self._restated:
+            return
+        self._restated = compactions
+        if not self._directions:
+            return
+        command_id = f"compact:{self.task.fence.attempt}:{compactions}"
+        framed = frame_restated_directions(self._directions)
+        receipt = await self._deliver(framed, command_id, _RESTATE_WAIT_SECONDS)
+        if receipt.outcome is not ControlOutcome.ACCEPTED_CURRENT_TURN:
+            logger.warning("Task %s: directions not restated after compaction: %s", self.task.pk, receipt.code)
 
     def _start_turn(self, prompt: str, wait: float) -> FollowUp | None:
         window = self._idle
@@ -412,6 +492,7 @@ class LiveSessionController:
             receipt = ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
         finally:
             self._in_flight.discard(settled)
+        self._remember(text, receipt)
         settled.set_result(receipt)
         return receipt
 
@@ -434,6 +515,7 @@ class LiveSessionController:
         if self.idle:
             return await self._push_idle(framed, command_id, wait)
         self._pushing += 1
+        self._pushes_done.clear()
         try:
             return await self._deliver(framed, command_id, wait)
         except Exception:
@@ -441,6 +523,8 @@ class LiveSessionController:
             return ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
         finally:
             self._pushing -= 1
+            if not self._pushing:
+                self._pushes_done.set()
 
     async def _push_idle(self, framed: str, command_id: str, wait: float) -> ControlReceipt:
         if self._claim_live is not None:
@@ -493,3 +577,6 @@ class LiveSessionController:
         """Give in-flight commands a bounded moment to settle once their session has resolved them."""
         if self._in_flight:
             await asyncio.wait(set(self._in_flight), timeout=_DRAIN_SECONDS)
+        if self._pushing:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._pushes_done.wait(), timeout=_DRAIN_SECONDS)

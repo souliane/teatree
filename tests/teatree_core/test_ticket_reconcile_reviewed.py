@@ -33,6 +33,23 @@ class TestReconcileReviewed(TestCase):
         ticket.save()
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
+    def test_reviewed_reconcile_preserves_shipping_hold(self) -> None:
+        hold = {"reason": "no worktree row", "skipped": "no shippable diff"}
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED, extra={"shipping_hold": hold})
+        ticket.reconcile_reviewed()
+        ticket.save()
+        ticket.refresh_from_db()
+        assert ticket.extra["shipping_hold"] == hold
+
+    def test_reconcile_from_started_clears_stale_shipping_hold(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test", state=Ticket.State.WORK_STARTED, extra={"shipping_hold": {"reason": "stale"}}
+        )
+        ticket.reconcile_reviewed()
+        ticket.save()
+        ticket.refresh_from_db()
+        assert "shipping_hold" not in ticket.extra
+
     def test_post_ship_state_cannot_reconcile_backwards(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PR_OPENED)
         with pytest.raises(TransitionNotAllowed):

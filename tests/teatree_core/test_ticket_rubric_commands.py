@@ -13,6 +13,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.gates.rubric_gate import check_rubric_satisfied
 from teatree.core.management.commands._rubric_commands import RubricCommandError, parse_grades
 from teatree.core.models import RubricCriterion, RubricError, Ticket
 
@@ -102,6 +103,25 @@ class TestRubricGradeCommand(TestCase):
         )
         assert result["graded_count"] == 2
         assert result["fully_passed"] is True
+
+    def test_grade_echoes_each_criterion_with_hash_and_text(self) -> None:
+        ticket = self._ticket_with_rubric()
+        rubric = ticket.rubrics.get()
+        output = io.StringIO()
+        call_command(
+            "ticket",
+            "rubric-grade",
+            str(ticket.pk),
+            "--grades-json",
+            json.dumps([{"ordinal": 0, "status": "fail"}]),
+            "--grader-identity",
+            "cold-reviewer",
+            "--reviewed-sha",
+            _SHA,
+            stdout=output,
+        )
+        criterion = rubric.criteria.get(ordinal=0)
+        assert f"#0 {criterion.text_hash} AC1" in output.getvalue()
 
     def test_grade_partial_is_not_fully_passed(self) -> None:
         ticket = self._ticket_with_rubric()
@@ -325,3 +345,81 @@ class TestParseGrades(TestCase):
         assert raised.value.code == 1
         assert "rubric-grade refused: each grade must be an object, not a str: 'pass'" in stderr.getvalue()
         assert [c.status for c in ticket.rubrics.get().criteria.all()] == [RubricCriterion.Status.PENDING]
+
+
+class TestRubricWaiveCommand(TestCase):
+    def test_waiver_removes_pending_criterion_and_gate_passes(self) -> None:
+        ticket = _ticket()
+        call_command("ticket", "rubric-set", str(ticket.pk), "--criteria-json", json.dumps(["AC1", "AC2"]))
+        rubric = ticket.rubrics.get()
+        rubric.criteria.get(ordinal=0).record_grade(
+            status="pass", grader_identity="cold-reviewer", reviewed_sha=_SHA, rationale=_CITATION
+        )
+        text_hash = rubric.criteria.get(ordinal=1).text_hash
+        call_command(
+            "ticket",
+            "rubric-waive",
+            str(ticket.pk),
+            "--text-hash",
+            text_hash,
+            "--waived-by",
+            "owner",
+            "--reason",
+            "out of scope",
+        )
+        check_rubric_satisfied(ticket, _SHA, transition="merge")
+        assert list(rubric.criteria.values_list("text", flat=True)) == ["AC1"]
+
+    def test_refusal_exits_nonzero(self) -> None:
+        ticket = _ticket()
+        call_command("ticket", "rubric-set", str(ticket.pk), "--criteria-json", json.dumps(["AC1"]))
+        with pytest.raises(SystemExit) as exc:
+            call_command(
+                "ticket",
+                "rubric-waive",
+                str(ticket.pk),
+                "--text-hash",
+                "0" * 12,
+                "--waived-by",
+                "owner",
+                "--reason",
+                "out of scope",
+            )
+        assert exc.value.code == 1
+
+    def test_blank_waived_by_exits_nonzero_and_changes_nothing(self) -> None:
+        ticket = _ticket()
+        call_command("ticket", "rubric-set", str(ticket.pk), "--criteria-json", json.dumps(["AC1", "AC2"]))
+        rubric = ticket.rubrics.get()
+        with pytest.raises(SystemExit) as exc:
+            call_command(
+                "ticket",
+                "rubric-waive",
+                str(ticket.pk),
+                "--text-hash",
+                rubric.criteria.get(ordinal=0).text_hash,
+                "--waived-by",
+                "",
+                "--reason",
+                "out of scope",
+            )
+        assert exc.value.code == 1
+        ticket.refresh_from_db()
+        assert rubric.criteria.count() == 2
+        assert not ticket.extra.get("rubric_waivers")
+
+    def test_ticket_without_a_rubric_exits_nonzero(self) -> None:
+        ticket = _ticket()
+        with pytest.raises(SystemExit) as exc:
+            call_command(
+                "ticket",
+                "rubric-waive",
+                str(ticket.pk),
+                "--text-hash",
+                "0" * 32,
+                "--waived-by",
+                "owner",
+                "--reason",
+                "out of scope",
+            )
+        assert exc.value.code == 1

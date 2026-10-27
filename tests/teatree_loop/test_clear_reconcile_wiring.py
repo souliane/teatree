@@ -21,6 +21,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.loop.reconcile_lanes import reconcile_holder_pr_rows_best_effort
 from teatree.loop.scanner_factories import _pr_sweep_scanner_for
+from teatree.loop.scanners.head_lineage import GhLineageReader
 from teatree.loop.self_improve.detectors import ForgottenMergeDetector
 from teatree.loop.self_improve.schedule import _cheap_detectors
 
@@ -61,6 +62,19 @@ class TestSweepLaneWiring(TestCase):
     def test_a_failing_reconcile_never_stops_the_sweep_being_built(self) -> None:
         with patch(_RECONCILE, side_effect=RuntimeError("forge down")):
             assert _pr_sweep_scanner_for(_backend(), slack_user_id="") is not None
+
+
+class TestSweepHeadCarryWiring(TestCase):
+    @pytest.fixture(autouse=True)
+    def _muzzle_entry_points(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
+
+    def test_the_production_sweep_reads_head_lineage_from_github(self) -> None:
+        with patch(_RECONCILE):
+            scanner = _pr_sweep_scanner_for(_backend(), slack_user_id="")
+
+        assert scanner is not None
+        assert isinstance(scanner.head_lineage, GhLineageReader)
 
 
 class TestHolderReconcileSurvivedTheMove(TestCase):

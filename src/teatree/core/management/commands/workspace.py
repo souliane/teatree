@@ -13,7 +13,6 @@ from teatree.core.cleanup.prek_patch_recovery import render_report, resolve_patc
 from teatree.core.cleanup.unshipped_restore import restore_bundle
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue, start_services_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
-from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
 from teatree.core.intake.landscape_gather import LandscapeReport, run_landscape
 from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace import helpers as _wh
@@ -43,12 +42,12 @@ from teatree.core.management.commands._workspace.ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     InvalidTicketKindError,
     RawTicketInputs,
+    RepoExpansionRefusedError,
     TerminalTicketRefusedError,
-    adopt_preflight_refusal,
     build_intake,
     build_ticket,
     finalize_ticket_provision,
-    resolve_adopt_context,
+    prepare_ticket_reference,
 )
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
@@ -105,6 +104,9 @@ class Command(TyperCommand):
         kind: Annotated[
             str, typer.Option("--kind", help="Classify: 'fix' or 'feature' (blank infers from the title, #17).")
         ] = "",
+        reason: Annotated[
+            str, typer.Option("--reason", help="Reason for adding repositories to a ticket that already has repos.")
+        ] = "",
     ) -> int:
         """Create or update a ticket, provision its worktrees, return its pk; a refusal exits nonzero (#932)."""
         # The pk is for a ``call_command`` caller; the summary below is the human view.
@@ -114,32 +116,19 @@ class Command(TyperCommand):
         except CommandFailedError as exc:
             self.stderr.write(f"  Refused: orphan scan failed: {exc}")
             raise SystemExit(1) from exc
-        # #1310: a multi-overlay install with ``T3_OVERLAY_NAME`` missing
-        # used to die on the ambiguous ``get_overlay()`` call here.
-        # Infer from the issue URL whose workspace repos own it; the
-        # default ``get_overlay()`` env-var path still wins when set.
-        overlay = get_overlay(_wh.resolve_overlay_name_for_url(issue_url))
-        # Refuse/canonicalize a non-URL arg (a bare ``3274``) BEFORE it can be
-        # persisted as a malformed ``issue_url`` — resolve it to the overlay's
-        # full issue URL or reject it.
-        try:
-            issue_url = canonicalize_issue_ref(overlay, issue_url)
-        except InvalidIssueRefError as exc:
-            self.stderr.write(f"  Refused: {exc}")
-            raise SystemExit(1) from exc
-        adopt_ctx = resolve_adopt_context(adopt=adopt, adopt_branch=adopt_branch)
-        adopt_refusal = adopt_preflight_refusal(overlay, issue_url, adopt_ctx, allow_closed=adopt_closed)
-        if adopt_refusal is not None:
-            self.stderr.write(adopt_refusal)
-            raise SystemExit(1)
-        raw = RawTicketInputs(issue_url, repos, variant, description, take_over, adopt=adopt_ctx, kind=kind)
+        overlay, issue_url, adopt_ctx = prepare_ticket_reference(
+            self.stderr.write, issue_url, adopt=adopt, adopt_branch=adopt_branch, adopt_closed=adopt_closed
+        )
+        raw = RawTicketInputs(
+            issue_url, repos, variant, description, take_over, adopt=adopt_ctx, kind=kind, reason=reason
+        )
         try:
             intake = build_intake(overlay, raw)
             ticket = build_ticket(self.stderr.write, overlay, intake, _worktree_root())
         except InvalidTicketKindError as exc:
             self.stderr.write(f"  Refused: {exc}")
             raise SystemExit(1) from exc
-        except (ForeignIssueWorktreeRefusedError, TerminalTicketRefusedError) as exc:
+        except (ForeignIssueWorktreeRefusedError, TerminalTicketRefusedError, RepoExpansionRefusedError) as exc:
             raise SystemExit(1) from exc
 
         # #3952: re-resolving a ticket whose checkout a live agent already holds

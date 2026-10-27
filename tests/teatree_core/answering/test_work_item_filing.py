@@ -12,15 +12,15 @@ caller reads as "there was nothing to file".
 """
 
 from dataclasses import dataclass, field
-from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
-from teatree.core.answering.work_item_filing import WorkItemFilingError, file_work_item
-from teatree.core.models import Ticket
+from teatree.core.answering.work_item_filing import UnknownForgeError, WorkItemFilingError, file_work_item
+from teatree.core.models import ThreadBinding, Ticket
 from teatree.core.send_proxy import OutboundBlockedError
 from teatree.types import RawAPIDict
-from tests._send_gate import allow_forge_repos
+from tests._send_gate import allow_github_repos
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("configured_banned_term_registry")]
@@ -32,7 +32,7 @@ _ANCHOR = "https://github.com/souliane/teatree/issues/3009#slack=D-owner/1.0/dm"
 
 @pytest.fixture(autouse=True)
 def _allow_filing_repo() -> None:
-    allow_forge_repos(_REPO)
+    allow_github_repos(_REPO)
 
 
 @dataclass
@@ -42,6 +42,7 @@ class RecordingHost:
     created: list[dict] = field(default_factory=list)
     open_issues: list[RawAPIDict] = field(default_factory=list)
     next_number: int = 7000
+    forge: str = "github"
 
     def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> RawAPIDict:
         self.created.append({"repo": repo, "title": title, "body": body, "labels": list(labels or [])})
@@ -54,6 +55,11 @@ class RecordingHost:
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
         _ = repo
         return [raw for raw in self.open_issues if query in str(raw.get("body") or "")]
+
+
+def _in_repo(title: str, body: str) -> str:
+    _ = (title, body)
+    return _REPO
 
 
 def _conversation_ticket(**extra_slack: object) -> Ticket:
@@ -89,7 +95,7 @@ class TestANewRequestBecomesAnAdmissibleIssue:
             _conversation_ticket(),
             {"title": "Detect the open-PR bottleneck", "body": "Alert when open PRs stall."},
             host=host,
-            repo=_REPO,
+            repo_for=_in_repo,
         )
 
         assert filed is not None
@@ -98,7 +104,8 @@ class TestANewRequestBecomesAnAdmissibleIssue:
         assert work.is_admissible(), "the filed row is still not something intake could discover"
         assert work.short_description == "Detect the open-PR bottleneck"
 
-    def test_issue_write_uses_the_overlay_forge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("forge", ["github", "gitlab"])
+    def test_issue_write_uses_the_hosts_forge(self, monkeypatch: pytest.MonkeyPatch, forge: str) -> None:
         routed_forges: list[str] = []
 
         def route(*, forge: str, repo: str, text: str, action: str, target: str) -> str:
@@ -106,14 +113,47 @@ class TestANewRequestBecomesAnAdmissibleIssue:
             routed_forges.append(forge)
             return text
 
-        monkeypatch.setattr(
-            "teatree.core.answering.work_item_filing.get_overlay",
-            lambda _name: SimpleNamespace(config=SimpleNamespace(code_host="gitlab")),
-        )
         monkeypatch.setattr("teatree.core.answering.work_item_filing.route_forge_write", route)
-        file_work_item(_conversation_ticket(), {"title": "t", "body": "b"}, host=RecordingHost(), repo=_REPO)
+        file_work_item(
+            _conversation_ticket(), {"title": "t", "body": "b"}, host=RecordingHost(forge=forge), repo_for=_in_repo
+        )
 
-        assert routed_forges == ["gitlab", "gitlab"]
+        assert routed_forges == [forge, forge]
+
+    @pytest.mark.parametrize("forge", ["", "forgejo"])
+    def test_an_unknown_host_forge_refuses_before_the_send(self, monkeypatch: pytest.MonkeyPatch, forge: str) -> None:
+        host = RecordingHost(forge=forge)
+
+        def unexpected_write(**_kwargs: object) -> str:
+            pytest.fail("an unknown forge reached the outbound send")
+
+        monkeypatch.setattr("teatree.core.answering.work_item_filing.route_forge_write", unexpected_write)
+        with pytest.raises(UnknownForgeError, match=f"forge for {_REPO} could not be determined"):
+            file_work_item(_conversation_ticket(), {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
+
+        assert host.created == []
+
+    def test_an_unknown_host_forge_does_not_attach_a_fingerprint_match(self) -> None:
+        host = RecordingHost(forge="")
+        matching_url = f"https://github.com/{_REPO}/issues/99"
+        host.open_issues.append({"html_url": matching_url, "body": "<!-- slack-request-fingerprint:fp-bottleneck -->"})
+        ticket = _conversation_ticket()
+
+        with pytest.raises(UnknownForgeError, match=f"forge for {_REPO} could not be determined"):
+            file_work_item(ticket, {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
+
+        assert not Ticket.objects.filter(issue_url=matching_url).exists()
+        ticket.refresh_from_db()
+        assert "work_issue_url" not in ticket.extra["slack_answer"]
+
+    @pytest.mark.parametrize("forge", [None, 17])
+    def test_a_non_string_host_forge_is_a_filing_refusal(self, forge: object) -> None:
+        host = RecordingHost(forge=cast("str", forge))
+
+        with pytest.raises(UnknownForgeError, match=f"forge for {_REPO} could not be determined"):
+            file_work_item(_conversation_ticket(), {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
+
+        assert host.created == []
 
     def test_every_filed_issue_is_withheld_behind_needs_triage(self) -> None:
         """Nobody dictated this text, so the maintainer clears it before the factory claims it."""
@@ -123,24 +163,26 @@ class TestANewRequestBecomesAnAdmissibleIssue:
             _conversation_ticket(),
             {"title": "Detect the open-PR bottleneck", "body": "Alert when open PRs stall."},
             host=host,
-            repo=_REPO,
+            repo_for=_in_repo,
         )
 
         assert host.created[0]["labels"] == ["t3-auto", "needs-triage"]
 
     def test_the_conversation_row_records_where_the_work_went(self) -> None:
         ticket = _conversation_ticket()
+        ThreadBinding.bind(ticket=ticket, channel="D-owner", thread_ts="1.0")
 
         filed = file_work_item(
             ticket,
             {"title": "Detect the open-PR bottleneck", "body": "Alert when open PRs stall."},
             host=RecordingHost(),
-            repo=_REPO,
+            repo_for=_in_repo,
         )
 
         assert filed is not None
         ticket.refresh_from_db()
         assert ticket.extra["slack_answer"]["work_issue_url"] == filed.url
+        assert ThreadBinding.objects.get(channel="D-owner", thread_ts="1.0").ticket.issue_url == filed.url
 
 
 class TestARetryNeverForksASecondIssue:
@@ -150,7 +192,7 @@ class TestARetryNeverForksASecondIssue:
         ticket = _conversation_ticket(work_issue_url="https://github.com/souliane/teatree/issues/4242")
         host = RecordingHost()
 
-        filed = file_work_item(ticket, {"title": "t", "body": "b"}, host=host, repo=_REPO)
+        filed = file_work_item(ticket, {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
 
         assert filed is not None
         assert filed.url == "https://github.com/souliane/teatree/issues/4242"
@@ -160,12 +202,12 @@ class TestARetryNeverForksASecondIssue:
         """A crash between the forge write and the DB stamp must not fork a second issue."""
         host = RecordingHost()
         ticket = _conversation_ticket()
-        first = file_work_item(ticket, {"title": "t", "body": "b"}, host=host, repo=_REPO)
+        first = file_work_item(ticket, {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
         ticket.refresh_from_db()
         ticket.extra["slack_answer"].pop("work_issue_url")
         ticket.save(update_fields=["extra"])
 
-        second = file_work_item(ticket, {"title": "t", "body": "b"}, host=host, repo=_REPO)
+        second = file_work_item(ticket, {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
 
         assert first is not None
         assert second is not None
@@ -183,7 +225,7 @@ class TestAttachingToAnExistingBacklogIssue:
             _conversation_ticket(),
             {"existing_issue_url": "https://github.com/souliane/teatree/issues/4526"},
             host=host,
-            repo=_REPO,
+            repo_for=_in_repo,
         )
 
         assert filed is not None
@@ -194,7 +236,9 @@ class TestAttachingToAnExistingBacklogIssue:
     def test_a_non_forge_reference_is_refused_rather_than_recorded(self) -> None:
         """A bare number or a made-up ref would record a promise nothing can resolve."""
         with pytest.raises(WorkItemFilingError):
-            file_work_item(_conversation_ticket(), {"existing_issue_url": "4526"}, host=RecordingHost(), repo=_REPO)
+            file_work_item(
+                _conversation_ticket(), {"existing_issue_url": "4526"}, host=RecordingHost(), repo_for=_in_repo
+            )
 
 
 class TestNothingLeaksAndNothingFailsQuietly:
@@ -204,7 +248,7 @@ class TestNothingLeaksAndNothingFailsQuietly:
         monkeypatch.setattr("teatree.core.answering.work_item_filing.route_forge_write", _blocked_write)
         host = RecordingHost()
 
-        filed = file_work_item(_conversation_ticket(), {"title": "t", "body": "b"}, host=host, repo=_REPO)
+        filed = file_work_item(_conversation_ticket(), {"title": "t", "body": "b"}, host=host, repo_for=_in_repo)
 
         assert filed is not None
         assert filed.withheld
@@ -219,7 +263,7 @@ class TestNothingLeaksAndNothingFailsQuietly:
             _conversation_ticket(),
             {"no_work_reason": "answered from recorded state; nothing to build"},
             host=host,
-            repo=_REPO,
+            repo_for=_in_repo,
         )
 
         assert filed is None
@@ -228,4 +272,4 @@ class TestNothingLeaksAndNothingFailsQuietly:
     def test_an_empty_envelope_raises_rather_than_returning_nothing(self) -> None:
         """A quiet ``None`` here is indistinguishable from "no work needed" — the exact silent drop."""
         with pytest.raises(WorkItemFilingError):
-            file_work_item(_conversation_ticket(), {}, host=RecordingHost(), repo=_REPO)
+            file_work_item(_conversation_ticket(), {}, host=RecordingHost(), repo_for=_in_repo)

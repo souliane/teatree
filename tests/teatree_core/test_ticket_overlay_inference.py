@@ -23,6 +23,7 @@ from teatree.core.intake.resolve import _auto_register_from_git
 from teatree.core.management.commands._workspace.ticket_intake import locked_get_or_create_ticket
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay_for_ticket
+from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL, slack_conversation_anchor
 
 type _Reattribute = dict[str, object]
 
@@ -146,6 +147,30 @@ class TestReconcileOverlay(TestCase):
         assert changed is False
         assert ticket.overlay == "manual"
 
+    def test_umbrella_attribution_survives_direct_reconciliation(self) -> None:
+        with patch(
+            "teatree.core.overlay_loader.get_all_overlays",
+            return_value={"umbrella-owner": _DynamicRepoOverlay(["souliane/teatree"])},
+        ):
+            ticket = Ticket.objects.create(
+                overlay="directive-scope", issue_url=f"{SYNTHETIC_LOOP_UMBRELLA_URL}#directive=42"
+            )
+            assert ticket.apply_inferred_overlay("umbrella-owner") is False
+            assert ticket.reconcile_overlay() is False
+        ticket.refresh_from_db()
+        assert ticket.overlay == "directive-scope"
+
+    def test_blank_umbrella_attribution_is_not_inferred_on_save(self) -> None:
+        with patch(
+            "teatree.core.overlay_loader.get_all_overlays",
+            return_value={"umbrella-owner": _DynamicRepoOverlay(["souliane/teatree"])},
+        ):
+            ticket = Ticket.objects.create(issue_url=f"{SYNTHETIC_LOOP_UMBRELLA_URL}#directive=43")
+            assert ticket.apply_inferred_overlay("umbrella-owner") is False
+            assert ticket.reconcile_overlay() is False
+        ticket.refresh_from_db()
+        assert ticket.overlay == ""
+
 
 class TestReconcileOverlayCommand(TestCase):
     """``manage.py ticket reconcile-overlay`` backfills mis-attributed rows."""
@@ -196,6 +221,30 @@ class TestReconcileOverlayCommand(TestCase):
         assert right.overlay == "gitlab-overlay"
         reattributed = [r for r in results if r["action"] == "reattributed"]
         assert [r["ticket_id"] for r in reattributed] == [wrong.pk]
+
+    def test_umbrella_tickets_are_not_reported_or_rewritten(self) -> None:
+        with patch(
+            "teatree.core.overlay_loader.get_all_overlays",
+            return_value={"umbrella-owner": _DynamicRepoOverlay(["souliane/teatree"])},
+        ):
+            directive = Ticket.objects.create(
+                overlay="directive-scope", issue_url=f"{SYNTHETIC_LOOP_UMBRELLA_URL}#directive-impl=45"
+            )
+            blank = Ticket.objects.create(issue_url=f"{SYNTHETIC_LOOP_UMBRELLA_URL}#outer-loop-experiment=46")
+            slack = Ticket.objects.create(
+                overlay="conversation-scope",
+                issue_url=slack_conversation_anchor(channel="test-channel", slack_ts="123.456"),
+            )
+            dry = cast("list[_Reattribute]", call_command("ticket", "reconcile-overlay", "--dry-run"))
+            actual = cast("list[_Reattribute]", call_command("ticket", "reconcile-overlay"))
+        assert dry == []
+        assert actual == []
+        directive.refresh_from_db()
+        blank.refresh_from_db()
+        slack.refresh_from_db()
+        assert directive.overlay == "directive-scope"
+        assert blank.overlay == ""
+        assert slack.overlay == "conversation-scope"
 
 
 class _RegisteredOverlay:
@@ -271,7 +320,7 @@ class TestCreationSeamStampsOverlay(TestCase):
         tracker_url = "https://gitlab.com/acme/bugs/-/work_items/2374"
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
-            ticket = locked_get_or_create_ticket(tracker_url, "", ["widgets"], overlay_name="overlay-b")
+            ticket, _ = locked_get_or_create_ticket(tracker_url, "", ["widgets"], overlay_name="overlay-b")
             assert ticket._infer_overlay() == ""  # inference is blind here — the stamp is the only signal
             assert ticket.overlay == "overlay-b"
             assert get_overlay_for_ticket(ticket) is overlays["overlay-b"]
@@ -281,7 +330,7 @@ class TestCreationSeamStampsOverlay(TestCase):
         url = "https://gitlab.com/acme/bugs/-/work_items/7"
         Ticket.objects.create(overlay="overlay-a", issue_url=url)
 
-        ticket = locked_get_or_create_ticket(url, "", ["widgets"], overlay_name="overlay-b")
+        ticket, _ = locked_get_or_create_ticket(url, "", ["widgets"], overlay_name="overlay-b")
 
         assert ticket.overlay == "overlay-a"
         assert Ticket.objects.filter(issue_url=url).count() == 1

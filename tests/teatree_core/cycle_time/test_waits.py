@@ -11,7 +11,12 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX, LIMIT_PARKED_PREFIX
+from teatree.core.models.usage_window_state import (
+    CHECKOUT_PARKED_PREFIX,
+    LIMIT_PARKED_PREFIX,
+    OPERATOR_PAUSED_PREFIX,
+    REVIEW_HELD_PREFIX,
+)
 
 
 class RecentMergeBreakdownTestCase(TestCase):
@@ -134,6 +139,25 @@ class RecentMergeBreakdownTestCase(TestCase):
         assert row.wait_seconds["sibling_task"] == 10 * 60
         assert row.wait_seconds["quota"] == 30 * 60
         assert row.work_seconds == 90 * 60
+
+    def test_an_operator_pause_is_a_human_wait(self) -> None:
+        self.task("planning", 0, 0, 10)
+        coding = self.task("coding", 10, 100, 130)
+        self.park(coding, 20, OPERATOR_PAUSED_PREFIX)
+
+        row = build_merge_wait_breakdowns()[0]
+
+        assert row.wait_seconds["human"] == 80 * 60
+        assert row.wait_seconds["checkout_fence"] == 0
+
+    def test_an_own_pr_review_hold_is_a_review_wait_not_a_checkout_fence(self) -> None:
+        self.task("planning", 0, 0, 30)
+        reviewing = self.task("reviewing", 30, 100, 130)
+        self.park(reviewing, 40, REVIEW_HELD_PREFIX)
+
+        row = build_merge_wait_breakdowns()[0]
+        assert row.wait_seconds["review"] == (60 + 10) * 60
+        assert row.wait_seconds["checkout_fence"] == 0
 
     def test_sibling_and_fence_parks_do_not_swap_causes(self) -> None:
         sibling = self.task("planning", 0, 0, 40)

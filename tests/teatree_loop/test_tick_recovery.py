@@ -28,6 +28,14 @@ _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES":
 
 
 class TestReapStaleTaskClaims(TestCase):
+    def test_shipping_hold_settle_is_skipped_when_claims_are_refused(self) -> None:
+        with (
+            patch("teatree.loop.tick_recovery._redispatch_block_reason", return_value="quiescing"),
+            patch("teatree.loop.shipping_hold_settle.settle_held_tickets") as settle,
+        ):
+            _reap_stale_task_claims()
+        settle.assert_not_called()
+
     def test_runs_the_transient_requeue_and_the_stuck_redispatch(self) -> None:
         transient = self._transient_failed_task()
         stuck = self._stuck_started_ticket()

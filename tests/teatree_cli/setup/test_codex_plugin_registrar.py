@@ -14,6 +14,7 @@ import teatree
 import teatree.cli.setup.codex_plugin_registrar as registrar_mod
 from teatree.cli.setup.codex_plugin_payload import CodexPluginPayload
 from teatree.cli.setup.codex_plugin_registrar import CodexPluginRegistrar
+from teatree.core.mcp_registration import PLUGIN_ARGS
 
 type Reply = CompletedProcess[str] | BaseException | Callable[[], CompletedProcess[str]]
 
@@ -26,7 +27,7 @@ def _failed(stderr: str, returncode: int = 1) -> CompletedProcess[str]:
     return CompletedProcess(["codex"], returncode, "", stderr)
 
 
-_STDIO_TEATREE = {"type": "stdio", "command": "t3", "args": ["mcp", "serve"]}
+_STDIO_TEATREE = {"type": "stdio", "command": "t3", "args": list(PLUGIN_ARGS)}
 _TEATREE_ENTRY = {"name": "teatree", "enabled": True, "transport": _STDIO_TEATREE}
 _MCP_RESOLVED = _ok(_TEATREE_ENTRY)
 _MCP_GET = ("mcp", "get", "teatree", "--json")
@@ -606,7 +607,7 @@ def test_the_ready_line_claims_only_what_codex_resolved(env: Path) -> None:
     assert installed is True
     assert output == (
         f"OK    TeaTree Codex plugin registered from {_slim_root(env)}; "
-        "Codex resolves its `teatree` MCP server (t3 mcp serve).\n"
+        "Codex resolves its `teatree` MCP server (t3 mcp serve --interactive).\n"
     )
 
 
