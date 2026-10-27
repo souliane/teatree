@@ -87,10 +87,14 @@ git commit -a -m "type(scope): description"
 Do X — never Y: DO compose the message with a bare `git commit -m`. NEVER pass `--no-verify`. NEVER append a `Co-Authored-By:` line. Body content (Open questions & assumptions, the `Closes/Fixes #N` keyword) goes in additional `-m` blocks or via a `git commit` editor session, never as a trailer.
 
 **The commit gate grades the index.** Stage after every edit and verify the committed
-file with `git show HEAD:<path>`. On a shared checkout, commit only your paths with
-`git commit -o -- <paths>`; prek stashes unstaged changes from every writer.
-Read [`references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md)
-for the stash signals and recovery procedure.
+file with `git show HEAD:<path>`. `git commit -a` is safe only for a sole writer. On a
+SHARED checkout, stage each edit immediately and commit only your paths with
+`git commit -o -- <your paths only>`; prek stashes every unstaged change, including
+another writer's. A hook's `git diff --name-only` runs after that stash, so it cannot
+detect the risk. If a killed hook leaves the stash unrestored, recover its patch from
+`~/.cache/prek/patches/` with `git apply ~/.cache/prek/patches/<id>.patch`.
+Read [`skills/ship/references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md)
+for the stash signals and full recovery procedure.
 
 - **Carry an `Open questions & assumptions` section in the commit message body** (one bullet per item, status `decided-by-user` / `assumed` / `open`; `- none` when there is nothing to flag). Same content also goes in the PR description — see § 5 "Open Questions & Assumptions" for the canonical rule.
 - **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) when the active overlay's `validate_pr` requires it. With `mr_close_ticket = True`, the ship path keeps a `Closes/Fixes #<number>` body keyword by default; set `Ticket.extra['more_prs_coming']` to emit `Relates to #N` for a declared partial.
@@ -522,7 +526,7 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
 - **Cancel running pipelines when closing an MR/PR.** When a PR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every PR, ticket, or note reference must be a markdown link — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Clickable References".
 - **Commit early, commit often.** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 <overlay> workspace finalize`.
-- **Prefer `git commit -a`** when committing changes that touch files the linter might reformat. Pre-commit hooks (ruff-format, end-of-file-fixer) modify files and re-stage them. If you stage specific files, the hook may modify OTHER files that remain unstaged. The pre-push hook then stashes these unstaged changes and fails to restore the patch. Use selective staging only when you specifically need to exclude files.
+- **Prefer `git commit -a` only in a sole-writer checkout** when committing changes that touch files the linter might reformat. Pre-commit hooks (ruff-format, end-of-file-fixer) modify files and re-stage them. If you stage specific files, the hook may modify OTHER files that remain unstaged. The pre-push hook then stashes these unstaged changes and fails to restore the patch. In a shared checkout, stage each edit immediately and commit only your paths.
 - **Verify static asset URLs** after any change to `<script src>` or `<link href>` in templates: (1) check the URL resolves (`curl -sI <url>`), (2) if vendoring locally, verify file size > 1KB (a 45-byte file is an error page), (3) Playwright screenshot + console error check.
 - **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/PR/merge/remote-delete needs separate explicit approval. In `auto` mode (DB-home `mode = auto` via `config_setting set mode auto`, or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
 - **Merging is the §17.4 keystone transition, not raw `gh`.** Raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` helper are FSM-incoherent (they skip `MergeClear` validation, `expected_head_oid` SHA-binding, the atomic CLEAR-consume + `MergeAudit` + attestation binding + `mark_merged()`) and are **mechanically refused** — `hook_router._BLOCKED_COMMANDS` denies the raw commands and `pr merge` returns a redirect error. The sanctioned path is two `t3` steps, maker != checker throughout:
