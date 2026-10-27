@@ -178,13 +178,18 @@ def notify_user_outcome(
 
     payload_text = maybe_linkify(text) if options.linkify else text
 
+    outgoing_text = format_notification(payload_text, kind_value)
+    outgoing_blocks = options.blocks
+    if audience is NotifyAudience.OWNER_QUESTION:
+        outgoing_text, outgoing_blocks = _owner_question_payload(outgoing_text, outgoing_blocks, resolved_user_id)
+
     if options.ticket_id is not None and not options.thread_ts:
         channel, posted_ts, failure = deliver_ticket_dm(
             TicketDmRequest(
                 backend=resolved_backend,
                 user_id=resolved_user_id,
-                text=format_notification(payload_text, kind_value),
-                blocks=options.blocks,
+                text=outgoing_text,
+                blocks=outgoing_blocks,
                 ticket_id=options.ticket_id,
                 deliver=_deliver_dm,
                 post_root=_post_ticket_root,
@@ -195,8 +200,8 @@ def notify_user_outcome(
         channel, posted_ts, failure = _deliver_dm(
             resolved_backend,
             user_id=resolved_user_id,
-            text=format_notification(payload_text, kind_value),
-            blocks=options.blocks,
+            text=outgoing_text,
+            blocks=outgoing_blocks,
             thread_ts=options.thread_ts,
         )
     if failure:
@@ -241,6 +246,27 @@ def notify_user_outcome(
         posted_ts=posted_ts,
     )
     return DELIVERED
+
+
+def _owner_question_payload(
+    text: str, blocks: list[RawAPIDict] | None, user_id: str
+) -> tuple[str, list[RawAPIDict] | None]:
+    mention = f"<@{user_id}>"
+    if mention not in text:
+        text = f"{mention} {text}"
+    if not blocks or mention in repr(blocks):
+        return text, blocks
+
+    first = blocks[0]
+    first_text = first.get("text")
+    if (
+        first.get("type") == "section"
+        and isinstance(first_text, dict)
+        and first_text.get("type") == "mrkdwn"
+        and isinstance(first_text.get("text"), str)
+    ):
+        return text, [{**first, "text": {**first_text, "text": f"{mention} {first_text['text']}"}}, *blocks[1:]]
+    return text, [{"type": "section", "text": {"type": "mrkdwn", "text": mention}}, *blocks]
 
 
 def resolve_owner_dm_backend() -> tuple[MessagingBackend | None, NotifyReason]:

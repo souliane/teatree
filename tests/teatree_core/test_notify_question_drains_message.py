@@ -93,9 +93,15 @@ class TestTheFirstPostIsTheCardWithButtons(TestCase):
         row = self._post_first(calls)
 
         [(_, payload)] = [call for call in calls if call[0] == "chat.postMessage"]
-        assert payload["text"] == render_text(row)
-        assert payload["blocks"] == render_blocks(row)
-        assert payload["text"].splitlines()[0].startswith(f"Is {self.LINK} ready to be released")
+        assert payload["text"] == f"<@U0DEMOOWNER> {render_text(row)}"
+        expected_blocks = render_blocks(row)
+        first_text = cast("dict[str, str]", expected_blocks[0]["text"])
+        expected_blocks[0] = {
+            **expected_blocks[0],
+            "text": {**first_text, "text": f"<@U0DEMOOWNER> {first_text['text']}"},
+        }
+        assert payload["blocks"] == expected_blocks
+        assert payload["text"].splitlines()[0].startswith(f"<@U0DEMOOWNER> Is {self.LINK} ready to be released")
         assert "thread_ts" not in payload
         assert not payload["text"].startswith(":question:")
         assert "[Yes] (recommended) - I go ahead." in payload["text"]
@@ -108,7 +114,10 @@ class TestTheFirstPostIsTheCardWithButtons(TestCase):
         row = self._post_first(calls)
 
         [(_, payload)] = [call for call in calls if call[0] == "chat.postMessage"]
-        assert payload["text"].splitlines() == render_text(row).splitlines()
+        assert payload["text"].splitlines() == [
+            f"<@U0DEMOOWNER> {render_text(row).splitlines()[0]}",
+            *render_text(row).splitlines()[1:],
+        ]
         assert any(len(line) > WRAP_WIDTH for line in payload["text"].splitlines())
 
 

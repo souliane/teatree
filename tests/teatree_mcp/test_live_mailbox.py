@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
-from contextlib import closing, nullcontext, suppress
+from contextlib import closing, nullcontext
 from dataclasses import replace
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -209,24 +209,17 @@ def test_attended_join_refuses_untrusted_peer_credentials(broker: LiveMailboxBro
 def test_attended_join_skips_an_untrusted_socket_before_the_live_worker(
     broker: LiveMailboxBroker, tmp_path: Path
 ) -> None:
-    untrusted = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    untrusted.bind(str(tmp_path / "w-0000.sock"))
-    untrusted.listen()
-
-    def answer_as_rogue() -> None:
-        peer, _ = untrusted.accept()
-        with peer, suppress(BrokenPipeError):
-            peer.sendall(b'{"result":{"address":"rogue","token":"rogue"}}\n')
-
-    rogue = threading.Thread(target=answer_as_rogue, daemon=True)
-    rogue.start()
-    try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as untrusted:
+        untrusted.bind(str(tmp_path / "w-0000.sock"))
+        untrusted.listen()
         with InteractiveMailboxLease.connect(tmp_path) as joined:
             assert broker.identity_of(joined.address) is not None
             assert joined.address != "rogue"
-    finally:
-        untrusted.close()
-        rogue.join(timeout=2)
+        untrusted.settimeout(2)
+        peer, _ = untrusted.accept()
+        with peer:
+            peer.settimeout(2)
+            assert peer.recv(1024) == b""
 
 
 def test_only_an_attended_identity_may_register_without_a_ticket(broker: LiveMailboxBroker) -> None:

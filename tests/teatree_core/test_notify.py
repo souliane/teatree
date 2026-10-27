@@ -376,6 +376,98 @@ class TestNotifyUser(TestCase):
 
         assert backend.post_message.call_args.kwargs["thread_ts"] == ""
 
+    def test_owner_question_mentions_recipient_in_text_and_section_without_mutating_blocks(self) -> None:
+        backend = _backend()
+        blocks: list[RawAPIDict] = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "Choose a plan"}},
+            {"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "Yes"}}]},
+        ]
+
+        notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-section",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+
+        posted = backend.post_message.call_args.kwargs
+        assert posted["text"] == "<@U_ME> Choose a plan"
+        assert posted["blocks"][0]["text"]["text"] == "<@U_ME> Choose a plan"
+        assert posted["blocks"][1] == blocks[1]
+        assert blocks[0]["text"]["text"] == "Choose a plan"
+        assert BotPing.objects.get(idempotency_key="mention-section").text == "Choose a plan"
+
+    def test_owner_question_prepends_section_when_first_block_is_not_mrkdwn(self) -> None:
+        backend = _backend()
+        blocks: list[RawAPIDict] = [{"type": "actions", "elements": []}]
+
+        notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-new-section",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+
+        assert backend.post_message.call_args.kwargs["blocks"] == [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "<@U_ME>"}},
+            *blocks,
+        ]
+        assert blocks == [{"type": "actions", "elements": []}]
+
+    def test_owner_question_with_empty_mrkdwn_block_still_posts(self) -> None:
+        backend = _backend()
+        blocks: list[RawAPIDict] = [{"type": "section", "text": {"type": "mrkdwn"}}]
+
+        outcome = notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-empty-mrkdwn",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+
+        assert outcome.sent
+        assert backend.post_message.call_args.kwargs["blocks"] == [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "<@U_ME>"}},
+            *blocks,
+        ]
+
+    def test_owner_question_existing_mention_and_other_audience_stay_unchanged(self) -> None:
+        backend = _backend()
+        blocks: list[RawAPIDict] = [{"type": "section", "text": {"type": "mrkdwn", "text": "<@U_ME> choose"}}]
+
+        notify_user_outcome(
+            "<@U_ME> choose",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-already-present",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+        assert backend.post_message.call_args.kwargs["text"] == "<@U_ME> choose"
+        assert backend.post_message.call_args.kwargs["blocks"] == blocks
+
+        notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-in-blocks",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+        assert backend.post_message.call_args.kwargs["text"] == "<@U_ME> Choose a plan"
+        assert backend.post_message.call_args.kwargs["blocks"] == blocks
+
+        notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="other-audience-unchanged",
+            audience=NotifyAudience.COLLEAGUE_ACTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks, requested_push=True),
+        )
+        assert backend.post_message.call_args.kwargs["text"] == "Choose a plan"
+        assert backend.post_message.call_args.kwargs["blocks"] == blocks
+
     def test_no_active_thread_posts_at_root(self) -> None:
         backend = _backend()
 
@@ -556,6 +648,9 @@ class TestNotifyUser(TestCase):
         )
         good_backend.open_dm.assert_called_once_with("U_ME")
         good_backend.post_message.assert_called_once()
+        assert bad_backend.post_message.call_args.kwargs["text"].count("<@U_ME>") == 1
+        assert good_backend.post_message.call_args.kwargs["text"].count("<@U_ME>") == 1
+        assert BotPing.objects.get(idempotency_key="retry-1306").text == "retry me"
         # The terminal ledger row reflects the eventual success.
         assert BotPing.objects.get(idempotency_key="retry-1306").status == BotPing.Status.SENT
 
