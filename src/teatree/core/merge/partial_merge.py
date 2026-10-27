@@ -67,6 +67,10 @@ def _plain(text: str) -> str:
     return re.sub(r"[\s*_`]+", " ", text).strip().casefold()
 
 
+def _capped(item: str) -> str:
+    return item[:_ITEM_CAP].strip()
+
+
 def _says_nothing_left(item: str) -> bool:
     words = re.sub(r"[^\w/ ]+", " ", _plain(item)).split()
     return not words or words[0] in _NOTHING_LEFT
@@ -138,12 +142,12 @@ class MergedPrReading:
             return cls()
         lines = body.splitlines()
         declared = (*_status_table_items(lines), *_marker_line_items(lines, ticket))
-        return cls(PrLink.PARTIAL, tuple(dict.fromkeys(item[:_ITEM_CAP] for item in declared)))
+        return cls(PrLink.PARTIAL, tuple(dict.fromkeys(_capped(item) for item in declared)))
 
     def with_unclaimed_issue_boxes(self, issue_body: str, pr_body: str) -> "MergedPrReading":
         claimed = _plain(pr_body)
         boxes = (box for box in _unchecked_acceptance_boxes(issue_body) if _plain(box) not in claimed)
-        return MergedPrReading(self.link, tuple(dict.fromkeys(box[:_ITEM_CAP] for box in boxes)))
+        return MergedPrReading(self.link, tuple(dict.fromkeys(_capped(box) for box in boxes)))
 
 
 def read_merged_pr(clear: MergeClear, repo_slug: str) -> MergedPrReading:

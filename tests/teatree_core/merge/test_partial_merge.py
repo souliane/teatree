@@ -5,13 +5,16 @@ The reading tests use paraphrased shapes of real merged bodies. The keystone tes
 and the issue read stubbed.
 """
 
+import io
 import json
 import logging
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
+from teatree.cli.doctor.checks_blank_work_overlays import check_blank_work_overlays
 from teatree.core.merge import merge_ticket_pr
 from teatree.core.merge.partial_merge import CLOSING_PATTERN, MergedPrReading, PrLink
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Task, Ticket
@@ -51,6 +54,7 @@ _BOILERPLATE = (
 )
 _OTHER_ISSUE_STAYS = "Part of #4242\n\nThe second step stays on #9999.\n"
 _NOTHING_OPEN = "Part of #4242\n\nUnmet: none.\n"
+_SPACE_AT_THE_CAP = "Part of #4242\n\nUnmet: " + "x" * 299 + " and then more words\n"
 _OPEN_CAVEAT = "Part of #4242\n\nopen: independent review still needs completion before merge.\n"
 _KEEPS_ISSUE_OPEN = "Part of #4242\n\nThis change keeps the issue open: the link rules need a separate path.\n"
 
@@ -132,6 +136,12 @@ def test_a_part_of_link_with_no_declared_remainder_leaves_none(body: str) -> Non
 )
 def test_the_link_is_read_for_the_tickets_own_issue_only(body: str, link: PrLink) -> None:
     assert MergedPrReading.parse(body, _ticket()).link is link
+
+
+def test_a_remainder_item_cut_at_the_cap_carries_no_trailing_space() -> None:
+    (item,) = MergedPrReading.parse(_SPACE_AT_THE_CAP, _ticket()).unmet
+
+    assert item == "x" * 299
 
 
 def test_unchecked_acceptance_boxes_the_body_does_not_claim_are_the_fallback_remainder() -> None:
@@ -237,6 +247,34 @@ class TestPartOfWithDeclaredRemainder(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["pr_url_by_branch"] == {"other-branch": other_url}
 
+    def test_the_doctor_accepts_a_held_ticket_whose_merged_branch_was_released(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        merged_url = "https://github.com/souliane/teatree/pull/859"
+        Ticket.objects.filter(pk=ticket.pk).update(
+            extra={"pr_urls": [merged_url], "pr_url_by_branch": {"5670-first-step": merged_url}}
+        )
+        ticket.refresh_from_db()
+
+        _merge(ticket, _STATUS_TABLE)
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            passed = check_blank_work_overlays()
+        assert passed is True, output.getvalue()
+
+    def test_the_doctor_still_flags_an_open_pull_request_with_no_branch(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        open_url = "https://github.com/souliane/teatree/pull/12"
+        PullRequest.objects.create(ticket=ticket, overlay="t3-teatree", url=open_url, repo="souliane/teatree", iid="12")
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"pr_urls": [open_url], "pr_url_by_branch": {}})
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            passed = check_blank_work_overlays()
+
+        assert passed is False
+        assert "1 unresolved PR branch row(s)" in output.getvalue()
+
     def test_the_fallback_remainder_comes_from_the_issue_acceptance_boxes(self) -> None:
         ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
 
@@ -246,6 +284,16 @@ class TestPartOfWithDeclaredRemainder(TestCase):
         assert state == Ticket.State.WORK_STARTED
         (task,) = _planning_tasks(ticket)
         assert "route the retro rows" in task.execution_reason
+
+    def test_an_item_cut_at_the_cap_on_a_space_is_still_recognised_by_a_second_merge(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        _merge(ticket, _SPACE_AT_THE_CAP)
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_REQUESTED)
+
+        state = _merge(ticket, _SPACE_AT_THE_CAP, pr_id=860)
+
+        assert state == Ticket.State.MERGED
+        assert len(_planning_tasks(ticket)) == 1
 
     def test_a_second_merge_declaring_the_identical_remainder_does_not_reopen_again(self) -> None:
         ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
@@ -291,7 +339,10 @@ class TestMergesThatStillReachMerged(TestCase):
         Ticket.objects.filter(pk=ticket.pk).update(role=Ticket.Role.REVIEWER)
         ticket.refresh_from_db()
 
-        assert _merge(ticket, _STATUS_TABLE) == Ticket.State.MERGED
+        with self.assertNoLogs("teatree.core.merge.partial_merge", level=logging.WARNING):
+            state = _merge(ticket, _STATUS_TABLE)
+
+        assert state == Ticket.State.MERGED
         assert _planning_tasks(ticket) == []
 
     def test_a_hold_that_fails_still_leaves_the_merge_recorded(self) -> None:
