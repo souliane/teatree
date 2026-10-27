@@ -54,9 +54,9 @@ Use the active overlay's `validate_pr(title, description)` policy for title and 
    glab issue list --search '<keywords>'                 # CLI fallback (GitLab)
    ```
 
-   The MCP search returns at most ten linked open issues (number, title, url, state, updated_at) and `truncated`; narrow the query when true.
+   MCP returns up to ten linked open issues and `truncated`; narrow the query when set.
 
-   If you find it, **use that reference** — it is the canonical one. Do not open a new issue that duplicates an existing one.
+   Use the found issue; do not file a duplicate.
 
 2. **If no existing issue is found, the fallback depends on the repo class** (the same colleague-facing-vs-own distinction the [`../rules/SKILL.md`](../rules/SKILL.md) § "Three Orthogonal Repo Axes" tracks):
 
