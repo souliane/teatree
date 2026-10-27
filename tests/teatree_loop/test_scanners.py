@@ -112,6 +112,7 @@ class FakeMessaging:
     """In-memory MessagingBackend conforming to the protocol."""
 
     mentions: list[RawAPIDict] = field(default_factory=list)
+    user_id: str = "U_OWNER"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -710,7 +711,12 @@ class TestSlackMentionsScanner:
     def test_emits_one_signal_per_event(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         queue = tmp_path / "slack-events.jsonl"
         queue.write_text(
-            json.dumps({"overlay": "", "event": {"type": "message", "channel_type": "im", "ts": "2.0", "text": "DM"}})
+            json.dumps(
+                {
+                    "overlay": "",
+                    "event": {"type": "message", "channel_type": "im", "ts": "2.0", "user": "U_OWNER", "text": "DM"},
+                }
+            )
             + "\n",
             encoding="utf-8",
         )

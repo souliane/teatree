@@ -51,15 +51,11 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from teatree.core.models import ConfigSetting, PendingChatInjection
+from teatree.core.models import PendingChatInjection
+from teatree.core.slack_owner_registry import configured_slack_owner_ids
 from teatree.loops.dream.replay import TranscriptMember
 
 logger = logging.getLogger(__name__)
-
-#: The DB ``ConfigSetting`` row holding ``{overlay: {fields}}``. Read here directly rather
-#: than through ``teatree.cli.slack.app_resolve.read_overlay_registry``, which is the same
-#: two lines behind an INTERFACE-layer import this ORCHESTRATION-layer module may not take.
-_OVERLAYS_REGISTRY_KEY = "overlays"
 
 #: The member ``kind`` a rendered Slack day carries. Anything that is not ``"memory"``
 #: is a TRANSCRIPT everywhere downstream (the weight ladder's correction floor, the
@@ -77,19 +73,6 @@ _MEMBER_ROOT = Path("slack-dm")
 #: (80 rows across the first 34 days of history), so it is inert in practice — its job is
 #: to guarantee the source can never become unbounded work, not to shape the corpus.
 _MAX_ROWS = 500
-
-
-def _owner_slack_user_ids() -> frozenset[str]:
-    """Every Slack user id the OPERATOR posts under, from the DB ``overlays`` registry.
-
-    The positive allowlist. Empty when no overlay records a ``slack_user_id`` — the
-    fail-closed state, in which :func:`owner_slack_members` enumerates nothing.
-    """
-    registry = ConfigSetting.objects.get_effective(_OVERLAYS_REGISTRY_KEY)
-    if not isinstance(registry, dict):
-        return frozenset()
-    ids = {str(block.get("slack_user_id", "")).strip() for block in registry.values() if isinstance(block, dict)}
-    return frozenset(user_id for user_id in ids if user_id)
 
 
 def render_owner_turn(text: str, *, received_at: datetime, thread_ts: str) -> str:
@@ -125,7 +108,7 @@ def owner_slack_members(*, since: datetime) -> list[TranscriptMember]:
     so this reads the DB but writes nothing: the corpus gains the owner's instructions
     without gaining a second plaintext copy of the DM channel on disk.
     """
-    owner_ids = _owner_slack_user_ids()
+    owner_ids = configured_slack_owner_ids()
     if not owner_ids:
         logger.warning(
             "dream replay: no overlay records a slack_user_id, so the owner's Slack DMs are "
@@ -135,7 +118,8 @@ def owner_slack_members(*, since: datetime) -> list[TranscriptMember]:
         return []
 
     rows = list(
-        PendingChatInjection.objects.filter(received_at__gte=since, user_id__in=owner_ids)
+        PendingChatInjection.objects.filter(received_at__gte=since)
+        .sent_by_owners(owner_ids)
         .order_by("received_at")
         .values_list("text", "received_at", "thread_ts")[:_MAX_ROWS]
     )

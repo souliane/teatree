@@ -24,6 +24,7 @@ from teatree.loop.slack_answer.cycle import (
 )
 from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread
 from teatree.types import RawAPIDict
+from tests._owner_channel import OWNER_SLACK_ID
 
 
 def _reading(intent: InboundIntent, *, answerable: bool = False, summary: str = "") -> InboundReading:
@@ -53,10 +54,10 @@ _BOT_UID = "UBOT"
 
 @dataclass
 class RecordingBackend:
+    user_id: str = OWNER_SLACK_ID
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
     thread_replies: dict[str, list[RawAPIDict]] = field(default_factory=dict)
-    user_id: str = "UUSER"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -110,7 +111,7 @@ class FailingReactBackend(RecordingBackend):
 
 
 def _row(text: str, ts: str = "1.0") -> PendingChatInjection:
-    row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text, context=DmContext(user_id="UUSER"))
+    row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text, context=DmContext(user_id=OWNER_SLACK_ID))
     assert row is not None
     return row
 
@@ -329,13 +330,12 @@ class TestProcessUnitDegenerateBranches:
 
 
 class TestNoBackendSkip:
-    def test_none_backend_is_skipped_not_an_error(self) -> None:
-        _row("thanks")
+    def test_rows_of_an_overlay_with_no_backend_are_left_untouched_not_an_error(self) -> None:
+        row = _row("thanks")
         report = run_slack_answer_cycle(messaging_resolver=lambda _o: None)
 
-        assert report.skipped_no_backend == 1
-        assert report.errors == 0
-        assert report.processed == 1
+        row.refresh_from_db()
+        assert (report.processed, report.errors, row.loop_replied_at) == (0, 0, None)
 
 
 class TestDefaultResolver:
