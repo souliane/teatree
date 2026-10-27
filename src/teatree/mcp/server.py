@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _CRASH_DETAIL_CAP = 500
+_CRASH_DETAIL_SCAN_CAP = 20 * _CRASH_DETAIL_CAP
 
 
 class ToolNameCollisionError(RuntimeError):
@@ -147,7 +148,7 @@ class _NoShadowServer(MCPServer):
             crash = unexpected.__cause__ or unexpected
             detail = ""
             with suppress(Exception):
-                detail = redact_secrets(str(crash))[:_CRASH_DETAIL_CAP]
+                detail = redact_secrets(str(crash)[:_CRASH_DETAIL_SCAN_CAP])[:_CRASH_DETAIL_CAP]
             message = f"Error executing tool {name}: {type(crash).__name__}"
             if detail:
                 message += f": {detail}"

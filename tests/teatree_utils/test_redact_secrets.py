@@ -83,7 +83,7 @@ def test_credential_suffixes_and_private_token_header_are_redacted(arg: str, exp
 
 
 class TestRedactionCostIsLinearInMessageLength:
-    @pytest.mark.parametrize("unit", ["a-", "x-"])
+    @pytest.mark.parametrize("unit", ["a-", "x-", "-Hx-", "%20x-"])
     def test_a_long_hyphen_chain_is_redacted_within_the_time_budget(self, unit: str) -> None:
         message = unit * CHAIN_LENGTH
 
@@ -94,7 +94,12 @@ class TestRedactionCostIsLinearInMessageLength:
 
     @pytest.mark.parametrize(
         ("unit", "tail"),
-        [("a-", "token=notarealvalue"), ("x-", "X-Api-Key: notarealvalue")],
+        [
+            ("a-", "token=notarealvalue"),
+            ("x-", "X-Api-Key: notarealvalue"),
+            ("-Hx-", "-HX-Api-Key: notarealvalue"),
+            ("%20x-", "%20X-Api-Key: notarealvalue"),
+        ],
     )
     def test_a_secret_after_a_long_chain_is_still_redacted_within_the_time_budget(self, unit: str, tail: str) -> None:
         message = f"{unit * CHAIN_LENGTH} {tail}"
@@ -132,6 +137,14 @@ def test_credential_name_shapes_keep_their_name_and_lose_their_value(arg: str, e
         ("X-Gitlab-Token: notarealvalue", "X-Gitlab-Token: <redacted>"),
         ("X-Api-Key: notarealvalue", "X-Api-Key: <redacted>"),
         ("--header=X-Api-Key: notarealvalue", "--header=X-Api-Key: <redacted>"),
+        ("-HX-Api-Key: notarealvalue", "-HX-Api-Key: <redacted>"),
+        ("curl -sS -HX-Api-Key: notarealvalue", "curl -sS -HX-Api-Key: <redacted>"),
+        ("curl -HX-Gitlab-Token:notarealvalue", "curl -HX-Gitlab-Token: <redacted>"),
+        ("curl -H X-Api-Key:notarealvalue", "curl -H X-Api-Key: <redacted>"),
+        (
+            "https://example.test/api?q=a%20X-Api-Key: notarealvalue",
+            "https://example.test/api?q=a%20X-Api-Key: <redacted>",
+        ),
     ],
 )
 def test_credential_header_shapes_keep_their_name_and_lose_their_value(arg: str, expected: str) -> None:
