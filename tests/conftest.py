@@ -50,14 +50,12 @@ from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.pytest_resource_contract import (
     TOTAL_TEST_WORKERS_PER_CORE,
     PoolUnavailableError,
-    SelectionContext,
     SlotLease,
     WorkerSlotPool,
     bounded_auto_workers,
-    ci_environment_enabled,
-    oversized_selection_refusal,
     worker_pool_root,
 )
+from teatree.quality.pytest_selection import SelectionContext, ci_environment_enabled, oversized_selection_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
