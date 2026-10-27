@@ -52,7 +52,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from teatree.core.models import PendingChatInjection
-from teatree.core.slack_owner_registry import configured_slack_owner_ids
+from teatree.core.retention.owner_registry import configured_slack_owner_ids
 from teatree.loops.dream.replay import TranscriptMember
 
 logger = logging.getLogger(__name__)

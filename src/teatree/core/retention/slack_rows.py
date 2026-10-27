@@ -5,7 +5,7 @@ import datetime as dt
 from django.db import models
 
 from teatree.core.models import BotPing, PendingChatInjection
-from teatree.core.slack_owner_registry import configured_slack_owner_ids
+from teatree.core.retention.owner_registry import configured_slack_owner_ids
 
 DM_RETENTION_DAYS = 30
 SENT_TEXT_RETENTION_DAYS = 7

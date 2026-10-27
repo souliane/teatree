@@ -10,7 +10,6 @@ import typer
 from teatree.backends.slack.receiver import QueuePaths, default_queue_path, default_reactions_queue_path, run_listener
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.loop.owner_identity import configured_owner_id, sent_by_owner
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
 from teatree.utils.singleton import AlreadyRunningError, read_pid, singleton
@@ -163,6 +162,8 @@ def _is_foreign_dm(event: dict, overlay: str) -> bool:
     if event.get("channel_type") != "im":
         return False
     ensure_django()
+    from teatree.loop.owner_identity import configured_owner_id, sent_by_owner  # noqa: PLC0415 — DM-only policy
+
     return not sent_by_owner(event, configured_owner_id(messaging_from_overlay(overlay or None)))
 
 
