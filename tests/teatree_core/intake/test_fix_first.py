@@ -163,3 +163,17 @@ class TestFixFirstLandscape(TestCase):
         assert result["defects"]
         assert result["stuck"]
         assert all(item["issue"] in {issue["url"] for issue in issues} for item in result["defects"])
+
+    def test_malformed_repo_read_is_explicit_and_never_lists_an_unlinked_issue(self) -> None:
+        unlinked = self._report([{"title": "fix: missing link", "labels": ["bug"]}])
+        assert unlinked["defects"] == []
+        assert "missing issue URL" in " ".join(unlinked["unread"])
+
+        with (
+            patch(_FACTORY, return_value=_Host([])),
+            patch(_OVERLAY, return_value=_Overlay()),
+            patch.object(_Host, "list_repo_open_issues", return_value=None),
+        ):
+            invalid = run_landscape(Path("/does-not-exist"))["fix_first"]
+        assert invalid["defects"] == []
+        assert "invalid issue list" in " ".join(invalid["unread"])

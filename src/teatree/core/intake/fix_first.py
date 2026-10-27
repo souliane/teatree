@@ -76,7 +76,13 @@ def _defects(host: CodeHostBackend | None, repo_slugs: list[str]) -> tuple[list[
         except Exception as exc:  # noqa: BLE001 — surface a failed external read in the survey
             unread.append(f"could not list defects in {slug}: {exc}"[:160])
             continue
+        if not isinstance(issues, list):
+            unread.append(f"invalid issue list from {slug}"[:160])
+            continue
         for issue in issues:
+            if not isinstance(issue, dict):
+                unread.append(f"invalid issue entry from {slug}"[:160])
+                continue
             title = issue.get("title")
             title = title if isinstance(title, str) else ""
             if (
@@ -85,10 +91,13 @@ def _defects(host: CodeHostBackend | None, repo_slugs: list[str]) -> tuple[list[
             ):
                 continue
             url = issue.get("web_url") or issue.get("html_url") or issue.get("url")
+            if not isinstance(url, str) or not url:
+                unread.append(f"missing issue URL in {slug}"[:160])
+                continue
             filed = issue.get("created_at") or issue.get("createdAt")
             defects.append(
                 DefectEntry(
-                    issue=url if isinstance(url, str) else "",
+                    issue=url,
                     title=title[:80],
                     filed=filed if isinstance(filed, str) else "",
                 )
