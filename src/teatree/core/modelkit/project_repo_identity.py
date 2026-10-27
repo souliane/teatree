@@ -1,30 +1,17 @@
 """Canonical ticket repo identity from an overlay's declared project paths."""
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from teatree.core.modelkit.gate_registry import get_resolver
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 
-@dataclass(slots=True)
-class _ProjectPathsRegistry:
-    provider: Callable[["Ticket"], Mapping[str, str]] | None = None
-
-
-_registry = _ProjectPathsRegistry()
-
-
-def register_project_paths_provider(provider: Callable[["Ticket"], Mapping[str, str]]) -> None:
-    _registry.provider = provider
-
-
 def project_repo_identity_for_ticket(ticket: "Ticket") -> "ProjectRepoIdentity":
-    if _registry.provider is None:
-        msg = "repo project paths provider is not registered"
-        raise RuntimeError(msg)
-    return ProjectRepoIdentity(_registry.provider(ticket))
+    return ProjectRepoIdentity(cast("Mapping[str, str]", get_resolver("repo_project_paths")(ticket)))
 
 
 @dataclass(frozen=True, slots=True)

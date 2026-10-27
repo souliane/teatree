@@ -17,6 +17,7 @@ overwrites the same key), so a second ``ready()`` (test re-entry, in-process
 from typing import TYPE_CHECKING
 
 from teatree.core.models.self_review import SelfReview
+from teatree.core.overlay_loader import repo_project_paths_for_ticket
 from teatree.core.review import pr_open_state as _pr_open_state
 
 if TYPE_CHECKING:
@@ -74,4 +75,5 @@ def populate_model_registries() -> None:
     register_resolver("infer_overlay_for_url", _infer_overlay_for_url)
     register_resolver("resolve_overlay_name", _resolve_overlay_name)
     register_resolver("pr_open_state", _read_pr_open_state)
+    register_resolver("repo_project_paths", repo_project_paths_for_ticket)
     register_cost_factories()

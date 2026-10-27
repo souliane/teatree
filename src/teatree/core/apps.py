@@ -1,7 +1,5 @@
 from django.apps import AppConfig
 
-from teatree.core.modelkit.project_repo_identity import register_project_paths_provider
-from teatree.core.overlay_loader import repo_project_paths_for_ticket
 from teatree.core.process_freshness import record_loaded_snapshot
 
 
@@ -21,7 +19,6 @@ class CoreConfig(AppConfig):
         register_signals()
         register_projection_signals()
         register_fleet_admission_refusal(fleet_admission_refusal)
-        register_project_paths_provider(repo_project_paths_for_ticket)
         # Freeze the migration heads this interpreter loaded, BEFORE any DB access (#4387).
         # It is the only moment the answer is knowable: from here on the files on disk can be
         # fast-forwarded under a running process while its imported model classes stay old.

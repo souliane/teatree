@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.modelkit import project_repo_identity
+from teatree.core.modelkit import gate_registry, project_repo_identity
 from teatree.core.modelkit.project_repo_identity import ProjectRepoIdentity
 from teatree.core.models import Ticket
 
@@ -35,7 +35,7 @@ def test_empty_declaration_keeps_old_string_comparison() -> None:
 
 def test_missing_project_paths_provider_fails_loud() -> None:
     with (
-        patch.object(project_repo_identity._registry, "provider", None),
-        pytest.raises(RuntimeError, match="not registered"),
+        patch.dict(gate_registry._REGISTRY, {}, clear=True),
+        pytest.raises(KeyError, match="repo_project_paths"),
     ):
         project_repo_identity.project_repo_identity_for_ticket(Ticket(overlay="t3-teatree"))
