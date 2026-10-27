@@ -94,10 +94,16 @@ def test_push_signals_membership_is_pinned_exactly() -> None:
                 "self-improve:ram-probe-inert",
                 "self-improve:disk-probe-inert",
                 "self-improve:outbound-unposted",
+                "unaudited-merge",
+                "shipping-hold",
             }
         )
         == PUSH_SIGNALS
     )
+
+
+def test_shipping_hold_owner_note_pushes() -> None:
+    assert classify(audience=NotifyAudience.OWNER_ESCALATION, idempotency_key="shipping-hold:42") is DmChannel.PUSH
 
 
 def test_signal_prefixes_walks_every_colon_boundary() -> None:

@@ -11,6 +11,7 @@ mention people raise instead, so an unknown repo is never mistaken for no activi
 
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 from urllib.parse import quote_plus, urlencode
 
@@ -27,6 +28,48 @@ logger = logging.getLogger(__name__)
 
 class ProjectUnresolvedError(RuntimeError):
     """A read that must not degrade to ``[]`` could not resolve its GitLab project."""
+
+
+class ProjectResolution:
+    @staticmethod
+    def resolve_project(client: GitLabAPI, repo: str) -> ProjectInfo | None:
+        if Path(repo).exists():
+            return client.resolve_project_from_remote(repo)
+        if "/" in repo:
+            return client.resolve_project(repo)
+        return client.resolve_project_from_remote(".")
+
+
+def list_unshipped_branches(client: GitLabAPI, project: ProjectInfo | None, *, repo: str, prefix: str) -> list[str]:
+    if project is None:
+        msg = f"could not resolve GitLab project for {repo!r}"
+        raise ProjectUnresolvedError(msg)
+    base = f"projects/{project.project_id}"
+    branches = client.get_json_paginated(
+        f"{base}/repository/branches?search={quote_plus('^' + prefix)}&per_page=100",
+        require_list=True,
+    )
+    result = []
+    for branch in branches:
+        name = branch.get("name") if isinstance(branch, dict) else None
+        tip = branch.get("commit") if isinstance(branch, dict) else None
+        sha = tip.get("id") if isinstance(tip, dict) else None
+        merged = branch.get("merged") if isinstance(branch, dict) else None
+        if not isinstance(name, str) or not isinstance(sha, str) or not isinstance(merged, bool):
+            msg = f"GitLab {repo} returned an invalid branch"
+            raise TypeError(msg)
+        if not name.startswith(prefix) or merged:
+            continue
+        mrs = client.get_json_paginated(
+            f"{base}/merge_requests?state=merged&source_branch={quote_plus(name)}&per_page=100",
+            require_list=True,
+        )
+        if any(not isinstance(mr, dict) or not isinstance(mr.get("sha"), str) or not mr["sha"] for mr in mrs):
+            msg = f"GitLab {repo} returned an invalid merged request"
+            raise TypeError(msg)
+        if not any(mr["sha"] == sha for mr in mrs):
+            result.append(name)
+    return result
 
 
 def state_filter(state: str) -> str:

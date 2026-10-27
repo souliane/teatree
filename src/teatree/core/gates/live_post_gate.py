@@ -25,6 +25,11 @@ top) so importing the gate helper from the CLI layer does not require
 :mod:`teatree.core.on_behalf_gate_recorded`.
 """
 
+import logging
+from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
+
 APPROVE_LIVE_POST_USAGE = (
     "    t3 review approve-live-post <mr-url> --slack-ts <ts>\n"
     "where <ts> is the Slack timestamp of the user's DM authorising the "
@@ -70,7 +75,7 @@ class LivePostBlockedError(RuntimeError):
         )
 
 
-def require_live_post_approval(*, mr_url: str) -> None:
+def require_live_post_approval(*, mr_url: str, review_url_supplier: Callable[[], str] | None = None) -> None:
     """Gate one ``--live`` post-comment against the Slack-recorded approval.
 
     Consumes a matching unconsumed, fresh approval (single-use,
@@ -80,7 +85,16 @@ def require_live_post_approval(*, mr_url: str) -> None:
     drop, never an unattended live publish.
     """
     from teatree.core.models.live_post_approval import LivePostApproval  # noqa: PLC0415 — deferred: ORM/app-registry
+    from teatree.core.review.owner_waits import (  # noqa: PLC0415 — deferred: ORM/app-registry
+        record_live_post_wait,
+        settle_live_post_wait,
+    )
 
     consumed = LivePostApproval.consume(mr_url=mr_url)
     if consumed is None:
+        record_live_post_wait(mr_url=mr_url, review_url_supplier=review_url_supplier)
         raise LivePostBlockedError(mr_url)
+    try:
+        settle_live_post_wait(mr_url)
+    except Exception:
+        logger.exception("live post gate failed to settle the owner card for %s", mr_url)

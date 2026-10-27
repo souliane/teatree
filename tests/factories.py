@@ -68,7 +68,7 @@ def record_test_plan(ticket: Ticket, *, plan_text: str = "test plan", recorded_b
 
 
 def waive_rubric(ticket: Ticket) -> PlanArtifact:
-    """Record the human-authorized plan-bypass on *ticket* — the ONLY rubric waiver."""
+    """Record the human-authorized plan bypass on *ticket*."""
     return PlanArtifact.record_bypass(
         ticket=ticket,
         plan_text="[audited bypass by tests] fixture",

@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
+from teatree.core.cleanup.removal_proof import removal_refusal
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.broken_checkout import BrokenCheckout, classify_broken_checkout
 from teatree.core.worktree.checkout_disposal import disposal_refusal
@@ -67,6 +68,7 @@ class TestNoDeciderDisposesOfAForeignViewCheckout(TestCase):
     def _deciders(self) -> dict[str, Callable[[], bool]]:
         """Decider name → does it AUTHORISE removing or re-creating the checkout?"""
         return {
+            "removal_proof.removal_refusal": lambda: removal_refusal(self.checkout, clone=self.acting_clone) == "",
             "checkout_disposal.disposal_refusal": lambda: (
                 disposal_refusal(self.checkout, clone=self.acting_clone) == ""
             ),

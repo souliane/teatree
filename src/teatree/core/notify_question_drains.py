@@ -49,6 +49,7 @@ from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.reask_cadence import (
     REASK_KEY_PREFIX,
+    REASK_UNIT,
     RESURFACE_INTERVAL_HOURS,
     bump_due,
     first_posted_at,
@@ -136,6 +137,8 @@ _PROCFS_STARTTIME_INDEX = 19
 _QUESTION_PING_SLOT_TTL_SECONDS = 120
 #: Threads of one process share its pid, which the slot's liveness check cannot tell apart.
 _QUESTION_PING_THREAD_GUARD = threading.Lock()
+#: The measured 11.04s send fits this wait inside the shared 60s scan deadline.
+_QUESTION_PING_THREAD_WAIT_SECONDS = 15
 
 
 def _question_ping_keys() -> Q:
@@ -173,7 +176,12 @@ def _question_ping_slot(*, reserved: int = 0) -> Generator[bool]:
         logger.info("Owner question pings are held until 08:00 (quiet hours)")
         yield False
         return
-    if not _QUESTION_PING_THREAD_GUARD.acquire(blocking=False):
+    if not _QUESTION_PING_THREAD_GUARD.acquire(timeout=_QUESTION_PING_THREAD_WAIT_SECONDS):
+        logger.info(
+            "Another drain in this process still holds the owner question-ping slot after %ss; "
+            "this ping waits for the next pass",
+            _QUESTION_PING_THREAD_WAIT_SECONDS,
+        )
         yield False
         return
     try:
@@ -275,6 +283,8 @@ def resurface_question_backlog(
         return False, 0
 
     stamped_at = now or timezone.now()
+    if all(first_posted_at(row.slack_ts, row.created_at) > stamped_at - REASK_UNIT for row in rows):
+        return False, len(rows)
     bucket = int(stamped_at.timestamp()) // (RESURFACE_INTERVAL_HOURS * 3600)
     previous_overlay = _scoped_overlay_env(overlay)
     try:
@@ -486,6 +496,7 @@ def drain_deferred_questions(
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
     owner_rows = _checked(live_owner_questions(), backend=backend)
+    pending_total = len(owner_rows)
     # Skip what a fresh send would decline to re-deliver BEFORE applying the cap. The queue
     # is oldest-first, so capping it directly hands the same stood-down head back every
     # time: each call deduped to a no-op and every row behind it stayed unreachable, on a
@@ -495,7 +506,7 @@ def drain_deferred_questions(
     if not rows:
         # Nothing NEW to send. The backlog total is still reported so a caller cannot read
         # "0 delivered" as "queue empty" — the distinction this drain previously erased.
-        return 0, len(owner_rows)
+        return 0, pending_total
 
     previous_overlay = _scoped_overlay_env(overlay)
     delivered = 0
@@ -521,7 +532,7 @@ def drain_deferred_questions(
     # The denominator is the BACKLOG, never the capped slice: `3/3` read as "all pending
     # delivered" while 69 were outstanding, which is how a permanently-stalled queue
     # looked healthy (#4064).
-    return delivered, len(owner_rows)
+    return delivered, pending_total
 
 
 def drain_unmirrored_deferred_questions(

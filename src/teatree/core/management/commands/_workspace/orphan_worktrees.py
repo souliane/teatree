@@ -41,6 +41,7 @@ from teatree.core.cleanup.orphan_checkouts import (
     orphan_is_dirty,
 )
 from teatree.core.cleanup.preview import preview_line
+from teatree.core.cleanup.removal_proof import removal_refusal
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache
 from teatree.core.worktree.venue_safe_registry import prune_worktrees
@@ -68,7 +69,7 @@ def _keep_reason(repo: str, wt_path: str, branch: str) -> str | None:
         return pth.reason
     if orphan_has_unique_work(repo, branch, wt_path):
         return "unpushed work not on any remote — push it to salvage, never reaped"
-    return None
+    return removal_refusal(Path(wt_path), clone=Path(repo), sweep=True) or None
 
 
 def _reap_one_orphan(repo: str, wt_path: str, branch: str, *, dry_run: bool = False) -> str:

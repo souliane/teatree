@@ -11,7 +11,7 @@ from teatree.cli.setup.mcp_registrar import McpServerRegistrar
 class TestMcpServerRegistrarVerify:
     def test_ok_when_mcp_json_declares_teatree(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         (tmp_path / ".mcp.json").write_text(
-            json.dumps({"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}}),
+            json.dumps({"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve", "--interactive"]}}}),
         )
 
         assert McpServerRegistrar(tmp_path).verify() is True
@@ -26,7 +26,7 @@ class TestMcpServerRegistrarVerify:
 
     def test_idempotent_across_repeated_runs(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         (tmp_path / ".mcp.json").write_text(
-            json.dumps({"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}}),
+            json.dumps({"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve", "--interactive"]}}}),
         )
         registrar = McpServerRegistrar(tmp_path)
 

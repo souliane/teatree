@@ -19,11 +19,14 @@ from teatree.core import notify as notify_module
 from teatree.core import notify_question_drains as drains_module
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease
 from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
+from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
+from teatree.core.worktree.checkout_state import CheckoutState
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
 from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
 from teatree.utils.thread_db import close_thread_db_connections
 from tests._owner_channel import OWNER_DECISION
 from tests.db_alias import register_control_db_alias, run_racing_threads, teardown_sqlite_alias, wal_control_db
+from tests.factories import TaskFactory, WorktreeFactory
 from tests.teatree_core.conftest import SchemaGuardAlias
 from tests.teatree_core.test_claim_liveness import _OTHER_NS, _READER_NS, pinned_reader_namespace
 
@@ -38,7 +41,7 @@ _DEAD_PID = 4_100_000
 class _NoInProcessGuard:
     """Separate processes share no in-process lock."""
 
-    def acquire(self, *, blocking: bool = True) -> bool:
+    def acquire(self, *, blocking: bool = True, timeout: float = -1) -> bool:
         return True
 
     def release(self) -> None:
@@ -106,6 +109,44 @@ def _sent_pings() -> int:
     return BotPing.objects.filter(status=BotPing.Status.SENT).count()
 
 
+@contextlib.contextmanager
+def _sibling_holds(guard: threading.Lock) -> Generator[threading.Event]:
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with guard:
+            acquired.set()
+            release.wait(timeout=30)
+
+    sibling = threading.Thread(target=hold)
+    sibling.start()
+    assert acquired.wait(timeout=5)
+    try:
+        yield release
+    finally:
+        release.set()
+        sibling.join(timeout=2)
+        assert not sibling.is_alive()
+
+
+class _ReleaseSiblingOnAcquire:
+    def __init__(self, guard: threading.Lock, release: threading.Event) -> None:
+        self.guard = guard
+        self.release_sibling = release
+
+    def acquire(self, *, blocking: bool = True, timeout: float = -1) -> bool:
+        release = threading.Timer(0.2, self.release_sibling.set)
+        release.start()
+        try:
+            return self.guard.acquire(blocking=blocking, timeout=timeout)
+        finally:
+            release.join()
+
+    def release(self) -> None:
+        self.guard.release()
+
+
 class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
     def setUp(self) -> None:
         self.backend = _backend()
@@ -123,6 +164,131 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         self._poster()
         self._nag()
         _age_the_ledger(minutes=5)
+
+    def test_a_sibling_finishing_mid_send_lets_each_drain_post(self) -> None:
+        for name, drain, slack_ts, expected in (
+            ("poster", drain_unmirrored_deferred_questions, "", (1, 1)),
+            ("manual resurface", drain_deferred_questions, "", (1, 1)),
+            ("digest", drains_module.resurface_question_backlog, "100.0", (True, 1)),
+            ("reask", drains_module.reask_escalated_questions, "100.0", (1, 1)),
+        ):
+            with self.subTest(drain=name):
+                DeferredQuestion.objects.all().delete()
+                BotPing.objects.all().delete()
+                self.backend.post_message.reset_mock()
+                question = _backlog("Which DB host?", slack_ts=slack_ts)
+                guard = threading.Lock()
+                with (
+                    _sibling_holds(guard) as release,
+                    patch.object(
+                        drains_module, "_QUESTION_PING_THREAD_GUARD", _ReleaseSiblingOnAcquire(guard, release)
+                    ),
+                ):
+                    result = drain(user_id="U_ME", backend=self.backend)
+
+                assert result == expected
+                self.backend.post_message.assert_called_once()
+                assert not guard.locked()
+                question.refresh_from_db()
+                assert question.slack_ts
+
+    def test_a_sibling_outliving_the_wait_keeps_each_drain_pending_and_logs_why(self) -> None:
+        for name, drain, slack_ts, expected in (
+            ("poster", drain_unmirrored_deferred_questions, "", (0, 1)),
+            ("manual resurface", drain_deferred_questions, "", (0, 1)),
+            ("digest", drains_module.resurface_question_backlog, "100.0", (False, 1)),
+            ("reask", drains_module.reask_escalated_questions, "100.0", (0, 1)),
+        ):
+            with self.subTest(drain=name):
+                DeferredQuestion.objects.all().delete()
+                BotPing.objects.all().delete()
+                self.backend.post_message.reset_mock()
+                question = _backlog("Which DB host?", slack_ts=slack_ts)
+                guard = threading.Lock()
+                with (
+                    _sibling_holds(guard) as release,
+                    patch.object(
+                        drains_module, "_QUESTION_PING_THREAD_GUARD", _ReleaseSiblingOnAcquire(guard, release)
+                    ),
+                    patch.object(drains_module, "_QUESTION_PING_THREAD_WAIT_SECONDS", 0.03),
+                    self.assertLogs(drains_module.logger, level="INFO") as captured,
+                ):
+                    result = drain(user_id="U_ME", backend=self.backend)
+
+                assert result == expected
+                self.backend.post_message.assert_not_called()
+                assert not BotPing.objects.exists()
+                assert any(
+                    "Another drain in this process still holds the owner question-ping slot after 0.03s; "
+                    "this ping waits for the next pass" in line
+                    for line in captured.output
+                )
+                question.refresh_from_db()
+                assert question.slack_ts == slack_ts
+
+    def test_an_uncontended_drain_posts_with_the_bounded_guard(self) -> None:
+        question = _backlog("Which DB host?")
+        guard = threading.Lock()
+        with patch.object(drains_module, "_QUESTION_PING_THREAD_GUARD", guard):
+            self._poster()
+
+        question.refresh_from_db()
+        assert question.slack_ts
+        assert guard.acquire(blocking=False)
+        guard.release()
+
+    def test_attest_card_waits_eight_minutes_before_poster_sends_it(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        card = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert card is not None
+
+        self._poster()
+        assert not card.slack_ts
+        self.backend.post_message.assert_not_called()
+
+        clock = timezone.now()
+        with patch.object(timezone, "now", return_value=clock):
+            DeferredQuestion.objects.filter(pk=card.pk).update(created_at=clock - dt.timedelta(minutes=7, seconds=59))
+            self._poster()
+            self.backend.post_message.assert_not_called()
+
+            DeferredQuestion.objects.filter(pk=card.pk).update(created_at=clock - dt.timedelta(minutes=8))
+            self._poster()
+        card.refresh_from_db()
+        assert card.slack_ts
+        assert self.backend.post_message.call_count == 1
+
+    def test_manual_resurface_keeps_a_new_attest_card_on_hold(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        card = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert card is not None
+
+        assert drain_deferred_questions(user_id="U_ME", backend=self.backend) == (0, 0)
+        self.backend.post_message.assert_not_called()
+
+        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=timezone.now() - dt.timedelta(minutes=8))
+        assert drain_deferred_questions(user_id="U_ME", backend=self.backend) == (1, 1)
+
+    def test_dismissed_attest_card_never_leaves_the_hold(self) -> None:
+        task = TaskFactory()
+        worktree = WorktreeFactory(ticket=task.ticket)
+        card = ask_owner_to_attest(
+            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
+        )
+        assert card is not None
+        card.mark_stale("Checkout state changed")
+        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=timezone.now() - dt.timedelta(minutes=8))
+
+        self._poster()
+
+        self.backend.post_message.assert_not_called()
+        assert DeferredQuestion.unmirrored_pending().count() == 0
 
     def test_an_hour_of_ticks_over_a_resumed_41_question_backlog_sends_six_pings(self) -> None:
         for index in range(20):

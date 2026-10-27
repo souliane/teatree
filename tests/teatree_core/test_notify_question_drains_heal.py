@@ -100,6 +100,7 @@ class TestTheResurfaceDrain(_HealedProvisionQuestion):
 
 class TestTheDigest(_HealedProvisionQuestion):
     def test_a_healed_row_is_not_counted(self) -> None:
+        self._mirror_and_age(self.live)
         self._heal()
 
         with patch("teatree.core.notify_question_drains.notify_user", return_value=True):

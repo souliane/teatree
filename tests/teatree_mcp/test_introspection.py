@@ -1,30 +1,47 @@
 """Config, gate, and command introspection MCP reads."""
 
+from datetime import timedelta
 from pathlib import Path
 
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.config import COLD_HOOK_SETTINGS
 from teatree.core.models import ConfigSetting, DeferredQuestion
 from teatree.mcp import introspection
 from teatree.mcp.introspection import question_list
+from tests._owner_channel import OWNER_DECISION
 
 
 class TestQuestionList(TestCase):
-    def test_returns_only_pending_questions_newest_first(self) -> None:
-        older = DeferredQuestion.record("First?")
-        newer = DeferredQuestion.record("Second?")
-        answered = DeferredQuestion.record("Done?")
+    def test_returns_only_owner_pending_questions_oldest_first(self) -> None:
+        older = DeferredQuestion.record("First?", **OWNER_DECISION)
+        internal = DeferredQuestion.record("Repair halt?")
+        newer = DeferredQuestion.record("Second?", **OWNER_DECISION)
+        answered = DeferredQuestion.record("Done?", **OWNER_DECISION)
         answered.answered_at = answered.created_at
         answered.save(update_fields=["answered_at"])
+        DeferredQuestion.objects.filter(pk=older.pk).update(created_at=timezone.now() - timedelta(days=2))
 
         rows = question_list()
 
         ids = [row["id"] for row in rows]
+        assert ids == [older.pk, newer.pk]
+        assert internal.pk not in ids
         assert answered.pk not in ids
-        assert ids.index(newer.pk) < ids.index(older.pk)
         assert next(row for row in rows if row["id"] == older.pk)["question"] == "First?"
+
+    def test_later_owner_cards_are_pageable_with_decision_fields(self) -> None:
+        rows = [DeferredQuestion.record(f"Decision {i}?", **OWNER_DECISION) for i in range(52)]
+
+        first = question_list()
+        later = question_list(offset=50)
+
+        assert len(first) == 50
+        assert [row["id"] for row in later] == [row.pk for row in rows[50:]]
+        assert later[0]["decision"] == "product_scope"
+        assert later[0]["owner_only"] is False
 
 
 class TestConfigSettingGet(TestCase):

@@ -24,7 +24,7 @@ import time
 import traceback
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # When run as a script (the live hook: ``python3 .../hooks/scripts/hook_router.py``)
 # the plugin root — the directory that CONTAINS ``hooks/`` — is not on ``sys.path``,
@@ -49,6 +49,7 @@ if __name__ == "__main__":
 from hooks.scripts import gate_escape as _gate_escape
 from hooks.scripts.active_repo_tracking import handle_track_active_repo
 from hooks.scripts.additional_context import emit_additional_context
+from hooks.scripts.ai_signature_guard import handle_block_ai_signature
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.brief_anchor_gate import handle_brief_anchor_lint
@@ -98,7 +99,6 @@ from hooks.scripts.forge_api_detect import (
 )
 from hooks.scripts.gate_decision import record_gate_decision as _record_gate_decision
 from hooks.scripts.gate_decision import write_pretooluse_deny as _write_pretooluse_deny
-from hooks.scripts.gate_result import GateSkipped, ValidatorTimedOut, announce_cannot_evaluate, run_validator
 from hooks.scripts.general_purpose_agent_gate import handle_block_general_purpose_agent
 from hooks.scripts.git_add_all_guard import handle_block_git_add_all
 from hooks.scripts.glab_stale_base_remote_guard import handle_block_glab_stale_base_remote
@@ -167,6 +167,7 @@ from hooks.scripts.raw_review_post_guard import handle_block_raw_review_post
 from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
+from hooks.scripts.remote_factory_target import remote_factory_target_active
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.router_args import parse_args as _parse_args
 from hooks.scripts.router_args import read_input as _read_input
@@ -188,7 +189,7 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.t3_invocation import spawn_t3_detached, t3_argv, t3_available, t3_never_started, venue_fault
+from hooks.scripts.t3_invocation import spawn_t3_detached, t3_argv, t3_available
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
@@ -202,6 +203,9 @@ from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.verbatim_paste_gate import handle_block_verbatim_operator_paste
 from hooks.scripts.visible_plan_gate import handle_enforce_visible_plan_before_tools
 from hooks.scripts.void_merge_guard import handle_block_void_merge
+
+if TYPE_CHECKING:
+    from hooks.scripts.gate_result import GateSkipped
 
 STATE_DIR = hook_state_dir()
 
@@ -446,21 +450,8 @@ def _teatree_engaged(session_id: str) -> bool:
 
 
 def _loop_auto_load_active(session_id: str) -> bool:
-    """Whether this session may take the attended loop slot and show the loop statusline (#256).
-
-    The gate the loop-slot bootstrap (:func:`handle_session_start_bootstrap`)
-    applies. Two conditions must BOTH hold:
-
-    - the session opted into teatree (:func:`_teatree_active` — a teatree
-        skill was loaded), AND
-    - the operator enabled autoload (:func:`_autoload_enabled`).
-
-    ``autoload`` is the ONE owner flag (``[teatree] autoload = true``, or the
-    ``T3_AUTOLOAD`` env): it both ENGAGES the session and elects it for the
-    loop slot. It defaults OFF so a colleague who merely clones the repo (and
-    even loads a teatree skill) never takes the slot or sees the loop statusline.
-    """
-    return _teatree_active(session_id) and _autoload_enabled()
+    """The attended slot needs engagement, autoload, and a local factory target."""
+    return _teatree_active(session_id) and _autoload_enabled() and not remote_factory_target_active()
 
 
 _read_lines = read_lines
@@ -1006,194 +997,6 @@ def _extract_mr_fields(data: dict) -> "tuple[str, str] | GateSkipped | None":
         return tool_input.get("title", ""), tool_input.get("description", "")
 
     return None
-
-
-# ── PreToolUse: block-ai-signature (#836 §17.6 gate 15) ─────────────
-
-_PR_CREATE_TOOLS = {
-    "mcp__glab__glab_mr_create",
-    "mcp__glab__glab_mr_update",
-    "mcp__github__create_pull_request",
-    "mcp__github__update_pull_request",
-}
-
-
-def _extract_bash_ai_sig_payload(command: str, cwd: Path | None = None) -> str | None:
-    """Return the scannable forge-post body for a Bash command, or ``None``.
-
-    Delegates the "is this a forge post?" decision and the body extraction to
-    the SAME canonical command parser the #1213 quote-scanner, #1415
-    banned-terms, and #1530 bare-reference gates use
-    (:mod:`teatree.hooks._command_parser`). This was previously a second,
-    hand-rolled parser (``_AI_SIG_PR_RE`` / ``_AI_SIG_COMMIT_RE`` /
-    ``_PR_BODY_FLAG_RE`` / ``_GIT_COMMIT_M_RE``, all now removed) that covered
-    only ``gh pr`` / ``glab mr`` and a QUOTED ``--body`` — it missed
-    ``gh issue create/comment``,
-    ``glab issue note``, ``glab mr note``, and the ``-b``/heredoc/``-d`` body
-    forms, so an AI-signature footer leaked on those surfaces (#11, the
-    souliane/skills#38 / #1840 / #1845 recurrence). Reusing the shared parser
-    closes the whole class at once: :func:`is_publish_command` recognises every
-    forge-post command shape (the contiguous-substring catalogue + the
-    token-aware ``api`` WRITE / ``git commit`` classifiers), and
-    :func:`extract_bash_payload` pulls the body out of every flag form
-    (``--body``/``--description``/``--message``/``-b``/``-m``, ``--body-file``/
-    ``--file``/``-F``, ``-d``/``--field`` JSON, heredocs).
-
-    ``fail_closed_body_file=False`` keeps this gate's fail-OPEN contract on an
-    unreadable / missing / binary body file (an absent body contributes
-    nothing rather than a hard-block sentinel) — a broken environment must
-    never block a forge post, matching the other t3-shelling hooks.
-
-    The body extraction itself lives in the public
-    :func:`teatree.hooks.ai_signature_gate.extract_forge_post_body` so the
-    private ``_command_parser`` import stays INSIDE the ``teatree`` package (the
-    hook router cannot import a private name from an external module), mirroring
-    how ``banned_terms_scanner.extract_publish_payload`` wraps the same parser.
-    """
-    from teatree.hooks.ai_signature_gate import extract_forge_post_body  # noqa: PLC0415 — deferred: cold-hook import
-
-    return extract_forge_post_body(command, cwd)
-
-
-def _extract_ai_sig_payload(data: dict) -> str | None:
-    """Return the PR-body / commit-message text to scan, else ``None``.
-
-    Covers the full forge-post command class via the shared canonical parser
-    (:func:`_extract_bash_ai_sig_payload`): ``gh pr create/edit/comment``,
-    ``gh issue create/comment``, ``glab mr create/update/note``,
-    ``glab issue create/note``, ``git commit`` (inline ``-m`` and file-based
-    ``-F``/``-C``/``--file`` / ``--body-file`` / ``--description``-file —
-    the #831 multi-line shape), the ``gh api``/``glab api`` WRITE to a forge
-    endpoint, and the MR/PR MCP create/update tools. ``None`` ⇒ not a forge
-    post / commit, or (for a file-based arg) a missing/binary file (fail open).
-    """
-    tool_name = data.get("tool_name", "")
-    tool_input = data.get("tool_input", {})
-
-    if tool_name == "Bash":
-        return _extract_bash_ai_sig_payload(tool_input.get("command", ""), _resolve_cwd_repo(data))
-
-    if tool_name in _PR_CREATE_TOOLS:
-        return tool_input.get("body", "") or tool_input.get("description", "")
-
-    return None
-
-
-def _ai_sig_scan_argv() -> list[str] | None:
-    return t3_argv("tool", "ai-sig-scan", "-")
-
-
-# A genuine finding is recognisable by the scanner's well-formed summary
-# header ``AI-signature scan: N banned trailer(s)`` (``teatree.hooks.
-# ai_signature_scan.summary``). The scanner exits 1 on a finding AND
-# nonzero on a crash (a missing/unreadable ``-F`` file → typer traceback →
-# exit 1, no summary on stdout), so ``returncode != 0`` alone CANNOT tell the
-# two apart — keying on the summary line does, mirroring the sibling
-# ``coverage_gate.diff_coverage_finding`` structured-stdout discriminator.
-_AI_SIG_FINDING_RE = re.compile(r"^AI-signature scan:\s+\d+\s+banned trailer", re.MULTILINE)
-
-
-def _ai_sig_finding(stdout: str) -> str | None:
-    """Return the finding summary iff *stdout* is a real banned-trailer finding.
-
-    ``None`` ⇒ not a genuine finding: either the clean summary (``AI-signature
-    scan: clean``) or a crash/error with no well-formed summary at all. The
-    caller maps the three outcomes to DENY-finding / ALLOW / fail-closed-error.
-    """
-    return stdout.strip() if _AI_SIG_FINDING_RE.search(stdout) else None
-
-
-def handle_block_ai_signature(data: dict) -> bool:
-    """Refuse a forge-post body / commit message carrying an AI-signature trailer.
-
-    Deterministic enforcement of the "No AI Signature on Posts Made on the
-    User's Behalf" rule (BLUEPRINT §17.6 gate 15, #836). The rule was prose
-    only in /t3:rules and unenforced at the PR-body layer — PR #831 leaked
-    the banned trailer, caught only by cold review. This makes it a code
-    gate at the same pre-merge layer as the draft-lock and structured-
-    question gates.
-
-    Body extraction now reuses the shared canonical command parser
-    (``teatree.hooks._command_parser``) so the gate fires for the WHOLE
-    forge-post command class — ``gh pr/issue create/edit/comment``,
-    ``glab mr/issue create/update/note``, ``git commit``, and every
-    ``--body``/``--body-file``/``-F``/``-b``/``-m`` flag form — closing the
-    ``gh issue`` / ``glab note`` / unquoted-body gap a hand-rolled regex
-    parser left open (#11). The handler bootstraps ``sys.path`` to import
-    ``teatree`` from the sibling ``src/`` dir (the hook runs in the user's
-    session shell with no guarantee ``teatree`` is importable, #1314) and
-    fails open on a broken environment (no ``t3`` / import error / timeout),
-    matching the other t3-shelling hooks — a gate that cannot run AT ALL must
-    not lock out every commit.
-
-    Three outcomes are kept DISTINCT (#1884), because this is a SECURITY gate
-    that prevents publishing AI signatures under the user's identity:
-    (a) scanner ran, found a trailer (well-formed ``AI-signature scan: N
-    banned trailer(s)`` summary) → DENY with the finding message;
-    (b) scanner ran, clean → ALLOW;
-    (c) scanner WAS invoked but exited nonzero with no well-formed finding
-    summary (a crash/error) → FAIL CLOSED with a clear "scanner error, not a
-    finding" message. The old gate mapped ANY nonzero exit to (a), so a crash
-    (exit 1, traceback, no summary) became a false DENY carrying the LYING
-    "banned trailer found" message. Unlike the sibling coverage gate (which
-    fails OPEN on a crash, correct for a coverage gate), a leak-prevention
-    gate must NOT fail open — an unscanned publish may carry a signature.
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_block_ai_signature(data)
-    except Exception:  # noqa: BLE001 — a crashing gate is worse than no scan; fail open.
-        return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
-def _run_block_ai_signature(data: dict) -> bool:
-    """Block-ai-signature inner body — assumes ``teatree`` is already importable."""
-    from teatree.hooks import ai_signature_gate  # noqa: PLC0415 — deferred: cold-hook import
-
-    payload = _extract_ai_sig_payload(data)
-    argv = _ai_sig_scan_argv()
-    if payload is None or argv is None:
-        return False
-
-    result = run_validator(argv, stdin_text=payload)
-    if isinstance(result, ValidatorTimedOut | GateSkipped):
-        return announce_cannot_evaluate("AI-signature", result)
-    if result is None:
-        return False
-
-    finding = _ai_sig_finding(result.stdout or "")
-    if finding is not None:
-        return emit_pretooluse_deny(ai_signature_gate.format_block_message(finding), gate_id="ai_signature")
-    # A clean exit is ALLOW; a scanner that never STARTED is the broken-environment case
-    # the docstring promises to fail OPEN on. Distinct from the fail-closed case below:
-    # a scanner that RAN and errored still blocks.
-    if result.returncode == 0 or t3_never_started(result):
-        return False
-    # Scanner ran but exited nonzero WITHOUT a well-formed finding summary —
-    # a crash/error (traceback, usage error), not a finding. This is a
-    # SECURITY gate (it prevents publishing AI signatures under the user's
-    # identity), so the safe posture is FAIL CLOSED with a clear
-    # "scanner error" message — block, but never report a finding that did
-    # not happen, and never silently let an unscanned publish through.
-    # (The sibling COVERAGE gate fails OPEN here, correctly for ITS
-    # purpose; a leak-prevention gate must not.) A launcher refusing the venue (exit 69)
-    # scanned nothing, so it blocks the same way under its own name.
-    fault = venue_fault(result.returncode, result.stderr)
-    detail = (result.stderr or result.stdout or "").strip()
-    message = (
-        ai_signature_gate.format_venue_fault_message(fault)
-        if fault
-        else ai_signature_gate.format_scanner_error_message(detail)
-    )
-    return emit_pretooluse_deny(message, gate_id="ai_signature")
 
 
 # ── PreToolUse: pre-publish quote-scanner gate (#1213) ──────────────
@@ -2727,10 +2530,10 @@ def handle_session_start_bootstrap(data: dict) -> None:
     The read → decide → write stays one flock-guarded transaction so two
     fresh sessions in the same window cannot both claim (TOCTOU).
 
-    Gated on :func:`_loop_auto_load_active` (#256): a session only claims the
-    tick-owner record / emits the bootstrap directive when it both opted into
-    teatree AND the operator enabled session-start auto-load. Default OFF, so a
-    colleague cloning the repo never silently becomes the loop owner.
+    Gated on :func:`_loop_auto_load_active` (#256): only an opted-in session
+    with operator autoload and a local factory target claims the tick-owner
+    record / emits the bootstrap directive. Default OFF, so a colleague
+    cloning the repo never silently becomes the loop owner.
 
     Default-off engagement (#256): when ``[teatree] autoload`` is set the owner
     default flips the session ``teatree-active`` BEFORE the loop gate, so today's

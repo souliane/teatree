@@ -9,6 +9,7 @@ from teatree.core.models.checkout_proof import (
     DeferredExitAttestation,
     ReleasedPrHeadAttestation,
 )
+from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -118,24 +119,17 @@ class PREntrySerialized(TypedDict, total=False):
     draft_comments_count: int
 
 
-class DreamGapEntry(TypedDict, total=False):
-    gap_key: str
-    cluster_key: str
-    title: str
-    citation: str
-    theme: str
-    detail: str
-
-
-class DreamGapDisposition(TypedDict):
-    disposition: str
-    evidence: str
-
-
 class PlanningHandoff(TypedDict, total=False):
     planning_task: int
     phase: str
     reason: str
+
+
+class ShippingHold(TypedDict):
+    reason: str
+    skipped: str
+    held_at: str
+    checked_at: str
 
 
 class TicketExtra(TypedDict, total=False):
@@ -194,14 +188,18 @@ class TicketExtra(TypedDict, total=False):
     description: str
     provision: dict[str, str]
     shipping_skipped: str
+    shipping_hold: ShippingHold
     tracker_status: str
     # Notion status-sync: the tracked page URL (input) and the last status read
     # from it via the direct Notion API (``core.sync.fetch_notion_statuses``).
     notion_url: str
     notion_status: str
     issue_title: str
+    mr_title_generated: str
     labels: list[str]
     reviewed_sha: str
+    review_retry_head_by_task: dict[str, str]
+    review_retry_after_move: dict[str, str]
     # What the FORGE last reported. Overwritten with the live value on every scan, so a
     # LOCAL disposition stored here survives one pass and is then read back as an
     # observation — the discharge has its own key below for exactly that reason.
@@ -249,6 +247,7 @@ class TicketExtra(TypedDict, total=False):
     anti_vacuity_attestations: "dict[str, AntiVacuityAttestation]"
     rubric_grades_by_head: "dict[str, dict[str, dict[str, str]]]"
     rubric_grades_recorded: bool
+    rubric_waivers: list[dict[str, str | int]]
     # #1661 per-ticket FixRecord read by ``fix_dod_gate`` at ``mark_delivered`` for
     # ``kind=fix``; written from the agent result envelope by
     # ``agents.fix_record_recorder``. ``fix_record_override`` is the audited escape
@@ -287,7 +286,7 @@ class TicketExtra(TypedDict, total=False):
     # ``dream_gap_claimed_delivered`` is the coder/reviewer-recorded subset of gap
     # keys actually delivered, verified independently at review before the
     # reconcile checks a box or retires a memory. See ``teatree.loops.dream.batch_promote``.
-    dream_gap_batch: "list[dict[str, str]]"
+    dream_gap_batch: "list[DreamGapEntry]"
     dream_gap_claimed_delivered: list[str]
     # The umbrella host's queue of a pass's collected gaps awaiting the backlog sweep's
     # fold into an existing host, and a host's per-gap address/reject record.
@@ -297,6 +296,8 @@ class TicketExtra(TypedDict, total=False):
     # ``schedule_planned_work`` mints it when ``plan()`` fires.
     planning_handoff: "PlanningHandoff"
     dream_gap_dispositions: "dict[str, DreamGapDisposition]"
+    dream_gap_released: DreamGapRelease
+    dream_funnel: list[DreamFunnelEntry]
     # #2886: durable pydantic_ai conversation store, keyed by the ``Task.pk`` whose run produced
     # it and selected through ``Task.session_continuation``; see ``teatree.agents.pydantic_ai_resume``.
     pydantic_ai_threads: dict[str, list[object]]
@@ -334,6 +335,7 @@ class TicketExtra(TypedDict, total=False):
     # the answering phase. Undeclared, the first transition stripped it — taking the
     # question text and the work-placed stamp with it on 50 live rows.
     slack_answer: SlackAnswerContext
+    slack_priority_receipts: dict[str, str]
     # Project-board provenance, re-stamped through ``merge_extra`` on every board sync.
     board_position: int
     board_status: str
@@ -409,7 +411,7 @@ class PlanAdequacy(TypedDict, total=False):
     ``acceptance_criteria.content`` is the ticket's acceptance-criteria list, which
     ``PlanArtifact.record`` turns into the ticket's ``core.Rubric`` rows — the plan is
     the one home for it, and a reasoned negative there writes no rows and waives nothing
-    (the rubric gate's one waiver is the human-authorized ``ticket plan-bypass``).
+    (a reasoned negative does not grant the human-authorized plan bypass).
     """
 
     design: AdequacySection
@@ -485,6 +487,7 @@ class RubricGrade(TypedDict, total=False):
     ordinal: int
     status: str
     rationale: str
+    text_hash: str
 
 
 class FixRecord(TypedDict, total=False):
@@ -492,7 +495,8 @@ class FixRecord(TypedDict, total=False):
 
     Produced by the fixing agent in its result envelope, validated and written by
     ``teatree.agents.fix_record_recorder``, read by ``core.gates.fix_dod_gate`` at
-    ``mark_delivered``. Every field is required and non-blank — a manifestation patch
+    ``mark_delivered``. Every field is required and non-blank when forced repro is on;
+    ``observed_red`` is optional when it is off — a manifestation patch
     with no stated root cause is exactly the case the gate exists to catch, so there
     is no partial credit.
 
@@ -530,16 +534,21 @@ class FixRecordOverride(TypedDict, total=False):
 FIX_RECORD_FIELDS: Final[tuple[str, ...]] = tuple(FixRecord.__annotations__)
 
 
-def fix_record_missing_fields(record: object) -> list[str]:
-    """The :data:`FIX_RECORD_FIELDS` *record* leaves absent or blank, in declaration order.
+def fix_record_required_fields(*, red_required: bool = True) -> tuple[str, ...]:
+    return FIX_RECORD_FIELDS if red_required else tuple(field for field in FIX_RECORD_FIELDS if field != "observed_red")
+
+
+def fix_record_missing_fields(record: object, *, red_required: bool = True) -> list[str]:
+    """The required fields *record* leaves absent or blank, in declaration order.
 
     The one parse shared by the gate that READS the stored record and the recorder
     that VALIDATES the returned one, so producer and consumer cannot drift. A
-    non-mapping (or absent) record yields every field — there is no partial credit.
+    non-mapping (or absent) record yields every required field — there is no partial credit.
     """
+    required = fix_record_required_fields(red_required=red_required)
     if not isinstance(record, dict):
-        return list(FIX_RECORD_FIELDS)
-    return [field for field in FIX_RECORD_FIELDS if not str(record.get(field, "")).strip()]
+        return list(required)
+    return [field for field in required if not str(record.get(field, "")).strip()]
 
 
 class IntegrationReviewOverride(TypedDict, total=False):

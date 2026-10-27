@@ -33,6 +33,7 @@ from _deploy_wrapper_paths import PROLOGUE_NAME, container_credential_prologue
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash (present in the deploy image and CI)")
 
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
+READER = WRAPPER.parent / "secret-read.sh"
 _SH = shutil.which("sh") or "sh"
 _REAL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
@@ -71,6 +72,7 @@ def _run_prologue(
         check=check,
         env={
             "PATH": path,
+            "T3_SECRET_READER": str(READER),
             **({"TEATREE_GITLAB_TOKEN_PASS_PATH": "gitlab/pat"} if with_explicit_pass_route else {}),
             **(env or {}),
         },
@@ -131,6 +133,15 @@ class TestTokenRead:
 class TestAWedgedStoreRefusesRatherThanRunningOnAnEmptyToken:
     """An EMPTY token authenticates as nobody and reads as a missing branch."""
 
+    def test_missing_timeout_refuses_instead_of_treating_the_read_as_absent(self, tmp_path: Path) -> None:
+        bare = tmp_path / "no-timeout"
+        _fake_pass(bare, 'printf "token\\n"')
+        (bare / "sh").symlink_to(_SH)
+        proc = _run_prologue(env={"PATH": str(bare), "T3_SECRET_STORE": "pass"}, check=False)
+        assert proc.returncode != 0
+        assert proc.stdout == ""
+        assert "could not start" in proc.stderr
+
     def test_a_store_that_fails_to_answer_stops_the_dispatch(self, tmp_path: Path) -> None:
         _fake_pass(tmp_path / "bin", 'echo "gpg: No Keybox daemon running" >&2; exit 2')
         proc = _run_prologue(bin_dir=tmp_path / "bin", check=False)
@@ -151,7 +162,11 @@ class TestAWedgedStoreRefusesRatherThanRunningOnAnEmptyToken:
         bare = tmp_path / "no-pass-here"
         bare.mkdir()
         (bare / "sh").symlink_to(_SH)
-        proc = _run_prologue(env={"PATH": str(bare)}, check=False)
+        (bare / "head").symlink_to(shutil.which("head") or "/usr/bin/head")
+        timeout = bare / "timeout"
+        timeout.write_text('#!/bin/sh\nshift\nexec "$@"\n')
+        timeout.chmod(0o755)
+        proc = _run_prologue(env={"PATH": str(bare), "T3_SECRET_STORE": "pass"}, check=False)
 
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip() == "<unset>"
@@ -175,7 +190,7 @@ class TestTheReadIsBounded:
     def test_the_deadline_is_configurable_and_defaults_to_twenty_seconds(self) -> None:
         prologue = container_credential_prologue()
         assert 'deadline="${TEATREE_SECRET_READ_DEADLINE_SECONDS:-20}"' in prologue
-        assert 'timeout "$deadline" pass show "$pass_path"' in prologue
+        assert 'timeout "$deadline" "$reader" get "$pass_path"' in prologue
 
 
 class TestWrapperUsesThePrologue:

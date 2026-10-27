@@ -1,8 +1,12 @@
 """Board cards and the ticket drawer link to the forge (#3624)."""
 
+import re
+from pathlib import Path
+
 from django.test import TestCase
 from django.urls import reverse
 
+import teatree.dash
 from teatree.core.models import PullRequest, Ticket
 from teatree.dash.ticket_detail import build_ticket_detail
 
@@ -13,14 +17,14 @@ class TestCardForgeLinks(TestCase):
     def test_the_card_number_links_to_the_forge_issue(self) -> None:
         Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=_ISSUE_URL, short_description="clickable cards")
 
-        body = self.client.get(reverse("dash:board"), REMOTE_ADDR="127.0.0.1").content.decode()
+        body = self.client.get(reverse("dash:board_lifecycle"), REMOTE_ADDR="127.0.0.1").content.decode()
 
         assert f'href="{_ISSUE_URL}"' in body
 
     def test_a_synthetic_loop_key_never_renders_a_dead_anchor(self) -> None:
         Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="scanning-news://t3-teatree")
 
-        body = self.client.get(reverse("dash:board"), REMOTE_ADDR="127.0.0.1").content.decode()
+        body = self.client.get(reverse("dash:board_lifecycle"), REMOTE_ADDR="127.0.0.1").content.decode()
 
         assert "scanning-news://" not in body
 
@@ -33,9 +37,36 @@ class TestCardForgeLinks(TestCase):
             url="https://github.com/souliane/teatree/pull/3624",
         )
 
-        body = self.client.get(reverse("dash:board"), REMOTE_ADDR="127.0.0.1").content.decode()
+        body = self.client.get(reverse("dash:board_lifecycle"), REMOTE_ADDR="127.0.0.1").content.decode()
 
         assert 'href="https://github.com/souliane/teatree/pull/3624"' in body
+
+
+class TestCardAnchorTargets(TestCase):
+    def test_every_card_anchor_link_targets_the_lifecycle_board_that_renders_the_card(self) -> None:
+        templates = Path(teatree.dash.__file__).parent / "templates"
+        linked = {
+            path.relative_to(templates).as_posix()
+            for path in templates.rglob("*.html")
+            if "#card-" in path.read_text(encoding="utf-8")
+        }
+        offenders = {name for name in linked if "{% url 'dash:board' %}#card-" in (templates / name).read_text()}
+
+        assert linked, "no template links a card anchor any more — drop this guard"
+        assert offenders == set()
+        for name in linked:
+            source = (templates / name).read_text()
+            references = re.findall(r"\{% url 'dash:board_lifecycle' %\}[^\"]*#card-\{\{ ([\w.]+) \}\}", source)
+            assert references
+            for reference in references:
+                assert f"?focus={{{{ {reference} }}}}#card-{{{{ {reference} }}}}" in source
+
+    def test_the_lifecycle_board_renders_the_anchor_the_links_point_at(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=_ISSUE_URL, short_description="anchored")
+
+        body = self.client.get(reverse("dash:board_lifecycle"), REMOTE_ADDR="127.0.0.1").content.decode()
+
+        assert f'id="card-{ticket.pk}"' in body
 
 
 class TestDrawerForgeLink(TestCase):

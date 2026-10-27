@@ -19,6 +19,8 @@ import pytest
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.models import DmContext, PendingChatInjection, Session, Task, TaskAttempt
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.loop.inbound_reading import read_inbound
+from teatree.loop.question_binding import AmbiguousCards, BoundAnswer, bind_reply
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
@@ -46,6 +48,7 @@ class FakeMessaging:
     raise_on_react: bool = False
     route_token: str = "self"
     user_id: str = OWNER_SLACK_ID
+    thread: list[str] = field(default_factory=list)
 
     def _is_self_dm(self, channel: str) -> bool:
         _ = channel
@@ -69,6 +72,10 @@ class FakeMessaging:
     def get_permalink(self, *, channel: str, ts: str) -> str:
         _ = (channel, ts)
         return self.permalink
+
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        _ = (channel, thread_ts)
+        return [{"ts": ts} for ts in self.thread]
 
 
 def _record_question(*, generation: int, slack_ts: str, session_id: str = "s", run_id: str = "r") -> DeferredQuestion:
@@ -101,16 +108,16 @@ class TestATypedAnswerClosesTheRootCard:
         question = DeferredQuestion.record(
             "Can I ship the widgets?", slack_channel=_CHANNEL, slack_ts="100.0", **OWNER_DECISION
         )
-        _record_reply("tomorrow, please", slack_ts="200.0")
+        _record_reply("Yes", slack_ts="200.0")
         backend = FakeMessaging()
 
         _scan(backend)
 
         question.refresh_from_db()
-        assert question.answer_text == "tomorrow, please"
+        assert question.answer_text == "Yes"
         [update] = backend.updates
         assert (update["channel"], update["ts"]) == (_CHANNEL, "100.0")
-        assert "You answered: tomorrow, please" in str(update["text"])
+        assert "You chose: Yes" in str(update["text"])
         assert update["blocks"]
 
     def test_a_reply_sent_before_the_card_was_posted_edits_nothing(self) -> None:
@@ -121,6 +128,43 @@ class TestATypedAnswerClosesTheRootCard:
         _scan(backend)
 
         assert backend.updates == []
+
+    def test_a_reply_that_matches_two_cards_in_its_thread_is_left_unclaimed(self) -> None:
+        first = _record_question(generation=1, slack_ts="100.2", session_id="s1")
+        second = _record_question(generation=1, slack_ts="100.3", session_id="s2")
+        reply = PendingChatInjection.record(
+            channel=_CHANNEL, slack_ts="200.0", text="Yes", context=DmContext(user_id=OWNER_SLACK_ID, thread_ts="100.1")
+        )
+        assert reply is not None
+        backend = FakeMessaging(thread=["100.1", "100.2", "100.3"])
+        assert bind_reply(reply, reader=read_inbound, backend=backend) == AmbiguousCards((first.pk, second.pk))
+
+        _scan(backend)
+
+        reply.refresh_from_db()
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert reply.loop_replied_at is None
+        assert backend.react_calls == []
+        assert first.is_pending
+        assert second.is_pending
+
+    def test_a_card_thread_reply_is_left_for_the_answer_cycle(self) -> None:
+        card = _record_question(generation=1, slack_ts="100.2")
+        reply = PendingChatInjection.record(
+            channel=_CHANNEL, slack_ts="200.0", text="Yes", context=DmContext(user_id=OWNER_SLACK_ID, thread_ts="100.1")
+        )
+        assert reply is not None
+        backend = FakeMessaging(thread=["100.1", "100.2"])
+        assert isinstance(bind_reply(reply, reader=read_inbound, backend=backend), BoundAnswer)
+
+        _scan(backend)
+
+        reply.refresh_from_db()
+        card.refresh_from_db()
+        assert reply.loop_replied_at is None
+        assert backend.react_calls == []
+        assert card.is_pending
 
 
 class TestDigitReplyResolvesOption:
@@ -274,15 +318,15 @@ class TestParkedTaskHeadlessResume:
             parked_task=parked,
             **OWNER_DECISION,
         )
-        _record_reply("use postgres-1", slack_ts="200.0")
+        _record_reply("Yes", slack_ts="200.0")
 
         _scan(FakeMessaging())
 
         question.refresh_from_db()
-        assert question.answer_text == "use postgres-1"
+        assert question.answer_text == "Yes"
         resume = parked.child_tasks.get()
         assert resume.parent_task_id == parked.pk
-        assert "use postgres-1" in resume.execution_reason
+        assert "Yes" in resume.execution_reason
         assert resume_session_id(resume) == _RESUME_UUID
 
     def test_resume_is_not_double_queued_on_re_scan(self) -> None:
@@ -295,7 +339,7 @@ class TestParkedTaskHeadlessResume:
             parked_task=parked,
             **OWNER_DECISION,
         )
-        _record_reply("use postgres-1", slack_ts="200.0")
+        _record_reply("Yes", slack_ts="200.0")
 
         _scan(FakeMessaging())
         _scan(FakeMessaging())

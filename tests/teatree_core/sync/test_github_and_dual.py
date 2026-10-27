@@ -1,9 +1,9 @@
-"""GitHub-sync, dual-sync and reviewer-PR tests (souliane/teatree#443 split of test_sync.py).
+"""GitHub-sync and dual-sync tests (souliane/teatree#443 split of test_sync.py).
 
-Covers _merge_results, dual GitHub+GitLab sync, reviewer MR/PR caching and
-the GitHub sync backend.
+Covers _merge_results, dual GitHub+GitLab sync and the GitHub sync backend.
 """
 
+import shutil
 import subprocess
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
@@ -17,7 +17,7 @@ from teatree.backends.github.sync import GitHubSyncBackend
 from teatree.backends.gitlab.sync import GitLabSyncBackend
 from teatree.core.models import Ticket, Worktree
 from teatree.core.sync import _merge_results, sync_followup
-from teatree.types import PENDING_REVIEWS_CACHE_KEY, SyncResult
+from teatree.types import SyncResult
 from tests.teatree_core.sync._overlays import (
     _MR_WITH_ISSUE,
     _MR_WITHOUT_ISSUE,
@@ -75,10 +75,6 @@ class TestDualSync(TestCase):
             "teatree.backends.github.fetch_project_items",
             lambda *_a, **_kw: [github_item],
         )
-        self._monkeypatch.setattr(
-            "teatree.backends.github.sync.run_allowed_to_fail",
-            lambda *_a, **_kw: subprocess.CompletedProcess([], 0, stdout="[]"),
-        )
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
@@ -110,47 +106,54 @@ class TestDualSync(TestCase):
         assert "No code host token" in result.errors[0]
 
 
-class TestSyncReviewerMRs(TestCase):
-    def test_caches_reviewer_mrs(self) -> None:
-        from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
+class TestSyncLeavesReviewRequestsToTheScanner(TestCase):
+    _RETIRED_CACHE_KEY = "teatree_pending_reviews"
 
-        mock_client = MagicMock()
-        mock_client.list_open_mrs_as_reviewer.return_value = [
-            {
-                "web_url": "https://gitlab.com/org/repo/-/merge_requests/99",
-                "title": "Fix widget",
-                "iid": 99,
-                "draft": False,
-                "updated_at": "2026-04-09T10:00:00Z",
-                "author": {"username": "alice"},
-            },
-        ]
-        host = GitLabCodeHost(client=mock_client)
-        result = SyncResult()
+    def setUp(self) -> None:
+        cache.delete(self._RETIRED_CACHE_KEY)
 
-        GitLabSyncBackend._sync_reviewer_prs(host, "testuser", result)
+    def test_github_sync_searches_no_review_requests_and_writes_no_cache(self) -> None:
+        overlay = SyncOverlay(
+            gitlab_token="",
+            gitlab_username="",
+            github_token="gh-test-token",
+            github_owner="souliane",
+            github_project_number=1,
+        )
+        item = ProjectItem(
+            issue_number=71,
+            title="Board issue",
+            url="https://github.com/souliane/teatree/issues/71",
+            status="Todo",
+            position=0,
+            labels=[],
+            updated_at="2026-04-01T00:00:00Z",
+        )
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(shutil, "which", return_value="/usr/bin/gh"),
+            patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="[]")) as run,
+        ):
+            result = GitHubSyncBackend().sync(overlay)
 
-        cached = cache.get(PENDING_REVIEWS_CACHE_KEY)
-        assert cached is not None
-        assert len(cached) == 1
-        assert cached[0]["author"] == "alice"
-        assert cached[0]["repo"] == "repo"
-        assert result.reviews_synced == 1
+        assert result.tickets_created == 1
+        assert result.errors == []
+        assert all("search" not in call.args[0] for call in run.call_args_list)
+        assert cache.get(self._RETIRED_CACHE_KEY) is None
 
-        cache.delete(PENDING_REVIEWS_CACHE_KEY)
+    def test_gitlab_sync_lists_no_review_requests_and_writes_no_cache(self) -> None:
+        overlay = SyncOverlay()
+        client = _make_mock_client([_MR_WITH_ISSUE])
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=client),
+        ):
+            result = GitLabSyncBackend().sync(overlay)
 
-    def test_handles_api_failure_gracefully(self) -> None:
-        from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
-
-        mock_client = MagicMock()
-        mock_client.list_open_mrs_as_reviewer.side_effect = RuntimeError("API down")
-        host = GitLabCodeHost(client=mock_client)
-        result = SyncResult()
-
-        GitLabSyncBackend._sync_reviewer_prs(host, "testuser", result)
-
-        assert len(result.errors) == 1
-        assert "Reviewer PR fetch failed" in result.errors[0]
+        assert result.tickets_created == 1
+        client.list_open_mrs_as_reviewer.assert_not_called()
+        assert cache.get(self._RETIRED_CACHE_KEY) is None
 
 
 # ── GitHub sync ──────────────────────────────────────────────────────
@@ -188,7 +191,6 @@ class TestSyncClassifiesTicketKind(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
         ):
             GitHubSyncBackend().sync(overlay)
         return Ticket.objects.get(issue_url=url)
@@ -247,7 +249,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
         ):
             result = GitHubSyncBackend().sync(overlay)
 
@@ -280,7 +281,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github.sync.cleanup_worktree"),
         ):
             result = GitHubSyncBackend().sync(overlay)
@@ -319,7 +319,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github.sync.cleanup_worktree") as mock_cleanup,
         ):
             result = GitHubSyncBackend().sync(overlay)
@@ -349,7 +348,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github.sync.cleanup_worktree") as mock_cleanup,
         ):
             GitHubSyncBackend().sync(overlay)
@@ -384,7 +382,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch(
                 "teatree.backends.github.sync.cleanup_worktree",
                 side_effect=RuntimeError("refused cleanup — 1 unsynced commit(s)"),
@@ -434,7 +431,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github.sync.cleanup_worktree", return_value=dirty_result),
         ):
             result = GitHubSyncBackend().sync(overlay)
@@ -469,7 +465,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github.sync.cleanup_worktree"),
             patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["teatree"]),
         ):
@@ -501,7 +496,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github.sync.cleanup_worktree"),
             # ticket repo "teatree" not in the overlay's frontend repos -> not UI-visible
             patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["some-frontend"]),
@@ -534,7 +528,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github.sync.cleanup_worktree"),
             patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["teatree"]),
         ):
@@ -575,7 +568,6 @@ class TestSyncGitHub(TestCase):
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
-            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github.sync.cleanup_worktree") as mock_cleanup,
             patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["teatree"]),
         ):
@@ -621,111 +613,3 @@ class TestSyncGitHub(TestCase):
             result = GitHubSyncBackend().sync(overlay)
 
         assert any("fetch failed" in e for e in result.errors)
-
-
-class TestSyncGitHubReviewerPrs(TestCase):
-    def test_reviewer_read_scrubs_hostile_github_token(self) -> None:
-        mock_run = MagicMock(return_value=subprocess.CompletedProcess([], 0, stdout="[]"))
-        with (
-            patch.dict("os.environ", {"GH_TOKEN": "ambient-gh", "GITHUB_TOKEN": "ambient-github"}, clear=False),
-            patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("subprocess.run", mock_run),
-        ):
-            GitHubSyncBackend._fetch_reviewer_prs("routed-token")
-
-        env = mock_run.call_args.kwargs["env"]
-        assert env["GH_TOKEN"] == "routed-token"
-        assert "GITHUB_TOKEN" not in env
-
-    def test_caches_reviewer_prs(self) -> None:
-        import json  # noqa: PLC0415
-        import subprocess  # noqa: PLC0415
-
-        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
-
-        prs = [
-            {
-                "url": "https://github.com/org/repo/pull/10",
-                "title": "Fix bug",
-                "repository": {"name": "repo"},
-                "number": 10,
-                "author": {"login": "alice"},
-                "isDraft": False,
-                "updatedAt": "2026-04-01T00:00:00Z",
-            },
-        ]
-        mock_run = MagicMock(
-            return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(prs)),
-        )
-        result = SyncResult()
-
-        with (
-            patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("subprocess.run", mock_run),
-        ):
-            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
-
-        assert result.reviews_synced == 1
-        cached = cache.get(PENDING_REVIEWS_CACHE_KEY)
-        assert cached is not None
-        assert len(cached) == 1
-        assert cached[0]["author"] == "alice"
-        cache.delete(PENDING_REVIEWS_CACHE_KEY)
-
-    def test_skips_when_gh_not_found(self) -> None:
-        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
-
-        result = SyncResult()
-        with patch("shutil.which", return_value=None):
-            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
-
-        assert result.reviews_synced == 0
-
-    def test_handles_subprocess_exception(self) -> None:
-        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
-
-        result = SyncResult()
-        with (
-            patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("subprocess.run", side_effect=OSError("spawn failed")),
-        ):
-            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
-
-        assert any("reviewer PR fetch failed" in e for e in result.errors)
-
-    def test_a_failed_search_is_recorded_not_reported_as_zero_reviews(self) -> None:
-        import subprocess  # noqa: PLC0415
-
-        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
-
-        result = SyncResult()
-        mock_run = MagicMock(
-            return_value=subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 401: Bad credentials"),
-        )
-        with (
-            patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("subprocess.run", mock_run),
-        ):
-            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
-
-        assert result.reviews_synced == 0
-        assert len(result.errors) == 1
-        assert "reviewer PR fetch failed" in result.errors[0]
-        assert "Bad credentials" in result.errors[0]
-
-    def test_handles_invalid_json(self) -> None:
-        import subprocess  # noqa: PLC0415
-
-        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
-
-        result = SyncResult()
-        mock_run = MagicMock(
-            return_value=subprocess.CompletedProcess([], 0, stdout="not json"),
-        )
-        with (
-            patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("subprocess.run", mock_run),
-        ):
-            GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
-
-        assert result.reviews_synced == 0

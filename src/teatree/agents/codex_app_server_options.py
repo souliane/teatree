@@ -5,14 +5,20 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Never
+from typing import TYPE_CHECKING, Any, Never
 
 from claude_agent_sdk import ClaudeAgentOptions
 
+from teatree.agents.codex_auth_cache import resolve_codex_home
 from teatree.agents.codex_read_only_executor import ExecutorAttestation
 from teatree.agents.codex_sandbox import CONTAINER_IS_SANDBOX_ENV, container_is_the_sandbox
 from teatree.agents.harness_options import HarnessOptions
+from teatree.agents.live_delivery import MAILBOX_PHASE_ENV
+from teatree.agents.sdk_tool_map import CODEX_WORKER_EXECUTION_PHASES, sdk_disallowed_tools_for_phase
 from teatree.utils.ports import running_in_container
+
+if TYPE_CHECKING:
+    from teatree.agents.harness_registry import HarnessBuildContext
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +95,7 @@ class CodexAppServerOptions:
     sandbox_policy: dict[str, Any]
     config: dict[str, Any]
     executor: ExecutorAttestation | None = None
+    mailbox_phase: str | None = None
 
     @classmethod
     def from_sdk_options(
@@ -113,6 +120,7 @@ class CodexAppServerOptions:
             sandbox_policy=sandbox_policy,
             config=config,
             executor=attested,
+            mailbox_phase=(options.env or {}).get(MAILBOX_PHASE_ENV),
         )
 
 
@@ -128,6 +136,13 @@ def codex_phase_policy_unavailable_reason(disallowed_tools: Iterable[str]) -> st
     if denied & _MUTATION_TOOLS and container_is_the_sandbox():
         return f"Codex cannot enforce {_CONTAINER_READ_ONLY_UNENFORCEABLE}"
     return None
+
+
+def codex_worker_denials(disallowed_tools: Iterable[str], phase: str) -> tuple[str, ...]:
+    denied = set(disallowed_tools)
+    if phase in CODEX_WORKER_EXECUTION_PHASES and container_is_the_sandbox():
+        denied -= _MUTATION_TOOLS
+    return tuple(sorted(denied))
 
 
 def codex_login_unavailable_reason(code_home: Path) -> str | None:
@@ -151,6 +166,27 @@ def codex_model_unavailable_reason(code_home: Path, model: str) -> str | None:
     if model in slugs:
         return None
     return f"model {model!r} is not in the Codex catalog ({catalog_path}, fetched {catalog.get('fetched_at', '?')})"
+
+
+def codex_worker_unavailable_reason(context: "HarnessBuildContext") -> str | None:
+    if context.phase and (
+        reason := codex_phase_policy_unavailable_reason(
+            codex_worker_denials(sdk_disallowed_tools_for_phase(context.phase), context.phase)
+        )
+    ):
+        return f"phase {context.phase!r} {reason.lower()}"
+    if container_is_the_sandbox() and (rules := sorted((resolve_codex_home() / "rules").glob("*.rules"))):
+        # Codex 0.155.1 has no app-server switch to ignore user rules, and an ALLOW skips the approval gate.
+        return f"execpolicy rules would bypass TeaTree approvals: {', '.join(str(rule) for rule in rules)}"
+    if context.phase == "architectural_review" and context.task is not None and container_is_the_sandbox():
+        from teatree.agents.codex_app_server_route import (  # noqa: PLC0415 — Django models are not importable at agents import time
+            starts_in_managed_main_clone,
+        )
+
+        if starts_in_managed_main_clone(context.task):
+            return "architectural_review starts in a managed main clone where the container is Codex's sandbox"
+    home = resolve_codex_home()
+    return codex_login_unavailable_reason(home) or codex_model_unavailable_reason(home, context.model)
 
 
 def codex_container_unavailable_reason() -> str | None:

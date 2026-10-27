@@ -9,14 +9,18 @@ tools plus any write tool an ``--allow-write`` names. Django is bootstrapped her
 same shape as ``t3 cost``).
 """
 
+import logging
 from typing import Annotated
 
 import typer
 
+from teatree.agents.live_mailbox_client import InteractiveMailboxLease, MailboxClient, NoLiveWorkerError
 from teatree.cli.mcp_owning_domain import delegate_to_owning_domain
-from teatree.core.mcp_registration import ALLOW_WRITE_ARG, READ_ONLY_ARG, read_only_serve_flags
+from teatree.core.mcp_registration import ALLOW_WRITE_ARG, INTERACTIVE_ARG, READ_ONLY_ARG, read_only_serve_flags
 from teatree.mcp.serve_lifecycle import reap_orphaned_servers, start_parent_death_watch
 from teatree.utils.django_bootstrap import ensure_django
+
+logger = logging.getLogger(__name__)
 
 mcp_app = typer.Typer(
     name="mcp",
@@ -38,6 +42,9 @@ def serve(
         list[str] | None,
         typer.Option(ALLOW_WRITE_ARG, help="A write tool a --read-only server still registers (repeatable)."),
     ] = None,
+    interactive: Annotated[
+        bool, typer.Option(INTERACTIVE_ARG, help="Join the live peer network as an attended operator session.")
+    ] = False,
 ) -> None:
     """Run the structured-search MCP server over stdio (blocks until stdin closes).
 
@@ -53,7 +60,8 @@ def serve(
     """
     reap_orphaned_servers()
     allowed_writes = frozenset(allow_write or ())
-    delegate_to_owning_domain(read_only_serve_flags(allowed_writes) if read_only else [])
+    flags = read_only_serve_flags(allowed_writes) if read_only else []
+    delegate_to_owning_domain([*flags, *([INTERACTIVE_ARG] if interactive else [])])
     start_parent_death_watch()
     ensure_django()
 
@@ -61,4 +69,14 @@ def serve(
     from teatree.mcp.server import build_server  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     register_notion_seam()
-    build_server(read_only=read_only, allowed_writes=allowed_writes).run("stdio")
+    try:
+        lease = InteractiveMailboxLease.connect() if interactive else None
+    except NoLiveWorkerError as exc:
+        logger.warning("Attended mailbox unavailable: %s", exc)
+        lease = None
+    if lease is None:
+        build_server(read_only=read_only, allowed_writes=allowed_writes).run("stdio")
+    else:
+        with lease:
+            client = MailboxClient(lease.socket_path, lease.token)
+            build_server(read_only=read_only, allowed_writes=allowed_writes, mailbox_client=client).run("stdio")

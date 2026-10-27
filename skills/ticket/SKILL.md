@@ -75,6 +75,13 @@ Under load — a polluted prior-session context, a coordinator brief, several ti
 2. **Pin the id before the fetch.** State the single `<repo>#<iid>` (or full URL) you are about to fetch, then run the one `glab issue view` / `gh issue view` command above against exactly that id.
 3. **Never merge two tickets' context.** If the session has touched ticket A and the user now hands you ticket B, fetch B fresh and keep A's acceptance criteria, scope, and tenant out of B. Lessons carry; details do not.
 4. **One fetch, one ticket, then stop and read it.** Do not batch-fetch a menu of ids you "might" need; fetch the requested one and act on it.
+5. **In a headless run, record the split question.** When two tenant tickets are in play and no interactive question tool is available, ask which ticket to handle or name both tickets in the question. Use this one-line command, then stop:
+
+   ```bash
+   t3 <overlay> questions record '<question>'
+   ```
+
+   Add `--options '<json>'` after the closing quote when choices help the owner answer.
 
 Acting on a different ticket than the one requested — or smearing one ticket's spec onto another — is a retro-worthy failure even when an upstream brief made the conflation tempting.
 
@@ -198,8 +205,11 @@ t3 <overlay> ticket plan <ticket-id> '<plan text>' --base-sha "$(git rev-parse o
 
 Write criteria that can FAIL — one satisfied by inaction is refused at population. A
 `"none_reason"` there is an ordinary reasoned negative: it writes no rubric rows and waives
-NOTHING. The one waiver is the human-authorized `t3 <overlay> ticket plan-bypass <id>
---human-authorize <who> --reason <why>`, and even that never overrides a recorded FAIL.
+NOTHING. A human-authorized `t3 <overlay> ticket plan-bypass <id>
+--human-authorize <who> --reason <why>` waives the delivery rubric. A forge-evidenced
+owner merge also permits delivery when `forge_merge_evidence.merged_by` matches an owner
+alias, criteria are missing or ungraded, and no merge audit or live PR exists. Neither
+path overrides a recorded FAIL; merge-time grading stays strict.
 
 **Every criterion must be gradeable PASS at the PR head before merge.** The merge gate
 (`src/teatree/core/gates/rubric_gate.py`) refuses unless every criterion is PASS against the
@@ -213,6 +223,8 @@ split a compound criterion: the head-provable part stays a criterion, the rest m
 
 Already recorded a bundled one? Restate the rubric with `t3 <overlay> ticket rubric-set
 <ticket-id> --criteria-json '<json>'` — a replace that resets every grade, so re-grade after.
+An owner can waive one criterion with `t3 <overlay> ticket rubric-waive <ticket-id>
+--text-hash <hash> --waived-by <owner> --reason <why>`; later plans will not add it back.
 
 **Grading happens at the end, by someone other than the maker — automatically.** The cold
 reviewer is the producer: it returns `rubric_grades` in the same envelope as its verdict, and
@@ -220,7 +232,7 @@ the orchestrator stamps both in one transaction. A PASS must cite what proves it
 kind (unit, integration, functional, e2e), named in free-form prose:
 
 ```json
-"rubric_grades": [{"ordinal": 0, "status": "pass", "rationale": "<the test that proves it>"}]
+"rubric_grades": [{"ordinal": 0, "text_hash": "<hash from brief>", "status": "pass", "rationale": "<the test that proves it>"}]
 ```
 
 The CLI below is the **operator's** seam beside it — for a rubric no review will grade, never

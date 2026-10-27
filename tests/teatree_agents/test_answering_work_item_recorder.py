@@ -6,7 +6,9 @@ filed issue as a clickable link, because "tracking as ticket N" for an N nobody
 can open is the trap this whole change removes.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -14,16 +16,21 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.answering.work_item_filing import WorkItemFilingError
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.core.overlay_metadata import OverlayMetadata
+from teatree.core.send_proxy import route_forge_write
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError
 from teatree.utils.url_slug import slack_conversation_anchor
-from tests._send_gate import allow_forge_repos
+from tests._send_gate import allow_github_repos
 
 pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 
 _CHANNEL = "D-owner"
-_FILED = "https://github.com/souliane/teatree/issues/7100"
+_REPO_A = "souliane/teatree"
+_REPO_B = "souliane/docs-site"
+_FILED = f"https://github.com/{_REPO_A}/issues/7100"
 
 
 @dataclass
@@ -42,20 +49,23 @@ class RecordingHost:
     """Code host that hands back one filed issue URL and records the request."""
 
     created: list[dict] = field(default_factory=list)
+    searched: list[str] = field(default_factory=list)
     refusal: Exception | None = None
+    forge: str = "github"
 
     def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> RawAPIDict:
         if self.refusal is not None:
             raise self.refusal
         self.created.append({"repo": repo, "title": title, "body": body, "labels": list(labels or [])})
-        return {"html_url": _FILED, "body": body}
+        return {"html_url": f"https://github.com/{repo}/issues/7100", "body": body}
 
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
-        _ = (repo, query)
+        _ = query
+        self.searched.append(repo)
         return []
 
 
-def _answering_task(*, implies_work: bool = True) -> Task:
+def _answering_task(*, implies_work: bool = True, work_issue_url: str = "") -> Task:
     ticket = Ticket.objects.create(
         issue_url=slack_conversation_anchor(channel=_CHANNEL, slack_ts="1.0"),
         overlay="t3-teatree",
@@ -70,6 +80,7 @@ def _answering_task(*, implies_work: bool = True) -> Task:
                 "intent": "instruction",
                 "work_summary": "detect the open-PR bottleneck",
                 "implies_work": implies_work,
+                **({"work_issue_url": work_issue_url} if work_issue_url else {}),
             }
         },
     )
@@ -82,13 +93,13 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        allow_forge_repos("souliane/teatree")
+        allow_github_repos("souliane/teatree")
         self.backend = RecordingBackend()
         self.host = RecordingHost()
         patches = (
             mock.patch("teatree.core.backend_factory.messaging_from_overlay", return_value=self.backend),
             mock.patch("teatree.core.backend_factory.code_host_from_overlay", return_value=self.host),
-            mock.patch("teatree.core.answering.work_item_filing.filing_repo", return_value="souliane/teatree"),
+            mock.patch("teatree.core.answering.work_item_filing.filing_repo", return_value=_REPO_A),
         )
         for patch in patches:
             patch.start()
@@ -98,6 +109,56 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         task = _answering_task()
         record_reactive_envelopes(task, result, phase="answering")
         return task
+
+    def test_the_request_uses_the_hosts_forge_when_the_overlay_names_none(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", [f"github:{_REPO_A}"])
+        with mock.patch(
+            "teatree.core.answering.work_item_filing.get_overlay",
+            return_value=SimpleNamespace(config=SimpleNamespace(code_host="")),
+        ):
+            self._record(
+                {
+                    "answer": {"text": "On it."},
+                    "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."},
+                }
+            )
+
+        assert len(self.host.created) == 1
+        assert self.host.created[0]["repo"] == _REPO_A
+        reply = self.backend.replies[0][2]
+        assert f"<https://github.com/{_REPO_A}/issues/7100|#7100>" in reply
+        assert "Could not file" not in reply
+
+    def test_an_unknown_host_forge_files_nothing_and_names_the_cause(self) -> None:
+        self.host.forge = ""
+        task = self._record(
+            {"answer": {"text": "On it."}, "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."}}
+        )
+
+        assert self.host.created == []
+        reply = self.backend.replies[0][2]
+        assert f"forge for {_REPO_A} could not be determined" in reply
+        assert "nothing was filed" in reply
+        assert "Tracking as" not in reply
+        assert list(Ticket.objects.values_list("pk", flat=True)) == [task.ticket_id]
+
+    def test_a_host_without_forge_keeps_the_reply_and_files_nothing(self) -> None:
+        host = mock.Mock(spec=["create_issue", "search_open_issues"])
+        host.search_open_issues.return_value = []
+        with mock.patch("teatree.core.backend_factory.code_host_from_overlay", return_value=host):
+            task = self._record(
+                {
+                    "answer": {"text": "On it."},
+                    "work_item": {"title": "Detect the bottleneck", "body": "Alert on stalls."},
+                }
+            )
+
+        host.create_issue.assert_not_called()
+        assert list(Ticket.objects.values_list("pk", flat=True)) == [task.ticket_id]
+        reply = self.backend.replies[0][2]
+        assert "On it." in reply
+        assert f"forge for {_REPO_A} could not be determined" in reply
+        assert "Tracking as" not in reply
 
     def test_the_request_is_filed_as_a_real_issue(self) -> None:
         self._record(
@@ -178,3 +239,184 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         assert "no code host provider is registered" in body, (
             f"the stated reason does not carry why the host could not be resolved: {body!r}"
         )
+
+
+def _pick_by_slug(*, title: str, body: str, candidates: tuple[str, ...]) -> str:
+    named = [slug for slug in candidates if slug in f"{title} {body}"]
+    if len(named) != 1:
+        msg = f"the item names {len(named)} of {', '.join(candidates)}; name exactly one"
+        raise WorkItemFilingError(msg)
+    return named[0]
+
+
+class _TwoRepoMetadata(OverlayMetadata):
+    """An overlay owning two repos; ``choose`` is its filing policy, ``None`` keeps the inherited default."""
+
+    def __init__(self, choose: Callable[..., str] | None) -> None:
+        self.choose = choose
+        self.repos = [_REPO_A, _REPO_B]
+        self.asked: list[str] = []
+
+    def get_followup_repos(self) -> list[str]:
+        return self.repos
+
+    def choose_filing_repo(self, *, title: str, body: str, candidates: tuple[str, ...]) -> str:
+        self.asked.append(title)
+        if self.choose is None:
+            return super().choose_filing_repo(title=title, body=body, candidates=candidates)
+        return self.choose(title=title, body=body, candidates=candidates)
+
+
+class TestAnOverlayChoosesTheRepoAWorkItemIsFiledIn(TestCase):
+    """The overlay's metadata hook picks among its owned repos from the item's own text (#5508)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        allow_github_repos(_REPO_A, _REPO_B)
+        self.backend = RecordingBackend()
+        self.host = RecordingHost()
+        self.metadata = _TwoRepoMetadata(_pick_by_slug)
+        overlay = SimpleNamespace(
+            config=SimpleNamespace(code_host="github"),
+            review=SimpleNamespace(merge_candidate_repo_slugs=list),
+            metadata=self.metadata,
+        )
+        patches = (
+            mock.patch("teatree.core.backend_factory.messaging_from_overlay", return_value=self.backend),
+            mock.patch("teatree.core.backend_factory.code_host_from_overlay", return_value=self.host),
+            mock.patch("teatree.core.answering.work_item_filing.get_overlay", return_value=overlay),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def _record(self, work_item: dict, *, work_issue_url: str = "") -> str:
+        task = _answering_task(work_issue_url=work_issue_url)
+        record_reactive_envelopes(task, {"answer": {"text": "On it."}, "work_item": work_item}, phase="answering")
+        return self.backend.replies[0][2]
+
+    def test_an_item_naming_the_second_repo_is_filed_there(self) -> None:
+        reply = self._record({"title": f"Document the flow in {_REPO_B}", "body": "Write it up."})
+
+        filed = f"https://github.com/{_REPO_B}/issues/7100"
+        assert [call["repo"] for call in self.host.created] == [_REPO_B]
+        assert Ticket.objects.get(issue_url=filed).is_admissible()
+        assert f"<{filed}|#7100>" in reply
+
+    def test_the_chooser_receives_the_title_and_body_in_order_when_only_the_body_names_a_repo(self) -> None:
+        title = "Document the follow-up flow"
+        body = f"Apply it to {_REPO_B}."
+        received: list[tuple[str, str]] = []
+
+        def choose(*, title: str, body: str, candidates: tuple[str, ...]) -> str:
+            received.append((title, body))
+            return _pick_by_slug(title=title, body=body, candidates=candidates)
+
+        self.metadata.choose = choose
+        self._record({"title": title, "body": body})
+
+        assert received == [(title, body)]
+        assert [call["repo"] for call in self.host.created] == [_REPO_B]
+
+    def test_the_recorder_looks_up_the_ticket_overlay_by_its_real_name(self) -> None:
+        requested: list[str] = []
+
+        def lookup(overlay: str, title: str, body: str) -> str:
+            requested.append(overlay)
+            assert overlay == "t3-teatree"
+            return _pick_by_slug(title=title, body=body, candidates=(_REPO_A, _REPO_B))
+
+        with mock.patch("teatree.core.answering.work_item_filing.filing_repo", side_effect=lookup):
+            self._record({"title": "Document the follow-up flow", "body": f"Apply it to {_REPO_B}."})
+
+        assert requested == ["t3-teatree"]
+        assert [call["repo"] for call in self.host.created] == [_REPO_B]
+
+    def test_the_dedupe_read_the_gated_writes_and_the_create_all_use_the_chosen_repo(self) -> None:
+        with mock.patch("teatree.core.answering.work_item_filing.route_forge_write", wraps=route_forge_write) as routed:
+            self._record({"title": f"Document the flow in {_REPO_B}", "body": "Write it up."})
+
+        assert self.host.searched == [_REPO_B]
+        assert [call.kwargs["repo"] for call in routed.call_args_list] == [_REPO_B, _REPO_B]
+        assert [call.kwargs["target"] for call in routed.call_args_list] == [_REPO_B, _REPO_B]
+        assert [call["repo"] for call in self.host.created] == [_REPO_B]
+
+    def test_an_item_naming_both_repos_is_refused_naming_the_candidates(self) -> None:
+        reply = self._record({"title": f"Sync {_REPO_A} with {_REPO_B}", "body": "Keep them aligned."})
+
+        assert "Could not file a tracking issue for this" in reply
+        assert _REPO_A in reply, reply
+        assert _REPO_B in reply, reply
+        assert self.host.created == []
+        assert self.host.searched == []
+
+    def test_an_overlay_without_the_override_files_in_its_first_repo(self) -> None:
+        self.metadata.choose = None
+
+        self._record({"title": f"Document the flow in {_REPO_B}", "body": "Write it up."})
+
+        assert [call["repo"] for call in self.host.created] == [_REPO_A]
+
+    def _assert_hook_stays_quiet(self, work_item: dict, *, work_issue_url: str = "") -> None:
+        reply = self._record(work_item, work_issue_url=work_issue_url)
+
+        assert self.metadata.asked == []
+        assert "Could not file" not in reply, reply
+
+    def test_the_hook_is_not_asked_when_the_item_names_an_existing_issue(self) -> None:
+        self.metadata.repos = []
+        url = f"https://github.com/{_REPO_A}/issues/4526"
+        self._assert_hook_stays_quiet({"existing_issue_url": url})
+        assert f"<{url}|#4526>" in self.backend.replies[0][2]
+        assert self.host.created == []
+
+    def test_the_hook_is_not_asked_when_the_item_declares_no_work(self) -> None:
+        self._assert_hook_stays_quiet({"no_work_reason": "answered from recorded state"})
+
+    def test_the_hook_is_not_asked_when_the_request_is_already_tracked(self) -> None:
+        self.metadata.repos = []
+        url = f"https://github.com/{_REPO_A}/issues/4242"
+        self._assert_hook_stays_quiet(
+            {"title": f"Sync {_REPO_A} with {_REPO_B}", "body": "b"},
+            work_issue_url=url,
+        )
+        assert f"<{url}|#4242>" in self.backend.replies[0][2]
+        assert self.host.created == []
+
+    def test_a_hook_naming_an_undeclared_repo_is_refused(self) -> None:
+        self.metadata.choose = lambda **_: "someone/else"
+
+        reply = self._record({"title": "Anything", "body": "b"})
+
+        assert "Could not file a tracking issue for this" in reply
+        assert "someone/else" in reply, reply
+        assert _REPO_A in reply, reply
+        assert _REPO_B in reply, reply
+        assert self.host.created == []
+
+    def test_a_hook_that_crashes_is_stated_in_the_thread_and_never_destroys_the_answer(self) -> None:
+        def crash(**_: object) -> str:
+            missing = "repo-map"
+            raise KeyError(missing)
+
+        self.metadata.choose = crash
+
+        reply = self._record({"title": "Anything", "body": "b"})
+
+        assert "Could not file a tracking issue for this" in reply
+        assert "repo-map" in reply, reply
+        assert self.host.created == []
+
+    def test_an_overlay_owning_no_repo_states_it_only_when_a_new_issue_is_due(self) -> None:
+        self.metadata.repos = []
+
+        reply = self._record({"title": "Anything", "body": "b"})
+
+        assert "Could not file a tracking issue for this" in reply
+        assert "declares no repos" in reply, reply
+        assert self.host.created == []
+
+    def test_an_overlay_owning_no_repo_still_accepts_a_declared_no_work_reply(self) -> None:
+        self.metadata.repos = []
+
+        self._assert_hook_stays_quiet({"no_work_reason": "answered from recorded state"})

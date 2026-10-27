@@ -126,18 +126,19 @@ class TestDefaultOverlayValidation:
         data = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
         assert handle_validate_mr_metadata(data) is False
 
-    def test_fails_closed_when_t3_not_on_path(self, monkeypatch, capsys):
+    def test_fails_closed_when_t3_not_on_path(self, monkeypatch, capsys, tmp_path):
         # No validator resolvable -> the gate FAILS CLOSED (deny), not open:
         # a non-compliant title must never reach GitLab just because the env
         # could not validate it. The escape hatch is the explicit env var.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: None)
+        monkeypatch.setenv("PATH", str(tmp_path))
         blocked = handle_validate_mr_metadata(_glab_create("bad", "bad"))
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
         assert "validate" in out["permissionDecisionReason"].lower()
+        assert "teatree app" in out["permissionDecisionReason"]
 
     def test_broken_env_escape_hatch_fails_open(self, monkeypatch):
         # The deliberate self-rescue opt-in: when the operator sets

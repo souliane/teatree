@@ -22,7 +22,9 @@ RUNTIME_SERVICES = (*ROLES, "teatree-watchdog")
 SOURCE_TARGET = "/home/teatree/teatree"
 UV_VOLUME_TARGET = "/opt/teatree/uv"
 BAKED_ENTRYPOINT = ["/usr/local/bin/entrypoint.sh"]
-CHECKOUT_ENTRYPOINT_TARGET = str(Path(SOURCE_TARGET).parent / "teatree-deploy/deploy/entrypoint.sh")
+CHECKOUT_SCRIPT_TARGETS = {
+    str(Path(SOURCE_TARGET).parent / "teatree-deploy/deploy" / name) for name in ("entrypoint.sh", "git-pins.sh")
+}
 BASH = shutil.which("bash") or ""
 
 
@@ -135,7 +137,7 @@ class TestTheRenderedGenerationStack:
             assert SOURCE_TARGET not in targets, name
             assert UV_VOLUME_TARGET not in targets, name
             if name == "teatree-webhooks":
-                assert CHECKOUT_ENTRYPOINT_TARGET not in targets
+                assert CHECKOUT_SCRIPT_TARGETS.isdisjoint(targets)
             assert services[name]["entrypoint"] == BAKED_ENTRYPOINT, name
             assert "build" not in services[name], name
             assert "TEATREE_CLONE_DIR" not in services[name]["environment"], name
@@ -148,7 +150,7 @@ class TestTheRenderedGenerationStack:
         for name in ROLES:
             kept = [t for t in _rendered_targets(base[name]) if t not in {SOURCE_TARGET, UV_VOLUME_TARGET}]
             if name == "teatree-webhooks":
-                kept.remove(CHECKOUT_ENTRYPOINT_TARGET)
+                kept = [target for target in kept if target not in CHECKOUT_SCRIPT_TARGETS]
             assert _rendered_targets(generation[name]) == kept, name
 
     def test_host_identity_still_merges_on_top_of_the_override(self, tmp_path: Path) -> None:

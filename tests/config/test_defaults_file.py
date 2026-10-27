@@ -175,6 +175,7 @@ class TestSafetyAndDarkFlagsPinned:
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
+        "user_identity_aliases": [],
         "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
         "eval_ci_account_allowlist": [],
@@ -197,6 +198,7 @@ class TestSafetyAndDarkFlagsPinned:
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
+        "user_identity_aliases": [],
         "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
         "eval_ci_account_allowlist": [],
@@ -209,7 +211,11 @@ class TestSafetyAndDarkFlagsPinned:
 
     @pytest.mark.parametrize("key", sorted(_PINNED))
     def test_shipped_default_matches_pinned_literal(self, key: str) -> None:
-        assert _toml_teatree()[key] == self._PINNED[key]
+        if setting_meta(key).category is Category.DEFAULT:
+            actual = _toml_teatree()[key]
+        else:
+            actual = TeatreeSettingsSchema.model_fields[key].get_default()
+        assert actual == self._PINNED[key]
 
     def test_every_dark_flag_is_pinned_to_its_own_off_value(self) -> None:
         # A dark flag's literal is not free-form: it must equal the flag's declared

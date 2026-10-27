@@ -90,6 +90,8 @@ Run this **before** the cleanup checklist. Resolve any conflicts the same way yo
 
 **Cold-review checkout — fetch the exact pushed head, never `git worktree add <branch>` (Non-Negotiable).** A cold-review sub-agent reviewing a PR on a fresh checkout must NOT run `git worktree add <dir> origin/<branch>` (or the local-branch form). When that branch is already checked out in another worktree on the same machine, `worktree add` fails and the agent silently falls back to a pre-existing (stale) checkout — reviewing a tree one commit behind the pushed head and producing a spurious CHANGES_NEEDED (souliane/teatree#2132). Use the verify-or-fail helper `teatree.utils.review_checkout.add_review_worktree_at_head(repo, ref=<branch>, expected_sha=<pr-head-sha>)`: it fetches the ref into a guaranteed-unique temp dir, checks it out with `git worktree add --detach <dir> FETCH_HEAD` (cannot collide with a branch worktree), and asserts the materialised HEAD equals the PR head SHA — hard-failing with `StaleReviewCheckoutError` rather than ever falling back to a stale tree. Remove the returned worktree with `teatree.utils.git.worktree_remove` when the review is done.
 
+On a wrong checkout, return `review_head_mismatch` (`observed_sha`, `reason`) with no verdict or owner question. The factory retries once at the live head, then records a card.
+
 **Run the affected tests through `t3`, in the checkout — never a hand-rolled runner (Non-Negotiable).** A fresh review checkout is bare (no `uv sync`, no `.venv`), so the test run is the step where a reviewer is most tempted to improvise. `t3 <overlay> run tests` provisions the checkout first (`runtime.pre_run_steps`), spawns in the worktree it resolved, and prints the argv + cwd it used so the run is reconstructible later; a genuinely unspawnable runner names `t3 <overlay> worktree provision --path <dir>` instead of reporting a bare `Failed to spawn` (souliane/teatree#4746). The `checkout` command emits the exact invocation as its `run_tests` key.
 
 ```bash
@@ -324,18 +326,15 @@ Pinned by `review_reaction_dedups_existing_reactor` (`evals/scenarios/review.yam
 
 #### The review-DONE Slack signal is `mcp__teatree__slack_react`, or `t3 slack react` with three positional arguments
 
-A finished review emits its verdict on the MR's review-broadcast message as a Slack reaction. Prefer the
-`mcp__teatree__slack_react` MCP tool — same seam, structured result; when the MCP server isn't connected there is
-exactly one CLI command for it and it takes **positional** `channel`, `ts`, and `emoji` — no `--emoji` flag,
-and no reaction subcommand under `t3 review` (there is none; do not invent one), and the emoji name
-carries **no colons**:
+React on the MR's review-broadcast message with `mcp__teatree__slack_react`, or use the CLI below when
+MCP is unavailable. Its arguments are positional; there is no `--emoji` flag or `t3 review` reaction
+subcommand. Use the emoji name without colons:
 
 ```bash
 t3 slack react <channel> <ts> <emoji>          # e.g. t3 slack react C_REVIEW 171.5 white_check_mark
 ```
 
-The verdict → emoji mapping is the one `teatree.loop.review_done_reactions.emit_review_done_reactions`
-posts, so a hand-issued reaction matches what the loop would have emitted:
+`emit_review_done_reactions` uses this mapping only on colleagues' MRs; the operator's own gets none:
 
 | verdict | emoji argument |
 | --- | --- |

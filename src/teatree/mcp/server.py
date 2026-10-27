@@ -26,7 +26,7 @@ registers: a phase's deliverable tool or, for planning, reviewing and critic_rev
 the three peer-mailbox tools. Other read-only phases retain only mailbox self and peers.
 
 The live agent mailbox is a separate, addressed communication surface, present
-only when the runner binds this MCP child to a running TeaTree task.
+when the runner binds a task or an operator-authenticated attended child joins a worker.
 
 A registered overlay contributes its own tools through
 ``overlay.connectors.mcp_tool_group()``, which hands over an
@@ -46,6 +46,7 @@ from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
 from mcp.types import Icon, ToolAnnotations
 
+from teatree.agents.live_mailbox_client import MailboxClient as NeutralMailboxClient
 from teatree.backends.types import Service
 from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
@@ -431,14 +432,15 @@ async def _task_list(
     )
 
 
-async def _question_list(*, limit: int = 50) -> list[dict[str, Any]]:
-    """Pending DeferredQuestion rows — the backlog awaiting the user's answer.
+async def _question_list(*, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    """Pending owner questions — the backlog awaiting the user's answer.
 
-    The read counterpart to the ``question_answer`` write tool. Returns each
-    pending question's id, text, raw options, originating session, and Slack
-    ``ts`` / ``channel`` (when mirrored), newest first.
+    Owner-audience rows only: the internal rows ``question_answer`` can settle are not listed
+    here (``t3 <overlay> questions list`` shows them). Returns each pending question's id,
+    decision, owner-only flag, text, raw options, originating session, and Slack destination,
+    oldest first. Page with ``offset``.
     """
-    return await sync_to_async(introspection.question_list, thread_sensitive=True)(limit=limit)
+    return await sync_to_async(introspection.question_list, thread_sensitive=True)(limit=limit, offset=offset)
 
 
 async def _config_setting_get(key: str, *, overlay: str | None = None) -> dict[str, Any]:
@@ -490,7 +492,12 @@ _READ_TOOLS: dict[str, Callable[..., Awaitable[Any]]] = {
 }
 
 
-def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = frozenset()) -> MCPServer:
+def build_server(
+    *,
+    read_only: bool = False,
+    allowed_writes: frozenset[str] = frozenset(),
+    mailbox_client: NeutralMailboxClient | None = None,
+) -> MCPServer:
     """Assemble a fresh stdio MCP server with the read + gate-preserving write tools.
 
     Returns a new instance on every call (no import-time global) so tests can
@@ -501,13 +508,14 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)
+    mailbox_client = mailbox_client or agent_mailbox.MailboxClient.from_env()
 
     instructions = (
         _PREAMBLE
         + (
             "\n\nLive agent mailbox (busy peers receive now; idle Claude peers can wake within their window):\n"
             + agent_mailbox.INSTRUCTIONS
-            if agent_mailbox.MailboxClient.from_env() is not None
+            if mailbox_client is not None
             else ""
         )
         + "".join(f"\n\nOverlay tools ({name}):\n{group.instructions}" for name, group in overlay_groups)
@@ -523,7 +531,7 @@ def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = fr
         if service in declared:
             register_group(server)
     write_tools.register(server)
-    agent_mailbox.register(server)
+    agent_mailbox.register(server, client=mailbox_client)
     # Last, and tool by tool rather than through a registrar the overlay owns:
     # the server is what puts a contributed tool on the surface, so a name it has
     # already given out is refused here rather than silently discarded by mcp.

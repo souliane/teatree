@@ -6,6 +6,7 @@ status reads (lenient and fail-closed) and the data-loss-guard diff capture
 """
 
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 from teatree.utils.git_run import git_env_without_overrides, run, run_strict, run_strict_verbatim
@@ -47,14 +48,14 @@ def status_porcelain_z_strict(repo: str = ".") -> str:
     return run_strict_verbatim(repo=repo, args=["status", "--porcelain", "-z"])
 
 
-def full_worktree_diff(repo: str, base: str = "HEAD") -> str:
+def full_worktree_diff(repo: str, base: str = "HEAD", *, also: Sequence[str] = ()) -> str:
     """Return a single patch covering staged, unstaged, AND untracked changes.
 
     ``git diff HEAD`` alone omits untracked files. Marking them intent-to-add
     (``git add -N``) makes them appear in the diff as new-file hunks (without
     staging their content), so a single ``git apply`` of the returned patch
-    restores edits and brand-new files alike. ``.gitignore`` is still honoured,
-    so ignored trees stay out of the patch.
+    restores edits and brand-new files alike. Ignored paths stay out unless the
+    caller names them in ``also`` for a salvage bundle.
 
     Those marks land in a THROWAWAY index (``GIT_INDEX_FILE`` under a scratch
     dir), never ``repo``'s own: the salvage capture (#4435) runs against
@@ -79,6 +80,8 @@ def full_worktree_diff(repo: str, base: str = "HEAD") -> str:
         env = git_env_without_overrides() | {"GIT_INDEX_FILE": str(Path(scratch) / "index")}
         run_checked(["git", "-C", repo, "read-tree", base], env=env)
         run_checked(["git", "-C", repo, "add", "-A", "-N"], env=env)
+        if also:
+            run_checked(["git", "-C", repo, "add", "-N", "-f", "--", *also], env=env)
         result = run_checked(
             ["git", "-C", repo, "diff", base, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
             env=env,

@@ -61,7 +61,7 @@ _FALLBACK_PATTERNS = (
     re.compile(r"\b(?:auth(?:entication|orization)?|credential|quota|rate.?limit|token outage)\b", re.IGNORECASE),
     re.compile(r"\b(?:model access|access denied|not entitled|not available)\b", re.IGNORECASE),
     re.compile(r"\b(?:connection|transport|network|timed? out|timeout|temporarily unavailable)\b", re.IGNORECASE),
-    re.compile(r"\b(?:spawn|process|could not start|failed to start|enoent)\b", re.IGNORECASE),
+    re.compile(r"\b(?:could not start|failed to start|enoent)\b", re.IGNORECASE),
 )
 
 _STICKY_PATTERN = re.compile(

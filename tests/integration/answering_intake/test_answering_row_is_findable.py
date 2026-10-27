@@ -26,7 +26,7 @@ from teatree.core.models import DmContext, PendingChatInjection, Task, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
-from tests._send_gate import allow_forge_repos
+from tests._send_gate import allow_github_repos
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("configured_banned_term_registry")]
@@ -34,7 +34,7 @@ pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("configured_banned_
 
 @pytest.fixture(autouse=True)
 def _installation_send_gate(db: None) -> None:
-    allow_forge_repos(_REPO)
+    allow_github_repos(_REPO)
 
 
 _CHANNEL = "D-owner"
@@ -48,6 +48,7 @@ class FakeSlack:
 
     replies: list[tuple[str, str, str]] = field(default_factory=list)
     reactions: list[str] = field(default_factory=list)
+    user_id: str = "U-owner"
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         self.replies.append((channel, ts, text))
@@ -72,6 +73,7 @@ class FakeForge:
     """Code host that files the owner's request and remembers the labels it carried."""
 
     created: list[dict] = field(default_factory=list)
+    forge: str = "github"
 
     def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> RawAPIDict:
         self.created.append({"repo": repo, "title": title, "body": body, "labels": list(labels or [])})

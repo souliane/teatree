@@ -20,7 +20,7 @@ from teatree.core.models.sweep_skip_streak import (
     SkipDisposition,
     disposition_for,
 )
-from teatree.loop.scanners import pr_sweep, pr_sweep_decision
+from teatree.loop.scanners import pr_sweep, pr_sweep_decision, pr_sweep_ticket_gate
 
 
 def _observe(
@@ -338,11 +338,12 @@ class TestLink(django.test.SimpleTestCase):
 
 
 def _scanner_skip_reasons() -> set[str]:
-    """Every skip reason ``pr_sweep`` itself can emit, read from its own source."""
+    """Every skip reason ``pr_sweep`` and its precondition gate can emit, read from their own source."""
     tree = ast.parse(pathlib.Path(pr_sweep.__file__).read_text(encoding="utf-8"))
+    gate = ast.parse(pathlib.Path(pr_sweep_ticket_gate.__file__).read_text(encoding="utf-8"))
     reasons: set[str] = set()
     for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
-        if not (isinstance(call.func, ast.Name) and call.func.id == "_skip"):
+        if not (isinstance(call.func, ast.Name) and call.func.id == "skip_attempt"):
             continue
         reasons |= {
             kw.value.value
@@ -350,7 +351,7 @@ def _scanner_skip_reasons() -> set[str]:
             if kw.arg == "reason" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str)
         }
     precondition = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_precondition_skip_reason"
+        node for node in gate.body if isinstance(node, ast.FunctionDef) and node.name == "precondition_skip_reason"
     )
     for returned in (node.value for node in ast.walk(precondition) if isinstance(node, ast.Return)):
         branches = [returned.body, returned.orelse] if isinstance(returned, ast.IfExp) else [returned]

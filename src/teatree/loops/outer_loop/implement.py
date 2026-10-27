@@ -8,6 +8,9 @@ critic therefore supervises every experiment merge for free (the ``mark_delivere
 FSM condition); the outer loop gains ZERO new merge authority.
 """
 
+import logging
+
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.models import OuterLoopExperiment
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -15,12 +18,13 @@ from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL
 
 #: The standing umbrella issue every outer-loop experiment's synthetic ticket
 #: anchors under; the ``#outer-loop-experiment=<pk>`` fragment makes each unique
-#: while still resolving the ``souliane/teatree`` overlay via ``infer_overlay_for_url``.
+#: while retaining its work's overlay independently of the umbrella URL.
 #: Single-sourced from the ONE umbrella anchor the task sweep recognises (#3706).
 OUTER_LOOP_UMBRELLA_URL = SYNTHETIC_LOOP_UMBRELLA_URL
 
 _EXPERIMENT_KEY = "outer_loop_experiment_id"
 _TARGET_KEY = "outer_loop_target"
+logger = logging.getLogger(__name__)
 
 
 def _experiment_issue_url(experiment: OuterLoopExperiment, *, umbrella_url: str) -> str:
@@ -39,9 +43,16 @@ def schedule_experiment_fix(
     (``None`` once the ticket has left NOT_STARTED or already carries a coding task).
     """
     issue_url = _experiment_issue_url(experiment, umbrella_url=umbrella_url)
+    if reason := open_pr_start_cap_hold_reason():
+        logger.warning("outer loop is claiming nothing new: %s", reason)
+        return None
     ticket, _ = Ticket.objects.get_or_create(
         issue_url=issue_url,
-        defaults={"role": Ticket.Role.AUTHOR, "short_description": experiment.hypothesis.strip()[:80]},
+        defaults={
+            "role": Ticket.Role.AUTHOR,
+            "short_description": experiment.hypothesis.strip()[:80],
+            "overlay": lambda: Ticket.creation_overlay(experiment.overlay),
+        },
     )
     ticket.merge_extra(set_keys={_EXPERIMENT_KEY: experiment.pk, _TARGET_KEY: experiment.target_provider_id})
     task: Task | None = None
