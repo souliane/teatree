@@ -28,6 +28,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.config import UserSettings
+from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
+from teatree.core.models import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -78,6 +80,15 @@ def _backdate_task(task: Task, *, hours: int) -> None:
 
 
 class BacklogSweepScannerTests(TestCase):
+    def test_open_pr_cap_holds_a_new_sweep(self) -> None:
+        for index in range(OPEN_PR_START_CAP):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 700}",
+            )
+        assert _scanner().scan() == []
+        assert _last_sweep_task() is None
+
     def test_no_prior_run_queues_task(self) -> None:
         """First-ever run queues exactly one task (bootstrap trigger)."""
         signals = _scanner().scan()
@@ -421,6 +432,27 @@ class DreamGapLedgerTriggerTests(TestCase):
         assert "3a9f11" in task.execution_reason
         assert "77c1aa" in task.execution_reason
         assert "ticket attach-gaps" in task.execution_reason
+
+    def test_offered_window_rotates_before_reoffering_old_gaps(self) -> None:
+        umbrella = _umbrella_with_pending(*(f"g{i:02}" for i in range(14)))
+        scanner = self._gap_scanner()
+
+        scanner.scan_dream_gaps()
+        first = _last_sweep_task()
+        assert first is not None
+        assert "g00" in first.execution_reason
+        assert "g11" in first.execution_reason
+        assert "g12" not in first.execution_reason
+        assert "2 more" in first.execution_reason
+        umbrella.refresh_from_db()
+        assert sum(bool(item.get("offered_at")) for item in umbrella.extra["dream_gap_pending"]) == 12
+
+        Task.objects.filter(pk=first.pk).update(status=Task.Status.COMPLETED)
+        scanner.scan_dream_gaps()
+        second = _last_sweep_task()
+        assert second is not None
+        assert "g12" in second.execution_reason
+        assert "g13" in second.execution_reason
 
     def test_an_in_flight_sweep_is_the_lock(self) -> None:
         _umbrella_with_pending("3a9f11")

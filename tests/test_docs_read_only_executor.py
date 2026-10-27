@@ -28,6 +28,9 @@ def test_the_codex_doc_describes_the_executor_by_its_code_names() -> None:
     assert EXECUTOR_SERVICE in section
     assert EXECUTOR_LOGIN_ENTRY in section
     assert all(f"`{phase}`" in section for phase in EXECUTOR_PHASES)
+    assert "--disable plugins app-server" in section
+    assert "256 KiB" in section
+    assert "worker Codex source clone's `.git`" in section
 
 
 def test_the_blueprint_names_the_live_probe_hook_and_the_executor_login() -> None:
@@ -35,6 +38,7 @@ def test_the_blueprint_names_the_live_probe_hook_and_the_executor_login() -> Non
 
     assert "read_only_executor_refusal" in text
     assert EXECUTOR_LOGIN_ENTRY in text
+    assert "worker Codex source clone's `.git`" in text
 
 
 def test_the_deploy_security_posture_keeps_the_secrets_file_out_of_reach() -> None:

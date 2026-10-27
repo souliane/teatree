@@ -16,7 +16,16 @@ from teatree.agents.dispatch_preflight import (
     rubric_brief_lines,
 )
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
-from teatree.core.models import AutoReviewDispatch, PullRequest, Session, Task, Ticket, Worktree
+from teatree.core.models import (
+    AutoReviewDispatch,
+    PullRequest,
+    RedMrFixAttempt,
+    ReviewVerdict,
+    Session,
+    Task,
+    Ticket,
+    Worktree,
+)
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 from tests._git_repo import make_git_repo, run_git
@@ -62,6 +71,37 @@ class TestResolveHeadState(TestCase):
 
 
 class TestHeadStateBriefLines(TestCase):
+    def test_review_findings_debug_brief_inlines_every_standing_hold(self) -> None:
+        pr_url = "https://github.com/example/repo/pull/8"
+        head = "a" * 40
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/7")
+        PullRequest.objects.create(ticket=ticket, url=pr_url, repo="example/repo", iid="8")
+        RedMrFixAttempt.objects.create(pr_url=pr_url, head_sha=head, kind=RedMrFixAttempt.Kind.REVIEW_FINDINGS)
+        for reviewer, summary in (("cold-reviewer-one", "first blocker"), ("cold-reviewer-two", "second blocker")):
+            ReviewVerdict.objects.create(
+                ticket=ticket,
+                slug="example/repo",
+                pr_id=8,
+                reviewed_sha=head,
+                verdict=ReviewVerdict.Verdict.HOLD,
+                reviewer_identity=reviewer,
+                reviewer_identity_normalized=reviewer,
+                blast_class="logic",
+                gh_verify_result="green",
+                findings=[{"severity": "major", "kind": "blocking", "summary": summary, "file": "src/f.py", "line": 3}],
+            )
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="debugging",
+            execution_reason=f"Auto-scheduled review-findings fix — {pr_url}",
+        )
+
+        block = "\n".join(round_brief_lines(task))
+
+        assert "first blocker" in block
+        assert "second blocker" in block
+
     def test_coding_round_names_standard_and_missing_measured_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = _worktree_with_commit(Path(tmp), subject="fix: prior round")
@@ -218,6 +258,10 @@ class TestRubricBriefLines(TestCase):
         assert f"TICKET RUBRIC (ticket {ticket.pk})" in block
         for ordinal, text in enumerate(_RUBRIC_AC):
             assert f"#{ordinal} {text}" in block
+        header = next(line for line in block.splitlines() if line.startswith("TICKET RUBRIC"))
+        assert '"text_hash": "<hash>"' in header
+        for criterion in ticket.rubrics.get().criteria.all():
+            assert f"[text_hash {criterion.text_hash}]" in block
 
     def test_a_pr_no_ticket_owns_carries_no_block(self) -> None:
         assert rubric_brief_lines(_reviewing_task_for_pr()) == ()
@@ -289,7 +333,7 @@ class TestBranchCurrencyBriefLines(TestCase):
             assert "git merge --no-edit origin/main" in brief
             assert "NEVER rebase" in brief
 
-    def test_behind_but_clean_prescribes_merging_before_gating(self) -> None:
+    def test_behind_but_clean_prescribes_no_merge_because_it_only_moves_the_head(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bare, clone = _remote_and_clone(root)
@@ -299,6 +343,8 @@ class TestBranchCurrencyBriefLines(TestCase):
             brief = "\n".join(branch_currency_brief_lines(_currency_task(clone, issue="https://e.test/i/2")))
 
             assert "1 commit(s) behind origin/main and merges clean." in brief
+            assert "No merge needed" in brief
+            assert "git merge" not in brief
             assert "CONFLICTS" not in brief
 
     def test_current_branch_states_the_check_ran(self) -> None:

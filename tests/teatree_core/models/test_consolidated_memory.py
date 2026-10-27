@@ -288,6 +288,43 @@ class TestSupersedeCoveredBy(TestCase):
         assert narrow.status == ConsolidatedMemory.Status.SUPERSEDED
         assert narrow.superseded_by_id == wide.pk
 
+    def test_new_nested_row_is_absorbed_by_older_routed_row_without_union(self) -> None:
+        routed = self._row("routed", ["a.jsonl"])
+        routed.classify_core_gap()
+        routed.mark_ticketed("https://github.com/souliane/teatree/issues/1")
+        new = self._row("new", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == [new]
+        new.refresh_from_db()
+        routed.refresh_from_db()
+        assert new.status == ConsolidatedMemory.Status.SUPERSEDED
+        assert new.superseded_by_id == routed.pk
+        assert routed.member_paths == frozenset({"a.jsonl"})
+        assert not ConsolidatedMemory.objects.untriaged().filter(pk=new.pk).exists()
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == []
+
+    def test_routed_superset_absorbs_new_subset(self) -> None:
+        routed = self._row("routed", ["a.jsonl", "b.jsonl"])
+        routed.classify_core_gap()
+        new = self._row("new", ["a.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == [new]
+        new.refresh_from_db()
+        assert new.superseded_by_id == routed.pk
+
+    def test_retired_or_binding_routed_row_does_not_absorb(self) -> None:
+        retired = self._row("retired", ["a.jsonl"])
+        retired.classify_core_gap()
+        retired.status = ConsolidatedMemory.Status.EXPIRED
+        retired.save(update_fields=["status"])
+        binding = self._row("binding", ["c.jsonl"], is_binding=True)
+        binding.classify_core_gap()
+        new = self._row("new", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == []
+        new.refresh_from_db()
+        assert new.status == ConsolidatedMemory.Status.VERIFIED
+
     def test_a_partial_overlap_supersedes_nothing(self) -> None:
         other = self._row("overlap", ["a.jsonl", "c.jsonl"])
         wide = self._row("wide", ["a.jsonl", "b.jsonl"])
@@ -295,6 +332,42 @@ class TestSupersedeCoveredBy(TestCase):
         assert ConsolidatedMemory.objects.supersede_covered_by(wide) == []
         other.refresh_from_db()
         assert other.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_partly_overlapping_new_row_is_not_absorbed_by_routed_row(self) -> None:
+        routed = self._row("routed", ["a.jsonl", "c.jsonl"])
+        routed.classify_core_gap()
+        new = self._row("new", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == []
+        new.refresh_from_db()
+        assert new.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_binding_new_row_is_not_absorbed_by_routed_row(self) -> None:
+        routed = self._row("routed", ["a.jsonl"])
+        routed.classify_core_gap()
+        binding = self._row("binding-new", ["a.jsonl", "b.jsonl"], is_binding=True)
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(binding) == []
+        binding.refresh_from_db()
+        assert binding.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_binding_routed_row_cannot_absorb_nested_new_row(self) -> None:
+        routed = self._row("binding-routed", ["a.jsonl"], is_binding=True)
+        routed.classify_core_gap()
+        new = self._row("new", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == []
+        new.refresh_from_db()
+        assert new.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_a_routed_row_created_later_cannot_absorb_older_new_row(self) -> None:
+        new = self._row("new", ["a.jsonl", "b.jsonl"])
+        routed = self._row("routed", ["a.jsonl"])
+        routed.classify_core_gap()
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(new) == []
+        new.refresh_from_db()
+        assert new.status == ConsolidatedMemory.Status.VERIFIED
 
     def test_a_binding_row_is_never_superseded(self) -> None:
         binding = self._row("binding", ["a.jsonl"], is_binding=True)

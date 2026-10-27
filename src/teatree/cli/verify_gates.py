@@ -34,17 +34,25 @@ a clean main clone on its default branch is refused, and a green run names the
 CI jobs no local hook covers so exit 0 cannot be read as "CI will be green".
 """
 
+import json
+import os
 import shutil
+import sqlite3
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import typer
 import yaml
 
 from teatree.core.invocation_cwd import invocation_cwd
+from teatree.hooks.banned_term_registry import load_registry
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
+from teatree.paths import ControlDb, canonical_db_in
 from teatree.quality.changed_set import ChangedSetError, changed_paths
 from teatree.quality.gate_receipt import write_gate_receipt
+from teatree.sqlite_snapshot import _sqlite_snapshot
 from teatree.utils.git_branch import current_branch, head_sha
 from teatree.utils.git_remote_ops import config_value
 from teatree.utils.git_run import run, run_strict
@@ -273,18 +281,62 @@ def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[t
     return [*stages, ("manual (CI-job hooks)", manual)]
 
 
-def _run_stages(stages: list[tuple[str, list[str]]], repo: Path) -> tuple[list[str], list[str]]:
+def _run_stages(stages: list[tuple[str, list[str]]], repo: Path, env: dict[str, str]) -> tuple[list[str], list[str]]:
     failed: list[str] = []
     incomplete: list[str] = []
     for label, cmd in stages:
         typer.echo(f"== verify-gates: {label} ==", err=True)
         # ``check=False`` inherits stdio and lets us collect both stage results.
-        result = run_streamed(cmd, check=False, cwd=repo)
+        result = run_streamed(cmd, check=False, cwd=repo, env=env)
         if result in {124, 137}:
             incomplete.append(label)
         elif result != 0:
             failed.append(label)
     return failed, incomplete
+
+
+def _stage_env(private_root: str) -> dict[str, str]:
+    env = os.environ.copy()
+    if not env.get("TEATREE_TERM_REGISTRY"):
+        try:
+            registry = load_registry()
+        except (BannedTermsUnreadableError, BannedTermsUnsetError):
+            registry = None
+        if registry is not None:
+            env["TEATREE_TERM_REGISTRY"] = json.dumps(registry)
+    env.pop("T3_CONFIG_DB", None)
+    env.pop("DATABASE_URL", None)
+    env["XDG_DATA_HOME"] = private_root
+    env["T3_CONTROL_DB_DIR"] = str(Path(private_root) / "control-db")
+    return env
+
+
+def _snapshot_control_db(repo: Path, env: dict[str, str]) -> None:
+    control = ControlDb(os.environ)
+    source = control.for_repo(repo).path
+    if not source.is_file() and not os.environ.get("T3_CONFIG_DB"):
+        source = canonical_db_in(control.primary_data_dir(), env=os.environ, home=Path.home())
+    if not source.is_file():
+        raise FileNotFoundError(source)
+
+    destination = ControlDb(env).for_repo(repo).path
+    if source.resolve() == destination.resolve():
+        reason = "source and destination are identical"
+        raise OSError(reason)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _sqlite_snapshot(source, destination)
+
+
+def _run_with_private_control_db(repo: Path, stages: list[tuple[str, list[str]]]) -> tuple[list[str], list[str]]:
+    with TemporaryDirectory(prefix="t3-verify-gates-") as private_root:
+        env = _stage_env(private_root)
+        try:
+            _snapshot_control_db(repo, env)
+        except (OSError, sqlite3.DatabaseError) as exc:
+            _record(repo, "incomplete", f"private control database unavailable: {exc}")
+            typer.echo(f"verify-gates: INCOMPLETE — private control database unavailable: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        return _run_stages(stages, repo, env)
 
 
 def verify_gates(
@@ -360,7 +412,7 @@ def verify_gates(
     scope_args, scope_reason = _scope_args(repo)
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
     stages = _stage_commands(scope_args, repo, tree.toplevel)
-    failed, incomplete = _run_stages(stages, repo)
+    failed, incomplete = _run_with_private_control_db(repo, stages)
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):

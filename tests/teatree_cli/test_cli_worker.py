@@ -299,6 +299,86 @@ class TestWorkerStatusShowsTheDeployDrain(django.test.TestCase):
         assert "deploy drain:" not in self._status()
 
 
+def test_database_lock_blocks_ensure_across_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    database = tmp_path / "control" / "db.sqlite3"
+    home = tmp_path / "other-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(database.parent))
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path / "host-lock")
+    db_lock = database.with_name(f"{database.name}.worker.pid")
+    with (
+        singleton_mod.singleton(singleton_mod.WORKER_SINGLETON, pid_path=db_lock),
+        mock.patch("teatree.utils.worker_spawn.spawn_detached_worker") as spawn,
+        mock.patch(
+            "teatree.loop.worker_lifecycle.wait_for_new_holder",
+            return_value=StartReport(started=False, holder_pid=None, waited_seconds=0.0),
+        ) as wait,
+    ):
+        result = runner.invoke(worker_app, ["ensure", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["action"] == "already-running"
+    spawn.assert_not_called()
+    wait.assert_not_called()
+
+
+def test_worker_run_refuses_pytest_home_with_external_control_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "pytest-of-test" / "pytest-1" / "home"))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", "/var/lib/teatree/control-db")
+    with mock.patch("teatree.utils.django_bootstrap.ensure_django", side_effect=AssertionError("DB opened")):
+        result = runner.invoke(worker_app, ["run"])
+    assert result.exit_code != 0
+    assert "pytest HOME" in str(result.exception)
+
+
+@pytest.mark.parametrize(
+    ("control_dir", "config_db"),
+    [
+        ("external", "internal"),
+        ("default", "unset"),
+        ("internal", "external"),
+    ],
+)
+def test_worker_run_checks_every_control_database_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, control_dir: str, config_db: str
+) -> None:
+    pytest_root = tmp_path / "pytest-of-test"
+    home = pytest_root / "pytest-1" / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    if control_dir == "default":
+        monkeypatch.delenv("T3_CONTROL_DB_DIR", raising=False)
+    else:
+        directory = pytest_root / "control" if control_dir == "internal" else Path("/var/lib/teatree/control-db")
+        monkeypatch.setenv("T3_CONTROL_DB_DIR", str(directory))
+    if config_db == "unset":
+        monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    else:
+        database = (
+            pytest_root / "config.sqlite3" if config_db == "internal" else Path("/var/lib/teatree/config.sqlite3")
+        )
+        monkeypatch.setenv("T3_CONFIG_DB", str(database))
+    with mock.patch("teatree.utils.django_bootstrap.ensure_django", side_effect=AssertionError("DB opened")):
+        result = runner.invoke(worker_app, ["run"])
+    assert result.exit_code != 0
+    assert "pytest HOME" in str(result.exception)
+
+
+def test_worker_run_allows_database_inside_pytest_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest_root = tmp_path / "pytest-of-test"
+    monkeypatch.setenv("HOME", str(pytest_root / "home"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(pytest_root / "data"))
+    monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    monkeypatch.delenv("T3_CONTROL_DB_DIR", raising=False)
+    with mock.patch("teatree.utils.django_bootstrap.ensure_django", side_effect=AssertionError("DB opened")):
+        result = runner.invoke(worker_app, ["run"])
+    assert str(result.exception) == "DB opened"
+
+
 class TestWorkerEnsure(django.test.TestCase):
     def test_ensure_reports_already_running(self) -> None:
         with mock.patch("teatree.utils.singleton.flock_is_held", return_value=True):

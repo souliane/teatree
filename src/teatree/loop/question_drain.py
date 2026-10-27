@@ -15,10 +15,11 @@ The sweep runs in two stages, and the split is the whole design:
     row uses ``Ticket._SETTLED_STATES``, the same population ``transient_requeue`` stops
     retrying, so PR_OPENED ends it; an owner row drains only on
     :func:`~teatree.core.models.question_subject.finished_subject_reason`, because a
-    PR_OPENED review is still the owner's to decide. Two later resolvers read facts the FSM
-    state cannot carry — a subject whose pull requests have all settled, and a parked
-    lane that has since re-run to completion — and both are POSITIVE-ONLY: short of
-    proof they answer nothing at all, so they add drains without ever suppressing one.
+    PR_OPENED review is still the owner's to decide. Three later resolvers read facts the FSM
+    state cannot carry — a subject whose pull requests have all settled, a held PR card
+    whose recorded PR has settled, and a parked lane that has since re-run to completion —
+    and all three are POSITIVE-ONLY: short of proof they answer nothing at all, so they add
+    drains without ever suppressing one.
     The :data:`~teatree.core.question_heal.HEAL_CHECKS` resolvers are positive-only too:
     each drains a row whose trigger it can prove has healed.
 * **backstop stage** — runs on every row the subject stage did NOT drain, including one
@@ -44,6 +45,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from django.db.models import Max
 from django.utils import timezone
@@ -52,7 +54,11 @@ from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.question_heal import HEAL_CHECKS
+from teatree.core.review.owner_waits import canonical_wait_subject
 from teatree.loop.question_subjects import SubjectIndex
+from teatree.loop.recovered_repair_halts import REPAIR_HALT_RECOVERED, recovered_repair_halts
+from teatree.utils.pr_ref import PrRef
+from teatree.utils.url_slug import pr_ref_from_url
 
 #: The pull-request states that are DONE either way — the same partition
 #: ``PullRequestQuerySet.live()`` excludes. A merge succeeded and a close was given
@@ -120,8 +126,9 @@ class SweepContext:
     superseded_parked: frozenset[int]
     #: pks of the halt rows whose ticket has since run a phase to success.
     cleared_halts: frozenset[int]
-    #: Per ``HEAL_CHECKS`` name, the rows it proved healed and why.
+    #: Per healing resolver (``HEAL_CHECKS`` plus ``repair_halt_recovered``), the rows it proved healed and why.
     healed: Mapping[str, Mapping[int, str]]
+    settled_pr_subjects: Mapping[str, str]
 
     @classmethod
     def build(cls, questions: Sequence[DeferredQuestion]) -> "SweepContext":
@@ -131,7 +138,11 @@ class SweepContext:
             now=timezone.now(),
             superseded_parked=_superseded_parked_questions(questions),
             cleared_halts=_cleared_halt_questions(questions, index),
-            healed={name: check(questions) for name, check in HEAL_CHECKS},
+            healed={
+                **{name: check(questions) for name, check in HEAL_CHECKS},
+                REPAIR_HALT_RECOVERED: recovered_repair_halts(questions, index),
+            },
+            settled_pr_subjects=_settled_pr_subjects(questions),
         )
 
 
@@ -242,6 +253,56 @@ def _pr_terminal(question: DeferredQuestion, context: SweepContext) -> Decision 
     return Decision(Verdict.DRAIN, f"every pull request recorded for the subject is settled ({settled})")
 
 
+def _settled_pr_subjects(questions: Sequence[DeferredQuestion]) -> dict[str, str]:
+    subjects = {
+        canonical_wait_subject(subject)
+        for question in questions
+        if isinstance((subject := question.evidence.get("subject")), str) and subject
+    }
+    subjects.discard("")
+    if not subjects:
+        return {}
+    refs = {subject: pr_ref_from_url(subject.removesuffix("/files")) for subject in subjects}
+    candidates = PullRequest.objects.none()
+    for subject, ref in refs.items():
+        candidates |= (
+            PullRequest.objects.for_pr(slug=ref.slug, pr_id=ref.pr_id)
+            if ref
+            else PullRequest.objects.filter(url__istartswith=subject)
+        )
+    states: dict[str, list[str]] = {}
+    urls: dict[str, str] = {}
+    for pr in candidates.only("url", "state"):
+        for subject, ref in refs.items():
+            if _is_same_pull_request(subject, ref, pr.url):
+                states.setdefault(subject, []).append(pr.state)
+                urls[subject] = pr.url
+    return {
+        identity: f"pull request {urls[identity]} is {', '.join(sorted(set(pr_states)))}"
+        for identity, pr_states in states.items()
+        if all(state in _SETTLED_PR_STATES for state in pr_states)
+    }
+
+
+def _forge_host(url: str) -> str:
+    return (urlsplit(url).hostname or "").removeprefix("www.").casefold()
+
+
+def _is_same_pull_request(subject: str, ref: PrRef | None, stored_url: str) -> bool:
+    stored_ref = pr_ref_from_url(stored_url)
+    if ref is None or stored_ref is None:
+        return ref is None and canonical_wait_subject(stored_url) == subject
+    return ref.same_pr(stored_ref) and _forge_host(subject) == _forge_host(stored_url)
+
+
+def _subject_pr_settled(question: DeferredQuestion, context: SweepContext) -> Decision | None:
+    subject = question.evidence.get("subject")
+    if not isinstance(subject, str):
+        return None
+    reason = context.settled_pr_subjects.get(canonical_wait_subject(subject))
+    return Decision(Verdict.DRAIN, reason) if reason is not None else None
+
+
 def _superseded_parked_questions(questions: Sequence[DeferredQuestion]) -> frozenset[int]:
     """The parked rows whose ``(ticket, phase)`` lane has since completed a NEWER run.
 
@@ -333,7 +394,9 @@ def _lane_moved_on(
 SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (
     *((name, _heal_resolver(name)) for name, _check in HEAL_CHECKS),
     ("halt_trigger_cleared", _halt_trigger_cleared),
+    (REPAIR_HALT_RECOVERED, _heal_resolver(REPAIR_HALT_RECOVERED)),
     ("parked_task_superseded", _parked_task_superseded),
+    ("subject_pr_settled", _subject_pr_settled),
     ("pr_terminal", _pr_terminal),
     ("subject_terminal", _subject_terminal),
 )

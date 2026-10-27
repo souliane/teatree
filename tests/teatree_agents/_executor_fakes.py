@@ -22,7 +22,15 @@ from teatree.agents import codex_read_only_server
 from teatree.agents.codex_auth_cache import CODEX_AUTH_PASS_ENTRY
 from teatree.agents.codex_read_only_executor import EXECUTOR_LOGIN_ENTRY, ExecutorAttestation, attest
 from teatree.agents.codex_read_only_probe_program import Mount, Observation
-from teatree.agents.codex_read_only_verdict import CLONE_ROOT, EXECUTOR_HOME_ROOT, SCRATCH_ROOT, WORKTREE_ROOT
+from teatree.agents.codex_read_only_verdict import (
+    CLONE_ROOT,
+    CODEX_HOME_ROOT,
+    CODEX_SOURCE_GIT,
+    EXECUTOR_HOME_ROOT,
+    SCRATCH_ROOT,
+    WORKTREE_ROOT,
+    codex_source_git_subpath,
+)
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "codex_read_only_executor"
 CONTAINER_HOME = str(PurePosixPath(CLONE_ROOT).parent)
@@ -109,6 +117,11 @@ elif argv[:1] == ["exec"]:
         else:
             rest = rest[1:]
     container, command = rest[0], rest[1:]
+    if container == CONFIG["worker"]["Id"] and command == ["test", "-d", CONFIG["codex_source_git"]]:
+        if CONFIG["codex_source_git_error"]:
+            sys.stderr.write("Error response from daemon: worker stopped\n")
+            sys.exit(1)
+        sys.exit(0 if CONFIG["codex_source_git_present"] else 1)
     if container not in CONFIG["containers"]:
         sys.stderr.write("Error: No such container: " + container + "\n")
         sys.exit(1)
@@ -180,7 +193,8 @@ elif argv[:1] == ["exec"]:
             "FAKE_EXECUTOR_CONFIG": CONFIG_PATH,
             "PATH": os.environ.get("PATH", ""),
         }
-        os.execve(sys.executable, [sys.executable, CONFIG["app_server"], *command[6:]], child_env)
+        codex_flags = ["--disable", "plugins"] if "codex --disable plugins" in command[4] else []
+        os.execve(sys.executable, [sys.executable, CONFIG["app_server"], *codex_flags, *command[6:]], child_env)
     if command[:2] == ["sh", "-c"] and command[2] == CONFIG["scripts"]["list_homes"]:
         root = mapped(CONFIG["home_root"])
         for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
@@ -228,6 +242,8 @@ import sys
 config = json.loads(open(os.environ["FAKE_EXECUTOR_CONFIG"], encoding="utf-8").read())
 home = os.environ["FAKE_FS"] + os.environ["CODEX_HOME"]
 threads = 0
+if sys.argv[1:3] != ["--disable", "plugins"]:
+    os.mkdir(home + "/plugins")
 
 
 def emit(message):
@@ -262,6 +278,8 @@ for raw in sys.stdin:
         if rotated is not None:
             with open(home + "/auth.json", "w", encoding="utf-8") as auth:
                 auth.write(rotated if isinstance(rotated, str) else json.dumps(rotated))
+        if config["plant_plugins_after_turn"]:
+            os.mkdir(home + "/plugins")
         common = {"threadId": thread_id, "turnId": "turn-1"}
         item = {"id": "msg-1", "type": "agentMessage", "text": config["reply"]}
         emit({"method": "item/completed", "params": common | {"completedAtMs": 1, "item": item}})
@@ -324,7 +342,12 @@ class WorkerInspect(TypedDict):
 
 def _fixture_text(name: str) -> str:
     template = Template((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
-    return template.substitute(CONTAINER_HOME=CONTAINER_HOME)
+    return template.substitute(
+        CONTAINER_HOME=CONTAINER_HOME,
+        CODEX_HOME_ROOT=CODEX_HOME_ROOT,
+        CODEX_SOURCE_GIT=CODEX_SOURCE_GIT,
+        SOURCE_GIT_SUBPATH=codex_source_git_subpath(),
+    )
 
 
 def probe_fixture(name: str) -> Observation:
@@ -360,6 +383,9 @@ class FakeExecutor:
     inspect_exit: int = 0
     with_login: bool = True
     reply: str = "OK"
+    plant_plugins_after_turn: bool = False
+    codex_source_git_present: bool = True
+    codex_source_git_error: bool = False
     rotated_login: object = None
     stored_login: dict[str, object] = field(default_factory=lambda: dict(STORED_LOGIN))
     raw_sweep: object = None
@@ -514,6 +540,10 @@ class FakeExecutor:
                     "home_root": EXECUTOR_HOME_ROOT,
                     "app_server": str(self.root / "app_server.py"),
                     "reply": self.reply,
+                    "plant_plugins_after_turn": self.plant_plugins_after_turn,
+                    "codex_source_git": f"{CODEX_HOME_ROOT}/{codex_source_git_subpath()}",
+                    "codex_source_git_present": self.codex_source_git_present,
+                    "codex_source_git_error": self.codex_source_git_error,
                     "rotated_login": self.rotated_login,
                     "lease": str(self.root / "data" / "codex-ro-executor" / ".auth.lock"),
                     "scratch": str(self.fs) + SCRATCH_ROOT,
@@ -546,6 +576,7 @@ class FakeExecutor:
             "PATH": f"{self.bin_dir}:/usr/bin:/bin",
             "PASSWORD_STORE_DIR": str(self.store),
             "T3_DATA_DIR": str(self.root / "data"),
+            "TEATREE_CODEX_SOURCE_GIT_SUBPATH": codex_source_git_subpath(),
         }
 
     def _executable(self, name: str, body: str) -> None:

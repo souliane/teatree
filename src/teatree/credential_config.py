@@ -55,7 +55,7 @@ from django.utils import timezone
 
 from teatree.account_headroom import AccountHeadroom, headroom_at, rank
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick
-from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import HEALTH_TTL, AnthropicTokenUsage, TokenHealthReading
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigSetting
 from teatree.credential_readings import reading_from, unverified_exhaustion
 from teatree.llm.anthropic_limits import ALL_TOKENS_EXHAUSTED_SIGNATURE
@@ -378,6 +378,16 @@ def record_reactive_exhaustion_and_reselect(
         prober=prober or AccountProber(reader=read_rate_limits, secret_reader=read_pass),
     )
     return _SELECTOR.select(TokenKind.OAUTH, scope)
+
+
+def record_api_key_exhausted(pass_path: str, *, now: dt.datetime) -> None:
+    """Mark the metered key that signed a credit-refused dispatch spent for ``HEALTH_TTL``.
+
+    Unverified, so a funded key is offered again after the TTL instead of staying out for a window.
+    """
+    AnthropicTokenUsage.objects.record(
+        pass_path, unverified_exhaustion(resets_at=now + HEALTH_TTL, weekly=False), now=now
+    )
 
 
 def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSubscriptionCredential:

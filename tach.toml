@@ -1018,12 +1018,13 @@ depends_on = [
 [[modules]]
 path = "teatree.loop.preset_resolution"
 layer = "domain"
-depends_on = ["teatree.core.models"]
+depends_on = ["teatree.core.models", "teatree.core.modelkit"]
 
 [[modules]]
 path = "teatree.loop.scanners"
 layer = "domain"
 depends_on = [
+  "teatree.core.admission.pr_start_cap",
   "teatree.loop.inbound_reading",
   "teatree.loop.question_binding",
   "teatree.loop.main_check_runs",
@@ -1095,7 +1096,9 @@ depends_on = [
 path = "teatree.loop.self_improve"
 layer = "domain"
 depends_on = [
+  "teatree.core",
   "teatree.core.admission",
+  "teatree.core.admission.pr_start_cap",
   "teatree.core.factory.queue_stall",
   "teatree.core.models",
   "teatree.utils",

@@ -223,7 +223,7 @@ If you do produce a same-PR-worthy fix while shipping (a stale doc, a broken ref
 
 ### 4. Push
 
-- **Reconcile with the default branch first.** `git fetch origin <default> && git log <branch>..origin/<default> --oneline` — if any commits appear, merge them in (`git merge origin/<default>`) and re-run lint/tests before pushing. Opening a PR that is already BEHIND main forces the user (or you) to do a second round-trip to resolve conflicts; catch them now, while you have the context of your own change open.
+- **Reconcile with the default branch only when it conflicts.** `git fetch origin <default> && git merge-tree --write-tree HEAD origin/<default>` — a predicted conflict is resolved now, while you have the context of your own change open (`git merge origin/<default>`, then re-run lint/tests before pushing). A clean prediction needs no merge: the squash applies your diff onto the default branch, and a merge only moves the head and restarts CI.
 - Push with `t3 push` (§ 4a). Cancel stale pipelines first if the branch has an existing PR (see § Rules).
 
 ### 4a. `t3 push` is the push path from a container (Non-Negotiable)
@@ -439,7 +439,7 @@ When fixing review comments on an already-existing PR:
 
 0. **Verify branch alignment.** Confirm the worktree is on the PR's source branch (`git branch --show-current` vs PR metadata). If the worktree uses a different branch name, resolve the mismatch **before** editing: either checkout the PR branch or plan to cherry-pick onto it after committing. Discovering the mismatch mid-push wastes time on branch gymnastics.
 1. **Fix the issues** as requested.
-2. **Merge the default branch** if needed: `git merge origin/main`. **Never rebase** — the branch has already been reviewed.
+2. **Merge the default branch** only when `git merge-tree --write-tree HEAD origin/main` predicts a conflict: `git merge origin/main`. **Never rebase** — the branch has already been reviewed.
 3. **Run the full local gate set** (`t3 tool verify-gates` — commit-stage, push-stage and declared manual CI-job hooks) after merging — merges can expose new lint violations in your code even without conflicts.
 4. **Push without squashing or rebasing** (regular commits on top).
 5. **Reply to the review comments on the PR.**

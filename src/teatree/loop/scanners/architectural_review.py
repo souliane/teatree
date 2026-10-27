@@ -57,6 +57,7 @@ from django.apps import apps
 from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
@@ -103,6 +104,9 @@ class ArchitecturalReviewScanner:
         last_completed_at = cadence.last_completed_run_at()
         trigger = self._evaluate_triggers(cadence, now=now, last_completed_at=last_completed_at)
         if trigger is None:
+            return []
+        if reason := open_pr_start_cap_hold_reason():
+            logger.warning("architectural review is claiming nothing new: %s", reason)
             return []
 
         task = cadence.queue_task(

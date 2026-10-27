@@ -22,6 +22,7 @@ from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain
+from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 
 
 def _signature(job: Any) -> tuple[Any, ...]:
@@ -183,6 +184,7 @@ class PrSweepShipDomainTestCase(TestCase):
         backend = self._backend_with_sweep()
         ship = self._scanner_type_names(jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,)))
         assert "PrSweepScanner" in ship
+        assert "UnauditedMergeScanner" in ship
 
     def test_review_domain_does_not_own_the_pr_sweep(self) -> None:
         backend = self._backend_with_sweep()
@@ -224,6 +226,59 @@ class TriageSharesTheShipEnricherTestCase(TestCase):
         triage = self._enricher_of(jobs, "MrTriageScanner")
         assert triage is not None
         assert triage is self._enricher_of(jobs, "MyPrsScanner")
+
+
+class ShipDomainCiReadBudgetTestCase(TestCase):
+    def setUp(self) -> None:
+        reset_ci_memo()
+        self.addCleanup(reset_ci_memo)
+
+    @staticmethod
+    def _scan(count: int) -> list[str]:
+        host = MagicMock(spec=CodeHostBackend)
+        host.list_my_prs.return_value = [
+            {
+                "web_url": f"https://github.com/example/repo/pull/{number}",
+                "iid": number,
+                "title": f"PR {number}",
+                "sha": f"{number:040d}",
+            }
+            for number in range(1, count + 1)
+        ]
+        overlay = MagicMock()
+        overlay.get_workspace_repos.return_value = []
+        backend = OverlayBackends(name="teatree", hosts=(host,), overlay=overlay, identities=("author",))
+        jobs = jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,))
+        scanner = next(job.scanner for job in jobs if job.scanner.name == "my_prs")
+        return [str(signal.payload["status"]) for signal in scanner.scan()]
+
+    def test_eight_open_prs_get_eight_ci_reads_in_one_tick(self) -> None:
+        with patch("teatree.core.merge.ci_rollup.CodeHostQuery.for_ref") as query:
+            query.return_value.required_checks_status.return_value = "green"
+            statuses = self._scan(8)
+
+        assert query.call_count == 8
+        assert statuses == ["success"] * 8
+
+    def test_six_open_prs_keep_their_existing_read_count(self) -> None:
+        with patch("teatree.core.merge.ci_rollup.CodeHostQuery.for_ref") as query:
+            query.return_value.required_checks_status.return_value = "green"
+            statuses = self._scan(6)
+
+        assert query.call_count == 6
+        assert statuses == ["success"] * 6
+
+    def test_reads_stop_at_the_ceiling_and_resume_next_tick(self) -> None:
+        with patch("teatree.core.merge.ci_rollup.CodeHostQuery.for_ref") as query:
+            query.return_value.required_checks_status.return_value = "green"
+            first_tick = self._scan(17)
+            first_tick_reads = query.call_count
+            second_tick = self._scan(17)
+
+        assert first_tick_reads == 12
+        assert first_tick == ["success"] * 12 + [""] * 5
+        assert query.call_count == 17
+        assert second_tick == ["success"] * 17
 
 
 _SETTINGS_PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"

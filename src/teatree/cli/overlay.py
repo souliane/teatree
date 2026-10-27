@@ -23,7 +23,7 @@ from teatree.skill_support.index import harness_skills_dirs
 from teatree.skill_support.pin_shadow import SkillPinRefusalError
 from teatree.utils.django_db import project_env_import_error, project_env_is_drivable, runner_prefix
 from teatree.utils.run import CommandFailedError, run_streamed, spawn
-from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, singleton
+from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, singleton, worker_control_lock_path
 
 if TYPE_CHECKING:
     from teatree.config import OverlayEntry
@@ -286,7 +286,7 @@ class OverlayAppBuilder:
                 raise typer.Exit(code=1)
 
             try:
-                with singleton(WORKER_SINGLETON):
+                with singleton(WORKER_SINGLETON), singleton(WORKER_SINGLETON, pid_path=worker_control_lock_path()):
                     failed = _run_workers(project_path, overlay_name, count, interval)
             except AlreadyRunningError as exc:
                 typer.echo(f"WARN  {exc} Stop it before starting another.")
