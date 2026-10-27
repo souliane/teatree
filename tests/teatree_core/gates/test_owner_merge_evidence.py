@@ -100,7 +100,7 @@ class TestRecordForgeMerger(TestCase):
         states = (
             PrMergeState(state="OPEN", merge_commit_oid=_SHA, raw_merge_commit_oid=_SHA, merged_by="alice"),
             PrMergeState(state="MERGED", merge_commit_oid="b" * 40, merged_by="alice"),
-            PrMergeState(state="MERGED", merge_commit_oid=_SHA, merged_by=" "),
+            PrMergeState(state="MERGED", merge_commit_oid=_SHA, raw_merge_commit_oid=_SHA, merged_by=" "),
         )
         for state in states:
             with self.subTest(state=state):
