@@ -27,7 +27,6 @@ from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
 from teatree.core.modelkit.gate_verdict import Pass, Refuse, Unknown, Verdict, evaluate_gate, read_or_refuse
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.self_review import SelfReview
-from teatree.core.models.visual_qa_types import VisualQASummary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.worktree.branch_currency import require_current_branch
@@ -35,6 +34,7 @@ from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+from teatree.visual_qa_types import VisualQASummary
 
 _log = logging.getLogger(__name__)
 

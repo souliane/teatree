@@ -520,6 +520,7 @@ graph TD
     teatree.request_cache
     teatree.forge_credentials
     teatree.types
+    teatree.visual_qa_types
     teatree.harness_skills
     teatree.pricing
     teatree.verification

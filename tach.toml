@@ -167,6 +167,11 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
+path = "teatree.visual_qa_types"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.harness_skills"
 layer = "foundation"
 depends_on = []
