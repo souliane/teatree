@@ -15,6 +15,7 @@ from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.merge.errors import MergePreconditionError, MergeReplayError
+from teatree.core.merge.partial_merge import hold_for_remainder, read_merged_pr
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolved_repo_slug
 from teatree.core.models import MergeClear
 
@@ -131,6 +132,7 @@ def record_merge_and_advance(
         raise MergePreconditionError(msg)
 
     merge_audit_model = apps.get_model("core", "MergeAudit")
+    reading = read_merged_pr(clear, repo_slug)
 
     def _consume_and_advance() -> str:
         with transaction.atomic():
@@ -180,6 +182,10 @@ def record_merge_and_advance(
             if isinstance(grades, dict) and locked.reviewed_sha in grades:
                 remaining_grades = {sha: item for sha, item in grades.items() if sha != locked.reviewed_sha}
                 ticket.merge_extra(set_keys={"rubric_grades_by_head": remaining_grades})
+            if reading.leaves_remainder and hold_for_remainder(
+                ticket, reading, merged_pr=f"{repo_slug or locked.slug}#{locked.pr_id}"
+            ):
+                return ticket.state
             # Bind the phase attestation to the merged HEAD/workstream it was
             # earned against (the §17.6 enforcement candidate (7), absorbed
             # here): the canonical phase session records the SHA that actually
