@@ -18,21 +18,25 @@ import os
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core import notify as notify_module
 from teatree.core.gates.t3_master_gate import T3MasterGate
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
-from teatree.core.models import LoopLease, MergeClear, SelfImproveFiring, Ticket
+from teatree.core.management.commands.loop_self_improve import _deliver_owner_alert
+from teatree.core.models import ConfigSetting, LoopLease, MergeClear, SelfImproveFiring, Task, Ticket
 from teatree.core.models.merge_clear import ClearRequest
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.notify_types import NotifyOutcome, NotifyReason
 from teatree.loop.self_improve import schedule as schedule_mod
 from teatree.loop.self_improve.actions import ActionResult
 from teatree.loop.self_improve.budget import BudgetVerdict
+from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.schedule import TierResult
 from tests._loop_principal_env import pinned_loop_principal
 from tests._t3_master_env import worker_owns_t3_master
@@ -155,6 +159,75 @@ class LoopSelfImproveCommandTests(TestCase):
 
         assert "OK" in out.getvalue()
         assert run_tier.call_args.kwargs["delivery"].overlay_name == "t3-teatree"
+
+    def _stalled_loop_cycle(self, at: dt.datetime, *, quiet: bool) -> MagicMock:
+        reading = SimpleNamespace(
+            unexplained=(SimpleNamespace(name="followup"),),
+            deadlined=(),
+            driverless=(),
+            frozen_fleet=False,
+            fleet_admits=False,
+        )
+        notify = MagicMock(return_value=NotifyOutcome(sent=True))
+        with (
+            patch("teatree.core.management.commands.loop_self_improve.loop_health", return_value=reading),
+            patch("teatree.core.management.commands.loop_self_improve.owner_quiet_now", return_value=quiet),
+            patch.object(notify_module, "notify_user_outcome", notify),
+            patch("django.utils.timezone.now", return_value=at),
+        ):
+            call_command("loop_self_improve", tier="cheap", stdout=io.StringIO(), stderr=io.StringIO())
+        return notify
+
+    def test_stalled_loop_is_repaired_first_and_the_owner_hears_once_after_the_default_wait(self) -> None:
+        start = timezone.now()
+
+        first = self._stalled_loop_cycle(start, quiet=False)
+        firing = SelfImproveFiring.objects.get(detector="loop_health")
+        assert firing.ticket is not None
+        assert Task.objects.filter(ticket=firing.ticket, phase="planning").exists()
+        before_wait = self._stalled_loop_cycle(start + dt.timedelta(minutes=30), quiet=False)
+        due = self._stalled_loop_cycle(start + dt.timedelta(minutes=61), quiet=False)
+        later = self._stalled_loop_cycle(start + dt.timedelta(minutes=120), quiet=False)
+
+        assert [first.call_count, before_wait.call_count, due.call_count, later.call_count] == [0, 0, 1, 0]
+        assert "options" not in due.call_args.kwargs
+        assert f"Repair: ticket {firing.ticket.pk}" in due.call_args.args[0]
+
+    def test_owner_quiet_hours_hold_the_delayed_message(self) -> None:
+        start = timezone.now()
+        self._stalled_loop_cycle(start, quiet=True)
+
+        held = self._stalled_loop_cycle(start + dt.timedelta(minutes=61), quiet=True)
+
+        assert held.call_count == 0
+
+    def test_configured_wait_minutes_decide_when_the_owner_hears(self) -> None:
+        ConfigSetting.objects.set_value("self_improve_owner_wait_minutes", 30)
+        start = timezone.now()
+
+        self._stalled_loop_cycle(start, quiet=False)
+        before = self._stalled_loop_cycle(start + dt.timedelta(minutes=29), quiet=False)
+        due = self._stalled_loop_cycle(start + dt.timedelta(minutes=31), quiet=False)
+
+        assert [before.call_count, due.call_count] == [0, 1]
+
+    def test_an_alert_the_ledger_already_delivered_counts_as_sent(self) -> None:
+        report = DetectorReport(
+            detector="pressure_incident",
+            dedup_key="pressure_incident::ram",
+            state_hash="h1",
+            severity="warn",
+            max_rung=ActionRung.SLACK,
+            summary="ram probe inert",
+            payload={"kind": "ram_probe_inert"},
+        )
+        already = NotifyOutcome(sent=False, reason=NotifyReason.ALREADY_SENT)
+
+        with patch.object(notify_module, "notify_user_outcome", return_value=already):
+            delivery = _deliver_owner_alert(report, None)
+
+        assert delivery.sent is True
+        assert delivery.pulled is False
 
     def test_unknown_scan_is_visible_in_json_and_human_output(self) -> None:
         result = TierResult(

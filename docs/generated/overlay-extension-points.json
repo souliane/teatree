@@ -143,6 +143,12 @@
       "signature": "() -> list[teatree.types.ToolCommand]"
     },
     {
+      "description": "Return repository names needed by one issue URL; empty means no hint.",
+      "name": "metadata.get_issue_repos",
+      "required": false,
+      "signature": "(issue_url: str) -> list[str]"
+    },
+    {
       "description": "Return GitLab project paths to sync MRs from.",
       "name": "metadata.get_followup_repos",
       "required": false,

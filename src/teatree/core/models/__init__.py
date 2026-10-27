@@ -117,6 +117,7 @@ from teatree.core.models.round_metric import RoundMetric as RoundMetric
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
+from teatree.core.models.scanner_fault import ScannerFault
 from teatree.core.models.sealed_secret import KeyHealth, SealedSecret
 from teatree.core.models.secret_cutover import SecretCutover
 from teatree.core.models.self_improve_firing import SelfImproveFiring
@@ -139,6 +140,7 @@ from teatree.core.models.ticket_artifacts import (
     TicketArtifacts,
     WorktreeArtifact,
 )
+from teatree.core.models.ticket_dm_thread import TicketDmPost, TicketDmThread
 from teatree.core.models.ticket_sweep_run import SOURCE_INTERACTIVE, SOURCE_LOOP, TicketSweepRun, TicketSweepRunManager
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.trusted_identity import TrustedIdentity, TrustedIdentityManager
@@ -330,6 +332,7 @@ __all__ = [
     "RuleSource",
     "ScannedBroadcast",
     "ScannedFailedE2E",
+    "ScannerFault",
     "ScenarioPassRate",
     "ScenarioRegression",
     "SealedSecret",
@@ -356,6 +359,8 @@ __all__ = [
     "ThreadBinding",
     "Ticket",
     "TicketArtifacts",
+    "TicketDmPost",
+    "TicketDmThread",
     "TicketExtra",
     "TicketSweepRun",
     "TicketSweepRunManager",
