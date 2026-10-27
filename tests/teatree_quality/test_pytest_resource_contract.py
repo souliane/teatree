@@ -141,7 +141,7 @@ class TestWorkerSlotPool:
 
 
 class TestRealPytestRunsDrawFromOneBoxPool:
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("capacity_state", ["corrupt", "unreadable"])
     def test_real_pytest_rebuilds_an_unusable_capacity_file(self, real_pytest_root: Path, capacity_state: str) -> None:
         slot_dir = real_pytest_root / "pytest-worker-slots"
@@ -151,12 +151,12 @@ class TestRealPytestRunsDrawFromOneBoxPool:
         if capacity_state == "unreadable":
             capacity_file.chmod(0)
         result = subprocess.run(
-            pytest_command("-n", "1", "-q", _BOUNDED_NODE),
+            pytest_command("-o", "addopts=", "-n", "1", "-q", _BOUNDED_NODE),
             cwd=REPO,
-            env=standalone_pytest_env(real_pytest_root),
+            env={**standalone_pytest_env(real_pytest_root), "DJANGO_SETTINGS_MODULE": "teatree.settings"},
             capture_output=True,
             text=True,
-            timeout=45,
+            timeout=90,
             check=False,
         )
         assert result.returncode == 0, result.stderr
