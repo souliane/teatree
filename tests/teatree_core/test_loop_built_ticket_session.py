@@ -53,8 +53,9 @@ class TestProvisionRollbackPreservesAttestationSessions(TestCase):
         ) as prov:
             prov.return_value.run.return_value = RunnerResult(ok=False, detail="provision boom")
             with pytest.raises(SystemExit) as exc:
-                call_command("workspace", "ticket", "https://example.com/issues/748")
+                call_command("workspace", "ticket", "https://example.com/issues/748", reason="issue scope")
         assert exc.value.code == 1
+        prov.return_value.run.assert_called_once()
 
         # The ticket-with-attestation must still exist (or the attested
         # session must survive on whatever ticket represents this issue).

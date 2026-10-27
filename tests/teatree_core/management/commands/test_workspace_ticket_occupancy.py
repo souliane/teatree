@@ -17,6 +17,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 import teatree.core.management.commands.workspace as workspace_mod
+from teatree.core.management.commands._workspace import ticket_intake as workspace_intake_mod
 from teatree.core.worktree.occupancy import acquire, occupancy_holder
 from tests.factories import TicketFactory, WorktreeFactory
 
@@ -30,10 +31,10 @@ class _TicketHandoutCase(TestCase):
         self.worktree = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
         self.finalize = MagicMock(return_value=int(self.ticket.pk))
         self.enterContext(patch.object(workspace_mod._wh, "warn_orphans"))
-        self.enterContext(patch.object(workspace_mod, "get_overlay", return_value=MagicMock()))
-        self.enterContext(patch.object(workspace_mod, "canonicalize_issue_ref", side_effect=lambda _o, url: url))
-        self.enterContext(patch.object(workspace_mod, "resolve_adopt_context", return_value=None))
-        self.enterContext(patch.object(workspace_mod, "adopt_preflight_refusal", return_value=None))
+        self.enterContext(patch.object(workspace_intake_mod, "get_overlay", return_value=MagicMock()))
+        self.enterContext(patch.object(workspace_intake_mod, "canonicalize_issue_ref", side_effect=lambda _o, url: url))
+        self.enterContext(patch.object(workspace_intake_mod, "resolve_adopt_context", return_value=None))
+        self.enterContext(patch.object(workspace_intake_mod, "adopt_preflight_refusal", return_value=None))
         self.enterContext(patch.object(workspace_mod, "build_intake", return_value=MagicMock()))
         self.enterContext(patch.object(workspace_mod, "build_ticket", return_value=self.ticket))
         self.enterContext(patch.object(workspace_mod, "finalize_ticket_provision", self.finalize))
