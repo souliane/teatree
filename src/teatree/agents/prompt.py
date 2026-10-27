@@ -207,7 +207,16 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     lines = _task_header_lines(task, extra)
     lines.extend(_format_pr_context(extra))
-    lines.extend(("", "Issue body (read from the forge for you):", facts.issue_body or "(empty)"))
+    triage = normalize_phase(task.phase) == "triage_assessing"
+    lines.extend(
+        (
+            "",
+            "Listed issues, each under its URL (read from the forge for you):"
+            if triage
+            else "Issue body (read from the forge for you):",
+            facts.issue_body or "(empty)",
+        )
+    )
     if facts.issue_comments:
         lines.extend(("", "Issue comments, oldest first (read from the forge for you):", facts.issue_comments))
     if facts.ticket_context:
@@ -218,6 +227,8 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     if parent_summary := _parent_result_summary(task):
         lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))
+    if facts.draft_facts:
+        lines.extend(("", facts.draft_facts))
     if normalize_phase(task.phase) == "reviewing":
         lines.extend(
             read_only_text(line)
@@ -230,7 +241,9 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     lines.extend(("", "Instructions:", *_OWNER_STOP_LINES))
     if normalize_phase(task.phase) == "planning":
         lines.append("5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.")
-    lines.append(final_output_reminder_line(task.phase))
+    if triage:
+        lines.append("5. The listed issues above are the pages to fetch: assess them from this text and fetch nothing.")
+    lines.append(final_output_reminder_line(task.phase, read_only_venue=True))
     return "\n".join(lines)
 
 
@@ -432,7 +445,9 @@ def _render_system_context(request: _ContextRequest, *, handoff: Path | None) ->
                 if read_only_venue
                 else _WRAP_UP_LINES
             ),
-            *envelope_contract_lines(task.phase, reviewer_identity=_assigned_reviewer_identity(task)),
+            *envelope_contract_lines(
+                task.phase, reviewer_identity=_assigned_reviewer_identity(task), read_only_venue=read_only_venue
+            ),
             "",
             "IMPORTANT: If only the owner can decide, STOP immediately and emit:",
             '  {"summary": "...", "needs_user_input": true, "user_input_kind": "<kind>",',

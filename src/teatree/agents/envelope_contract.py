@@ -25,6 +25,7 @@ from teatree.agents.result_schema import (
     conditional_evidence_for_phase,
     required_evidence_for_phase,
 )
+from teatree.agents.result_schema_draft import EXECUTOR_DRAFT_FIELDS
 from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
@@ -90,6 +91,14 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
         ]
     },
     "answer": {"answer": {"text": "<the drafted reply, in the user's voice>", "thread_ref": "<thread ts, or ''>"}},
+    "review_request": {
+        "review_request": {
+            "ready": True,
+            "pr_url": "<a PR URL from the task message>",
+            "title": "<type(scope): subject>",
+        }
+    },
+    "ship_readiness": {"ship_readiness": {"ready": True, "reasons": []}},
     # The id `ticket sweep-begin` printed — the count is read from the run's own
     # recorded URLs, so the example deliberately shows no changed_count to restate.
     "ticket_sweep": {"ticket_sweep": {"run_id": "<the id `t3 <overlay> ticket sweep-begin` printed>"}},
@@ -102,6 +111,12 @@ def allowed_keys() -> tuple[str, ...]:
     return tuple(str(key) for key in properties) if isinstance(properties, Mapping) else ()
 
 
+def _taught_keys(*, read_only_venue: bool) -> tuple[str, ...]:
+    """The keys a brief lists: a worker brief omits the draft keys only the read-only executor returns."""
+    draft_keys = set(EXECUTOR_DRAFT_FIELDS.values())
+    return tuple(key for key in allowed_keys() if read_only_venue or key not in draft_keys)
+
+
 def _with_reviewer_identity(evidence: AgentResult, identity: str) -> AgentResult:
     """*evidence* carrying the dispatch's assigned identity — a COPY, never the constant."""
     verdict = evidence.get("review_verdict")
@@ -110,7 +125,13 @@ def _with_reviewer_identity(evidence: AgentResult, identity: str) -> AgentResult
     return {**evidence, "review_verdict": {**verdict, "reviewer_identity": identity}}
 
 
-def envelope_example(phase: str, *, reviewer_identity: str = "") -> AgentResult:
+def _evidence_fields(phase: str, *, read_only_venue: bool) -> tuple[str, ...]:
+    """The evidence a run must return; on the read-only executor a draft phase returns its draft, not a command log."""
+    field = EXECUTOR_DRAFT_FIELDS.get(normalize_phase(phase)) if read_only_venue else None
+    return (field,) if field else required_evidence_for_phase(phase)
+
+
+def envelope_example(phase: str, *, reviewer_identity: str = "", read_only_venue: bool = False) -> AgentResult:
     """A minimal envelope for *phase* that satisfies the phase evidence gate.
 
     *reviewer_identity* replaces the self-naming template with the dispatch's assigned
@@ -118,7 +139,7 @@ def envelope_example(phase: str, *, reviewer_identity: str = "") -> AgentResult:
     the identity has to be concrete (#2663).
     """
     example: AgentResult = {"summary": "<one line: what you did and how you proved it>"}
-    for field in required_evidence_for_phase(phase):
+    for field in _evidence_fields(phase, read_only_venue=read_only_venue):
         evidence = _EVIDENCE_EXAMPLES.get(field)
         if evidence is not None:
             example.update(_with_reviewer_identity(evidence, reviewer_identity))
@@ -127,9 +148,9 @@ def envelope_example(phase: str, *, reviewer_identity: str = "") -> AgentResult:
     return example
 
 
-def _evidence_lines(phase: str) -> tuple[str, ...]:
+def _evidence_lines(phase: str, *, read_only_venue: bool) -> tuple[str, ...]:
     """The phase-scoped "this key is also mandatory" clause, or the summary-only note."""
-    required = required_evidence_for_phase(phase)
+    required = _evidence_fields(phase, read_only_venue=read_only_venue)
     if not required:
         return (f"- Phase `{normalize_phase(phase) or phase}` requires no extra evidence key beyond `summary`.",)
     fields = " or ".join(f"`{field}`" for field in required)
@@ -157,14 +178,14 @@ def _verdict_consistency_lines(phase: str) -> tuple[str, ...]:
     return ("", f"- {VERDICT_CHECKS_RULE}")
 
 
-def final_output_reminder_line(phase: str) -> str:
+def final_output_reminder_line(phase: str, *, read_only_venue: bool = False) -> str:
     """The one-line restatement of the contract, placed last in the work prompt.
 
     The full contract sits in the system context; recency is what a non-Claude
     model actually acts on, so the work prompt closes by naming the phase's own
     required key again rather than trusting the system prompt to carry it alone.
     """
-    required = required_evidence_for_phase(phase)
+    required = _evidence_fields(phase, read_only_venue=read_only_venue)
     keys = "`summary`" + ("" if not required else " and " + " or ".join(f"`{field}`" for field in required))
     return (
         f"6. FINAL OUTPUT: end with the JSON result envelope ({keys}) as the last thing you write — "
@@ -172,7 +193,9 @@ def final_output_reminder_line(phase: str) -> str:
     )
 
 
-def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple[str, ...]:
+def envelope_contract_lines(
+    phase: str, *, reviewer_identity: str = "", read_only_venue: bool = False
+) -> tuple[str, ...]:
     """The full envelope contract taught to a headless brief for *phase*.
 
     Every phase gets it, verbatim: assuming the model already knows the format is
@@ -199,11 +222,13 @@ def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple
             "- For each required skill used, add `skill_application`: "
             '`{"skill": "name", "evidence": "short concrete reference"}`; omissions are unverified.'
         ),
-        *_evidence_lines(phase),
+        *_evidence_lines(phase, read_only_venue=read_only_venue),
         *_verdict_consistency_lines(phase),
         "- Only these keys are allowed:",
-        f"  {', '.join(allowed_keys())}",
+        f"  {', '.join(_taught_keys(read_only_venue=read_only_venue))}",
         "",
         "Minimal valid envelope for this phase — copy this shape exactly:",
-        json.dumps(envelope_example(phase, reviewer_identity=reviewer_identity), indent=1),
+        json.dumps(
+            envelope_example(phase, reviewer_identity=reviewer_identity, read_only_venue=read_only_venue), indent=1
+        ),
     )
