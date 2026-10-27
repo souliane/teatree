@@ -88,10 +88,10 @@ def list_repo_open_issues(client: GitLabAPI, project: ProjectInfo | None) -> lis
     """Every OPEN issue on the project, all pages — the create-dedupe landscape (#162).
 
     Unlike :func:`search_open_issues` this takes no query: Rule 1 requires the
-    filer to see the whole open backlog before it decides nothing fits, and a
-    search term is exactly the thing that hides the near-duplicate phrased
-    differently. ``get_json_paginated`` exhausts the pages, so a backlog past the
-    first page cannot read as "no candidates".
+    filer to rank the whole open backlog before judging the closest 20, and a
+    search term could hide a near-duplicate phrased differently.
+    ``get_json_paginated`` exhausts the pages, so a backlog past the first page
+    cannot read as "no candidates".
 
     Returns an empty list when the project cannot resolve; the facade treats an
     unresolvable repo as a hard failure rather than an empty landscape, so this

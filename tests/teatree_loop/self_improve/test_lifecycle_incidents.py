@@ -14,15 +14,18 @@ from django.utils import timezone
 
 from teatree.core.modelkit.notify_policy import CHECKOUT_ATTEST_HOLD
 from teatree.core.modelkit.reask_cadence import owner_quiet_at
-from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
+from teatree.core.modelkit.task_failure_taxonomy import STALE_ERROR_AFTER
+from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, TaskAttempt, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
 from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
 from teatree.core.worktree.checkout_state import CheckoutState
+from teatree.dash.selectors import STALE_ERROR_AFTER as BOARD_STALE_ERROR_AFTER
 from teatree.loop.preset_resolution import owner_zone
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.detectors.lifecycle_incident import _POST_WAIT, LifecycleIncidentDetector
+from teatree.loop.self_improve.detectors.lifecycle_incident import STALE_ERROR_AFTER as DETECTOR_STALE_ERROR_AFTER
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.self_improve.schedule import DeliveryRoutes, Tier, TierResult, detectors_for_tier, run_tier
 from tests._owner_channel import OWNER_DECISION
@@ -69,6 +72,62 @@ class LifecycleIncidentTests(TestCase):
         task.fail(reason="ProcessError: worker exited", by_holder=True)
 
         assert any(report.payload["kind"] == "task_failed" for report in self._reports())
+
+    def test_failed_task_reports_only_recent_attempts_or_tasks_without_attempts(self) -> None:
+        old = TaskFactory()
+        recent = TaskFactory()
+        without_attempt = TaskFactory()
+        retried = TaskFactory()
+        for task in (old, recent, without_attempt, retried):
+            task.fail(reason="ProcessError: worker exited", by_holder=True)
+        old_attempt = TaskAttemptFactory(task=old)
+        recent_attempt = TaskAttemptFactory(task=recent)
+        retried_old_attempt = TaskAttemptFactory(task=retried)
+        retried_new_attempt = TaskAttemptFactory(task=retried)
+        TaskAttempt.objects.filter(pk=old_attempt.pk).update(started_at=timezone.now() - timedelta(days=3))
+        TaskAttempt.objects.filter(pk=recent_attempt.pk).update(started_at=timezone.now() - timedelta(days=1))
+        TaskAttempt.objects.filter(pk=retried_old_attempt.pk).update(started_at=timezone.now() - timedelta(days=3))
+        TaskAttempt.objects.filter(pk=retried_new_attempt.pk).update(started_at=timezone.now() - timedelta(days=1))
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "task_failed"]
+
+        assert len(reports) == 1
+        assert reports[0].payload["ids"] == sorted([recent.pk, without_attempt.pk, retried.pk])
+
+    def test_board_and_detector_share_failure_age_window(self) -> None:
+        assert BOARD_STALE_ERROR_AFTER is STALE_ERROR_AFTER
+        assert DETECTOR_STALE_ERROR_AFTER is STALE_ERROR_AFTER
+
+    def test_failed_repair_task_reports_use_the_same_attempt_window(self) -> None:
+        old = TaskFactory(ticket=TicketFactory(extra={"source": "self_improve"}))
+        recent = TaskFactory(ticket=TicketFactory(extra={"source": "self_improve"}))
+        without_attempt = TaskFactory(ticket=TicketFactory(extra={"source": "self_improve"}))
+        for task in (old, recent, without_attempt):
+            task.fail(reason="ProcessError: worker exited", by_holder=True)
+        old_attempt = TaskAttemptFactory(task=old)
+        recent_attempt = TaskAttemptFactory(task=recent)
+        TaskAttempt.objects.filter(pk=old_attempt.pk).update(started_at=timezone.now() - timedelta(days=3))
+        TaskAttempt.objects.filter(pk=recent_attempt.pk).update(started_at=timezone.now() - timedelta(days=1))
+
+        reports = [report for report in self._reports() if report.payload["kind"] == "repair_task_failed"]
+
+        assert len(reports) == 1
+        assert reports[0].payload["ids"] == sorted([recent.pk, without_attempt.pk])
+
+    def test_failed_task_firing_resolves_when_its_attempt_ages_out(self) -> None:
+        task = TaskFactory()
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
+        attempt = TaskAttemptFactory(task=task)
+        detector = LifecycleIncidentDetector()
+        first = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+        firing = SelfImproveFiring.objects.get(dedup_key=first.reports[0].dedup_key)
+        assert firing.resolved_at is None
+
+        TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(days=3))
+        second = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+
+        assert not [report for report in second.reports if report.payload["kind"] == "task_failed"]
+        assert SelfImproveFiring.objects.get(pk=firing.pk).resolved_at is not None
 
     def test_failed_task_on_settled_ticket_does_not_resurface(self) -> None:
         task = TaskFactory()
