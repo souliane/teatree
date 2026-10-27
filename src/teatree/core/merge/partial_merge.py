@@ -165,8 +165,8 @@ def read_merged_pr(clear: MergeClear, repo_slug: str) -> MergedPrReading:
             return reading.with_unclaimed_issue_boxes(
                 description_of(query.backend.get_issue(ticket.issue_url)), message.body
             )
-    except Exception:  # noqa: BLE001 — a forge read must never roll back the consumed CLEAR and the audit
-        logger.warning("partial merge: could not read %s#%s; treating the merge as complete", slug, clear.pr_id)
+    except Exception:
+        logger.exception("partial merge: could not read %s#%s; treating the merge as complete", slug, clear.pr_id)
         return MergedPrReading()
     return reading
 

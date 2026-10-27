@@ -308,6 +308,18 @@ class TestMergesThatStillReachMerged(TestCase):
         assert MergeClear.objects.get(ticket=ticket).consumed_at is not None
         assert MergeAudit.objects.filter(clear__ticket=ticket).count() == 1
 
+    def test_an_issue_read_that_raises_keeps_the_merge_and_the_audit(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+
+        with (
+            patch(_ISSUE_READ, side_effect=RuntimeError("forge down")),
+            self.assertLogs("teatree.core.merge.partial_merge", level=logging.ERROR),
+        ):
+            state = _merge(ticket, _BOILERPLATE)
+
+        assert state == Ticket.State.MERGED
+        assert MergeAudit.objects.filter(clear__ticket=ticket).count() == 1
+
     def test_a_ticket_with_no_edge_back_to_planning_keeps_the_merge(self) -> None:
         ticket = _ticket_in(Ticket.State.PLAN_RECORDED)
 
