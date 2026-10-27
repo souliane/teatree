@@ -16,14 +16,19 @@ from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.config import get_effective_settings
+from teatree.config.settings_loop_owned import parse_self_improve_owner_wait_minutes
+from teatree.core import notify as notify_module
 from teatree.core.gates.t3_master_gate import t3_master_verdict
 from teatree.core.machine_output import emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.notify_types import NotifyKind, NotifyReason
+from teatree.core.notify_question_drains import owner_quiet_now
+from teatree.core.notify_types import NotifyKind, NotifyOptions, NotifyOutcome, NotifyReason
+from teatree.loop.self_improve.repair_first import OwnerAlertDelivery, OwnerWaitChannel
+from teatree.loops.loop_staleness import loop_health
 
 if TYPE_CHECKING:
     from teatree.core.models.self_improve_firing import SelfImproveFiring
-    from teatree.loop.self_improve.actions import OwnerAlertDelivery
     from teatree.loop.self_improve.detectors.base import DetectorReport
     from teatree.loop.self_improve.schedule import TierResult
 
@@ -31,24 +36,44 @@ type ReportDict = dict[str, Any]
 logger = logging.getLogger(__name__)
 
 
+def _delivery(outcome: NotifyOutcome) -> OwnerAlertDelivery:
+    return OwnerAlertDelivery(
+        sent=outcome.sent or outcome.reason is NotifyReason.ALREADY_SENT,
+        pulled=outcome.reason is NotifyReason.ROUTED_TO_PULL,
+    )
+
+
 def _deliver_owner_alert(report: "DetectorReport", existing: "SelfImproveFiring | None") -> "OwnerAlertDelivery":
     """Use the verified bot→owner egress without a reverse domain dependency."""
-    from teatree.core.notify import notify_user_outcome  # noqa: PLC0415 — keep command import light for CLI discovery
     from teatree.loop.self_improve.actions import (  # noqa: PLC0415 — defer domain action import until command execution
-        OwnerAlertDelivery,
         format_slack_payload,
         owner_alert_key,
     )
 
-    outcome = notify_user_outcome(
+    outcome = notify_module.notify_user_outcome(
         format_slack_payload(report)["text"],
         kind=NotifyKind.INFO,
         idempotency_key=owner_alert_key(report, existing),
         audience=NotifyAudience.OWNER_ESCALATION,
     )
-    if not outcome.sent and outcome.reason is not NotifyReason.ROUTED_TO_PULL:
+    if not outcome.sent and outcome.reason not in {NotifyReason.ROUTED_TO_PULL, NotifyReason.ALREADY_SENT}:
         logger.warning("self-improve owner alert not delivered: %s (%s)", report.dedup_key, outcome.reason)
-    return OwnerAlertDelivery(sent=outcome.sent, pulled=outcome.reason is NotifyReason.ROUTED_TO_PULL)
+    return _delivery(outcome)
+
+
+def _owner_wait(raw: object) -> dt.timedelta:
+    return dt.timedelta(minutes=parse_self_improve_owner_wait_minutes(raw))
+
+
+def _deliver_owner_wait(text: str, key: str) -> "OwnerAlertDelivery":
+    outcome = notify_module.notify_user_outcome(
+        text,
+        kind=NotifyKind.INFO,
+        idempotency_key=key,
+        audience=NotifyAudience.OWNER_ESCALATION,
+        options=NotifyOptions(as_thread_root=True),
+    )
+    return _delivery(outcome)
 
 
 def _result_to_dict(result: "TierResult") -> ReportDict:
@@ -59,6 +84,7 @@ def _result_to_dict(result: "TierResult") -> ReportDict:
         "skipped": result.skipped,
         "report_count": len(result.reports),
         "action_count": len(result.actions),
+        "owner_waits": result.owner_waits,
         "degraded_scans": [{"detector": detector, "reason": reason} for detector, reason in result.degraded_scans],
         "reports": [asdict(r) for r in result.reports],
         "actions": [
@@ -149,7 +175,16 @@ class Command(TyperCommand):
             result = run_tier(
                 tier,
                 auto_fix_callable=self_improve_rerender,
-                delivery=DeliveryRoutes(owner_alert=_deliver_owner_alert, overlay_name=overlay_name),
+                delivery=DeliveryRoutes(
+                    owner_alert=_deliver_owner_alert,
+                    overlay_name=overlay_name,
+                    owner_wait=OwnerWaitChannel(
+                        deliver=_deliver_owner_wait,
+                        quiet_now=owner_quiet_now,
+                        wait=_owner_wait(get_effective_settings().self_improve_owner_wait_minutes),
+                    ),
+                    loop_health_reader=loop_health,
+                ),
             )
         finally:
             LoopLease.objects.release("loop-self-improve", owner=owner)
