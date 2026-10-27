@@ -12,12 +12,12 @@ from django.http import HttpResponse
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from teatree.core.management.commands._github_webhook_connect import ConnectResult, validate_target
+from teatree.core.management.commands._github_webhook_connect import ConnectResult, WebhookConnection, validate_target
 from teatree.core.models import ConfigSetting, IncomingEvent, Loop, Mode
 from teatree.core.views._webhook_secrets import reset_webhook_secrets
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.utils.run import CommandFailedError
-from teatree.utils.secrets import use_store
+from teatree.utils.secrets import SecretStoreError, use_store
 from tests.secret_memory_store import MemoryStore
 
 URL = "https://hooks.example.org/hooks/github/"
@@ -50,6 +50,7 @@ class FakeGitHub:
         self.calls: list[tuple[list[str], str]] = []
         self.refusals: dict[tuple[str, str], str] = {}
         self.timeouts: set[tuple[str, str]] = set()
+        self.interrupts: set[tuple[str, str]] = set()
         self.delete_outcome: Literal["deleted", "leaves_hook", "already_gone"] = "deleted"
         self.stored_events: list[str] | None = None
         self.malformed_list = False
@@ -126,6 +127,8 @@ class FakeGitHub:
         self.refusals[method, suffix] = stderr
 
     def _raise_if_refused(self, argv: list[str], endpoint: str, method: str) -> None:
+        if any(method == hit_method and endpoint.endswith(suffix) for hit_method, suffix in self.interrupts):
+            raise KeyboardInterrupt
         if any(method == timed_out_method and endpoint.endswith(suffix) for timed_out_method, suffix in self.timeouts):
             raise TimeoutExpired(argv, 1)
         for (refused_method, suffix), stderr in self.refusals.items():
@@ -276,7 +279,18 @@ class GitHubWebhookCommandTests(TestCase):
         assert self.store.entries == {KEY: CANARY}
         output = self.capsys.readouterr().err
         assert "timed out" in output.lower()
+        assert "may have been updated" in output
+        assert "--replace-secret" in output
         assert "Traceback" not in output
+
+    def test_disconnect_timeout_gives_no_replace_secret_hint(self) -> None:
+        self.connect()
+        self.fake.timeouts.add(("DELETE", "/hooks/7"))
+        with pytest.raises(SystemExit):
+            call_command("github_webhook", "disconnect", repo="sample/repo", url=URL)
+        output = self.capsys.readouterr().err
+        assert "timed out" in output.lower()
+        assert "--replace-secret" not in output
 
     def test_create_timeout_removes_new_secret_and_reports_plain_error(self) -> None:
         self.fake.timeouts.add(("POST", "/hooks"))
@@ -303,23 +317,114 @@ class GitHubWebhookCommandTests(TestCase):
             self.connect()
         assert self.store.entries == {}
 
-    def test_failed_update_reports_store_rollback_failure(self) -> None:
+    def replace_secret_with(self, secret: str) -> None:
+        with patch("teatree.core.management.commands._github_webhook_connect.token_hex", return_value=secret):
+            call_command("github_webhook", "connect", repo="sample/repo", url=URL, replace_secret=True)
+
+    def backups(self) -> dict[str, str]:
+        return {key: value for key, value in self.store.entries.items() if key.startswith(KEY + ".bak-")}
+
+    def test_failed_restore_keeps_backup_and_reports_original_error(self) -> None:
         self.connect()
-        self.fake.refuse("PATCH", "/hooks/7")
+        self.fake.refuse("PATCH", "/hooks/7", "HTTP 500: Server Error")
         original_write = self.store.write
 
         def fail_restore(key: str, value: str) -> bool:
             return False if (key, value) == (KEY, CANARY) else original_write(key, value)
 
+        with patch.object(self.store, "write", side_effect=fail_restore), pytest.raises(SystemExit) as error:
+            self.replace_secret_with("b" * 64)
+        assert error.value.code == 1
+        message = self.capsys.readouterr().err
+        ((backup_key, backup_value),) = self.backups().items()
+        assert backup_value == CANARY
+        assert backup_key in message
+        assert "HTTP 500: Server Error" in message
+        assert "could not restore" in message
+        assert "rerun with --replace-secret" in message
+        assert self.store.entries[KEY] == "b" * 64
+        assert "b" * 64 not in message
+        assert CANARY not in message
+
+    def test_restore_that_times_out_keeps_backup_and_reports_original_error(self) -> None:
+        self.connect()
+        self.fake.refuse("PATCH", "/hooks/7", "HTTP 500: Server Error")
+        original_write = self.store.write
+
+        def hang_on_restore(key: str, value: str) -> bool:
+            if (key, value) == (KEY, CANARY):
+                raise SecretStoreError.timed_out(key, 1)
+            return original_write(key, value)
+
+        with patch.object(self.store, "write", side_effect=hang_on_restore), pytest.raises(SystemExit) as error:
+            self.replace_secret_with("b" * 64)
+        assert error.value.code == 1
+        message = self.capsys.readouterr().err
+        ((backup_key, backup_value),) = self.backups().items()
+        assert backup_value == CANARY
+        assert backup_key in message
+        assert "HTTP 500: Server Error" in message
+        assert "timed out" in message
+        assert "rerun with --replace-secret" in message
+
+    def test_failed_removal_of_a_new_secret_names_the_error_and_needs_no_backup(self) -> None:
+        self.fake.refuse("POST", "/hooks", "HTTP 500: Server Error")
+        with patch.object(self.store, "remove", return_value=False), pytest.raises(SystemExit):
+            self.connect()
+        message = self.capsys.readouterr().err
+        assert "HTTP 500: Server Error" in message
+        assert "could not restore" in message
+        assert "still in" not in message
+        assert self.store.entries[KEY] == CANARY
+
+    def test_backup_that_cannot_be_removed_after_restore_keeps_the_hook_error(self) -> None:
+        self.connect()
+        self.fake.refuse("PATCH", "/hooks/7", "HTTP 500: Server Error")
         with (
-            patch("teatree.core.management.commands._github_webhook_connect.token_hex", return_value="b" * 64),
-            patch.object(self.store, "write", side_effect=fail_restore),
+            patch.object(self.store, "remove", side_effect=SecretStoreError.timed_out(KEY, 1)),
             pytest.raises(SystemExit),
         ):
-            call_command("github_webhook", "connect", repo="sample/repo", url=URL, replace_secret=True)
-        assert "secret store could not restore" in self.capsys.readouterr().err
-        assert self.store.entries[KEY] == "b" * 64
-        assert not any(key.startswith(KEY + ".bak-") for key in self.store.entries)
+            self.replace_secret_with("b" * 64)
+        message = self.capsys.readouterr().err
+        assert "HTTP 500: Server Error" in message
+        assert "could not be removed" in message
+        assert self.store.entries[KEY] == CANARY
+        assert self.backups() != {}
+
+    def test_interrupted_update_restores_store_and_reraises(self) -> None:
+        self.connect()
+        self.fake.interrupts.add(("PATCH", "/hooks/7"))
+        connection = WebhookConnection("sample/repo", URL, "test-token", echo=lambda _: None)
+        with (
+            patch("teatree.core.management.commands._github_webhook_connect.token_hex", return_value="b" * 64),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            connection.connect(replace_secret=True)
+        assert self.store.entries == {KEY: CANARY}
+        assert self.fake.config()["secret"] == CANARY
+
+    def test_connect_with_stored_secret_and_no_hook_creates_hook_with_stored_value(self) -> None:
+        self.store.entries[KEY] = "c" * 64
+        with patch.object(self.store, "write", wraps=self.store.write) as write:
+            result = self.connect()
+        write.assert_not_called()
+        assert result["status"] == "created"
+        assert self.fake.config()["secret"] == "c" * 64
+        assert self.store.entries == {KEY: "c" * 64}
+
+    def test_failed_update_with_reused_secret_writes_nothing_to_the_store(self) -> None:
+        self.connect()
+        self.fake.hooks[0]["active"] = False
+        self.fake.refuse("PATCH", "/hooks/7")
+        with (
+            patch.object(self.store, "write", wraps=self.store.write) as write,
+            patch.object(self.store, "remove", wraps=self.store.remove) as remove,
+            pytest.raises(SystemExit),
+        ):
+            self.connect()
+        write.assert_not_called()
+        remove.assert_not_called()
+        assert self.store.entries == {KEY: CANARY}
 
     def test_non_public_url_refuses_before_network_and_store(self) -> None:
         private_ip_urls = (
