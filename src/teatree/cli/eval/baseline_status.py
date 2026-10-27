@@ -1,7 +1,7 @@
 """``t3 eval baseline-status`` — is a recent full-catalog green proof on record?
 
 A one-shard smoke run stays green without saying anything about the rest of the catalog, so
-this reads the newest completed full-suite ``eval-ci-heal`` runs on a branch, downloads each
+this reads the newest completed ``eval-ci-heal`` runs on a branch, downloads each
 ``eval-heal-<sha>`` summary and judges it with :func:`teatree.eval.green_proof.evaluate_baseline`
 against the core catalog as this checkout defines it (the catalog CI measures, whatever overlays this host also
 installs). Exit 0 only for a recent green proof.
@@ -26,17 +26,17 @@ from teatree.eval.summary_json import scenario_version
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError
 
-#: Newest successful runs read before giving up, so a run of parked or unreadable ones is bounded.
+#: Newest completed runs read before giving up, so a run of parked or unreadable ones is bounded.
 _RUNS_TO_READ = 3
 
 
 def _newest_payloads(client: GhCiEvalClient, *, ref: str) -> tuple[list[RawAPIDict], list[str]]:
-    """The merged summaries of the newest successful runs, newest first, plus a note per unreadable one."""
-    runs = [
-        run
-        for run in client.list_runs(EVAL_CI_HEAL_WORKFLOW, branch=ref)
-        if run.get("status") == "completed" and run.get("conclusion") == "success"
-    ]
+    """The merged summaries of the newest completed runs, newest first, plus a note per unreadable one.
+
+    A red full-suite run concludes ``failure`` (the green-proof step exits 1) yet still uploads its
+    summary, so the conclusion cannot filter runs: skipping it would let an older green proof stand in.
+    """
+    runs = [run for run in client.list_runs(EVAL_CI_HEAL_WORKFLOW, branch=ref) if run.get("status") == "completed"]
     payloads: list[RawAPIDict] = []
     notes: list[str] = []
     for run in runs[:_RUNS_TO_READ]:

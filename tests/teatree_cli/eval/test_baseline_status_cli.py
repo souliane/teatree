@@ -138,7 +138,7 @@ def test_a_proof_that_covers_less_than_the_current_catalog_reports_stale() -> No
 
 
 def test_a_gating_red_in_the_newest_proof_reports_not_green() -> None:
-    client = _FakeClient([_run(11)], {11: _payload("a", "b", red="b")})
+    client = _FakeClient([_run(11, conclusion="failure")], {11: _payload("a", "b", red="b")})
 
     with _catalog("a", "b"):
         result = _invoke(client)
@@ -156,14 +156,36 @@ def test_a_parked_newest_run_falls_back_to_the_older_proof() -> None:
     assert result.exit_code == 0, result.output
 
 
-def test_runs_that_did_not_succeed_are_not_a_baseline() -> None:
-    runs = [_run(12, conclusion="failure"), _run(13, status="in_progress", conclusion=""), _run(11)]
+def test_a_red_run_is_judged_not_skipped_in_favour_of_an_older_green_one() -> None:
+    runs = [_run(12, conclusion="failure"), _run(11)]
+    client = _FakeClient(runs, {12: _payload("a", "b", red="b"), 11: _payload("a", "b")})
+
+    with _catalog("a", "b"):
+        result = _invoke(client)
+
+    assert result.exit_code == 1, result.output
+    assert "BASELINE NOT_GREEN" in result.output
+
+
+def test_a_run_still_in_progress_is_not_a_baseline() -> None:
+    runs = [_run(13, status="in_progress", conclusion=""), _run(11)]
     client = _FakeClient(runs, {11: _payload("a", "b")})
 
     with _catalog("a", "b"):
         result = _invoke(client)
 
     assert result.exit_code == 0, result.output
+
+
+def test_a_cancelled_run_without_an_artifact_is_named_and_the_older_proof_still_counts() -> None:
+    runs = [_run(12, conclusion="cancelled"), _run(11)]
+    client = _FakeClient(runs, {12: CommandFailedError(["gh"], 1, "", "no artifact"), 11: _payload("a", "b")})
+
+    with _catalog("a", "b"):
+        result = _invoke(client)
+
+    assert result.exit_code == 0, result.output
+    assert "run 12: could not download eval-heal-" in result.output
 
 
 def test_an_unreadable_artifact_is_named_and_leaves_the_baseline_missing() -> None:
