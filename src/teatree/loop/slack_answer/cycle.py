@@ -85,7 +85,6 @@ from teatree.loop.slack_answer.vocabulary import InboundReaction
 logger = logging.getLogger(__name__)
 
 _BATCH = 10
-
 type MessagingResolver = Callable[[str], MessagingBackend | None]
 
 

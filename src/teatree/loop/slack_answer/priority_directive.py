@@ -189,7 +189,7 @@ def pending_question_prefix(row: PendingChatInjection, text: str) -> bool:
 
 def apply_priority(ticket: Ticket, row: PendingChatInjection, *, enabled: bool) -> tuple[Ticket, bool]:
     """Apply the newest owner instruction in one conversation and re-read it."""
-    key = f"{row.channel}:{row.thread_ts}:{row.user_id}"
+    key = f"{row.channel}:{row.user_id}"
     with transaction.atomic():
         current = Ticket.objects.select_for_update().get(pk=ticket.pk)
         extra = dict(current.extra or {})

@@ -1,4 +1,4 @@
-"""Group adjacent inbound rows into one Slack answer turn."""
+"""Combine adjacent Slack messages into one answer turn."""
 
 from dataclasses import dataclass, field
 
@@ -6,6 +6,9 @@ from teatree.core.models import PendingChatInjection
 from teatree.loop.question_binding import _addressed
 from teatree.loop.slack_answer.priority_directive import parse_priority_directive
 
+# Consecutive messages from the same user on the same channel, with no
+# bot reply between them and received within this window, are one logical
+# turn (a message + its quick follow-up). Zero-token: pure DB/time logic.
 _COALESCE_WINDOW_SECONDS = 90
 
 

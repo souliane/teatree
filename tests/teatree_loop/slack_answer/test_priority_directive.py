@@ -125,6 +125,20 @@ class TestPriorityDirective(TestCase):
         assert "normally again" in backend.replies[1][2]
         reader.assert_not_called()
 
+    def test_confirmed_priority_receipt_survives_ticket_transition(self) -> None:
+        ticket = _ticket()
+        backend = RecordingBackend()
+        _row("#445 urgent", "2.000", thread="")
+
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+        ticket.refresh_from_db()
+        assert ticket.extra["slack_priority_receipts"] == {"D1:UUSER": "2.000"}
+
+        ticket.ignore()
+        ticket.save()
+        ticket.refresh_from_db()
+        assert ticket.extra["slack_priority_receipts"] == {"D1:UUSER": "2.000"}
+
     def test_failed_post_retry_cannot_reverse_a_later_directive(self) -> None:
         ticket = _ticket()
         backend = _backend()
@@ -175,6 +189,35 @@ class TestPriorityDirective(TestCase):
         assert ticket.expedited is False
         assert "superseded" in backend.replies[-1][2]
 
+    def test_root_retry_cannot_reverse_a_later_reply_directive(self) -> None:
+        ticket = _ticket()
+        backend = RecordingBackend()
+        backend.message_meta["2.000"] = {"ts": "2.000", "text": "#445 urgent"}
+        backend.message_meta["3.000"] = {"ts": "3.000", "thread_ts": "2.000"}
+        original_post = backend.post_reply
+
+        def post_except_root(*, channel: str, ts: str, text: str) -> RawAPIDict:
+            if ts == "2.000":
+                message = "Slack post unavailable"
+                raise RuntimeError(message)
+            return original_post(channel=channel, ts=ts, text=text)
+
+        root = _row("#445 urgent", "2.000", thread="")
+        reply = _row("not urgent", "3.000", thread="2.000")
+        with patch.object(backend, "post_reply", side_effect=post_except_root):
+            run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+        root.refresh_from_db()
+        reply.refresh_from_db()
+        assert root.loop_replied_at is None
+        assert reply.loop_response_confirmed_at is not None
+        assert Ticket.objects.get(pk=ticket.pk).expedited is False
+
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+
+        ticket.refresh_from_db()
+        assert ticket.expedited is False
+        assert "superseded" in backend.replies[-1][2]
+
     def test_unacknowledged_post_is_found_on_retry_without_a_second_reply(self) -> None:
         ticket = _ticket()
         backend = _backend()
@@ -200,6 +243,12 @@ class TestPriorityDirective(TestCase):
         assert row.mark_loop_replied(PendingChatInjection.AnswerKind.PRIORITY)
         PendingChatInjection.objects.filter(pk=row.pk).update(loop_replied_at=timezone.now() - dt.timedelta(minutes=3))
 
+        with patch.object(backend, "post_reply", side_effect=RuntimeError("Slack post unavailable")):
+            first = run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
+        row.refresh_from_db()
+        assert first.errors == 1
+        assert row.loop_replied_at is None
+
         report = run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=_ack)
 
         ticket.refresh_from_db()
@@ -207,6 +256,7 @@ class TestPriorityDirective(TestCase):
         assert report.answered_simple == 1
         assert ticket.expedited is True
         assert row.loop_response_confirmed_at is not None
+        assert row.answer_kind == PendingChatInjection.AnswerKind.PRIORITY
         assert len(backend.replies) == 1
 
     def test_ambiguous_message_keeps_priority_and_routes_normally(self) -> None:
@@ -235,6 +285,20 @@ class TestPriorityDirective(TestCase):
         assert ticket.expedited is False
         assert backend.replies == []
         assert backend.reactions == []
+        reader.assert_not_called()
+
+    def test_senderless_row_has_no_reader_or_slack_side_effects(self) -> None:
+        ticket = _ticket()
+        backend = _backend()
+        reader = Mock(side_effect=_ack)
+        _row("urgent", "2.000", user="")
+
+        run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend, reader=reader)
+
+        ticket.refresh_from_db()
+        assert ticket.expedited is False
+        assert backend.reactions == []
+        assert backend.replies == []
         reader.assert_not_called()
 
     def test_explicit_issue_reference_expedites_only_unique_unsettled_issue(self) -> None:
