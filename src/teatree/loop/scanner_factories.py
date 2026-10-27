@@ -25,7 +25,8 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.intake.budget import read_intake_budget, release_deadlocked_holder
 from teatree.core.intake.concurrency import resolve_intake_concurrency
 from teatree.core.models import ImplementedIssueMarker
-from teatree.core.overlay_repos import owned_repo_slugs
+from teatree.core.overlay_repos import intake_repo_slugs, owned_repo_slugs
+from teatree.core.review.pr_inventory import mark_inventory_unknown, write_inventory
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.loop.intake_idle_hold import idle_hold_reason
@@ -62,6 +63,7 @@ from teatree.loop.scanners import (
     TaskSweepScanner,
     TriageAssessorScanner,
 )
+from teatree.loop.scanners.head_lineage import GhLineageReader
 from teatree.loop.scanners.my_prs import CiEnricher
 from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
@@ -160,6 +162,8 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     reconcile_settled_clears_best_effort()
     return PrSweepScanner(
         repos=repos,
+        inventory_writer=write_inventory,
+        inventory_invalidator=mark_inventory_unknown,
         # #72: a bare slug carries no host, so routing per slug is what stops a GitLab
         # project being probed with the GitHub CLI and read as "no open MRs".
         api=ForgePrApiClient(
@@ -183,6 +187,8 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         # lets the sweep auto-merge a substrate PR that passes EVERY gate and DM the
         # owner "informed, not asked".
         substrate_standing_authorizer=settings.substrate_auto_merge_authorized_by,
+        # #5450: a clearance follows a merge of main to the new head when the PR's patch is unchanged.
+        head_lineage=GhLineageReader(),
     )
 
 
@@ -397,7 +403,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
         identities=backend.identities,
         exclude_labels=backend.exclude_labels,
-        repo_slugs=owned_repo_slugs(backend.overlay),
+        repo_slugs=intake_repo_slugs(backend.overlay, settings.issue_intake_repos),
         can_claim=can_claim,
         max_concurrent=limit,
         pass_budget_seconds=settings.issue_intake_pass_budget_seconds,

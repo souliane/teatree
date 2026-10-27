@@ -789,9 +789,10 @@ Usage: t3 codex auth check [OPTIONS]
  would.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --executor          Act on the read-only executor's own login; only          │
-│                     teatree-worker reaches it.                               │
-│ --help              Show this message and exit.                              │
+│ --executor              Act on the read-only executor's own login; only      │
+│                         teatree-worker reaches it.                           │
+│ --phase           TEXT  Check a read-only executor phase.                    │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7015,6 +7016,8 @@ Usage: t3 dream [OPTIONS] COMMAND [ARGS]...
 │                  (cron entry).                                               │
 │ gap-coverage     Prove every dream gap has exactly one owner; exit 1 on an   │
 │                  orphan, duplicate, bad link or open gap.                    │
+│ funnel           Show the daily dream funnel and whether a recurring         │
+│                  question class has stopped.                                 │
 │ gap-disposition  Record a folded dream gap's ADDRESS (with its citation) or  │
 │                  reasoned REJECT on its host.                                │
 │ compliance       Inspect the instruction-compliance accountant (#2663) — the │
@@ -7069,6 +7072,21 @@ Usage: t3 dream gap-coverage [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 dream funnel`
+
+```
+Usage: t3 dream funnel [OPTIONS]
+
+ Show the daily dream funnel and whether a recurring question class has
+ stopped.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --class        TEXT  Inspect one recurring question class.                   │
+│ --json               Emit the daily funnel as JSON.                          │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 dream gap-disposition`
 
 ```
@@ -7085,6 +7103,7 @@ Usage: t3 dream gap-disposition [OPTIONS] TICKET GAP_KEY
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --citation        TEXT  ADDRESS: the evidence that verifies the gap.         │
 │ --reject          TEXT  REJECT: why the gap is not worth addressing.         │
+│ --misfit          TEXT  RETURN: why this host cannot address the gap.        │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -7568,7 +7587,7 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
 │ wip             Bounded-WIP throughput dial.                                 │
 │ autonomy        Per-overlay trust switch (collapses the approval gates).     │
-│ secrets         Inspect sealed credentials and plan a password-store import. │
+│ secrets         Inspect, manage and copy sealed credentials.                 │
 │ worktree        Per-worktree FSM operations.                                 │
 │ workspace       Ticket-level workspace operations (every worktree in the     │
 │                 ticket).                                                     │
@@ -9303,7 +9322,7 @@ Usage: t3 teatree autonomy set [OPTIONS] LEVEL
 ```
 Usage: t3 teatree secrets [OPTIONS] COMMAND [ARGS]...
 
- Inspect sealed credentials and plan a password-store import.
+ Inspect, manage and copy sealed credentials.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -9311,7 +9330,12 @@ Usage: t3 teatree secrets [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ status       Show sealed-store key health and key IDs.                       │
 │ ls           List sealed entry names.                                        │
-│ import-pass  Classify password-store entries without copying values.         │
+│ import-pass  Classify password-store entries; --apply copies row entries.    │
+│ set          Seal a value from stdin or a hidden prompt.                     │
+│ rm           Remove a sealed entry.                                          │
+│ verify       Check referenced sealed entries without printing values.        │
+│ get          Print one secret line to a pipe.                                │
+│ exec         Run a command with secrets in its environment.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9347,10 +9371,88 @@ Usage: t3 teatree secrets ls [OPTIONS] [PREFIX]
 ```
 Usage: t3 teatree secrets import-pass [OPTIONS]
 
- Classify password-store names without copying their values.
+ Classify password-store names; with --apply copy them into sealed rows and
+ print names and statuses only.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --apply          Copy the row entries into the sealed store.                 │
+│ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets set`
+
+```
+Usage: t3 teatree secrets set [OPTIONS] [NAME]
+
+ Seal a value read from stdin (or a hidden prompt) under NAME in the sealed
+ store.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Entry name.                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets rm`
+
+```
+Usage: t3 teatree secrets rm [OPTIONS] [NAME]
+
+ Remove NAME from the sealed store.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Entry name.                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets verify`
+
+```
+Usage: t3 teatree secrets verify [OPTIONS]
+
+ Print ok|absent|unreadable per referenced entry, never a value; exit 1 if any
+ is unreadable.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets get`
+
+```
+Usage: t3 teatree secrets get [OPTIONS] [NAME]
+
+ Print the first line of NAME from the active store; exit 1 absent, 2
+ unreadable, 3 on a terminal.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Entry name.                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree secrets exec`
+
+```
+Usage: t3 teatree secrets exec [OPTIONS] [COMMAND]...
+
+ Run COMMAND with each --env VAR=<entry> value in the child's environment only.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   command      [COMMAND]...  Command to run after --.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --env         TEXT  VAR=<entry name>; repeatable.                            │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

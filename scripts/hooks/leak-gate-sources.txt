@@ -29,6 +29,7 @@ src/teatree/config/setting_parsers.py
 src/teatree/config/setting_registries.py
 src/teatree/config/settings.py
 src/teatree/config/settings_agent.py
+src/teatree/config/settings_communication.py
 src/teatree/config/settings_loop_flags.py
 src/teatree/config/settings_loop_owned.py
 src/teatree/config/settings_provisioning.py

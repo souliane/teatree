@@ -1,3 +1,4 @@
+import errno
 import logging
 import multiprocessing
 import os
@@ -11,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.utils.master_key import KeyFileSource, master_key_source
+from teatree.utils.master_key import KeyFileSource, MasterKeySourceError, master_key_source
 from teatree.utils.secrets import SecretStoreError
 from tests.teatree_utils.test_sealing import KEY_TEXT
 
@@ -63,6 +64,109 @@ def test_create_in_missing_directory_raises_store_error(tmp_path: Path) -> None:
         KeyFileSource(tmp_path / "missing" / "master.key").create()
 
 
+def test_link_refusal_raises_store_error_and_leaves_no_file(tmp_path: Path) -> None:
+    directory = tmp_path / "keys"
+    directory.mkdir()
+    with (
+        patch("teatree.utils.master_key.os.link", side_effect=PermissionError("hard links refused")),
+        pytest.raises(MasterKeySourceError, match="could not be created"),
+    ):
+        KeyFileSource(directory / "master.key").create()
+    assert list(directory.iterdir()) == []
+
+
+def test_read_only_key_directory_points_at_the_readme(tmp_path: Path) -> None:
+    real_open = os.open
+
+    def read_only(path: Path, flags: int, *args: int) -> int:
+        if flags & os.O_CREAT:
+            raise OSError(errno.EROFS, "Read-only file system")
+        return real_open(path, flags, *args)
+
+    with (
+        patch("teatree.utils.master_key.os.open", side_effect=read_only),
+        pytest.raises(MasterKeySourceError, match=r"read-only.*deploy/README.md"),
+    ):
+        KeyFileSource(tmp_path / "master.key").create()
+
+
+def test_directory_sync_failure_raises_store_error(tmp_path: Path) -> None:
+    directory = tmp_path / "keys"
+    directory.mkdir()
+    real_open = os.open
+
+    def refuse_directory(path: Path, flags: int, *args: int) -> int:
+        if Path(path) == directory:
+            message = "directory not openable"
+            raise PermissionError(message)
+        return real_open(path, flags, *args)
+
+    with (
+        patch("teatree.utils.master_key.os.open", side_effect=refuse_directory),
+        pytest.raises(MasterKeySourceError, match="directory could not be synced"),
+    ):
+        KeyFileSource(directory / "master.key").create()
+    assert [path.name for path in directory.iterdir()] == ["master.key"]
+
+
+def _production_env(volume: Path, **extra: str) -> dict[str, str]:
+    return {"T3_CONTROL_DB_DIR": str(volume), "TEATREE_ROLE": "worker", **extra}
+
+
+def test_production_default_inside_the_volume_is_refused_for_create(tmp_path: Path) -> None:
+    volume = tmp_path / "control"
+    volume.mkdir()
+    with pytest.raises(MasterKeySourceError, match="control-database volume"):
+        master_key_source(_production_env(volume)).create()
+    assert list(volume.iterdir()) == []
+
+
+def test_production_explicit_path_inside_the_volume_through_a_symlink_is_refused(tmp_path: Path) -> None:
+    volume = tmp_path / "control"
+    volume.mkdir()
+    (tmp_path / "alias").symlink_to(volume)
+    environment = _production_env(
+        volume, T3_MASTER_KEY_SOURCE=f"file:{tmp_path / 'alias' / 'sub' / '..' / 'master.key'}"
+    )
+    with pytest.raises(MasterKeySourceError, match="control-database volume"):
+        master_key_source(environment).create()
+    assert list(volume.iterdir()) == []
+
+
+def test_production_path_outside_the_volume_creates_the_key(tmp_path: Path) -> None:
+    volume = tmp_path / "control"
+    keys = tmp_path / "keys"
+    volume.mkdir()
+    keys.mkdir()
+    source = master_key_source(_production_env(volume, T3_MASTER_KEY_SOURCE=f"file:{keys / 'master.key'}"))
+    assert source.create().key_id == source.load().key_id
+
+
+def test_unset_role_keeps_the_default_inside_the_volume(tmp_path: Path) -> None:
+    volume = tmp_path / "control"
+    volume.mkdir()
+    source = master_key_source({"T3_CONTROL_DB_DIR": str(volume)})
+    assert source.create().key_id
+    assert (volume / "master.key").exists()
+
+
+def test_production_load_inside_the_volume_warns_once(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    volume = tmp_path / "control"
+    volume.mkdir()
+    (volume / "master.key").write_text(KEY_TEXT)
+    (volume / "master.key").chmod(0o600)
+    source = master_key_source(_production_env(volume))
+    with caplog.at_level("WARNING", logger="teatree.utils.master_key"):
+        source.load()
+        source.load()
+    warnings = [record.getMessage() for record in caplog.records if "control-database volume" in record.getMessage()]
+    expected = (
+        f"master key {source.label} sits inside the control-database volume; "
+        "a copy of the volume carries the key with the rows it seals (deploy/README.md)"
+    )
+    assert warnings == [expected]
+
+
 def test_explicit_missing_source_never_opens_the_default_key(tmp_path: Path) -> None:
     default = tmp_path / "control"
     default.mkdir()
@@ -74,6 +178,19 @@ def test_explicit_missing_source_never_opens_the_default_key(tmp_path: Path) -> 
         master_key_source(environment).load()
     assert str(explicit) in str(exc.value)
     assert [call.args[0] for call in spy.call_args_list] == [explicit]
+
+
+def test_in_volume_warning_is_once_across_new_source_instances(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    volume = tmp_path / "control"
+    volume.mkdir()
+    path = volume / "master.key"
+    KeyFileSource(path).create()
+    with caplog.at_level("WARNING", logger="teatree.utils.master_key"):
+        KeyFileSource(path, volume=volume).load()
+        KeyFileSource(path, volume=volume).load()
+    assert sum("sits inside the control-database volume" in record.message for record in caplog.records) == 1
 
 
 def _race_create(path: str, barrier: Barrier, results: Queue, creations: Queue) -> None:

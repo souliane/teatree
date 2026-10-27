@@ -52,6 +52,15 @@ class TestList:
         assert payload["entries"][0]["kind"] == WaitingKind.MANUAL
         assert payload["entries"][0]["ref"] == "call the bank"
 
+    def test_question_entry_carries_the_row_id_the_card_list_joins_on(self) -> None:
+        row = DeferredQuestion.record("what region?", **OWNER_DECISION)
+
+        [entry] = json.loads(_call("waiting", "list", "--json"))["entries"]
+
+        assert entry["row_id"] == row.pk
+        assert entry["owner_only"] is False
+        assert f"Q{row.pk}" in _call("waiting", "list")
+
 
 class TestAdd:
     def test_add_records_manual_item(self) -> None:

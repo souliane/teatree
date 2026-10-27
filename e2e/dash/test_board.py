@@ -4,12 +4,15 @@ The signature regression: a poll tick morphs the board in place without
 resetting horizontal scroll or dropping the open side panel (#3162).
 """
 
+import re
+
 import pytest
 from playwright.sync_api import Page, expect
 from pytest_django.live_server_helper import LiveServer
 
-from e2e.dash.pom import BoardPage, SeededBoard
+from e2e.dash.pom import BoardPage, PrBoardPage, SeededBoard
 from teatree.core.models.ticket import Ticket
+from tests.factories import TicketFactory
 
 State = Ticket.State
 
@@ -28,10 +31,48 @@ def test_seeded_tickets_land_in_their_state_columns(
 ) -> None:
     board = BoardPage(page, live_server.url)
     board.open()
-    expect(board.card_in_column(State.NOT_STARTED, seeded_board.backlog.pk)).to_be_visible()
+    backlog_card = board.card_in_column(State.NOT_STARTED, seeded_board.backlog.pk)
+    expect(backlog_card).to_be_hidden()
+    board.expand_column(State.NOT_STARTED)
+    expect(backlog_card).to_be_visible()
     expect(board.card_in_column(State.WORK_STARTED, seeded_board.building.pk)).to_be_visible()
     expect(board.card_in_column(State.REVIEW_REQUESTED, seeded_board.reviewing.pk)).to_be_visible()
     expect(board.card_in_column(State.MERGED, seeded_board.landed.pk)).to_be_visible()
+
+
+def test_default_board_groups_the_open_pr_by_who_acts_next(
+    live_server: LiveServer, page: Page, seeded_board: SeededBoard
+) -> None:
+    pr = seeded_board.reviewing.pull_requests.get()
+    board = PrBoardPage(page, live_server.url)
+    board.open()
+    expect(page.locator("[data-pr-group] h2")).to_have_text(
+        [
+            re.compile(name)
+            for name in ("Needs you", "Waiting on colleagues", "Factory working", "Ready to merge", "Blocked")
+        ]
+    )
+    card = board.group("Blocked").locator(board.card(f"{pr.repo}!{pr.iid}"))
+    expect(card).to_contain_text("PR state unreadable")
+    expect(card).to_contain_text("Approvals")
+    expect(card).to_contain_text("Last activity")
+
+
+def test_an_expanded_collapsed_column_stays_open_across_polls(
+    live_server: LiveServer, page: Page, seeded_board: SeededBoard
+) -> None:
+    board = BoardPage(page, live_server.url)
+    board.open()
+    backlog = page.locator(f'details[data-state="{State.NOT_STARTED}"]')
+    expect(backlog).not_to_have_attribute("open", "")
+    board.expand_column(State.NOT_STARTED)
+    expect(backlog).to_have_attribute("open", "")
+    expect(board.card_by_id(seeded_board.backlog.pk)).to_be_visible()
+
+    with page.expect_response(lambda r: "board/columns" in r.url):
+        pass
+    page.wait_for_timeout(300)
+    expect(backlog).to_have_attribute("open", "")
 
 
 def test_text_filter_narrows_the_cards(live_server: LiveServer, page: Page, seeded_board: SeededBoard) -> None:
@@ -69,9 +110,11 @@ def test_review_now_on_a_card_enqueues_without_opening_the_drawer_first(
     live_server: LiveServer, page: Page, seeded_board: SeededBoard
 ) -> None:
     """#4085: prioritise a PR from the row it is already on, not a raw DB query plus a CLI call."""
+    testable = TicketFactory(state=State.TESTED, short_description="ready for review")
     board = BoardPage(page, live_server.url)
     board.open()
-    review_now = board.enqueue_buttons_on(seeded_board.reviewing.pk).filter(has_text="Review now")
+    expect(board.enqueue_buttons_on(seeded_board.reviewing.pk)).to_have_count(0)
+    review_now = board.enqueue_buttons_on(testable.pk).filter(has_text="Review now")
     expect(review_now).to_be_enabled()
 
     page.on("dialog", lambda dialog: dialog.accept())

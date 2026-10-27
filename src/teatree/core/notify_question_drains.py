@@ -49,6 +49,7 @@ from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.reask_cadence import (
     REASK_KEY_PREFIX,
+    REASK_UNIT,
     RESURFACE_INTERVAL_HOURS,
     bump_due,
     first_posted_at,
@@ -280,6 +281,8 @@ def resurface_question_backlog(
         return False, 0
 
     stamped_at = now or timezone.now()
+    if all(first_posted_at(row.slack_ts, row.created_at) > stamped_at - REASK_UNIT for row in rows):
+        return False, len(rows)
     bucket = int(stamped_at.timestamp()) // (RESURFACE_INTERVAL_HOURS * 3600)
     previous_overlay = _scoped_overlay_env(overlay)
     try:
@@ -491,6 +494,7 @@ def drain_deferred_questions(
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
     owner_rows = _checked(live_owner_questions(), backend=backend)
+    pending_total = len(owner_rows)
     # Skip what a fresh send would decline to re-deliver BEFORE applying the cap. The queue
     # is oldest-first, so capping it directly hands the same stood-down head back every
     # time: each call deduped to a no-op and every row behind it stayed unreachable, on a
@@ -500,7 +504,7 @@ def drain_deferred_questions(
     if not rows:
         # Nothing NEW to send. The backlog total is still reported so a caller cannot read
         # "0 delivered" as "queue empty" — the distinction this drain previously erased.
-        return 0, len(owner_rows)
+        return 0, pending_total
 
     previous_overlay = _scoped_overlay_env(overlay)
     delivered = 0
@@ -526,7 +530,7 @@ def drain_deferred_questions(
     # The denominator is the BACKLOG, never the capped slice: `3/3` read as "all pending
     # delivered" while 69 were outstanding, which is how a permanently-stalled queue
     # looked healthy (#4064).
-    return delivered, len(owner_rows)
+    return delivered, pending_total
 
 
 def drain_unmirrored_deferred_questions(

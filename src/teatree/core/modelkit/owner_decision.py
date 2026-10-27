@@ -14,6 +14,21 @@ class OwnerDecision(enum.StrEnum):
     ARCHITECTURE = "architecture"
 
 
+OWNER_KEPT_DECISIONS = frozenset(
+    {
+        OwnerDecision.CREDENTIALS,
+        OwnerDecision.MONEY_OR_PLAN,
+        OwnerDecision.PUBLIC_POST,
+        OwnerDecision.IRREVERSIBLE,
+    }
+)
+HELD_PR_MARKER_PREFIX = "owner-wait:held-pr:"
+
+
+def owner_kept_decision(decision: OwnerDecision | None, dedupe_marker: str) -> bool:
+    return decision is None or decision in OWNER_KEPT_DECISIONS or dedupe_marker.startswith(HELD_PR_MARKER_PREFIX)
+
+
 OWNER_QUESTION_ROUTE = (
     "Ask the owner only via `t3 <overlay> questions record '<one question ending in ?>' --decision <kind> "
     "--checked '<fact>' --why '<one sentence on why you ask>' --blocker '<what stops you>' "
@@ -39,8 +54,11 @@ def owner_decision(value: object) -> OwnerDecision | None:
 
 
 __all__ = [
+    "HELD_PR_MARKER_PREFIX",
     "OWNER_ANSWER_ROUTE",
+    "OWNER_KEPT_DECISIONS",
     "OWNER_QUESTION_ROUTE",
     "OwnerDecision",
     "owner_decision",
+    "owner_kept_decision",
 ]

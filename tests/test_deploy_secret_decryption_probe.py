@@ -166,7 +166,7 @@ class TestHealthy:
 
         calls = (scenario.root / "calls").read_text(encoding="utf-8")
         assert result.returncode == 0, result.stdout
-        assert "exec teatree-teatree-worker-1 timeout 5 pass show gitlab/pat" in calls
+        assert "exec teatree-teatree-worker-1 timeout 5 /usr/local/bin/secret-read.sh get gitlab/pat" in calls
 
 
 class TestFailsLoud:

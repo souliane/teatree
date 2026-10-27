@@ -1,0 +1,45 @@
+{% load static %}
+  <script src="{% static 'dash/js/mermaid-11.min.js' %}"></script>
+  <script>
+    // Theme the lifecycle diagram from the CSS tokens so it matches the palette in
+    // both light and dark — never a hardcoded theme.
+    function mermaidTokens() {
+      var s = getComputedStyle(document.documentElement);
+      var v = function (n) { return s.getPropertyValue(n).trim(); };
+      return {
+        startOnLoad: false,
+        theme: "base",
+        themeVariables: {
+          darkMode: (document.documentElement.dataset.theme || "dark") !== "light",
+          background: v("--surface-2"),
+          mainBkg: v("--surface"),
+          primaryColor: v("--surface"),
+          primaryBorderColor: v("--line"),
+          primaryTextColor: v("--ink"),
+          lineColor: v("--ink-muted"),
+          secondaryColor: v("--surface-2"),
+          tertiaryColor: v("--surface-2"),
+          fontFamily: v("--font-mono"),
+          fontSize: "13px"
+        }
+      };
+    }
+    function initMermaid() { mermaid.initialize(mermaidTokens()); }
+    function renderDrawerDiagram(root) {
+      var nodes = root.querySelectorAll(".mermaid");
+      nodes.forEach(function (n) {
+        if (!n.dataset.src) { n.dataset.src = n.textContent; }
+        else { n.removeAttribute("data-processed"); n.innerHTML = n.dataset.src; }
+      });
+      if (nodes.length) { mermaid.run({ nodes: nodes }); }
+    }
+    initMermaid();
+    document.body.addEventListener("htmx:afterSwap", function (evt) {
+      if (evt.target.id === "drawer") { renderDrawerDiagram(evt.target); }
+    });
+    window.addEventListener("t3:theme", function () {
+      initMermaid();
+      var drawer = document.getElementById("drawer");
+      if (drawer) { renderDrawerDiagram(drawer); }
+    });
+  </script>

@@ -47,21 +47,21 @@ class DirtGuardTest(TestCase):
     def test_a_clean_worktree_is_not_guarded(self) -> None:
         wt_dir, row, target = self._worktree()
 
-        guard_or_warn_dirty_worktree(row, str(wt_dir), target, keep_if_dirty=True, force=False)
+        guard_or_warn_dirty_worktree(row, str(wt_dir), target, force=False)
 
     def test_a_modified_file_refuses_as_uncommitted_changes(self) -> None:
         wt_dir, row, target = self._worktree()
         (wt_dir / "tracked.py").write_text("x = 2\n", encoding="utf-8")
 
         with pytest.raises(RuntimeError, match="uncommitted changes"):
-            guard_or_warn_dirty_worktree(row, str(wt_dir), target, keep_if_dirty=True, force=False)
+            guard_or_warn_dirty_worktree(row, str(wt_dir), target, force=False)
 
     def test_an_unreadable_working_tree_keeps_without_claiming_dirt(self) -> None:
         wt_dir, row, target = self._worktree()
         corrupt_index(wt_dir)
 
         with pytest.raises(RuntimeError) as refusal:
-            guard_or_warn_dirty_worktree(row, str(wt_dir), target, keep_if_dirty=True, force=False)
+            guard_or_warn_dirty_worktree(row, str(wt_dir), target, force=False)
 
         assert "uncommitted changes" not in str(refusal.value)
         assert "could not answer" in str(refusal.value)
@@ -70,7 +70,7 @@ class DirtGuardTest(TestCase):
         wt_dir, row, target = self._worktree()
         corrupt_index(wt_dir)
 
-        guard_or_warn_dirty_worktree(row, str(wt_dir), target, keep_if_dirty=True, force=True)
+        guard_or_warn_dirty_worktree(row, str(wt_dir), target, force=True)
 
     def test_the_message_names_the_worktree_in_both_shapes(self) -> None:
         _wt_dir, row, _target = self._worktree()

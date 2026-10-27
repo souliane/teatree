@@ -52,6 +52,7 @@ _NOT_A_TICKET_STATE = frozenset(
         ("src/teatree/docker/reclaim.py", "`planned`", "steps carry the exact argv"),
         ("src/teatree/core/review/completion_evidence.py", '"shipped":', '"shipped": "shipped"'),
         ("tests/teatree_core/review/test_completion_evidence.py", '== "shipped"', "claim_kind"),
+        ("tests/teatree_core/test_loops_tick_open_prs.py", '"started":', '"started": False'),
         ("tests/test_block_uncovered_diff_hook.py", "`shipped`", "SESSION repo"),
     }
 )

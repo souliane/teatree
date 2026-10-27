@@ -35,10 +35,10 @@ from teatree.core.issue_hygiene import (
 )
 from teatree.core.issue_writes.section_removal import DescriptionRemovalConflictError
 from teatree.core.models import ConsolidatedMemory, Rubric, Task, Ticket
-from teatree.core.models.dream_gap_ledger import BATCH_KEY, pending_entries, take_pending
+from teatree.core.models.dream_gap_ledger import BATCH_KEY, pending_entries, take_pending, undispositioned_gap_keys
+from teatree.core.models.dream_gap_types import DreamGapEntry
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import has_plan_decision
-from teatree.core.models.types import DreamGapEntry
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
 from teatree.core.send_proxy import REDACTION_PLACEHOLDER, OutboundBlockedError, forge_from_url
 from teatree.hooks.publish_destination import Destination, is_public_destination
@@ -49,11 +49,13 @@ DISPOSITION_CRITERION = (
     "Every folded dream gap carries a recorded disposition: `t3 dream gap-coverage --ticket {pk}` exits 0."
 )
 PLANNING_INTENT = (
-    "Address or reject each dream gap folded into this ticket, recording each with "
+    "Address, reject or return each dream gap folded into this ticket, recording each with "
     '`t3 dream gap-disposition {pk} <gap_key> --citation "<evidence>"` or '
-    '`t3 dream gap-disposition {pk} <gap_key> --reject "<why>"`:\n{gaps}'
+    '`t3 dream gap-disposition {pk} <gap_key> --reject "<why>"` or '
+    '`t3 dream gap-disposition {pk} <gap_key> --misfit "<why this host cannot address it>"`:\n{gaps}'
 )
 _SECTION_HEADING = "Dream gaps folded in"
+HOST_GAP_CAP = 3
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +80,27 @@ class _FoldResult:
     section_body: str = ""
 
 
+def _host_capacity_refusal(host: Ticket, entries: list[DreamGapEntry]) -> str:
+    declined = [entry["gap_key"] for entry in entries if host.pk in entry.get("declined_hosts", [])]
+    if declined:
+        return f"host already declined gap(s): {', '.join(declined)}"
+    existing = set(undispositioned_gap_keys(host))
+    if len(existing | {entry["gap_key"] for entry in entries}) > HOST_GAP_CAP:
+        return f"host exceeds {HOST_GAP_CAP} undispositioned gaps"
+    return ""
+
+
+def _pending_manifest_entries(umbrella: Ticket, manifest: list[DreamGapEntry]) -> list[DreamGapEntry]:
+    themes = {str(item.get("gap_key") or ""): str(item.get("theme") or "") for item in manifest}
+    umbrella.refresh_from_db(fields=["extra"])
+    pending = {entry.get("gap_key"): entry for entry in pending_entries(umbrella)}
+    unknown = sorted(key for key in themes if key not in pending)
+    if unknown or not themes:
+        msg = f"not pending on {umbrella.issue_url}: {', '.join(unknown) or '(empty manifest)'}"
+        raise GapAttachError(msg)
+    return [{**pending[key], "theme": theme} for key, theme in themes.items()]
+
+
 def attach_dream_gaps(
     host: Ticket,
     manifest: list[DreamGapEntry],
@@ -87,19 +110,14 @@ def attach_dream_gaps(
     sweep_run_id: str = "",
 ) -> AttachOutcome:
     """Fold *manifest*'s pending gaps into *host*; record them only once the fold is proved on the forge."""
-    host.refresh_from_db(fields=["state"])
+    host.refresh_from_db(fields=["state", "extra"])
     if host.is_settled:
         return AttachOutcome(
             host_pk=host.pk, attached=[], refusal=f"host {host.issue_url} is {host.state}: no new gaps"
         )
-    themes = {str(item.get("gap_key") or ""): str(item.get("theme") or "") for item in manifest}
-    umbrella.refresh_from_db(fields=["extra"])
-    pending = {entry.get("gap_key"): entry for entry in pending_entries(umbrella)}
-    unknown = sorted(key for key in themes if key not in pending)
-    if unknown or not themes:
-        msg = f"not pending on {umbrella.issue_url}: {', '.join(unknown) or '(empty manifest)'}"
-        raise GapAttachError(msg)
-    entries: list[DreamGapEntry] = [{**pending[key], "theme": theme} for key, theme in themes.items()]
+    entries = _pending_manifest_entries(umbrella, manifest)
+    if refusal := _host_capacity_refusal(host, entries):
+        return AttachOutcome(host_pk=host.pk, attached=[], refusal=refusal)
 
     fold = _fold_into_host_issue(host, entries, code_host=code_host, sweep_run_id=sweep_run_id)
     if fold.refusal and not fold.marker:
@@ -114,7 +132,7 @@ def attach_dream_gaps(
             terminal_state = locked_host.state
         elif not fold.refusal:
             host.state = locked_host.state
-            taken = {entry.get("gap_key") for entry in take_pending(umbrella, set(themes))}
+            taken = {entry.get("gap_key") for entry in take_pending(umbrella, {entry["gap_key"] for entry in entries})}
             attached = [entry for entry in entries if entry.get("gap_key") in taken]
             host.merge_extra(append_to_lists={BATCH_KEY: list(attached)})
             context = locked_host.context

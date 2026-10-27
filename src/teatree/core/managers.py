@@ -1,10 +1,12 @@
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, Unpack, cast
 
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.admission.generation_admission import reopen_own_stranded_drain
@@ -41,7 +43,6 @@ from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_c
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
 from teatree.core.modelkit.phases import CheapClass, PhaseCost
-from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 from teatree.generation import current_generation
 
@@ -171,6 +172,21 @@ class TicketQuerySet(models.QuerySet):
 
 
 class WorktreeQuerySet(models.QuerySet):
+    def sharing_checkout(
+        self,
+        path: str | Path,
+        *,
+        ticket_id: int | None = None,
+        path_matches: Callable[[str, str | Path], bool],
+    ) -> list["Worktree"]:
+        rows = self.select_related("ticket")
+        if ticket_id is not None:
+            rows = rows.exclude(ticket_id=ticket_id)
+        return [row for row in rows if row.worktree_path and path_matches(row.worktree_path, path)]
+
+    def runtime_peers(self, worktree: "Worktree") -> list["Worktree"]:
+        return list(self.exclude(pk=worktree.pk).select_related("ticket"))
+
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         return _for_overlay(self, overlay)
 
@@ -206,13 +222,6 @@ class WorktreeQuerySet(models.QuerySet):
 
 
 class TaskQuerySet(models.QuerySet):
-    def without_newer_phase_sibling(self) -> models.QuerySet:
-        task_model = cast("type[Task]", apps.get_model("core", "Task"))
-        newer = task_model.objects.filter(
-            ticket_id=OuterRef("ticket_id"), phase=OuterRef("phase"), pk__gt=OuterRef("pk")
-        ).exclude(status=task_model.Status.FAILED, failure_kind__in=NON_REPAIR_KINDS)
-        return self.alias(newer_phase_sibling=Exists(newer)).filter(newer_phase_sibling=False)
-
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         """Tasks scoped to an overlay through the ticket OR the session.
 

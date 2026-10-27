@@ -90,6 +90,21 @@ class TicketStateSetsModel(TicketFacet):
         return [s.value for s in cls.State].index(state)
 
     @classmethod
+    def off_ladder_states(cls) -> frozenset[str]:
+        return frozenset({cls.State.REVIEW_DELIVERED, cls.State.IGNORED})
+
+    @classmethod
+    def state_retreats(cls, source: str, target: str) -> bool:
+        if (
+            source not in cls.State.values
+            or target not in cls.State.values
+            or source in cls.off_ladder_states()
+            or target in cls.off_ladder_states()
+        ):
+            return False
+        return cls.state_index(target) < cls.state_index(source)
+
+    @classmethod
     def state_advances(cls, current: str, candidate: str) -> bool:
         """True iff writing *candidate* over *current* moves the ticket forward.
 

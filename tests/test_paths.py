@@ -590,6 +590,15 @@ class TestCanonicalControlDbLivesInItsVolume:
 
         assert resolved == volume / "db.sqlite3"
 
+    def test_a_child_home_uses_its_own_canonical_dir_after_parent_import(self, tmp_path: Path) -> None:
+        home = tmp_path / "child-home"
+        volume = tmp_path / "control-db"
+        env = {paths.CONTROL_DB_DIR_ENV: str(volume)}
+
+        assert paths.canonical_db_in(home / ".local" / "share" / "teatree", env=env, home=home) == volume / "db.sqlite3"
+        sandbox = tmp_path / "sandbox" / "teatree"
+        assert paths.canonical_db_in(sandbox, env=env, home=home) == sandbox / "db.sqlite3"
+
     def test_an_isolated_worktree_dir_keeps_its_database_beside_itself(self, tmp_path: Path) -> None:
         isolated = tmp_path / "teatree-worktrees" / "abc123"
 
@@ -625,7 +634,7 @@ class TestPrimaryDataDirIsNotTheDatabasesParent:
         # The data dir captures the original HOME at import; the DB captures the
         # control-dir override then. The test harness's later HOME changes neither.
         assert paths.TRUE_CANONICAL_DB.parent != paths._TRUE_CANONICAL_DATA_DIR
-        assert paths.TRUE_CANONICAL_DB.parent == paths.control_db_dir(os.environ)
+        assert paths.TRUE_CANONICAL_DB.parent == paths.DEFAULT_CONTROL_DB_DIR
 
 
 class TestCoreRepoRoot:
