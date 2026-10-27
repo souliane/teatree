@@ -9755,6 +9755,8 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 │                             CLOSED/nonexistent target issue/PR URL.          │
 │ --kind                TEXT  Classify: 'fix' or 'feature' (blank infers from  │
 │                             the title, #17).                                 │
+│ --reason              TEXT  Reason for adding repositories to an existing    │
+│                             ticket.                                          │
 │ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

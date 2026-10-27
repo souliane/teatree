@@ -84,6 +84,7 @@ Project metadata, CI integration, MR validation, and skill registration live on 
 | `get_required_description_sections()` | `[]` | MR-description sections (beyond What/Why) the gate requires and the generator emits by default — e.g. `["Configuration"]` (#312) |
 | `get_description_section_defaults()` | `{}` | Default body text the generator writes under a missing required section — e.g. a `Configuration` no-config line (#312) |
 | `get_followup_repos()` | `[]` | Repos to check during follow-up sync |
+| `get_issue_repos(issue_url)` | `[]` | Optional repo hint for one issue; empty falls through to core's issue-repo detection |
 | `choose_filing_repo(*, title, body, candidates)` | `candidates[0]` | The repo a filed work item goes to: one of the owned repos in `candidates`, returned verbatim. Raise `teatree.core.answering.work_item_filing.WorkItemFilingError` naming the candidates when the text does not decide; a slug outside `candidates`, or any other exception, is stated in the owner's thread and files nothing |
 | `get_skill_metadata()` | `{}` | Skill path, remote patterns, trigger index for the overlay's companion skills |
 | `get_ci_project_path()` | `""` | CI project path for pipeline triggers and evidence posting |

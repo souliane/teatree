@@ -22,6 +22,7 @@ from django.db import transaction
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.loader import get_code_host_for_url
 from teatree.config import worktree_root
+from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
 from teatree.core.intake.resolve import _get_user_cwd
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind, parse_kind
 from teatree.core.management.commands._workspace import helpers as _wh
@@ -29,7 +30,7 @@ from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.project_learning import ProjectLearning
 from teatree.core.models.ticket_display import format_intake_summary
-from teatree.core.overlay_loader import overlay_name_of
+from teatree.core.overlay_loader import get_overlay, overlay_name_of
 from teatree.core.runners import WorktreeProvisioner
 from teatree.core.worktree.dev_repo import parse_repo_branch_map, resolve_repo_names
 from teatree.core.worktree.ticket_workspace import ticket_workspace_dir
@@ -61,6 +62,10 @@ class TerminalTicketRefusedError(Exception):
 
 class InvalidTicketKindError(ValueError):
     """Raised by :func:`build_intake` when ``--kind`` is not a valid Ticket.Kind (#17)."""
+
+
+class RepoExpansionRefusedError(ValueError):
+    """An existing ticket gained repos without an expansion reason."""
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,7 @@ class TicketIntake:
     adopt: "AdoptContext | None" = None
     # #17: explicit ``--kind`` (``fix``/``feature``). Blank defers to inference.
     kind: str = ""
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,29 @@ class RawTicketInputs:
     take_over: bool
     adopt: "AdoptContext | None" = None
     kind: str = ""
+    reason: str = ""
+
+
+def prepare_ticket_reference(
+    write: Callable[[str], None],
+    issue_url: str,
+    *,
+    adopt: bool,
+    adopt_branch: str,
+    adopt_closed: bool,
+) -> tuple["OverlayBase", str, AdoptContext | None]:
+    overlay = get_overlay(_wh.resolve_overlay_name_for_url(issue_url))
+    try:
+        issue_url = canonicalize_issue_ref(overlay, issue_url)
+    except InvalidIssueRefError as exc:
+        write(f"  Refused: {exc}")
+        raise SystemExit(1) from exc
+    adopt_ctx = resolve_adopt_context(adopt=adopt, adopt_branch=adopt_branch)
+    refusal = adopt_preflight_refusal(overlay, issue_url, adopt_ctx, allow_closed=adopt_closed)
+    if refusal is not None:
+        write(refusal)
+        raise SystemExit(1)
+    return overlay, issue_url, adopt_ctx
 
 
 def resolve_adopt_context(*, adopt: bool, adopt_branch: str) -> AdoptContext | None:
@@ -209,6 +238,7 @@ def build_intake(overlay: "OverlayBase", raw: RawTicketInputs) -> TicketIntake:
         branches=parse_repo_branch_map(raw.repos),
         adopt=raw.adopt,
         kind=raw.kind,
+        reason=raw.reason,
     )
 
 
@@ -231,7 +261,7 @@ def locked_get_or_create_ticket(
     *,
     kind: Ticket.Kind = Ticket.Kind.FEATURE,
     overlay_name: str = "",
-) -> Ticket:
+) -> tuple[Ticket, bool]:
     """Get-or-create the ticket and lock it for the provisioning RMW.
 
     #800 N3: ``get_or_create`` does not lock the row; the subsequent
@@ -253,8 +283,8 @@ def locked_get_or_create_ticket(
         issue_url, overlay=overlay_name, variant=variant, repos=repo_names, kind=kind
     )
     if created:
-        return ticket
-    return Ticket.objects.select_for_update().get(pk=ticket.pk)  # select-for-update: caller-atomic
+        return ticket, True
+    return Ticket.objects.select_for_update().get(pk=ticket.pk), False  # select-for-update: caller-atomic
 
 
 def build_ticket(
@@ -276,7 +306,7 @@ def build_ticket(
     # Read before ``atomic()``: its ``BEGIN IMMEDIATE`` would hold the write lock for the forge's latency.
     description = intake.description or overlay.get_issue_title(intake.issue_url)
     with transaction.atomic():
-        ticket = locked_get_or_create_ticket(
+        ticket, created = locked_get_or_create_ticket(
             intake.issue_url,
             intake.variant,
             intake.repo_names,
@@ -289,12 +319,23 @@ def build_ticket(
         # Refuse a silent rebind when --variant disagrees with the existing ticket's variant (#1306).
         _wh.reject_variant_mismatch(write, ticket, intake.variant)
 
+        prior = [] if created else list(ticket.repos or [])
+        added = list(dict.fromkeys(name for name in intake.repo_names if name not in prior))
+        if not created and added and not intake.reason.strip():
+            write(f"  Refused: adding {', '.join(added)} requires --reason <why>.")
+            raise RepoExpansionRefusedError
+
         if ticket.state == Ticket.State.NOT_STARTED:
             ticket.scope(variant=intake.variant or None, repos=intake.repo_names)
 
-        ticket.repos = list(dict.fromkeys((ticket.repos or []) + intake.repo_names))
+        ticket.repos = list(dict.fromkeys(prior + intake.repo_names))
 
         extra = cast("TicketExtra", ticket.extra or {})
+        if not created and added:
+            extra["repo_expansions"] = [
+                *extra.get("repo_expansions", []),
+                {"repos": added, "reason": intake.reason.strip()},
+            ]
         if intake.adopt:
             # Adopt (#2275): register the ticket against the EXISTING branch the
             # operator handed us, not a derived ``<number>-<slug>``, and record

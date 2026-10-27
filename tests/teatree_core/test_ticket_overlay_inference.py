@@ -271,7 +271,7 @@ class TestCreationSeamStampsOverlay(TestCase):
         tracker_url = "https://gitlab.com/acme/bugs/-/work_items/2374"
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
-            ticket = locked_get_or_create_ticket(tracker_url, "", ["widgets"], overlay_name="overlay-b")
+            ticket, _ = locked_get_or_create_ticket(tracker_url, "", ["widgets"], overlay_name="overlay-b")
             assert ticket._infer_overlay() == ""  # inference is blind here — the stamp is the only signal
             assert ticket.overlay == "overlay-b"
             assert get_overlay_for_ticket(ticket) is overlays["overlay-b"]
@@ -281,7 +281,7 @@ class TestCreationSeamStampsOverlay(TestCase):
         url = "https://gitlab.com/acme/bugs/-/work_items/7"
         Ticket.objects.create(overlay="overlay-a", issue_url=url)
 
-        ticket = locked_get_or_create_ticket(url, "", ["widgets"], overlay_name="overlay-b")
+        ticket, _ = locked_get_or_create_ticket(url, "", ["widgets"], overlay_name="overlay-b")
 
         assert ticket.overlay == "overlay-a"
         assert Ticket.objects.filter(issue_url=url).count() == 1

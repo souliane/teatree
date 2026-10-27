@@ -138,6 +138,11 @@ class PlanningHandoff(TypedDict, total=False):
     reason: str
 
 
+class RepoExpansion(TypedDict):
+    repos: list[str]
+    reason: str
+
+
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     nit_follow_up: bool
@@ -185,6 +190,7 @@ class TicketExtra(TypedDict, total=False):
     # single ticket-dir name so every repo provisions as a SIBLING in one dir.
     # Repos absent from the map fall back to ``branch``.
     branches: dict[str, str]
+    repo_expansions: list[RepoExpansion]
     # #2275 adopt: repo -> existing on-disk worktree_path for an outside branch
     # registered via ``workspace ticket --adopt``; the provisioner records the
     # path verbatim instead of ``git worktree add``.

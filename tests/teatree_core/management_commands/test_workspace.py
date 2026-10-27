@@ -58,6 +58,7 @@ from tests.teatree_core.management_commands._overlays import (
     FULL_OVERLAY,
     NESTED_OVERLAY,
     SETTINGS,
+    FullMetadata,
     FullOverlay,
     FullProvisioning,
     _patch_overlays,
@@ -325,9 +326,43 @@ class _TicketIntakeCase(TestCase):
 class TestWorkspaceTicketIssueIdentity(_TicketIntakeCase):
     """GitLab serves one issue at ``/-/issues/N`` and ``/-/work_items/N``; both are ONE ticket (#2293)."""
 
+    def test_first_repo_added_to_existing_empty_ticket_requires_reason(self) -> None:
+        url = "https://gitlab.com/acme/widgets/-/issues/258"
+        ticket = Ticket.objects.create(issue_url=url, overlay="test", repos=[])
+
+        refusal = _refused_workspace_ticket(url, repos="backend")
+        ticket.refresh_from_db()
+        assert "--reason" in refusal
+        assert ticket.repos == []
+
+        call_command("workspace", "ticket", url, repos="backend", reason="initial scope")
+        ticket.refresh_from_db()
+        assert ticket.repos == ["backend"]
+        assert ticket.extra["repo_expansions"] == [{"repos": ["backend"], "reason": "initial scope"}]
+
+    def test_expansion_requires_reason_and_records_each_step(self) -> None:
+        url = "https://gitlab.com/acme/widgets/-/issues/257"
+        ticket_id = cast("int", call_command("workspace", "ticket", url, repos="backend"))
+
+        refusal = _refused_workspace_ticket(url, repos="frontend")
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert "--reason" in refusal
+        assert ticket.repos == ["backend"]
+        assert ticket.extra.get("repo_expansions") is None
+
+        call_command("workspace", "ticket", url, repos="frontend", reason="frontend change")
+        call_command("workspace", "ticket", url, repos="frontend", reason="frontend change")
+        call_command("workspace", "ticket", url, repos="api", reason="api change")
+        ticket.refresh_from_db()
+        assert ticket.repos == ["backend", "frontend", "api"]
+        assert ticket.extra["repo_expansions"] == [
+            {"repos": ["frontend"], "reason": "frontend change"},
+            {"repos": ["api"], "reason": "api change"},
+        ]
+
     def test_issues_and_work_items_urls_resolve_to_the_same_ticket(self) -> None:
         stored = Ticket.objects.create(issue_url=_WORK_ITEM_URL)
-        assert call_command("workspace", "ticket", _ISSUE_URL) == stored.pk
+        assert call_command("workspace", "ticket", _ISSUE_URL, reason="issue scope") == stored.pk
         assert list(Ticket.objects.values_list("issue_url", flat=True)) == [_WORK_ITEM_URL]
 
     def test_the_same_number_in_another_repo_is_another_ticket(self) -> None:
@@ -368,7 +403,10 @@ class TestWorkspaceTicketOnATerminalTicket(_TicketIntakeCase):
 
     def test_a_started_ticket_still_proceeds_with_take_over(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/3", state=Ticket.State.WORK_STARTED)
-        assert call_command("workspace", "ticket", "https://example.com/issues/3", take_over=True) == ticket.pk
+        assert (
+            call_command("workspace", "ticket", "https://example.com/issues/3", take_over=True, reason="issue scope")
+            == ticket.pk
+        )
 
 
 class TestWorkspaceTicketRefusalsExitNonZero(_TicketIntakeCase):
@@ -710,6 +748,19 @@ class TestWorkspaceTicket(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_no_derived_repo_keeps_ticket_without_worktree(self) -> None:
+        url = "https://example.com/issues/5551"
+        with patch.object(FullMetadata, "get_issue_repos", return_value=[]):
+            refusal = _refused_workspace_ticket(url)
+
+        ticket = Ticket.objects.get(issue_url=url)
+        assert ticket.repos == []
+        assert not Worktree.objects.filter(ticket=ticket).exists()
+        assert not (_worktree_root() / ticket.extra["branch"]).exists()
+        assert "worker retries" in refusal
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_creates_ticket_and_worktrees(self) -> None:
         ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/42"))
 
@@ -912,6 +963,7 @@ class TestWorkspaceTicket(TestCase):
                 "ticket",
                 "https://example.com/issues/45",
                 repos="frontend:fix/fe-45",
+                reason="frontend branch",
             ),
         )
 
@@ -1184,7 +1236,9 @@ class TestWorkspaceTicket(TestCase):
         )
         assert Worktree.objects.filter(ticket_id=ticket_id).count() == 1
 
-        call_command("workspace", "ticket", "https://example.com/issues/101", repos="backend,frontend")
+        call_command(
+            "workspace", "ticket", "https://example.com/issues/101", repos="backend,frontend", reason="frontend work"
+        )
         assert Worktree.objects.filter(ticket_id=ticket_id).count() == 2
         assert Worktree.objects.filter(ticket_id=ticket_id, repo_path="frontend").exists()
 
@@ -1302,6 +1356,7 @@ class TestWorkspaceTicket(TestCase):
                 patch.object(provision_mod, "clone_root", return_value=workspace),
                 patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
+                patch.object(FullMetadata, "get_issue_repos", return_value=["org/backend", "org/frontend"]),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/90"))
 
@@ -1346,6 +1401,7 @@ class TestWorkspaceTicket(TestCase):
                 patch("teatree.core.worktree.dev_repo.find_project_root", return_value=core),
                 patch("teatree.core.worktree.dev_repo.discover_active_overlay", return_value=None),
                 patch.object(git_mod, "remote_slug", return_value="souliane/teatree"),
+                patch.object(FullMetadata, "get_issue_repos", return_value=[]),
             ):
                 ticket_id = cast(
                     "int",
@@ -1357,8 +1413,8 @@ class TestWorkspaceTicket(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-prod-issue")
-    def test_product_issue_still_provisions_product_repos(self) -> None:
-        """#727 regression guard: a product-repo issue keeps the product repo set."""
+    def test_overlay_hint_can_request_multiple_repos(self) -> None:
+        """An overlay hint can request both repositories for one issue."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = self._allowed_root(Path(tmp))
             core = workspace / "souliane" / "teatree"
