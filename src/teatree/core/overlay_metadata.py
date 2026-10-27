@@ -85,6 +85,11 @@ class OverlayMetadata:
     def get_followup_repos(self) -> list[str]:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return []
 
+    def get_issue_repos(self, issue_url: str) -> list[str]:
+        """Optional repo hint for an issue; an empty answer leaves resolution to core."""
+        del self, issue_url
+        return []
+
     @staticmethod
     def choose_filing_repo(*, title: str, body: str, candidates: tuple[str, ...]) -> str:
         """The repo a work item is filed in, one of *candidates* (the overlay's owned repos, never empty) (#5508).
