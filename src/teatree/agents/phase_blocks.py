@@ -508,20 +508,16 @@ def _shipping_phase_lines() -> tuple[str, ...]:
         "",
         "PHASE: shipping — auto-review gate",
         "Before creating the PR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
-        "If the result shows `reviewing` in the `missing` list:",
-        "1. Spawn a sub-agent to review the diff. Use this exact dispatch prompt so the",
-        "   reviewer loads the overlay review conventions (do NOT abbreviate the skill block):",
+        "If `missing` includes `reviewing`:",
+        "1. Spawn a reviewer sub-agent with this exact prompt, including its skill block:",
         reviewer_dispatch,
-        (
-            "2. After the sub-agent completes, mark reviewing as visited:"
-            " `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."
-        ),
+        ("2. When it completes, mark reviewing visited: `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."),
         "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-        "If the result shows `retro` in the `missing` list:",
+        "If `missing` includes `retro`:",
         "1. Run `/t3:retro` to capture lessons from this session and commit any skill fixes.",
         "2. Mark retro as visited: `t3 <overlay> lifecycle visit-phase <ticket_id> retro`.",
         "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-        "Do NOT create a new session for the review — use a sub-agent within this session.",
+        "Review in this session's sub-agent, not a new session.",
     )
 
 
