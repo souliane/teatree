@@ -442,9 +442,12 @@ def test_a_device_mount_outside_the_runtime_set_is_refused(fake: FakeExecutor, m
 def test_a_readable_secret_file_under_a_mount_is_refused(fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch) -> None:
     fake.probe["scan"][CLONE_ROOT]["secrets"] = [f"{CLONE_ROOT}/example/.env"]
 
-    assert f"it can read {CLONE_ROOT}/example/.env, a secret file under {CLONE_ROOT}" in str(
-        _refusal(fake, monkeypatch)
-    )
+    secret = f"{CLONE_ROOT}/example/.env"
+
+    assert (
+        f"it can read {secret}, a secret file under {CLONE_ROOT}; "
+        f"fix: chmod o-rwx {secret} in the worker, or move it out of {CLONE_ROOT}"
+    ) in str(_refusal(fake, monkeypatch))
 
 
 @pytest.mark.parametrize("target", ["/", _CHECKOUT_GIT, CLONE_ROOT, WORKTREE_ROOT])
@@ -615,8 +618,20 @@ def test_selection_runs_a_live_probe_exec(fake: FakeExecutor, monkeypatch: pytes
     assert [call[2] for call in probes] == [EXECUTOR_ID, EXECUTOR_ID]
 
 
-@pytest.mark.parametrize("phase", ["reviewing", "critic_reviewing"])
-def test_review_phases_are_probed_on_each_selection(
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "reviewing",
+        "critic_reviewing",
+        "scoping",
+        "triage_assessing",
+        "directive_interpreting",
+        "answering",
+        "requesting_review",
+        "shipping",
+    ],
+)
+def test_read_only_phases_are_probed_on_each_selection(
     fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch, managed: str, phase: str
 ) -> None:
     _applied(fake, monkeypatch)
@@ -670,7 +685,7 @@ class _BarCase(NamedTuple):
         _BarCase("planning", _two_containers, f"2 running {EXECUTOR_SERVICE} containers"),
         _BarCase("planning", _probe_fails, f"{EXECUTOR_SERVICE} is not read-only: / accepted a write"),
         _BarCase("bughunt", _unchanged, "the read-only executor serves only"),
-        _BarCase("shipping", _unchanged, "the read-only executor serves only"),
+        _BarCase("scanning_news", _unchanged, "the read-only executor serves only"),
     ],
     ids=[
         "no-login",
@@ -679,7 +694,7 @@ class _BarCase(NamedTuple):
         "two-containers",
         "probe-fails",
         "bughunt",
-        "shipping",
+        "scanning-news",
     ],
 )
 def test_barred_without_a_passing_executor(

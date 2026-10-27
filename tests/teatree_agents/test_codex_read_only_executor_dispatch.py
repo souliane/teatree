@@ -26,11 +26,15 @@ from teatree.core.models import (
     AutoReviewDispatch,
     CriticDispatch,
     CriticVerdict,
+    Directive,
+    DirectiveDispatch,
     LandscapeArtifact,
+    PendingTriageRecommendation,
     ReviewVerdict,
     Session,
     Task,
     TaskAttempt,
+    Ticket,
 )
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.types import SkillMetadata
@@ -38,6 +42,7 @@ from teatree.utils import run, secrets
 from tests.factories import planned_ticket
 from tests.teatree_agents._executor_fakes import EXECUTOR_ID, FakeExecutor
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
+from tests.teatree_core.models.test_mechanism_sketch import default_behaviour_envelope
 
 _ISSUE_URL = "https://github.com/example-org/example-repo/issues/9"
 _SURVEY = {"open_prs": [], "worktrees": [], "recommendations": [], "warnings": []}
@@ -326,3 +331,77 @@ class TestPlanningOnTheReadOnlyExecutor(TestCase):
         assert attempt.error == "", attempt.error
         assert (attempt.exit_code, attempt.selected_harness) == (0, "codex_app_server")
         assert CriticVerdict.objects.filter(ticket=ticket, transition="mark_delivered", head_sha=head).exists()
+
+    def _run_read_only_phase(
+        self, task: Task, *, skill: str, reply: dict[str, object], host: SimpleNamespace
+    ) -> TaskAttempt:
+        self.fake.reply = json.dumps(reply)
+        self.fake.install()
+        config = AgentConfig(skill_models={skill: (AgentRouteCandidate("codex_app_server", "codex-model"),)})
+        with (
+            self._world(config, host, skills=[skill]),
+            patch("teatree.agents._runner_options._main_clone_cwd", return_value=None),
+            patch("teatree.agents.read_only_venue_brief.fetch_branch"),
+        ):
+            return run_agent(task, phase=task.phase, overlay_skill_metadata=SkillMetadata())
+
+    def _turn_text(self) -> str:
+        requests = [json.loads(line) for line in Path(f"{self.fake.log}.rpc").read_text(encoding="utf-8").splitlines()]
+        return json.dumps([request["params"] for request in requests if request.get("method") == "turn/start"])
+
+    def test_triage_assessment_runs_on_codex_and_records_its_recommendations(self) -> None:
+        urls = [f"https://github.com/example-org/example-repo/issues/{number}" for number in (31, 32)]
+        reason = "ISSUES:\n" + "\n".join(f"- {url} | title | needs-triage" for url in urls)
+        ticket = Ticket.objects.create(issue_url="triage-assessor://example-overlay", overlay="example-overlay")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="triage_assessing",
+            execution_reason=reason,
+        )
+        recommendations = [{"issue_url": url, "verdict": "keep", "rationale": "real"} for url in urls]
+        host = SimpleNamespace(
+            get_issue=lambda url: {"body": f"Body of {url}"}, list_issue_comments=lambda *, issue_url: []
+        )
+
+        attempt = self._run_read_only_phase(
+            task,
+            skill="triaging-issues",
+            reply={"summary": "assessed", "triage_recommendations": recommendations},
+            host=host,
+        )
+
+        assert attempt.error == "", attempt.error
+        assert (attempt.exit_code, attempt.selected_harness) == (0, "codex_app_server")
+        assert all(f"Body of {url}" in self._turn_text() for url in urls)
+        assert PendingTriageRecommendation.objects.filter(
+            url_hash__in=[PendingTriageRecommendation.hash_url(url) for url in urls]
+        ).count() == len(urls)
+
+    def test_directive_interpretation_runs_on_codex_and_records_its_sketch(self) -> None:
+        directive = Directive.objects.capture("never retry a hold", source=Directive.Source.CLI)
+        row = DirectiveDispatch.enqueue(directive=directive, contract="Directive (verbatim):\nnever retry a hold")
+        assert row is not None
+        assert row.task is not None
+        reply = {"summary": "interpreted", "directive_interpretation": {"sketch": default_behaviour_envelope()}}
+
+        attempt = self._run_read_only_phase(row.task, skill="architecture-design", reply=reply, host=SimpleNamespace())
+
+        directive.refresh_from_db()
+        assert attempt.error == "", attempt.error
+        assert (attempt.exit_code, attempt.selected_harness) == (0, "codex_app_server")
+        assert "never retry a hold" in self._turn_text()
+        assert directive.state == Directive.State.INTERPRETED
+
+    def test_scoping_runs_on_codex_and_completes_on_its_summary(self) -> None:
+        ticket = Ticket.objects.create(issue_url=_ISSUE_URL, overlay="example-overlay")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="scoping")
+        host = SimpleNamespace(
+            get_issue=lambda url: {"body": "Scope the executor."}, list_issue_comments=lambda *, issue_url: []
+        )
+
+        attempt = self._run_read_only_phase(task, skill="ticket", reply={"summary": "scoped"}, host=host)
+
+        assert attempt.error == "", attempt.error
+        assert (attempt.exit_code, attempt.selected_harness) == (0, "codex_app_server")
+        assert "Scope the executor." in self._turn_text()
