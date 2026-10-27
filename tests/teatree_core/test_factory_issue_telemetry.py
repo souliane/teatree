@@ -12,7 +12,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from teatree.core.models import DeferredQuestion, PendingChatInjection, Task
+from teatree.core.models import DeferredQuestion, DmContext, PendingChatInjection, Task
 from teatree.core.telemetry.admission import (
     PressureSpanExporter,
     recent_factory_observations,
@@ -65,7 +65,9 @@ class FactoryIssueTelemetryTests(TestCase):
                 ),
                 self.captureOnCommitCallbacks(execute=True),
             ):
-                inbound = PendingChatInjection.record(channel="C1", slack_ts="100.9", text="what's the status?")
+                inbound = PendingChatInjection.record(
+                    channel="C1", slack_ts="100.9", text="what's the status?", context=DmContext(user_id="UUSER")
+                )
                 assert inbound is not None
                 backend = RecordingBackend(post_reply_raises=True)
                 run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend)
@@ -86,7 +88,9 @@ class FactoryIssueTelemetryTests(TestCase):
                 ),
                 self.captureOnCommitCallbacks(execute=True),
             ):
-                inbound = PendingChatInjection.record(channel="C1", slack_ts="101.0", text="what's the status?")
+                inbound = PendingChatInjection.record(
+                    channel="C1", slack_ts="101.0", text="what's the status?", context=DmContext(user_id="UUSER")
+                )
                 assert inbound is not None
                 backend = RecordingBackend()
                 run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend)
