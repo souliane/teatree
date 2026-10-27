@@ -27,7 +27,6 @@ def _assert_fallbacks(task: Task, repo: Path, prior: str, head: str) -> None:
     with (
         patch("teatree.core.review.review_plan.matching_clone", return_value=repo),
         patch("teatree.core.review.review_plan.resolve_target_branch", return_value="main"),
-        patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of("f" * 40)),
         patch(
             "teatree.core.review.review_plan.resolve_delta",
             return_value=ReviewDelta("full", "base changed", prior_head=prior),
@@ -35,23 +34,27 @@ def _assert_fallbacks(task: Task, repo: Path, prior: str, head: str) -> None:
     ):
         fallback = plan_for_task(task)
     assert fallback is not None
+    assert fallback.head == "f" * 40
     assert fallback.delta.case == "full"
     assert RoundMetric.objects.get(kind="review", subject="f" * 40).size == 0
     assert "Prior reviewed head: " + prior in "\n".join(fallback.brief_lines())
     assert "fix the branch" in "\n".join(fallback.brief_lines())
 
+    task.ticket.merge_extra(set_keys={"reviewed_sha": "e" * 40})
     with (
         patch("teatree.core.review.review_plan.dispatch_worktree_path", return_value=None),
         patch("teatree.core.review.review_plan.matching_clone", return_value=None),
-        patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of("e" * 40)),
     ):
         no_clone = plan_for_task(task)
     assert no_clone is not None
+    assert no_clone.head == "e" * 40
     assert no_clone.delta.reason == "git clone unavailable"
     assert "Prior reviewed head: " + prior in "\n".join(no_clone.brief_lines())
 
+    owner = PullRequest.objects.get(url=task.ticket.issue_url).ticket
+    author_task = Task.objects.create(ticket=owner, session=Session.objects.create(ticket=owner), phase="reviewing")
     with patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of(head)):
-        rebound = plan_for_task(task, create=False)
+        rebound = plan_for_task(author_task, create=False)
     assert rebound is not None
     assert rebound.head == head
 
@@ -59,7 +62,7 @@ def _assert_fallbacks(task: Task, repo: Path, prior: str, head: str) -> None:
         patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead(sha="", unreadable=True)),
         patch("teatree.core.review.review_plan.matching_clone", return_value=repo),
     ):
-        unreadable = plan_for_task(task)
+        unreadable = plan_for_task(author_task)
     assert unreadable is None
 
 

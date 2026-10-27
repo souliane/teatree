@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.plan_adequacy import declared_seam_paths
 from teatree.core.models.plan_artifact import PlanArtifact
@@ -148,7 +149,7 @@ def round_brief_lines(task: "Task") -> tuple[str, ...]:
 
 
 def _open_review_findings_lines(task: "Task", state: HeadState | None) -> tuple[str, ...]:
-    if task.phase != "debugging" or "review-findings fix" not in task.execution_reason:
+    if normalize_phase(task.phase) != "debugging" or "review-findings fix" not in task.execution_reason:
         return ()
     urls = PullRequest.objects.live().filter(ticket=task.ticket).values_list("url", flat=True)
     rows = RedMrFixAttempt.objects.filter(pr_url__in=urls, kind=RedMrFixAttempt.Kind.REVIEW_FINDINGS).order_by(

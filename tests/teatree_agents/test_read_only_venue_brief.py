@@ -34,6 +34,7 @@ from teatree.agents.read_only_venue_brief import (
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.backends.github.client import GitHubCodeHost
 from teatree.core.models import LandscapeArtifact, RoundMetric, Session, Task, TaskAttempt, Ticket
+from teatree.core.review.review_delta import BRIEF_PATCH_CHARS
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -598,6 +599,42 @@ class TestTheReadOnlyVenueBrief(TestCase):
             prompt = self._prepare(task, host=host).prompt
         assert "+fixed line" in prompt
         assert "REVIEW CASE: delta" in prompt
+
+    def test_truncated_delta_refuses_the_read_only_venue(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=1,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+" * (BRIEF_PATCH_CHARS + 1),
+                "delta_files": ["src/example.py"],
+                "carried": [],
+            },
+        )
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="green"),
+            ),
+        ):
+            refusal = self._refusal(task)
+        assert "review delta patch was truncated" in str(refusal)
 
     def test_empty_delta_still_shows_worker_ci(self) -> None:
         head = "b" * 40

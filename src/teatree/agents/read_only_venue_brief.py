@@ -18,6 +18,7 @@ from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import dispatch_review_target, live_head_at
+from teatree.core.review.review_delta import BRIEF_PATCH_CHARS
 from teatree.core.review.review_plan import plan_for_task
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils.git_sync import fetch_branch
@@ -216,6 +217,9 @@ def _review_diff(task: "Task") -> tuple[str, str, str]:
         raise _refused(reason)
     plan = plan_for_task(task)
     if plan is not None and plan.delta.case == "delta":
+        if len(plan.delta.patch) > BRIEF_PATCH_CHARS:
+            reason = "review delta patch was truncated; a full review needs the changed files"
+            raise _refused(reason)
         diff_text = plan.delta.patch
     else:
         try:
