@@ -1,8 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 import pytest
 
 from teatree.core.merge.bound_token import BoundTokenScopeError, bound_merge_token, bound_token_for
+from teatree.core.merge.execution import execute_bound_merge
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
+from teatree.utils.pr_ref import PrRef
 
 
 def test_bound_token_resets_on_success_and_exception() -> None:
@@ -18,3 +22,24 @@ def test_bound_token_resets_on_success_and_exception() -> None:
     with bound_merge_token("group/repo", "PERSON"), pytest.raises(ValueError, match=msg):
         raise ValueError(msg)
     assert bound_token_for("group/repo") == ""
+
+
+def test_execute_bound_merge_binds_owner_token_until_failure() -> None:
+    ref = PrRef(slug="group/repo", pr_id=7, host_kind="gitlab")
+    resolution = ForgeTokenResolution("gitlab_token", "owner", ForgeTokenState.TOKEN, token="OWNER")
+    observed: list[str] = []
+
+    def stop_merge(**_kwargs: object) -> None:
+        observed.append(bound_token_for(ref.slug))
+        msg = "merge stopped"
+        raise RuntimeError(msg)
+
+    with (
+        patch("teatree.forge_credentials.resolve_slug_token", return_value=resolution),
+        patch("teatree.core.merge.execution.CodeHostQuery.for_ref", return_value=object()),
+        patch("teatree.core.merge.execution.assert_merge_provenance_trusted", side_effect=stop_merge),
+        pytest.raises(RuntimeError, match="merge stopped"),
+    ):
+        execute_bound_merge(ref=ref, expected_head_oid="abc")
+    assert observed == ["OWNER"]
+    assert bound_token_for(ref.slug) == ""
