@@ -13,8 +13,10 @@ thin pipeline of named phases — ``sweep`` then ``scan`` then ``act`` then
 exists as one unit.
 """
 
+import datetime as dt
 import logging
 import re
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,6 +34,8 @@ if TYPE_CHECKING:
     from teatree.loop.tick import TickReport, TickRequest
 
 logger = logging.getLogger(__name__)
+_VISIBLE_KINDS = 3
+_VISIBLE_CAUSES = 2
 
 
 def render_phase(
@@ -73,23 +77,47 @@ def render_phase(
 
 
 def _append_self_improve_firings(zones: StatuslineZones) -> None:
-    """Show active statusline-rung incidents on both busy and idle ticks."""
+    """Show one counted line for active statusline-rung incidents."""
     try:
         from teatree.core.models.self_improve_firing import SelfImproveFiring  # noqa: PLC0415 — ORM at render time
 
         active = SelfImproveFiring.objects.filter(
             resolved_at__isnull=True,
             last_action=SelfImproveFiring.Action.STATUSLINE,
-        ).order_by("-last_fired_at")[:5]
-        for firing in active:
-            payload = firing.payload if isinstance(firing.payload, dict) else {}
+        ).values_list("payload", "first_fired_at")
+        by_kind: dict[str, Counter[str]] = defaultdict(Counter)
+        now = dt.datetime.now(tz=dt.UTC)
+        age_days = 0
+        for raw_payload, first_fired_at in active:
+            payload = raw_payload if isinstance(raw_payload, dict) else {}
             kind = payload.get("kind", "unknown")
-            cause = payload.get("cause", "unknown")
+            cause = payload.get("cause", "cause unreported")
             count = payload.get("count", 1)
             kind = kind if isinstance(kind, str) and re.fullmatch(r"[a-z0-9_]{1,64}", kind) else "unknown"
-            cause = cause if isinstance(cause, str) and re.fullmatch(r"[a-z0-9_\-]{1,64}", cause) else "unknown"
+            cause = (
+                cause
+                if isinstance(cause, str) and cause != "unknown" and re.fullmatch(r"[a-z0-9_\-]{1,64}", cause)
+                else "cause unreported"
+            )
             count = count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 1
-            zones.action_needed.append(f"self-improve: {kind} ({cause}; {count})")
+            by_kind[kind][cause] += count
+            age_days = max(age_days, (now - first_fired_at).days)
+        if not by_kind:
+            return
+        kinds = sorted(by_kind.items(), key=lambda item: (-sum(item[1].values()), item[0]))
+        parts = []
+        for kind, causes in kinds[:_VISIBLE_KINDS]:
+            ordered_causes = sorted(causes.items(), key=lambda item: (-item[1], item[0]))
+            cause_parts = [f"{cause} {count}" for cause, count in ordered_causes[:_VISIBLE_CAUSES]]
+            if len(ordered_causes) > _VISIBLE_CAUSES:
+                cause_parts.append(f"+{len(ordered_causes) - _VISIBLE_CAUSES} more causes")
+            parts.append(f"{kind} {sum(causes.values())} ({', '.join(cause_parts)})")
+        if len(kinds) > _VISIBLE_KINDS:
+            extra = len(kinds) - _VISIBLE_KINDS
+            parts.append(f"+{extra} more {'kind' if extra == 1 else 'kinds'}")
+        if age_days >= 1:
+            parts.append(f"oldest {age_days}d")
+        zones.action_needed.append(f"self-improve: {'; '.join(parts)}")
     except Exception:  # statusline must still render if the ledger is unavailable
         logger.debug("self-improve statusline ledger unavailable", exc_info=True)
 

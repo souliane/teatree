@@ -165,6 +165,67 @@ def test_render_phase_idle_omits_scanner_error_line(tmp_path: Path) -> None:
 
 
 class TestSelfImproveStatuslineVisibility(TestCase):
+    def test_many_missing_payloads_become_one_counted_line_with_reason(self) -> None:
+        now = dt.datetime.now(tz=dt.UTC)
+        for index in range(17):
+            payload = {}
+            if index == 0:
+                payload = {"kind": "private/run", "cause": "private/path", "count": True}
+            elif index == 1:
+                payload = {"kind": "unknown", "cause": "unknown", "count": 1}
+            record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=f"missing-{index}",
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload=payload,
+                ),
+                action=ActionRung.STATUSLINE,
+                now=now - dt.timedelta(days=2),
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == ["self-improve: unknown 17 (cause unreported 17); oldest 2d"]
+            assert "private detail" not in sl.read_text()
+
+    def test_groups_kinds_and_causes_then_folds_extra_kinds(self) -> None:
+        for kind, cause, count in [
+            ("task_failed", "harness_crash", 3),
+            ("task_failed", "timeout", 2),
+            ("task_failed", "worker_exit", 1),
+            ("pressure_incident", "load", 4),
+            ("inbound_unanswered", "no_reply", 2),
+            ("dispatch_gap", "stalled", 1),
+        ]:
+            record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=f"{kind}:{cause}",
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload={"kind": kind, "cause": cause, "count": count},
+                ),
+                action=ActionRung.STATUSLINE,
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            report = TickReport(started_at=_NOW)
+            render_phase(report, TickRequest(), jobs=[_job("my_prs")], statusline_path=sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == [
+                (
+                    "self-improve: task_failed 6 (harness_crash 3, timeout 2, +1 more causes); "
+                    "pressure_incident 4 (load 4); inbound_unanswered 2 (no_reply 2); +1 more kind"
+                )
+            ]
+
     def test_idle_render_shows_only_active_statusline_firings(self) -> None:
         active = DetectorReport(
             detector="lifecycle_incident",
@@ -192,7 +253,7 @@ class TestSelfImproveStatuslineVisibility(TestCase):
             report = TickReport(started_at=_NOW)
             render_phase(report, TickRequest(), jobs=[], statusline_path=sl, colorize=False)
             rendered = sl.read_text(encoding="utf-8")
-            assert "self-improve: task_failed (harness_crash; 1)" in rendered
+            assert "self-improve: task_failed 1 (harness_crash 1)" in rendered
             assert "inbound_unanswered" not in rendered
             assert "private" not in rendered
 
@@ -218,7 +279,7 @@ class TestSelfImproveStatuslineVisibility(TestCase):
             record_firing(report, action=ActionRung.STATUSLINE)
             sl = root / "statusline.txt"
             rerender_statusline(sl, colorize=False)
-            assert "self-improve: pressure_incident (load; 3)" in sl.read_text()
+            assert "self-improve: pressure_incident 3 (load 3)" in sl.read_text()
 
     def test_self_improve_rerender_preserves_active_finding(self) -> None:
         report = DetectorReport(
@@ -234,7 +295,7 @@ class TestSelfImproveStatuslineVisibility(TestCase):
         with TemporaryDirectory() as directory:
             sl = Path(directory) / "statusline.txt"
             rerender_statusline(sl, colorize=False)
-            assert "self-improve: inbound_unanswered (message_without_substantive_reply; 1)" in sl.read_text()
+            assert "self-improve: inbound_unanswered 1 (message_without_substantive_reply 1)" in sl.read_text()
 
 
 def test_rerender_statusline_rewrites_a_stale_file(tmp_path: Path) -> None:
