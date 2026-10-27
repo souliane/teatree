@@ -5,15 +5,17 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.models import PullRequest, SelfImproveFiring, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases import render_phase
-from teatree.loop.phases.render import _identity_aliases_for_request, rerender_statusline
+from teatree.loop.phases.render import _SELF_IMPROVE_WIDTH, _identity_aliases_for_request, rerender_statusline
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.resource_pressure import ResourceReading
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
@@ -188,7 +190,7 @@ class TestSelfImproveStatuslineVisibility(TestCase):
             sl = Path(directory) / "statusline.txt"
             rerender_statusline(sl, colorize=False)
             lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
-            assert lines == ["self-improve: task_failed 2 (timeout 2); oldest 5d"]
+            assert lines == ["self-improve: task_failed 2 (timeout 2) | oldest 5d"]
 
     def test_many_missing_payloads_become_one_counted_line_with_reason(self) -> None:
         now = dt.datetime.now(tz=dt.UTC)
@@ -215,7 +217,7 @@ class TestSelfImproveStatuslineVisibility(TestCase):
             sl = Path(directory) / "statusline.txt"
             rerender_statusline(sl, colorize=False)
             lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
-            assert lines == ["self-improve: unknown 17 (cause unreported 17); oldest 2d"]
+            assert lines == ["self-improve: lifecycle_incident 17 (cause unreported 17) | oldest 2d"]
             assert "private detail" not in sl.read_text()
 
     def test_groups_kinds_and_causes_then_folds_extra_kinds(self) -> None:
@@ -223,6 +225,8 @@ class TestSelfImproveStatuslineVisibility(TestCase):
             ("task_failed", "harness_crash", 3),
             ("task_failed", "timeout", 2),
             ("task_failed", "worker_exit", 1),
+            ("task_failed", "credential_missing", 1),
+            ("task_failed", "plan_missing", 1),
             ("pressure_incident", "load", 4),
             ("inbound_unanswered", "no_reply", 2),
             ("dispatch_gap", "stalled", 1),
@@ -246,10 +250,53 @@ class TestSelfImproveStatuslineVisibility(TestCase):
             lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
             assert lines == [
                 (
-                    "self-improve: task_failed 6 (harness_crash 3, timeout 2, +1 more causes); "
-                    "pressure_incident 4 (load 4); inbound_unanswered 2 (no_reply 2); +1 more kind"
+                    "self-improve: task_failed 8 (harness_crash 3, timeout 2, credential_missing 1, "
+                    "plan_missing 1, worker_exit 1) | pressure_incident 4 (load 4) | "
+                    "inbound_unanswered 2 (no_reply 2) | +1 more kind"
                 )
             ]
+
+    def test_long_line_folds_kinds_before_hook_can_truncate_oldest(self) -> None:
+        now = dt.datetime.now(tz=dt.UTC) - dt.timedelta(days=3)
+        for index in range(5):
+            record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=f"wide-{index}",
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload={
+                        "kind": f"incident_category_{index}_with_a_long_name",
+                        "cause": "a_reason_with_a_long_name",
+                        "count": 5 - index,
+                    },
+                ),
+                action=ActionRung.STATUSLINE,
+                now=now,
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            line = next(line for line in sl.read_text().splitlines() if line.startswith("self-improve:"))
+            assert len(line) <= 200
+            assert "more kinds" in line
+            assert line.endswith(" | oldest 3d")
+
+    def test_width_matches_statusline_hook_fallback(self) -> None:
+        hook = Path(__file__).resolve().parents[3] / "hooks/scripts/statusline.sh"
+        assert f"_cap_cols={_SELF_IMPROVE_WIDTH}\nfi" in hook.read_text()
+
+    def test_unreadable_ledger_keeps_statusline_rendering(self) -> None:
+        with (
+            patch.object(SelfImproveFiring.objects, "filter", side_effect=OperationalError("unavailable")),
+            TemporaryDirectory() as directory,
+        ):
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            assert sl.exists()
+            assert "self-improve:" not in sl.read_text()
 
     def test_idle_render_shows_only_active_statusline_firings(self) -> None:
         active = DetectorReport(
