@@ -62,8 +62,7 @@ def request_merge_item_waiver(ticket: Ticket, *, slug: str, reason: str) -> Defe
     return DeferredQuestion.record(question, dedupe_marker=action_marker(action), card=card)
 
 
-def _owner_answer(question: DeferredQuestion, ticket: Ticket, slug: str, reason: str) -> str:
-    row = DeferredQuestion.objects.select_for_update().get(pk=question.pk)
+def _owner_answer(row: DeferredQuestion, ticket: Ticket, slug: str, reason: str) -> str:
     action = read_action(row.evidence)
     answer = DeferredQuestionAudit.objects.owner_answer(row)
     option = match_action_option(row.options_json, row.answer_text)
@@ -106,7 +105,8 @@ def waive_merge_item(
         if owner_question is None:
             msg = "a matching owner button answer is required to waive this item"
             raise MergeItemWaiverError(msg)
-        if identity != _owner_answer(owner_question, ticket, slug, reason):
+        row = DeferredQuestion.objects.select_for_update().get(pk=owner_question.pk)
+        if identity != _owner_answer(row, ticket, slug, reason):
             msg = "the waiver identity does not match the owner's answer"
             raise MergeItemWaiverError(msg)
         locked = Ticket.objects.select_for_update().get(pk=ticket.pk)

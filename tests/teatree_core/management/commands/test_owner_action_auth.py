@@ -2,14 +2,14 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.owner_action_auth import direct_owner_action
+from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.session_identity import SESSION_ID_ENV_VARS
 from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 
 
 def _owner_terminal(env: dict[str, str], *, tty: bool = True) -> bool:
     with (
-        patch("teatree.core.owner_action_auth.sys.stdin.isatty", return_value=tty),
+        patch("teatree.core.management.commands.owner_action_auth.sys.stdin.isatty", return_value=tty),
         patch.dict("os.environ", env, clear=True),
     ):
         return direct_owner_action()

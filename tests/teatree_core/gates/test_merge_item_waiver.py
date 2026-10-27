@@ -11,9 +11,9 @@ from django.test import TestCase, TransactionTestCase
 from teatree.core.answering.owner_actions import carry_out_owner_actions
 from teatree.core.gates.merge_item_waiver import MergeItemWaiverError, request_merge_item_waiver, waive_merge_item
 from teatree.core.gates.merge_quality_gate import MergeQualityVerdictError, check_merge_quality_verdict, unmet_items
+from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.models import CriticFinding, CriticVerdict, DeferredQuestion, Ticket
 from teatree.core.models.types import validated_ticket_extra
-from teatree.core.owner_action_auth import direct_owner_action
 from teatree.loop.question_binding import answer_from_click
 
 _HEAD = "a" * 40
@@ -175,7 +175,7 @@ class TestAWaiverIsRefused(TestCase):
     def test_a_terminal_and_configured_alias_do_not_prove_owner_identity(self) -> None:
         with (
             patch("teatree.config.get_effective_settings", return_value=MagicMock(user_identity_aliases=["owner"])),
-            patch("teatree.core.owner_action_auth.sys.stdin.isatty", return_value=True),
+            patch("teatree.core.management.commands.owner_action_auth.sys.stdin.isatty", return_value=True),
             patch.dict("os.environ", {}, clear=True),
         ):
             assert direct_owner_action()
@@ -211,7 +211,7 @@ class TestTheMergeItemWaiveCommand(TestCase):
         verdict = _verdict(ticket, _FAIL, _PASS)
 
         with (
-            patch("teatree.core.owner_action_auth.sys.stdin.isatty", return_value=True),
+            patch("teatree.core.management.commands.owner_action_auth.sys.stdin.isatty", return_value=True),
             patch.dict("os.environ", {}, clear=True),
         ):
             assert direct_owner_action()
