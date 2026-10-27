@@ -25,7 +25,6 @@ from dataclasses import dataclass, field
 
 from django.db import transaction
 
-from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.dream_gap_ledger import (
@@ -231,9 +230,6 @@ def promote_batch(*, umbrella_url: str, batch: PromotionBatch, dry_run: bool = F
         return BatchOutcome(
             queued=False, umbrella_url=umbrella_url, gap_count=len(batch.pending), reason="DRY (no writes)"
         )
-    if reason := open_pr_start_cap_hold_reason():
-        logger.warning("dream is claiming nothing new: %s", reason)
-        return BatchOutcome(queued=False, umbrella_url=umbrella_url, gap_count=len(batch.pending), reason=reason)
     host = umbrella_ticket(umbrella_url)
     if host is None:
         return BatchOutcome(

@@ -15,7 +15,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory, PullRequest
 from teatree.core.models.dream_gap_ledger import pending_entries, record_gap_disposition
@@ -181,9 +180,9 @@ class ConsiderTestCase(TestCase):
 class PromoteBatchTestCase(TestCase):
     """A pass queues its gaps on the umbrella host and mints nothing; zero pending queues nothing."""
 
-    def test_open_pr_cap_holds_new_gap_promotions(self) -> None:
+    def test_twenty_live_pull_requests_allow_new_gap_promotions(self) -> None:
         umbrella = _umbrella()
-        for index in range(OPEN_PR_START_CAP):
+        for index in range(20):
             PullRequest.objects.record_opened(
                 ticket=Ticket.objects.create(),
                 url=f"https://github.com/example-org/example-repo/pull/{index + 1200}",
@@ -191,9 +190,8 @@ class PromoteBatchTestCase(TestCase):
         batch = bp.PromotionBatch(pending=[_gap("gap-1")])
         outcome = bp.promote_batch(umbrella_url=UMBRELLA, batch=batch)
         umbrella.refresh_from_db()
-        assert outcome.queued is False
-        assert pending_entries(umbrella) == []
-        assert "start cap" in outcome.reason
+        assert outcome.queued is True
+        assert len(pending_entries(umbrella)) == 1
 
     def test_an_empty_batch_queues_nothing(self) -> None:
         umbrella = _umbrella()

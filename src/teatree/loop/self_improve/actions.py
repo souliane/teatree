@@ -26,7 +26,6 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 
 from teatree.config import discover_active_overlay, discover_overlays
-from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.ticket import Ticket
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, fresh_or_escalated
@@ -275,14 +274,8 @@ def _record_ticket_or_defer(
     *,
     overlay_name: str | None,
     linked_ticket: Ticket | None,
-    source_rung: str,
 ) -> tuple[SelfImproveFiring, str] | None:
     opens_ticket = _opens_ticket(linked_ticket)
-    if opens_ticket and (reason := open_pr_start_cap_hold_reason()):
-        logger.warning("self-improve is claiming nothing new: %s", reason)
-        if source_rung != ActionRung.SLACK:
-            return None
-        return record_firing(report, action=ActionRung.STATUSLINE), ActionRung.STATUSLINE
     try:
         firing = _record_ticket_followup(
             report,
@@ -356,7 +349,6 @@ def run_action_ladder(
             report,
             overlay_name=resolved_overlay or overlay_name,
             linked_ticket=linked_ticket,
-            source_rung=_LADDER_ORDER[rung_index],
         )
         if recorded is None:
             return None
