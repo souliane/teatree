@@ -10,11 +10,11 @@ from urllib.parse import urlsplit
 
 from django.utils import timezone
 
-from teatree.backends.github.repository_webhooks import RepositoryWebhooks, hook_body
+from teatree.backends.github.repository_webhooks import RepositoryHook, RepositoryWebhooks, hook_body
 from teatree.core.intake.github_payload import HOOK_EVENTS
 from teatree.core.models import IncomingEvent
 from teatree.core.views._webhook_secrets import REFRESH_WINDOW_SECONDS, STORE_PREFIX
-from teatree.utils.secrets import read_pass, remove_pass, write_pass_with_backup
+from teatree.utils.secrets import pass_entry_names, read_pass, remove_pass, write_pass, write_pass_with_backup
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
@@ -82,7 +82,7 @@ def validate_target(repo: str, url: str) -> None:
             raise WebhookConnectError(message) from None
     else:
         if not address.is_global:
-            message = "--url must have a public IP address"
+            message = "--url must be a public HTTPS URL with a public IP address"
             raise WebhookConnectError(message)
 
 
@@ -93,27 +93,53 @@ class WebhookConnection:
         self.webhooks = RepositoryWebhooks(repo, token)
         self.echo = echo
 
-    def connect(self, *, replace_secret: bool) -> ConnectResult:
-        repo_id = self.webhooks.repository_id()
-        hook = self.webhooks.find(self.url)
-        key = secret_key(repo_id)
-        stored = read_pass(key)
-        secret = stored
-        if not secret or replace_secret:
-            secret = token_hex(32)
-            write_pass_with_backup(key, secret, echo=self.echo)
-        changed_secret = secret != stored
-        if hook is None:
-            hook = self.webhooks.create(hook_body(self.url, HOOK_EVENTS, secret))
-            status = "created"
-        elif changed_secret or not hook.satisfies(self.url, HOOK_EVENTS):
-            self.webhooks.update(hook.id, hook_body(self.url, HOOK_EVENTS, secret))
-            status = "updated"
-        else:
-            status = "unchanged"
-        if status != "unchanged" and not self.webhooks.get(hook.id).satisfies(self.url, HOOK_EVENTS):
+    def _verify_hook(self, hook: RepositoryHook) -> None:
+        if not self.webhooks.get(hook.id).satisfies(self.url, HOOK_EVENTS):
             message = "GitHub hook did not match after write"
             raise WebhookConnectError(message)
+
+    def _write_hook(
+        self, repo_id: int, hook: RepositoryHook | None, *, replace_secret: bool
+    ) -> tuple[RepositoryHook, str]:
+        key = secret_key(repo_id)
+        stored = read_pass(key)
+        parent, _, name = key.rpartition("/")
+        secret_existed = bool(stored) or name in pass_entry_names(parent)
+        secret = stored
+        backup_key = ""
+        backup_messages: list[str] = []
+        secret_written = not secret or replace_secret
+        if secret_written:
+            secret = token_hex(32)
+            backup_key = write_pass_with_backup(key, secret, echo=backup_messages.append)
+        try:
+            if hook is None:
+                hook = self.webhooks.create(hook_body(self.url, HOOK_EVENTS, secret))
+                status = "created"
+            elif secret != stored or not hook.satisfies(self.url, HOOK_EVENTS):
+                self.webhooks.update(hook.id, hook_body(self.url, HOOK_EVENTS, secret))
+                status = "updated"
+            else:
+                status = "unchanged"
+            if status != "unchanged":
+                self._verify_hook(hook)
+        except Exception:
+            if secret_written:
+                try:
+                    restored = write_pass(key, stored) if secret_existed else remove_pass(key)
+                finally:
+                    backup_removed = not backup_key or remove_pass(backup_key)
+                if not restored or not backup_removed:
+                    message = f"GitHub hook write failed; secret store could not restore {key}"
+                    raise WebhookConnectError(message) from None
+            raise
+        for message in backup_messages:
+            self.echo(message)
+        return hook, status
+
+    def connect(self, *, replace_secret: bool) -> ConnectResult:
+        repo_id = self.webhooks.repository_id()
+        hook, status = self._write_hook(repo_id, self.webhooks.find(self.url), replace_secret=replace_secret)
         repo_key = f"github:{repo_id}"
         started = timezone.now()
         polls_per_ping = 15

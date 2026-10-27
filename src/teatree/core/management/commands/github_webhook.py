@@ -12,7 +12,7 @@ from teatree.core.management.commands._github_webhook_connect import (
     validate_target,
 )
 from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
-from teatree.utils.run import CommandFailedError
+from teatree.utils.run import CommandFailedError, TimeoutExpired
 from teatree.utils.secrets import SecretStoreError
 
 
@@ -46,6 +46,9 @@ class Command(MachineOutputCommand):
             result = (
                 connection.connect(replace_secret=replace_secret) if action == "connect" else connection.disconnect()
             )
+        except TimeoutExpired as exc:
+            self.stderr.write(f"GitHub webhook request timed out after {exc.timeout} seconds")
+            raise SystemExit(1) from exc
         except (WebhookConnectError, WebhookAccessError, SecretStoreError, CommandFailedError) as exc:
             self.stderr.write(str(exc))
             raise SystemExit(1) from exc

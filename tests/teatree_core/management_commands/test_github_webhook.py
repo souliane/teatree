@@ -1,7 +1,8 @@
 import hashlib
 import hmac
 import json
-from subprocess import CompletedProcess
+import logging
+from subprocess import CompletedProcess, TimeoutExpired
 from typing import Literal, cast
 from unittest.mock import patch
 
@@ -48,6 +49,7 @@ class FakeGitHub:
         self.hooks: list[dict[str, object]] = []
         self.calls: list[tuple[list[str], str]] = []
         self.refusals: dict[tuple[str, str], str] = {}
+        self.timeouts: set[tuple[str, str]] = set()
         self.delete_outcome: Literal["deleted", "leaves_hook", "already_gone"] = "deleted"
         self.stored_events: list[str] | None = None
         self.malformed_list = False
@@ -124,6 +126,8 @@ class FakeGitHub:
         self.refusals[method, suffix] = stderr
 
     def _raise_if_refused(self, argv: list[str], endpoint: str, method: str) -> None:
+        if any(method == timed_out_method and endpoint.endswith(suffix) for timed_out_method, suffix in self.timeouts):
+            raise TimeoutExpired(argv, 1)
         for (refused_method, suffix), stderr in self.refusals.items():
             if method == refused_method and endpoint.endswith(suffix):
                 raise CommandFailedError(argv, 1, "", stderr)
@@ -191,7 +195,12 @@ class GitHubWebhookCommandTests(TestCase):
                 if "--method" in call[0] and "POST" in call[0] and not call[0][2].endswith("/pings")
             ]
         )
-        result = self.connect()
+        with (
+            patch("teatree.core.management.commands._github_webhook_connect.token_hex", return_value="b" * 64),
+            patch.object(self.store, "write", wraps=self.store.write) as write,
+        ):
+            result = self.connect()
+        write.assert_not_called()
         after = len(
             [
                 call
@@ -202,8 +211,11 @@ class GitHubWebhookCommandTests(TestCase):
         assert result["status"] == "unchanged"
         assert (before, after) == (1, 1)
         assert self.store.entries[KEY] == CANARY
+        assert not any(key.startswith(KEY + ".bak-") for key in self.store.entries)
 
     def test_secret_only_reaches_stdin_and_store(self) -> None:
+        self.caplog.set_level(logging.DEBUG)
+        assert self.caplog.handler.level == logging.DEBUG
         self.connect()
         assert any(CANARY in stdin for _, stdin in self.fake.calls)
         assert CANARY not in str([argv for argv, _ in self.fake.calls])
@@ -229,16 +241,100 @@ class GitHubWebhookCommandTests(TestCase):
         with pytest.raises(SystemExit):
             self.connect()
         assert "Webhooks permission" in self.capsys.readouterr().err
-        assert self.store.entries[KEY] == CANARY
+        assert KEY not in self.store.entries
+
+    def test_failed_secret_replacement_restores_store_and_plain_connect_repairs_drift(self) -> None:
+        self.connect()
+        self.fake.hooks[0]["active"] = False
+        self.fake.refuse("PATCH", "/hooks/7")
+        with (
+            patch("teatree.core.management.commands._github_webhook_connect.token_hex", return_value="b" * 64),
+            pytest.raises(SystemExit) as error,
+        ):
+            call_command("github_webhook", "connect", repo="sample/repo", url=URL, replace_secret=True)
+        assert error.value.code == 1
+        assert self.store.entries == {KEY: CANARY}
+        assert self.fake.config()["secret"] == CANARY
+        assert "Backed up" not in self.capsys.readouterr().err
+        self.fake.refusals.clear()
+        reset_webhook_secrets()
+        before = sum("PATCH" in argv for argv, _ in self.fake.calls)
+        result = self.connect()
+        assert result["status"] == "updated"
+        assert sum("PATCH" in argv for argv, _ in self.fake.calls) == before + 1
+        assert "unchanged" not in self.capsys.readouterr().out
+
+    def test_update_timeout_restores_old_secret_and_reports_plain_error(self) -> None:
+        self.connect()
+        self.fake.timeouts.add(("PATCH", "/hooks/7"))
+        with (
+            patch("teatree.core.management.commands._github_webhook_connect.token_hex", return_value="b" * 64),
+            pytest.raises(SystemExit) as error,
+        ):
+            call_command("github_webhook", "connect", repo="sample/repo", url=URL, replace_secret=True)
+        assert error.value.code == 1
+        assert self.store.entries == {KEY: CANARY}
+        output = self.capsys.readouterr().err
+        assert "timed out" in output.lower()
+        assert "Traceback" not in output
+
+    def test_create_timeout_removes_new_secret_and_reports_plain_error(self) -> None:
+        self.fake.timeouts.add(("POST", "/hooks"))
+        with pytest.raises(SystemExit) as error:
+            self.connect()
+        assert error.value.code == 1
+        assert self.store.entries == {}
+        assert "timed out" in self.capsys.readouterr().err.lower()
+
+    def test_failed_create_restores_prior_empty_entry(self) -> None:
+        self.store.entries[KEY] = ""
+        self.fake.refuse("POST", "/hooks")
+        with pytest.raises(SystemExit):
+            self.connect()
+        assert self.store.entries == {KEY: ""}
+
+    def test_failed_update_with_no_prior_secret_removes_new_secret(self) -> None:
+        self.connect()
+        self.store.entries.clear()
+        reset_webhook_secrets()
+        self.fake.hooks[0]["active"] = False
+        self.fake.refuse("PATCH", "/hooks/7")
+        with pytest.raises(SystemExit):
+            self.connect()
+        assert self.store.entries == {}
+
+    def test_failed_update_reports_store_rollback_failure(self) -> None:
+        self.connect()
+        self.fake.refuse("PATCH", "/hooks/7")
+        original_write = self.store.write
+
+        def fail_restore(key: str, value: str) -> bool:
+            return False if (key, value) == (KEY, CANARY) else original_write(key, value)
+
+        with (
+            patch("teatree.core.management.commands._github_webhook_connect.token_hex", return_value="b" * 64),
+            patch.object(self.store, "write", side_effect=fail_restore),
+            pytest.raises(SystemExit),
+        ):
+            call_command("github_webhook", "connect", repo="sample/repo", url=URL, replace_secret=True)
+        assert "secret store could not restore" in self.capsys.readouterr().err
+        assert self.store.entries[KEY] == "b" * 64
+        assert not any(key.startswith(KEY + ".bak-") for key in self.store.entries)
 
     def test_non_public_url_refuses_before_network_and_store(self) -> None:
+        private_ip_urls = (
+            "https://10.0.0.1/hooks/github/",  # privacy-scan:allow RFC1918 URL-validation fixture
+            "https://169.254.169.254/hooks/github/",  # privacy-scan:allow link-local URL-validation fixture
+        )
         bad_urls = (
             "http://hooks.example.org/hooks/github/",
+            "https://example.org/other/",
             "https://localhost/hooks/github/",
             "https://hooks.local/hooks/github/",
             "https://hooks.internal/hooks/github/",
             "https://singlelabel/hooks/github/",
             "https://127.0.0.1/hooks/github/",
+            *private_ip_urls,
             "https://192.0.2.2/hooks/github/",  # privacy-scan:allow documentation address for URL validation
             "https://[::1]/hooks/github/",
             "https://user@hooks.example.org/hooks/github/",
@@ -249,6 +345,8 @@ class GitHubWebhookCommandTests(TestCase):
         for bad_url in bad_urls:
             with self.subTest(url=bad_url), pytest.raises(SystemExit):
                 call_command("github_webhook", "connect", repo="sample/repo", url=bad_url)
+            if bad_url in private_ip_urls:
+                assert "HTTPS" in self.capsys.readouterr().err
         assert self.fake.calls == []
         assert self.store.entries == {}
 
@@ -376,6 +474,7 @@ class GitHubWebhookCommandTests(TestCase):
             self.connect()
         assert "did not match after write" in self.capsys.readouterr().err
         assert self.fake.pings == 0
+        assert self.store.entries == {}
 
     def test_json_output_is_only_the_result(self) -> None:
         call_command("github_webhook", "connect", repo="sample/repo", url=URL, json_output=True)
