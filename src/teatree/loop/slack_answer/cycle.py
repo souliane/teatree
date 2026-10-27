@@ -13,10 +13,9 @@ agent-answered independently with no race and no double reply.
 
 Per unit, oldest-first, bounded to :data:`_BATCH` per cycle. First a
 no-LLM :eyes: receipt reaction, exactly once (``mark_eyes_reacted`` CAS)
-even across cycle re-runs. A bound thread reaches its ticket's live session
-first, including a reply to a queued ``DeferredQuestion``. When no live
-session accepts it, :func:`~teatree.loop.question_binding.bind_reply` can
-resolve the answer before ordinary routing, without a model turn. Otherwise
+even across cycle re-runs. The question binder sees a recorded card answer
+first; a ticket status request then uses ticket rows without a model turn.
+Other bound replies reach the ticket's live session before ordinary routing. Otherwise
 the unit is READ (:func:`~teatree.loop.inbound_reading.read_inbound` — one cheap
 model turn, keyword fallback) and routed on what it means, not on which
 keywords it contains:
@@ -56,6 +55,7 @@ from dataclasses import dataclass
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
 from teatree.core.models.thread_binding import slack_command_id
+from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, memoized_reader, read_inbound
 from teatree.loop.question_binding import (
@@ -78,8 +78,14 @@ from teatree.loop.slack_answer.session_routing import (
     _uncertain_question_reply,
     _unmark_unit_loop_replied,
 )
-from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
-from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread, resolve_thread_root
+from teatree.loop.slack_answer.simple_answer import (
+    NEEDS_WORK_SENTINEL,
+    build_simple_answer,
+    is_status_question,
+    status_binding_reader,
+    ticket_status_answer,
+)
+from teatree.loop.slack_answer.thread_readback import bot_reply_match_in_thread, resolve_thread_root
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 
 logger = logging.getLogger(__name__)
@@ -115,33 +121,6 @@ def _default_resolver(overlay: str) -> MessagingBackend | None:
     from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: loaded at tick time
 
     return messaging_from_overlay(overlay or None)
-
-
-def verify_reply_visible(
-    backend: MessagingBackend,
-    *,
-    channel: str,
-    thread_root: str,
-    after_ts: str | None = None,
-    expected_ts: str | ExpectedReply | None = None,
-) -> bool:
-    """Confirm the just-posted reply is visible under its thread ROOT (#2061).
-
-    Reads the thread root's replies and confirms a bot reply is present. The
-    key is the thread ROOT, not the user-message ts: a reply posted with
-    ``thread_ts=<a non-root user-message ts>`` re-parents to the root, so a
-    read-back keyed on the user-message ts misses it and would wrongly stamp
-    a delivered reply as absent (or, on the dedup side, post a duplicate). An
-    absent reply — including the conservative outcome of an empty/raised read
-    — releases the provisional claim; no confirmed receipt is stamped.
-    """
-    return bot_reply_present_in_thread(
-        backend,
-        channel=channel,
-        thread_root=thread_root,
-        after_ts=after_ts,
-        expected_ts=expected_ts,
-    )
 
 
 def _react_eyes_once(backend: MessagingBackend, unit: _Unit) -> bool:
@@ -191,7 +170,7 @@ def _handle_noted(backend: MessagingBackend, unit: _Unit) -> bool:
     return True
 
 
-def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
+def _handle_simple(backend: MessagingBackend, unit: _Unit, binding: ThreadBinding | None = None) -> str:
     """SIMPLE path: resolve-root, dedup, post, readback-verify, stamp.
 
     Returns an outcome tag: ``"simple"`` — answered & whole unit stamped;
@@ -214,7 +193,11 @@ def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
     idempotent across cooperating answerers that do not share the
     ``mark_loop_replied`` CAS (#2061's cross-agent duplicate incident).
     """
-    answer = build_simple_answer(unit.lead)
+    answer = (
+        ticket_status_answer(binding.ticket)
+        if binding is not None and is_status_question(unit.text)
+        else build_simple_answer(unit.lead)
+    )
     if answer is None or answer == NEEDS_WORK_SENTINEL:
         return "needs_work"
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE):
@@ -222,18 +205,21 @@ def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
     try:
         thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
         floor = unit.rows[-1].slack_ts
-        if not bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor):
+        matched_ts = bot_reply_match_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor)
+        if matched_ts is None:
             post = backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=answer)
             posted_ts = post.get("ts")
-            if (
-                post.get("ok") is not True
-                or not isinstance(posted_ts, str)
-                or not verify_reply_visible(
+            matched_ts = (
+                bot_reply_match_in_thread(
                     backend, channel=unit.channel, thread_root=thread_root, after_ts=floor, expected_ts=posted_ts
                 )
-            ):
+                if post.get("ok") is True and isinstance(posted_ts, str)
+                else None
+            )
+            if matched_ts is None:
                 _unmark_unit_loop_replied(unit)
                 return "retry"
+        record_ticket_thread_post(unit.channel, thread_root, matched_ts)
     except Exception:
         _unmark_unit_loop_replied(unit)
         raise
@@ -354,21 +340,24 @@ def _report_coverage(backend: MessagingBackend, unit: _Unit, coverage: Coverage)
     """
     thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
     floor = unit.rows[-1].slack_ts
-    if not bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor):
+    matched_ts = bot_reply_match_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor)
+    if matched_ts is None:
         post = backend.post_reply(
             channel=unit.channel,
             ts=unit.slack_ts,
             text=f"Already covered by {coverage.describe()} — not dispatching a second lane.",
         )
         posted_ts = post.get("ts")
-        if (
-            post.get("ok") is not True
-            or not isinstance(posted_ts, str)
-            or not verify_reply_visible(
+        matched_ts = (
+            bot_reply_match_in_thread(
                 backend, channel=unit.channel, thread_root=thread_root, after_ts=floor, expected_ts=posted_ts
             )
-        ):
+            if post.get("ok") is True and isinstance(posted_ts, str)
+            else None
+        )
+        if matched_ts is None:
             return False
+    record_ticket_thread_post(unit.channel, thread_root, matched_ts)
     for row in unit.rows:
         row.observe_confirmed_loop_reply()
     backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
@@ -429,6 +418,24 @@ def _answer_or_acknowledge_question(
     return False
 
 
+def _handle_priority(
+    backend: MessagingBackend,
+    unit: _Unit,
+    report: SlackAnswerReport,
+    binding: ThreadBinding | None,
+    *,
+    eligible: bool,
+) -> bool:
+    outcome = handle_priority_directive(backend, unit, report, binding) if eligible else "none"
+    if outcome in {"confirmed", "retry"}:
+        if outcome == "confirmed":
+            _react_done(backend, unit)
+        return True
+    if outcome in {"mixed_on", "mixed_off"}:
+        backend.react(channel=unit.channel, ts=unit.slack_ts, emoji="zap" if outcome == "mixed_on" else "sleeping")
+    return False
+
+
 def _process_unit(
     backend: MessagingBackend,
     unit: _Unit,
@@ -445,30 +452,28 @@ def _process_unit(
     if _react_eyes_once(backend, unit):
         report.eyes_reacted += 1
 
+    status_request = binding is not None and is_status_question(unit.text)
     read = memoized_reader(reader)
-    result = bind_reply(unit.lead, reader=read, backend=backend, text=unit.text)
+    result = bind_reply(
+        unit.lead, reader=status_binding_reader(read, status_request=status_request), backend=backend, text=unit.text
+    )
     log_coalesced_replies(unit.rows, result)
     bound = result if isinstance(result, BoundAnswer) else None
+    if status_request and bound is None:
+        if _handle_simple(backend, unit, binding) == "simple":
+            report.answered_simple += 1
+        return
     if isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result):
         return
-    priority_outcome = (
-        handle_priority_directive(backend, unit, report, binding)
-        if bound is None and not isinstance(result, AmbiguousCards)
-        else "none"
-    )
-    if priority_outcome in {"confirmed", "retry"}:
-        if priority_outcome == "confirmed":
-            _react_done(backend, unit)
+    if _handle_priority(
+        backend, unit, report, binding, eligible=bound is None and not isinstance(result, AmbiguousCards)
+    ):
         return
-    if priority_outcome in {"mixed_on", "mixed_off"}:
-        backend.react(
-            channel=unit.channel, ts=unit.slack_ts, emoji="zap" if priority_outcome == "mixed_on" else "sleeping"
-        )
     if binding is not None and _live_receipt(backend, unit, report, binding, (read, bound)):
         return
-    if _card_result_reply(backend, unit, report, result):
-        return
-    if _answer_or_acknowledge_question(backend, unit, report, bound):
+    if _card_result_reply(backend, unit, report, result) or _answer_or_acknowledge_question(
+        backend, unit, report, bound
+    ):
         return
 
     _route_unbound(backend, unit, report, read, binding)
@@ -487,7 +492,7 @@ def _route_unbound(
             report.acked += 1
         return
     if reading.intent is InboundIntent.QUESTION and reading.answerable:
-        outcome = _handle_simple(backend, unit)
+        outcome = _handle_simple(backend, unit, binding)
         if outcome == "simple":
             report.answered_simple += 1
             return
@@ -535,4 +540,4 @@ def run_slack_answer_cycle(
     return report
 
 
-__all__ = ["SlackAnswerReport", "run_slack_answer_cycle", "verify_reply_visible"]
+__all__ = ["SlackAnswerReport", "run_slack_answer_cycle"]
