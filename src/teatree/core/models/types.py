@@ -327,6 +327,7 @@ class TicketExtra(TypedDict, total=False):
     # the answering phase. Undeclared, the first transition stripped it — taking the
     # question text and the work-placed stamp with it on 50 live rows.
     slack_answer: SlackAnswerContext
+    slack_priority_receipts: dict[str, str]
     # Project-board provenance, re-stamped through ``merge_extra`` on every board sync.
     board_position: int
     board_status: str
