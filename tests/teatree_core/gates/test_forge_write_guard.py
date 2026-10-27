@@ -62,6 +62,38 @@ class TestGitLabWriteGuard(TestCase):
         assert request.call_count == 1
         assert request.call_args.kwargs["json"] == {"body": "\\/label allowed\nhi /close"}
 
+    def test_label_allowlist_admits_allowed_labels_in_string_and_list_forms(self) -> None:
+        payloads = ({"labels": "allowed"}, {"labels": "allowed, also-allowed"}, {"labels": ["allowed", "also-allowed"]})
+        for payload in payloads:
+            with (
+                self.subTest(payload=payload),
+                self._setting({"label_allowlist": ["allowed", "also-allowed"]}),
+                patch("httpx.post", return_value=_response("POST")) as request,
+            ):
+                GitLabHTTPClient(token="CLIENT").post_json("projects/group%2Frepo/issues/7", payload)
+            assert request.call_args.kwargs["json"] == payload
+
+    def test_label_allowlist_refuses_a_foreign_label_in_list_form(self) -> None:
+        with (
+            self._setting({"label_allowlist": ["allowed"]}),
+            patch("httpx.post", return_value=_response("POST")) as request,
+            pytest.raises(WriteRefusedError),
+        ):
+            GitLabHTTPClient(token="CLIENT").post_json(
+                "projects/group%2Frepo/issues/7", {"labels": ["allowed", "other"]}
+            )
+        request.assert_not_called()
+
+    def test_label_allowlist_vets_add_labels_and_remove_labels(self) -> None:
+        for key in ("add_labels", "remove_labels"):
+            with self.subTest(key=key), self._setting({"label_allowlist": ["allowed"]}):
+                with patch("httpx.put", return_value=_response("PUT")) as request:
+                    GitLabHTTPClient(token="CLIENT").put_json("projects/group%2Frepo/issues/7", {key: "allowed"})
+                request.assert_called_once()
+                with patch("httpx.put", return_value=_response("PUT")) as request, pytest.raises(WriteRefusedError):
+                    GitLabHTTPClient(token="CLIENT").put_json("projects/group%2Frepo/issues/7", {key: "other"})
+                request.assert_not_called()
+
     def test_invalid_setting_refuses_without_wire_call(self) -> None:
         for value, readable in (({"cap_per_hour": "many"}, True), (None, False)):
             with self.subTest(value=value, readable=readable):

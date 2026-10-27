@@ -1,9 +1,11 @@
+from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
-from unittest.mock import patch
+from contextlib import contextmanager, nullcontext
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from teatree.core.merge import CodeHostQuery
 from teatree.core.merge.bound_token import BoundTokenScopeError, bound_merge_token, bound_token_for
 from teatree.core.merge.execution import execute_bound_merge
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
@@ -57,3 +59,41 @@ def test_execute_bound_merge_token_scope(scope: tuple[str, str] | None, expected
     with bound_merge_token(*scope) if scope else nullcontext():
         assert _token_seen_by_merge(ref) == expected
     assert bound_token_for(ref.slug) == ""
+
+
+@contextmanager
+def _stubbed_forge() -> Generator[MagicMock]:
+    provider = MagicMock()
+    owner = ForgeTokenResolution("gitlab_token", "owner", ForgeTokenState.TOKEN, token="OWNER")
+    with (
+        patch("teatree.core.merge.ci_rollup.get_backend_provider", return_value=provider),
+        patch("teatree.core.merge.ci_rollup.resolve_slug_token", return_value=owner),
+    ):
+        yield provider
+
+
+@pytest.mark.parametrize("host_kind", ["gitlab", "github"])
+def test_query_built_inside_a_bound_scope_uses_the_bound_token(host_kind: str) -> None:
+    ref = PrRef(slug="group/repo", pr_id=7, host_kind=host_kind)
+    with _stubbed_forge() as provider, bound_merge_token("Group/Repo", "PERSON"):
+        CodeHostQuery.for_ref(ref)
+    build = provider.build_gitlab_host if host_kind == "gitlab" else provider.build_github_host
+    assert build.call_args.kwargs["token"] == "PERSON"
+
+
+def test_query_for_another_slug_inside_a_bound_scope_is_refused_before_a_host_is_built() -> None:
+    ref = PrRef(slug="other/repo", pr_id=7, host_kind="gitlab")
+    with _stubbed_forge() as provider, bound_merge_token("group/repo", "PERSON"), pytest.raises(BoundTokenScopeError):
+        CodeHostQuery.for_ref(ref)
+    provider.build_gitlab_host.assert_not_called()
+
+
+def test_query_outside_a_bound_scope_keeps_the_owner_route_and_the_scope_does_not_leak() -> None:
+    ref = PrRef(slug="group/repo", pr_id=7, host_kind="gitlab")
+    with _stubbed_forge() as provider:
+        CodeHostQuery.for_ref(ref)
+        with bound_merge_token("group/repo", "PERSON"):
+            CodeHostQuery.for_ref(ref)
+        CodeHostQuery.for_ref(ref)
+    tokens = [call.kwargs["token"] for call in provider.build_gitlab_host.call_args_list]
+    assert tokens == ["OWNER", "PERSON", "OWNER"]

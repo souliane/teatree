@@ -142,8 +142,6 @@ class ForgeWriteGuard:
     @staticmethod
     def require_own_item(read_json: Callable[[str], object], endpoint: str) -> None:
         item_endpoint = item_endpoint_of(endpoint)
-        if not item_endpoint:
-            return
         try:
             issue = read_json(item_endpoint)
             user = read_json("user")
