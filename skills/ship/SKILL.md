@@ -86,43 +86,11 @@ git commit -a -m "type(scope): description"
 
 Do X — never Y: DO compose the message with a bare `git commit -m`. NEVER pass `--no-verify`. NEVER append a `Co-Authored-By:` line. Body content (Open questions & assumptions, the `Closes/Fixes #N` keyword) goes in additional `-m` blocks or via a `git commit` editor session, never as a trailer.
 
-**What the commit gate commits is the INDEX, not the working tree.** prek stashes unstaged
-changes, runs the hooks against the index, and restores the stash afterwards — once for the
-pre-commit stage and again for commit-msg. An edit made AFTER `git add` is therefore not in
-the resulting commit, and the working tree still shows it, so a `cat` of the file confirms a
-fix that did not ship. Verify with `git show HEAD:<path>`, never the working tree.
-
-prek announces this itself, on stdout, every time it applies:
-
-```text
-Unstaged changes detected. Temporarily saving them to `~/.cache/prek/patches/<id>.patch`
-...
-Restored unstaged changes from `~/.cache/prek/patches/<id>.patch`
-```
-
-No hook can add to that notice, which is why the behaviour is documented rather than gated.
-A hook runs after the stash, so `git diff --name-only` inside one reports nothing — the
-information is already gone by the time any hook could look. And prek prints a hook's output
-only when the hook FAILS, so a warn-only hook stays invisible unless it blocks every commit
-that carries an unstaged change. The two lines above are the signal; `git commit -a` is the
-way to avoid the split in the first place — on a checkout only you write to.
-
-**On a SHARED checkout that stash is a data hazard, and `git commit -a` is the wrong escape.**
-prek stashes every unstaged change in the tree, another writer's included, so your commit
-decides the fate of work you never touched. Three ways it goes wrong, all observed: `-a`
-commits their half-finished edits under your message; a run killed between the stash and the
-restore leaves the tree without them; and a write landing DURING the hook window is discarded
-whole (`Hook changes conflicted with the saved unstaged changes. Reverting the hook changes`).
-So where more than one writer shares a checkout:
-
-```bash
-git add <path>                                    # right after EVERY edit — prek stashes only what is UNSTAGED
-git commit -o -F <msg-file> -- <your paths only>  # never bare, never -a
-```
-
-prek keeps every patch it writes rather than deleting it on restore, so
-`~/.cache/prek/patches/` is a durable backup: recover a stash the tree never got back with
-`git apply ~/.cache/prek/patches/<ts>-<pid>.patch`, newest timestamp first.
+**The commit gate grades the index.** Stage after every edit and verify the committed
+file with `git show HEAD:<path>`. On a shared checkout, commit only your paths with
+`git commit -o -- <paths>`; prek stashes unstaged changes from every writer.
+Read [`references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md)
+for the stash signals and recovery procedure.
 
 - **Carry an `Open questions & assumptions` section in the commit message body** (one bullet per item, status `decided-by-user` / `assumed` / `open`; `- none` when there is nothing to flag). Same content also goes in the PR description — see § 5 "Open Questions & Assumptions" for the canonical rule.
 - **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) when the active overlay's `validate_pr` requires it. With `mr_close_ticket = True`, the ship path keeps a `Closes/Fixes #<number>` body keyword by default; set `Ticket.extra['more_prs_coming']` to emit `Relates to #N` for a declared partial.

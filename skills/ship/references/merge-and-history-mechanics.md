@@ -2,6 +2,46 @@
 
 The mechanics behind `/t3:ship` § "Merging the Default Branch into a PR" and § "Git History Rewriting". Those sections carry the rules; this file carries the 3-way merge reasoning, the JSON conflict-resolution semantics, and the filter-branch details.
 
+## Commit index and prek stash recovery
+
+**What the commit gate commits is the INDEX, not the working tree.** prek stashes unstaged
+changes, runs the hooks against the index, and restores the stash afterwards — once for the
+pre-commit stage and again for commit-msg. An edit made AFTER `git add` is therefore not in
+the resulting commit, and the working tree still shows it, so a `cat` of the file confirms a
+fix that did not ship. Verify with `git show HEAD:<path>`, never the working tree.
+
+prek announces this itself, on stdout, every time it applies:
+
+```text
+Unstaged changes detected. Temporarily saving them to `~/.cache/prek/patches/<id>.patch`
+...
+Restored unstaged changes from `~/.cache/prek/patches/<id>.patch`
+```
+
+No hook can add to that notice, which is why the behaviour is documented rather than gated.
+A hook runs after the stash, so `git diff --name-only` inside one reports nothing — the
+information is already gone by the time any hook could look. And prek prints a hook's output
+only when the hook FAILS, so a warn-only hook stays invisible unless it blocks every commit
+that carries an unstaged change. The two lines above are the signal; `git commit -a` is the
+way to avoid the split in the first place — on a checkout only you write to.
+
+**On a SHARED checkout that stash is a data hazard, and `git commit -a` is the wrong escape.**
+prek stashes every unstaged change in the tree, another writer's included, so your commit
+decides the fate of work you never touched. Three ways it goes wrong, all observed: `-a`
+commits their half-finished edits under your message; a run killed between the stash and the
+restore leaves the tree without them; and a write landing DURING the hook window is discarded
+whole (`Hook changes conflicted with the saved unstaged changes. Reverting the hook changes`).
+So where more than one writer shares a checkout:
+
+```bash
+git add <path>                                    # right after EVERY edit — prek stashes only what is UNSTAGED
+git commit -o -F <msg-file> -- <your paths only>  # never bare, never -a
+```
+
+prek keeps every patch it writes rather than deleting it on restore, so
+`~/.cache/prek/patches/` is a durable backup: recover a stash the tree never got back with
+`git apply ~/.cache/prek/patches/<ts>-<pid>.patch`, newest timestamp first.
+
 ## Merging the default branch into a PR
 
 Before touching the PR branch to "prepare" it for a merge, reason through what a clean 3-way merge would produce on its own:
