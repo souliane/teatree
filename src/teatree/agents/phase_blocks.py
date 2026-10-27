@@ -378,6 +378,11 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
     """The ``PHASE: reviewing`` block and its review evidence instructions."""
     plan = plan_for_task(task)
     reviewer_head_unverified = task.ticket.role == task.ticket.Role.REVIEWER and plan is None
+    probe_kinds = (
+        "revert-to-RED and mutation"
+        if failing_run_required(gated_ticket_for_review_task(task) or task.ticket)
+        else "mutation"
+    )
     unverified_line = (
         "No verified live head is available for this PR. Do not review a stamped SHA or local diff; "
         "return review_venue_limit naming the live head read failure."
@@ -407,7 +412,7 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
         ),
         ("For multi-repo tickets, review the combined diff and list all repos in `integration_review.repos`."),
         *(() if read_only_venue else _TEST_SELECTION_LINES),
-        *(() if read_only_venue else ("Run revert-to-RED and mutation probes by pinned node id with -n0.",)),
+        *(() if read_only_venue else (f"Run {probe_kinds} probes by pinned node id with -n0.",)),
         (
             "Use the supplied check-runs at the reviewed head for whole-tree evidence."
             if read_only_venue

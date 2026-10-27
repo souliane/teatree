@@ -298,6 +298,19 @@ class TestFixRecordDirective(TestCase):
         assert all(field in brief for field in FIX_RECORD_FIELDS if field != "observed_red")
         assert not any(term in brief for term in ("observed_red", "RED-first", "repro record-red", "revert-to-RED"))
 
+    def test_the_review_brief_asks_for_revert_to_red_and_mutation_probes_while_the_gate_is_on(self) -> None:
+        brief = self._review_brief_for_pr_owned_by(Ticket.Kind.FIX)
+        assert "Run revert-to-RED and mutation probes by pinned node id with -n0." in brief
+
+    def test_a_switched_off_review_brief_asks_for_mutation_probes_only(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        for brief in (
+            self._review_brief_for_pr_owned_by(Ticket.Kind.FIX),
+            self._brief("reviewing", Ticket.Kind.FEATURE),
+        ):
+            assert "Run mutation probes by pinned node id with -n0." in brief
+            assert "revert-to-RED" not in brief
+
     def test_an_issue_anchored_review_is_told_the_live_head_it_is_checked_against(self) -> None:
         live = "d" * 40
         owner = Ticket.objects.create(
