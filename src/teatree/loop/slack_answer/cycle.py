@@ -67,13 +67,14 @@ from teatree.loop.question_binding import (
 )
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
+from teatree.loop.slack_answer.priority_directive import handle_priority_directive
 from teatree.loop.slack_answer.session_routing import (
     _card_result_reply,
     _command_reply,
     _live_receipt,
     _mark_unit_loop_replied,
     _post_live_reply,
-    _reject_foreign_bound_unit,
+    _reject_foreign_unit,
     _uncertain_question_reply,
     _unmark_unit_loop_replied,
 )
@@ -434,16 +435,15 @@ def _process_unit(
     report: SlackAnswerReport,
     reader: InboundReader,
 ) -> None:
-    if _react_eyes_once(backend, unit):
-        report.eyes_reacted += 1
-
     binding = (
         ThreadBinding.objects.filter(overlay=unit.overlay, channel=unit.channel, thread_ts=unit.lead.thread_ts).first()
         if unit.lead.thread_ts
         else None
     )
-    if _reject_foreign_bound_unit(backend, unit, report, binding):
+    if _reject_foreign_unit(backend, unit, report):
         return
+    if _react_eyes_once(backend, unit):
+        report.eyes_reacted += 1
 
     read = memoized_reader(reader)
     result = bind_reply(unit.lead, reader=read, backend=backend, text=unit.text)
@@ -451,6 +451,19 @@ def _process_unit(
     bound = result if isinstance(result, BoundAnswer) else None
     if isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result):
         return
+    priority_outcome = (
+        handle_priority_directive(backend, unit, report, binding)
+        if bound is None and not isinstance(result, AmbiguousCards)
+        else "none"
+    )
+    if priority_outcome in {"confirmed", "retry"}:
+        if priority_outcome == "confirmed":
+            _react_done(backend, unit)
+        return
+    if priority_outcome in {"mixed_on", "mixed_off"}:
+        backend.react(
+            channel=unit.channel, ts=unit.slack_ts, emoji="zap" if priority_outcome == "mixed_on" else "sleeping"
+        )
     if binding is not None and _live_receipt(backend, unit, report, binding, (read, bound)):
         return
     if _card_result_reply(backend, unit, report, result):
