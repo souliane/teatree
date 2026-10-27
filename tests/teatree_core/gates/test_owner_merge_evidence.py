@@ -172,6 +172,10 @@ class TestOwnerMergeRubricWaiver(TestCase):
         assert completeness(with_rubric) is None
 
     def test_recorded_fail_still_blocks_and_merge_time_stays_strict(self) -> None:
+        ungraded = _ticket(merger="alice")
+        Rubric.populate(ungraded, ["ungraded criterion"])
+        assert check_rubric_verified(ungraded) is None
+
         ticket = _ticket(merger="alice")
         rubric = Rubric.populate(ticket, ["failed criterion", "ungraded criterion"])
         rubric.criteria.get(ordinal=0).record_grade(status="fail", grader_identity="cold-reviewer", reviewed_sha=_SHA)
