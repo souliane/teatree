@@ -10,13 +10,15 @@ from operator import itemgetter
 from pathlib import Path
 from typing import ClassVar
 
-from django.db.models import Q, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone
 
+from teatree.core.modelkit import reask_cadence
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind, is_causeless
+from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, STALE_ERROR_AFTER, FailureKind, is_causeless
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
+from teatree.core.models.loop_schedule import owner_zone
 from teatree.core.models.question_withheld import WITHHELD_ACTION
 from teatree.core.models.task_phase_disposition import PHASE_WEDGE_MARKER_RE
 from teatree.core.telemetry.admission import checked_lifecycle_observations
@@ -82,7 +84,7 @@ class LifecycleIncidentDetector:
             return ActionRung.TICKET
         firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
         if firing is None or firing.resolved_at is not None:
-            return ActionRung.STATUSLINE
+            return ActionRung.TICKET if ticket_allowed and self.repair_after <= timedelta(0) else ActionRung.SLACK
         if ticket_allowed and firing.last_action == ActionRung.TICKET:
             return ActionRung.TICKET
         age = now - firing.first_fired_at
@@ -223,7 +225,7 @@ class LifecycleIncidentDetector:
         return DetectorReport(
             detector=self.name,
             dedup_key=self._key(kind, cause),
-            state_hash=state_hash(kind, cause, tuple(sorted(ids)), rung),
+            state_hash=state_hash(kind, cause, () if kind == "outbound_unposted" else tuple(sorted(ids)), rung),
             severity="error" if rung == ActionRung.TICKET else self.severity,
             max_rung=rung,
             requested_rung=rung,
@@ -251,6 +253,13 @@ class LifecycleIncidentDetector:
             Task.objects.filter(status=Task.Status.FAILED)
             .exclude(failure_kind__in=_RECOVERED_KINDS)
             .exclude(ticket__state__in=Ticket.finished_states())
+            .alias(
+                has_attempt=Exists(TaskAttempt.objects.filter(task_id=OuterRef("pk"))),
+                has_recent_attempt=Exists(
+                    TaskAttempt.objects.filter(task_id=OuterRef("pk"), started_at__gte=now - STALE_ERROR_AFTER)
+                ),
+            )
+            .exclude(has_attempt=True, has_recent_attempt=False)
         )
         if self.overlay_name:
             tasks = tasks.filter(ticket__overlay=self.overlay_name)
@@ -424,7 +433,15 @@ class LifecycleIncidentDetector:
 
     def _outbound_questions(self, now: datetime) -> list[DetectorReport]:
         pending = DeferredQuestion.owner_pending()
-        unposted = list(pending.filter(slack_ts="", created_at__lt=now - _POST_WAIT).values_list("pk", flat=True)[:100])
+        zone = owner_zone()
+        quiet = reask_cadence.owner_quiet_at(now.astimezone(zone).time()) or reask_cadence.owner_quiet_at(
+            (now - _POST_WAIT).astimezone(zone).time()
+        )
+        unposted = (
+            []
+            if quiet
+            else list(pending.filter(slack_ts="", created_at__lt=now - _POST_WAIT).values_list("pk", flat=True)[:100])
+        )
         unanswered = list(
             pending.exclude(slack_ts="").filter(created_at__lt=now - _MESSAGE_WAIT).values_list("pk", flat=True)[:100]
         )

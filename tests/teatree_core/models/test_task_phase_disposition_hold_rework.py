@@ -74,6 +74,23 @@ class TestHoldReworkTargetsTheLiveHead(TestCase):
         assert rework.parent_task_id == held.pk
         assert rework.status == Task.Status.PENDING
 
+    def test_addressed_review_clears_old_shipping_hold_before_next_review(self) -> None:
+        ticket = author_ticket(state=Ticket.State.SELF_REVIEWED)
+        completed_self_review(ticket, "hold")
+        ticket.merge_extra(
+            set_keys={
+                "shipping_hold": {"reason": "awaiting evidence", "skipped": "no diff", "held_at": "", "checked_at": ""}
+            }
+        )
+
+        ticket.address_self_review()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.CODED
+        assert "shipping_hold" not in ticket.extra
+        assert ticket.schedule_shipping().phase == "shipping"
+
     def test_an_abbreviated_reviewed_sha_matches_the_live_head_by_prefix(self) -> None:
         ticket, live = _ticket_with_worktree_at_head(self.tmp_path)
         completed_self_review(ticket, "hold", reviewed_sha=live[:12])

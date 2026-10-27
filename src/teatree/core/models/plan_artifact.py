@@ -126,7 +126,7 @@ class PlanArtifact(models.Model):
         the retroactive reconcile, and the ONLY writer of the all-negatives manifest
         (:func:`all_negated_adequacy`) — :meth:`record` refuses that shape. The manifest
         is therefore the durable proof a human authorized the bypass, which is what the
-        rubric gate reads as its one waiver signal.
+        rubric gate reads as its human-authorized plan waiver signal.
         Because it has no declared seams, the currency gate finds nothing to guard —
         ``check_plan_current`` passes it DIRECTLY (a ``no_seams`` plan can never be
         stale on a seam), so a bypassed plan reaches CODED with no ``plan-reaffirm``

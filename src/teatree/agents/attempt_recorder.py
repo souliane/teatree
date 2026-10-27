@@ -32,9 +32,17 @@ from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
-from teatree.agents.result_schema_owner_stop import OWNER_STOP_SHAPE
+from teatree.agents.result_schema_draft import executor_draft_evidence_error, is_executor_draft_run
+from teatree.agents.result_schema_owner_stop import owner_stop_refusal
 from teatree.agents.review_context_recorder import record_returned_review_context
-from teatree.agents.review_envelope_recorder import record_returned_review_envelope, review_head_mismatch_refusal
+from teatree.agents.review_envelope_recorder import (
+    record_returned_review_envelope,
+    review_head_mismatch_refusal,
+    review_venue_limit_refusal,
+    settle_review_venue_limit,
+)
+from teatree.agents.review_request_recorder import record_returned_review_request
+from teatree.agents.ship_readiness_recorder import record_returned_ship_readiness
 from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
@@ -150,9 +158,11 @@ def validate_result_keys(result: AgentResultBlob) -> str:
         return ""
     if (card := QuestionCard.from_envelope(result)) is None:
         kinds = ", ".join(OwnerDecision)
-        return f"user_input_kind {result['user_input_kind']!r} is none of {kinds}; omit it for factory work"
+        return owner_stop_refusal(
+            f"user_input_kind {result['user_input_kind']!r} is none of {kinds}; omit it for factory work"
+        )
     if problems := card.problems(str(result.get("user_input_reason", ""))):
-        return f"{'; '.join(problems)}. {OWNER_STOP_SHAPE}"
+        return owner_stop_refusal("; ".join(problems))
     return ""
 
 
@@ -218,7 +228,9 @@ def record_result_envelope(
     if checked.error:
         return _record_failure(task, error=checked.error, result=result, usage=usage)
 
-    server_side_error = _record_returned_envelopes(task, result, phase=phase)
+    server_side_error = _record_returned_envelopes(
+        task, result, phase=phase, executor_draft_run=is_executor_draft_run(phase or task.phase, usage.selected_harness)
+    )
     if server_side_error:
         return _record_failure(task, error=server_side_error, result=result, usage=usage)
 
@@ -365,7 +377,11 @@ def _check_before_recording(
     out so that function stays a short record-or-refuse decision over ONE verdict
     rather than a ladder of early returns.
     """
-    if error := validate_result_keys(result) or review_head_mismatch_refusal(task, result, phase=phase):
+    if error := (
+        validate_result_keys(result)
+        or review_head_mismatch_refusal(task, result, phase=phase)
+        or review_venue_limit_refusal(task, result, phase=phase)
+    ):
         return _PreRecordCheck(error, result)
 
     if (
@@ -382,7 +398,15 @@ def _check_before_recording(
     if action_error:
         return _PreRecordCheck(action_error, result)
 
-    evidence_error = check_evidence(result, phase or task.phase) or _answering_work_item_error(task, result, phase)
+    evidence_error = (
+        (
+            ""
+            if is_executor_draft_run(phase or task.phase, usage.selected_harness)
+            else check_evidence(result, phase or task.phase)
+        )
+        or _answering_work_item_error(task, result, phase)
+        or executor_draft_evidence_error(phase or task.phase, result, selected_harness=usage.selected_harness)
+    )
     if evidence_error:
         salvaged = salvage_coding_result(task, result, phase=phase)
         if salvaged is None:
@@ -401,7 +425,7 @@ def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) 
     return missing_work_item_error(task, result)
 
 
-def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str, executor_draft_run: bool) -> str:
     """Record every shell-denied hand-back that carries a maker≠checker write, short-circuit.
 
     A headless phase denied the shell RETURNS its typed verdict/sketch instead of
@@ -421,7 +445,14 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
         return critic_error
     fix_error = record_returned_fix_record(task, result)
     sweep_error = fix_error or verify_returned_ticket_sweep(result)
-    return sweep_error or record_returned_directive_interpretation(task, result)
+    draft_error = sweep_error or (
+        executor_draft_run
+        and (
+            record_returned_review_request(task, result, phase=phase)
+            or record_returned_ship_readiness(task, result, phase=phase)
+        )
+    )
+    return draft_error or record_returned_directive_interpretation(task, result)
 
 
 def _record_failure(
@@ -440,6 +471,7 @@ def _record_failure(
         **usage_fields(usage),
     )
     task.fail_claimed(reason=error)
+    settle_review_venue_limit(task, error)
     if error.startswith(_CRITIC_EVIDENCE_UNAVAILABLE_PREFIX):
         _CriticDispatch.rearm_unverified(task)
     return attempt

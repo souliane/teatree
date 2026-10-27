@@ -25,7 +25,7 @@ prose that merely resembles command words. See
 import pytest
 
 from teatree.hooks._gh_glab_hiding import command_segments
-from teatree.hooks._shell_lexer import TokenKind, split_commands, tokenize
+from teatree.hooks._shell_lexer import HeredocBody, TokenKind, split_commands, tokenize
 
 
 class TestRawSpanInvariant:
@@ -178,6 +178,20 @@ class TestHeredocBodyConsumption:
         segments = command_segments(command)
         assert len(segments) == 1
         assert segments[0][:2] == ["cat", ">"]
+
+    @pytest.mark.parametrize(
+        ("opener", "ending"),
+        [("<< 'EOF'", "\nEOF"), ("<<EOF", "\nEOF"), ("<<-EOF", "\n\tEOF"), ("<<EOF", "")],
+    )
+    def test_captured_body_keeps_execution_metadata(self, opener: str, ending: str) -> None:
+        command = f"cat > run.sh {opener}\nuv run pytest{ending}"
+        bodies: list[HeredocBody] = []
+        tokenize(command, heredoc_bodies=bodies)
+        assert len(bodies) == 1
+        assert bodies[0].body == "uv run pytest" + ("\n" if ending else "")
+        assert bodies[0].quoted is ("'" in opener)
+        assert bodies[0].terminated is bool(ending)
+        assert bodies[0].opener_line.startswith("cat > run.sh")
 
     def test_heredoc_body_text_resembling_a_publish_command_is_inert(self) -> None:
         # A heredoc body that happens to CONTAIN text resembling a gh/glab

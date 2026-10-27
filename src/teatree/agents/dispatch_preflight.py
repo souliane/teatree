@@ -17,20 +17,27 @@ from typing import TYPE_CHECKING
 
 from teatree.core.gates.merge_item_waiver import waived_merge_items
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.plan_adequacy import declared_seam_paths
 from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.rubric import Rubric
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.review.finding_standard import FINDING_STANDARD
+from teatree.core.review.review_delta import BRIEF_PATCH_CHARS
 from teatree.core.worktree.branch_currency import fetch_target_head, predict_merge_conflicts
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.quality.review_evidence import ReviewEvidenceError, read_review_evidence
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
+    from teatree.core.review.review_plan import ReviewPlan
 
 # A committer-timestamp / subject record from one `git log -1`, unit-separated so
 # a subject containing spaces or the field text is never mis-split.
@@ -115,6 +122,7 @@ def round_brief_lines(task: "Task") -> tuple[str, ...]:
         else ("  - none recorded; inspect every merge-quality class on the first pass",)
     )
     state = resolve_head_state(task)
+    review_findings = _open_review_findings_lines(task, state)
     worktree = dispatch_worktree_path(task.ticket)
     try:
         evidence = read_review_evidence(Path(worktree), state.sha) if state is not None and worktree else None
@@ -138,7 +146,35 @@ def round_brief_lines(task: "Task") -> tuple[str, ...]:
         measured,
         f"Optional measurement: `{command}` on a clean committed head; a missing receipt is report-only.",
         "The coder report must show the matrix result for each new or changed test.",
+        *review_findings,
     )
+
+
+def _open_review_findings_lines(task: "Task", state: HeadState | None) -> tuple[str, ...]:
+    if normalize_phase(task.phase) != "debugging" or "review-findings fix" not in task.execution_reason:
+        return ()
+    urls = PullRequest.objects.live().filter(ticket=task.ticket).values_list("url", flat=True)
+    rows = RedMrFixAttempt.objects.filter(pr_url__in=urls, kind=RedMrFixAttempt.Kind.REVIEW_FINDINGS).order_by(
+        "-dispatched_at", "-pk"
+    )
+    row = next(
+        (
+            candidate
+            for candidate in rows
+            if candidate.pr_url in task.execution_reason and (state is None or candidate.head_sha == state.sha)
+        ),
+        None,
+    )
+    if row is None or (ref := pr_ref_from_url(row.pr_url)) is None:
+        return ()
+    findings = [
+        f"  - {verdict.reviewer_identity}: {finding.describe()}"
+        for verdict in ReviewVerdict.objects.speaking_verdicts_at(slug=ref.slug, pr_id=ref.pr_id, head_sha=row.head_sha)
+        if verdict.stands_as_hold()
+        for finding in verdict.structured_findings
+        if finding.kind == "blocking"
+    ]
+    return ("", f"OPEN REVIEW FINDINGS at {row.head_sha}:", *(findings or ["  (none recorded)"]))
 
 
 def declared_seams_brief_lines(task: "Task") -> tuple[str, ...]:
@@ -164,7 +200,7 @@ def declared_seams_brief_lines(task: "Task") -> tuple[str, ...]:
     return ("", header, *(f"  - {seam}" for seam in seams))
 
 
-def rubric_brief_lines(task: "Task") -> tuple[str, ...]:
+def rubric_brief_lines(task: "Task", *, plan: "ReviewPlan | None" = None) -> tuple[str, ...]:
     """Render the reviewed ticket's rubric criteria for a reviewing brief, or ``()``.
 
     The reviewer is told to grade EVERY criterion and nothing else grades one, so a
@@ -189,10 +225,22 @@ def rubric_brief_lines(task: "Task") -> tuple[str, ...]:
         f"TICKET RUBRIC (ticket {ticket.pk}) — grade EVERY one in `rubric_grades` "
         'as {"ordinal": <int>, "text_hash": "<hash>", "status": "pass"|"fail", "rationale": "<proof>"}:'
     )
-    return ("", header, *(f"  #{c.ordinal} {c.text} [text_hash {c.text_hash}]" for c in criteria))
+    return (
+        "",
+        header,
+        *(
+            f"  #{c.ordinal} {c.text} [text_hash {c.text_hash}]"
+            + (
+                " CARRIED (return a new grade if the delta affects it)"
+                if plan is not None and c.ordinal in plan.carried
+                else ""
+            )
+            for c in criteria
+        ),
+    )
 
 
-_MAX_REVIEW_DIFF_CHARS = 24000
+_MAX_REVIEW_DIFF_CHARS = BRIEF_PATCH_CHARS
 
 
 def review_diff_brief_lines(task: "Task") -> tuple[str, ...]:

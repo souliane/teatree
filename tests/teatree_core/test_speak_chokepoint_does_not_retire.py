@@ -3,8 +3,8 @@
 A user-question Slack DM lands as a :class:`PendingChatInjection` row.
 :func:`teatree.core.speak.deliver_user_dm` is the ONE chokepoint EVERY
 bot→user DM passes through — the ``notify post --thread-ts`` deliberate
-answer AND every unrelated INFO/status DM that ``notify_user`` threads via
-``_active_dm_thread``. PR #2103's first cut retired the question here, so an
+answer AND every unrelated INFO/status DM that ``notify_user`` threads explicitly.
+PR #2103's first cut retired the question here, so an
 innocent INFO DM threaded under a still-open question silently retired it.
 
 The retire is now owned by the deliberate threaded-answer egress (the

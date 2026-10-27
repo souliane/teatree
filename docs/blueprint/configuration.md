@@ -135,16 +135,26 @@ a less-safe mode.
 
 ### 10.1.0 Staged sealed credential store
 
-The `teatree.utils.secrets` facade now has one swappable `SecretStore` slot.
-`PassStore` remains the production default while the migration is staged; tests
-install `MemoryStore` so they cannot read an operator's `pass` store. The new
-`DbStore` keeps AES-256-GCM sealed values in `SealedSecret` rows on the control
-DB, with the installation master key in a mode-0600 file beside that database.
-`T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override;
-it is never a `ConfigSetting` row. `t3 <overlay> secrets status`, `ls` and
-`import-pass` provide read-only key-health diagnostics and a names-only import
-inventory; `secrets status` exits 1 on any key verdict other than OK. No production reader or writer reaches the sealed rows: `DbStore` is
-not installed, and `import-pass` copies nothing.
+The `teatree.utils.secrets` facade has one swappable `SecretStore` slot, resolved at first use.
+`T3_SECRET_STORE` (`pass` by default, or `sealed`; environment-only, never a `ConfigSetting` row) selects it:
+`sealed` reads and writes `SealedSecret` rows with no fallback to `pass`, an unknown value raises naming the
+variable, and a store installed in code (tests install `MemoryStore`) always wins.
+
+`DbStore` keeps AES-256-GCM sealed values in `SealedSecret` rows on the control DB, with the installation master
+key in a mode-0600 file. `T3_MASTER_KEY_SOURCE` is an environment-only `file:<absolute-path>` override. In a
+deployed container (`TEATREE_ROLE` set) a key path inside the control-DB directory is refused for creation and
+warned for loads, and the deployment mounts the key directory read-only from the host into the services that
+mount the password store.
+
+`t3 <overlay> secrets status`, `ls` and `import-pass` are read-only diagnostics (`status` prints the selected
+store and exits 1 on any key verdict other than OK; `import-pass` prints a names-only inventory). `set|rm|verify`
+act on sealed rows directly; `get|exec` read through the active store, `get` refuses a terminal, and the
+secret-print detector denies an unredirected `get`. `import-pass --apply` copies the `row` entries from `pass`
+into sealed rows (names and statuses only), writes the `SecretCutover` marker after a second full read-back, and
+refuses when the selector is `sealed` or the key sits inside the control-DB volume.
+Deploy shell readers use `deploy/secret-read.sh` for the same selector. In sealed mode, its Django-free
+reader opens the canonical control DB read-only and returns 0 for a value, 1 for absence, or 2 for an unreadable
+row; host-only readers leave the value for the container, which mounts the DB and key.
 
 ### 10.1.1 Per-Overlay Setting Overrides
 
@@ -392,7 +402,7 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | `plan_edit_gate_enabled` | Kill-switch (default `true`) for the §17.6.4 gate 16 early DX signal (`handle_block_edit_before_planned`) that denies `Edit`/`Write` while the worktree's ticket is in `WORK_STARTED` state. Read directly by the hook layer; set `false` under `[teatree]` or disable via `t3 <overlay> gate plan disable`. Per-call escape: `[gate-escape:plan_gate: <reason>]` in `new_string`/`content`/`file_path` (first 512 chars). |
 | `visible_plan_gate_enabled` | Kill-switch (default `true`) for the visible per-target plan-first gate (`handle_enforce_visible_plan_before_tools`), which arms only when the owner's own prompt names two or more tickets and one of its sentences orders a plan before a change (a question, or a report about an earlier plan, never arms), then denies a write, question or dispatch until the turn shows one implementation-plus-verification plan per ticket. Read, Grep, Glob, read-only Bash and the task-list tools stay open. Read directly by the hook layer; disable via `t3 <overlay> gate visible-plan disable`. Per-call escape: `[gate-escape:visible_plan_gate: <reason>]` in any string argument (first 512 chars). Third escape: its `TEATREE PLAN-FIRST GATE` deny prefix sits on the deny circuit breaker's UX allow-list, so the third identical denial fails that one call open rather than escalating a refusal the agent cannot answer. |
 | `gate_relaxation_gate_enabled` | Kill-switch (default `true`, [#850](https://github.com/souliane/teatree/issues/850)) for the §17.6.1/§17.6.2 anti-relaxation + tach-soundness prek gate (`scripts/hooks/check_gate_relaxation.py`) that refuses a commit whose staged diff relaxes a lint/coverage constraint or a tach boundary. DB-home (per-overlay overridable): the hook resolves it DB-first through `get_effective_settings`, so `config_setting set gate_relaxation_gate_enabled false` actuates it exactly like the sibling gates, and `t3 <overlay> gate gate-relaxation disable` is the self-rescue. Per-commit escape: the `ALLOW_GATE_RELAX='<reason>'` env marker (non-empty reason) records a sanctioned relaxation and lets the commit through. |
-| `forced_repro_gate_enabled` | Default `true`; an owner-only DB setting that requires a pre-fix RED for FIX coding and a RED→GREEN pair for testing and ship. Set `false` globally or per overlay with `t3 <overlay> config_setting set forced_repro_gate_enabled false --overlay <name>` to disable the recorder refusal and replay, both gates, and the prompt's record-red instruction together. When the switch exempts a ticket lacking evidence, it emits a WARNING and adds the disabling setting scope to a durable marker once per scope. Rendering a prompt does not mark the ticket. Turning the setting back on blocks until a valid RED→GREEN pair or a human `repro waive` exists. MCP and the loop principal are refused; no env, envelope or overlay path exists. |
+| `forced_repro_gate_enabled` | Default `true`; an owner-only DB setting that requires a pre-fix RED for FIX coding and a RED→GREEN pair for testing and ship. Set `false` globally or per overlay with `t3 <overlay> config_setting set forced_repro_gate_enabled false --overlay <name>` to disable the recorder refusal and replay, both gates, the prompt's record-red instruction, the seeded rubric criteria that demand a failing run, and `observed_red` as a required FixRecord field together. When the switch exempts a ticket lacking evidence, it emits a WARNING and adds the disabling setting scope to a durable marker once per scope. Rendering a prompt does not mark the ticket. Turning the setting back on blocks until a valid RED→GREEN pair or a human `repro waive` exists. MCP and the loop principal are refused; no env, envelope or overlay path exists. |
 | `orchestrator_boundary_agent_gate_enabled` | Kill-switch (default `true`, #1733) for the `Agent` arm of the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary` → `_deny_foreground_agent_dispatch`, #1442), denying a main-agent FOREGROUND `Agent` dispatch. Now LIVE: an `Agent` `PreToolUse` matcher is wired in `hooks.json` ([#1646](https://github.com/souliane/teatree/issues/1646)) and the gate is default-ON after its attended pre-INSTALL dry-run. Fails OPEN to enabled on a missing/broken config; only an explicit bare `false` disables it. Off-ramps (never-lockout): sub-agent context, `run_in_background: true`, per-call `[gate-escape:orchestrator_bash: <reason>]`, the deny-circuit-breaker, and — via `_fail_open_or_deny` ([#1692](https://github.com/souliane/teatree/issues/1692)) — the self-rescue allowlist + the master `danger_gate_fail_open` switch. The `Bash` arm (`orchestrator_bash_gate_enabled`) is unaffected. |
 | `orchestrator_delegation_gate_enabled` | Kill-switch (default `true`) for the delegation gate (`handle_block_undelegated_investigation`), which refuses an ORCHESTRATOR `Bash` call whose shape has no ceiling on what it returns — a SWEEP (`rg`, `grep -r`, `git grep`, `find <path>`) carrying neither a count bound (`-m`/`--max-count`), a piped `head`/`tail`, nor a named single file (a glob is not a name), or a PARSE (output piped into `python`/`node`/`ruby`/`perl`). Routing reads, sub-agent calls and every non-Bash tool are untouched. `run_in_background: true` is NOT an escape (it guards context, not responsiveness); the per-call escape is `[gate-escape:orchestrator_delegation_gate: <reason>]`, and `t3 <overlay> gate delegation disable` flips this switch. |
 | `schema_readiness_gate_enabled` | Default-on claim gate escape. A false `BEHIND` or `UNKNOWN` reading can otherwise refuse every new task; `t3 <overlay> config_setting set schema_readiness_gate_enabled false` bypasses both DB-behind-code and process-behind-DB checks on the next claim without waiting for their memo TTL. |

@@ -443,7 +443,7 @@ class SharePointRemoteSpec:
     the concrete ``teatree.backends.sharepoint`` client can consume it without a
     layer crossing either way. ``password_command`` is the shell command rclone
     runs (via ``RCLONE_PASSWORD_COMMAND``) to unlock the encrypted ``rclone.conf``
-    — e.g. ``pass <entry>``; ``site_url`` + ``library_path`` back the ``?id=``
+    — e.g. ``t3 teatree secrets get <entry>`` or ``pass <entry>``; ``site_url`` + ``library_path`` back the ``?id=``
     deep-link.
     """
 

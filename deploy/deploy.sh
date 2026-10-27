@@ -451,7 +451,7 @@ export TEATREE_DOCKER_SOCKET_GID
 TEATREE_HOST_OS="${TEATREE_HOST_OS:-$(uname -s)}"
 export TEATREE_HOST_OS
 
-install -d -m 700 "$HOME/.password-store" "$HOME/.gnupg"
+install -d -m 700 "$HOME/.password-store" "$HOME/.gnupg" "$HOME/.config/teatree-master-key"
 install -d \
     "$HOME/.local/share/teatree" \
     "$HOME/.local/share/teatree-worktrees" \
@@ -527,8 +527,8 @@ echo "deploy: worker sizing — cpus=${TEATREE_WORKER_CPUS:-<default>} mem_limit
 # pass entry, read it here because this process runs `compose up` and compose
 # interpolates from ITS environment. With no explicit entry, stay empty rather
 # than guessing a legacy path that may disagree with the DB-bound route.
-if [ -z "${GITLAB_TOKEN:-}" ] && [ -n "${TEATREE_GITLAB_TOKEN_PASS_PATH:-}" ] && command -v pass >/dev/null 2>&1; then
-    GITLAB_TOKEN="$(pass show "$TEATREE_GITLAB_TOKEN_PASS_PATH" 2>/dev/null | head -n1 || true)"
+if [ -z "${GITLAB_TOKEN:-}" ] && [ -n "${TEATREE_GITLAB_TOKEN_PASS_PATH:-}" ]; then
+    GITLAB_TOKEN="$("$SCRIPT_DIR/secret-read.sh" host-get "$TEATREE_GITLAB_TOKEN_PASS_PATH" 2>/dev/null || true)"
 fi
 export GITLAB_TOKEN="${GITLAB_TOKEN:-}"
 if [ -n "$GITLAB_TOKEN" ]; then
@@ -540,13 +540,14 @@ fi
 # The Notion token crosses the same boundary, but only from an entry named in
 # NOTION_TOKEN_PASS_PATH: an exported value beats the notion_token_pass_key setting, so a
 # guessed default would shadow the entry each container routes from its own store.
-if [ -z "${NOTION_TOKEN:-}" ] && [ -n "${NOTION_TOKEN_PASS_PATH:-}" ] && command -v pass >/dev/null 2>&1; then
-    NOTION_TOKEN="$(pass show "$NOTION_TOKEN_PASS_PATH" 2>/dev/null | head -n1 || true)"
+if [ -z "${NOTION_TOKEN:-}" ] && [ -n "${NOTION_TOKEN_PASS_PATH:-}" ]; then
+    NOTION_TOKEN="$("$SCRIPT_DIR/secret-read.sh" host-get "$NOTION_TOKEN_PASS_PATH" 2>/dev/null || true)"
 fi
-export NOTION_TOKEN="${NOTION_TOKEN:-}"
-if [ -n "$NOTION_TOKEN" ]; then
+if [ -n "${NOTION_TOKEN:-}" ]; then
+    export NOTION_TOKEN
     echo "deploy: Notion token exported to the container environment (key ${NOTION_TOKEN_PASS_PATH:-from this environment})"
 else
+    unset NOTION_TOKEN
     echo "deploy: no Notion token exported — containers read the entry notion_token_pass_key routes; 't3 setup' in one reports it"
 fi
 

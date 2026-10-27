@@ -20,6 +20,8 @@ MAX_SENTENCE_CHARS = 200
 MAX_LABEL_CHARS = 40
 MAX_CONSEQUENCE_CHARS = 160
 MAX_CHECKED_FACTS = 4
+MIN_OPTIONS = 2
+MAX_OPTIONS = 4
 
 REPLY_LINE = "Or reply in this thread."
 REPLY_LINE_WITHOUT_OPTIONS = "Reply in this thread."
@@ -143,6 +145,7 @@ class CardEvidence(TypedDict):
     blocker: str
     why: str
     quoted: NotRequired[str]
+    subject: NotRequired[str]
     action: NotRequired[ActionRequest]
 
 
@@ -258,8 +261,9 @@ def _shorthand_problems(where: str, text: str, *, in_client: bool = False) -> li
 
 def _option_problems(options: tuple[CardOption, ...]) -> list[str]:
     problems: list[str] = []
-    if len(options) not in {0, 2, 3, 4}:
-        problems.append(f"{len(options)} {'option' if len(options) == 1 else 'options'}; a card has none, or 2 to 4")
+    if len(options) not in {0, *range(MIN_OPTIONS, MAX_OPTIONS + 1)}:
+        noun = "option" if len(options) == 1 else "options"
+        problems.append(f"{len(options)} {noun}; a card has none, or {MIN_OPTIONS} to {MAX_OPTIONS}")
     labels = [option.label.strip().casefold() for option in options]
     if "" in labels:
         problems.append("an option has a blank label")
@@ -320,6 +324,7 @@ class QuestionCard:
     why: str
     options: tuple[CardOption, ...] = ()
     quoted: str = ""
+    subject: str = ""
     action: ActionRequest | None = None
 
     def __post_init__(self) -> None:
@@ -369,6 +374,8 @@ class QuestionCard:
         )
         if self.quoted:
             evidence["quoted"] = self.quoted
+        if self.subject:
+            evidence["subject"] = self.subject
         if self.action is not None:
             evidence["action"] = self.action
         return evidence
@@ -393,6 +400,7 @@ class QuestionCard:
             why=str(evidence["why"]),
             options=CardOption.parse_all(options_json),
             quoted=str(evidence.get("quoted", "")),
+            subject=str(evidence.get("subject", "")),
             action=read_action(evidence),
         )
 

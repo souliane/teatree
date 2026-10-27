@@ -70,7 +70,7 @@ from teatree.agents.runner_route_recording import park_after_route_failure as _p
 from teatree.agents.runner_route_recording import park_until as _park_until
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
-from teatree.agents.runner_skill_staging import staged_skills_or_refusal
+from teatree.agents.runner_skill_staging import park_if_worker_skill_roots_empty, staged_skills_or_refusal
 from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
@@ -293,9 +293,11 @@ def _ready_run_or_failure(
     except SkillDispatchError as exc:
         _restore_unconsumed_resume_thread(preflight.dispatch.harness)
         logger.warning("Refusing task %s: %s", route_retry.task.pk, exc)
-        attempt = _record_failure(  # no-usage: required skill refused before the harness opened; no turn billed
-            route_retry.task, error=str(exc), result={"skill_assurance": exc.assurance}
-        )
+        attempt = park_if_worker_skill_roots_empty(route_retry.task, exc)
+        if attempt is None:
+            attempt = _record_failure(  # no-usage: required skill refused before the harness opened; no turn billed
+                route_retry.task, error=str(exc), result={"skill_assurance": exc.assurance}
+            )
         record_skill_assurance_attempt(route_retry.task, attempt)
         return attempt
     if isinstance(prepared, TaskAttempt):
