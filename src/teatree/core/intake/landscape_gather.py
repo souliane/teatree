@@ -18,8 +18,11 @@ import logging
 from pathlib import Path
 from typing import TypedDict
 
+from django.utils import timezone
+
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.intake.fix_first import FixFirst, fix_first_listing
 from teatree.core.intake.landscape import LandscapeSurvey, survey_landscape, survey_merged_pr_issue_keys
 from teatree.core.overlay_loader import get_overlay
 from teatree.types import RawAPIDict
@@ -86,6 +89,7 @@ class LandscapeReport(TypedDict):
     open_prs: list[OpenPrReport]
     recommendations: list[RecommendationReport]
     warnings: list[str]
+    fix_first: FixFirst
 
 
 def _worktrees_of_clone(clone: Path) -> list[Path]:
@@ -153,7 +157,7 @@ def _open_issues_in_scope(host: CodeHostBackend, repo_slugs: list[str]) -> tuple
     return issues, warnings
 
 
-def _to_report(survey: LandscapeSurvey) -> LandscapeReport:
+def _to_report(survey: LandscapeSurvey, *, fix_first: FixFirst) -> LandscapeReport:
     """Flatten a :class:`LandscapeSurvey` into the JSON-serialisable command shape."""
     return LandscapeReport(
         worktrees=[
@@ -181,6 +185,7 @@ def _to_report(survey: LandscapeSurvey) -> LandscapeReport:
             for rec in survey.recommendations
         ],
         warnings=list(survey.warnings),
+        fix_first=fix_first,
     )
 
 
@@ -209,7 +214,7 @@ def run_landscape(workspace: Path, *, overlay_name: str | None = None) -> Landsc
             worktree_paths=worktree_paths,
             open_issues=[],
         )
-        report = _to_report(local)
+        report = _to_report(local, fix_first=fix_first_listing(None, [], now=timezone.now()))
         report["warnings"].append("no code host configured; surveyed local git landscape only")
         return report
 
@@ -239,7 +244,7 @@ def run_landscape(workspace: Path, *, overlay_name: str | None = None) -> Landsc
             "forge read failed during intake landscape survey; refusing a degraded-empty survey: "
             + "; ".join(forge_read_errors)
         )
-    return _to_report(survey)
+    return _to_report(survey, fix_first=fix_first_listing(host, repo_slugs, now=timezone.now()))
 
 
 class _NullCodeHost:

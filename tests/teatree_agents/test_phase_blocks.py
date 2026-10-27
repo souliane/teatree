@@ -362,6 +362,22 @@ class TestIntakeSurveyJson(TestCase):
 
         assert intake_survey_json(task) in phase_specific_lines(task, [])
 
+    def test_planning_brief_names_fix_first_action_and_evidence(self) -> None:
+        task = _task("planning")
+        survey = {
+            "fix_first": {
+                "defects": [{"issue": "https://github.com/owner/repo/issues/1", "title": "fix: fault"}],
+                "stuck": [{"ticket": 8, "state": "tested"}],
+            }
+        }
+        LandscapeArtifact.record(ticket=task.ticket, survey=survey, recorded_by="t3:intake")
+
+        lines = phase_specific_lines(task, [])
+
+        assert "https://github.com/owner/repo/issues/1" in intake_survey_json(task)
+        assert '"ticket": 8' in intake_survey_json(task)
+        assert any("Rule 6" in line and "defer or split" in line for line in lines)
+
 
 class TestEmbeddedIntakeSurveyJson(TestCase):
     """Only the phase that EMBEDS the survey offers it to the byte-budget pass.
