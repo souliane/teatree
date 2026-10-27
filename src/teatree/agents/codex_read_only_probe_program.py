@@ -16,7 +16,8 @@ SECRET_NAMES = frozenset(
 TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
 KEY_SUFFIXES = (".pem", ".key", ".p8", ".ppk")
 PRIVATE_KEY_MARKERS = (b"PRIVATE KEY-----", b"PuTTY-User-Key-File")
-DOTENV_POINTER = re.compile(rb"dotenv[ \t]+[A-Za-z0-9_.][A-Za-z0-9_./-]*")
+# The one line worktree provisioning writes (CACHE_DIRNAME / CACHE_FILENAME, inlined: this program is stdlib-only).
+DOTENV_POINTER = re.compile(rb"dotenv[ \t]+\.\./\.t3-cache/(?!\.{1,2}/)[A-Za-z0-9_.@+-]+/\.t3-env\.cache")
 KEY_READ_BYTES = 64 * 1024
 
 
@@ -178,7 +179,7 @@ def _readable(path: str) -> bool:
 
 
 def _dotenv_pointer(path: str) -> bool:
-    """Every non-blank line is ``dotenv <relative path>``, so the file names another file and holds no value."""
+    """Every non-blank line is the generated cache pointer, so the file names another file and holds no value."""
     content = _head(path, KEY_READ_BYTES + 1)
     if content is None or len(content) > KEY_READ_BYTES:
         return False

@@ -308,13 +308,14 @@ Tickets without a forge issue or pull request URL carry an empty issue body and 
   is also walked in full for env and credential files it can open and that are not empty (`.env`, `*.env`,
   `.env.*`, `.env-*` and `.env_*` other than `.example`, `.sample`, `.template` and `.dist` templates,
   `.envrc`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.pgpass`, `id_rsa`, `id_dsa`, `id_ecdsa`,
-  `id_ed25519`; an `.envrc` whose only non-blank lines are `dotenv <relative path>` is the pointer the
-  worktree setup step generates, holds no secret, and does not count), and for a private key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other
+  `id_ed25519`; an `.envrc` whose only non-blank lines are the generated `dotenv ../.t3-cache/<name>/.t3-env.cache`
+  (one path segment that is not `.` or `..`) is the pointer the worktree setup step writes, holds no secret, and
+  does not count; a pointer at any other path does), and for a private key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other
   than `*.pub`) whose first 64 KiB carry a private-key marker; content is read only for key names, since
   source that embeds the marker is no key. The run is refused, named and with nothing started, on a mount that
   accepts a write or is not declared, a declared mount that is missing or that the write probe or the
-  secret scan skipped, any readable secret file (the refusal names it and the one-line fix: `chmod 600` it
-  in the worker, or delete it), running as root or as the owner of a mounted tree, a
+  secret scan skipped, any readable secret file (the refusal names it and the one-line fix: `chmod o-rwx` the quoted path
+  in the worker, or move the file out of the root), running as root or as the owner of a mounted tree, a
   Git config with an embedded HTTP credential or auth header,
   checkout whose Git metadata it cannot read, a tmpfs whose control write fails, capabilities or a missing
   `no_new_privs`, any
