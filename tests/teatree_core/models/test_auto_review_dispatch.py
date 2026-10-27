@@ -37,6 +37,28 @@ URL = f"https://github.com/{SLUG}/pull/6230"
 
 
 class TestEnqueueCreatesClaimableTask:
+    def test_reviewer_ticket_verdicts_still_count_after_owner_resolves(self) -> None:
+        owner = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
+        reviewer = Ticket.objects.create(issue_url=URL, role=Ticket.Role.REVIEWER)
+        PullRequest.objects.create(ticket=owner, url=URL, repo=SLUG, iid="6230")
+        for index in range(3):
+            ReviewVerdict.objects.create(
+                ticket=reviewer if index == 0 else owner,
+                slug=SLUG,
+                pr_id=6230,
+                reviewed_sha=f"{index:040x}",
+                verdict="hold",
+                reviewer_identity="cold-reviewer",
+                reviewer_identity_normalized="cold-reviewer",
+                blast_class="logic",
+                gh_verify_result="green",
+                findings=[],
+            )
+
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD, pr_url=URL) is None
+        report = DeferredQuestion.objects.get(dedupe_marker="review-cap:souliane/teatree:6230")
+        assert report.evidence["reviewed_shas"] == [f"{index:040x}" for index in range(3)]
+
     def test_three_verdicts_across_a_tickets_prs_cap_its_next_review(self) -> None:
         owner = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
         PullRequest.objects.create(ticket=owner, url=URL, repo=SLUG, iid="6230")
@@ -165,6 +187,31 @@ class TestEnqueueCreatesClaimableTask:
             AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD, pr_url=URL, overlay="teatree")
             is not None
         )
+        assert not DeferredQuestion.objects.filter(dedupe_marker="review-cap:souliane/teatree:6230").exists()
+
+    def test_copied_reviewer_ticket_hold_uses_owner_provenance(self) -> None:
+        owner = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/4804")
+        reviewer = Ticket.objects.create(issue_url=URL, role=Ticket.Role.REVIEWER)
+        PullRequest.objects.create(ticket=owner, url=URL, repo=SLUG, iid="6230")
+        heads = [f"{index:040x}" for index in range(1, 4)]
+        for index, head in enumerate(heads):
+            ReviewVerdict.objects.create(
+                ticket=reviewer if index == 2 else owner,
+                slug=SLUG,
+                pr_id=6230,
+                reviewed_sha=head,
+                verdict="hold",
+                reviewer_identity="cold-reviewer-6230",
+                reviewer_identity_normalized="cold-reviewer-6230",
+                blast_class="logic",
+                gh_verify_result="green",
+                findings=[],
+            )
+        owner.merge_extra(
+            merge_into_dicts={"hold_carry_forward": {f"{SLUG}#6230:{heads[2]}:cold-reviewer-6230": heads[1]}}
+        )
+
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD, pr_url=URL) is not None
         assert not DeferredQuestion.objects.filter(dedupe_marker="review-cap:souliane/teatree:6230").exists()
 
     def test_three_recorded_verdicts_cap_the_ticket_and_report_every_head(self) -> None:

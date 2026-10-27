@@ -32,11 +32,11 @@ class TestReviewPlan(TestCase):
             rubric = Rubric.objects.create(ticket=owner)
             criteria = [
                 RubricCriterion.objects.create(rubric=rubric, ordinal=index, text=f"criterion {index}")
-                for index in range(3)
+                for index in range(4)
             ]
             for criterion, rationale in zip(
                 criteria,
-                ("tests/unchanged.py:1", "touched.py:2", "uncited rationale"),
+                ("untouched.py:1", "touched.py:2", "uncited rationale", "tests/unchanged.py:1"),
                 strict=True,
             ):
                 criterion.record_grade(
@@ -79,7 +79,7 @@ class TestReviewPlan(TestCase):
             assert plan.delta.case == "delta"
             assert plan.carried == frozenset({0})
             assert "CARRIED: #0" in "\n".join(plan.brief_lines())
-            assert "RE-GRADE: #1, #2" in "\n".join(plan.brief_lines())
+            assert "RE-GRADE: #1, #2, #3" in "\n".join(plan.brief_lines())
             assert "fix the branch" in "\n".join(plan.brief_lines())
             assert repeated == plan
             assert RoundMetric.objects.filter(ticket=owner, kind="review", subject=head).count() == 1

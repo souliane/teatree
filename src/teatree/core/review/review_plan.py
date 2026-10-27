@@ -104,6 +104,7 @@ def _carry_ordinals(task: "Task", prior: str, files: frozenset[str]) -> frozense
     if not isinstance(grades, dict):
         return frozenset()
     carried: set[int] = set()
+    source_changed = any(not path.startswith(("tests/", "docs/")) for path in files)
     for criterion in rubric.criteria.all():
         grade = grades.get(str(criterion.pk))
         if not isinstance(grade, dict) or str(grade.get("status", "")).lower() != "pass":
@@ -111,7 +112,11 @@ def _carry_ordinals(task: "Task", prior: str, files: frozenset[str]) -> frozense
         if not is_independent_reviewer_identity(str(grade.get("grader_identity", ""))):
             continue
         cited = set(_PATH.findall(str(grade.get("rationale", ""))))
-        if cited and not cited.intersection(files):
+        if (
+            cited
+            and not cited.intersection(files)
+            and (not source_changed or not all(path.startswith("tests/") for path in cited))
+        ):
             carried.add(criterion.ordinal)
     return frozenset(carried)
 

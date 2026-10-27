@@ -80,7 +80,9 @@ from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 
 if TYPE_CHECKING:
+    from teatree.core.models.review_verdict import ReviewVerdict
     from teatree.core.models.task import Task
+    from teatree.core.models.ticket import Ticket
 
 #: The holder identity the loop scanner takes the per-MR review lock under. A
 #: verdict recorded for a head this dispatch armed releases that lock; a verdict
@@ -100,6 +102,17 @@ DEFAULT_DISPATCH_TTL: dt.timedelta = DEFAULT_LOCK_TTL
 MAX_DISPATCH_ATTEMPTS = 3
 MAX_RECORDED_REVIEWS = 3
 MAX_REVIEW_CAP_MARKER_CHARS = 64
+
+
+def _hold_was_carried(row: "ReviewVerdict", ticket: "Ticket | None") -> bool:
+    marker = f"{row.slug.casefold()}#{row.pr_id}:{row.reviewed_sha}:{row.reviewer_identity_normalized}"
+    for candidate in (row.ticket, ticket):
+        if candidate is None:
+            continue
+        provenance = (candidate.extra or {}).get("hold_carry_forward", {})
+        if isinstance(provenance, dict) and provenance.get(marker):
+            return True
+    return False
 
 
 def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) -> str:
@@ -396,11 +409,12 @@ class AutoReviewDispatch(models.Model):
         ticket = PullRequest.objects.gated_ticket(slug=slug, pr_id=pr_id) or next(
             (row.ticket for row in reversed(pr_rows) if row.ticket is not None), None
         )
-        rows = (
-            list(ReviewVerdict.objects.filter(ticket=ticket).select_related("ticket").order_by("recorded_at", "pk"))
-            if ticket is not None
-            else pr_rows
+        rows_by_id = {row.pk: row for row in pr_rows}
+        rows_by_id.update(
+            (row.pk, row)
+            for row in ReviewVerdict.objects.filter(ticket=ticket, ticket__isnull=False).select_related("ticket")
         )
+        rows = sorted(rows_by_id.values(), key=lambda row: (row.recorded_at, row.pk))
         by_head: dict[tuple[str, int, str], list[ReviewVerdict]] = {}
         for row in rows:
             by_head.setdefault((row.slug.casefold(), row.pr_id, row.reviewed_sha), []).append(row)
@@ -417,12 +431,7 @@ class AutoReviewDispatch(models.Model):
                         for source in by_head.get((repo_slug, number, move.from_head), [])[:count]
                     )
         for row in rows:
-            if row.verdict != ReviewVerdict.Verdict.HOLD or row.ticket is None:
-                continue
-            provenance = (row.ticket.extra or {}).get("hold_carry_forward", {})
-            if isinstance(provenance, dict) and provenance.get(
-                f"{row.slug.casefold()}#{row.pr_id}:{row.reviewed_sha}:{row.reviewer_identity_normalized}"
-            ):
+            if row.verdict == ReviewVerdict.Verdict.HOLD and _hold_was_carried(row, ticket):
                 copied.add(
                     (row.slug.casefold(), row.pr_id, row.reviewed_sha, row.reviewer_identity_normalized, row.verdict)
                 )
