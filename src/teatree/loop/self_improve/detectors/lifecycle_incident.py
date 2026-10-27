@@ -10,12 +10,12 @@ from operator import itemgetter
 from pathlib import Path
 from typing import ClassVar
 
-from django.db.models import Q, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone
 
 from teatree.core.modelkit import reask_cadence
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind, is_causeless
+from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, STALE_ERROR_AFTER, FailureKind, is_causeless
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.models.loop_schedule import owner_zone
@@ -26,7 +26,6 @@ from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
-from teatree.loop.self_improve.detectors.task_failure_coverage import failures_handled_by_finished_repair
 
 _MESSAGE_WAIT = timedelta(hours=1)
 _POST_WAIT = timedelta(minutes=10)
@@ -81,11 +80,9 @@ class LifecycleIncidentDetector:
         now: datetime,
         ticket_allowed: bool = True,
     ) -> str:
-        firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
-        if kind == "task_failed" and failures_handled_by_finished_repair(firing, ids):
-            return ActionRung.STATUSLINE
         if ticket_allowed and len(ids) >= _RECURRING_FAILURE:
             return ActionRung.TICKET
+        firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
         if firing is None or firing.resolved_at is not None:
             return ActionRung.TICKET if ticket_allowed and self.repair_after <= timedelta(0) else ActionRung.SLACK
         if ticket_allowed and firing.last_action == ActionRung.TICKET:
@@ -93,7 +90,9 @@ class LifecycleIncidentDetector:
         age = now - firing.first_fired_at
         if ticket_allowed and age >= self.repair_after:
             return ActionRung.TICKET
-        return ActionRung.SLACK if age >= self.owner_alert_after else ActionRung.STATUSLINE
+        if age >= self.owner_alert_after:
+            return ActionRung.SLACK
+        return ActionRung.STATUSLINE
 
     def detect(self) -> list[DetectorReport]:
         return self.detect_checked().reports
@@ -254,6 +253,13 @@ class LifecycleIncidentDetector:
             Task.objects.filter(status=Task.Status.FAILED)
             .exclude(failure_kind__in=_RECOVERED_KINDS)
             .exclude(ticket__state__in=Ticket.finished_states())
+            .alias(
+                has_attempt=Exists(TaskAttempt.objects.filter(task_id=OuterRef("pk"))),
+                has_recent_attempt=Exists(
+                    TaskAttempt.objects.filter(task_id=OuterRef("pk"), started_at__gte=now - STALE_ERROR_AFTER)
+                ),
+            )
+            .exclude(has_attempt=True, has_recent_attempt=False)
         )
         if self.overlay_name:
             tasks = tasks.filter(ticket__overlay=self.overlay_name)
