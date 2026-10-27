@@ -44,6 +44,7 @@ class DjangoGroup:
     core_dispatch: bool = False
     core_subcommands: frozenset[str] = frozenset()
     overlay_settings_subcommands: frozenset[str] = frozenset()
+    command_name: str = ""
 
     def dispatches_to_core(self, sub_name: str) -> bool:
         """True iff *sub_name* must dispatch via teatree-core, not overlay manage.py."""
