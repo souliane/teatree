@@ -22,13 +22,28 @@ from hooks.scripts import gate_result, hook_budget, mr_validator, t3_invocation
 from hooks.scripts.forge_api_detect import _is_existing_pr_metadata_only_edit
 from hooks.scripts.gate_result import GateSkipped
 from hooks.scripts.hook_router import handle_validate_mr_metadata
-from hooks.scripts.mr_cli_fields import _api_field_args, extract_api_mr_fields
+from hooks.scripts.mr_cli_fields import _api_field_args, extract_api_mr_fields, strip_heredoc
 from teatree.config import COLD_HOOK_SETTINGS
 from teatree.core.review.mr_metadata import validate_mr_metadata
 from teatree.types import DEFAULT_MR_TITLE_REGEX
 from tests._gate_escape_audit import audited_escape
 
 _ALLOWANCE_KEY = "hook_validator_timeout_seconds"
+
+
+@pytest.mark.parametrize(
+    ("opener", "invalid_end", "valid_end"),
+    [
+        ("<<EOF", " EOF", "EOF"),
+        ("<<EOF", "EOF ", "EOF"),
+        ("<<-EOF", " EOF", "\tEOF"),
+    ],
+)
+def test_strip_heredoc_keeps_data_until_an_exact_terminator(opener: str, invalid_end: str, valid_end: str) -> None:
+    command = f"cat {opener}\nbody\n{invalid_end}\nmake all\n{valid_end}\necho done"
+    stripped = strip_heredoc(command)
+    assert "make all" not in stripped
+    assert "echo done" in stripped
 
 
 def _verdict(command: str) -> list[str] | None:

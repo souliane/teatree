@@ -6,9 +6,6 @@ from functools import lru_cache
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from hooks.scripts.managed_repo import teatree_src_on_path
-from hooks.scripts.mr_cli_fields import strip_heredoc
-
 if TYPE_CHECKING:
     from teatree.hooks.shell_tokens import HeredocBody, Token
 
@@ -40,13 +37,18 @@ def call_is_from_subagent(data: dict) -> bool:
 
 
 COMMAND_HEAD = (
-    r"(?:^|[;&|\n(){}])[^\S\n]*(?:(?:then|do)\s+)?(?:\w+=\S+\s+)*"
-    r"(?:(?:(?:command(?!\s+-[vV](?:\s|$))|exec|time|nice|sudo|nohup)(?:\s+-\S+)*"
-    r"|env(?:\s+(?:-\S+|\w+=\S+))*)\s+)*"
+    r"(?:^|[;&|\n(){}])[^\S\n]*(?:(?:then|do|if|until|while|!)\s+)*(?:\w+=\S+\s+)*"
+    r"(?:(?:command(?!\s+-[vV](?:\s|$))|exec|time|nohup|watch)(?:\s+-\S+)*\s+"
+    r"|sudo(?:\s+(?:-u\s+\S+|-\S+))*\s+"
+    r"|nice(?:\s+(?:-n\s+\S+|-\S+))*\s+"
+    r"|env(?:\s+(?:-u\s+\S+|-\S+|\w+=\S+))*\s+"
+    r"|timeout(?:\s+-\S+)*\s+\d+(?:\.\d+)?[smhd]?\s+"
+    r"|xargs(?:\s+(?:-P\s*\d+|-\S+))*\s+)*"
 )
 RUNNER_PREFIX = (
-    r"(?:(?:uvx|npx|xargs)\s+|(?:uv|poetry|pdm|hatch)\s+run\s+"
-    r"|python3?\s+-m\s+|timeout\s+\d+\s+)*"
+    r"(?:(?:uvx|npx|yarn)\s+|(?:uv|poetry|pdm|hatch)\s+run\s+"
+    r"|pnpm\s+exec\s+|python3?\s+-m\s+)*"
+    r"(?:/(?:[\w.-]+/)+)?"
 )
 PYTEST_VERB_RE = COMMAND_HEAD + RUNNER_PREFIX + r"pytest(?![\w-])"
 PYTEST_VERB_FINDER = re.compile(PYTEST_VERB_RE)
@@ -55,18 +57,25 @@ PYTEST_VERB_FINDER = re.compile(PYTEST_VERB_RE)
 @lru_cache(maxsize=1)
 def _shell_tokens() -> ModuleType | None:
     try:
+        from hooks.scripts.managed_repo import (  # noqa: PLC0415 — keep origin-only hooks cold (#4995)
+            teatree_src_on_path,
+        )
+
         with teatree_src_on_path():
             from teatree.hooks import shell_tokens  # noqa: PLC0415 — cold-hook import
-    except ImportError:
+    except (ImportError, SyntaxError):
         sys.stderr.write("orchestrator boundary gate: shell lexer unavailable; scanning the raw command.\n")
         return None
     return shell_tokens
 
 
 _SUBCOMMAND_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`", re.DOTALL)
-_HEREDOC_INTERPRETER_RE = re.compile(r"(?:^|[;&|])\s*(?:bash|sh|python3?)\b[^;&|\n]*<<")
+_HEREDOC_INTERPRETER_RE = re.compile(
+    COMMAND_HEAD + r"(?:docker\s+exec(?:\s+-\S+)*\s+\S+\s+)?(?:/(?:[\w.-]+/)+)?(?:bash|sh|zsh|python3?)\b[^;&|\n]*<<"
+)
 _HEREDOC_PIPE_RE = re.compile(r"\|\s*(?:bash|sh)\b|>\(\s*(?:bash|sh)\b")
 _FILE_REDIRECT_RE = re.compile(r"(?<!<)>{1,2}\s*([^\s<>|;&]+)")
+_TEE_FILE_RE = re.compile(r"(?:^|[;&|])\s*tee(?:\s+-\S+)*\s+([^\s<>|;&]+)")
 _EXECUTED_FILE_RE = re.compile(r"(?:^|[;&|\n])\s*(?:bash|sh)\s+([^\s<>|;&]+)")
 
 
@@ -84,12 +93,15 @@ def _subcommand_text(lexer: ModuleType, raw: str, *, heredoc_body: bool = False)
     return "\n".join(commands)
 
 
-def _heredoc_executes_body(heredoc: "HeredocBody", executed_files: dict[str, int]) -> bool:
+def _heredoc_executes_body(heredoc: "HeredocBody", command: str, executed_files: dict[str, int]) -> bool:
     line = heredoc.opener_line
     if _HEREDOC_INTERPRETER_RE.search(line) or _HEREDOC_PIPE_RE.search(line):
         return True
-    redirect = _FILE_REDIRECT_RE.search(line)
-    return redirect is not None and executed_files.get(redirect.group(1), -1) >= heredoc.end
+    redirect = _FILE_REDIRECT_RE.search(line) or _TEE_FILE_RE.search(line)
+    if redirect is None:
+        return False
+    line_start = command.rfind(line, 0, heredoc.end)
+    return executed_files.get(redirect.group(1), -1) > line_start + redirect.start(1)
 
 
 _PYTEST_TARGETED_RE = re.compile(r"(?:^|\s)(?:-k|--deselect)(?:[=\s]|$)|::|(?:^|\s)\S*\.py(?:::|\s|$)")
@@ -128,19 +140,46 @@ def heavy_command_is_help_only(command: str, heavy_pattern: re.Pattern[str]) -> 
     return saw_heavy
 
 
+_QUOTED_PYTEST_SELECTOR_RE = re.compile(r"[^\s;&|(){}]*\.py(?:::[^\s;&|(){}]+)?")
+_SHELL_WORDS = frozenset({"bash", "sh", "zsh"})
+
+
+def _quoted_shell_payload(words: list[str]) -> bool:
+    if not words:
+        return False
+    if words[0] in {"eval", "ssh"}:
+        return True
+    if not re.fullmatch(r"-[a-z]*c", words[-1]):
+        return False
+    return (
+        words[0] in _SHELL_WORDS
+        or words[0].rsplit("/", 1)[-1] in _SHELL_WORDS
+        or (
+            words[0] in {"sudo", "env", "docker"} and any(word.rsplit("/", 1)[-1] in _SHELL_WORDS for word in words[1:])
+        )
+    )
+
+
 def _word_text(lexer: ModuleType, tokens: list["Token"]) -> list[str]:
     result: list[str] = []
     words: list[str] = []
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if token.kind is lexer.TokenKind.OP:
             result.append(token.value)
             words.clear()
             continue
         raw = token.raw or token.value
-        shell_script_arg = len(words) > 1 and words[-2] in {"bash", "sh"} and bool(re.fullmatch(r"-[a-z]*c", words[-1]))
-        if shell_script_arg:
+        pipe_to_shell = (
+            len(tokens) > index + 2
+            and words[:1] == ["echo"]
+            and tokens[index + 1].value == "|"
+            and tokens[index + 2].value.rsplit("/", 1)[-1] in _SHELL_WORDS
+        )
+        if _quoted_shell_payload(words) or pipe_to_shell:
             result.extend(("\n", heavy_command_text(token.value), "\n"))
-        elif "'" not in raw and '"' not in raw:
+        elif ("'" not in raw and '"' not in raw) or (
+            "pytest" in words and _QUOTED_PYTEST_SELECTOR_RE.fullmatch(token.value)
+        ):
             result.append(token.value)
         else:
             result.append(" ")
@@ -153,7 +192,7 @@ def _heredoc_text(lexer: ModuleType, bodies: list["HeredocBody"], command: str) 
     result: list[str] = []
     executed_files = {match.group(1): match.start(1) for match in _EXECUTED_FILE_RE.finditer(command)}
     for body in bodies:
-        if not body.terminated or _heredoc_executes_body(body, executed_files):
+        if not body.terminated or _heredoc_executes_body(body, command, executed_files):
             executable_text = body.body
             if body.terminated and "python" not in body.opener_line:
                 executable_text = heavy_command_text(body.body)
@@ -168,6 +207,8 @@ def heavy_command_text(command: str) -> str:
     lexer = _shell_tokens()
     if lexer is None:
         return command
+    from hooks.scripts.mr_cli_fields import strip_heredoc  # noqa: PLC0415 — keep origin-only hooks cold (#4995)
+
     bodies: list[HeredocBody] = []
     tokens = lexer.tokenize(command, heredoc_bodies=bodies)
     joined = " ".join(strip_heredoc(token.raw) if "<<" in token.raw else token.raw for token in tokens)

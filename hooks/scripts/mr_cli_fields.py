@@ -32,7 +32,10 @@ _MR_OP_RE = re.compile(r"\bglab\s+mr\s+(create|update)\b")
 # A heredoc body — ``<<['"]?DELIM['"]?`` up to a line that is just ``DELIM``.
 # Stripped FIRST (before quotes) because a quoted delimiter (``<<'PY'``) would
 # otherwise be eaten by the quote-stripper and orphan the body.
-_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(?P<delim>\w+)\1.*?^[ \t]*(?P=delim)[ \t]*(?=\r?$)", re.DOTALL | re.MULTILINE)
+_HEREDOC_RE = re.compile(
+    r"<<(?P<strip>-)?[^\S\r\n]*(?P<quote>['\"]?)(?P<delim>\w+)(?P=quote).*?^(?(strip)\t*)(?P=delim)(?=\r?$)",
+    re.DOTALL | re.MULTILINE,
+)
 # Single- and double-quoted argument spans — a ``-m``/``-F`` message, a quoted
 # title/description value, any quoted text. Removed for DETECTION only; value
 # extraction still runs on the original command.

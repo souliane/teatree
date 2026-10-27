@@ -20,10 +20,12 @@ read by ``_call_is_from_subagent``.
 
 import json
 import sqlite3
+import subprocess
 import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -37,6 +39,26 @@ from hooks.scripts.hook_router import (
     handle_enforce_orchestrator_boundary,
 )
 from tests._gate_escape_audit import audited_escape
+
+
+def test_origin_signal_import_stays_cold() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            (
+                "import sys; import hooks.scripts.orchestration_boundary_signals; "
+                "assert 'hooks.scripts.mr_cli_fields' not in sys.modules; "
+                "assert 'hooks.scripts.managed_repo' not in sys.modules"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
@@ -209,6 +231,7 @@ class TestFileWritingHeredocs:
             "mkdir -p scripts && cat > scripts/run.sh <<EOF\nuv run pytest\nEOF",
             "cat > run.sh << 'EOF'\nuv run pytest\nEOF",
             "tee run.sh << EOF\nuv run pytest\nEOF",
+            "bash run.sh; cat > run.sh <<EOF\nmake lint\nEOF",
             "gh pr create --body \"$(cat <<'EOF'\n`uv run pytest`\nEOF\n)\"",
             "git commit -m \"$(cat <<'EOF'\n`uv run pytest`\nEOF\n)\"",
             "gh pr create --body \"$(cat <<'EOF'\n`make lint`\nEOF\n)\"",
@@ -239,6 +262,12 @@ class TestFileWritingHeredocs:
             "tee run.sh <<EOF >(bash)\nuv run pytest\nEOF",
             "cat > run.sh << 'EOF'\nuv run pytest\nEOF\nbash run.sh",
             "cat > run.sh <<EOF\nuv run pytest\nEOF\nbash run.sh; echo done",
+            "tee run.sh <<EOF\nmake lint\nEOF\nbash run.sh",
+            "cat > run.sh <<EOF && bash run.sh\nmake lint\nEOF",
+            "tee run.sh <<EOF && sh run.sh\nmake lint\nEOF",
+            "sudo bash <<EOF\nmake lint\nEOF",
+            "docker exec -i c bash <<EOF\nmake lint\nEOF",
+            "/usr/bin/bash <<EOF\nmake lint\nEOF",
         ],
     )
     def test_executable_or_unclosed_heredoc_still_denies(self, command: str) -> None:
@@ -261,6 +290,7 @@ class TestHeavyWordIsNotACommand:
             "command -V pytest",
             "command -v make",
             "command -v tox",
+            "echo 'make all'",
             "echo '$(pytest)' \"$(date)\"",
             "echo '`pytest`' `date`",
         ],
@@ -291,9 +321,45 @@ class TestHeavyWordIsNotACommand:
             "bash -lc 'make all'",
             "if true; then make all; fi",
             "command -p pytest",
+            "zsh -c 'make all'",
+            "/bin/bash -c 'make all'",
+            "bash -x -c 'make all'",
+            "bash -euo pipefail -c 'make all'",
+            "ssh host 'make all'",
+            'eval "make all"',
+            "echo 'make all' | sh",
+            "if make; then :; fi",
+            "until make; do :; done",
+            "! make",
+            "sudo -u root make",
+            "nice -n 5 make",
+            "env -u FOO make",
+            "timeout 30s make",
+            "/usr/bin/make",
+            "yarn webpack",
+            "pnpm exec webpack",
+            "watch make",
+            "xargs -P4 make",
         ],
     )
     def test_real_heavy_verb_still_denies(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestQuotedPytestSelectors:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'uv run pytest "tests/test_a.py::test_b[1-2]"',
+            "pytest 'tests/test_a.py::TestX::test_y' -x",
+            'pytest "tests/test_a.py" -q',
+        ],
+    )
+    def test_quoted_file_or_node_stays_targeted(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize("command", ['pytest "tests/"', 'pytest "tests/test_a.py" && pytest'])
+    def test_quoted_directory_or_second_whole_suite_denies(self, command: str) -> None:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
 
@@ -301,21 +367,21 @@ class TestHeavyScanStaysBounded:
     @pytest.mark.parametrize("span", ["$(date)", "`date`"])
     def test_thousands_of_substitutions_scan_in_bounded_time(self, span: str) -> None:
         command = "echo " + " ".join([span] * 5000)
-        started = time.perf_counter()
+        started = time.process_time()
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
-        assert time.perf_counter() - started < 2.0
+        assert time.process_time() - started < 2.0
 
     def test_thousands_of_file_writing_heredocs_scan_in_bounded_time(self) -> None:
         command = "\n".join(f"cat > f{i} <<EOF{i}\nbody\nEOF{i}" for i in range(2000))
-        started = time.perf_counter()
+        started = time.process_time()
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
-        assert time.perf_counter() - started < 2.0
+        assert time.process_time() - started < 2.0
 
     def test_a_long_blank_line_run_scans_in_bounded_time(self) -> None:
         command = "echo a" + "\n" * 8000 + "echo done"
-        started = time.perf_counter()
+        started = time.process_time()
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
-        assert time.perf_counter() - started < 2.0
+        assert time.process_time() - started < 2.0
 
     def test_a_verb_after_a_long_blank_line_run_still_denies(self) -> None:
         command = "echo a" + "\n" * 8000 + "uv run pytest"
@@ -340,6 +406,11 @@ class TestShellLexerUnavailable:
 
     def test_a_light_command_still_passes(self) -> None:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash("git status")) is False
+
+    def test_syntax_error_in_shell_lexer_falls_back_to_raw_scan(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch("hooks.scripts.managed_repo.teatree_src_on_path", side_effect=SyntaxError("broken lexer")):
+            assert signals.heavy_command_text("uv run pytest") == "uv run pytest"
+        assert "shell lexer unavailable" in capsys.readouterr().err
 
 
 class TestHeavyBashEscapeHatch:
