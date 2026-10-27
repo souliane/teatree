@@ -132,6 +132,20 @@ class TestInvestigationSignalClassification:
     def test_foreground_pytest_is_flagged(self) -> None:
         assert _investigation_signal(_owner_bash("uv run pytest --no-cov -q")) == "a foreground test run"
 
+    def test_backticked_prose_is_not_a_test_run(self) -> None:
+        assert _investigation_signal(_owner_bash("gh pr comment --body 'CI runs `pytest` on shard 3'")) is None
+
+    def test_quoted_regex_is_not_a_test_run(self) -> None:
+        assert (
+            _investigation_signal(
+                _owner_bash("ps -eo pid,etime,stat,cmd | rg 'test-affected|pytest|uv run' | head -20")
+            )
+            is None
+        )
+
+    def test_executable_backticks_are_a_test_run(self) -> None:
+        assert _investigation_signal(_owner_bash("echo `pytest`")) == "a foreground test run"
+
     @pytest.mark.parametrize("tool_name", ["Edit", "Write", "NotebookEdit"])
     def test_edit_write_is_flagged(self, tool_name: str) -> None:
         signal = _investigation_signal(_owner_call(tool_name, file_path="src/x.py", new_string="y"))
