@@ -1373,6 +1373,10 @@
           "name": "fix-record-override"
         },
         {
+          "help": "",
+          "name": "partial-merge-report"
+        },
+        {
           "help": "List every non-terminal ticket intake can never find, oldest lane first (#4527)",
           "name": "dead-rows"
         },
