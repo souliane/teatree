@@ -28,12 +28,10 @@ def corrective_note(task: Task, error: str) -> str | None:
     ``debugging`` (already in :data:`CORRECTIVE_PHASES`) plus every no-evidence,
     non-prose-exempt phase outside it (``architectural_review``, ``bughunt``, ``e2e``,
     ``codex_*``) — which the old gate left paging a human on the first prose-only run.
-    A RECORDER-side refusal stays gated on the set, except that a ``reviewing`` run whose
-    verdict envelope was refused for a misnamed, misplaced or malformed key is told that
-    refusal once — the reopened row resumes its own conversation, so the reviewer fixes
-    the keys without repeating the review. A withheld verdict is still a judgement to
-    surface. ``None`` for a genuine defect, and for a task whose one corrective retry is
-    already spent.
+    A RECORDER-side refusal stays gated on the set, except for an owner card on any phase
+    and a ``reviewing`` run whose envelope has misnamed, misplaced, or malformed keys.
+    The reopened row resumes its conversation for one correction. A withheld verdict
+    is still a judgement to surface. ``None`` for a genuine defect or a spent retry.
     """
     if CORRECTIVE_MARKER in task.execution_reason:
         return None
