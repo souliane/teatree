@@ -81,24 +81,19 @@ class LifecycleIncidentDetector:
         now: datetime,
         ticket_allowed: bool = True,
     ) -> str:
-        firing = None
-        if kind == "task_failed":
-            firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
-            if failures_handled_by_finished_repair(firing, ids):
-                return ActionRung.STATUSLINE
+        firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
+        if kind == "task_failed" and failures_handled_by_finished_repair(firing, ids):
+            return ActionRung.STATUSLINE
         if ticket_allowed and len(ids) >= _RECURRING_FAILURE:
             return ActionRung.TICKET
-        if kind != "task_failed":
-            firing = SelfImproveFiring.objects.filter(detector=self.name, dedup_key=self._key(kind, cause)).first()
-        if firing is not None and firing.resolved_at is None:
-            if ticket_allowed and firing.last_action == ActionRung.TICKET:
-                return ActionRung.TICKET
-            age = now - firing.first_fired_at
-            if ticket_allowed and age >= self.repair_after:
-                return ActionRung.TICKET
-            if age >= self.owner_alert_after:
-                return ActionRung.SLACK
-        return ActionRung.STATUSLINE
+        if firing is None or firing.resolved_at is not None:
+            return ActionRung.TICKET if ticket_allowed and self.repair_after <= timedelta(0) else ActionRung.SLACK
+        if ticket_allowed and firing.last_action == ActionRung.TICKET:
+            return ActionRung.TICKET
+        age = now - firing.first_fired_at
+        if ticket_allowed and age >= self.repair_after:
+            return ActionRung.TICKET
+        return ActionRung.SLACK if age >= self.owner_alert_after else ActionRung.STATUSLINE
 
     def detect(self) -> list[DetectorReport]:
         return self.detect_checked().reports

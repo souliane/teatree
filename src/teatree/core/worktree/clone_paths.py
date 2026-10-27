@@ -21,9 +21,24 @@ from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.worktree.dev_repo import issue_url_slug
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
+from teatree.project import find_project_root
 from teatree.utils import git
+from teatree.utils.run import SUBPROCESS_UNREACHABLE, CommandFailedError
 
 logger = logging.getLogger(__name__)
+
+
+def matching_clone(slug: str) -> Path | None:
+    """A local checkout whose remote matches the qualified forge slug."""
+    for repo in (find_project_root(), unambiguous_clone_path(clone_root(), slug)):
+        if repo is None:
+            continue
+        try:
+            if git.remote_slug(repo=str(repo)).casefold() == slug.casefold():
+                return repo
+        except (CommandFailedError, *SUBPROCESS_UNREACHABLE):
+            continue
+    return None
 
 
 def find_clone_path(workspace: Path, repo_name: str) -> Path | None:

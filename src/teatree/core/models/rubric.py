@@ -183,7 +183,7 @@ class Rubric(models.Model):
         return cls.add_criteria(ticket, [text])
 
     @staticmethod
-    def carry_grades(ticket: Ticket, *, from_head: str, to_head: str) -> int:
+    def carry_grades(ticket: Ticket, *, from_head: str, to_head: str, only: set[str] | None = None) -> int:
         """Re-record the grades bound to *from_head* at *to_head*, keeping every grader and rationale.
 
         A criterion already graded at *to_head* keeps its own grade; the count is the grades added.
@@ -196,7 +196,7 @@ class Rubric(models.Model):
         at_target = by_head.get(target) or {}
         if not isinstance(carried, dict) or not isinstance(at_target, dict):
             return 0
-        added = {key: grade for key, grade in carried.items() if key not in at_target}
+        added = {key: grade for key, grade in carried.items() if key not in at_target and (only is None or key in only)}
         if added:
             ticket.merge_extra(merge_into_dicts={"rubric_grades_by_head": {target: {**at_target, **added}}})
         return len(added)
@@ -293,9 +293,8 @@ class Rubric(models.Model):
         NAMES the criteria that failed it, so the remediation points at what to fix
         rather than at a count.
 
-        *waived* is the human-authorized plan-bypass, and it keeps exactly one rung: a
-        recorded FAIL. A bypass says "there was nothing to declare"; it cannot say "the
-        verifier's FAIL does not count".
+        *waived* applies to a human-authorized plan bypass or an owner-merged
+        delivery; it keeps exactly one rung, a recorded FAIL.
         """
         criteria = list(self.criteria.all())
         if head_sha is not None and not waived:
