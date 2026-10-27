@@ -24,7 +24,6 @@ Two reliability invariants govern every request:
 import logging
 import time
 from collections.abc import Mapping
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -35,6 +34,7 @@ import httpx
 from teatree.backends.http_retry import BoundedRetryTransport, SleepFn, env_float
 from teatree.config import cold_reader
 from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.gates.forge_write_guard import vet_gitlab_write
 from teatree.core.overlays.overlay_credentials import overlay_pass_key
 from teatree.llm.credentials import Credential, CredentialError, CredentialSpec
 from teatree.utils import secrets
@@ -72,25 +72,23 @@ def _project_from_endpoint(endpoint: str) -> str:
     return _normalise_project(rest.partition("/")[0].partition("?")[0])
 
 
-def _configured_read_token(project: str, token_cache: dict[str, str]) -> str | None:
+def _configured_read_token(project: str) -> str | None:
     setting = cold_reader.read_setting_confirmed("gitlab_read_token_pass_paths")
     if not setting.readable or (setting.value is not None and not isinstance(setting.value, dict)):
         raise ValueError
     if setting.value is None:
         return None
-    entry = next(
-        (value for key, value in setting.value.items() if isinstance(key, str) and _normalise_project(key) == project),
-        None,
-    )
+    matching = [
+        value for key, value in setting.value.items() if isinstance(key, str) and _normalise_project(key) == project
+    ]
+    if len(matching) > 1:
+        logger.warning("GitLab read-token mapping has duplicate project %s after normalization", project)
+    entry = matching[0] if matching else None
     if entry is None:
         return None
     if not isinstance(entry, str) or not entry:
         raise ValueError
-    token = token_cache.get(entry)
-    if token is None:
-        token = secrets.read_pass(entry)
-        if token:
-            token_cache[entry] = token
+    token = secrets.read_pass(entry)
     if not token:
         raise ValueError
     return token
@@ -189,10 +187,19 @@ class GitLabHTTPClient(BoundedRetryTransport):
         project = _project_from_endpoint(endpoint)
         if not project:
             return self.token
-        with suppress(Exception):
-            return _configured_read_token(project, self._read_token_cache) or self.token
-        logger.warning("GitLab read-token lookup failed for project %s; using client token", project)
-        return self.token
+        if project not in self._read_token_cache:
+            try:
+                self._read_token_cache[project] = _configured_read_token(project) or ""
+            except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                    raise
+                self._read_token_cache[project] = ""
+                logger.warning(
+                    "GitLab read-token lookup failed for project %s (%s); using client token",
+                    project,
+                    type(exc).__name__,
+                )
+        return self._read_token_cache[project] or self.token
 
     def _require_token(self) -> None:
         """Raise :class:`BackendResolutionError` when no GitLab credential resolved.
@@ -234,6 +241,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         return self._run(attempt, idempotent=True)
 
     def _post(self, endpoint: str, *, json: object, idempotent: bool = False) -> httpx.Response:
+        json = vet_gitlab_write("POST", endpoint, json, self.get_json)
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
@@ -242,6 +250,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         return self._run(attempt, idempotent=idempotent)
 
     def _put(self, endpoint: str, *, json: object, idempotent: bool = True) -> httpx.Response:
+        json = vet_gitlab_write("PUT", endpoint, json, self.get_json)
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
@@ -253,6 +262,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         return self._run(attempt, idempotent=idempotent)
 
     def _delete(self, endpoint: str) -> httpx.Response:
+        vet_gitlab_write("DELETE", endpoint, None, self.get_json)
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
@@ -384,6 +394,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
 
     def upload_file(self, project_id: int, filepath: str) -> RawMR | None:
         self._require_token()
+        vet_gitlab_write("POST", f"projects/{project_id}/uploads", None, self.get_json)
         with Path(filepath).open("rb") as f:
             response = httpx.post(
                 self._url(f"projects/{project_id}/uploads"),
@@ -414,6 +425,8 @@ class GitLabHTTPClient(BoundedRetryTransport):
 
     def graphql(self, query: str, variables: RawMR | None = None) -> RawMR | None:
         self._require_token()
+        if query.lstrip().casefold().startswith("mutation"):
+            variables = cast("RawMR", vet_gitlab_write("POST", "graphql", variables or {}, self.get_json))
         graphql_url = self.base_url.replace("/api/v4", "/api/graphql")
 
         def attempt() -> httpx.Response:

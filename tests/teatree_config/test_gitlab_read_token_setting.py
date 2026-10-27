@@ -14,3 +14,13 @@ def test_gitlab_read_token_pass_paths_is_private_mapping() -> None:
     assert is_credential_reference("gitlab_read_token_pass_paths")
     with pytest.raises(TypeError):
         setting.parse(["pass-entry"])
+
+
+def test_gitlab_write_guard_is_optional_private_mapping() -> None:
+    setting = COLD_SETTINGS["gitlab_write_guard"]
+
+    assert setting.default == {}
+    assert setting.category is Category.SECRET
+    assert setting.parse({"cap_per_hour": 2}) == {"cap_per_hour": 2}
+    with pytest.raises(TypeError):
+        setting.parse(["cap_per_hour"])

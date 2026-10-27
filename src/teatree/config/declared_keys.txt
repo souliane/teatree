@@ -76,6 +76,7 @@ general_purpose_agent_gate_enabled
 git_add_all_gate_enabled
 gitlab_events_subscription
 gitlab_read_token_pass_paths
+gitlab_write_guard
 glab_stale_base_remote_gate_enabled
 handover_mirror_path
 harness_skill_exclusions

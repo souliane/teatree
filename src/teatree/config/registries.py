@@ -141,6 +141,13 @@ COLD_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Registries", "Term scanning, agent
 TERM_REGISTRY: str = "banned_term_registry"
 
 COLD_SETTINGS: dict[str, ColdHookSetting] = {
+    "gitlab_write_guard": ColdHookSetting(
+        _parse_registry_dict,
+        default={},
+        help="optional GitLab write policy",
+        stored=dict[str, Any],
+        category=Category.SECRET,
+    ),
     "gitlab_read_token_pass_paths": ColdHookSetting(
         _parse_registry_dict,
         default={},

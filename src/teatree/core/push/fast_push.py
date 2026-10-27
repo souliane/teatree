@@ -53,6 +53,7 @@ from teatree.core.authoring_credential import (
     unapprovable_author_refusal,
 )
 from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, probe_gitlab_open_pr
+from teatree.core.gates.forge_write_guard import item_key_of_url, vet_text_write
 from teatree.core.public_identity import is_noreply_email
 from teatree.core.push.push_range import PushRange
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
@@ -167,6 +168,7 @@ class GlabForge:
 
     def create_pr(self, *, branch: str, title: str, body: str) -> str:
         remote = git.remote_url(repo=str(self._repo))
+        body = vet_text_write(f"{git_remote.slug_from_remote(remote)}/merge_requests", body)
         credential = authoring_credential_for_remote(remote, fallback=self._owner_token)
         if credential.refusal:
             raise UnapprovableAuthorError(credential.refusal)
@@ -184,6 +186,7 @@ class GlabForge:
         return urls[-1] if urls else ""
 
     def update_pr(self, *, url: str, body: str) -> None:
+        body = vet_text_write(item_key_of_url(url), body)
         env = self._env(self._owner_token())
         if env is None:
             return

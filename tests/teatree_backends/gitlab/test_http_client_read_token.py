@@ -75,7 +75,11 @@ def test_failed_read_token_lookup_warns_and_uses_client_token(
         GitLabHTTPClient(token="CLIENT").get_json("projects/group%2Frepo/issues")
 
     assert request.call_args.kwargs["headers"] == {"PRIVATE-TOKEN": "CLIENT"}
-    warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+    warnings = [
+        record.getMessage() + (str(record.exc_info[1]) if record.exc_info else "")
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
     assert len(warnings) == 1
     assert "group/repo" in warnings[0]
     assert "private-entry" not in warnings[0]
@@ -117,9 +121,66 @@ def test_matching_gets_read_secret_once_per_client(monkeypatch: pytest.MonkeyPat
     read_secret.assert_called_once_with("entry")
 
 
+def test_failed_lookup_is_cached_per_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    setting = MagicMock(return_value=SettingRead(value={"42": "private-entry"}, readable=True))
+    secret = MagicMock(side_effect=RuntimeError("private-entry must stay private"))
+    monkeypatch.setattr(cold_reader, "read_setting_confirmed", setting)
+    monkeypatch.setattr(secrets, "read_pass", secret)
+    monkeypatch.setattr(httpx, "get", MagicMock(return_value=_response()))
+    client = GitLabHTTPClient(token="CLIENT")
+
+    client.get_json("projects/42/issues")
+    client.get_json("projects/42/merge_requests")
+
+    setting.assert_called_once_with("gitlab_read_token_pass_paths")
+    secret.assert_called_once_with("private-entry")
+
+
+def test_project_cache_is_per_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        cold_reader,
+        "read_setting_confirmed",
+        lambda _key: SettingRead(value={"a": "entry-a", "b": "entry-b"}, readable=True),
+    )
+    secret = MagicMock(side_effect=lambda entry: {"entry-a": "A", "entry-b": "B"}[entry])
+    monkeypatch.setattr(secrets, "read_pass", secret)
+    request = MagicMock(return_value=_response())
+    monkeypatch.setattr(httpx, "get", request)
+    first = GitLabHTTPClient(token="CLIENT")
+    second = GitLabHTTPClient(token="CLIENT")
+
+    first.get_json("projects/a/issues")
+    first.get_json("projects/b/issues")
+    second.get_json("projects/a/issues")
+
+    assert [call.kwargs["headers"] for call in request.call_args_list] == [
+        {"PRIVATE-TOKEN": "A"},
+        {"PRIVATE-TOKEN": "B"},
+        {"PRIVATE-TOKEN": "A"},
+    ]
+    assert secret.call_count == 3
+
+
+def test_normalized_project_collision_warns(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(
+        cold_reader,
+        "read_setting_confirmed",
+        lambda _key: SettingRead(value={"GROUP/REPO": "entry-a", "group/repo": "entry-b"}, readable=True),
+    )
+    monkeypatch.setattr(secrets, "read_pass", lambda _entry: "A")
+    monkeypatch.setattr(httpx, "get", MagicMock(return_value=_response()))
+    with caplog.at_level(logging.WARNING, logger="teatree.backends.gitlab.http_client"):
+        GitLabHTTPClient(token="CLIENT").get_json("projects/group%2Frepo/issues")
+    assert any("duplicate project group/repo" in record.getMessage() for record in caplog.records)
+
+
 def test_writes_keep_client_token_when_project_has_read_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
-        cold_reader, "read_setting_confirmed", lambda _key: SettingRead(value={"42": "entry"}, readable=True)
+        cold_reader,
+        "read_setting_confirmed",
+        lambda key: SettingRead(
+            value={"42": "entry"} if key == "gitlab_read_token_pass_paths" else None, readable=True
+        ),
     )
     monkeypatch.setattr(secrets, "read_pass", lambda _entry: "READ")
     requests = {method: MagicMock(return_value=_response(method.upper())) for method in ("post", "put", "delete")}
