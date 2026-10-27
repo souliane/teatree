@@ -19,7 +19,12 @@ logger = logging.getLogger(__name__)
 
 #: The sweeps that mint or reopen work; the boot sweeps hold their own task half, so they run under any posture.
 _REDISPATCH_SWEEPS = frozenset(
-    {"recovery:transient_requeue", "recovery:unplanned_redispatch", "recovery:stuck_redispatch"}
+    {
+        "recovery:transient_requeue",
+        "recovery:unplanned_redispatch",
+        "recovery:stuck_redispatch",
+        "recovery:shipping_hold_settle",
+    }
 )
 
 
@@ -69,6 +74,7 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.loop import (  # noqa: PLC0415 — deferred: loaded at tick time
         question_drain,
+        shipping_hold_settle,
         stuck_ticket_redispatch,
         transient_requeue,
         unplanned_ticket_redispatch,
@@ -82,6 +88,7 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
         # tick rather than two.
         ("recovery:unplanned_redispatch", unplanned_ticket_redispatch.redispatch_unplanned_tickets),
         ("recovery:stuck_redispatch", stuck_ticket_redispatch.redispatch_stuck_tickets),
+        ("recovery:shipping_hold_settle", shipping_hold_settle.settle_held_tickets),
         ("recovery:question_drain", question_drain.drain_pending_questions),
     )
     blocked = _redispatch_block_reason(errors)

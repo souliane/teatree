@@ -2,7 +2,7 @@
 
 Split out of ``task.py`` (the Task-model lifecycle module): these helpers decide
 a completed phase task's FSM disposition — derive a transition's declared source
-states, auto-ignore an unshippable SELF_REVIEWED ticket, and escalate a genuine FSM
+states, hold an unshippable SELF_REVIEWED ticket, and escalate a genuine FSM
 wedge as a durable ``DeferredQuestion``. None of it is core Task lifecycle
 (claim / lease / complete / route), so it lives in its own concern module.
 """
@@ -19,6 +19,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.plan_decision import has_plan_decision
 from teatree.core.models.self_review import SelfReview
+from teatree.core.models.shipping_hold import hold_unshippable_review
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_worktree_checks import worktree_head_sha
 from teatree.core.repair_loop import max_phase_iterations, terminal_reason_fingerprint
@@ -67,26 +68,13 @@ def transition_source_states(name: str) -> set[str]:
 
 
 def dispose_unshippable_review(ticket: Ticket) -> None:
-    """Auto-ignore a SELF_REVIEWED ticket ``review()`` found had no shippable diff.
-
-    ``review()`` lands SELF_REVIEWED and stamps ``extra["shipping_skipped"]`` when
-    there is no shippable diff (meta / already-shipped work). Without a
-    disposition that ticket rests at SELF_REVIEWED forever — nothing consumes the
-    marker, it never reaches a terminal state, and it holds its
-    issue-implementer budget marker and its in-flight WIP slot indefinitely.
-    Ignoring it is the explicit disposition: IGNORED is terminal (releasing
-    the marker via the completion signal and freeing the WIP slot), and the
-    ``shipping_skipped`` reason stays recorded in ``extra`` alongside
-    ``ignored_from``.
-    """
+    """Hold a no-diff review until workspace and forge evidence can settle it."""
     if ticket.state != Ticket.State.SELF_REVIEWED:
         return
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     if not extra.get("shipping_skipped"):
         return
-    logger.info("Ticket %s reviewed with no shippable diff; auto-ignoring (terminal disposition)", ticket.pk)
-    ticket.ignore()
-    ticket.save()
+    hold_unshippable_review(ticket)
 
 
 def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
