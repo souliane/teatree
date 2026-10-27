@@ -1,6 +1,6 @@
 """Review hold preserves work and sends one post-commit owner note."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.test import TestCase
 
@@ -50,5 +50,17 @@ class TestShippingHold(TestCase):
             self.captureOnCommitCallbacks(execute=True),
         ):
             hold_unshippable_review(ticket)
+        ticket.refresh_from_db()
+        assert ticket.extra["shipping_hold"]["reason"] == "no worktree row"
+
+    def test_failed_notice_resolver_does_not_undo_hold(self) -> None:
+        ticket = self._ticket()
+        failing_notice = Mock(side_effect=RuntimeError("unavailable"))
+        with (
+            patch("teatree.core.models.shipping_hold.get_resolver", return_value=failing_notice),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            hold_unshippable_review(ticket)
+        failing_notice.assert_called_once_with(ticket.pk)
         ticket.refresh_from_db()
         assert ticket.extra["shipping_hold"]["reason"] == "no worktree row"

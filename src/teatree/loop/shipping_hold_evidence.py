@@ -87,8 +87,16 @@ def _checkout_evidence(path: Path, *, named: bool, ticket: Ticket) -> Evidence:
     if read_remote.returncode != 0:
         return Evidence(unverified=f"git ({path.name}: no readable origin remote)")
     remote = read_remote.stdout.strip()
-    row_slugs = ticket.worktrees.values_list("repo_path", flat=True) if ticket.pk else ()
-    if slug_from_remote(remote).lower() not in {candidate.lower() for candidate in (slug, *row_slugs)}:
+    remote_slug = slug_from_remote(remote).lower()
+    row_slugs = {slug.lower()}
+    for row in ticket.worktrees.all() if ticket.pk else ():
+        if "/" in row.repo_path:
+            row_slugs.add(row.repo_path.lower())
+        elif (row.extra or {}).get("worktree_path") == str(path) and row.repo_path.lower() == remote_slug.rsplit(
+            "/", 1
+        )[-1]:
+            row_slugs.add(remote_slug)
+    if remote_slug not in row_slugs:
         return Evidence()
     if host_from_remote(remote) != host:
         return Evidence(unverified=f"git ({path.name}: origin host differs from issue host)")
@@ -119,8 +127,27 @@ def disk_evidence(ticket: Ticket) -> Evidence:
     return Evidence()
 
 
+def _verify_row_projects(rows: list[Worktree], *, slug: str, issue_host: str) -> Evidence:
+    for row in rows:
+        repo = row.repo_path
+        if "/" not in repo:
+            checkout = str((row.extra or {}).get("worktree_path") or "")
+            if not checkout:
+                return Evidence(unverified=f"forge (no recorded checkout for {repo})")
+            read_remote = run_with_status(repo=checkout, args=["remote", "get-url", "origin"], timeout=GIT_READ_TIMEOUT)
+            if read_remote.returncode != 0:
+                return Evidence(unverified=f"forge (unreadable origin for {repo})")
+            remote = read_remote.stdout.strip()
+            repo = slug_from_remote(remote)
+            if host_from_remote(remote) != issue_host or repo.rsplit("/", 1)[-1].lower() != row.repo_path.lower():
+                return Evidence(unverified=f"forge (origin differs from recorded repo {row.repo_path})")
+        if repo.lower() != slug.lower():
+            return Evidence(unverified=f"forge (row project {repo} differs from issue project)")
+    return Evidence()
+
+
 def forge_evidence(ticket: Ticket) -> Evidence:
-    slug, number, _ = _issue_project(ticket)
+    slug, number, issue_host = _issue_project(ticket)
     if not slug or not number or not forge_from_remote(ticket.issue_url):
         return Evidence(unverified="issue URL (no readable project or issue number)")
     try:
@@ -129,18 +156,19 @@ def forge_evidence(ticket: Ticket) -> Evidence:
             return Evidence(unverified="forge (no readable host)")
         prefix = f"{number}-"
         recorded = str((ticket.extra or {}).get("branch") or "")
-        rows = list(ticket.worktrees.values_list("repo_path", "branch")) if ticket.pk else []
-        for repo in dict.fromkeys((slug, *(row_repo for row_repo, _ in rows))):
-            branches = host.list_unshipped_branches(repo=repo, prefix=prefix)
-            candidates = (recorded, *(branch for row_repo, branch in rows if row_repo == repo))
-            for candidate in dict.fromkeys(candidates):
-                if not candidate or candidate.startswith(prefix):
-                    continue
-                branches.extend(
-                    name for name in host.list_unshipped_branches(repo=repo, prefix=candidate) if name == candidate
-                )
-            if branches:
-                return Evidence(found=f"branch {branches[0]}")
+        rows = list(ticket.worktrees.all()) if ticket.pk else []
+        if (verification := _verify_row_projects(rows, slug=slug, issue_host=issue_host)).unverified:
+            return verification
+        branches = host.list_unshipped_branches(repo=slug, prefix=prefix)
+        candidates = (recorded, *(row.branch for row in rows))
+        for candidate in dict.fromkeys(candidates):
+            if not candidate or candidate.startswith(prefix):
+                continue
+            branches.extend(
+                name for name in host.list_unshipped_branches(repo=slug, prefix=candidate) if name == candidate
+            )
+        if branches:
+            return Evidence(found=f"branch {branches[0]}")
     except (
         BackendResolutionError,
         CommandFailedError,
@@ -149,6 +177,7 @@ def forge_evidence(ticket: Ticket) -> Evidence:
         RuntimeError,
         TypeError,
         ValueError,
+        TimeoutExpired,
     ) as exc:
         return Evidence(unverified=f"forge ({type(exc).__name__}: {str(exc)[:160]})")
     return Evidence()

@@ -15,15 +15,18 @@ from teatree.core.models import Task, Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
 from teatree.loop.shipping_hold_evidence import Evidence, disk_evidence
 from teatree.loop.shipping_hold_settle import Settlement, settle_held_tickets
+from teatree.utils.git_run import run_with_status
 
 
 class _Host:
     def __init__(self, branches: list[str] | None = None) -> None:
         self.branches = branches or []
         self.calls = 0
+        self.repos: list[str] = []
 
     def list_unshipped_branches(self, *, repo: str, prefix: str) -> list[str]:
         self.calls += 1
+        self.repos.append(repo)
         return [name for name in self.branches if name.startswith(prefix)]
 
 
@@ -91,6 +94,115 @@ class TestShippingHoldSettlement(TestCase):
         assert "shipping_hold" not in ticket.extra
         assert ticket.extra["ignored_from"] == Ticket.State.SELF_REVIEWED
 
+    def test_base_name_row_with_issue_origin_and_empty_sources_is_ignored(self) -> None:
+        ticket = self._ticket()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            _git(checkout, "init", "-b", "main")
+            _git(checkout, "remote", "add", "origin", "https://github.com/souliane/teatree.git")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="teatree",
+                branch="5346-work",
+                extra={"worktree_path": str(checkout)},
+            )
+            host = _Host()
+            with (
+                patch("teatree.loop.shipping_hold_settle.worktree_has_commits_ahead", return_value=False),
+                patch("teatree.loop.shipping_hold_settle.disk_evidence", return_value=Evidence()),
+            ):
+                results = self._run(root, host)
+        assert results[0].action == "ignore"
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+        assert host.calls == 1
+        assert host.repos == ["souliane/teatree"]
+
+    def test_gitlab_base_name_row_queries_only_issue_project(self) -> None:
+        ticket = self._ticket()
+        ticket.issue_url = "https://gitlab.example/group/proj/-/issues/5346"
+        ticket.save(update_fields=["issue_url"])
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            _git(checkout, "init", "-b", "main")
+            _git(checkout, "remote", "add", "origin", "https://gitlab.example/group/proj.git")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="proj",
+                branch="5346-work",
+                extra={"worktree_path": str(checkout)},
+            )
+            host = _Host()
+            with (
+                patch("teatree.loop.shipping_hold_settle.worktree_has_commits_ahead", return_value=False),
+                patch("teatree.loop.shipping_hold_settle.disk_evidence", return_value=Evidence()),
+            ):
+                results = self._run(root, host)
+        assert results[0].action == "ignore"
+        assert host.repos == ["group/proj"]
+
+    def test_gitlab_other_base_name_row_never_queries_other_project(self) -> None:
+        ticket = self._ticket()
+        ticket.issue_url = "https://gitlab.example/group/proj/-/issues/5346"
+        ticket.save(update_fields=["issue_url"])
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            _git(checkout, "init", "-b", "main")
+            _git(checkout, "remote", "add", "origin", "https://gitlab.example/group/other-repo.git")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="other-repo",
+                branch="5346-work",
+                extra={"worktree_path": str(checkout)},
+            )
+            host = _Host()
+            with (
+                patch("teatree.loop.shipping_hold_settle.worktree_has_commits_ahead", return_value=False),
+                patch("teatree.loop.shipping_hold_settle.disk_evidence", return_value=Evidence()),
+            ):
+                results = self._run(root, host)
+        assert results[0].action == "hold"
+        assert results[0].reason.startswith("unverified:")
+        assert set(host.repos) <= {"group/proj"}
+
+    def test_base_name_row_with_failed_forge_read_stays_held(self) -> None:
+        ticket = self._ticket()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            _git(checkout, "init", "-b", "main")
+            _git(checkout, "remote", "add", "origin", "https://github.com/souliane/teatree.git")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="teatree",
+                branch="5346-work",
+                extra={"worktree_path": str(checkout)},
+            )
+            host = _Host()
+            with (
+                patch("teatree.loop.shipping_hold_settle.worktree_has_commits_ahead", return_value=False),
+                patch("teatree.loop.shipping_hold_settle.disk_evidence", return_value=Evidence()),
+                patch.object(host, "list_unshipped_branches", side_effect=RuntimeError("HTTP 500")),
+                patch("teatree.loop.shipping_hold_evidence.run_with_status", wraps=run_with_status) as read_git,
+            ):
+                results = self._run(root, host)
+        assert results[0].action == "hold"
+        assert results[0].reason == "unverified: forge (RuntimeError: HTTP 500)"
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert any(call.kwargs.get("args") == ["remote", "get-url", "origin"] for call in read_git.call_args_list)
+
     def test_row_branch_outside_issue_prefix_is_scanned_on_forge(self) -> None:
         ticket = self._ticket()
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="custom-work")
@@ -101,12 +213,9 @@ class TestShippingHoldSettlement(TestCase):
         assert results[0].reason == "branch custom-work"
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
-    def test_other_recorded_repo_branch_keeps_ticket_held(self) -> None:
+    def test_other_recorded_repo_is_unverified_without_query(self) -> None:
         ticket = self._ticket()
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/other-repo", branch="5346-work")
-
-        def branches(*, repo: str, prefix: str) -> list[str]:
-            return ["5346-work"] if repo == "souliane/other-repo" and prefix == "5346-" else []
 
         with (
             TemporaryDirectory() as directory,
@@ -114,16 +223,15 @@ class TestShippingHoldSettlement(TestCase):
             patch("teatree.loop.shipping_hold_evidence.get_code_host_for_url") as backend,
             patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=Path(directory)),
         ):
-            backend.return_value.list_unshipped_branches.side_effect = branches
             results = settle_held_tickets()
         assert results[0].action == "hold"
-        assert results[0].reason == "branch 5346-work"
+        assert results[0].reason == "unverified: forge (row project souliane/other-repo differs from issue project)"
+        backend.return_value.list_unshipped_branches.assert_not_called()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_other_recorded_repo_checkout_is_evidence(self) -> None:
         ticket = self._ticket()
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/other-repo", branch="5346-work")
         with TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / "5346-work" / "other-repo"
@@ -153,6 +261,13 @@ class TestShippingHoldSettlement(TestCase):
                 "work",
             )
             _git(path, "remote", "add", "origin", "https://github.com/souliane/other-repo.git")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="other-repo",
+                branch="5346-work",
+                extra={"worktree_path": str(path)},
+            )
             with patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root):
                 assert str(path) in disk_evidence(ticket).found
 
