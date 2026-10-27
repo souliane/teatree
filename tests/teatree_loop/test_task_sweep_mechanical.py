@@ -81,11 +81,12 @@ class RecheckBeforeCompleteTests(_TaskCompletionHarness):
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
         overlay_patch, host_patch = self._patch(host)
 
-        with overlay_patch, host_patch:
+        with overlay_patch, host_patch, self.assertLogs("teatree.loop.mechanical", level="WARNING") as captured:
             task_completion({"task_id": task.pk, "issue_url": self.URL})
 
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
+        assert any("cannot complete" in line for line in captured.output)
 
     def test_completes_task_when_artifact_still_terminal(self) -> None:
         task = self._task()

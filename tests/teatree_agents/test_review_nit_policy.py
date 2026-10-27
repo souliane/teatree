@@ -19,6 +19,18 @@ def test_blocking_finding_overrides_merge_safe() -> None:
     assert normalize_review_envelope(envelope, None)["verdict"] == "hold"
 
 
+def test_explicit_note_does_not_turn_merge_safe_into_hold() -> None:
+    envelope = {
+        "verdict": "merge_safe",
+        "findings": [{"severity": "low", "kind": "note", "basis": "executed", "summary": "context"}],
+    }
+
+    normalized = normalize_review_envelope(envelope, None)
+
+    assert normalized["verdict"] == "merge_safe"
+    assert normalized["findings"][0]["kind"] == "note"
+
+
 def test_a_red_check_keeps_a_nit_only_hold() -> None:
     envelope = {
         "verdict": "hold",

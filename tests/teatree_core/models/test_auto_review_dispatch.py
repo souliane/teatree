@@ -64,6 +64,24 @@ class TestEnqueueCreatesClaimableTask:
 
 
 class TestDedupPerHead:
+    def test_live_codex_claim_blocks_headless_dispatch(self) -> None:
+        assert CodexReviewMarker.claim(slug=SLUG, pr_id=6230, head_sha=HEAD) is not None
+
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is None
+
+    @pytest.mark.parametrize("attempts", [1, MAX_DISPATCH_ATTEMPTS])
+    def test_expired_codex_claim_does_not_block_headless_dispatch(self, attempts: int) -> None:
+        marker = CodexReviewMarker.claim(slug=SLUG, pr_id=6230, head_sha=HEAD)
+        assert marker is not None
+        CodexReviewMarker.objects.filter(pk=marker.pk).update(
+            deadline=timezone.now() - dt.timedelta(minutes=1), attempts=attempts
+        )
+
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+
+        assert row is not None
+        assert row.task is not None
+
     def test_resolved_codex_review_does_not_block_headless_evidence_producer(self) -> None:
         marker = CodexReviewMarker.claim(slug=SLUG, pr_id=6230, head_sha=HEAD)
         assert marker is not None

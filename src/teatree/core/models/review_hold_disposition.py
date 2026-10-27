@@ -54,10 +54,8 @@ def _check_points(hold: "ReviewVerdict", points: list[HoldPointResponse]) -> Non
         ):
             msg = "each response requires a classification and citation"
             raise ReviewHoldDispositionError(msg)
-        if (
-            point["classification"] == "venue_limit"
-            and point["index"] >= 0
-            and hold.structured_findings[point["index"]].basis != "venue_limit"
+        if point["classification"] == "venue_limit" and (
+            point["index"] < 0 or hold.structured_findings[point["index"]].basis != "venue_limit"
         ):
             msg = "venue_limit can answer only a venue-limit finding"
             raise ReviewHoldDispositionError(msg)

@@ -808,9 +808,7 @@ class TestFindingRoundTrip(TestCase):
         assert finding.kind == "note"
 
     def test_explicit_note_kind_wins_over_minor_severity(self) -> None:
-        finding = Finding(
-            severity="minor", kind="note", basis="venue_limit", summary="Review venue could not inspect CI"
-        )
+        finding = Finding(severity="minor", kind="note", basis="executed", summary="Review venue could not inspect CI")
         assert finding.kind == "note"
 
     def test_executed_reproduction_still_blocks(self) -> None:

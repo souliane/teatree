@@ -72,7 +72,7 @@ from django.apps import apps
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.expiring_claim import acquirable_q, release_head_claim, retire_head_claim
+from teatree.core.modelkit.expiring_claim import acquirable_q, live_claim_q, release_head_claim, retire_head_claim
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
@@ -380,7 +380,10 @@ class AutoReviewDispatch(models.Model):
                 return None
             marker = apps.get_model("core", "CodexReviewMarker")
             if marker.objects.filter(
-                slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha, state="dispatched"
+                live_claim_q(active={"dispatched"}, now=now),
+                slug__iexact=slug,
+                pr_id=pr_id,
+                head_sha__iexact=head_sha,
             ).exists():
                 transaction.set_rollback(True)
                 return None

@@ -33,6 +33,8 @@ def normalize_finding_kind(kind: str, severity: str) -> str:
         return FindingKind.BLOCKING
     if normalized == FindingKind.NIT:
         return FindingKind.NIT
+    if normalized == FindingKind.NOTE:
+        return FindingKind.NOTE
     return FindingKind.BLOCKING
 
 

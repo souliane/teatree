@@ -304,7 +304,7 @@ def task_completion(payload: ActionPayload) -> None:
     try:
         task.complete()
     except InvalidTransitionError as exc:
-        logger.info("task_completion: task %s cannot complete: %s", task_id, exc)
+        logger.warning("task_completion: task %s cannot complete: %s", task_id, exc)
         return
     logger.info("Auto-completed task %s (artifact confirmed terminal: %s)", task_id, payload.get("issue_url", "?"))
 

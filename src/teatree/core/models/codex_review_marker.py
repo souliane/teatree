@@ -49,7 +49,7 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.expiring_claim import acquirable_q, release_head_claim, retire_head_claim
+from teatree.core.modelkit.expiring_claim import acquirable_q, live_claim_q, release_head_claim, retire_head_claim
 from teatree.core.models.auto_review_dispatch import DEFAULT_DISPATCH_TTL, MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
 from teatree.core.models.mr_review_lock import MRReviewLock
 
@@ -128,7 +128,10 @@ class CodexReviewMarker(models.Model):
             MRReviewLock.objects.filter(pk=lock.pk).update(state=models.F("state"))
             if (
                 AutoReviewDispatch.objects.filter(slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha)
-                .exclude(state=AutoReviewDispatch.State.UNVERIFIED)
+                .filter(
+                    models.Q(state=AutoReviewDispatch.State.RESOLVED)
+                    | live_claim_q(active={AutoReviewDispatch.State.DISPATCHED}, now=now)
+                )
                 .exists()
             ):
                 return None

@@ -59,6 +59,20 @@ class TestReviewHoldDisposition(TestCase):
 
         assert not ReviewHoldDisposition.objects.exists()
 
+    def test_unstructured_hold_cannot_be_answered_as_a_venue_limit(self) -> None:
+        hold, clearing = self._pair()
+        hold.findings = []
+        hold.save(update_fields=["findings"])
+
+        with pytest.raises(ReviewHoldDispositionError, match="venue_limit"):
+            ReviewHoldDisposition.record(
+                hold=hold,
+                clearing_verdict=clearing,
+                points=[{"index": -1, "classification": "venue_limit", "citation": "retry"}],
+            )
+
+        assert not ReviewHoldDisposition.objects.exists()
+
     def test_legacy_hold_requires_an_answer_for_each_stored_blocker(self) -> None:
         hold, clearing = self._pair()
         hold.findings = [
