@@ -137,6 +137,7 @@ _PROCFS_STARTTIME_INDEX = 19
 _QUESTION_PING_SLOT_TTL_SECONDS = 120
 #: Threads of one process share its pid, which the slot's liveness check cannot tell apart.
 _QUESTION_PING_THREAD_GUARD = threading.Lock()
+#: The measured 11.04s send fits this wait inside the shared 60s scan deadline.
 _QUESTION_PING_THREAD_WAIT_SECONDS = 15
 
 
@@ -177,7 +178,8 @@ def _question_ping_slot(*, reserved: int = 0) -> Generator[bool]:
         return
     if not _QUESTION_PING_THREAD_GUARD.acquire(timeout=_QUESTION_PING_THREAD_WAIT_SECONDS):
         logger.info(
-            "Owner question ping slot wait timed out after %ss; another drain is still sending",
+            "Another drain in this process still holds the owner question-ping slot after %ss; "
+            "this ping waits for the next pass",
             _QUESTION_PING_THREAD_WAIT_SECONDS,
         )
         yield False
