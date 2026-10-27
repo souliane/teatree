@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from teatree.eval.green_proof import BASELINE_MAX_AGE, BaselineState, evaluate_baseline
+from teatree.eval.parallel import usage_limit_skip
 
 _NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 _SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -125,3 +126,42 @@ def test_only_a_green_state_counts_as_green() -> None:
     missing = evaluate_baseline([], expected=_EXPECTED, now=_NOW)
 
     assert (green.is_green, missing.is_green) == (True, False)
+
+
+def test_a_proof_stamped_in_the_future_is_stale() -> None:
+    status = evaluate_baseline([_payload(age=timedelta(days=-2))], expected=_EXPECTED, now=_NOW)
+
+    assert status.state is BaselineState.STALE
+    assert "future" in status.detail
+
+
+def _skipped(name: str, version: str) -> dict[str, object]:
+    return {
+        "name": name,
+        "version": version,
+        "lane": "clean_room",
+        "verdict": "skip",
+        "outcome": "UNVERIFIED",
+        "triage_class": "no_coverage",
+        "terminal_reason": usage_limit_skip(name).terminal_reason,
+    }
+
+
+def test_a_proof_the_usage_limit_cut_short_names_its_unmeasured_rows() -> None:
+    rows = [_row("a", "va"), _skipped("b", "vb")]
+    totals = {"total": 2, "passed": 1, "failed": 0, "skipped": 1, "incomplete": 0}
+
+    status = evaluate_baseline([_payload(scenarios=rows, totals=totals)], expected=_EXPECTED, now=_NOW)
+
+    assert status.state is BaselineState.NOT_GREEN
+    assert "unmeasured: b" in status.detail
+
+
+def test_an_all_skipped_proof_over_a_changed_catalog_names_its_unmeasured_rows() -> None:
+    rows = [_skipped("a", "va"), _skipped("b", "vb")]
+    totals = {"total": 2, "passed": 0, "failed": 0, "skipped": 2, "incomplete": 0}
+
+    status = evaluate_baseline([_payload(scenarios=rows, totals=totals)], expected={**_EXPECTED, "c": "vc"}, now=_NOW)
+
+    assert status.state is BaselineState.STALE
+    assert "unmeasured: a, b" in status.detail

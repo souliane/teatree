@@ -60,7 +60,7 @@ def _payload(*names: str, age: timedelta = timedelta(days=1), red: str | None = 
 
 
 class _FakeClient:
-    def __init__(self, runs: list[dict[str, object]], payloads: dict[int, dict | Exception]) -> None:
+    def __init__(self, runs: list[dict[str, object]], payloads: dict[int, dict | str | Exception]) -> None:
         self.runs = runs
         self.payloads = payloads
         self.listed: list[tuple[str, str]] = []
@@ -73,7 +73,8 @@ class _FakeClient:
         payload = self.payloads[int(run_id)]
         if isinstance(payload, Exception):
             raise payload
-        (dest_dir / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
+        text = payload if isinstance(payload, str) else json.dumps(payload)
+        (dest_dir / f"{name}.json").write_text(text, encoding="utf-8")
 
 
 def _run(run_id: int, *, conclusion: str = "success", status: str = "completed") -> dict[str, object]:
@@ -196,6 +197,27 @@ def test_an_unreadable_artifact_is_named_and_leaves_the_baseline_missing() -> No
 
     assert result.exit_code == 1, result.output
     assert "could not download eval-heal-" in result.output
+    assert "BASELINE MISSING" in result.output
+
+
+def test_a_corrupt_artifact_is_named_and_the_older_proof_still_counts() -> None:
+    client = _FakeClient([_run(12), _run(11)], {12: "{not json", 11: _payload("a", "b")})
+
+    with _catalog("a", "b"):
+        result = _invoke(client)
+
+    assert result.exit_code == 0, result.output
+    assert "run 12: eval-heal-" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_a_corrupt_artifact_alone_leaves_the_baseline_missing() -> None:
+    client = _FakeClient([_run(11)], {11: "{not json"})
+
+    with _catalog("a", "b"):
+        result = _invoke(client)
+
+    assert result.exit_code == 1, result.output
     assert "BASELINE MISSING" in result.output
 
 

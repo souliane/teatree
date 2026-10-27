@@ -48,7 +48,10 @@ def _newest_payloads(client: GhCiEvalClient, *, ref: str) -> tuple[list[RawAPIDi
                 notes.append(f"run {run_id}: could not download {name}: {exc}")
                 continue
             files = sorted(Path(scratch).rglob("*.json"))
-            payload = json.loads(files[0].read_text(encoding="utf-8")) if files else None
+            try:
+                payload = json.loads(files[0].read_text(encoding="utf-8")) if files else None
+            except ValueError:
+                payload = None
         if isinstance(payload, dict):
             payloads.append(payload)
         else:

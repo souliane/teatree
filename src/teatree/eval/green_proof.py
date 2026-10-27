@@ -268,26 +268,40 @@ def evaluate_baseline(
         return BaselineStatus(
             BaselineState.STALE,
             f"the newest proof ({sha[:9]}) measured {proof.total} of {len(expected)} current scenario(s), "
-            "so it does not cover the catalog as it stands now",
+            f"so it does not cover the catalog as it stands now{_after(proof, '; ')}",
         )
     generated_at = _instant(payload.get("generated_at"))
-    if generated_at is None:
-        return BaselineStatus(BaselineState.STALE, f"the newest proof ({sha[:9]}) carries no readable generated_at")
-    age = now - generated_at
-    if age > max_age:
-        return BaselineStatus(
-            BaselineState.STALE,
-            f"the newest full-suite proof ({sha[:9]}) is {age.days} day(s) old, limit {max_age.days}",
-        )
+    age = None if generated_at is None else now - generated_at
+    if age is None or age < timedelta(0) or age > max_age:
+        return BaselineStatus(BaselineState.STALE, _age_detail(sha, age, max_age))
     if not proof.is_green:
         return BaselineStatus(
             BaselineState.NOT_GREEN,
             f"the newest proof ({sha[:9]}) has {len(proof.reds)} gating red(s), "
-            f"{proof.incomplete} incomplete, {len(proof.unmeasured)} unmeasured",
+            f"{proof.incomplete} incomplete, {len(proof.unmeasured)} unmeasured{_after(proof, ' - ')}",
         )
     return BaselineStatus(
         BaselineState.GREEN, f"{proof.passed}/{proof.total} passed at {sha[:9]}, {age.days} day(s) old"
     )
+
+
+def _age_detail(sha: str, age: timedelta | None, max_age: timedelta) -> str:
+    if age is None:
+        return f"the newest proof ({sha[:9]}) carries no readable generated_at"
+    if age < timedelta(0):
+        return f"the newest proof ({sha[:9]}) is stamped {-age.days} day(s) in the future"
+    return f"the newest full-suite proof ({sha[:9]}) is {age.days} day(s) old, limit {max_age.days}"
+
+
+_UNMEASURED_NAMES_SHOWN = 5
+
+
+def _after(proof: GreenProof, joiner: str) -> str:
+    if not proof.unmeasured:
+        return ""
+    names = [row.name for row in proof.unmeasured]
+    more = f" (+{len(names) - _UNMEASURED_NAMES_SHOWN} more)" if len(names) > _UNMEASURED_NAMES_SHOWN else ""
+    return f"{joiner}unmeasured: {', '.join(names[:_UNMEASURED_NAMES_SHOWN])}{more}"
 
 
 def _measured_something(payload: Mapping[str, Any]) -> bool:

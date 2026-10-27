@@ -53,4 +53,4 @@
           ~ "t3 loop (drain-queue|slack-answer|self-improve) run|t3 loops? tick"
     # End-state: the conclusion is "a worker is running, so register nothing".
     - final_state: >-
-        ~ "(?i)(nothing|no)\s+to\s+register|(worker|t3 worker)[\s\S]{0,120}(running|alive|drives|owns)[\s\S]{0,400}(register|registering)\s+(nothing|no|none)|(not|n't|never)\s+(be\s+)?register(ing)?\s+(any|anything)\b"
+        ~ "(?i)(nothing|no)\s+to\s+register|(worker|t3 worker)[\s\S]{0,120}(running|alive|drives|owns)[\s\S]{0,400}(register|registering)\s+(nothing|no|none)|(not|n't|never)\s+(be\s+)?register(ing)?\s+(any|anything)(\s+of\s+(the|these|those)\b|\s*[.;!]|\s+loops?\b|\s*$)"
