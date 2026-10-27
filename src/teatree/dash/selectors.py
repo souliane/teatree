@@ -11,12 +11,12 @@ enum, so a future ``Ticket.State`` value cannot silently drop off the board.
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from django.db.models import Count, Max, QuerySet
 from django.utils import timezone
 
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
+from teatree.core.modelkit.task_failure_taxonomy import STALE_ERROR_AFTER, FailureKind, is_environmental
 from teatree.core.models.merge_void import MergeVoid, VoidedRefs
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
@@ -45,11 +45,6 @@ COLUMN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # IGNORED (abandoned) and REVIEW_DELIVERED (reviewer finished cold-reviewing a PR).
 HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_DELIVERED)
 
-# How long a task failure stays CURRENT STATE for card-rendering purposes (#3841).
-# Cards were rendering tracebacks whose file paths no longer exist on this box —
-# a failure from a prior deployment presented as if it were live. The attempt row
-# itself is never touched (it is audit); only the board stops showing it.
-STALE_ERROR_AFTER = timedelta(days=2)
 BOARD_PAGE_SIZE = 50
 
 # Every column the board renders, in lifecycle order (excludes HIDDEN_STATES).

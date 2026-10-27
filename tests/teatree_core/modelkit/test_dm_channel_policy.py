@@ -64,6 +64,7 @@ def test_internal_is_pull() -> None:
         "self-improve:ram-probe-inert:incident:state:initial",
         "self-improve:disk-probe-inert:incident:state:initial",
         "self-improve:outbound-unposted:incident:state:initial",
+        "self-improve:still-open:123:456",
     ],
 )
 def test_a_registered_outage_page_pushes(key: str) -> None:
@@ -94,6 +95,7 @@ def test_push_signals_membership_is_pinned_exactly() -> None:
                 "self-improve:ram-probe-inert",
                 "self-improve:disk-probe-inert",
                 "self-improve:outbound-unposted",
+                "self-improve:still-open",
                 "unaudited-merge",
                 "shipping-hold",
             }

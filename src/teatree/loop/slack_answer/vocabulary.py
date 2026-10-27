@@ -22,7 +22,7 @@ Four symbols, deliberately disjoint, ordered by how much they claim:
 :data:`InboundReaction.DONE` carries the only claim that can mislead, so it has
 one rule with no exceptions: **it is placed only after the completion it claims
 has been verified** — for an answer, that means the reply was posted AND a
-thread read-back saw it (:func:`~teatree.loop.slack_answer.cycle.verify_reply_visible`).
+thread read-back saw it (:func:`~teatree.loop.slack_answer.thread_readback.bot_reply_match_in_thread`).
 Dispatching work is not completing it; being already covered is not completing
 it; acknowledging a message is not completing it. Those get
 :data:`~InboundReaction.IN_FLIGHT` or :data:`~InboundReaction.NOTED`.

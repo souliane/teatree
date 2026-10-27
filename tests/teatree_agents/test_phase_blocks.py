@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
@@ -35,6 +36,7 @@ from teatree.core.models import (
 )
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
+from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 
 
@@ -498,6 +500,49 @@ class TestAnsweringWorkItemBlock(TestCase):
         lines = phase_specific_lines(self._answering_task(implies_work=False), [])
 
         assert not any("work_item" in line for line in lines)
+
+    def test_only_the_ticket_overlay_adds_work_item_lines(self) -> None:
+        class ExtendedMetadata(OverlayMetadata):
+            def work_item_return_lines(self) -> tuple[str, ...]:
+                return ("Offer the optional routing key.",)
+
+        first = self._answering_task(implies_work=True)
+        first.ticket.overlay = "extended"
+        first.ticket.save(update_fields=["overlay"])
+        second = self._answering_task(implies_work=True)
+        second.ticket.overlay = "ordinary"
+        second.ticket.save(update_fields=["overlay"])
+
+        def resolve(ticket: Ticket) -> SimpleNamespace:
+            metadata = ExtendedMetadata() if ticket.overlay == "extended" else OverlayMetadata()
+            return SimpleNamespace(metadata=metadata)
+
+        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket", side_effect=resolve):
+            extended = phase_specific_lines(first, [])
+            ordinary = phase_specific_lines(second, [])
+        assert "Offer the optional routing key." in extended
+        assert "Offer the optional routing key." not in ordinary
+
+    def test_empty_ticket_overlay_keeps_base_work_item_lines_without_loading_overlay(self) -> None:
+        task = self._answering_task(implies_work=True)
+        assert task.ticket.overlay == ""
+        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket") as resolve:
+            lines = phase_specific_lines(task, [])
+        resolve.assert_not_called()
+        assert any("work_item" in line for line in lines)
+
+    def test_raising_overlay_hook_keeps_the_base_brief(self) -> None:
+        class RaisingMetadata(OverlayMetadata):
+            def work_item_return_lines(self) -> tuple[str, ...]:
+                raise RuntimeError
+
+        task = self._answering_task(implies_work=True)
+        task.ticket.overlay = "raising"
+        task.ticket.save(update_fields=["overlay"])
+        overlay = SimpleNamespace(metadata=RaisingMetadata())
+        with patch("teatree.agents.phase_blocks.get_overlay_for_ticket", return_value=overlay):
+            lines = phase_specific_lines(task, [])
+        assert any("work_item" in line for line in lines)
 
 
 class TestReviewingBriefAssignsTheIdentity(TestCase):

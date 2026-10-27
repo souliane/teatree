@@ -38,6 +38,7 @@ from teatree.config.settings_loop_owned import (
     _NewsLoopSettings,
     _ResourcePressureLoopSettings,
     _ReviewLoopSettings,
+    _SelfImproveLoopSettings,
     _SnapshotWarmerLoopSettings,
     _TicketsLoopSettings,
 )
@@ -779,6 +780,7 @@ class UserSettings(
     _NewsLoopSettings,
     _ResourcePressureLoopSettings,
     _ReviewLoopSettings,
+    _SelfImproveLoopSettings,
     _SnapshotWarmerLoopSettings,
     _TicketsLoopSettings,
 ):
