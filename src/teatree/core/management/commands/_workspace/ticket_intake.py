@@ -322,9 +322,11 @@ def build_ticket(
         _wh.reject_variant_mismatch(write, ticket, intake.variant)
 
         prior = [] if created else list(ticket.repos or [])
-        requested = intake.repo_names if created or intake.explicit_repos or intake.reason.strip() else prior
+        requested = (
+            intake.repo_names if created or not prior or intake.explicit_repos or intake.reason.strip() else prior
+        )
         added = list(dict.fromkeys(name for name in requested if name not in prior))
-        if not created and added and not intake.reason.strip():
+        if prior and added and not intake.reason.strip():
             write(f"  Refused: adding {', '.join(added)} requires --reason <why>.")
             raise RepoExpansionRefusedError
 
@@ -334,7 +336,7 @@ def build_ticket(
         ticket.repos = list(dict.fromkeys(prior + requested))
 
         extra = cast("TicketExtra", ticket.extra or {})
-        if not created and added:
+        if prior and added:
             extra["repo_expansions"] = [
                 *extra.get("repo_expansions", []),
                 {"repos": added, "reason": intake.reason.strip()},
@@ -473,6 +475,8 @@ def finalize_ticket_provision(
     if not result.ok and not ticket.worktrees.exists():
         if result.retryable:
             write_err(f"  Provisioning deferred: {result.detail}")
+            if not ticket.repos:
+                write_err("  Pass --repos <repo> to set the ticket's initial scope.")
             write_err(f"  Ticket #{ticket.pk} kept: the worker retries provisioning, then asks the owner.")
             return 0
         write_err(f"  Provisioning failed: {result.detail}")

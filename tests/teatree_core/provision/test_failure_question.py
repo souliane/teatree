@@ -50,7 +50,7 @@ class TestQuestionText(TestCase):
         assert question.dedupe_marker == f"provision-failure:{ticket.pk}"
         assert "t3 test workspace ticket https://example.com/issues/7" in question.question
         assert "--repos <repo>" in question.question
-        assert "--reason <why>" in question.question
+        assert "--reason <why>" not in question.question
         assert "ignore the ticket" in question.question
         assert "after 6 automatic retries" in question.question
         assert "drop the repo" not in question.question

@@ -654,7 +654,7 @@ $EDITOR src/app/thing.py                     # FORBIDDEN — pollutes the shared
 
 # RIGHT — create the ticket workspace, provision it, then edit IN the worktree:
 t3 <overlay> workspace ticket <issue-url-or-id>   # creates the worktree(s) on a branch
-# Add another repo later: --repos <repo> --reason "why this repo is needed"
+# Once the ticket has repos, add another with: --repos <repo> --reason "why this repo is needed"
 t3 <overlay> worktree provision                   # DB import + env cache + direnv + prek + overlay setup
 cd <printed-worktree-path>                         # the per-ticket worktree, NOT the main clone
 $EDITOR src/app/thing.py                            # edit here — isolated branch + env

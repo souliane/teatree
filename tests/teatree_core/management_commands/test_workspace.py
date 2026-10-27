@@ -329,29 +329,24 @@ class _TicketIntakeCase(TestCase):
 class TestWorkspaceTicketIssueIdentity(_TicketIntakeCase):
     """GitLab serves one issue at ``/-/issues/N`` and ``/-/work_items/N``; both are ONE ticket (#2293)."""
 
-    def test_first_repo_added_to_existing_empty_ticket_requires_reason(self) -> None:
+    def test_first_repo_scopes_existing_empty_ticket_without_expansion(self) -> None:
         url = "https://gitlab.com/acme/widgets/-/issues/258"
         ticket = Ticket.objects.create(issue_url=url, overlay="test", repos=[])
 
-        err = StringIO()
-        with pytest.raises(SystemExit) as raised:
-            call_command("workspace", "ticket", url, repos="backend", stderr=err)
-        ticket.refresh_from_db()
-        assert raised.value.code == 1
-        assert isinstance(raised.value.__cause__, RepoExpansionRefusedError)
-        assert "--reason" in err.getvalue()
-        assert ticket.repos == []
-
-        call_command("workspace", "ticket", url, repos="backend", reason="initial scope")
+        call_command("workspace", "ticket", url, repos="backend")
         ticket.refresh_from_db()
         assert ticket.repos == ["backend"]
-        assert ticket.extra["repo_expansions"] == [{"repos": ["backend"], "reason": "initial scope"}]
+        assert ticket.extra.get("repo_expansions") is None
 
     def test_expansion_requires_reason_and_records_each_step(self) -> None:
         url = "https://gitlab.com/acme/widgets/-/issues/257"
         ticket_id = cast("int", call_command("workspace", "ticket", url, repos="backend"))
 
-        refusal = _refused_workspace_ticket(url, repos="frontend")
+        err = StringIO()
+        with pytest.raises(SystemExit) as raised:
+            call_command("workspace", "ticket", url, repos="frontend", stderr=err)
+        assert isinstance(raised.value.__cause__, RepoExpansionRefusedError)
+        refusal = err.getvalue()
         ticket = Ticket.objects.get(pk=ticket_id)
         assert "--reason" in refusal
         assert ticket.repos == ["backend"]
@@ -370,7 +365,7 @@ class TestWorkspaceTicketIssueIdentity(_TicketIntakeCase):
 
     def test_issues_and_work_items_urls_resolve_to_the_same_ticket(self) -> None:
         stored = Ticket.objects.create(issue_url=_WORK_ITEM_URL)
-        assert call_command("workspace", "ticket", _ISSUE_URL, reason="issue scope") == stored.pk
+        assert call_command("workspace", "ticket", _ISSUE_URL) == stored.pk
         assert list(Ticket.objects.values_list("issue_url", flat=True)) == [_WORK_ITEM_URL]
 
     def test_the_same_number_in_another_repo_is_another_ticket(self) -> None:
@@ -411,10 +406,7 @@ class TestWorkspaceTicketOnATerminalTicket(_TicketIntakeCase):
 
     def test_a_started_ticket_still_proceeds_with_take_over(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/3", state=Ticket.State.WORK_STARTED)
-        assert (
-            call_command("workspace", "ticket", "https://example.com/issues/3", take_over=True, reason="issue scope")
-            == ticket.pk
-        )
+        assert call_command("workspace", "ticket", "https://example.com/issues/3", take_over=True) == ticket.pk
 
 
 class TestWorkspaceTicketRefusalsExitNonZero(_TicketIntakeCase):
@@ -521,6 +513,7 @@ class TestWorkspaceTicketAdopt(TestCase):
     def test_adopt_branch_registers_rows_and_no_second_dir(self) -> None:
         worktree = self._clone_and_worktree("feature-x")
         self._enter_adopt_patches(worktree)
+        existing = Ticket.objects.create(issue_url="https://example.com/issues/2275", repos=[])
 
         ticket_id = cast(
             "int",
@@ -528,8 +521,10 @@ class TestWorkspaceTicketAdopt(TestCase):
         )
 
         ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.pk == existing.pk
         assert ticket.extra["branch"] == "feature-x"
         assert ticket.repos == ["myrepo"]
+        assert ticket.extra.get("repo_expansions") is None
         wt = Worktree.objects.get(ticket=ticket, repo_path="myrepo")
         assert Path((wt.extra or {})["worktree_path"]).resolve() == worktree.resolve()
         assert not (self.workspace / "feature-x").exists()
@@ -766,6 +761,7 @@ class TestWorkspaceTicket(TestCase):
         assert not Worktree.objects.filter(ticket=ticket).exists()
         assert not (_worktree_root() / ticket.extra["branch"]).exists()
         assert "worker retries" in refusal
+        assert "Pass --repos <repo>" in refusal
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

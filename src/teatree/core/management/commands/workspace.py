@@ -107,7 +107,7 @@ class Command(TyperCommand):
             str, typer.Option("--kind", help="Classify: 'fix' or 'feature' (blank infers from the title, #17).")
         ] = "",
         reason: Annotated[
-            str, typer.Option("--reason", help="Reason for adding repositories to an existing ticket.")
+            str, typer.Option("--reason", help="Reason for adding repositories to a ticket that already has repos.")
         ] = "",
     ) -> int:
         """Create or update a ticket, provision its worktrees, return its pk; a refusal exits nonzero (#932)."""

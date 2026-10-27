@@ -72,6 +72,18 @@ class TestResolveRepoNames:
             "souliane/teatree",
         ]
 
+    def test_dev_repo_precedes_declared_issue_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: "souliane/teatree")
+
+        assert resolve_repo_names(_ProductOverlay(), "https://github.com/acme/backend/issues/1", "") == [
+            "souliane/teatree",
+        ]
+
+    def test_blank_issue_url_never_selects_the_overlay_repo_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: None)
+
+        assert resolve_repo_names(_ProductOverlay(), "", "") == []
+
     def test_issue_with_no_derivable_repo_is_never_the_overlay_whole_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: None)
 
