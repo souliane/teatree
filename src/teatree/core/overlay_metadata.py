@@ -19,6 +19,11 @@ __all__ = ["OverlayMetadata"]
 
 
 class OverlayMetadata:
+    DEFAULT_WORK_ITEM_RETURN_LINES: tuple[str, ...] = ()
+
+    def work_item_return_lines(self) -> tuple[str, ...]:
+        return self.DEFAULT_WORK_ITEM_RETURN_LINES
+
     def validate_pr(
         self, title: str, description: str, *, require_sections: bool = True, repo: str = ""
     ) -> ValidationResult:

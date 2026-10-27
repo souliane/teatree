@@ -86,6 +86,10 @@ def test_gitlab_code_host_implements_every_merge_rpc_method() -> None:
 
 
 _WAVE2_READ_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
+    "list_unshipped_branches": [
+        ("repo", inspect.Parameter.KEYWORD_ONLY),
+        ("prefix", inspect.Parameter.KEYWORD_ONLY),
+    ],
     "list_prs": [
         ("repo", inspect.Parameter.KEYWORD_ONLY),
         ("state", inspect.Parameter.KEYWORD_ONLY),

@@ -34,7 +34,12 @@ from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SHAPE, owner_stop_limits_lines
 from teatree.agents.review_context_recorder import record_returned_review_context
-from teatree.agents.review_envelope_recorder import record_returned_review_envelope, review_head_mismatch_refusal
+from teatree.agents.review_envelope_recorder import (
+    record_returned_review_envelope,
+    review_head_mismatch_refusal,
+    review_venue_limit_refusal,
+    settle_review_venue_limit,
+)
 from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
@@ -365,7 +370,11 @@ def _check_before_recording(
     out so that function stays a short record-or-refuse decision over ONE verdict
     rather than a ladder of early returns.
     """
-    if error := validate_result_keys(result) or review_head_mismatch_refusal(task, result, phase=phase):
+    if error := (
+        validate_result_keys(result)
+        or review_head_mismatch_refusal(task, result, phase=phase)
+        or review_venue_limit_refusal(task, result, phase=phase)
+    ):
         return _PreRecordCheck(error, result)
 
     if (
@@ -440,6 +449,7 @@ def _record_failure(
         **usage_fields(usage),
     )
     task.fail_claimed(reason=error)
+    settle_review_venue_limit(task, error)
     if error.startswith(_CRITIC_EVIDENCE_UNAVAILABLE_PREFIX):
         _CriticDispatch.rearm_unverified(task)
     return attempt

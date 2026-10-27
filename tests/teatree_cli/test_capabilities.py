@@ -103,6 +103,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree ticket critic-record": ticket.Command.critic_record,
         "teatree ticket list-clears": ticket.Command.list_clears,
         "teatree ticket dead-rows": ticket.Command.dead_rows,
+        "teatree ticket settle-holds": ticket.Command.settle_holds,
         "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,
         "teatree ticket set-target-branch": ticket.Command.set_target_branch,
         "teatree ticket rework-hold": ticket.Command.rework_hold,
