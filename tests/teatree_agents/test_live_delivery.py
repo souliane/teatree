@@ -1,9 +1,21 @@
 """A peer message's receipt: the first verdict wins, and settling withdraws a push still in flight."""
 
 import asyncio
+from types import SimpleNamespace
 
 from teatree.agents.live_control import ControlOutcome, RejectCode
-from teatree.agents.live_delivery import PeerDelivery, SendReceipt
+from teatree.agents.live_delivery import PeerDelivery, SendReceipt, peer_identity
+
+
+def test_mailbox_self_keeps_ticket_and_exposes_room() -> None:
+    peer = SimpleNamespace(
+        address="agent-a", harness="codex", label="worker", can_receive=True, room="17", phase="coding"
+    )
+
+    identity = peer_identity(peer)
+
+    assert identity["ticket"] == "17"
+    assert identity["room"] == "17"
 
 
 def _delivery() -> PeerDelivery:

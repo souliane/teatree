@@ -41,7 +41,6 @@ scheduling methods with the ``core`` repair-loop budget over a housekeeping swee
 """
 
 import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -75,6 +74,7 @@ from teatree.core.models.ticket_external_review import (
     schedule_external_review,
 )
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.owner_dm.question_ticket import STUCK_HALT_PK_RE
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, max_phase_iterations, requeue_verdict
 from teatree.loop.persistence_phase_task import create_phase_task
 from teatree.utils import git
@@ -90,7 +90,6 @@ DEFAULT_STUCK_IDLE_HOURS = 6
 #: Public because the question drain names the halt's subject ticket from it
 #: (:mod:`teatree.loop.question_subjects`).
 STUCK_HALT_MARKER = "stuck-redispatch-halt:{pk}"
-STUCK_HALT_PK_RE = re.compile(r"^stuck-redispatch-halt:(\d+)$")
 
 #: The non-terminal work-states an AUTHOR ticket re-dispatches from, mapped to the
 #: phase the state implies. NOT_STARTED / SCOPED await provisioning (excluded);
