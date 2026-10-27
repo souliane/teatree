@@ -407,11 +407,11 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
         ),
         ("For multi-repo tickets, review the combined diff and list all repos in `integration_review.repos`."),
         *(() if read_only_venue else _TEST_SELECTION_LINES),
-        *(() if read_only_venue else ("For a mutation probe, run only the pinned test node ids with -n0.",)),
+        *(() if read_only_venue else ("Run revert-to-RED and mutation probes by pinned node id with -n0.",)),
         (
             "Use the supplied check-runs at the reviewed head for whole-tree evidence."
             if read_only_venue
-            else "Read the forge check-runs at the reviewed head; use CI for whole-tree evidence."
+            else "Read check-runs at the reviewed head for whole-tree evidence."
         ),
         *(() if read_only_venue else ("2. Run /t3:next to wrap up.",)),
         *_VERIFICATION_BRIEF_LINES,

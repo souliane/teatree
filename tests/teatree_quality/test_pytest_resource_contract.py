@@ -344,12 +344,10 @@ def test_real_pytest_collects_a_small_directory() -> None:
 
 @pytest.mark.timeout(120)
 def test_real_tach_scoped_invocation_is_never_refused(tmp_path: Path) -> None:
-    """The exact flags-only shape ``dev/test-affected.sh`` emits on a doc-only diff.
+    """The flags-only shape ``dev/test-affected.sh`` emits on a doc-only diff.
 
-    Reproduces souliane/teatree's own local-default lane end to end: no explicit test
-    ids, just ``--tach --tach-base <ref> -p force_keep_plugin`` — the shape a diff with
-    zero changed src modules always produces (``SelectionResult.pytest_args``). Before
-    the ``tach_active`` carve-out this hit the whole-tree guard on EVERY such run.
+    Reproduces the local lane's flags-only shape with HEAD as an available base.
+    A CI checkout need not have origin/main; tach validates the base at startup.
     Collection exits immediately after the startup guard accepts the invocation.
     """
     repo = Path(__file__).resolve().parents[2]
@@ -372,7 +370,7 @@ def test_real_tach_scoped_invocation_is_never_refused(tmp_path: Path) -> None:
             "0",
             "--tach",
             "--tach-base",
-            "origin/main",
+            "HEAD",
             "-p",
             "teatree.quality.force_keep_plugin",
             "-p",

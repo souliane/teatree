@@ -21,12 +21,10 @@ _VERIFY_GATES_COMMAND = "t3 tool verify-gates"
 # run CI is about to make anyway — measured at ~85 minutes of a 3.5h cycle (#3994).
 _TEST_SELECTION_LINES: tuple[str, ...] = (
     "",
-    "TEST SELECTION (teatree core): inspect `t3 tool affected-tests` before any local lane.",
-    "If SCOPED, run `bash dev/test-affected.sh`.",
-    "For overlay repos, use their playbook's wired runner and test selection.",
-    "It selects tests the diff can reach plus the always-run floor.",
-    "If FULL, run changed test files or pinned node ids locally and let CI run the whole tree.",
-    "Never run a multi-thousand-test directory for one fix or mutation; CI owns whole-tree proof.",
+    "TEST SELECTION (teatree core): inspect `t3 tool affected-tests`.",
+    "SCOPED: `bash dev/test-affected.sh`; FULL: changed test files or pinned node ids locally.",
+    "For overlay repos, use their playbook's wired runner; CI proves the whole tree.",
+    "Never run a multi-thousand-test directory for one fix or mutation.",
 )
 
 
