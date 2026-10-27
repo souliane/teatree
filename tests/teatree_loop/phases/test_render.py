@@ -2,6 +2,7 @@
 
 import datetime as dt
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,7 +16,12 @@ from teatree.core.models import PullRequest, SelfImproveFiring, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases import render_phase
-from teatree.loop.phases.render import _SELF_IMPROVE_WIDTH, _identity_aliases_for_request, rerender_statusline
+from teatree.loop.phases.render import (
+    _SELF_IMPROVE_WIDTH,
+    _identity_aliases_for_request,
+    _SelfImproveSummary,
+    rerender_statusline,
+)
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.resource_pressure import ResourceReading
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
@@ -167,6 +173,25 @@ def test_render_phase_idle_omits_scanner_error_line(tmp_path: Path) -> None:
 
 
 class TestSelfImproveStatuslineVisibility(TestCase):
+    def test_all_unreported_fields_render_one_unknown_count(self) -> None:
+        record_firing(
+            DetectorReport(
+                detector="private/run",
+                dedup_key="unreported",
+                state_hash="active",
+                severity="warn",
+                max_rung=ActionRung.STATUSLINE,
+                summary="private detail",
+                payload={"kind": "private/run", "cause": "private/path", "count": True},
+            ),
+            action=ActionRung.STATUSLINE,
+        )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == ["self-improve: unknown 1"]
+
     def test_oldest_age_uses_first_firing_across_mixed_ages(self) -> None:
         now = dt.datetime.now(tz=dt.UTC)
         for key, age_days in (("older", 5), ("younger", 2)):
@@ -255,6 +280,55 @@ class TestSelfImproveStatuslineVisibility(TestCase):
                     "inbound_unanswered 2 (no_reply 2) | +1 more kind"
                 )
             ]
+
+    def test_six_firings_keep_all_causes_when_the_line_fits(self) -> None:
+        for kind, cause, count in [
+            ("task_failed", "harness_crash", 3),
+            ("task_failed", "timeout", 2),
+            ("task_failed", "worker_exit", 1),
+            ("task_failed", "credential_missing", 1),
+            ("task_failed", "plan_missing", 1),
+            ("pressure_incident", "load", 4),
+        ]:
+            record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=f"{kind}:{cause}",
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload={"kind": kind, "cause": cause, "count": count},
+                ),
+                action=ActionRung.STATUSLINE,
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == [
+                (
+                    "self-improve: task_failed 8 (harness_crash 3, timeout 2, credential_missing 1, "
+                    "plan_missing 1, worker_exit 1) | pressure_incident 4 (load 4)"
+                )
+            ]
+
+    def test_one_kind_folds_causes_to_fit_width(self) -> None:
+        causes = {f"reason_{index:02d}_{'x' * 24}": 1 for index in range(8)}
+        line = _SelfImproveSummary({"task_failed": Counter(causes)}, 3).render()
+
+        assert line.startswith("self-improve: task_failed 8 (")
+        assert "more causes" in line
+        assert "…" not in line
+        assert line.endswith(" | oldest 3d")
+        assert len(line) <= _SELF_IMPROVE_WIDTH
+
+    def test_one_oversized_kind_truncates_with_ellipsis_and_keeps_age(self) -> None:
+        line = _SelfImproveSummary({"d" * 128: Counter({"c" * 64: 1})}, 40).render()
+
+        assert len(line) == _SELF_IMPROVE_WIDTH
+        assert "… | oldest 40d" in line
+        assert line.endswith(" | oldest 40d")
 
     def test_long_line_folds_kinds_before_hook_can_truncate_oldest(self) -> None:
         now = dt.datetime.now(tz=dt.UTC) - dt.timedelta(days=3)

@@ -93,7 +93,7 @@ def _append_self_improve_firings(zones: StatuslineZones) -> None:
             cause = payload.get("cause", "cause unreported")
             count = payload.get("count", 1)
             if not isinstance(kind, str) or not re.fullmatch(r"[a-z0-9_]{1,64}", kind) or kind == "unknown":
-                kind = detector if re.fullmatch(r"[a-z0-9_]{1,128}", detector) else "detector_unreported"
+                kind = detector if re.fullmatch(r"[a-z0-9_]{1,128}", detector) else "unknown"
             cause = (
                 cause
                 if isinstance(cause, str) and cause != "unknown" and re.fullmatch(r"[a-z0-9_\-]{1,64}", cause)
@@ -143,11 +143,15 @@ class _SelfImproveSummary:
     def _line(self) -> str:
         parts = []
         for index, (kind, causes) in enumerate(self.kinds[: self.visible_kinds]):
+            total = sum(count for _, count in causes)
+            if kind == "unknown" and causes == [("cause unreported", total)]:
+                parts.append(f"unknown {total}")
+                continue
             cause_parts = [f"{cause} {count}" for cause, count in causes[: self.visible_causes[index]]]
             omitted = len(causes) - self.visible_causes[index]
             if omitted:
                 cause_parts.append(f"+{omitted} more {'cause' if omitted == 1 else 'causes'}")
-            parts.append(f"{kind} {sum(count for _, count in causes)} ({', '.join(cause_parts)})")
+            parts.append(f"{kind} {total} ({', '.join(cause_parts)})")
         omitted_kinds = len(self.kinds) - self.visible_kinds
         if omitted_kinds:
             parts.append(f"+{omitted_kinds} more {'kind' if omitted_kinds == 1 else 'kinds'}")
