@@ -313,9 +313,7 @@ def _stage_env(private_root: str) -> dict[str, str]:
 
 def _snapshot_control_db(repo: Path, env: dict[str, str]) -> None:
     control = ControlDb(os.environ)
-    source = control.for_repo(repo).path
-    if not source.is_file() and not os.environ.get("T3_CONFIG_DB"):
-        source = control.primary()
+    source = control.primary()
     if not source.is_file():
         raise FileNotFoundError(source)
 
