@@ -64,7 +64,7 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 # A `[mr_reminder]` table left here is ignored on read; set it as a JSON dict:
 #   t3 <overlay> config_setting set mr_reminder \
 #     '{"default_channel":"C_FALLBACK","channels":{"souliane/teatree":"C_TEATREE","acme-engineering":"C_ACME"}}'
-# Likewise `speak` (#2060) is DB-home: t3 <overlay> config_setting set speak '{"local":"all","slack":true}'
+# Likewise `speak` (#2060) is DB-home: t3 <overlay> config_setting set speak '{"local":"dm","slack":true}'
 #   (per-overlay override: add --overlay <name>; it MERGES onto the global speak row).
 
 ```
@@ -173,8 +173,7 @@ value is ignored on read and the how-to advisory points at
 tables `speak` / `mr_reminder` — stored as JSON-dict `ConfigSetting` rows
 (`parse_speak_setting` / `parse_mr_reminder_setting`) and rebuilt bespoke by the
 resolver (`resolution._BESPOKE_STRUCTURED_FIELDS`), with `speak` keeping its
-per-overlay MERGE; the cold Stop-hook `speak` reader uses `cold_reader.read_setting`
-— to the DB. The last NON-`UserSettings` config — the definition registries
+per-overlay MERGE — to the DB. The last NON-`UserSettings` config — the definition registries
 (`REGISTRY_SETTINGS`: `[overlays]`, `[e2e_repos]`, `[peer_instances]`) — is DB-home too:
 each is stored as one JSON-dict `ConfigSetting` row (`config/registries.py`) and
 `loader._inject_db_registries` overrides `config.raw[<key>]` for every `REGISTRY_KEYS`
@@ -402,44 +401,40 @@ The `*_gate_enabled` kill-switch keys below disable one over-deny gate for recov
 | `private_repos` | Host-qualified `host/owner` or `host/owner/repo` entries. A namespace entry declares EVERY repo below it private, so use one only for a group with no public repo; otherwise list individual repos. A reachable forge answer PUBLIC wins over a declaration. Matching preserves the host and path-segment boundaries. |
 | `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). Read outside the scope gate by `merge.host_kind` (forge recovery) and `cli.review.forge_target` (attributing a review target the repo tables never listed); never by merge authorization. `teatree.core.intake.repo_scope`. |
 | `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from the private DB `ConfigSetting` store (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[gate-escape:unknown_repo_push: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
-| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
+| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"dm","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
 
 ### 10.1.1 Local text-to-speech (#2060)
 
 The `speak` config reads agent output aloud, gated on the macOS `say` binary (the
 whole feature is inert when it is absent). DB-home (#1775, config-unify):
 a JSON-dict `ConfigSetting` row, rebuilt bespoke by the resolver. Per-overlay
-overridable via a `--overlay <name>` row that MERGES onto the global row; ad-hoc local
-read via `t3 speak "…"`. The cold Stop hook reads the global row via `cold_reader`.
+overridable via a `--overlay <name>` row that MERGES onto the global row.
 
 ```bash
-# local: "off" (default) | "dm" | "all" — what plays through this machine's speakers
+# local: "off" (default) | "dm" — what plays through this machine's speakers
 # slack: false (default) | attach a spoken audio file to each Slack DM you receive
-t3 <overlay> config_setting set speak '{"local": "all", "slack": true}'
+t3 <overlay> config_setting set speak '{"local": "dm", "slack": true}'
 ```
 
 `local` is what plays through the speakers (macOS `say`): `off` nothing, `dm`
-the bot→user DM texts, `all` those DM texts **and** the Stop-hook reading of
-in-client turn ends. `slack` attaches the spoken audio to each bot→user DM in
+the bot→user DM texts. Stored legacy `all` values resolve as `dm`. `slack`
+attaches the spoken audio to each bot→user DM in
 the **same message** (text + inline player, one DM) via
 `SlackBotBackend.post_audio_dm` — no separate audio-only post; it applies to
 DMs only by nature. This needs the token's **`files:write`** scope (else
 `ok:false` / `missing_scope` — the DM degrades to text-only and the failure
 surfaces once per error class to the user's DM with the scope-fix hint; re-run
-`t3 setup slack-bot` to grant it). Both the `notify_user` DM and the on-behalf
-self-DM run through one shared `teatree.core.speak.deliver_user_dm` chokepoint.
+`t3 setup slack-bot` to grant it). On-behalf self-DMs use
+`teatree.core.speak.deliver_user_dm`; `notify_user` enriches its already-posted
+text DM through `deliver_user_dm_sidecar`.
 
 The two axes are fully independent. Slack never auto-plays, so local playback
-is never suppressed by `slack`. The Stop-hook in-client read fires whenever
-`local = all` — in-client turns are never Slack messages, so there is no
-double-play to suppress. The config lives in the DB store (read cold via
-`cold_reader` on the Stop path); there is no other per-run state.
+is never suppressed by `slack`. The config lives in the DB store.
 
 **Meeting-mute (#2171).** `_speak_local` silences local playback while a
 configured presence backend reports the user IN A MEETING — the gate lives at
 the PLAYBACK call site, not in `resolve_speak()`, so the user's stored `speak`
-config is never mutated and every local consumer (`speak()` and the local leg of
-`deliver_user_dm`) is gated by the one check. The `slack` arm is exempt (a
+config is never mutated and the local leg of `deliver_user_dm` is gated by the one check. The `slack` arm is exempt (a
 Slack-attached rendition still reaches the phone). It is opt-in via `[teatree.speak]
 presence_backend` (`""` = off, `msteams` = MS Teams) with the backend's access
 token in the `pass` entry named by `presence_token_ref`. `teatree.core.presence`
@@ -463,24 +458,20 @@ Slack ask they served. An attended question renders in the terminal only, so it 
 no DM to carry audio.
 
 **Cross-process speaker mutual exclusion (#2152, bounded #2156).** Local
-playback fans out from two independent sources — each DM's local-read leg and
-the detached `t3 speak` Stop-hook read — each spawning its own `say`. To stop
+playback fans out from independent DM deliveries, each spawning its own `say`. To stop
 concurrent reads talking over each other, `_speak_local()` wraps the actual
 `say` call in a single cross-process `fcntl.flock` on a lockfile under the
 teatree state dir (`get_data_dir("speak")/speaker.lock`), guaranteeing **mutual
 exclusion** (no two `say` calls overlap) across both the in-process daemon
-threads and the separate detached subprocesses (a per-process queue would not
-serialize the subprocesses). The lock is acquired with a **bounded wait**, not
+threads and separate DM delivery processes (a per-process queue would not
+serialize separate processes). The lock is acquired with a **bounded wait**, not
 blocking: `_serial_speaker()` retries a non-blocking acquire for a short total
 budget (`_SPEAKER_LOCK_WAIT_BUDGET_S`) and, if the speaker is still busy,
-**drops the read as stale** rather than queuing it. A blocking acquire is not
+plays without the lock rather than queuing indefinitely. A blocking acquire is not
 FIFO and builds an unbounded backlog under a flood of fan-out reads — a message
-could play many minutes after it was printed — so the bounded-wait-then-drop
-caps latency at the budget: a read either plays promptly or is dropped, never
-multi-minute late. The non-blocking daemon-thread dispatch is unchanged — the
-thread waits on the lock, never the caller's egress path — so the bounded wait
-never delays a DM or turn. The lock is best-effort: a lockfile that cannot be
-opened fails **open** (the read still plays) so a lock error never mutes audio.
+could play many minutes after it was printed. The non-blocking daemon-thread
+dispatch keeps lock waiting off the caller's egress path. The lock is best-effort:
+a busy or unavailable lock never mutes audio.
 
 Callers read `get_effective_settings().speak`. Adding a new overridable key
 is a one-line registry change picked up via `dataclasses.replace`; `speak` is

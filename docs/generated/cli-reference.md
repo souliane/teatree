@@ -25,7 +25,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 addressable upper bounds.                                    │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
-│ speak           Refuse to speak — local audio cannot reach the user.         │
 │ push            Push a branch using the forge credential the loop already    │
 │                 holds.                                                       │
 │ fast-push       Stage, commit, push, and create-or-update the PR in one      │
@@ -255,24 +254,6 @@ Usage: t3 tokens [OPTIONS]
 │ --scope         TEXT  Routing scope to select for; defaults to the active    │
 │                       overlay (T3_OVERLAY_NAME).                             │
 │ --help                Show this message and exit.                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 speak`
-
-```
-Usage: t3 speak [OPTIONS] TEXT
-
- Refuse to speak — local audio cannot reach the user.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │
-│                      [required]                                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay Slack   │
-│                        creds).                                               │
-│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

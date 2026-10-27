@@ -137,7 +137,6 @@
 # 5: #4476's publish path resolves the forge backend, its models and the outbound
 # privacy scan at call time so the command module stays import-light.
 "src/teatree/core/review/verdict_findings_publish.py" = 5
-"src/teatree/core/management/commands/speak.py" = 1
 "src/teatree/core/management/commands/standing_goal.py" = 3
 # 1: both agent_runner refusals became a declared top-level edge; the one left
 # is `review.completion_evidence`, which pulls the review graph at command load.
@@ -243,7 +242,7 @@
 # #61 availability+preset merge: the unified operating-mode resolver defers its
 # intra-core edges — Mode / ModeOverride / ConfigSetting (ORM, app-registry) and the
 # deferred-question drain — cycle-safe and app-registry-safe (mode_resolution is
-# imported by early hooks via speak.py before Django apps are ready).
+# imported before Django apps are ready).
 # 8 -> 5 (#3826): the fast-hook mirror is deleted (three of its deferrals with it) and
 # the presence heartbeat left this module — it needs no deferral at all.
 "src/teatree/core/mode_resolution.py" = 5

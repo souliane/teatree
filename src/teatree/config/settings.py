@@ -718,10 +718,10 @@ class _PrePublishGateSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Pre-publish")
 
-    # #2060 The resolved speak config — a local playback enum (off/dm/all) + a
+    # #2060 The resolved speak config — a local playback enum (off/dm) + a
     # slack bool. DB-home (#1775, DB-home cutover): stored as a JSON dict
     # ConfigSetting (``parse_speak_setting``), rebuilt bespoke by the resolver; the
-    # cold Stop hook reads it via ``cold_reader``. See :class:`SpeakConfig`.
+    # direct and sidecar DM paths read it via ``resolve_speak``. See :class:`SpeakConfig`.
     speak: SpeakConfig = setting(
         default_factory=SpeakConfig,
         spec=SettingSpec(

@@ -1144,11 +1144,6 @@
       "subcommands": []
     },
     {
-      "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
-      "name": "speak",
-      "subcommands": []
-    },
-    {
       "help": "Register, clear, or list standing verified-green goals (PR-25).",
       "name": "standing_goal",
       "subcommands": [
