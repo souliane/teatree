@@ -80,6 +80,8 @@ Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) — and the 
 
 ## 4. Domain Models
 
+**Operator identity ([#5122](https://github.com/souliane/teatree/issues/5122)).** `Ticket.requested_by` stores a canonical `platform:handle` key; blank means the requester is unknown. `OperatorIdentity` binds a forge or Slack identity to a Django user, with unique platform/handle and external forge ID constraints. Requester attribution is first-write-wins and survives a later save of a stale ticket object. Existing tickets migrate with a blank requester.
+
 **Ticket DM identity (#5361).** `TicketDmThread` owns one outbound Slack DM root per ticket, with a generation incremented only after a deleted root is proven. `TicketDmPost` records each confirmed header, note, card, chase, and answer reply in that generation; its channel and message timestamp pair is unique. `ThreadBinding` still maps inbound roots to tickets. A question card keeps its own mirror timestamp even when posted inside the ticket root, so button taps still address that card.
 
 **One agent per checkout (#5238).** A factory task holds its ticket checkout throughout its run. The writer fence checks occupancy, process evidence, and the attested checkout state before dispatch. Normal exits settle occupancy and attestation together; interrupted, deferred, and released exits can be re-attested at the next writer fence only with the custody, process, and forge proof described in [the worktree occupancy appendix](docs/blueprint/worktree-occupancy.md). A failed proof parks the task without spending its repair budget.

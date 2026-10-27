@@ -83,6 +83,7 @@ from teatree.core.models.merge_void import MergeVoid
 from teatree.core.models.mergeable_notified import MergeableNotified
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
+from teatree.core.models.operator_identity import OperatorIdentity
 from teatree.core.models.outbound_claim import OutboundClaim
 from teatree.core.models.outer_loop_experiment import (
     OuterLoopExperiment,
@@ -283,6 +284,7 @@ __all__ = [
     "OnBehalfApproval",
     "OnBehalfApprovalError",
     "OnBehalfAudit",
+    "OperatorIdentity",
     "OutboundClaim",
     "OuterLoopExperiment",
     "OuterLoopExperimentError",

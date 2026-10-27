@@ -1,4 +1,9 @@
+from collections.abc import Iterable
+
+from django.db import models
+
 from teatree.core.modelkit.gate_registry import get_resolver
+from teatree.core.models.operator_identity import canonical_operator_key
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 
@@ -6,8 +11,32 @@ from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 class TicketOverlayModel(TicketFacet):
     """Overlay attribution for a ticket: infer it from ``issue_url`` and keep it current."""
 
+    requested_by = models.CharField(max_length=180, blank=True, default="", db_index=True)
+
     class Meta:
         abstract = True
+
+    def save(
+        self,
+        force_insert: bool = False,  # noqa: FBT001, FBT002 — Django's save accepts these positionally.
+        force_update: bool = False,  # noqa: FBT001, FBT002 — Django's save accepts these positionally.
+        using: str | None = None,
+        update_fields: Iterable[str] | None = None,
+    ) -> None:
+        if self.pk is not None and update_fields is None:
+            recorded = type(self).objects.filter(pk=self.pk).values_list("requested_by", flat=True).first()
+            if recorded:
+                self.requested_by = recorded
+        super().save(force_insert=force_insert, force_update=force_update, using=using, update_fields=update_fields)
+
+    def record_requester(self, key: str) -> bool:
+        canonical = canonical_operator_key(key)
+        if self.pk is None:
+            return False
+        updated = type(self).objects.filter(pk=self.pk, requested_by="").update(requested_by=canonical)
+        if updated:
+            self.requested_by = canonical
+        return bool(updated)
 
     def _infer_overlay(self) -> str:
         """Derive overlay name from ``issue_url`` (see ``infer_overlay_for_url``)."""
