@@ -11,13 +11,14 @@ from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.t3_invocation import run_t3, t3_argv
 
 _NOT_A_REPOSITORY_EXIT_CODE = 128
+_NO_REPOSITORY_MESSAGES = ("not a git repository", "gitfile does not point to a valid repository")
 
 
 def _head(cwd: str) -> str:
     result = git_probe(cwd, "rev-parse", "HEAD", timeout=2.0)
     if result.ok:
         return result.out
-    if result.code == _NOT_A_REPOSITORY_EXIT_CODE and "not a git repository" in result.err:
+    if result.code == _NOT_A_REPOSITORY_EXIT_CODE and any(message in result.err for message in _NO_REPOSITORY_MESSAGES):
         return ""
     message = "the gate escape head could not be read"
     raise OSError(message)
