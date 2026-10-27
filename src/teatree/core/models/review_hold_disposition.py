@@ -65,6 +65,9 @@ def _check_points(hold: "ReviewVerdict", points: list[HoldPointResponse]) -> Non
 
 class ReviewHoldDisposition(models.Model):
     hold = models.ForeignKey("core.ReviewVerdict", on_delete=models.PROTECT, related_name="hold_dispositions")
+    if TYPE_CHECKING:
+        hold_id: int
+
     clearing_verdict = models.ForeignKey("core.ReviewVerdict", on_delete=models.PROTECT, related_name="cleared_holds")
     points = models.JSONField(default=list)
     recorded_at = models.DateTimeField(default=timezone.now)

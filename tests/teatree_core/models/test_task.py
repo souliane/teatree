@@ -22,7 +22,7 @@ _FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 class TestTask(TestCase):
-    def test_pr_review_cannot_complete_with_attempt_but_no_recorded_outcome(self) -> None:
+    def test_pr_review_attempt_can_complete_without_a_verdict_for_the_alert(self) -> None:
         ticket = Ticket.objects.create(
             role=Ticket.Role.REVIEWER,
             issue_url="https://github.com/souliane/teatree/pull/42",
@@ -34,11 +34,11 @@ class TestTask(TestCase):
         task.claim(claimed_by="worker")
         TaskAttempt.objects.create(task=task, result={"summary": "finished"})
 
-        with pytest.raises(InvalidTransitionError, match="recorded verdict"):
-            task.complete()
+        task.complete()
 
         task.refresh_from_db()
-        assert task.status == Task.Status.CLAIMED
+        assert task.status == Task.Status.COMPLETED
+        assert task.attempts.count() == 1
 
     def test_review_cannot_complete_without_a_recorded_attempt(self) -> None:
         ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER)

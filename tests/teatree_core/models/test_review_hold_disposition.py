@@ -58,3 +58,20 @@ class TestReviewHoldDisposition(TestCase):
             )
 
         assert not ReviewHoldDisposition.objects.exists()
+
+    def test_legacy_hold_requires_an_answer_for_each_stored_blocker(self) -> None:
+        hold, clearing = self._pair()
+        hold.findings = [
+            {"severity": "major", "kind": "blocking", "summary": "first", "file": "a.py", "line": 3},
+            {"severity": "major", "kind": "blocking", "summary": "second", "file": "b.py", "line": 4},
+        ]
+        hold.save(update_fields=["findings"])
+        hold.refresh_from_db()
+
+        assert ReviewHoldDisposition.blocking_indices(hold) == {0, 1}
+        with pytest.raises(ReviewHoldDispositionError, match="unanswered"):
+            ReviewHoldDisposition.record(
+                hold=hold,
+                clearing_verdict=clearing,
+                points=[{"index": 0, "classification": "disproved_premise", "citation": "new run"}],
+            )

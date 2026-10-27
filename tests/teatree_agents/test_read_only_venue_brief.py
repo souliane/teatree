@@ -692,7 +692,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
             prepared = self._prepare(task)
 
         assert f"WORKER CI at dispatched head {head}: unreadable" in prepared.prompt
-        assert "otherwise set pending or failed and return hold" in self._system_context(prepared)
+        assert "an unreadable check requires unverified" in self._system_context(prepared)
 
     def test_remote_review_refuses_a_head_that_moves_during_the_diff_read(self) -> None:
         head = "a" * 40
@@ -821,11 +821,6 @@ class TestWorkerBriefsAreTheBaseBytes(TestCase):
                     text.replace(f"Task ID: {task.pk}", "Task ID: <task>")
                     .replace(f"context show {ticket.pk}`", "context show <ticket>`")
                     .replace(f"{DEFAULT_SKILLS_DIR}/", "<skills>/")
-                    .replace(
-                        " NOTE: a venue cannot read or run a check, or documentation suggests a defect "
-                        "without executed reproduction.",
-                        "",
-                    )
                 )
 
             with self.subTest(phase=phase):

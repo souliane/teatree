@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, cast
 
 from django.db import transaction
 
-from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
+from teatree.agents.envelope_refusal import (
+    MALFORMED_REVIEW_VERDICT_PREFIX,
+    MALFORMED_RUBRIC_GRADES_PREFIX,
+    review_envelope_shape_error,
+)
 from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
@@ -160,6 +164,8 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     envelope = _returned_review_verdict(result, phase=resolved_phase)
     if envelope is None:
         return ""
+    if shape_error := review_envelope_shape_error(envelope):
+        return f"{MALFORMED_REVIEW_VERDICT_PREFIX}{shape_error}"
     target, refusal = _bound_review_target(task, envelope)
     if target is None:
         return refusal

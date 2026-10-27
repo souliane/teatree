@@ -158,8 +158,7 @@ class AutoReviewDispatch(models.Model):
     #: terminal. RESOLVED means a verdict already covers that exact tree; REFUSED
     #: means a verdict for that exact tree is structurally unrecordable and a human
     #: has been paged. SUPERSEDED means the PR no longer points at that tree at all.
-    #: None is re-armable, for three different reasons, and all are escaped the same
-    #: way — by a new head (#4522, #4737).
+    #: An unverified head is re-armable; other terminal heads need a new SHA.
     _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset({State.UNVERIFIED})
 
     slug = models.CharField(max_length=255)
@@ -227,7 +226,7 @@ class AutoReviewDispatch(models.Model):
         unclaimed head is a legitimate no-op, never an error.
         """
         return retire_head_claim(
-            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            cls.objects.filter(state__in=cls._ACTIVE_STATES | {cls.State.UNVERIFIED}),
             slug=slug,
             pr_id=pr_id,
             head_sha=head_sha,

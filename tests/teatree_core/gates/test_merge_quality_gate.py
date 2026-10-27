@@ -194,6 +194,25 @@ class TestVerdictGate(TestCase):
             ):
                 check_merge_quality_verdict(ticket, _FORTY_HEX)
 
+    def test_other_repo_brief_start_uses_target_branch_as_conservative_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = make_git_repo(Path(raw))
+            source = repo / "src/teatree/config/settings.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("class AppSettings:\n    old: int = 1\n")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-qm", "baseline")
+            base = run_git(repo, "rev-parse", "HEAD")
+            source.write_text("class AppSettings:\n    old: int = 1\n    new: int = 2\n")
+            ticket = self._constraint_ticket(task_text="No new setting.", start_sha="f" * 40)
+            with (
+                patch("teatree.core.gates.merge_quality_gate.latest_plan_artifact", return_value=None),
+                patch("teatree.core.gates.merge_quality_gate.dispatch_worktree_path", return_value=str(repo)),
+                patch("teatree.core.gates.merge_quality_gate.resolve_target_branch", return_value=base),
+                pytest.raises(MergeQualityVerdictError, match="brief constraint failed"),
+            ):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
+
     def test_prior_planned_migration_does_not_violate_later_round_limit(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = make_git_repo(Path(raw))
@@ -531,7 +550,7 @@ class TestNitReceiptGate(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["nit_publication"][_FORTY_HEX]["status"] == "failed"
 
-    def test_advisory_point_needs_a_receipt_at_the_same_head(self) -> None:
+    def test_advisory_point_does_not_require_a_receipt(self) -> None:
         ticket = _ordinary_ticket()
         pr_url = "https://github.com/souliane/teatree/pull/4040"
         PullRequest.objects.create(ticket=ticket, overlay="t3-teatree", url=pr_url, repo="souliane/teatree", iid="4040")
@@ -549,19 +568,7 @@ class TestNitReceiptGate(TestCase):
             ],
         )
 
-        check_merge_quality_verdict(ticket, _FORTY_HEX)
-
-        ticket.merge_extra(
-            merge_into_dicts={
-                "nit_lane_receipts": {
-                    nit_point_marker(pr_url, _FORTY_HEX, point): {
-                        "head_sha": _FORTY_HEX,
-                        "issue_url": "https://github.com/souliane/teatree/issues/10",
-                        "thread_id": "thread-1",
-                    }
-                }
-            }
-        )
+        assert "nit_lane_receipts" not in ticket.extra
         check_merge_quality_verdict(ticket, _FORTY_HEX)
 
 

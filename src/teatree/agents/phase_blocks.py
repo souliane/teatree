@@ -21,6 +21,12 @@ from teatree.agents.dispatch_preflight import (
     round_brief_lines,
     rubric_brief_lines,
 )
+from teatree.agents.envelope_contract import (
+    FIX_RECORD_NO_RED_FIELD_LINES,
+    FIX_RECORD_RETURN_LINES,
+    FIX_RECORD_REVIEW_LINES,
+    FIX_RECORD_REVIEW_NO_RED_LINES,
+)
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.gates.fix_dod_gate import is_fix
@@ -67,12 +73,18 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         "",
         "RECORD YOUR VERDICT BY RETURNING IT in final JSON; maker≠checker: do NOT try `t3 <overlay> review record`.",
         "The orchestrator records it and releases the review lock:",
-        '  "review_verdict": {"verdict": "merge_safe"|"hold"|"unverified", "reviewed_sha": "<full 40-char HEAD SHA>",',
+        (
+            '  "review_verdict": {"verdict": "merge_safe"|"hold"'
+            + ('|"unverified"' if identity else "")
+            + ', "reviewed_sha": "<full 40-char HEAD SHA>",'
+        ),
         f'                     "reviewer_identity": "{identity or REVIEWER_IDENTITY_INSTRUCTION}",',
         '                     "gh_verify_result": "green"|"pending"|"failed",',
         '                     "blast_class": "substrate"|"logic"|"docs",',
-        '                     "findings": [{"severity": "...", "kind": "blocking"|"nit",',
-        '                                   "summary": "...", "file": "...", "line": 0}]}',
+        '                     "findings": [{"severity": "...", "kind": "blocking"|"nit"|"note",',
+        '                                   "basis": "executed"|"documentation"|"venue_limit",',
+        '                                   "summary": "...", "file": "...", "line": 0,',
+        '                                   "citation": "...", "reproduction": "<run and result, if executed>"}]}',
         (
             'For a same-head HOLD, add "hold_dispositions": [{"hold_id": <id>, "points": '
             '[{"index": <held finding index>, "classification": "disproved_premise"|"venue_limit", '
@@ -82,9 +94,13 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         "test, duplicate definition, or red check. NIT: wording, naming, style, or placement.",
         "Only BLOCKING findings may hold a review; NITs need a merge_safe verdict and follow-up.",
         ENVELOPE_FINDINGS_RULE,
-        (
-            "Use unverified with evidence_gaps (ci_unreadable, tests_unavailable, or plan_unavailable) "
-            "when a venue cannot establish a required fact; it grants no merge authority and re-arms review."
+        *(
+            (
+                "Use unverified with evidence_gaps (ci_unreadable, tests_unavailable, or plan_unavailable) "
+                + "when a venue cannot establish a required fact; it grants no merge authority and re-arms review.",
+            )
+            if identity
+            else ()
         ),
         "A confirmed failed check or blocking code finding requires hold; PASS/LGTM/approve are refused.",
         (
@@ -106,8 +122,10 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             (
                 (
                     "This venue cannot build it; return `unverified` with the evidence gap "
-                    "if the result cannot be established."
-                ),
+                    + "if the result cannot be established.",
+                )
+                if identity
+                else ()
             )
             if read_only_venue
             else (
@@ -139,7 +157,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             '"status": "pass"|"fail", "rationale": "<what proves it>"}, ...]'
         ),
         "Grade EVERY criterion or verdict records nothing. A PASS cites a test; a FAIL needs none.",
-        "An unverified verdict may leave criteria ungraded; it never authorizes a merge.",
+        *(("An unverified verdict may leave criteria ungraded; it never authorizes a merge.",) if identity else ()),
         "FAIL is a finding; no bypass overrides it. do NOT run `ticket rubric-grade`.",
     )
 
@@ -231,42 +249,6 @@ _ARTICLE_SUGGESTIONS_RETURN_LINES: tuple[str, ...] = (
     "silently drops the scan and the phase is refused, wasting the run.",
 )
 
-
-# Injected into a FIXING brief (coding/debugging) on a ``kind=fix`` ticket only (#4520):
-# the DoD gate refuses DELIVERED without a recorded FixRecord, and the envelope is the
-# only thing that writes one. Kind-conditional rather than phase-conditional, so a
-# feature-ticket brief is byte-identical to what it was. Symmetric to
-# ``_review_verdict_return_lines``. The fields are spelled out rather than derived from
-# ``FIX_RECORD_FIELDS`` because each carries prose no tuple can supply; drift is caught
-# mechanically instead, by the test asserting every declared field appears here.
-_FIX_RECORD_FIELD_LINES: tuple[str, ...] = (
-    "",
-    "THIS IS A FIX TICKET — RETURN ITS FixRecord IN THE ENVELOPE (the Definition-of-Done gate",
-    "refuses DELIVERED without one, and nothing but this envelope writes it):",
-    '  "fix_record": {"root_cause": "<the DEEPEST cause, not the symptom you patched>",',
-    '                 "evidence": "<why that is the cause — what you read/ran that shows it>",',
-    '                 "regression_test": "<path::node of the RED-first test that pins it>",',
-    '                 "observed_red": "<attestation you saw that test FAIL against the pre-fix code>",',
-    '                 "recurrence_fingerprint": "<stable signature, e.g. module:condition>"}',
-    "Every field is required and non-blank — a PARTIAL object is REFUSED and records nothing,",
-    "so omit the key entirely rather than guessing at a field you cannot honestly fill.",
-    "A merged manifestation patch with no stated root cause is not done.",
-)
-_FIX_RECORD_NO_RED_FIELD_LINES: tuple[str, ...] = tuple(
-    line.replace("RED-first ", "") for line in _FIX_RECORD_FIELD_LINES if '"observed_red"' not in line
-)
-_FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
-    *_FIX_RECORD_FIELD_LINES,
-    (
-        "Before editing, run `repro record-red` on the pre-fix HEAD; coding completion requires it "
-        "and testing records GREEN automatically."
-    ),
-)
-_FIX_RECORD_REVIEW_LINES: tuple[str, ...] = (
-    *_FIX_RECORD_FIELD_LINES,
-    "Return it only with merge_safe; observed_red is your own revert-to-RED proof.",
-)
-_FIX_RECORD_REVIEW_NO_RED_LINES: tuple[str, ...] = (*_FIX_RECORD_NO_RED_FIELD_LINES, "Return it only with merge_safe.")
 
 _REVIEWER_LIFECYCLE_SKILL = "t3:review"
 
@@ -585,9 +567,9 @@ _WORKER_EXECUTION_COMMANDS = {
 def _fix_record_lines(task: Task, phase: str) -> tuple[str, ...]:
     """The FixRecord return directive for a fixing phase on a fix ticket, or the review of a fix PR, else ``()``."""
     if phase in _FIXING_PHASES and is_fix(task.ticket):
-        return _FIX_RECORD_RETURN_LINES if failing_run_required(task.ticket) else _FIX_RECORD_NO_RED_FIELD_LINES
+        return FIX_RECORD_RETURN_LINES if failing_run_required(task.ticket) else FIX_RECORD_NO_RED_FIELD_LINES
     if phase in ENVELOPE_VERDICT_PHASES and (gated := gated_ticket_for_review_task(task)) and is_fix(gated):
-        return _FIX_RECORD_REVIEW_LINES if failing_run_required(gated) else _FIX_RECORD_REVIEW_NO_RED_LINES
+        return FIX_RECORD_REVIEW_LINES if failing_run_required(gated) else FIX_RECORD_REVIEW_NO_RED_LINES
     return ()
 
 

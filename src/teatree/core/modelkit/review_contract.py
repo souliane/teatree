@@ -25,7 +25,10 @@ ENVELOPE_FINDINGS_RULE: Final[str] = (
     'omitted observation is a lost record rather than spared noise: "findings" is what you looked at, '
     '"verdict" is the separate judgement. A "hold" carries the observations that block. A "merge_safe" '
     'with an empty "findings" asserts you looked and found nothing worth recording, so emit that only '
-    "when it is true."
+    'when it is true. For each finding, name "basis" (executed, documentation, or venue_limit); '
+    'put the command and observed result in "reproduction" for an executed failure. A static '
+    "blocker such as an untested behavior or duplicate definition may cite file:line without a run. "
+    "An unexecuted documentation suggestion or venue limit is a note, not a hold."
 )
 
 #: Stamped beside :data:`ENVELOPE_FINDINGS_RULE` into every reviewer-facing brief that

@@ -41,6 +41,8 @@ def merge_without_clear(*, ref: PrRef, expected_head_oid: str) -> str:
                 reviewer_identity=verdict.reviewer_identity,
                 gh_verify_result=verdict.gh_verify_result,
                 blast_class=verdict.blast_class,
+                actor_kind=MergeClear.ActorKind.FACTORY_LOOP,
+                delegation="solo_overlay_sweep",
             )
             record_merge_and_advance(
                 clear=clear,

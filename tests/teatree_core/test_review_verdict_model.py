@@ -774,12 +774,27 @@ class TestStalenessAndSafety(TestCase):
 
 
 class TestFindingRoundTrip(TestCase):
-    def test_code_anchored_claim_without_reproduction_is_advisory(self) -> None:
+    def test_code_anchored_claim_without_reproduction_stays_blocking(self) -> None:
         finding = Finding(
-            severity="critical", kind="blocking", summary="Documentation claims a runtime failure", file="a.py", line=4
+            severity="critical", kind="blocking", summary="Untested shipped behavior", file="a.py", line=4
         )
+        assert finding.kind == "blocking"
+        assert finding.severity == "critical"
+
+    def test_explicit_documentation_basis_without_reproduction_is_advisory(self) -> None:
+        finding = Finding(severity="critical", kind="blocking", basis="documentation", summary="Spec suggests a bug")
         assert finding.kind == "note"
-        assert finding.severity == "note"
+
+    def test_null_reproduction_does_not_become_the_word_none(self) -> None:
+        finding = Finding.from_dict(
+            {"severity": "major", "kind": "blocking", "basis": "documentation", "reproduction": None}
+        )
+        assert finding.reproduction == ""
+        assert finding.kind == "note"
+
+    def test_explicit_note_kind_wins_over_minor_severity(self) -> None:
+        finding = Finding(severity="minor", kind="note", summary="Review venue could not inspect CI")
+        assert finding.kind == "note"
 
     def test_executed_reproduction_still_blocks(self) -> None:
         finding = Finding(

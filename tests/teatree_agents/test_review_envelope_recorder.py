@@ -168,6 +168,47 @@ def _criteria(ticket: Ticket) -> list[RubricCriterion]:
 
 
 class TestTheReviewerGradesTheRubricItVerifies(TestCase):
+    def test_null_findings_refuses_without_a_traceback(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = None
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert is_recorder_refusal(attempt.error)
+        assert "findings" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_malformed_hold_disposition_refuses_without_a_traceback(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["hold_dispositions"] = [{"points": []}]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert is_recorder_refusal(attempt.error)
+        assert "hold_id" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_unhashable_evidence_gap_refuses_without_a_traceback(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=None, verdict="unverified")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["gh_verify_result"] = "pending"
+        verdict["evidence_gaps"] = [["ci_unreadable"]]
+        result.pop("anti_vacuity")
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert is_recorder_refusal(attempt.error)
+        assert "evidence_gaps" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
     def test_unreadable_ci_records_unverified_without_grading_the_rubric(self) -> None:
         ticket = _author_ticket()
         result = _envelope(grades=None, verdict="unverified")

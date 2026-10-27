@@ -475,7 +475,9 @@ def _review_saturation_reason(task: "Task | None") -> str:
         return "refused brief"
     if "credential" in lowered or "api_credit:" in lowered:
         return "credential"
-    return redact_secrets(error.splitlines()[0])[:160]
+    lines = [line.strip() for line in error.splitlines() if line.strip()]
+    cause = lines[-1] if lines[0].startswith("Traceback (most recent call last):") else lines[0]
+    return redact_secrets(cause)[:160]
 
 
 def _high_churn_counts() -> dict[str, tuple[int, int]]:

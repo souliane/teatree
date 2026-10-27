@@ -219,6 +219,9 @@ def _normalize_clear_actor(request: ClearRequest) -> tuple[str, str]:
     if not delegation:
         msg = "Clearance delegation source is required (use 'none' when none applies)"
         raise ClearIssuanceError(msg)
+    if actor_kind == MergeClear.ActorKind.FACTORY_LOOP and delegation == "none":
+        msg = "Factory-loop clearance requires a named delegation source"
+        raise ClearIssuanceError(msg)
     return actor_kind, delegation
 
 

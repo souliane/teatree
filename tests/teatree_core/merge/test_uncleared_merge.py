@@ -24,6 +24,9 @@ class TestUnclearedMerge(TestCase):
             query.return_value.required_checks_status.return_value = "pending"
             merge_without_clear(ref=REF, expected_head_oid=HEAD)
         assert MergeAudit.objects.get(merged_sha=MERGED).required_checks_status == "pending"
+        clear = MergeClear.objects.get(slug=SLUG, pr_id=17)
+        assert clear.actor_kind == MergeClear.ActorKind.FACTORY_LOOP
+        assert clear.delegation == "solo_overlay_sweep"
 
     def test_retry_does_not_duplicate_the_audit(self) -> None:
         record_owned_pr_for_test(slug=SLUG, pr_id=17, head_sha=HEAD)

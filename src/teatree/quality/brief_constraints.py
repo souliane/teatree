@@ -30,7 +30,14 @@ _EXAMPLE_GROUP = re.compile(r"\b(?:closed\s+grammar|for\s+example|e\.g\.|such\s+
 _BLOCK_QUOTE = re.compile(r"^[ \t]*>[^\n]*$", re.MULTILINE)
 _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|(?<!\w)\'[^\'\n]*\'|\u2018[^\u2019\n]*\u2019')
 _ATTRIBUTED = re.compile(
-    r"\b(?:issue|pull\s+request|pr|mr)\b[^.;\n]{0,100}?\b(?:says?|said|states?|asks?|requires?|quotes?)\b[^.;\n]*",
+    r"\b(?:(?:another|other|external)\s+(?:issue|pull\s+request|pr|mr)|"
+    r"(?:issue|pull\s+request|pr|mr)\s*#\d+)\b[^.;\n]{0,100}?"
+    r"\b(?:says?|said|states?|asks?|quotes?)\b[^.;\n]*",
+    re.IGNORECASE,
+)
+_ANOTHER_REQUIRES = re.compile(
+    r"\b(?:another|other|external)\s+(?:issue|pull\s+request|pr|mr)\b[^.;\n]{0,100}?"
+    r"\brequires?\b[^.;\n]*",
     re.IGNORECASE,
 )
 _PATH = r"([\w./-]+\.(?:py|md|toml|yaml|yml|json|cfg|ini))"
@@ -44,6 +51,7 @@ def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
     text = _BLOCK_QUOTE.sub("", text)
     text = _QUOTED.sub(".", text)
     text = _ATTRIBUTED.sub("", text)
+    text = _ANOTHER_REQUIRES.sub("", text)
     found: dict[tuple[ConstraintKind, str], BriefConstraint] = {}
     for match in _NEGATIVE.finditer(text):
         scope = match.group(1).lower()

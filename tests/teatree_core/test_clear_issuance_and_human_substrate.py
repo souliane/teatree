@@ -161,6 +161,19 @@ class TestClearIssuanceSeam(TestCase):
         assert clear.actor_kind == "factory_loop"
         assert clear.delegation == "standing:substrate_auto_merge_authorized_by"
 
+    def test_factory_loop_clear_needs_a_named_delegation_source(self) -> None:
+        with pytest.raises(ClearIssuanceError, match="delegation"):
+            MergeClear.issue(
+                ClearRequest(
+                    pr_id=858,
+                    slug="souliane/teatree",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="cold-reviewer",
+                    actor_kind="factory_loop",
+                    delegation="none",
+                )
+            )
+
     def test_factory_refuses_held_head_without_command_guard(self) -> None:
         ReviewVerdict.record(
             pr_id=859,
@@ -602,7 +615,7 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_clear_command_can_record_human_authorizer_for_substrate(self) -> None:
-        with patch.dict("os.environ", {"T3_AGENT_MAILBOX_SOCKET": "/tmp/test-mailbox"}):
+        with patch("teatree.core.session_identity.runner_principal", return_value=("loop-runner", 42)):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -622,6 +635,40 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
         assert clear.human_authorizer == "owner:adrien"
         assert clear.actor_kind == MergeClear.ActorKind.FACTORY_LOOP
         assert clear.delegation == "per_clear:owner:adrien"
+
+    def test_clear_command_refuses_an_actor_kind_that_disagrees_with_its_session(self) -> None:
+        with patch.dict("os.environ", {"T3_AGENT_MAILBOX_SOCKET": "/tmp/test-mailbox"}):
+            refusal = _refused_clear(
+                "871",
+                "souliane/teatree",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                actor_kind="owner",
+            )
+        assert "actor kind" in refusal
+        assert not MergeClear.objects.exists()
+
+    def test_mailbox_path_without_runner_principal_cannot_claim_factory_actor(self) -> None:
+        with (
+            patch.dict("os.environ", {"T3_AGENT_MAILBOX_SOCKET": "/tmp/test-mailbox"}),
+            patch("teatree.core.session_identity.runner_principal", return_value=None),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "873",
+                    "souliane/teatree",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="docs",
+                ),
+            )
+        assert result["issued"]
+        assert MergeClear.objects.get(pk=result["clear_id"]).actor_kind == MergeClear.ActorKind.HAND_SESSION
 
     def test_human_authorize_rejected_for_non_substrate(self) -> None:
         """``--human-authorize`` is meaningless off the substrate path — reject it loudly."""

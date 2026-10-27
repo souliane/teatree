@@ -317,8 +317,7 @@ def ticket_brief_constraint_violations(
         message = "recorded task brief start head is invalid"
         raise ChangedSetError(message)
     if not git.check(repo=str(worktree), args=["merge-base", "--is-ancestor", start, "HEAD"]):
-        message = "recorded task brief start head is not an ancestor of HEAD"
-        raise ChangedSetError(message)
+        start = base_ref
     return (*violations, *run_brief_constraints(worktree, base_ref=start, brief=task.execution_reason))
 
 

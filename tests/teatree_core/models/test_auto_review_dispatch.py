@@ -636,3 +636,12 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
         assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD) is False
         row.refresh_from_db()
         assert row.state == AutoReviewDispatch.State.RESOLVED
+
+    def test_a_later_verdict_retires_an_unverified_claim(self) -> None:
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+        assert row is not None
+        assert AutoReviewDispatch.mark_unverified(slug=SLUG, pr_id=6230, head_sha=HEAD) is True
+
+        assert AutoReviewDispatch.mark_resolved(slug=SLUG, pr_id=6230, head_sha=HEAD) is True
+        row.refresh_from_db()
+        assert row.state == AutoReviewDispatch.State.RESOLVED

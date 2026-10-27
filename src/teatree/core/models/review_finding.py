@@ -51,7 +51,15 @@ class Finding:
 
     def __post_init__(self) -> None:
         kind = normalize_finding_kind(self.kind, self.severity)
-        if kind == FindingKind.BLOCKING and not self.reproduction.strip() and self.basis != "follow_up":
+        if (
+            kind == FindingKind.BLOCKING
+            and not self.reproduction.strip()
+            and self.basis
+            in {
+                "documentation",
+                "venue_limit",
+            }
+        ):
             kind = FindingKind.NOTE
             object.__setattr__(self, "severity", "note")
         object.__setattr__(self, "kind", kind)
@@ -82,7 +90,7 @@ class Finding:
             kind=str(raw.get("kind", "")),
             basis=str(raw.get("basis", "")),
             citation=str(raw.get("citation", "")),
-            reproduction=str(raw.get("reproduction", "")),
+            reproduction=str(raw.get("reproduction") or ""),
         )
 
     def location(self) -> str:

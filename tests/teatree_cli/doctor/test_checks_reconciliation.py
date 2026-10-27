@@ -720,6 +720,21 @@ class TestReviewDispatchSaturation(TestCase):
         for pr_id in reasons:
             assert f"#{pr_id}" in finding.message
 
+    def test_traceback_saturation_names_the_exception(self) -> None:
+        row = self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
+        assert row.task is not None
+        TaskAttempt.objects.create(
+            task=row.task,
+            exit_code=1,
+            error='Traceback (most recent call last):\n  File "review.py", line 3\nValueError: evidence unavailable',
+        )
+
+        finding = recon._check_review_dispatch_saturation()
+
+        assert finding.is_alarm
+        assert "ValueError: evidence unavailable" in finding.message
+        assert "Traceback (most recent call last)" not in finding.message
+
     def test_successful_attempt_without_verdict_is_named(self) -> None:
         row = self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
         assert row.task is not None

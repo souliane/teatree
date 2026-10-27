@@ -196,7 +196,7 @@ def head_review_state(*, slug: str, pr_id: int, head_sha: str) -> HeadReview:
     from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — lazy ORM import
 
     at_head = ReviewVerdict.objects.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
-    holds = [verdict for verdict in at_head if verdict.stands_as_hold()]
+    holds = ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha, at_head=at_head)
     standing = next((verdict for verdict in at_head if verdict.is_merge_safe()), None)
     authorizing = standing if not holds else None
     return HeadReview(

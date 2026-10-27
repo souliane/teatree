@@ -77,6 +77,11 @@ def _known_choice(value: str, choices: type[models.TextChoices], *, field: str) 
 def _validated_evidence_gaps(
     *, verdict: str, verify_result: str, findings: list[Finding], evidence_gaps: list[str] | None
 ) -> list[str]:
+    if evidence_gaps is not None and (
+        not isinstance(evidence_gaps, list) or any(not isinstance(gap, str) for gap in evidence_gaps)
+    ):
+        msg = "evidence_gaps must be a list of strings"
+        raise ReviewVerdictError(msg)
     gaps = list(dict.fromkeys(evidence_gaps or []))
     if verdict == "unverified":
         invalid = set(gaps) - {gap.value for gap in ReviewEvidenceGap}
@@ -215,18 +220,26 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
             return HeadVerdictState.MERGE_SAFE
         return HeadVerdictState.NO_MERGE_SAFE
 
-    def unreconciled_holds_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
+    def unreconciled_holds_at(
+        self, *, slug: str, pr_id: int, head_sha: str, at_head: list["ReviewVerdict"] | None = None
+    ) -> list["ReviewVerdict"]:
         """Every standing hold at this head, including one followed by a pass."""
         holds = [
             verdict
-            for verdict in self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+            for verdict in (
+                at_head if at_head is not None else self.verdicts_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+            )
             if verdict.stands_as_hold()
         ]
-        return [
-            hold
-            for hold in holds
-            if not any(row.covers(hold) for row in ReviewHoldDisposition.objects.filter(hold=hold))
-        ]
+        if not holds:
+            return []
+        by_id = {hold.pk: hold for hold in holds}
+        cleared = {
+            row.hold_id
+            for row in ReviewHoldDisposition.objects.filter(hold__in=holds)
+            if row.covers(by_id[row.hold_id])
+        }
+        return [hold for hold in holds if hold.pk not in cleared]
 
     def standing_hold_remedy_at(self, *, slug: str, pr_id: int, head_sha: str) -> str:
         """The refusal for active holds at this head, or an empty string."""

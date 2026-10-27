@@ -47,6 +47,14 @@ def test_own_instruction_after_a_quote_still_applies() -> None:
     }
 
 
+def test_own_issue_and_pr_constraints_are_not_discarded_as_attribution() -> None:
+    assert {item.kind for item in extract_constraints("The issue requires no migration.")} == {"no_migration"}
+    assert {item.kind for item in extract_constraints("Issue #5452 requires: no new setting.")} == {"no_setting"}
+    assert {
+        (item.kind, item.target) for item in extract_constraints("This PR requires that foo.py stays unchanged.")
+    } == {("unchanged_file", "foo.py")}
+
+
 def test_cli_settings_flag_is_not_a_ban_on_new_settings() -> None:
     brief = 'Use the advisor key without spawning: `--settings {"advisorModel": "<id>"}`.'
 

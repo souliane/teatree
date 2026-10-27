@@ -31,6 +31,7 @@ from typing import cast
 from teatree.agents.result_schema import (
     RESULT_JSON_SCHEMA,
     JSONSchema,
+    ReviewVerdictEnvelope,
     conditional_evidence_for_phase,
     required_evidence_for_phase,
 )
@@ -73,6 +74,33 @@ MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
 #: as another kind (``unexpected keys``, ``missing required evidence``).
 REVIEW_CONTEXT_REFUSAL_PREFIX = "review context recording refused: "
 ANTI_VACUITY_REFUSAL_PREFIX = "anti-vacuity recording refused: "
+MALFORMED_REVIEW_VERDICT_PREFIX = "malformed review_verdict: "
+
+
+def review_envelope_shape_error(envelope: ReviewVerdictEnvelope) -> str:
+    findings = envelope.get("findings", [])
+    if not isinstance(findings, list) or any(not isinstance(item, dict) for item in findings):
+        return "findings must be a list of objects"
+    gaps = envelope.get("evidence_gaps", [])
+    if not isinstance(gaps, list) or any(not isinstance(item, str) for item in gaps):
+        return "evidence_gaps must be a list of strings"
+    responses = envelope.get("hold_dispositions", [])
+    if not isinstance(responses, list):
+        return "hold_dispositions must be a list of objects"
+    for response in responses:
+        if not isinstance(response, dict) or type(response.get("hold_id")) is not int:
+            return "each hold_dispositions item needs an integer hold_id"
+        points = response.get("points")
+        if not isinstance(points, list) or any(
+            not isinstance(point, dict)
+            or type(point.get("index")) is not int
+            or not isinstance(point.get("classification"), str)
+            or not isinstance(point.get("citation"), str)
+            for point in points
+        ):
+            return "each hold_dispositions item needs points with index, classification, and citation"
+    return ""
+
 
 #: Substrings identifying a RECORDER-side envelope refusal — an envelope that
 #: parsed but is unusable, as opposed to a genuine defect (an assertion, a test
@@ -84,6 +112,7 @@ _RECORDER_REFUSAL_MARKERS = (
     "result must be a json object",
     MALFORMED_FIX_RECORD_PREFIX.strip().casefold(),
     MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
+    MALFORMED_REVIEW_VERDICT_PREFIX.strip().casefold(),
     MALFORMED_TICKET_SWEEP_PREFIX.strip().casefold(),
     REVIEW_CONTEXT_REFUSAL_PREFIX.strip().casefold(),
     ANTI_VACUITY_REFUSAL_PREFIX.strip().casefold(),
@@ -94,6 +123,7 @@ _RECORDER_REFUSAL_MARKERS = (
 _REVIEW_SHAPE_REFUSAL_MARKERS = (
     "unexpected keys",
     MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
+    MALFORMED_REVIEW_VERDICT_PREFIX.strip().casefold(),
     REVIEW_CONTEXT_REFUSAL_PREFIX.strip().casefold(),
     ANTI_VACUITY_REFUSAL_PREFIX.strip().casefold(),
 )
