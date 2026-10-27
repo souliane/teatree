@@ -19,6 +19,7 @@ from teatree.core.models import Rubric, RubricCriterion, Session, Ticket
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.rubric import PHASE_CRITERIA
+from teatree.core.models.rubric_waiver import waive_criterion
 
 _FORTY_HEX = "a" * 40
 _OTHER_HEX = "b" * 40
@@ -124,6 +125,19 @@ class TestEnforcementIsUnconditional(TestCase):
 
 
 class TestRecordPopulatesTheRubric(TestCase):
+    def test_re_recording_a_plan_does_not_restore_waived_text(self) -> None:
+        ticket = _ticket()
+        manifest = _full_adequacy()
+        manifest["acceptance_criteria"] = {"content": ["AC1", "AC2"]}
+        PlanArtifact.record(ticket=ticket, plan_text="plan", recorded_by="op", base_sha=_FORTY_HEX, adequacy=manifest)
+        rubric = Rubric.objects.active_for_ticket(ticket)
+        assert rubric is not None
+        waive_criterion(ticket, text_hash=rubric.criteria.get(text="AC1").text_hash, waived_by="owner", reason="scope")
+        PlanArtifact.record(
+            ticket=ticket, plan_text="reaffirmed", recorded_by="op", base_sha=_OTHER_HEX, adequacy=manifest
+        )
+        assert list(rubric.criteria.values_list("text", flat=True)) == ["AC2"]
+
     def test_declared_criteria_become_rubric_rows(self) -> None:
         ticket = _ticket()
         manifest = _full_adequacy()

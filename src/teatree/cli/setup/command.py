@@ -19,6 +19,7 @@ from teatree.cli.account_switch_recover import recover_account_switch
 from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import agent_skill_dirs
 from teatree.cli.doctor.checks_notion import report_notion_connections
+from teatree.cli.setup.agent_tool_credentials import AgentTool, StrictPluginGate
 from teatree.cli.setup.apm import strip_apm_hooks
 from teatree.cli.setup.clone import find_main_clone, validate_repo
 from teatree.cli.setup.codex_plugin_registrar import CodexPluginRegistrar
@@ -164,9 +165,11 @@ def _provision_agent_skills(
     if skip_plugin:
         return ready
 
-    claude_plugin_ready = PluginRegistrar(repo).install()
-    codex_plugin_ready = CodexPluginRegistrar(repo).install()
-    ready = claude_plugin_ready and codex_plugin_ready and ready
+    registered = {
+        AgentTool.CLAUDE: PluginRegistrar(repo).install(),
+        AgentTool.CODEX: CodexPluginRegistrar(repo).install(),
+    }
+    ready = StrictPluginGate().passes(registered) and ready
     PyrightPluginRegistrar().install()
     PyrightPluginRegistrar.ensure_langserver()
     McpServerRegistrar(repo).verify()
@@ -284,7 +287,8 @@ def run(
     strict_agent_skills: bool = typer.Option(
         False,
         "--strict-agent-skills",
-        help="Exit non-zero unless required skills, inventory, and both TeaTree plugins are ready.",
+        help="Exit non-zero unless required skills, inventory, and the TeaTree plugins of the credentialed "
+        "agent tools (both when none is) are ready.",
     ),
     write_automode: bool = typer.Option(
         False,

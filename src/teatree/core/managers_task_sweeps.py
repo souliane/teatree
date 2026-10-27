@@ -153,7 +153,8 @@ def replay_orphaned_transitions(qs: "models.QuerySet") -> int:
 
     This is the boot/tick recovery sweep — sibling of
     :func:`reclaim_orphaned_claims`, run from the same hook. For each
-    ticket it takes that ticket's latest COMPLETED task and replays
+    ticket it considers the latest COMPLETED task, skipping it when a later
+    backward edge moved the ticket over that task. Otherwise it replays
     the *same* idempotent ``Task._apply_phase_transition`` the live
     ``complete`` path uses — there is no parallel transition
     mechanism. Idempotency and gate-integrity come for free from that
@@ -197,6 +198,9 @@ def replay_orphaned_transitions(qs: "models.QuerySet") -> int:
             continue
         seen.add(task.ticket_id)
         try:
+            if task.ticket.transitions.moved_back_over(task):
+                logger.info("replay skip task=%s ticket=%s: moved back over", task.pk, task.ticket_id)
+                continue
             if task._apply_phase_transition():  # noqa: SLF001  # the shared single transition path (#883)
                 replayed += 1
         except (TransitionNotAllowed, ValueError) as exc:

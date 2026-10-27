@@ -10,9 +10,44 @@ from teatree.core.models.task_enqueue import (
     TaskEnqueueError,
     enqueue_phase_task,
     enqueue_phase_task_once,
+    phase_eligible,
 )
+from teatree.core.models.task_phase_disposition import transition_source_states
 from teatree.core.models.ticket import Ticket
 from tests.factories import record_test_plan
+from tests.teatree_core._self_review_helpers import author_ticket, completed_self_review
+
+
+class PhaseEligibleTestCase(TestCase):
+    def test_non_coding_phase_eligibility_matches_the_fsm_for_every_state(self) -> None:
+        transitions = {"scoping": "scope", "testing": "test", "reviewing": "review", "shipping": "ship"}
+        for state in Ticket.State.values:
+            ticket = Ticket.objects.create(overlay="test", state=state)
+            for phase, transition in transitions.items():
+                with self.subTest(state=state, phase=phase):
+                    assert phase_eligible(ticket, phase) == (state in transition_source_states(transition))
+
+    def test_reviewer_ticket_offers_reviewing_only(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.REVIEWER, state=Ticket.State.WORK_STARTED)
+        assert phase_eligible(ticket, "reviewing")
+        assert not phase_eligible(ticket, "coding")
+        assert not phase_eligible(ticket, "shipping")
+
+    def test_plan_recorded_author_can_code(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PLAN_RECORDED)
+        assert phase_eligible(ticket, "coding")
+
+    def test_started_author_can_code_only_once_a_plan_decision_exists(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
+        assert not phase_eligible(ticket, "coding")
+        record_test_plan(ticket)
+        assert phase_eligible(ticket, "coding")
+
+    def test_tested_author_can_rework_only_with_an_open_self_review_hold(self) -> None:
+        ticket = author_ticket(state=Ticket.State.TESTED)
+        assert not phase_eligible(ticket, "coding")
+        completed_self_review(ticket, "hold")
+        assert phase_eligible(ticket, "coding")
 
 
 class EnqueuePhaseTaskTestCase(TestCase):

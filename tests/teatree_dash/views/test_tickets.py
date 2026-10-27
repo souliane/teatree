@@ -237,7 +237,7 @@ class TaskEnqueuePostTestCase(TestCase):
     """The drawer's "Review now" / "Ship now" buttons — prioritise work, never record an outcome (#4085)."""
 
     def setUp(self) -> None:
-        self.ticket = TicketFactory(state=State.WORK_STARTED)
+        self.ticket = TicketFactory(state=State.TESTED)
         self.url = reverse("dash:task_action", args=[self.ticket.pk])
 
     def _post(self, phase: str, *, htmx: bool = True, **extra: str) -> HttpResponse:
@@ -259,6 +259,8 @@ class TaskEnqueuePostTestCase(TestCase):
         assert f"TODO-{task.pk}" in body
 
     def test_the_enqueue_is_audited_with_actor_phase_and_ticket(self) -> None:
+        self.ticket.state = State.SELF_REVIEWED
+        self.ticket.save(update_fields=["state"])
         with self.assertLogs("teatree.dash.audit", level="INFO") as logs:
             self._post("shipping")
         line = next(entry for entry in logs.output if "task:enqueue:shipping" in entry)
@@ -271,9 +273,18 @@ class TaskEnqueuePostTestCase(TestCase):
         assert task.execution_reason == "PR is green and blocked on a verdict."
 
     def test_an_implementing_phase_on_an_unplanned_ticket_is_refused_naming_the_remedy(self) -> None:
+        self.ticket.state = State.WORK_STARTED
+        self.ticket.save(update_fields=["state"])
         response = self._post("coding")
         assert response.status_code == 400
         assert "plan_missing" in response.content.decode()
+        assert not Task.objects.filter(ticket=self.ticket).exists()
+
+    def test_a_known_phase_outside_the_ticket_fsm_is_refused(self) -> None:
+        self.ticket.state = State.WORK_STARTED
+        self.ticket.save(update_fields=["state"])
+        response = self._post("reviewing")
+        assert response.status_code == 400
         assert not Task.objects.filter(ticket=self.ticket).exists()
 
     def test_a_phase_outside_the_button_set_is_refused(self) -> None:
@@ -313,7 +324,7 @@ class TaskEnqueuePostTestCase(TestCase):
 
 class TaskEnqueueButtonsRenderTestCase(TestCase):
     def setUp(self) -> None:
-        self.ticket = TicketFactory(state=State.WORK_STARTED)
+        self.ticket = TicketFactory(state=State.TESTED)
 
     def _drawer(self) -> str:
         return self.client.get(reverse("dash:ticket_drawer", args=[self.ticket.pk])).content.decode()

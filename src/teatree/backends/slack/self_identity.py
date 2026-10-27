@@ -7,28 +7,22 @@ can apply them at its read chokepoint without a backwards import to the loop
 layer; the loop scanner re-exports them via
 :mod:`teatree.loop.scanners.slack_self_filter`.
 
-Four transforms, four failure doctrines:
+Three transforms, three failure doctrines:
 
 *   :func:`filter_self_messages` — DROP the bot's own DMs before they reach
     :class:`PendingChatInjection`, so the bot never "answers" its own outbound
     posts (#1346). **Fail-closed**: an unresolved identity returns ``None`` and
     the scanner refuses to enqueue any row that turn.
-*   :func:`drop_on_behalf_messages` — DROP messages posted through the Slack
-    Web API (an app/bot token — including the human's own ``xoxp-`` user
-    token used to post on the human's behalf) even when they display under
-    the human's own identity (#1941). **Structural, no identity needed**: the
-    ``api_app_id`` field Slack stamps on the message is the signal, so this
-    filter never fails closed.
 *   :func:`strip_self_audio_attachments` — STRIP the bot's own TTS audio
     attachment when reading Slack, so the loop never re-ingests a spoken copy
     of text it already wrote (#2089). **Fail-open**: an unresolved identity
     passes the batch through unchanged — the only cost is token waste, never a
     safety violation.
-*   :func:`is_self_originated` — REFUSE the event-driven answer wake for the
-    app's own returning posts (#4707), upstream of the three above so a
-    self-post costs no cycle at all. **Degrades, never fails**: it reads
-    ``bot_id`` / ``api_app_id`` off the event, so an unresolved identity loses
-    precision rather than the guard.
+*   :func:`is_self_originated` — IDENTIFY posts that normally do not wake the
+    answer cycle (#4707). The receiver lets a possible user-token card reply
+    reach the recorder, which decides whether to record and wake it. **Degrades,
+    never fails**: it reads ``bot_id`` / ``api_app_id`` off the event, so an
+    unresolved identity loses precision rather than the guard.
 """
 
 import contextlib
@@ -197,25 +191,16 @@ def is_on_behalf_posted(message: RawAPIDict) -> bool:
     return isinstance(api_app_id, str) and bool(api_app_id)
 
 
-def drop_on_behalf_messages(messages: list[RawAPIDict]) -> list[RawAPIDict]:
-    """Unlike :func:`filter_self_messages`, needs no bot identity (#1941).
-
-    ``api_app_id`` presence is a structural property of how Slack delivered
-    the message, so this filter never fails closed on an unresolved identity.
-    """
-    return [m for m in messages if not is_on_behalf_posted(m)]
-
-
 def is_self_originated(message: RawAPIDict, identity: OwnSlackIdentity | None) -> bool:
     """True iff this app produced *message*, rather than a human typing it (#4707).
 
-    What the event-driven answer wake is gated on, so the cycle can never be
-    woken by its own output — the self-feeding loop that put 2,391
-    ``chat.postMessage`` into the owner's DM in 24h. The three signals are the
-    union the downstream scanner already drops, ordered by what each needs:
+    The receiver uses this to avoid waking the cycle on its own output — the
+    self-feeding loop that put 2,391 ``chat.postMessage`` into the owner's DM
+    in 24h. A possible user-token card reply is checked by the recorder before
+    wake. The three signals are ordered by what each needs:
 
     *   ``api_app_id`` — posted through the Web API by an app, exactly
-        :func:`drop_on_behalf_messages`'s test, and structural so an
+        :func:`is_on_behalf_posted`'s test, and structural so an
         unresolved identity cannot cost it.
     *   ``bot_id`` — any bot authorship. A bot-token post always carries it,
         so this one breaks the loop even with ``auth.test`` unavailable; the
@@ -288,7 +273,6 @@ def strip_self_audio_attachments(
 
 __all__ = [
     "OwnSlackIdentity",
-    "drop_on_behalf_messages",
     "filter_self_messages",
     "identity_from_auth_test",
     "is_on_behalf_posted",

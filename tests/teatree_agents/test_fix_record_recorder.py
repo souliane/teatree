@@ -13,9 +13,9 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import MALFORMED_FIX_RECORD_PREFIX, is_no_envelope_refusal, is_recorder_refusal
-from teatree.agents.fix_record_recorder import record_returned_fix_record
+from teatree.agents.fix_record_recorder import fix_record_refusal, record_returned_fix_record
 from teatree.core.gates.fix_dod_gate import FixRecordDodError
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.models.types import FIX_RECORD_FIELDS, fix_record_missing_fields
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import record_confirmed_merge_for_test, record_executed_repro_for_test
@@ -139,6 +139,25 @@ class TestMalformedRecordIsRefused(TestCase):
         task = _coding_task()
         error = record_returned_fix_record(task, {"fix_record": {**_COMPLETE_RECORD, "observed_red": "   "}})
         assert "observed_red" in error
+
+    def test_switched_off_recorder_accepts_missing_observed_red_and_stores_blank_field(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        task = _coding_task()
+        record = {key: value for key, value in _COMPLETE_RECORD.items() if key != "observed_red"}
+        assert record_returned_fix_record(task, {"fix_record": record}) == ""
+        task.ticket.refresh_from_db()
+        assert task.ticket.extra["fix_record"]["observed_red"] == ""
+
+    def test_switched_off_recorder_still_requires_root_cause(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        task = _coding_task()
+        record = {key: value for key, value in _COMPLETE_RECORD.items() if key not in {"observed_red", "root_cause"}}
+        assert "root_cause" in record_returned_fix_record(task, {"fix_record": record})
+
+    def test_without_a_gated_ticket_the_refusal_stays_strict(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        record = {key: value for key, value in _COMPLETE_RECORD.items() if key != "observed_red"}
+        assert "observed_red" in fix_record_refusal(record)
 
     def test_the_refusal_classifies_as_a_recorder_envelope_refusal(self) -> None:
         task = _coding_task()

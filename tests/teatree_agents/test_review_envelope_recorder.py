@@ -28,6 +28,7 @@ from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
 from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
 from teatree.core.models import (
     AutoReviewDispatch,
+    ConfigSetting,
     HonestyEscalation,
     MRReviewLock,
     PullRequest,
@@ -327,6 +328,18 @@ class TestAnUngradedCriterionRecordsNothing(TestCase):
     forever, with no reviewer left to fix it. The refusal has to come BEFORE the
     write, which is why coverage is a DB question only this actor can answer.
     """
+
+    def test_stale_text_hash_records_neither_verdict_nor_grades(self) -> None:
+        ticket = _author_ticket()
+        task = _reviewing_task_via_dispatch()
+        grades = _full_pass()
+        grades[1]["text_hash"] = "0" * 12
+
+        attempt = record_result_envelope(task, _envelope(grades=grades), phase="reviewing")
+
+        assert attempt.error.startswith("malformed rubric_grades:")
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert [c.status for c in _criteria(ticket)] == ["pending", "pending"]
 
     def test_a_verdict_that_grades_no_criterion_records_nothing(self) -> None:
         ticket = _author_ticket()
@@ -720,6 +733,28 @@ class TestAMergeSafeReviewRecordsTheFixRecord(TestCase):
 
         assert error.startswith(MALFORMED_FIX_RECORD_PREFIX)
         assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+
+    def test_switched_off_review_records_a_fix_without_observed_red(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        ticket = self._fix_ticket()
+        record = {key: value for key, value in _FIX_RECORD.items() if key != "observed_red"}
+        _task, error = self._review(record=record)
+        assert error == ""
+        ticket.refresh_from_db()
+        assert ticket.extra["fix_record"]["observed_red"] == ""
+
+    def test_switched_on_review_still_requires_observed_red(self) -> None:
+        self._fix_ticket()
+        record = {key: value for key, value in _FIX_RECORD.items() if key != "observed_red"}
+        _task, error = self._review(record=record)
+        assert "observed_red" in error
+
+    def test_switched_off_review_still_requires_root_cause(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        self._fix_ticket()
+        record = {key: value for key, value in _FIX_RECORD.items() if key not in {"observed_red", "root_cause"}}
+        _task, error = self._review(record=record)
+        assert "root_cause" in error
 
 
 class TestAReviewOnAnIssueAnchoredTicketRecordsOnItsOwnPr(TestCase):

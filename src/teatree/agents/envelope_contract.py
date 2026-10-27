@@ -54,7 +54,14 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
             # EVERY criterion, or the verdict is refused and records nothing — same
             # reasoning as ``findings`` above: the example a reviewer copies outranks
             # the prose beside it.
-            "rubric_grades": [{"ordinal": 0, "status": "pass", "rationale": "<the test that proves it>"}],
+            "rubric_grades": [
+                {
+                    "ordinal": 0,
+                    "text_hash": "<hash from brief>",
+                    "status": "pass",
+                    "rationale": "<the test that proves it>",
+                }
+            ],
         }
     },
     "critic_verdict": {

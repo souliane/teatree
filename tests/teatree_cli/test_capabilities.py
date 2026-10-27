@@ -75,6 +75,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree tasks list": tasks.Command.list_tasks,
         "teatree followup sync": followup.Command.sync,
         "teatree dream gap-coverage": dream.Command.gap_coverage_report,
+        "teatree dream funnel": dream.Command.funnel_report,
         "teatree worktree status": worktree.Command.status,
         "teatree worktree diagnose": worktree.Command.diagnose,
         "teatree worktree adopt": _worktree_adopt_command.WorktreeAdoptCommands.adopt,

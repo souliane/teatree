@@ -88,14 +88,16 @@ class _DriftedWorktreeFixture(TestCase):
             extra={"worktree_path": str(self.wt_path)},
         )
 
-    def _cleanup(self, worktree: Worktree, *, force: bool = False, pr_merged: bool = False) -> CleanupResult:
+    def _cleanup(
+        self, worktree: Worktree, *, force: bool = False, pr_merged: bool = False, discard: bool = False
+    ) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
             mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
-            return cleanup_worktree(worktree, force=force, strict_hygiene=False)
+            return cleanup_worktree(worktree, force=force, strict_hygiene=False, discard_unshipped_work=discard)
 
     def _branches(self) -> list[str]:
         return subprocess.run(
@@ -149,9 +151,9 @@ class TestDriftedBranchFullyPushedProceeds(_DriftedWorktreeFixture):
 
 
 class TestDriftedBranchForceDeletesRealBranch(_DriftedWorktreeFixture):
-    """DRIFT + force=True — worktree removed, the REAL (not slug) branch deleted.
+    """DRIFT + discard_unshipped_work — worktree removed, the REAL (not slug) branch deleted.
 
-    There is no recovery snapshot (the #1770 capture was removed): force=True is a
+    There is no recovery snapshot (the #1770 capture was removed): an explicit discard is a
     deliberate hard-delete. The drift fix still holds — the EFFECTIVE branch is the
     one deleted, never the phantom DB slug.
     """
@@ -161,7 +163,7 @@ class TestDriftedBranchForceDeletesRealBranch(_DriftedWorktreeFixture):
         _run_git("add", "-A", cwd=self.wt_path)
         _run_git("commit", "-q", "-m", "feat: real unpushed work", cwd=self.wt_path)
 
-        result = self._cleanup(self._make_worktree(), force=True)
+        result = self._cleanup(self._make_worktree(), force=True, discard=True)
 
         assert result.clean is True
         assert not self.wt_path.exists()
@@ -212,9 +214,9 @@ class TestDetachedHeadUnpushedRefuses(_DriftedWorktreeFixture):
 
 
 class TestDetachedHeadForceHardDeletes(_DriftedWorktreeFixture):
-    """DETACHED HEAD + force=True — a deliberate hard-delete (no recovery snapshot).
+    """DETACHED HEAD + discard_unshipped_work — a deliberate hard-delete (no recovery snapshot).
 
-    Force is the explicit-abandon escape: the worktree is removed even on a detached
+    An explicit discard is the abandon escape: the worktree is removed even on a detached
     HEAD with unpushed commits. There is no recovery bundle — the #1770 capture was
     removed; potentially-needed work is KEPT by the analyze-before-wipe reaper that
     fronts every automatic teardown, never reaching force.
@@ -226,7 +228,7 @@ class TestDetachedHeadForceHardDeletes(_DriftedWorktreeFixture):
         _run_git("commit", "-q", "-m", "feat: reachable only from detached HEAD", cwd=self.wt_path)
         _run_git("checkout", "-q", "--detach", "HEAD", cwd=self.wt_path)
 
-        result = self._cleanup(self._make_worktree(), force=True)
+        result = self._cleanup(self._make_worktree(), force=True, discard=True)
 
         assert result.clean is True
         assert not self.wt_path.exists()
@@ -500,10 +502,22 @@ class TestLocalOnlyMatchingTreeNotPruned(TestCase):
         )
 
     def _cleanup(self, worktree: Worktree, *, pr_merged: bool = False) -> CleanupResult:
+        tip = subprocess.run(
+            [_GIT, "-C", str(self.wt_path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        ).stdout.strip()
         with (
             patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=pr_merged),
+            patch("teatree.core.worktree.branch_classification._branch_pr_is_merged", return_value=pr_merged),
+            patch(
+                "teatree.core.worktree.branch_classification._merged_pr_head_sha",
+                return_value=tip if pr_merged else "",
+            ),
         ):
             mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=False, strict_hygiene=False)

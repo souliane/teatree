@@ -66,6 +66,11 @@ class TestDbConfigTier(TestCase):
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", "5")
         assert get_effective_settings().issue_implementer_max_concurrent == 5
 
+    def test_intake_idle_hold_window_is_unset_until_configured(self) -> None:
+        assert get_effective_settings().issue_intake_idle_hold_hours == 0
+        ConfigSetting.objects.set_value("issue_intake_idle_hold_hours", 6)
+        assert get_effective_settings().issue_intake_idle_hold_hours == 6
+
     def test_clear_restores_dataclass_default(self) -> None:
         ConfigSetting.objects.set_value("autoload", value=True)
         assert get_effective_settings().autoload is True

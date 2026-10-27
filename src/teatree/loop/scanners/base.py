@@ -11,12 +11,14 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
+from teatree import forge_credentials
 from teatree.backends.github.api import run_gh_unchecked
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.types import ScannerError, ScannerErrorClass
 from teatree.utils.run import CompletedProcess
 
 __all__ = [
+    "PartialScanError",
     "ScanSignal",
     "Scanner",
     "ScannerError",
@@ -26,6 +28,7 @@ __all__ = [
     "classify_http_error",
     "hours_since",
     "run_gh",
+    "run_gh_for_slug",
 ]
 
 type SignalPayload = dict[str, Any]
@@ -96,6 +99,11 @@ def run_gh(argv: list[str], *, resolution: ForgeTokenResolution) -> CompletedPro
     return run_gh_unchecked(argv, token=resolution.token)
 
 
+def run_gh_for_slug(argv: list[str], slug: str) -> CompletedProcess[str]:
+    resolution = forge_credentials.resolve_slug_token(slug, forge="github", credential="github_token")
+    return run_gh(argv, resolution=resolution)
+
+
 @dataclass(frozen=True, slots=True)
 class ScanSignal:
     """One observation surfaced by a scanner during a tick.
@@ -109,6 +117,14 @@ class ScanSignal:
     kind: str
     summary: str
     payload: SignalPayload = field(default_factory=dict)
+
+
+class PartialScanError(ScannerError):
+    """A scanner failure that still hands over the signals read before it failed."""
+
+    def __init__(self, *, scanner: str, detail: str, signals: list[ScanSignal]) -> None:
+        super().__init__(scanner=scanner, error_class=ScannerErrorClass.UNKNOWN, detail=detail)
+        self.signals = signals
 
 
 @runtime_checkable

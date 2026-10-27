@@ -4,11 +4,13 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import time
 import types
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -56,6 +58,7 @@ from teatree.quality.pytest_resource_contract import (
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
+from teatree.utils.master_key import reset_master_key_volume_warnings
 from teatree.utils.ram_probe import available_cpu_count
 from teatree.utils.secrets import PassStore, use_store
 from teatree.utils.work_tree import reset_cwd_cache
@@ -89,6 +92,24 @@ os.environ["TEATREE_HOST_OS"] = "Linux"
 def _no_idle_window_in_existing_tests() -> Iterator[None]:
     with patch("teatree.agents.runner.DEFAULT_IDLE_WINDOW_SECONDS", 0.0):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_real_worker_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_init = subprocess.Popen.__init__
+
+    def guarded_init(self: subprocess.Popen[Any], args: Any, *pargs: Any, **kwargs: Any) -> None:
+        if (
+            isinstance(args, (list, tuple))
+            and len(args) >= 2
+            and isinstance(args[0], (str, bytes, os.PathLike))
+            and Path(os.fsdecode(args[0])).name == "t3"
+            and args[1] == "worker"
+        ):
+            pytest.fail("test attempted to spawn a real t3 worker", pytrace=False)
+        original_init(self, args, *pargs, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", guarded_init)
 
 
 # Guard against import-time side effects in script modules that call _init.init()
@@ -257,12 +278,14 @@ def _clear_backend_caches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> It
     reset_backend_caches()
     reset_overlay_cache()
     reset_sealed_key_health_cache()
+    reset_master_key_volume_warnings()
     monkeypatch.setenv("T3_MASTER_KEY_SOURCE", f"file:{tmp_path / 'master.key'}")
     with use_store(MemoryStore()):
         yield
     reset_backend_caches()
     reset_overlay_cache()
     reset_sealed_key_health_cache()
+    reset_master_key_volume_warnings()
 
 
 @pytest.fixture
@@ -911,8 +934,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     There is no config file — every setting is DB-home, read from the canonical
     ``ConfigSetting`` store (Django-side) or via the Django-free ``cold_reader``
     (pre-Django hooks). Config isolation is therefore purely about the DB the cold
-    reader resolves: clearing ``T3_CONFIG_DB`` and ``XDG_DATA_HOME`` (and redirecting
-    ``$HOME``) leaves the cold reader with no config DB, so every setting fails OPEN
+    reader resolves: clearing ``T3_CONFIG_DB`` and setting ``T3_CONTROL_DB_DIR`` to
+    a throwaway directory leaves the cold reader with no config DB, so every setting fails OPEN
     to its dataclass default. A test that needs a cold-read value sets ``T3_CONFIG_DB``
     at a temp sqlite it seeds with a ``teatree_config_setting`` row. The update-check
     cache is redirected (below) at a hermetic per-test "up to date" verdict so the
@@ -929,11 +952,15 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / ".cache"))
-    # The cold readers resolve the canonical ConfigSetting DB from these: clear both
-    # so a cold reader resolves under the isolated ``$HOME`` (no DB → defaults) and
-    # never reads a host DB.
+    # Keep cold readers and child interpreters on a per-test control DB directory
+    # with no DB, so settings resolve to defaults without reading a host DB.
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    control_db_dir = tmp_path / "isolated-control-db"
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(control_db_dir))
+    monkeypatch.delenv("T3_DATA_DIR", raising=False)
+    monkeypatch.delenv("T3_WORKER_HEALTH_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("T3_FACTORY_TARGET", raising=False)
     # Resolve test registry paths under the isolated HOME.
     monkeypatch.delenv("T3_LOOP_REGISTRY_DIR", raising=False)
     # Redirect the update-check cache at a hermetic per-test dir holding a fresh

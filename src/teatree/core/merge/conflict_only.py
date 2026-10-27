@@ -253,8 +253,7 @@ def rebind_clearance_after_conflict_only_merge(
         with transaction.atomic():
             for verdict in merge_safe:
                 verdict.carry_forward(reviewed_sha=merge)
-            clear.reviewed_sha = merge
-            clear.save(update_fields=["reviewed_sha"])
+            clear.rebind_head(merge)
     except ReviewVerdictError:
         logger.warning(
             "conflict-only rebind refused for CLEAR %s at %s: a merge_safe verdict could not be "

@@ -13,6 +13,8 @@ from pathlib import Path
 from teatree.core.cleanup.unshipped_work import (
     COMMITS_SUFFIX,
     FILES_SUFFIX,
+    PARTIAL_COMMITS_SUFFIX,
+    PARTIAL_UNCOMMITTED_SUFFIX,
     UNCOMMITTED_SUFFIX,
     UNREADABLE_SUFFIX,
     bundle_path,
@@ -84,6 +86,12 @@ def _refusal(prefix: str, into: Path) -> str:
         return ""
     marker = bundle_path(prefix, UNREADABLE_SUFFIX)
     if marker.is_file():
+        partial = [
+            suffix for suffix in (PARTIAL_COMMITS_SUFFIX, PARTIAL_UNCOMMITTED_SUFFIX) if _has_content(prefix, suffix)
+        ]
+        if partial:
+            cause = marker.read_text(encoding="utf-8").strip()
+            return f"{prefix} captured incomplete content — partial patches: {', '.join(partial)}; {cause}"
         return (
             f"{prefix} captured no content — the checkout was unreadable: {marker.read_text(encoding='utf-8').strip()}"
         )

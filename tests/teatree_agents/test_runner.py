@@ -5,14 +5,16 @@ import sqlite3
 import tempfile
 import threading
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from claude_agent_sdk.types import RateLimitType
 from django.db import OperationalError
 from django.test import TestCase
+from django.utils import timezone
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
@@ -109,6 +111,8 @@ class TestRunHeadless(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
+            task.claim(claimed_by="test-worker")
+            started = timezone.now()
             attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
@@ -116,13 +120,47 @@ class TestRunHeadless(TestCase):
         assert attempt.result["skill_assurance"]["status"] == "missing"
         assert "code" in attempt.result["skill_assurance"]["missing"]
         assert attempt.input_tokens is None
-        assert task.status == Task.Status.FAILED
+        assert task.status == Task.Status.PENDING
+        assert task.claimed_by == ""
+        assert started + timedelta(minutes=5) <= task.not_before <= timezone.now() + timedelta(minutes=5)
+        assert attempt.error.startswith("limit_parked: skill_roots_empty")
+        assert str(Path.home()) in attempt.error
         record_skill_assurance.assert_called_once_with(
             task_id=task.pk,
             ticket_id=self.ticket.pk,
             attempt_id=attempt.pk,
             assurance=attempt.result["skill_assurance"],
         )
+
+    def test_missing_skill_with_a_populated_install_root_still_fails(self) -> None:
+        root = Path.home() / ".agents" / "skills"
+        (root / "unrelated").mkdir(parents=True)
+        (root / "unrelated" / "SKILL.md").write_text("# unrelated\n", encoding="utf-8")
+        with (
+            _fake_sdk(_success_stream({"summary": "should not run"})),
+            patch("teatree.agents.skill_assurance.harness_skills_dirs", return_value=[]),
+        ):
+            task = Task.objects.create(ticket=self.ticket, session=Session.objects.create(ticket=self.ticket))
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.result["skill_assurance"]["status"] == "missing"
+
+    def test_missing_skill_with_an_unreadable_install_root_still_fails(self) -> None:
+        root = Mock()
+        root.exists.return_value = True
+        root.is_dir.return_value = True
+        root.iterdir.side_effect = PermissionError("skill root unreadable")
+        with (
+            _fake_sdk(_success_stream({"summary": "should not run"})),
+            patch("teatree.agents.skill_assurance.harness_skills_dirs", return_value=[]),
+            patch("teatree.agents.runner_skill_staging.install_roots", return_value=[root]),
+        ):
+            task = Task.objects.create(ticket=self.ticket, session=Session.objects.create(ticket=self.ticket))
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.result["skill_assurance"]["status"] == "missing"
 
     def test_real_coding_phase_records_full_body_or_explicit_load_per_required_skill(self) -> None:
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
@@ -1434,14 +1472,12 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
         # ~one heartbeat — proving the watchdog stops a runaway rather than
         # waiting it out.
         messages = [_assistant_text("step") for _ in range(1000)]
-        start = time.monotonic()
         with (
-            _fake_sdk(messages, delay=0.05, task_usage=TaskUsage(turns=500, cost_usd=0.0)),
+            _fake_sdk(messages, delay=0.05, task_usage=TaskUsage(turns=500, cost_usd=0.0)) as sdk,
             patch.object(runner_mod.LoopWatchdog, "from_settings", return_value=watchdog),
             patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02),
         ):
             attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
-        elapsed = time.monotonic() - start
 
         task.refresh_from_db()
         assert attempt.exit_code != 0
@@ -1449,10 +1485,7 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
         assert "turns" in attempt.error
         assert "500" in attempt.error
         assert task.status == Task.Status.FAILED
-        # The interrupt cut the 1000-message stream short instead of streaming
-        # all 50s of it (1000 * 0.05s delay) — a generous bound that still fails
-        # loudly if the watchdog stops interrupting the stream.
-        assert elapsed < 10, f"watchdog did not cut the runaway stream short: {elapsed:.1f}s"
+        assert sdk.streamed_messages < len(messages)
 
 
 class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
