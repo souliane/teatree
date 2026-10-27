@@ -29,7 +29,9 @@ class CheckoutSafetyTests(TestCase):
         _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=1)
         self.ticket = TicketFactory()
         self.task = TaskFactory(ticket=self.ticket, phase="coding")
-        self.worktree = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
+        self.worktree = WorktreeFactory(
+            ticket=self.ticket, branch="feature", extra={"worktree_path": str(self.checkout)}
+        )
 
     def _claim(self, table: ProcessTable, venue: ProcessTable = _VENUE_CLEAR) -> TaskAttempt | None:
         with (
@@ -184,6 +186,16 @@ class CheckoutSafetyTests(TestCase):
         self._record_prior_writer()
 
         assert self._claim(ProcessTable(frozenset(), "/proc")) is None
+        assert UnshippedWorkRecord.objects.filter(checkout_path=str(self.checkout)).exists()
+
+    def test_unpushed_commits_on_an_unowned_branch_park_after_preservation(self) -> None:
+        self._record_prior_writer()
+        run_strict(repo=str(self.checkout), args=["checkout", "-b", "other"])
+
+        attempt = self._claim(ProcessTable(frozenset(), "/proc"))
+
+        assert attempt is not None
+        assert "owned pull request" in attempt.error
         assert UnshippedWorkRecord.objects.filter(checkout_path=str(self.checkout)).exists()
 
     def test_unpushed_commits_without_writer_history_park(self) -> None:

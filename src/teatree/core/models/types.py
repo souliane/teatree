@@ -1,10 +1,13 @@
 import logging
 from collections.abc import Iterable
-from typing import Final, TypedDict
+from typing import TYPE_CHECKING, Final, TypedDict
 
+from teatree.core.models.checkout_custody import WorktreeCheckoutExtra
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 from teatree.core.models.repo_expansion import TicketRepoExtra
-from teatree.core.models.worktree_extra_types import WorktreeExtra
+
+if TYPE_CHECKING:
+    from teatree.core.provision.provision_report import ProvisionReportDict
 
 logger = logging.getLogger(__name__)
 
@@ -741,6 +744,21 @@ class WorktreeSiblingFields(TypedDict, total=False):
     """
 
     branch: str
+
+
+class WorktreeExtra(WorktreeCheckoutExtra, total=False):
+    worktree_path: str
+    clone_path: str
+    services: list[str]
+    urls: dict[str, str]
+    pids: dict[str, int]
+    failed_services: list[str]
+    db_refreshed_at: str
+    db_import_failures: int
+    setup_hook: str
+    ports: Ports
+    provision_report: "ProvisionReportDict"
+    reaper_pinned: bool
 
 
 # Known keys for WorktreeExtra — used by get_extra() to filter stale data

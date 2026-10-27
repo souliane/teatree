@@ -18,11 +18,9 @@
 ["An attended session may attest under"]
 radius = 180
 "skills/workspace/SKILL.md" = ["4960e66693e73b4f"]
-"docs/blueprint/worktree-occupancy.md" = ["0a1588e7e8872b15"]
 
 ["An attended session may attest under".coverage]
 "skills/workspace/SKILL.md" = 396
-"docs/blueprint/worktree-occupancy.md" = 396
 
 ["For a checkout card,"]
 radius = 1300

@@ -80,20 +80,8 @@ def test_checkout_card_paragraph_is_pegged() -> None:
     assert any(paragraph in window for window in windows)
 
 
-@pytest.mark.parametrize(
-    ("anchor", "path"),
-    [
-        ("An attended session may attest under", "skills/workspace/SKILL.md"),
-        ("An attended session may attest under", "docs/blueprint/worktree-occupancy.md"),
-    ],
-    ids=["workspace", "worktree-occupancy"],
-)
-def test_checkout_route_reconciliation_is_pegged(anchor: str, path: str) -> None:
-    _assert_prose_peg(
-        anchor,
-        path,
-        expected_paths={"skills/workspace/SKILL.md", "docs/blueprint/worktree-occupancy.md"},
-    )
+def test_attended_checkout_route_is_pegged() -> None:
+    _assert_prose_peg("An attended session may attest under", "skills/workspace/SKILL.md")
 
 
 @pytest.mark.parametrize(

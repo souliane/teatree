@@ -27,7 +27,7 @@ from teatree.utils.git_remote import host_from_remote
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
-    from teatree.core.models.checkout_proof import ReleasedPrHeadAttestation
+    from teatree.core.models.checkout_custody import ReleasedPrHeadAttestation
 
 logger = logging.getLogger(__name__)
 _MAX_REFLOG_ANCHORS = 64

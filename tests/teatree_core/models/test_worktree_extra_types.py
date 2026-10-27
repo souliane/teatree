@@ -1,10 +1,8 @@
-from teatree.core.models.types import WorktreeExtra as PublicWorktreeExtra
-from teatree.core.models.types import validated_worktree_extra
-from teatree.core.models.worktree_extra_types import WorktreeExtra
+from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
 
 
-def test_worktree_extra_reexport_keeps_safe_checkout_audit() -> None:
+def test_worktree_extra_keeps_safe_checkout_audit() -> None:
     audit = {"digest": "verified", "process_evidence": "venue"}
 
-    assert PublicWorktreeExtra is WorktreeExtra
+    assert "auto_attestation" in WorktreeExtra.__annotations__
     assert validated_worktree_extra({"auto_attestation": audit})["auto_attestation"] == audit

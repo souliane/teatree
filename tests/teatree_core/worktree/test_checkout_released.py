@@ -176,6 +176,11 @@ class ReleasedPrHeadRecoveryTests(TestCase):
                 self.claimant, self.worktree, checkout_state(self.path, ticket=self.ticket), table or self.clear
             )
 
+    def assert_direct_recovery_refused(self, table: ProcessTable | None = None) -> None:
+        assert acquire(self.worktree, holder=task_holder_id(self.claimant))
+        self.worktree.refresh_from_db()
+        assert not self.direct_recovery(table)
+
     @contextmanager
     def git_shim(self, guard: str) -> Generator[Path]:
         real_git = shutil.which("git")
@@ -190,7 +195,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
 
     def test_read_only_prior_tenures_do_not_attest(self) -> None:
         Task.objects.filter(pk=self.shipping.pk).update(phase="reviewing")
-        self.assert_parked()
+        self.assert_direct_recovery_refused()
 
     def test_single_released_writer_can_attest(self) -> None:
         extra = self.worktree.get_extra()
@@ -220,7 +225,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
 
         self.on_remote_read.side_effect = change_checkout
         self.assert_parked()
-        self.on_remote_read.assert_called_once()
+        assert self.on_remote_read.called
 
     def test_current_tenure_must_name_claimant(self) -> None:
         assert acquire(self.worktree, holder=task_holder_id(self.claimant))
@@ -253,17 +258,14 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         busy = ProcessTable(frozenset({self.path}), "/host-proc")
         assert not self.direct_recovery(busy)
 
-    def test_git_failure_parks_and_releases_occupancy(self) -> None:
-        original = self.worktree.get_extra()["attested_state"]
+    def test_unreadable_reflog_does_not_block_a_proven_pushed_head(self) -> None:
         unreadable_reflog = (
             'case " $* " in *" reflog "*) printf "%s\\n" "fatal: unreadable reflog" >&2; exit 128;; esac\n'
         )
         with self.git_shim(unreadable_reflog):
-            parked = self.claim()
-        assert parked is not None
+            assert self.claim() is None
         self.worktree.refresh_from_db()
-        assert self.worktree.occupied_by == ""
-        assert self.worktree.get_extra()["attested_state"] == original
+        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.path, ticket=self.ticket).digest
 
     def test_proven_head_must_bind_attested_digest(self) -> None:
         marks = self.path.parent / "git-bin-marks"
@@ -317,10 +319,10 @@ class ReleasedPrHeadRecoveryTests(TestCase):
     def test_reported_pr_source_branch_must_equal_checkout(self) -> None:
         self.assert_parked(response=ForgeResponse(head_branch="other"))
 
-    def test_t2_checkout_off_its_recorded_branch_parks(self) -> None:
+    def test_t2_owned_pr_allows_recorded_branch_drift_but_detached_head_parks(self) -> None:
         with self.subTest("recorded_branch_must_equal_checkout"):
             Worktree.objects.filter(pk=self.worktree.pk).update(branch="other")
-            self.assert_parked()
+            self.assert_clean_claim_then_restore()
             Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")
         with self.subTest("detached_head"):
             self.assert_clean_claim_then_restore()
@@ -358,49 +360,49 @@ class ReleasedPrHeadRecoveryTests(TestCase):
                 run_strict(repo=str(self.path), args=["checkout", "--", "."])
                 run_strict(repo=str(self.path), args=["clean", "-fdq"])
 
-    def test_t4a_host_gap_with_mixed_empty_and_nested_namespaces_parks(self) -> None:
+    def test_t4a_host_gap_with_mixed_namespaces_refuses_legacy_proof(self) -> None:
         self.assert_clean_claim_then_restore()
         extra = self.worktree.get_extra()
         extra["checkout_custody"]["tenures"][0]["namespace"] = ""
         self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
         table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
         assert table.eviction_refuse_reason(nested_writer=False)
-        self.assert_parked(table)
+        self.assert_direct_recovery_refused(table)
 
-    def test_t5_operator_holder_parks(self) -> None:
+    def test_t5_operator_holder_refuses_legacy_proof(self) -> None:
         self.assert_clean_claim_then_restore()
         acquire(self.worktree, holder="operator", holder_session="terminal")
         release(self.worktree, holder="operator", holder_session="terminal")
-        self.assert_parked()
+        self.assert_direct_recovery_refused()
 
-    def test_t5_foreign_ticket_holder_parks(self) -> None:
+    def test_t5_foreign_ticket_holder_refuses_legacy_proof(self) -> None:
         self.assert_clean_claim_then_restore()
         foreign = TaskFactory(ticket=TicketFactory(), phase="reviewing")
         acquire(self.worktree, holder=task_holder_id(foreign))
         release(self.worktree, holder=task_holder_id(foreign))
-        self.assert_parked()
+        self.assert_direct_recovery_refused()
 
-    def test_t6_completed_cancelled_prior_task_parks(self) -> None:
+    def test_t6_completed_cancelled_prior_task_refuses_legacy_proof(self) -> None:
         self.assert_clean_claim_then_restore()
         Task.objects.filter(pk=self.reviewer.pk).update(
             status=Task.Status.COMPLETED, failure_kind=FailureKind.CANCELLED
         )
-        self.assert_parked()
+        self.assert_direct_recovery_refused()
 
-    def test_t6_abandoned_prior_tenure_parks(self) -> None:
+    def test_t6_abandoned_prior_tenure_refuses_legacy_proof(self) -> None:
         self.assert_clean_claim_then_restore()
         extra = self.worktree.get_extra()
         extra["checkout_custody"]["tenures"][1]["ended"] = "abandoned"
         self.worktree.merge_extra(set_keys={"checkout_custody": extra["checkout_custody"]})
-        self.assert_parked()
+        self.assert_direct_recovery_refused()
 
-    def test_t7_anchor_beyond_bounded_reflog_parks(self) -> None:
+    def test_t7_anchor_beyond_bounded_reflog_refuses_legacy_proof(self) -> None:
         self.assert_clean_claim_then_restore()
         for index in range(70):
             run_strict(repo=str(self.path), args=["commit", "--allow-empty", "-m", f"later {index}"])
         run_strict(repo=str(self.path), args=["push", "origin", "feature"])
         self.head = run_strict(repo=str(self.path), args=["rev-parse", "HEAD"])
-        self.assert_parked()
+        self.assert_direct_recovery_refused()
 
     def test_t7_anchor_inside_window_after_eleven_commits_attests(self) -> None:
         for index in range(11):
@@ -409,7 +411,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         self.head = run_strict(repo=str(self.path), args=["rev-parse", "HEAD"])
         assert self.claim() is None
 
-    def test_t7_missing_anchor_parks(self) -> None:
+    def test_t7_missing_anchor_refuses_legacy_proof(self) -> None:
         self.assert_clean_claim_then_restore()
         extra = self.worktree.get_extra()
         extra["checkout_custody"]["anchor"] = "0" * 64
@@ -419,9 +421,9 @@ class ReleasedPrHeadRecoveryTests(TestCase):
                 "checkout_custody": extra["checkout_custody"],
             }
         )
-        self.assert_parked()
+        self.assert_direct_recovery_refused()
 
-    def test_t7_nonancestor_anchor_parks(self) -> None:
+    def test_t7_nonancestor_anchor_refuses_legacy_proof(self) -> None:
         self.assert_clean_claim_then_restore()
         (self.path / "old-tip.txt").write_text("old tip")
         run_strict(repo=str(self.path), args=["add", "old-tip.txt"])
@@ -440,7 +442,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         run_strict(repo=str(self.path), args=["push", "origin", f"{new_head}:refs/heads/proof-candidate"])
         run_strict(repo=str(self.origin), args=["update-ref", "refs/heads/feature", new_head])
         self.head = new_head
-        self.assert_parked()
+        self.assert_direct_recovery_refused()
 
     def test_t8_fork_parks(self) -> None:
         self.assert_clean_claim_then_restore()

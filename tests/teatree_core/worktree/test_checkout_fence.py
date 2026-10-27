@@ -44,7 +44,7 @@ from tests.teatree_core._self_review_helpers import completed_self_review
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 if TYPE_CHECKING:
-    from teatree.core.models.checkout_proof import AutoAttestation
+    from teatree.core.models.checkout_custody import AutoAttestation
 
 _CLEAR = ProcessTable(frozenset(), "/proc")
 _VENUE_READ = "teatree.core.worktree.checkout_safety.read_process_table"
@@ -59,7 +59,9 @@ class CheckoutFenceTests(TestCase):
         _init_repo_with_branch(self.checkout, branch="feature", commits_ahead=0)
         self.ticket = TicketFactory()
         self.task = TaskFactory(ticket=self.ticket, phase="coding")
-        self.worktree = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
+        self.worktree = WorktreeFactory(
+            ticket=self.ticket, branch="feature", extra={"worktree_path": str(self.checkout)}
+        )
 
     def test_first_pristine_sight_attests_then_dirty_state_parks(self) -> None:
         with patch(
@@ -387,7 +389,7 @@ class CheckoutFenceTests(TestCase):
         self.addCleanup(temporary.cleanup)
         other = Path(temporary.name) / "other"
         _init_repo_with_branch(other, branch="feature", commits_ahead=0)
-        WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(other)})
+        WorktreeFactory(ticket=self.ticket, branch="feature", extra={"worktree_path": str(other)})
         clear = ProcessTable(frozenset(), "/proc")
         with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=clear):
             verify_task_checkout(self.task, str(self.checkout))

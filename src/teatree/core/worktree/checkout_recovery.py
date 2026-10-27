@@ -10,12 +10,13 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.phase_tools import phase_writes_checkout
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import PullRequest, Task, Worktree
-from teatree.core.models.checkout_custody import Custody, Tenure
-from teatree.core.models.checkout_proof import (
+from teatree.core.models.checkout_custody import (
     AutoAttestation,
     CheckoutProcessEvidence,
+    Custody,
     DeferredExitAttestation,
     ReleasedPrHeadAttestation,
+    Tenure,
 )
 from teatree.core.models.types import WorktreeExtra
 from teatree.core.models.worktree_occupancy import _task_pk_from_holder, task_holder_id

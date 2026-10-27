@@ -24,7 +24,7 @@ from teatree.core.worktree.checkout_released import owned_github_pr_url
 from teatree.utils import git
 
 if TYPE_CHECKING:
-    from teatree.core.models.checkout_proof import SafeCheckoutAttestation
+    from teatree.core.models.checkout_custody import SafeCheckoutAttestation
     from teatree.core.worktree.checkout_state import CheckoutState
 
 
@@ -116,7 +116,7 @@ def _preserve_unpushed(
 
 def _head_obstacle(task: Task, worktree: Worktree, state: "CheckoutState", preserved: _Preservation) -> str:
     path = Path(worktree.worktree_path)
-    if state.commits_ahead and not preserved.commits:
+    if state.branch != worktree.branch or (state.commits_ahead and not preserved.commits):
         try:
             head = git.run_strict(repo=str(path), args=["rev-parse", "--verify", "HEAD"])
             if owned_github_pr_url(task, str(path), state, head, allow_ancestor=True) is None:
@@ -151,7 +151,7 @@ def assess_checkout_safety(
     proof = _process_proof(task, worktree, table)
     if isinstance(proof, str):
         return proof
-    trusted = attested in {state.digest, f"owner:{state.digest}"} or allow_deferred_dirt
+    trusted = attested in {state.digest, f"owner:{state.digest}"}
     preserved = _preserve_unpushed(task, worktree, state, trusted_attestation=trusted)
     if isinstance(preserved, str):
         return preserved
