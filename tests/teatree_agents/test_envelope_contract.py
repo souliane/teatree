@@ -63,7 +63,7 @@ class TestEnvelopeContractText(SimpleTestCase):
     def test_an_owner_stop_needs_the_checked_facts_and_everything_else_is_decided(self) -> None:
         text = "\n".join(envelope_contract_lines(_WORK_PHASE))
         assert "`user_input_checked`" in text
-        assert "access/permission grants: credentials" in text
+        assert "access or permission grant is credentials" in text
         assert "Decide everything else yourself" in text
 
     def test_owner_stop_limits_follow_the_recorder_constants_on_every_phase(self) -> None:

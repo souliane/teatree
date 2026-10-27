@@ -192,7 +192,7 @@ def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple
             '  `user_input_checked`, `user_input_card` {"why", "blocker", '
             '"options": [{"label", "description", "recommended"}]}; stop.'
         ),
-        f"  Kinds: {', '.join(OwnerDecision)}; access/permission grants: credentials.",
+        f"  {', '.join(OwnerDecision)}; an access or permission grant is credentials.",
         *(f"  {line}" for line in owner_stop_limits_lines()),
         "  Decide everything else yourself.",
         "- If skills were required for this dispatch, include `skill_application`: one",
