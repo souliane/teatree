@@ -168,7 +168,7 @@ class GlabForge:
 
     def create_pr(self, *, branch: str, title: str, body: str) -> str:
         remote = git.remote_url(repo=str(self._repo))
-        body = vet_text_write(f"{git_remote.slug_from_remote(remote)}/merge_requests", body)
+        body = vet_text_write(f"{git_remote.slug_from_remote(remote).casefold()}/merge_requests", body)
         credential = authoring_credential_for_remote(remote, fallback=self._owner_token)
         if credential.refusal:
             raise UnapprovableAuthorError(credential.refusal)

@@ -35,7 +35,7 @@ from teatree.core.merge.authorization import (
     assert_no_active_review_lock,
     assert_review_verdict_gate,
 )
-from teatree.core.merge.bound_token import bound_merge_token
+from teatree.core.merge.bound_token import bound_merge_token, bound_token_active
 from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
 from teatree.core.merge.errors import MergePreconditionError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
@@ -63,7 +63,7 @@ MERGE_TRANSIENT_BASE_DELAY = 0.5
 def _bind_repository_merge_token(merge: Callable[..., str]) -> Callable[..., str]:
     @wraps(merge)
     def bound(*, ref: PrRef, expected_head_oid: str, squash: bool = True) -> str:
-        if ref.host_kind == "gitlab":
+        if ref.host_kind == "gitlab" and not bound_token_active(ref.slug):
             resolution = forge_credentials.resolve_slug_token(ref.slug, forge="gitlab", credential="gitlab_token")
             if resolution.state is forge_credentials.ForgeTokenState.TOKEN:
                 with bound_merge_token(ref.slug, resolution.token):

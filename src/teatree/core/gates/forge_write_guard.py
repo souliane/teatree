@@ -38,6 +38,14 @@ def item_key_of_endpoint(endpoint: str) -> str:
             return "gitlab"
 
 
+def item_endpoint_of(endpoint: str) -> str:
+    match endpoint.lstrip("/").split("?", 1)[0].split("/"):
+        case ["projects", project, ("issues" | "merge_requests") as kind, iid, *_]:
+            return f"projects/{project}/{kind}/{iid}"
+        case _:
+            return ""
+
+
 def item_key_of_url(url: str) -> str:
     project, separator, tail = urlparse(url).path.strip("/").partition("/-/")
     if separator:
@@ -128,11 +136,11 @@ class ForgeWriteGuard:
 
     @staticmethod
     def require_own_item(read_json: Callable[[str], object], endpoint: str) -> None:
-        item = item_key_of_endpoint(endpoint)
-        if not re.search(r"/(issues|merge_requests)/[^/]+$", item):
+        item_endpoint = item_endpoint_of(endpoint)
+        if not item_endpoint:
             return
         try:
-            issue = read_json(endpoint.split("?", 1)[0])
+            issue = read_json(item_endpoint)
             user = read_json("user")
             author = issue_author_login(issue)
             login = user.get("username", "") if isinstance(user, dict) else ""

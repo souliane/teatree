@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import pytest
@@ -24,8 +25,7 @@ def test_bound_token_resets_on_success_and_exception() -> None:
     assert bound_token_for("group/repo") == ""
 
 
-def test_execute_bound_merge_binds_owner_token_until_failure() -> None:
-    ref = PrRef(slug="group/repo", pr_id=7, host_kind="gitlab")
+def _token_seen_by_merge(ref: PrRef) -> str:
     resolution = ForgeTokenResolution("gitlab_token", "owner", ForgeTokenState.TOKEN, token="OWNER")
     observed: list[str] = []
 
@@ -41,5 +41,19 @@ def test_execute_bound_merge_binds_owner_token_until_failure() -> None:
         pytest.raises(RuntimeError, match="merge stopped"),
     ):
         execute_bound_merge(ref=ref, expected_head_oid="abc")
-    assert observed == ["OWNER"]
+    return observed[0]
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected"),
+    [
+        pytest.param(None, "OWNER", id="no-scope-binds-the-owner-token"),
+        pytest.param(("Group/Repo", "PERSON"), "PERSON", id="caller-scope-for-the-slug-is-kept"),
+        pytest.param(("other/repo", "PERSON"), "OWNER", id="scope-for-another-slug-binds-the-owner-token"),
+    ],
+)
+def test_execute_bound_merge_token_scope(scope: tuple[str, str] | None, expected: str) -> None:
+    ref = PrRef(slug="group/repo", pr_id=7, host_kind="gitlab")
+    with bound_merge_token(*scope) if scope else nullcontext():
+        assert _token_seen_by_merge(ref) == expected
     assert bound_token_for(ref.slug) == ""

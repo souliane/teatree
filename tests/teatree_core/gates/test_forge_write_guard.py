@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import timedelta
 from pathlib import Path
@@ -95,6 +96,38 @@ class TestGitLabWriteGuard(TestCase):
             GitLabHTTPClient(token="CLIENT").put_json("projects/group%2Frepo/issues/7", {"title": "x"})
         request.assert_called_once()
 
+    def _item_reads(self, *, author: str, status: int = 200) -> Callable[..., httpx.Response]:
+        def read(url: str, **_kwargs: object) -> httpx.Response:
+            request = httpx.Request("GET", url)
+            if url.endswith("/user"):
+                return httpx.Response(200, json={"username": "me"}, request=request)
+            if url.endswith("/merge_requests/7"):
+                item = {"author": {"username": author}, "web_url": "https://gitlab.com/group/repo/-/merge_requests/7"}
+                return httpx.Response(status, json=item, request=request)
+            return httpx.Response(404, json={}, request=request)
+
+        return read
+
+    def test_own_items_only_reads_the_item_behind_a_sub_resource_write(self) -> None:
+        cases = (("me", 200, True), ("colleague", 200, False), ("me", 404, False))
+        for suffix in ("merge", "rebase", "notes/5"):
+            for author, status, allowed in cases:
+                with (
+                    self.subTest(suffix=suffix, author=author, status=status),
+                    self._setting({"own_items_only": True}),
+                    patch("httpx.get", side_effect=self._item_reads(author=author, status=status)),
+                    patch("httpx.put", return_value=_response("PUT")) as request,
+                ):
+                    client = GitLabHTTPClient(token="CLIENT")
+                    endpoint = f"projects/group%2Frepo/merge_requests/7/{suffix}"
+                    if allowed:
+                        client.put_response(endpoint, {})
+                        request.assert_called_once()
+                    else:
+                        with pytest.raises(WriteRefusedError):
+                            client.put_response(endpoint, {})
+                        request.assert_not_called()
+
     def test_hour_window_expires_while_day_window_remains(self) -> None:
         endpoint = "projects/group%2Frepo/issues/7/notes"
         with self._setting({"cap_per_hour": 1}), patch("httpx.post", return_value=_response("POST")) as request:
@@ -141,6 +174,27 @@ class TestGitLabWriteGuard(TestCase):
             with pytest.raises(WriteRefusedError):
                 forge.create_pr(branch="branch", title="title", body="second")
         command.assert_called_once()
+
+    def test_glab_create_shares_cap_bucket_with_rest_across_remote_casing(self) -> None:
+        forge = GlabForge(Path())
+        with (
+            self._setting({"cap_per_hour": 1}),
+            patch("teatree.core.push.fast_push.git.remote_url", return_value="https://gitlab.com/Group/Repo.git"),
+            patch(
+                "teatree.core.push.fast_push.authoring_credential_for_remote",
+                return_value=SimpleNamespace(token="TOKEN", refusal=""),
+            ),
+            patch("teatree.core.push.fast_push.unapprovable_author_refusal", return_value=""),
+            patch(
+                "teatree.core.push.fast_push.run_checked",
+                return_value=SimpleNamespace(stdout="https://gitlab.com/Group/Repo/-/merge_requests/7"),
+            ),
+            patch("httpx.post", return_value=_response("POST")) as request,
+        ):
+            forge.create_pr(branch="branch", title="title", body="first")
+            with pytest.raises(WriteRefusedError):
+                GitLabHTTPClient(token="CLIENT").post_json("projects/Group%2FRepo/merge_requests", {"title": "second"})
+        request.assert_not_called()
 
     def test_graphql_label_ids_are_refused_before_post(self) -> None:
         with (

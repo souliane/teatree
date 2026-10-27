@@ -21,6 +21,11 @@ def bound_merge_token(slug: str, token: str) -> Generator[None]:
         _bound.reset(marker)
 
 
+def bound_token_active(slug: str) -> bool:
+    current = _bound.get()
+    return current is not None and current[0] == slug.casefold()
+
+
 def bound_token_for(slug: str) -> str:
     current = _bound.get()
     if current is None:
