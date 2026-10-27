@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING, Final
 from urllib.parse import urlparse
 
 from teatree.agents._runner_options import _resolve_task_cwd
+from teatree.agents.codex_read_only_executor import DRAFT_PHASES
 from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 from teatree.agents.phase_blocks import intake_survey_json
+from teatree.agents.read_only_draft_facts import DRAFT_FACTS_CAP_BYTES, DraftFactsUnavailableError, draft_phase_facts
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.intake.landscape_persist import ensure_planning_landscape
 from teatree.core.modelkit.phases import normalize_phase
@@ -60,6 +62,7 @@ class ReadOnlyFacts:
     review_head: str
     review_diff: str
     review_checks: str
+    draft_facts: str = ""
 
     @classmethod
     def gather(cls, task: "Task", handoff: Path | None) -> "ReadOnlyFacts":
@@ -76,6 +79,10 @@ class ReadOnlyFacts:
                 reason = f"no intake landscape survey is recorded for this ticket ({type(exc).__name__})"
                 raise _refused(reason) from exc
             survey = intake_survey_json(task)
+        try:
+            draft_facts = draft_phase_facts(task)
+        except DraftFactsUnavailableError as exc:
+            raise _refused(str(exc)) from exc
         facts = cls(
             issue_body=issue_body,
             issue_comments=issue_comments,
@@ -85,6 +92,7 @@ class ReadOnlyFacts:
             review_head=review_head,
             review_diff=review_diff,
             review_checks=review_checks,
+            draft_facts=draft_facts,
         )
         if planning and not facts.survey:
             reason = "no intake landscape survey is recorded for this ticket"
@@ -97,11 +105,13 @@ class ReadOnlyFacts:
             ("survey", facts.survey, SURVEY_CAP_BYTES),
             ("review diff", facts.review_diff, REVIEW_DIFF_CAP_BYTES),
             ("review checks", facts.review_checks, REVIEW_CHECKS_CAP_BYTES),
+            ("draft facts", facts.draft_facts, DRAFT_FACTS_CAP_BYTES),
         ):
             if (size := len(text.encode())) > cap:
                 reason = f"read-only brief over budget: {name} {size} bytes > {cap}"
                 raise _refused(reason)
-        _fetch_target(task)
+        if normalize_phase(task.phase) not in DRAFT_PHASES:
+            _fetch_target(task)
         return facts
 
 
