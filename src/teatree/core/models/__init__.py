@@ -113,6 +113,7 @@ from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceEr
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.review_verdict import Finding, ReviewVerdict, Severity
 from teatree.core.models.reviewer_identity import normalize_reviewer_identity
+from teatree.core.models.round_metric import RoundMetric as RoundMetric
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E

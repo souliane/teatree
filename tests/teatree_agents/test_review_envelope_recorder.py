@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.agents.attempt_recorder import record_result_envelope
+from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
 from teatree.agents.envelope_refusal import MALFORMED_FIX_RECORD_PREFIX, is_recorder_refusal
 from teatree.core.gates.anti_vacuity_gate import check_anti_vacuity_attestation
 from teatree.core.gates.integration_review_gate import check_integration_review
@@ -33,6 +33,7 @@ from teatree.core.models import (
     MRReviewLock,
     PullRequest,
     ReviewVerdict,
+    RoundMetric,
     Rubric,
     RubricCriterion,
     Session,
@@ -46,6 +47,7 @@ from teatree.core.models.types import AdequacySection, PlanAdequacy
 from teatree.core.review.live_head import LiveHeadRead
 from teatree.core.review.nit_lane import NitLaneError, NitPoint, NitReceipt
 from teatree.core.review.nit_publish import has_nit_receipts
+from teatree.loop.transient_requeue import requeue_transient_failed
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -163,6 +165,152 @@ def _criteria(ticket: Ticket) -> list[RubricCriterion]:
 
 
 class TestTheReviewerGradesTheRubricItVerifies(TestCase):
+    def test_venue_limit_refuses_without_recording_a_hold_and_marks_route(self) -> None:
+        task = _reviewing_task_via_dispatch()
+        RoundMetric.objects.open(kind="review", ticket=task.ticket, subject=_HEAD, size=0, detail={"case": "full"})
+        result = {"summary": "Venue could not verify CI", "review_venue_limit": {"limits": ["CI unreadable"]}}
+
+        attempt = record_result_envelope(
+            task,
+            result,
+            phase="reviewing",
+            usage=AttemptUsage(route_source_skill="review", route_candidate_index=0),
+        )
+
+        assert attempt.error.startswith("review_venue_limit: ")
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert task.attempts.refused_brief_candidates("review") == {0: attempt.error}
+        assert RoundMetric.objects.get(ticket=task.ticket, subject=_HEAD).outcome == "venue_limit"
+        with patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False):
+            assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_venue_limit_with_verdict_is_refused_without_recording(self) -> None:
+        task = _reviewing_task_via_dispatch()
+        result = _envelope(grades=_full_pass())
+        result["review_venue_limit"] = {"limits": ["CI unreadable"]}
+
+        attempt = record_result_envelope(task, result, phase="reviewing")
+
+        assert "review_venue_limit" in attempt.error
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+
+    def test_delta_review_carries_untouched_test_citation_after_source_change(self) -> None:
+        ticket = _author_ticket()
+        prior = "a" * 40
+        criteria = _criteria(ticket)
+        for criterion, rationale in zip(criteria, ("tests/unchanged.py:1", "src/touched.py:2"), strict=True):
+            criterion.record_grade(status="pass", grader_identity=_REVIEWER, reviewed_sha=prior, rationale=rationale)
+        ReviewVerdict.objects.create(
+            ticket=ticket,
+            slug=_SLUG,
+            pr_id=_PR_ID,
+            reviewed_sha=prior,
+            verdict="hold",
+            reviewer_identity=_REVIEWER,
+            reviewer_identity_normalized=_REVIEWER,
+            blast_class="logic",
+            gh_verify_result="green",
+            findings=[],
+        )
+        task = _reviewing_task_via_dispatch()
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=_HEAD,
+            size=2,
+            detail={
+                "case": "delta",
+                "prior_head": prior,
+                "patch": "+fixed",
+                "delta_files": ["src/touched.py"],
+                "carried": [0],
+            },
+        )
+
+        result = _envelope(
+            grades=[
+                {"ordinal": 1, "status": "pass", "rationale": _CITATION},
+            ]
+        )
+        attempt = record_result_envelope(task, result, phase="reviewing")
+
+        assert attempt.error == ""
+        ticket.refresh_from_db()
+        grades = ticket.extra["rubric_grades_by_head"][_HEAD]
+        assert grades[str(criteria[0].pk)]["grader_identity"] == _REVIEWER
+        assert grades[str(criteria[0].pk)]["rationale"] == "tests/unchanged.py:1"
+        assert Rubric.objects.active_for_ticket(ticket).is_fully_passed_at(_HEAD)
+
+    def test_delta_refuses_a_carry_for_basename_or_prose(self) -> None:
+        for rationale in ("touched.py:1", "e.g. a helper changed"):
+            with self.subTest(rationale=rationale):
+                ticket = _author_ticket(pr_id=_PR_ID + (1 if rationale.startswith("touched") else 2))
+                prior = "a" * 40
+                criteria = _criteria(ticket)
+                for criterion, evidence in zip(criteria, (rationale, "src/untouched.py:1"), strict=True):
+                    criterion.record_grade(
+                        status="pass", grader_identity=_REVIEWER, reviewed_sha=prior, rationale=evidence
+                    )
+                ReviewVerdict.objects.create(
+                    ticket=ticket,
+                    slug=_SLUG,
+                    pr_id=int(ticket.pull_requests.first().iid),
+                    reviewed_sha=prior,
+                    verdict="hold",
+                    reviewer_identity=_REVIEWER,
+                    reviewer_identity_normalized=_REVIEWER,
+                    blast_class="logic",
+                    gh_verify_result="green",
+                    findings=[],
+                )
+                task = _reviewing_task_via_dispatch(pr_id=int(ticket.pull_requests.first().iid))
+                RoundMetric.objects.open(
+                    kind="review",
+                    ticket=ticket,
+                    subject=_HEAD,
+                    size=2,
+                    detail={
+                        "case": "delta",
+                        "prior_head": prior,
+                        "patch": "+fixed",
+                        "delta_files": ["src/touched.py"],
+                        "carried": [0],
+                    },
+                )
+
+                attempt = record_result_envelope(
+                    task,
+                    _envelope(grades=[{"ordinal": 1, "status": "pass", "rationale": _CITATION}]),
+                    phase="reviewing",
+                )
+
+                assert "#0" in attempt.error
+                assert not ReviewVerdict.objects.filter(ticket=ticket, reviewed_sha=_HEAD).exists()
+
+    def test_delta_review_omitting_touched_criterion_records_no_verdict(self) -> None:
+        ticket = _author_ticket()
+        task = _reviewing_task_via_dispatch()
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=_HEAD,
+            size=2,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+fixed",
+                "delta_files": ["src/touched.py"],
+                "carried": [0],
+            },
+        )
+
+        attempt = record_result_envelope(task, _envelope(grades=[]), phase="reviewing")
+
+        assert "#1" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket).exists()
+
     def test_a_nit_only_hold_records_merge_safe(self) -> None:
         ticket = _author_ticket()
         result = _envelope(grades=_full_pass(), verdict="hold")
@@ -618,6 +766,7 @@ class TestOutsideTheGatesSubjectNoGradesAreOwed(TestCase):
     def test_a_rubric_less_ticket_requires_no_grades(self) -> None:
         ticket = _author_ticket(criteria=None)
         task = _reviewing_task_via_dispatch()
+        RoundMetric.objects.open(kind="review", ticket=ticket, subject=_HEAD, size=0, detail={"case": "full"})
 
         attempt = record_result_envelope(task, _envelope(), phase="reviewing")
 
@@ -626,6 +775,7 @@ class TestOutsideTheGatesSubjectNoGradesAreOwed(TestCase):
         assert task.status == Task.Status.COMPLETED
         assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD).exists()
         assert Rubric.objects.active_for_ticket(ticket) is None
+        assert RoundMetric.objects.get(ticket=ticket, subject=_HEAD).outcome == "merge_safe"
 
     def test_a_malformed_grade_on_a_rubric_less_ticket_still_records_the_verdict(self) -> None:
         # The per-item refusal is scoped to a rubric that EXISTS: with none, no grade is
