@@ -49,6 +49,7 @@ class RecordingBackend:
 
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
+    user_id: str = "U-owner"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since

@@ -9,7 +9,7 @@ is referenced by name and its own edge cases are pinned at the unit level.
 from django.test import TestCase
 
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import HeadCarryOver, ReviewVerdict, Task, Ticket
+from teatree.core.models import AutoReviewDispatch, HeadCarryOver, ReviewVerdict, Task, Ticket
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
@@ -37,6 +37,23 @@ def _action(*, pr_id: int = 90, head_sha: str = "selfsha-90", variant: str = "cl
 
 
 class TestHandleSelfPrReview(TestCase):
+    def test_self_pr_then_auto_dispatch_reuses_one_review_task(self) -> None:
+        task = handle_self_pr_review(_action(head_sha="a" * 40))
+        assert task is not None
+
+        row = AutoReviewDispatch.enqueue(slug="o/r", pr_id=90, head_sha="a" * 40, pr_url=_PR_URL, overlay="acme")
+
+        assert row is not None
+        assert row.task_id == task.pk
+        assert Task.objects.filter(ticket=task.ticket, phase="reviewing").count() == 1
+
+    def test_auto_dispatch_then_self_pr_keeps_one_review_task(self) -> None:
+        row = AutoReviewDispatch.enqueue(slug="o/r", pr_id=90, head_sha="a" * 40, pr_url=_PR_URL, overlay="acme")
+        assert row is not None
+
+        assert handle_self_pr_review(_action(head_sha="a" * 40)) is None
+        assert Task.objects.filter(ticket=row.task.ticket, phase="reviewing").count() == 1
+
     def test_creates_reviewer_reviewing_task_and_claims_marker(self) -> None:
         task = handle_self_pr_review(_action())
         assert task is not None

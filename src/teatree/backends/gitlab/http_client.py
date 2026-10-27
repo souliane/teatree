@@ -279,7 +279,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         response.raise_for_status()
         return cast("RawMR | list[RawMR]", response.json())
 
-    def get_json_paginated(self, endpoint: str) -> list[RawMR]:
+    def get_json_paginated(self, endpoint: str, *, require_list: bool = False) -> list[RawMR]:
         """Fetch every page of an offset-paginated GitLab list endpoint.
 
         GitLab returns each list page's continuation in the ``x-next-page``
@@ -299,13 +299,23 @@ class GitLabHTTPClient(BoundedRetryTransport):
             response.raise_for_status()
             body = response.json()
             if not isinstance(body, list):
+                if require_list:
+                    msg = f"GitLab {endpoint} returned a non-list page"
+                    raise TypeError(msg)
                 break
             items.extend(cast("list[RawMR]", body))
-            next_page = self._parse_next_page(response.headers.get("x-next-page", ""))
+            next_header = response.headers.get("x-next-page", "")
+            next_page = self._parse_next_page(next_header)
+            if require_list and next_header.strip() and next_page is None:
+                msg = f"GitLab {endpoint} returned an invalid pagination cursor"
+                raise ValueError(msg)
             if next_page is None:
                 break
             page = next_page
         else:
+            if require_list:
+                msg = f"GitLab {endpoint} exceeded the pagination limit"
+                raise ValueError(msg)
             logger.warning(
                 "GitLab pagination hit the %s-page cap for %s — result may be truncated", _MAX_PAGES, endpoint
             )

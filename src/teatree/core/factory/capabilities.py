@@ -210,6 +210,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "it is the only surviving record of; read-only (#4527)",
     ),
     Capability(
+        "teatree ticket settle-holds",
+        json_output=True,
+        exit_codes=("0",),
+        note="--dry-run reports held reviews without changing them; --json emits every decision",
+    ),
+    Capability(
         "teatree review apply-reviewer-policy",
         json_output=True,
         exit_codes=("0", "1"),

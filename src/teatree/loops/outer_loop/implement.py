@@ -18,7 +18,7 @@ from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL
 
 #: The standing umbrella issue every outer-loop experiment's synthetic ticket
 #: anchors under; the ``#outer-loop-experiment=<pk>`` fragment makes each unique
-#: while still resolving the ``souliane/teatree`` overlay via ``infer_overlay_for_url``.
+#: while retaining its work's overlay independently of the umbrella URL.
 #: Single-sourced from the ONE umbrella anchor the task sweep recognises (#3706).
 OUTER_LOOP_UMBRELLA_URL = SYNTHETIC_LOOP_UMBRELLA_URL
 
@@ -48,7 +48,11 @@ def schedule_experiment_fix(
         return None
     ticket, _ = Ticket.objects.get_or_create(
         issue_url=issue_url,
-        defaults={"role": Ticket.Role.AUTHOR, "short_description": experiment.hypothesis.strip()[:80]},
+        defaults={
+            "role": Ticket.Role.AUTHOR,
+            "short_description": experiment.hypothesis.strip()[:80],
+            "overlay": lambda: Ticket.creation_overlay(experiment.overlay),
+        },
     )
     ticket.merge_extra(set_keys={_EXPERIMENT_KEY: experiment.pk, _TARGET_KEY: experiment.target_provider_id})
     task: Task | None = None
