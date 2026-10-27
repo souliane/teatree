@@ -32,6 +32,12 @@ from tests.teatree_quality.real_pytest_pool_support import (
 )
 
 
+def test_standalone_pytest_env_drops_parent_django_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "teatree.settings")
+
+    assert "DJANGO_SETTINGS_MODULE" not in standalone_pytest_env(tmp_path)
+
+
 def test_auto_workers_are_parallel_but_bounded_on_a_healthy_box() -> None:
     assert bounded_auto_workers(cores=10, memory_mib=8192, explicit=None) == 4
     assert bounded_auto_workers(cores=2, memory_mib=2048, explicit=None) == 2

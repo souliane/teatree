@@ -43,6 +43,7 @@ def standalone_pytest_env(root: Path) -> dict[str, str]:
     env = {**os.environ, POOL_ROOT_ENV: str(root)}
     for key in (
         INHERITED_LEASE_ENV,
+        "DJANGO_SETTINGS_MODULE",
         "PYTEST_CURRENT_TEST",
         "CI_NODE_TOTAL",
         "CI_NODE_INDEX",
