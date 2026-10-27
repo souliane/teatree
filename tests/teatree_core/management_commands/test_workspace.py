@@ -9,7 +9,7 @@ from contextlib import AbstractContextManager
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -46,7 +46,7 @@ from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdic
 from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.core.management.commands._workspace.helpers import branch_prefix
 from teatree.core.management.commands._workspace.provision_parallel import WorktreeProvisionResult
-from teatree.core.management.commands._workspace.ticket_intake import build_branch_name
+from teatree.core.management.commands._workspace.ticket_intake import RepoExpansionRefusedError, build_branch_name
 from teatree.core.management.commands.workspace import _worktree_root
 from teatree.core.managers import TicketQuerySet
 from teatree.core.models import Session, Task, Ticket, Worktree
@@ -63,6 +63,9 @@ from tests.teatree_core.management_commands._overlays import (
     FullProvisioning,
     _patch_overlays,
 )
+
+if TYPE_CHECKING:
+    from teatree.core.models.types import RepoExpansion
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -330,9 +333,13 @@ class TestWorkspaceTicketIssueIdentity(_TicketIntakeCase):
         url = "https://gitlab.com/acme/widgets/-/issues/258"
         ticket = Ticket.objects.create(issue_url=url, overlay="test", repos=[])
 
-        refusal = _refused_workspace_ticket(url, repos="backend")
+        err = StringIO()
+        with pytest.raises(SystemExit) as raised:
+            call_command("workspace", "ticket", url, repos="backend", stderr=err)
         ticket.refresh_from_db()
-        assert "--reason" in refusal
+        assert raised.value.code == 1
+        assert isinstance(raised.value.__cause__, RepoExpansionRefusedError)
+        assert "--reason" in err.getvalue()
         assert ticket.repos == []
 
         call_command("workspace", "ticket", url, repos="backend", reason="initial scope")
@@ -355,7 +362,8 @@ class TestWorkspaceTicketIssueIdentity(_TicketIntakeCase):
         call_command("workspace", "ticket", url, repos="api", reason="api change")
         ticket.refresh_from_db()
         assert ticket.repos == ["backend", "frontend", "api"]
-        assert ticket.extra["repo_expansions"] == [
+        expansions: list[RepoExpansion] = ticket.extra["repo_expansions"]
+        assert expansions == [
             {"repos": ["frontend"], "reason": "frontend change"},
             {"repos": ["api"], "reason": "api change"},
         ]

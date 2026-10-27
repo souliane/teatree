@@ -18,6 +18,7 @@ from django.test import TestCase
 
 import teatree.core.management.commands.workspace as workspace_mod
 from teatree.core.management.commands._workspace import ticket_intake as workspace_intake_mod
+from teatree.core.management.commands._workspace.ticket_intake import prepare_ticket_reference
 from teatree.core.worktree.occupancy import acquire, occupancy_holder
 from tests.factories import TicketFactory, WorktreeFactory
 
@@ -35,6 +36,9 @@ class _TicketHandoutCase(TestCase):
         self.enterContext(patch.object(workspace_intake_mod, "canonicalize_issue_ref", side_effect=lambda _o, url: url))
         self.enterContext(patch.object(workspace_intake_mod, "resolve_adopt_context", return_value=None))
         self.enterContext(patch.object(workspace_intake_mod, "adopt_preflight_refusal", return_value=None))
+        self.prepare_reference = self.enterContext(
+            patch.object(workspace_mod, "prepare_ticket_reference", wraps=prepare_ticket_reference)
+        )
         self.enterContext(patch.object(workspace_mod, "build_intake", return_value=MagicMock()))
         self.enterContext(patch.object(workspace_mod, "build_ticket", return_value=self.ticket))
         self.enterContext(patch.object(workspace_mod, "finalize_ticket_provision", self.finalize))
@@ -74,6 +78,7 @@ class OccupiedHandoutTests(_TicketHandoutCase):
 
         self.run_ticket("--take-over")
 
+        self.prepare_reference.assert_called_once()
         self.finalize.assert_called_once()
         held = occupancy_holder(self.worktree.__class__.objects.get(pk=self.worktree.pk))
         assert held is not None
