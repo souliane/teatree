@@ -38,8 +38,8 @@ from dataclasses import dataclass
 
 from teatree.core.models import PullRequest, Session, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.owner_dm.question_ticket import STUCK_HALT_PK_RE, QuestionSource, question_source
 from teatree.loop.repair_halt_reconcile import repair_marker_subject_tickets
-from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_PK_RE
 
 _REPAIR_PREFIX = "repair-"
 
@@ -112,11 +112,11 @@ class SubjectIndex:
 
     def ticket_ids_for(self, question: DeferredQuestion) -> list[int] | None:
         """Every subject ticket's pk, or ``None`` when no source can name one."""
-        for source in _SUBJECT_SOURCES:
-            answer = source(self, question)
-            if answer.applicable:
-                return list(answer.tickets) or None
-        return None
+        source = question_source(question)
+        if source is None:
+            return None
+        answer = _SUBJECT_SOURCES[source[0]](self, question)
+        return list(answer.tickets) or None
 
     def states_for(self, question: DeferredQuestion) -> list[str] | None:
         """Every subject ticket's FSM state, or ``None`` when no source can name one."""
@@ -183,13 +183,13 @@ def _session_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectA
     return _resolved([ticket]) if ticket is not None else NOT_APPLICABLE
 
 
-#: Consulted in order; the first APPLICABLE source owns the row (see the module docstring).
-_SUBJECT_SOURCES: tuple[SubjectSource, ...] = (
-    _repair_marker_answer,
-    _stuck_halt_answer,
-    _parked_task_answer,
-    _session_answer,
-)
+#: The shared source selector owns precedence; these map its answer to sweep data.
+_SUBJECT_SOURCES: dict[QuestionSource, SubjectSource] = {
+    "repair": _repair_marker_answer,
+    "stuck": _stuck_halt_answer,
+    "parked": _parked_task_answer,
+    "session": _session_answer,
+}
 
 
 def _session_pk(question: DeferredQuestion) -> int | None:

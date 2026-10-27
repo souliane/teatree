@@ -75,11 +75,14 @@ there is no defect-specific text underneath it for a check to discriminate.
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
 
 from django.db import models
 
 from teatree.failure_signatures import HARNESS_CRASH_MARKERS, outage_signature_in_text
+
+STALE_ERROR_AFTER = timedelta(days=2)
 
 #: Prefix a lease-reaper failure carries, so the reaped row names its own cause.
 LEASE_EXPIRED_PREFIX = "lease_expired: "
@@ -475,6 +478,7 @@ __all__ = [
     "RECOVERY",
     "RESUME_REFUSED_PHRASE",
     "REVIEW_UNRECORDABLE_PREFIX",
+    "STALE_ERROR_AFTER",
     "SUPERSEDED_PREFIX",
     "FailureKind",
     "Recovery",

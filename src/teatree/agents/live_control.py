@@ -132,6 +132,7 @@ class PeerIdentity(TypedDict):
     harness: str
     label: str
     ticket: NotRequired[str]
+    room: NotRequired[str]
     phase: NotRequired[str]
     can_receive: NotRequired[bool]
 
