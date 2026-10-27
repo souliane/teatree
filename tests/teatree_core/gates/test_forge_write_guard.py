@@ -141,6 +141,11 @@ class TestGitLabWriteGuard(TestCase):
             "projects/group%2Frepo/merge_requests/%37",
             "projects/group%2Frepo/labels/3",
             "projects/group/repo/merge_requests/7",
+            "projects/group%2Frepo/merge_requests/7/..%2f..%2fissues/8",
+            "projects/group%2Frepo/merge_requests/7/..;/issues/8",
+            "projects/group%2Frepo/merge_requests/7/%252e%252e/issues/8",
+            "projects/group%2Frepo%5C..%2Fother/merge_requests/7",
+            "groups/5/labels/3",
         )
         client = GitLabHTTPClient(token="CLIENT")
         sends = {"put": lambda endpoint: client.put_response(endpoint, {}), "delete": client.delete}
@@ -155,6 +160,23 @@ class TestGitLabWriteGuard(TestCase):
                 ):
                     send(endpoint)
                 read.assert_not_called()
+                write.assert_not_called()
+
+    def test_own_items_only_reads_the_item_whatever_the_spelling_of_projects(self) -> None:
+        client = GitLabHTTPClient(token="CLIENT")
+        sends = {"put": lambda endpoint: client.put_response(endpoint, {}), "delete": client.delete}
+        for method, send in sends.items():
+            for first in ("%70rojects", "Projects", "PROJECTS"):
+                endpoint = f"{first}/group%2Frepo/merge_requests/7"
+                with (
+                    self.subTest(method=method, first=first),
+                    self._setting({"own_items_only": True}),
+                    patch("httpx.get", side_effect=self._item_reads(author="colleague")) as read,
+                    patch(f"httpx.{method}", return_value=_response(method.upper())) as write,
+                    pytest.raises(WriteRefusedError),
+                ):
+                    send(endpoint)
+                assert read.call_args_list[0].args[0].endswith("/projects/group%2Frepo/merge_requests/7")
                 write.assert_not_called()
 
     def test_own_items_only_checks_authorship_on_delete(self) -> None:

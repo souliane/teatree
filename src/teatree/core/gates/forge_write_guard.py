@@ -27,7 +27,7 @@ def _refuse(reason: str) -> Never:
 
 def item_key_of_endpoint(endpoint: str) -> str:
     parts = endpoint.lstrip("/").split("?", 1)[0].split("/")
-    match parts:
+    match [unquote(parts[0]).casefold(), *parts[1:]]:
         case ["projects", project, ("issues" | "merge_requests") as kind, iid, *_]:
             return f"{unquote(project).casefold()}/{kind}/{iid}"
         case ["projects", project, kind, *_]:
@@ -40,15 +40,15 @@ def item_key_of_endpoint(endpoint: str) -> str:
 
 def item_endpoint_of(endpoint: str) -> str:
     parts = endpoint.lstrip("/").split("?", 1)[0].split("/")
-    if any(unquote(part) in {".", ".."} for part in parts):
-        _refuse("GitLab endpoint path is not canonical")
-    match parts:
+    for index, part in enumerate(unquote(raw) for raw in parts):
+        banned = "\\;%" if index == 1 else "/\\;%"
+        if any(char in part for char in banned) or {".", ".."} & set(part.split("/")):
+            _refuse("GitLab endpoint path is not canonical")
+    match ["projects" if unquote(parts[0]).casefold() == "projects" else parts[0], *parts[1:]]:
         case ["projects", project, ("issues" | "merge_requests") as kind, iid, *_] if iid.isascii() and iid.isdecimal():
             return f"projects/{project}/{kind}/{iid}"
-        case ["projects", *_]:
-            _refuse("GitLab write target could not be matched to an item")
         case _:
-            return ""
+            _refuse("GitLab write target could not be matched to an item")
 
 
 def item_key_of_url(url: str) -> str:

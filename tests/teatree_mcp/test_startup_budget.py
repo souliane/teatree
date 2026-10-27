@@ -27,9 +27,8 @@ FORBIDDEN_STARTUP_MODULES = ("openai", "pydantic_ai", "litellm", "anthropic")
 
 # Ceiling on the whole import graph, so a NEW heavy dependency cannot slip in
 # under a different name than the four above. Measured at 2146 after the
-# deferral; the headroom absorbs ordinary growth without hiding a regression.
-# Nine spare modules allow small import changes before the graph needs review.
-# 2413: the GitLab write guard and the merge-bound token scope are imported by the GitLab client and the merge query.
+# deferral. 2413 equals the measured count, so there is no headroom: the GitLab write guard
+# and the merge-bound token scope are imported by the GitLab client and the merge query.
 MAX_STARTUP_MODULES = 2413
 
 _PROBE = """
