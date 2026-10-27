@@ -103,6 +103,7 @@ class TicketIntake:
     # #17: explicit ``--kind`` (``fix``/``feature``). Blank defers to inference.
     kind: str = ""
     reason: str = ""
+    explicit_repos: bool = False
 
 
 @dataclass(frozen=True)
@@ -239,6 +240,7 @@ def build_intake(overlay: "OverlayBase", raw: RawTicketInputs) -> TicketIntake:
         adopt=raw.adopt,
         kind=raw.kind,
         reason=raw.reason,
+        explicit_repos=bool(raw.repos.strip() or raw.adopt),
     )
 
 
@@ -320,15 +322,16 @@ def build_ticket(
         _wh.reject_variant_mismatch(write, ticket, intake.variant)
 
         prior = [] if created else list(ticket.repos or [])
-        added = list(dict.fromkeys(name for name in intake.repo_names if name not in prior))
+        requested = intake.repo_names if created or intake.explicit_repos or intake.reason.strip() else prior
+        added = list(dict.fromkeys(name for name in requested if name not in prior))
         if not created and added and not intake.reason.strip():
             write(f"  Refused: adding {', '.join(added)} requires --reason <why>.")
             raise RepoExpansionRefusedError
 
         if ticket.state == Ticket.State.NOT_STARTED:
-            ticket.scope(variant=intake.variant or None, repos=intake.repo_names)
+            ticket.scope(variant=intake.variant or None, repos=requested)
 
-        ticket.repos = list(dict.fromkeys(prior + intake.repo_names))
+        ticket.repos = list(dict.fromkeys(prior + requested))
 
         extra = cast("TicketExtra", ticket.extra or {})
         if not created and added:

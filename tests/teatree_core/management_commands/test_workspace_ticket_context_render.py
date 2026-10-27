@@ -74,9 +74,10 @@ class WorkspaceTicketContextWiringTest(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_intake_renders_stored_context_collapsed(self) -> None:
-        Ticket.objects.create(
+        ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://example.com/issues/600",
+            repos=["backend"],
             context="\n\n[2026-05-18 09:00] dev_lr_id = 1234 (used by bob for Round 2)",
         )
         out = StringIO()
@@ -87,6 +88,8 @@ class WorkspaceTicketContextWiringTest(TestCase):
         assert "<details>" in text
         assert "Ticket context (durable knowledge store)" in text
         assert "dev_lr_id = 1234" in text
+        ticket.refresh_from_db()
+        assert ticket.repos == ["backend"]
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
