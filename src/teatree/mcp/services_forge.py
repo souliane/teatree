@@ -213,7 +213,8 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
                 "open_count": len(candidates.all_open),
                 "compared": len(closest),
                 "instructions": (
-                    "Nothing was written. Keep title and body unchanged; judge every returned candidate, then "
+                    f"Nothing was written. {len(candidates.all_open) - len(closest)} open tickets were not compared. "
+                    "Keep title and body unchanged; judge every returned candidate, then "
                     "call again with dedupe={'snapshot': "
                     "<this snapshot>, 'decisions': [{'url': ..., 'fits': bool, 'reason': '<why not>'}]}. "
                     "One returned candidate fits -> the request is appended to that ticket's description; "

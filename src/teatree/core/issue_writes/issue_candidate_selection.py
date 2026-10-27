@@ -48,6 +48,11 @@ def _overlap(first: set[str], second: set[str]) -> float:
     return len(first & second) / len(first | second) if first and second else 0.0
 
 
+def _issue_number_key(url: str) -> tuple[int, int, str]:
+    number = url.rsplit("/", 1)[-1]
+    return (0, int(number), url) if number.isdecimal() else (1, 0, url)
+
+
 def select_closest(
     live: Mapping[str, RawAPIDict],
     title: str,
@@ -55,7 +60,7 @@ def select_closest(
     *,
     limit: int = ISSUE_CREATE_CANDIDATE_LIMIT,
 ) -> dict[str, RawAPIDict]:
-    """Rank by title and description similarity, breaking equal scores by URL."""
+    """Rank by similarity, then numeric issue number and URL."""
     title_words, body_words = _tokens(title), _tokens(body)
 
     def score(issue: RawAPIDict) -> float:
@@ -69,7 +74,7 @@ def select_closest(
             + _overlap(body_words, issue_body)
         )
 
-    urls = sorted(live, key=lambda url: (-score(live[url]), url))[:limit]
+    urls = sorted(live, key=lambda url: (-score(live[url]), _issue_number_key(url)))[:limit]
     return {url: live[url] for url in urls}
 
 

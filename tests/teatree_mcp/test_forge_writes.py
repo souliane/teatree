@@ -289,6 +289,7 @@ class TestIssueCreateDedupesFirst(TestCase):
 
         assert prepared["open_count"] == 24
         assert prepared["compared"] == 20
+        assert "4 open tickets were not compared" in prepared["instructions"]
         assert len(prepared["candidates"]) == len(prepared["snapshot"]) == 20
         assert closest in prepared["snapshot"]
         assert prepared["snapshot"] == prepared_again["snapshot"]
@@ -319,6 +320,50 @@ class TestIssueCreateDedupesFirst(TestCase):
         assert result["outcome"] == "stale_snapshot"
         assert new_url in result["unjudged"]
         assert _writes(fake) == []
+
+    def test_far_ticket_filed_after_preview_keeps_the_snapshot_current(self) -> None:
+        open_issues = [
+            {**self._candidate(title="routine task"), "html_url": f"https://github.com/acme/widgets/issues/{number}"}
+            for number in range(1, 24)
+        ]
+        fake = _FakeForge(open_issues)
+        args = {"repo": "acme/widgets", "title": "cache outage", "body": "cache is down"}
+
+        with _forge_env(fake):
+            prepared = _call("github_issue_create", args)
+            fake.open_issues.append(
+                {**self._candidate(title="routine task"), "html_url": "https://github.com/acme/widgets/issues/99"}
+            )
+            judged = {
+                "snapshot": prepared["snapshot"],
+                "decisions": [{"url": url, "reason": "different request"} for url in prepared["snapshot"]],
+            }
+            result = _call("github_issue_create", {**args, "dedupe": judged})
+
+        assert result["outcome"] == "created_new"
+        assert result["unjudged"] == []
+        assert [name for name, _ in _writes(fake)] == ["create_issue"]
+
+    def test_reversed_forge_listing_keeps_preview_and_commit_results(self) -> None:
+        open_issues = [
+            {**self._candidate(title="routine task"), "html_url": f"https://github.com/acme/widgets/issues/{number}"}
+            for number in range(1, 24)
+        ]
+        args = {"repo": "acme/widgets", "title": "cache outage", "body": "cache is down"}
+        outcomes = []
+
+        for listed in (open_issues, list(reversed(open_issues))):
+            fake = _FakeForge(listed)
+            with _forge_env(fake):
+                prepared = _call("github_issue_create", args)
+                judged = {
+                    "snapshot": prepared["snapshot"],
+                    "decisions": [{"url": url, "reason": "different request"} for url in prepared["snapshot"]],
+                }
+                result = _call("github_issue_create", {**args, "dedupe": judged})
+            outcomes.append((prepared["snapshot"], result))
+
+        assert outcomes[0] == outcomes[1]
 
     def test_a_fitting_candidate_is_extended_instead_of_duplicated(self) -> None:
         fake = _FakeForge([self._candidate()])

@@ -24,8 +24,22 @@ def test_closest_candidates_use_title_and_body_and_have_stable_url_ties() -> Non
     assert len(first) == 20
     assert list(first) == list(reversed_input)
     assert list(first)[:2] == [title_match, body_match]
-    assert list(first)[2:] == sorted(set(live) - {title_match, body_match})[:18]
+    assert (
+        list(first)[2:]
+        == sorted(set(live) - {title_match, body_match}, key=lambda url: int(url.rsplit("/", 1)[1]))[:18]
+    )
     assert set(first) <= set(live)
+
+
+def test_equal_scores_order_by_numeric_issue_number() -> None:
+    base = "https://github.com/acme/widgets/issues/"
+    live = {f"{base}{number}": {"title": "routine task", "body": "unrelated"} for number in (19, 10, 2)}
+
+    assert list(select_closest(live, "cache outage", "details")) == [f"{base}{number}" for number in (2, 10, 19)]
+    assert list(select_closest({f"{base}{name}": live[f"{base}2"] for name in ("beta", "alpha")}, "", "")) == [
+        f"{base}alpha",
+        f"{base}beta",
+    ]
 
 
 def test_closest_candidates_read_gitlab_description() -> None:
