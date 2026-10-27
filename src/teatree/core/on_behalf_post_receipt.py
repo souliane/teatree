@@ -19,7 +19,7 @@ un-posted.
 The receipt runs after every colleague-visible on-behalf post.
 
 Delivery (the configured receipt channel, else the owner DM) lives in
-:mod:`teatree.core.on_behalf_receipt_delivery`, reached at call time because the
+:mod:`teatree.core.owner_dm.receipt_delivery`, reached at call time because the
 egress it posts through imports this module.
 """
 
@@ -56,7 +56,7 @@ def notify_user_on_behalf_post(
     NOOP/FAILED ``BotPing`` row (the audit scanner re-DMs on drift), so
     a misconfigured Slack backend cannot break a legitimate publish.
     """
-    from teatree.core.on_behalf_receipt_delivery import deliver_receipt  # noqa: PLC0415 — deferred: egress imports this
+    from teatree.core.owner_dm.receipt_delivery import deliver_receipt  # noqa: PLC0415 — deferred: egress imports this
 
     if artifact_url.startswith("http"):
         short = artifact_url.rsplit("/", 1)[-1] or artifact_url
