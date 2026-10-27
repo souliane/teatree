@@ -74,12 +74,9 @@ def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, ph
     """Persist a scanning_news agent's returned ``article_suggestions`` (corr-11, #9).
 
     One ``PENDING`` :class:`PendingArticleSuggestion` per candidate, idempotent by
-    source URL (a re-scan never duplicates) and behind the same ask-gate the
-    scanner used to enqueue directly — the shell-denied agent hands the batch
-    back, the server persists it. After at least one NEW candidate is recorded,
-    the press-review digest delivers the read. The pending row is the ask-gate;
-    a batch question has no reader. A non-scanning_news phase or a result with
-    no ``article_suggestions`` list is a no-op.
+    source URL. After at least one new candidate is recorded, the press-review
+    digest delivers the read. A non-scanning_news phase or a result with no
+    ``article_suggestions`` list is a no-op.
     """
     if normalize_phase(phase or task.phase) != _SCANNING_NEWS_PHASE:
         return

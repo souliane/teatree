@@ -43,7 +43,8 @@ the loop persists and surfaces them for you:
 - **URL verification:** the recorder drops an `UNRESOLVED` URL (Non-Negotiable 7).
 - **Slack press-review digest:** after recording new candidates, the loop delivers
   one rendered digest with a clickable link per candidate and code symbols and file
-  paths in monospace. Deduped per task; an empty scan produces no digest.
+  paths in monospace (see `references/slack-format.md`). Deduped per task; an
+  empty scan produces no digest.
 - **Filing:** only the user, on approval, files a `from-news-scan` issue — never
   the scan.
 
@@ -143,8 +144,8 @@ The dispatched task's `execution_reason` carries the gate directive (the `ASK-GA
 ### 8. Hand back the envelope
 
 You do NOT post a Slack DM — the loop delivers the **press-review digest** after it
-records your candidates. Return the envelope (see "How
-candidates are recorded" above) with a one-line `summary` and every candidate in
+records your candidates. Return the envelope (see "How candidates are recorded"
+above) with a one-line `summary` and every candidate in
 `article_suggestions`. Fold the step-6b drop count into the `summary`.
 
 Write each `rationale` so it renders well in the digest: name real file paths and

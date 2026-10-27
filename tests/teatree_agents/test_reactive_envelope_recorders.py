@@ -5,8 +5,10 @@ from unittest import mock
 from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
+from teatree.core.notify import NotifyKind
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 from tests._owner_channel import assert_a_plain_card
 
@@ -46,6 +48,9 @@ class TestScanningNewsDigestDelivery(TestCase):
         text = notify.call_args.args[0]
         assert "<https://example.com/eval|An agent eval harness>" in text
         assert "`src/teatree/eval/backends.py`" in text
+        assert notify.call_args.kwargs["audience"] is NotifyAudience.OWNER_DELIVERY
+        assert notify.call_args.kwargs["kind"] is NotifyKind.INFO
+        assert notify.call_args.kwargs["linkify"] is False
 
     def test_the_digest_is_idempotent_per_task(self) -> None:
         task = _news_task()
