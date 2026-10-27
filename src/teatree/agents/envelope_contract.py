@@ -26,6 +26,7 @@ from teatree.agents.result_schema import (
     required_evidence_for_phase,
 )
 from teatree.agents.result_schema_draft import EXECUTOR_DRAFT_FIELDS
+from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
@@ -204,26 +205,30 @@ def envelope_contract_lines(
         "",
         CONTRACT_HEADING,
         "",
-        "Only the final JSON result envelope records this task. Prose alone is refused",
-        "(`no_result_envelope`) and discarded; no partial credit or synthesized envelope.",
+        "Only the final JSON envelope counts; prose or a synthesized envelope is refused",
+        "(`no_result_envelope`) and discarded; no partial credit.",
         "",
         "- End with exactly one plain JSON object; no code fence or trailing text.",
         "- `summary` (string) is required on every phase.",
-        "- `needs_user_input` is a boolean; when true, set `user_input_reason` (ONE question ending in `?`) and stop.",
-        "  Stop for the owner only with `user_input_kind`, `user_input_checked` (facts you checked), `user_input_card`",
-        '  {"why", "blocker", "options": [{"label", "description", "recommended"}]}; 120 words max, plain English:',
+        "- Owner stop (`needs_user_input`: true): `user_input_reason` (one question ending ?), `user_input_kind`,",
+        (
+            '  `user_input_checked`, `user_input_card` {"why", "blocker", '
+            '"options": [{"label", "description", "recommended"}]}; stop.'
+        ),
         f"  {', '.join(OwnerDecision)}; an access or permission grant is credentials.",
+        *(f"  {line}" for line in owner_stop_limits_lines()),
         "  Decide everything else yourself.",
-        "- If skills were required for this dispatch, include `skill_application`: one",
-        '  `{"skill": "name", "evidence": "short concrete reference"}` per skill.',
-        "  Only describe skill use that actually happened; omission is recorded as unverified.",
+        (
+            "- For each required skill used, add `skill_application`: "
+            '`{"skill": "name", "evidence": "short concrete reference"}`; omissions are unverified.'
+        ),
         *_evidence_lines(phase, read_only_venue=read_only_venue),
         *_verdict_consistency_lines(phase),
-        "- Use ONLY these keys — any other key is rejected outright:",
+        "- Only these keys are allowed:",
         f"  {', '.join(_taught_keys(read_only_venue=read_only_venue))}",
         "",
         "Minimal valid envelope for this phase — copy this shape exactly:",
         json.dumps(
-            envelope_example(phase, reviewer_identity=reviewer_identity, read_only_venue=read_only_venue), indent=2
+            envelope_example(phase, reviewer_identity=reviewer_identity, read_only_venue=read_only_venue), indent=1
         ),
     )
