@@ -44,7 +44,7 @@ import re
 import sys
 
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
-from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER, call_is_from_subagent
+from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER, call_is_from_subagent, heavy_command_text
 
 # Alias both identities so the handler the router registers and a test patching a
 # helper here operate on ONE module object.
@@ -118,7 +118,7 @@ def _investigation_signal(data: dict) -> str | None:
     command = data.get("tool_input", {}).get("command")
     if not isinstance(command, str):
         return None
-    if PYTEST_VERB_FINDER.search(command):
+    if PYTEST_VERB_FINDER.search(heavy_command_text(command)):
         return "a foreground test run"
     if _ORCHESTRATOR_INVESTIGATION_BASH_RE.search(command):
         return "a deep git/CI investigation command"
