@@ -25,6 +25,8 @@ from teatree.core.waiting import WaitingEntry, format_age, gather_waiting
 
 class _WaitingRow(TypedDict):
     id: int | None
+    row_id: int | None
+    owner_only: bool
     kind: str
     ref: str
     url: str
@@ -42,6 +44,8 @@ def _payload(entries: list[WaitingEntry]) -> WaitingPayload:
         "entries": [
             {
                 "id": entry.entry_id,
+                "row_id": entry.row_id,
+                "owner_only": entry.owner_only,
                 "kind": entry.kind,
                 "ref": entry.ref,
                 "url": entry.url,
@@ -52,6 +56,12 @@ def _payload(entries: list[WaitingEntry]) -> WaitingPayload:
     }
 
 
+def _entry_label(entry: WaitingEntry) -> str:
+    if entry.entry_id is not None:
+        return str(entry.entry_id)
+    return f"Q{entry.row_id}" if entry.row_id is not None else "-"
+
+
 def _render_list(entries: list[WaitingEntry]) -> str:
     """Render the waiting entries as a table, or a terse empty line."""
     if not entries:
@@ -59,7 +69,7 @@ def _render_list(entries: list[WaitingEntry]) -> str:
     buffer = io.StringIO()
     rows = [
         [
-            str(entry.entry_id) if entry.entry_id is not None else "-",
+            _entry_label(entry),
             entry.kind,
             format_age(entry.age),
             render_ref(entry.ref, url=entry.url),

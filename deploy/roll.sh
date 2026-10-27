@@ -112,7 +112,7 @@ trap release EXIT
 export TEATREE_DEPLOY_CHECKOUT="$REPO_ROOT"
 export TEATREE_HOST_HOME="${TEATREE_HOST_HOME:-$HOME}"
 # dockerd creates a missing bind source root-owned, locking the non-root container out of it.
-install -d -m 700 "$TEATREE_HOST_HOME/.password-store" "$TEATREE_HOST_HOME/.gnupg"
+install -d -m 700 "$TEATREE_HOST_HOME/.password-store" "$TEATREE_HOST_HOME/.gnupg" "$TEATREE_HOST_HOME/.config/teatree-master-key"
 install -d "$TEATREE_HOST_HOME/.local/share/teatree" "$TEATREE_HOST_HOME/.local/share/teatree-worktrees" \
     "$TEATREE_HOST_HOME/workspace/t3-workspaces" "$TEATREE_HOST_HOME/.local/share/uv/python" \
     "$TEATREE_HOST_HOME/.local/bin"
@@ -130,8 +130,8 @@ export TEATREE_DOCKER_SOCKET_GID
 for pair in "GITLAB_TOKEN:TEATREE_GITLAB_TOKEN_PASS_PATH" "NOTION_TOKEN:NOTION_TOKEN_PASS_PATH"; do
     var="${pair%%:*}"
     key="${pair#*:}"
-    if [ -z "${!var:-}" ] && [ -n "${!key:-}" ] && command -v pass >/dev/null 2>&1; then
-        export "$var=$(pass show "${!key}" 2>/dev/null | head -n1 || true)"
+    if [ -z "${!var:-}" ] && [ -n "${!key:-}" ]; then
+        export "$var=$("$SCRIPT_DIR/secret-read.sh" host-get "${!key}" 2>/dev/null || true)"
     fi
 done
 # The worker's caps come from the new image's own sizer, reading the daemon's real resources.

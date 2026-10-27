@@ -1018,7 +1018,7 @@ depends_on = [
 [[modules]]
 path = "teatree.loop.preset_resolution"
 layer = "domain"
-depends_on = ["teatree.core.models"]
+depends_on = ["teatree.core.models", "teatree.core.modelkit"]
 
 [[modules]]
 path = "teatree.loop.scanners"
@@ -1096,6 +1096,7 @@ depends_on = [
 path = "teatree.loop.self_improve"
 layer = "domain"
 depends_on = [
+  "teatree.core",
   "teatree.core.admission",
   "teatree.core.admission.pr_start_cap",
   "teatree.core.factory.queue_stall",

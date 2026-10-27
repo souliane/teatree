@@ -282,9 +282,9 @@ def _record_verdict_and_grades(
     vouch for a tree the verdict does not.
     """
     fix_record = result.get("fix_record")
-    if fix_record is not None and (refusal := fix_record_refusal(fix_record)):
-        return refusal
     ticket = gated_ticket_for_review_task(task)
+    if fix_record is not None and (refusal := fix_record_refusal(fix_record, ticket=ticket)):
+        return refusal
     merge_safe = str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.MERGE_SAFE
     raw_findings = envelope.get("findings", [])
     findings = (
