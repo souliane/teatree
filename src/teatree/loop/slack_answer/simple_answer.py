@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 from teatree.agents.one_shot import OneShotSpec, run_one_shot
 from teatree.core.models import PullRequest, Task, Ticket
 from teatree.loop.inbound_classifier import strip_urls
+from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, ReadingSource
 from teatree.loop.self_improve.budget import precheck_budget
 from teatree.loop.statusline import statusline_for_slack
 
@@ -101,6 +102,19 @@ def is_status_question(text: str) -> bool:
         any(token in lowered for token in _DASHBOARD_TOKENS)
         and ("?" in lowered or lowered.startswith(("status", "progress", "update")))
     )
+
+
+def status_binding_reader(read: InboundReader, *, status_request: bool) -> InboundReader:
+    if not status_request:
+        return read
+    status_reading = InboundReading(
+        intent=InboundIntent.QUESTION, answerable=True, work_summary="", source=ReadingSource.HEURISTIC
+    )
+
+    def status_reader(_text: str) -> InboundReading:
+        return status_reading
+
+    return status_reader
 
 
 def ticket_status_answer(ticket: Ticket) -> str:

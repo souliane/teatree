@@ -82,6 +82,7 @@ from teatree.loop.slack_answer.simple_answer import (
     NEEDS_WORK_SENTINEL,
     build_simple_answer,
     is_status_question,
+    status_binding_reader,
     ticket_status_answer,
 )
 from teatree.loop.slack_answer.thread_readback import (
@@ -466,15 +467,17 @@ def _process_unit(
     if _reject_foreign_bound_unit(backend, unit, report, binding):
         return
 
-    if binding is not None and is_status_question(unit.text):
+    status_request = binding is not None and is_status_question(unit.text)
+    read = memoized_reader(reader)
+    result = bind_reply(
+        unit.lead, reader=status_binding_reader(read, status_request=status_request), backend=backend, text=unit.text
+    )
+    log_coalesced_replies(unit.rows, result)
+    bound = result if isinstance(result, BoundAnswer) else None
+    if status_request and bound is None:
         if _handle_simple(backend, unit, binding) == "simple":
             report.answered_simple += 1
         return
-
-    read = memoized_reader(reader)
-    result = bind_reply(unit.lead, reader=read, backend=backend, text=unit.text)
-    log_coalesced_replies(unit.rows, result)
-    bound = result if isinstance(result, BoundAnswer) else None
     if isinstance(result, AmbiguousCards) and _card_result_reply(backend, unit, report, result):
         return
     if binding is not None and _live_receipt(backend, unit, report, binding, (read, bound)):
