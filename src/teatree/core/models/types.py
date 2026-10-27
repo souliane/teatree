@@ -3,6 +3,7 @@ from collections.abc import Iterable
 from typing import Final, TypedDict
 
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
+from teatree.core.models.repo_expansion import TicketRepoExtra
 from teatree.core.models.worktree_extra_types import WorktreeExtra
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ class ShippingHold(TypedDict):
     checked_at: str
 
 
-class TicketExtra(TypedDict, total=False):
+class TicketExtra(TicketRepoExtra, total=False):
     tests_passed: bool
     nit_follow_up: bool
     nit_lane_receipts: dict[str, JSONObject]
@@ -165,11 +166,6 @@ class TicketExtra(TypedDict, total=False):
     issue_close_reason: str
     visual_qa: VisualQASummary
     branch: str
-    # #33 per-repo branch override map (repo → branch). A ticket whose repos
-    # live on DIFFERENT branches maps each one here; ``branch`` stays the
-    # single ticket-dir name so every repo provisions as a SIBLING in one dir.
-    # Repos absent from the map fall back to ``branch``.
-    branches: dict[str, str]
     # #2275 adopt: repo -> existing on-disk worktree_path for an outside branch
     # registered via ``workspace ticket --adopt``; the provisioner records the
     # path verbatim instead of ``git worktree add``.

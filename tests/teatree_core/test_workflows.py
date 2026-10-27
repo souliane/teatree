@@ -665,6 +665,7 @@ class TestRunBackend(TestCase):
                     "https://gitlab.com/org/repo/-/issues/999",
                     "--variant",
                     "testclient",
+                    repos="backend,frontend",
                 ),
             )
 
