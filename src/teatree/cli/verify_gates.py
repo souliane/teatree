@@ -49,7 +49,7 @@ import yaml
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.hooks.banned_term_registry import load_registry
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
-from teatree.paths import ControlDb
+from teatree.paths import ControlDb, canonical_db_in
 from teatree.quality.changed_set import ChangedSetError, changed_paths
 from teatree.quality.gate_receipt import write_gate_receipt
 from teatree.sqlite_snapshot import _sqlite_snapshot
@@ -313,7 +313,9 @@ def _stage_env(private_root: str) -> dict[str, str]:
 
 def _snapshot_control_db(repo: Path, env: dict[str, str]) -> None:
     control = ControlDb(os.environ)
-    source = control.primary()
+    source = control.for_repo(repo).path
+    if not source.is_file() and not os.environ.get("T3_CONFIG_DB"):
+        source = canonical_db_in(control.primary_data_dir(), env=os.environ, home=Path.home())
     if not source.is_file():
         raise FileNotFoundError(source)
 

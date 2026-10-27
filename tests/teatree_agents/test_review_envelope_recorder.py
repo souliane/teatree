@@ -197,7 +197,7 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         assert "review_venue_limit" in attempt.error
         assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
 
-    def test_delta_review_carries_only_untouched_pass_grades_at_new_head(self) -> None:
+    def test_delta_review_regrades_test_citation_after_source_change(self) -> None:
         ticket = _author_ticket()
         prior = "a" * 40
         criteria = _criteria(ticket)
@@ -226,18 +226,23 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
                 "prior_head": prior,
                 "patch": "+fixed",
                 "delta_files": ["src/touched.py"],
-                "carried": [0],
+                "carried": [],
             },
         )
 
-        result = _envelope(grades=[{"ordinal": 1, "status": "pass", "rationale": _CITATION}])
+        result = _envelope(
+            grades=[
+                {"ordinal": 0, "status": "pass", "rationale": _CITATION},
+                {"ordinal": 1, "status": "pass", "rationale": _CITATION},
+            ]
+        )
         attempt = record_result_envelope(task, result, phase="reviewing")
 
         assert attempt.error == ""
         ticket.refresh_from_db()
         grades = ticket.extra["rubric_grades_by_head"][_HEAD]
         assert grades[str(criteria[0].pk)]["grader_identity"] == _REVIEWER
-        assert grades[str(criteria[0].pk)]["rationale"] == "tests/unchanged.py:1"
+        assert grades[str(criteria[0].pk)]["rationale"] == _CITATION
         assert Rubric.objects.active_for_ticket(ticket).is_fully_passed_at(_HEAD)
 
     def test_delta_review_omitting_touched_criterion_records_no_verdict(self) -> None:
