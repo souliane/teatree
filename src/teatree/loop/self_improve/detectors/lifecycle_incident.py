@@ -10,12 +10,12 @@ from operator import itemgetter
 from pathlib import Path
 from typing import ClassVar
 
-from django.db.models import Q, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone
 
 from teatree.core.modelkit import reask_cadence
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind, is_causeless
+from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, STALE_ERROR_AFTER, FailureKind, is_causeless
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.models.loop_schedule import owner_zone
@@ -253,6 +253,13 @@ class LifecycleIncidentDetector:
             Task.objects.filter(status=Task.Status.FAILED)
             .exclude(failure_kind__in=_RECOVERED_KINDS)
             .exclude(ticket__state__in=Ticket.finished_states())
+            .alias(
+                has_attempt=Exists(TaskAttempt.objects.filter(task_id=OuterRef("pk"))),
+                has_recent_attempt=Exists(
+                    TaskAttempt.objects.filter(task_id=OuterRef("pk"), started_at__gte=now - STALE_ERROR_AFTER)
+                ),
+            )
+            .exclude(has_attempt=True, has_recent_attempt=False)
         )
         if self.overlay_name:
             tasks = tasks.filter(ticket__overlay=self.overlay_name)

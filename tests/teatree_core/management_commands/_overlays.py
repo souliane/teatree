@@ -77,6 +77,10 @@ def env_safe_mock_overlay() -> MagicMock:
 
 
 class FullMetadata(OverlayMetadata):
+    def get_issue_repos(self, issue_url: str) -> list[str]:
+        del issue_url
+        return ["backend", "frontend"]
+
     def get_ci_project_path(self) -> str:
         return "test/project"
 

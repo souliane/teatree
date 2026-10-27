@@ -16,9 +16,10 @@ def record_issue_judgment(
     outcome: "CreateOutcome",
     decisions: "Sequence[CreateDecision]",
     live_urls: "Collection[str]",
+    open_count: int,
 ) -> None:
     live_decisions = [decision for decision in decisions if decision.candidate_url in live_urls]
-    lines = [f"{outcome.kind} {outcome.issue_url}: {len(live_urls)} candidates judged"]
+    lines = [f"{outcome.kind} {outcome.issue_url}: {len(live_urls)} candidates judged of {open_count} open"]
     for decision in live_decisions:
         verdict = "fits" if decision.fits else "rejected"
         reason = decision.reason.strip() or (
