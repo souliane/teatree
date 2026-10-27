@@ -641,6 +641,18 @@ class TestMarkerJudgedCreate(TestCase):
             in SendAudit.objects.get(action="issue_create_judgment").payload_summary
         )
 
+    def test_marker_filer_still_judges_every_open_ticket_beyond_manual_cap(self) -> None:
+        urls = [f"https://gitlab.com/acme/widgets/-/issues/{number}" for number in range(1, 23)]
+        host = _FakeHost({url: _issue(url, body="unrelated") for url in urls})
+
+        with _no_scrub():
+            outcome = create_or_extend_by_marker(
+                host=host, draft=IssueDraft(repo=_REPO, title="t", body="b"), marker="<!-- fp: abc -->"
+            )
+
+        assert outcome.kind == "created_new"
+        assert "22 candidates judged" in SendAudit.objects.get(action="issue_create_judgment").payload_summary
+
     def test_an_empty_backlog_logs_the_check_without_publishing_it(self) -> None:
         host = _FakeHost()
         with _no_scrub():

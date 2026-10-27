@@ -937,12 +937,14 @@ post-write result.
 - **The MCP create dedupes in two calls, so the pass cannot be skipped.**
   `<forge>_issue_create` is the surface an agent actually files from, so it is where a
   skippable dedupe would be skipped. Called with no `dedupe` it WRITES NOTHING and
-  returns `judgment_required` plus the open backlog and the `snapshot` it was read at;
+  returns `judgment_required`, the 20 closest open tickets by draft title and description,
+  `open_count`, `compared`, and a `snapshot` of only those candidate URLs;
   the retry supplies `dedupe={"snapshot", "decisions"}` and gets `created_new`,
   `extended_existing`, `external_conflict` or `stale_snapshot` — never a bare URL,
   because which of those happened is what the caller has to report. The two travel as
-  ONE argument: a judgment set without the backlog it was made against cannot be
-  checked for completeness.
+  ONE argument: a judgment set without the candidates it was made against cannot be
+  checked for completeness. A new ticket entering the closest set makes the snapshot
+  stale; tickets outside that set are not judged and can still contain a duplicate.
 - **A tracked source that files an issue is caught statically.** A PreToolUse hook only
   sees a live session — a CI workflow step, a checked-in script and a skill teaching the
   wrong command all run outside one, which is how `ci.yml`'s selection-audit filer ran a

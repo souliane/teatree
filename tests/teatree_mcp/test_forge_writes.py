@@ -255,6 +255,71 @@ class TestIssueCreateDedupesFirst(TestCase):
         assert result["candidates"][0]["title"] == "the empty case crashes"
         assert _writes(fake) == []
 
+    def test_preview_and_commit_judge_only_the_closest_twenty(self) -> None:
+        open_issues = [
+            {**self._candidate(title="routine task"), "html_url": f"https://github.com/acme/widgets/issues/{number}"}
+            for number in range(1, 24)
+        ]
+        closest = "https://github.com/acme/widgets/issues/99"
+        open_issues.append({**self._candidate(title="cache outage"), "html_url": closest, "body": "cache is down"})
+        fake = _FakeForge(open_issues)
+        args = {"repo": "acme/widgets", "title": "cache outage", "body": "cache is down"}
+
+        with _forge_env(fake):
+            prepared = _call("github_issue_create", args)
+            prepared_again = _call("github_issue_create", args)
+            with pytest.raises(Exception, match="unjudged"):
+                _call(
+                    "github_issue_create",
+                    {
+                        **args,
+                        "dedupe": {
+                            "snapshot": prepared["snapshot"],
+                            "decisions": [
+                                {"url": url, "reason": "different request"} for url in prepared["snapshot"][:-1]
+                            ],
+                        },
+                    },
+                )
+            judged = {
+                "snapshot": prepared["snapshot"],
+                "decisions": [{"url": url, "reason": "different request"} for url in prepared["snapshot"]],
+            }
+            result = _call("github_issue_create", {**args, "dedupe": judged})
+
+        assert prepared["open_count"] == 24
+        assert prepared["compared"] == 20
+        assert len(prepared["candidates"]) == len(prepared["snapshot"]) == 20
+        assert closest in prepared["snapshot"]
+        assert prepared["snapshot"] == prepared_again["snapshot"]
+        assert [name for name, _ in _writes(fake)] == ["create_issue"]
+        assert result["outcome"] == "created_new"
+        audit = SendAudit.objects.get(action="github_issue_create_judgment")
+        assert "20 candidates judged" in audit.payload_summary
+
+    def test_close_ticket_filed_after_preview_makes_snapshot_stale(self) -> None:
+        open_issues = [
+            {**self._candidate(title="routine task"), "html_url": f"https://github.com/acme/widgets/issues/{number}"}
+            for number in range(1, 24)
+        ]
+        fake = _FakeForge(open_issues)
+        args = {"repo": "acme/widgets", "title": "cache outage", "body": "cache is down"}
+
+        with _forge_env(fake):
+            prepared = _call("github_issue_create", args)
+            assert len(prepared["snapshot"]) == 20
+            new_url = "https://github.com/acme/widgets/issues/99"
+            fake.open_issues.append({**self._candidate(title="cache outage"), "html_url": new_url})
+            judged = {
+                "snapshot": prepared["snapshot"],
+                "decisions": [{"url": url, "reason": "different request"} for url in prepared["snapshot"]],
+            }
+            result = _call("github_issue_create", {**args, "dedupe": judged})
+
+        assert result["outcome"] == "stale_snapshot"
+        assert new_url in result["unjudged"]
+        assert _writes(fake) == []
+
     def test_a_fitting_candidate_is_extended_instead_of_duplicated(self) -> None:
         fake = _FakeForge([self._candidate()])
         judged = {
