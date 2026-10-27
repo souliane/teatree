@@ -16,7 +16,8 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, Ticket
+from teatree.core.notify_types import DELIVERED
 
 
 def _backend() -> MagicMock:
@@ -38,6 +39,20 @@ def _call(*args: str) -> tuple[str, int]:
 
 
 class TestNotifySendSubcommand(TestCase):
+    def test_dm_resolves_ticket_while_send_and_explicit_user_do_not(self) -> None:
+        ticket = Ticket.objects.create(short_description="Bound")
+        with (
+            patch("teatree.core.management.commands.notify.resolve_invoking_ticket", return_value=ticket) as resolve,
+            patch("teatree.core.management.commands.notify.notify_user_outcome", return_value=DELIVERED) as notify,
+        ):
+            _call("notify", "dm", "ticket note", "--idempotency-key", "ticket-dm")
+            assert notify.call_args.kwargs["options"].ticket_id == ticket.pk
+            _call("notify", "send", "signal", "--idempotency-key", "ticket-send")
+            assert notify.call_args.kwargs["options"].ticket_id is None
+            _call("notify", "dm", "other user", "--user-id", "U_OTHER", "--idempotency-key", "other-dm")
+            assert notify.call_args.kwargs["options"].ticket_id is None
+        resolve.assert_called_once_with()
+
     def test_send_invokes_notify_path_and_records_audit(self) -> None:
         backend = _backend()
         with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):

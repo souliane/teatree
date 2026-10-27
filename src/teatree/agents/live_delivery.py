@@ -23,6 +23,7 @@ _MAX_INBOX_MESSAGES = 1_000
 MAILBOX_SOCKET_ENV = "T3_AGENT_MAILBOX_SOCKET"
 MAILBOX_AUTH_ENV = "T3_AGENT_MAILBOX_TOKEN"
 MAILBOX_PHASE_ENV = "T3_AGENT_MAILBOX_PHASE"
+TICKET_ID_ENV = "T3_TICKET_ID"
 
 
 def _redacted_token_repr(_value: str) -> str:
@@ -80,6 +81,7 @@ def peer_identity(peer: PeerDescriptor) -> PeerIdentity:
     }
     if peer.room:
         identity["ticket"] = peer.room
+        identity["room"] = peer.room
     if peer.phase:
         identity["phase"] = peer.phase
     return identity
