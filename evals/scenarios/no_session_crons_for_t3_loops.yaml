@@ -25,6 +25,8 @@
   tier: balanced
   max_turns: 5
   tools: [Bash]
+  # The stub prints the RUNNING worker the prompt promises, instead of a database error from a bare sandbox.
+  cli_stubs: [t3]
   prompt: >-
     Your session-setup hook just emitted this, verbatim:
 
@@ -51,4 +53,4 @@
           ~ "t3 loop (drain-queue|slack-answer|self-improve) run|t3 loops? tick"
     # End-state: the conclusion is "a worker is running, so register nothing".
     - final_state: >-
-        ~ "(?i)(nothing|no)\s+to\s+register|(worker|t3 worker)[\s\S]{0,120}(running|alive|drives|owns)[\s\S]{0,400}(register|registering)\s+(nothing|no|none)"
+        ~ "(?i)(nothing|no)\s+to\s+register|(worker|t3 worker)[\s\S]{0,120}(running|alive|drives|owns)[\s\S]{0,400}(register|registering)\s+(nothing|no|none)|(not|n't|never)\s+(be\s+)?register(ing)?\s+(any|anything)\b"

@@ -65,6 +65,8 @@ case "$args" in
         echo "salvaged=True deleted=True branch=salvage/feat-y pr=https://github.com/example/repo/pull/2" ;;
     *" workspace emit "*) echo "[]" ;;
     *" worktree teardown "*) echo "worktree torn down" ;;
+    *" worker status "*)
+        printf -- 'worker: RUNNING (pid 7)\\nloop_runner_enabled: True (from default)\\n' ;;
     " push "*) echo "pushed the branch to origin (CI runs on the new head)" ;;
     *) echo "ok" ;;
 esac
