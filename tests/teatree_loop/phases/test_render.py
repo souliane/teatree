@@ -165,6 +165,31 @@ def test_render_phase_idle_omits_scanner_error_line(tmp_path: Path) -> None:
 
 
 class TestSelfImproveStatuslineVisibility(TestCase):
+    def test_oldest_age_uses_first_firing_across_mixed_ages(self) -> None:
+        now = dt.datetime.now(tz=dt.UTC)
+        for key, age_days in (("older", 5), ("younger", 2)):
+            firing = record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=key,
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload={"kind": "task_failed", "cause": "timeout", "count": 1},
+                ),
+                action=ActionRung.STATUSLINE,
+                now=now - dt.timedelta(days=age_days, hours=1),
+            )
+            SelfImproveFiring.objects.filter(pk=firing.pk).update(
+                last_fired_at=now if key == "older" else now - dt.timedelta(days=1)
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == ["self-improve: task_failed 2 (timeout 2); oldest 5d"]
+
     def test_many_missing_payloads_become_one_counted_line_with_reason(self) -> None:
         now = dt.datetime.now(tz=dt.UTC)
         for index in range(17):
