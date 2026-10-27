@@ -20,10 +20,11 @@ class TestIssueJudgmentAudit(TestCase):
                 CreateDecision(candidate_url="https://gitlab.com/acme/widgets/-/issues/3", reason="stale"),
             ],
             live_urls=(fitting, rejected),
+            open_count=3,
         )
         row = SendAudit.objects.get(action="issue_create_judgment")
         assert row.destination == "private-judgment:gitlab:acme/widgets"
-        assert "2 candidates judged" in row.payload_summary
+        assert "2 candidates judged of 3 open" in row.payload_summary
         assert f"{fitting} fits: caller marked as fitting" in row.payload_summary
         assert f"{rejected} rejected: different topic" in row.payload_summary
         assert "issues/3" not in row.payload_summary
@@ -35,6 +36,7 @@ class TestIssueJudgmentAudit(TestCase):
             outcome=CreateOutcome(kind="created_new", issue_url=url),
             decisions=[],
             live_urls=(),
+            open_count=0,
         )
         assert (
             SendAudit.objects.get(action="issue_create_judgment").destination == "private-judgment:gitlab:acme/widgets"
@@ -51,6 +53,7 @@ class TestIssueJudgmentAudit(TestCase):
                 CreateDecision(candidate_url=rejected, reason=" \n"),
             ],
             live_urls=(fitting, rejected),
+            open_count=2,
         )
         row = SendAudit.objects.get(action="issue_create_judgment")
         assert f"{rejected} rejected: caller supplied no rejection reason" in row.payload_summary

@@ -48,10 +48,12 @@ ticket is a request the factory will work on twice. The first call writes nothin
 ```text
 mcp__teatree__github_issue_create(
   title="<what the operator asked for>", body="<detail>", labels=["t3-auto"])
-  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...]}
+  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...],
+     "open_count": N, "compared": M}
 ```
 
-Judge every candidate, then call again with that same snapshot:
+Judge every returned candidate, then call again with that same snapshot, title, and body; `open_count - compared`
+is the number of open tickets outside the closest set:
 
 ```text
 mcp__teatree__github_issue_create(
