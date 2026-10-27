@@ -61,6 +61,19 @@ def test_origin_signal_import_stays_cold() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_gate_two_blueprint_describes_scanned_payloads() -> None:
+    text = (Path(__file__).resolve().parents[1] / "docs/blueprint/factory-architecture.md").read_text()
+    paragraphs = [
+        part for part in text.split("\n\n") if "gate 2" in part and "handle_enforce_orchestrator_boundary" in part
+    ]
+    assert any(
+        "every other heredoc body and shell here-string is scanned" in part
+        and "heavy commands in quoted spans" in part
+        and "file-writing `cat`/`tee` heredocs" in part
+        for part in paragraphs
+    )
+
+
 def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
     """Seed a DB-home ``teatree_config_setting`` store with JSON-encoded rows."""
     conn = sqlite3.connect(str(path))
@@ -271,6 +284,77 @@ class TestFileWritingHeredocs:
         ],
     )
     def test_executable_or_unclosed_heredoc_still_denies(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "docker compose exec -T web bash <<EOF\nuv run pytest\nEOF",
+            "ssh host bash -s <<EOF\nsleep 300\nEOF",
+            "ssh host <<EOF\nsleep 300\nEOF",
+            "sudo -s <<EOF\nsleep 300\nEOF",
+            "su - x <<EOF\nsleep 300\nEOF",
+            "kubectl exec -i pod -- sh <<EOF\nsleep 300\nEOF",
+            "source /dev/stdin <<EOF\nsleep 300\nEOF",
+            ". /dev/stdin <<EOF\nsleep 300\nEOF",
+            "dash <<EOF\nsleep 300\nEOF",
+            "ksh <<EOF\nsleep 300\nEOF",
+            "node <<EOF\nsleep 300\nEOF",
+            "ruby <<EOF\nsleep 300\nEOF",
+            "perl <<EOF\nsleep 300\nEOF",
+            "cat <<EOF | source /dev/stdin\nsleep 300\nEOF",
+            "cat <<EOF | python3\nsleep 300\nEOF",
+            "cat > x; ssh host <<EOF\nsleep 300\nEOF",
+            "echo > x; cat <<EOF\nsleep 300\nEOF",
+            'eval "$(cat <<EOF\nsleep 300\nEOF\n)"',
+            'echo "$(cat <<EOF\n$(sleep 300)\nEOF\n)"',
+        ],
+    )
+    def test_non_file_writer_heredoc_body_is_scanned(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize(
+        "runner",
+        ["bash ./x.sh", "bash -x x.sh", "/bin/bash x.sh", "source x.sh", "./x.sh"],
+    )
+    def test_file_written_then_executed_is_scanned(self, runner: str) -> None:
+        command = f"cat > x.sh <<EOF\nsleep 300\nEOF\n{runner}"
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestQuotedHeavyPayloads:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "FOO=1 bash -c 'sleep 300'",
+            "nohup bash -c 'npm run build'",
+            "time bash -c 'uv sync'",
+            "timeout 600 bash -c 'docker build .'",
+            "nice -n 5 bash -c 'find . -exec echo x {} ;'",
+            "exec bash -c 'python manage.py runserver'",
+            "setsid bash -c 'cargo test'",
+            "xargs sh -c 'pip install x'",
+            "su -c 'npm install x'",
+            "kubectl exec pod -- sh -c 'npx playwright test'",
+            "watch bash -c 'docker compose up'",
+            "python3 -c 'sleep 300'",
+            "dash -c 'sleep 300'",
+            "bash -c -- 'sleep 300'",
+            "timeout 600 bash -c 'make all'",
+        ],
+    )
+    def test_quoted_heavy_command_is_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize("command", ["sh <<< 'sleep 300'", 'bash <<< "make all"', "bash <<< 'npm run build'"])
+    def test_shell_here_string_is_scanned(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        ["else make all", "elif make all", ">log make all", "2>/dev/null make all", "/usr/bin/time -v make all"],
+    )
+    def test_command_head_variants_are_denied(self, command: str) -> None:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
 

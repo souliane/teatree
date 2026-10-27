@@ -61,6 +61,20 @@ class TestAnchorsClear:
 
 class TestNoFireCorpus:
     @pytest.mark.parametrize(
+        "identifier",
+        [
+            "x/4f861e60",
+            "foo-4f861e60",
+            "name.4f861e60",
+            "4f861e60/x",
+            "4f861e60-foo",
+            "4f861e60.md",
+        ],
+    )
+    def test_each_path_boundary_keeps_a_hex_identifier_out_of_sha_assertions(self, identifier: str) -> None:
+        assert scanner.find_unanchored_assertions(f"Inspect {identifier} and report the result.") is None
+
+    @pytest.mark.parametrize(
         "brief",
         [
             "",
@@ -102,6 +116,19 @@ class TestNoFireCorpus:
 
 
 class TestStandaloneShaForms:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/example/repo/commit/4f861e60/",
+            "https://github.com/example/repo/blob/4f861e60/path.py",
+            "https://github.com/example/repo/tree/4f861e60",
+        ],
+    )
+    def test_forge_url_refs_still_name_a_commit(self, url: str) -> None:
+        verdict = scanner.find_unanchored_assertions(f"The baseline is {url}")
+        assert verdict is not None
+        assert "commit SHA" in verdict.kinds
+
     @pytest.mark.parametrize(
         "sha",
         [

@@ -37,8 +37,9 @@ def call_is_from_subagent(data: dict) -> bool:
 
 
 COMMAND_HEAD = (
-    r"(?:^|[;&|\n(){}])[^\S\n]*(?:(?:then|do|if|until|while|!)\s+)*(?:\w+=\S+\s+)*"
-    r"(?:(?:command(?!\s+-[vV](?:\s|$))|exec|time|nohup|watch)(?:\s+-\S+)*\s+"
+    r"(?:^|[;&|\n(){}])[^\S\n]*(?:(?:then|else|elif|do|if|until|while|!)\s+)*"
+    r"(?:(?:\d?>{1,2}|\d?<)\s*[^\s<>|;&]+\s+)*(?:\w+=\S+\s+)*"
+    r"(?:(?:command(?!\s+-[vV](?:\s|$))|exec|(?:/(?:[\w.-]+/)+)?time|nohup|watch)(?:\s+-\S+)*\s+"
     r"|sudo(?:\s+(?:-u\s+\S+|-\S+))*\s+"
     r"|nice(?:\s+(?:-n\s+\S+|-\S+))*\s+"
     r"|env(?:\s+(?:-u\s+\S+|-\S+|\w+=\S+))*\s+"
@@ -70,13 +71,14 @@ def _shell_tokens() -> ModuleType | None:
 
 
 _SUBCOMMAND_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`", re.DOTALL)
-_HEREDOC_INTERPRETER_RE = re.compile(
-    COMMAND_HEAD + r"(?:docker\s+exec(?:\s+-\S+)*\s+\S+\s+)?(?:/(?:[\w.-]+/)+)?(?:bash|sh|zsh|python3?)\b[^;&|\n]*<<"
+_HEREDOC_PIPE_RE = re.compile(r"\|\s*(?:bash|sh|source|python3?)\b|>\(\s*(?:bash|sh)\b")
+_FILE_REDIRECT_RE = re.compile(r"(?<!<)>{1,2}\s*(?!\()([^\s<>|;&()]+)")
+_TEE_FILE_RE = re.compile(r"(?:^|[;&|])\s*tee(?:\s+-\S+)*\s+([^\s<>|;&()]+)")
+_FILE_WRITER_RE = re.compile(r"(?:^|[;&|$(])\s*(?P<cmd>cat|tee)\b[^;&|]*<<")
+_EXECUTED_FILE_RE = re.compile(
+    r"(?:^|[;&|\n])\s*(?:(?:/(?:[\w.-]+/)+)?(?:bash|sh)(?:\s+-\S+)*\s+|source\s+|\.\s+|(?=\./))"
+    r"(\.?/?[^\s<>|;&]+)"
 )
-_HEREDOC_PIPE_RE = re.compile(r"\|\s*(?:bash|sh)\b|>\(\s*(?:bash|sh)\b")
-_FILE_REDIRECT_RE = re.compile(r"(?<!<)>{1,2}\s*([^\s<>|;&]+)")
-_TEE_FILE_RE = re.compile(r"(?:^|[;&|])\s*tee(?:\s+-\S+)*\s+([^\s<>|;&]+)")
-_EXECUTED_FILE_RE = re.compile(r"(?:^|[;&|\n])\s*(?:bash|sh)\s+([^\s<>|;&]+)")
 
 
 def _subcommand_text(lexer: ModuleType, raw: str, *, heredoc_body: bool = False) -> str:
@@ -95,13 +97,17 @@ def _subcommand_text(lexer: ModuleType, raw: str, *, heredoc_body: bool = False)
 
 def _heredoc_executes_body(heredoc: "HeredocBody", command: str, executed_files: dict[str, int]) -> bool:
     line = heredoc.opener_line
-    if _HEREDOC_INTERPRETER_RE.search(line) or _HEREDOC_PIPE_RE.search(line):
+    writer = _FILE_WRITER_RE.search(line)
+    if _HEREDOC_PIPE_RE.search(line) or writer is None:
         return True
-    redirect = _FILE_REDIRECT_RE.search(line) or _TEE_FILE_RE.search(line)
+    writer_segment = re.split(r"[;&|]", line[writer.start("cmd") :], maxsplit=1)[0]
+    redirect = _FILE_REDIRECT_RE.search(writer_segment) or _TEE_FILE_RE.search(writer_segment)
     if redirect is None:
-        return False
+        return True
     line_start = command.rfind(line, 0, heredoc.end)
-    return executed_files.get(redirect.group(1), -1) > line_start + redirect.start(1)
+    return executed_files.get(redirect.group(1).removeprefix("./"), -1) > line_start + writer.start(
+        "cmd"
+    ) + redirect.start(1)
 
 
 _PYTEST_TARGETED_RE = re.compile(r"(?:^|\s)(?:-k|--deselect)(?:[=\s]|$)|::|(?:^|\s)\S*\.py(?:::|\s|$)")
@@ -141,7 +147,7 @@ def heavy_command_is_help_only(command: str, heavy_pattern: re.Pattern[str]) -> 
 
 
 _QUOTED_PYTEST_SELECTOR_RE = re.compile(r"[^\s;&|(){}]*\.py(?:::[^\s;&|(){}]+)?")
-_SHELL_WORDS = frozenset({"bash", "sh", "zsh"})
+_SHELL_WORDS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 
 
 def _quoted_shell_payload(words: list[str]) -> bool:
@@ -149,15 +155,15 @@ def _quoted_shell_payload(words: list[str]) -> bool:
         return False
     if words[0] in {"eval", "ssh"}:
         return True
-    if not re.fullmatch(r"-[a-z]*c", words[-1]):
-        return False
-    return (
-        words[0] in _SHELL_WORDS
-        or words[0].rsplit("/", 1)[-1] in _SHELL_WORDS
-        or (
-            words[0] in {"sudo", "env", "docker"} and any(word.rsplit("/", 1)[-1] in _SHELL_WORDS for word in words[1:])
-        )
-    )
+    shell_words = {word.rsplit("/", 1)[-1] for word in words}
+    if words[-1] == "<<<" and shell_words & _SHELL_WORDS:
+        return True
+    command_option = words[-2] if words[-1] == "--" and len(words) > 1 else words[-1]
+    return bool(re.fullmatch(r"-[a-z]*c", command_option) and (shell_words & _SHELL_WORDS or "su" in shell_words))
+
+
+_QUOTED_VERB_RE = re.compile(r"\b(?:make|tox|webpack)\b")
+_QUOTED_SEPARATOR_RE = re.compile(r"[;&|\n(){}]")
 
 
 def _word_text(lexer: ModuleType, tokens: list["Token"]) -> list[str]:
@@ -182,7 +188,7 @@ def _word_text(lexer: ModuleType, tokens: list["Token"]) -> list[str]:
         ):
             result.append(token.value)
         else:
-            result.append(" ")
+            result.append(_QUOTED_SEPARATOR_RE.sub(" ", _QUOTED_VERB_RE.sub(" ", token.value)))
         result.append(" ")
         words.append(token.value)
     return result
@@ -190,7 +196,9 @@ def _word_text(lexer: ModuleType, tokens: list["Token"]) -> list[str]:
 
 def _heredoc_text(lexer: ModuleType, bodies: list["HeredocBody"], command: str) -> list[str]:
     result: list[str] = []
-    executed_files = {match.group(1): match.start(1) for match in _EXECUTED_FILE_RE.finditer(command)}
+    executed_files = {
+        match.group(1).removeprefix("./"): match.start(1) for match in _EXECUTED_FILE_RE.finditer(command)
+    }
     for body in bodies:
         if not body.terminated or _heredoc_executes_body(body, command, executed_files):
             executable_text = body.body
