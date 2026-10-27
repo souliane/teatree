@@ -140,6 +140,7 @@ from teatree.core.models.ticket_artifacts import (
     TicketArtifacts,
     WorktreeArtifact,
 )
+from teatree.core.models.ticket_dm_thread import TicketDmPost, TicketDmThread
 from teatree.core.models.ticket_sweep_run import SOURCE_INTERACTIVE, SOURCE_LOOP, TicketSweepRun, TicketSweepRunManager
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.trusted_identity import TrustedIdentity, TrustedIdentityManager
@@ -358,6 +359,8 @@ __all__ = [
     "ThreadBinding",
     "Ticket",
     "TicketArtifacts",
+    "TicketDmPost",
+    "TicketDmThread",
     "TicketExtra",
     "TicketSweepRun",
     "TicketSweepRunManager",

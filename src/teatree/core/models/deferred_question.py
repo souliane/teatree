@@ -33,6 +33,7 @@ from teatree.core.models.question_actions import DeferredQuestionAuditQuerySet, 
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import options_digest
 from teatree.core.models.question_withheld import carried_wait
+from teatree.core.models.ticket_dm_thread import TicketDmPost
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
 if TYPE_CHECKING:
@@ -373,7 +374,12 @@ class DeferredQuestion(models.Model):
         """
         if not channel or not after_ts:
             return None
-        candidates = list(cls._reply_candidates(channel=channel, after_ts=after_ts)[:2])
+        nested_question_ids = TicketDmPost.objects.filter(channel=channel, question_id__isnull=False).values_list(
+            "question_id", flat=True
+        )
+        candidates = list(
+            cls._reply_candidates(channel=channel, after_ts=after_ts).exclude(pk__in=nested_question_ids)[:2]
+        )
         return candidates[0] if len(candidates) == 1 else None
 
     def mark_stale(self, reason: str, *, resolver_id: str = "") -> None:

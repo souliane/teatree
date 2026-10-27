@@ -190,7 +190,7 @@ class LoopSelfImproveCommandTests(TestCase):
         later = self._stalled_loop_cycle(start + dt.timedelta(minutes=120), quiet=False)
 
         assert [first.call_count, before_wait.call_count, due.call_count, later.call_count] == [0, 0, 1, 0]
-        assert due.call_args.kwargs["options"].as_thread_root is True
+        assert "options" not in due.call_args.kwargs
         assert f"Repair: ticket {firing.ticket.pk}" in due.call_args.args[0]
 
     def test_owner_quiet_hours_hold_the_delayed_message(self) -> None:

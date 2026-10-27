@@ -49,6 +49,7 @@ import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.modelkit.dm_channel_policy import signal_of
@@ -249,12 +250,17 @@ class Command(TyperCommand):
             raise SystemExit(2)
 
         with _overlay_env(request.overlay):
+            ticket = resolve_invoking_ticket() if request.requested_push and not request.user_id else None
             outcome = notify_user_outcome(
                 text,
                 kind=kind_value,
                 idempotency_key=request.idempotency_key,
                 audience=NotifyAudience.OWNER_DELIVERY,
-                options=NotifyOptions(user_id=request.user_id or None, requested_push=request.requested_push),
+                options=NotifyOptions(
+                    user_id=request.user_id or None,
+                    requested_push=request.requested_push,
+                    ticket_id=ticket.pk if ticket is not None else None,
+                ),
             )
 
         if outcome.reason in _WITHHELD_BY_DESIGN:
