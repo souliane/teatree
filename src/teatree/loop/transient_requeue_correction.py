@@ -8,7 +8,7 @@ from teatree.agents.envelope_refusal import (
     refused_envelope_instruction,
 )
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import WRONG_HEAD_RETRY_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import VENUE_LIMIT_PREFIX, WRONG_HEAD_RETRY_PREFIX
 from teatree.core.models import Task
 from teatree.core.models.auto_review_dispatch import build_review_contract
 from teatree.core.models.merge_clear import is_commit_sha
@@ -35,6 +35,8 @@ def corrective_note(task: Task, error: str) -> str | None:
     if CORRECTIVE_MARKER in task.execution_reason:
         return None
     phase = normalize_phase(task.phase)
+    if phase == "reviewing" and error.startswith(VENUE_LIMIT_PREFIX):
+        return "Retry this review on another venue; the previous venue could not complete it."
     if phase == "reviewing" and (head := wrong_head_retry_head(error)):
         return (
             f"Retry the review once at the live pull request head {head}. "

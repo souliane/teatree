@@ -28,9 +28,9 @@ class WorktreeProbeUnverifiableError(RuntimeError):
     Raised by :func:`worktree_has_commits_ahead` when a PRESENT on-disk checkout's
     commit-count probe fails (a transient git error, a lock, a corrupt ref). The
     old code swallowed such a failure to ``False``, which the shippable-diff path
-    reads as "no diff" and routes ``review() → dispose_unshippable_review() →
-    ticket.ignore()`` — terminally ABANDONING a live ticket on a transient git
-    failure (#F1.4). A distinct typed error lets a caller tell "could not verify"
+    reads as "no diff" and routes ``review() → dispose_unshippable_review()`` to a
+    shipping hold — and a hold the settlement sweep can later ignore — on a transient
+    git failure (#F1.4). A distinct typed error lets a caller tell "could not verify"
     apart from "verified: nothing to ship" and HOLD/skip the tick (retry later)
     rather than dispose. A genuinely-missing path/branch is NOT this error — that
     is an honest ``False`` (nothing on disk to ship).
@@ -77,27 +77,17 @@ def worktree_head_sha(ticket: "Ticket") -> str:
 
 
 def worktree_has_commits_ahead(worktree: "Worktree") -> bool:
-    """Whether ``worktree`` has commits ahead of its base branch.
+    """Whether a recorded checkout has commits ahead of its base branch.
 
-    Returns ``False`` for the genuinely-nothing-to-ship cases — no recorded path
-    or branch, or a recorded path that is no longer a directory on disk (the
-    checkout is gone, so there is provably nothing to lose).
-
-    Raises :class:`WorktreeProbeUnverifiableError` when a PRESENT on-disk checkout
-    is there but its commit-count probe FAILS (a transient git error, a lock, a
-    corrupt ref). That case must NOT be flattened to ``False``: the shippable-diff
-    path reads ``False`` as "no diff" and terminally ``ticket.ignore()``s the
-    ticket, so a transient git failure would abandon live work (#F1.4). The typed
-    error lets the caller HOLD/skip the tick and retry, never dispose on
-    uncertainty.
+    A missing path, branch, or directory returns False: no local checkout evidence.
+    A failed probe of a present checkout raises so review can hold the ticket
+    instead of treating unreadable work as verified absence.
     """
     repo_path = (worktree.extra or {}).get("worktree_path") or worktree.repo_path
     branch = worktree.branch
     if not repo_path or not branch:
         return False
     if not Path(repo_path).is_dir():
-        # The recorded checkout is gone from disk — genuinely nothing to ship,
-        # NOT a probe failure. Honest False (safe to dispose).
         return False
     base = _resolve_base_branch(repo_path)
     try:
@@ -105,7 +95,7 @@ def worktree_has_commits_ahead(worktree: "Worktree") -> bool:
     except (CommandFailedError, ValueError, OSError) as exc:
         # A PRESENT checkout whose commit-count probe could not be verified. Do
         # NOT return False (which routes review() → dispose_unshippable_review()
-        # → ticket.ignore(), abandoning a live ticket on a transient git error).
+        # → a shipping hold, on a transient git error).
         # Surface it typed so the caller holds/skips the tick.
         logger.warning(
             "worktree_has_commits_ahead: could not verify commits ahead for %s (%s..%s): %s",

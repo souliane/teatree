@@ -159,18 +159,23 @@ def record_confirmed_forge_merge(ticket: "Ticket") -> bool:
     return False
 
 
-def has_recorded_forge_merge(ticket: "Ticket") -> bool:
-    """Accept only a recorder's SHA for a PR still named by this ticket."""
+def recorded_forge_merge_ref(ticket: "Ticket") -> PrRef | None:
+    """The still-attached, unvoided PR named by the recorded merge SHA."""
     recorded = (ticket.extra or {}).get("forge_merge_evidence")
     if not isinstance(recorded, dict):
-        return False
+        return None
     sha = str(recorded.get("merged_sha", ""))
     if not _MERGED_SHA.fullmatch(sha):
-        return False
-    return any(
-        ref.slug.casefold() == str(recorded.get("slug", "")).casefold() and ref.pr_id == recorded.get("pr_id")
-        for ref in _probeable_refs(ticket)
-    )
+        return None
+    for ref in _probeable_refs(ticket):
+        if ref.slug.casefold() == str(recorded.get("slug", "")).casefold() and ref.pr_id == recorded.get("pr_id"):
+            return ref
+    return None
+
+
+def has_recorded_forge_merge(ticket: "Ticket") -> bool:
+    """Accept only a recorder's SHA for a PR still named by this ticket."""
+    return recorded_forge_merge_ref(ticket) is not None
 
 
 def has_merge_evidence(ticket: "Ticket") -> bool:

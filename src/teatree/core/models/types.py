@@ -1,5 +1,4 @@
 import logging
-from collections.abc import Iterable
 from typing import TYPE_CHECKING, Final, TypedDict
 
 from teatree.core.models.checkout_proof import (
@@ -10,6 +9,7 @@ from teatree.core.models.checkout_proof import (
     ReleasedPrHeadAttestation,
 )
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
+from teatree.core.models.extra_key_warning import warn_stripped_extra_keys
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -125,6 +125,13 @@ class PlanningHandoff(TypedDict, total=False):
     reason: str
 
 
+class ShippingHold(TypedDict):
+    reason: str
+    skipped: str
+    held_at: str
+    checked_at: str
+
+
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     brief_start_heads: dict[str, str]
@@ -182,6 +189,7 @@ class TicketExtra(TypedDict, total=False):
     description: str
     provision: dict[str, str]
     shipping_skipped: str
+    shipping_hold: ShippingHold
     tracker_status: str
     # Notion status-sync: the tracked page URL (input) and the last status read
     # from it via the direct Notion API (``core.sync.fetch_notion_statuses``).
@@ -404,7 +412,7 @@ class PlanAdequacy(TypedDict, total=False):
     ``acceptance_criteria.content`` is the ticket's acceptance-criteria list, which
     ``PlanArtifact.record`` turns into the ticket's ``core.Rubric`` rows — the plan is
     the one home for it, and a reasoned negative there writes no rows and waives nothing
-    (the rubric gate's one waiver is the human-authorized ``ticket plan-bypass``).
+    (a reasoned negative does not grant the human-authorized plan bypass).
     """
 
     design: AdequacySection
@@ -717,24 +725,10 @@ def reset_stripped_key_warnings() -> None:
     _WARNED_STRIPPED_KEYS.clear()
 
 
-def _warn_stripped(model: str, dropped: Iterable[str]) -> None:
-    """Announce each undeclared key once, naming the TypedDict that would have kept it."""
-    for key in sorted(dropped):
-        if (model, key) in _WARNED_STRIPPED_KEYS:
-            continue
-        _WARNED_STRIPPED_KEYS.add((model, key))
-        logger.warning(
-            "%s.extra: dropping undeclared key %r — declare it on %sExtra or the next transition strips it.",
-            model,
-            key,
-            model,
-        )
-
-
 def validated_ticket_extra(raw: dict | None) -> TicketExtra:
     if not raw:
         return TicketExtra()
-    _warn_stripped("Ticket", raw.keys() - _TICKET_EXTRA_KEYS)
+    warn_stripped_extra_keys("Ticket", raw.keys() - _TICKET_EXTRA_KEYS, _WARNED_STRIPPED_KEYS, logger)
     return TicketExtra(**{k: v for k, v in raw.items() if k in _TICKET_EXTRA_KEYS})
 
 
@@ -789,5 +783,5 @@ def validated_worktree_extra(raw: dict | None) -> WorktreeExtra:
     """
     if not raw:
         return WorktreeExtra()
-    _warn_stripped("Worktree", raw.keys() - _WORKTREE_EXTRA_KEYS)
+    warn_stripped_extra_keys("Worktree", raw.keys() - _WORKTREE_EXTRA_KEYS, _WARNED_STRIPPED_KEYS, logger)
     return WorktreeExtra(**{k: v for k, v in raw.items() if k in _WORKTREE_EXTRA_KEYS})

@@ -22,6 +22,7 @@ from teatree.core.management.commands._note_commands import NoteCommands
 from teatree.core.management.commands._plan_commands import PlanCommands
 from teatree.core.management.commands._rework_hold_commands import ReworkHoldCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
+from teatree.core.management.commands._shipping_hold_commands import ShippingHoldCommands
 from teatree.core.management.commands._sweep_commands import SweepCommands
 from teatree.core.management.commands._target_branch_commands import TargetBranchCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
@@ -132,6 +133,7 @@ class Command(
     TargetBranchCommands,
     ClearBackfillCommands,
     ReworkHoldCommands,
+    ShippingHoldCommands,
     MachineOutputCommand,
     # #4234: every refusal below is RETURNED so the loop can route on it —
     # `CallCommandMergeKeystone.merge_clear` reads five keys off `merge`. The base class

@@ -93,6 +93,7 @@ from teatree.cli.doctor.checks_session import (
     _check_interactive_permission_mode,
     _check_slack_socket_mode,
 )
+from teatree.cli.doctor.checks_shipping_holds import check_shipping_holds
 from teatree.cli.doctor.checks_skill_pins import _check_skill_pin_freshness
 from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_skills, _check_skill_source_drift
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
@@ -219,6 +220,7 @@ __all__ = (
     "agent_skill_dirs",
     "check",
     "check_dead_ticket_rows",
+    "check_shipping_holds",
     "check_slack_engagement",
     "check_slack_roundtrip",
     "check_statusline",

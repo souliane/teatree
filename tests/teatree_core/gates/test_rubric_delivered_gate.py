@@ -15,9 +15,9 @@ a PENDING/FAIL/uncited PASS   an ungraded or uncited criterion proves nothing
 a maker grader                a rubric is graded by an INDEPENDENT verifier
 ============================  ===============================================
 
-The audited waiver is the human-authorized ``ticket plan-bypass`` — and only that: a
+The audited plan waiver is the human-authorized ``ticket plan-bypass``: a
 ``none_reason`` on an ordinary plan's ``acceptance_criteria`` writes no rows and waives
-nothing. A bypass waives a missing or ungraded rubric, never a recorded FAIL. A PASS
+nothing. An owner forge merge is a separate delivery exception. Neither overrides a recorded FAIL. A PASS
 rationale is free-form: any test kind (unit, integration, functional, e2e) counts.
 """
 
@@ -145,7 +145,7 @@ class TestTheDeliveredCheckIsNotHeadBound(TestCase):
 
 
 class TestThePlanBypassIsTheAuditedWaiver(TestCase):
-    """The ONE waiver is the human-authorized ``ticket plan-bypass``, and it never outranks a FAIL."""
+    """The plan waiver is human-authorized and never outranks a FAIL."""
 
     def test_a_none_reason_on_an_ordinary_plan_is_not_a_waiver(self) -> None:
         ticket = _retrospected()

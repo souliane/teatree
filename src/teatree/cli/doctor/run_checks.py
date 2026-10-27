@@ -120,6 +120,7 @@ from teatree.cli.doctor.checks_session import (
     _check_interactive_permission_mode,
     _check_slack_socket_mode,
 )
+from teatree.cli.doctor.checks_shipping_holds import check_shipping_holds
 from teatree.cli.doctor.checks_skill_pins import _check_skill_pin_freshness
 from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_skills, _check_skill_source_drift
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
@@ -537,6 +538,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
                 _check_dream_consolidation_blocked(),
                 check_unshipped_work(),
                 check_dead_ticket_rows(),
+                check_shipping_holds(),
                 check_stale_retro_recorded(),
                 check_unknown_ticket_states(),
                 check_stranded_prek_patches(),

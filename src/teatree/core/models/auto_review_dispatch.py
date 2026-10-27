@@ -435,6 +435,14 @@ class AutoReviewDispatch(models.Model):
             issue_url=pr_url or f"{slug}#{pr_id}",
             defaults={"overlay": overlay, "role": Ticket.Role.REVIEWER},
         )
+        existing = (
+            Task.objects.in_flight_for_phase(overlay, "reviewing")
+            .filter(ticket=ticket, auto_review_dispatches__isnull=True)
+            .order_by("pk")
+            .first()
+        )
+        if existing is not None:
+            return existing
         session = Session.objects.create(ticket=ticket, agent_id="auto-review-dispatch")
         return Task.objects.create(
             ticket=ticket,

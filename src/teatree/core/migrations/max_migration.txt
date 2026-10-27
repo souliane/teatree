@@ -1,1 +1,1 @@
-0024_merge_review_verdict_priority_answer
+0025_merge_review_verdict_scanner_fault

@@ -46,7 +46,7 @@ from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.review.critic_continuity import merge_critic_continuity, review_evidence_contract
 from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
 from teatree.core.review.finding_standard import FINDING_STANDARD
-from teatree.core.review.nit_publish import critic_nits, pr_url_for_nits, publish_nits, review_nits
+from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, publish_nits, review_nits
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.quality.brief_constraints import ConstraintViolation, extract_constraints
 from teatree.quality.changed_set import ChangedSetError
@@ -289,7 +289,7 @@ def check_merge_quality_verdict(
                 f"at the shipped head."
             )
             raise MergeQualityVerdictError(msg)
-        _publish_nits_best_effort(evidence_ticket, head, verdict)
+        _assert_nit_receipts(evidence_ticket, head, verdict)
 
 
 def ticket_brief_constraint_violations(
@@ -348,7 +348,7 @@ def _check_brief_constraints(ticket: "Ticket") -> None:
         raise MergeQualityVerdictError(message)
 
 
-def _publish_nits_best_effort(ticket: "Ticket", head_sha: str, verdict: "CriticVerdict") -> None:
+def _assert_nit_receipts(ticket: "Ticket", head_sha: str, verdict: "CriticVerdict") -> None:
     review_points = tuple(
         point
         for review in ReviewVerdict.objects.filter(ticket=ticket, reviewed_sha=head_sha)
@@ -364,12 +364,16 @@ def _publish_nits_best_effort(ticket: "Ticket", head_sha: str, verdict: "CriticV
         try:
             publish_nits(ticket, pr_url, head_sha, points)
         except RuntimeError as exc:
-            ticket.merge_extra(
-                merge_into_dicts={"nit_publication": {head_sha: {"status": "failed", "error": str(exc)}}}
-            )
-            return
+            message = f"NIT publication retry refused: {exc}"
+            raise MergeQualityVerdictError(message) from exc
         ticket.refresh_from_db()
         ticket.merge_extra(merge_into_dicts={"nit_publication": {head_sha: {"status": "published"}}})
+    if not pr_url or not has_nit_receipts(ticket, pr_url, head_sha, points):
+        message = (
+            f"NIT publication receipt is missing for {ticket.pk} at head {head_sha}; "
+            "publish each inline point, read back the follow-up issue and resolved threads, then retry"
+        )
+        raise MergeQualityVerdictError(message)
 
 
 def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str) -> None:

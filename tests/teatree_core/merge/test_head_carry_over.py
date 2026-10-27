@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.gates.merge_quality_gate import check_merge_quality_verdict
+from teatree.core.gates.merge_quality_gate import MergeQualityVerdictError, check_merge_quality_verdict
 from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied
 from teatree.core.merge.head_carry_over import PatchLineage, carry_over_head
 from teatree.core.models import (
@@ -589,6 +589,7 @@ class TestACarriedClearanceStillMerges(TestCase):
         ticket.refresh_from_db()
         with (
             patch("teatree.core.gates.merge_quality_gate.publish_nits") as publish,
+            pytest.raises(MergeQualityVerdictError, match="NIT publication receipt is missing"),
         ):
             check_merge_quality_verdict(ticket, NEW)
         publish.assert_called_once_with(ticket, _PR_URL, NEW, (_NIT,))

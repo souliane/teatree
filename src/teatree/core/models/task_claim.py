@@ -30,6 +30,7 @@ from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_fa
 from teatree.core.models.checkout_exit import forget_checkout_exit, prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 from teatree.core.models.review_target import review_target_for_task, verdict_at
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.generation import current_generation
 
 if TYPE_CHECKING:
@@ -333,13 +334,14 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
             raise InvalidTransitionError(msg)
         target = review_target_for_task(task)
         recorded = verdict_at(target) is not None if target is not None else False
-        self_review = (
-            target is None
-            and task.ticket.role == task.ticket.Role.AUTHOR
-            and task.attempts.filter(
-                error="", result__review_verdict__verdict__in=["merge_safe", "hold", "unverified"]
+        returned_verdict = task.attempts.filter(
+            error="", result__review_verdict__verdict__in=["merge_safe", "hold", "unverified"]
+        ).exists()
+        if target is not None and target.bind_live_head and returned_verdict:
+            recorded = ReviewVerdict.objects.filter(
+                ticket=task.ticket, slug__iexact=target.slug, pr_id=target.pr_id
             ).exists()
-        )
+        self_review = target is None and task.ticket.role == task.ticket.Role.AUTHOR and returned_verdict
         escalated = (
             task.attempts.filter(error="", result__needs_user_input=True).exclude(result__user_input_reason="").exists()
         )
