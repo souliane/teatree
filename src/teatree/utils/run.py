@@ -70,10 +70,8 @@ __all__ = [
 ]
 
 
-# Names with `x-` only mid-word (Index-Key:, Max-Api-Key:) are deliberately not matched, to keep the scan linear.
-_SECRET_HEADER_RE = re.compile(
-    r"(?i)(authorization|private-token|(?:(?<![\w-])(?:-H)?|%20)x-[\w-]*(?:token|key))\s*:\s*\S.*"
-)
+# `x-` header names are bounded to 64 characters so the scan stays linear; a longer name is not required to redact.
+_SECRET_HEADER_RE = re.compile(r"(?i)(authorization|private-token|x-[\w-]{0,64}(?:token|key))\s*:\s*\S.*")
 # The lookbehinds anchor the start of a hyphen-joined name run; without them every hyphen restarts a quadratic rescan.
 _SECRET_QUERY_RE = re.compile(
     r"(?i)(?<![a-z0-9])(?<![a-z0-9][_-])((?:[a-z0-9]+[_-])*(?:token|secret|key|password))=[^&\s]+"

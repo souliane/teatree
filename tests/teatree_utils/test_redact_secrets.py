@@ -18,6 +18,7 @@ import pytest
 from teatree.utils.run import redact_secrets
 
 CHAIN_LENGTH = 10_000
+LONG_CHAIN_LENGTH = 100_000
 TIME_BUDGET_SECONDS = 1.0
 
 
@@ -145,6 +146,10 @@ def test_credential_name_shapes_keep_their_name_and_lose_their_value(arg: str, e
             "https://example.test/api?q=a%20X-Api-Key: notarealvalue",
             "https://example.test/api?q=a%20X-Api-Key: <redacted>",
         ),
+        ("curl -sSHX-Api-Key:notarealvalue", "curl -sSHX-Api-Key: <redacted>"),
+        ("curl -fsSLHX-Gitlab-Token:notarealvalue", "curl -fsSLHX-Gitlab-Token: <redacted>"),
+        ("curl -vHX-Api-Key: notarealvalue", "curl -vHX-Api-Key: <redacted>"),
+        ("Index-Key: notarealvalue", "Index-Key: <redacted>"),
     ],
 )
 def test_credential_header_shapes_keep_their_name_and_lose_their_value(arg: str, expected: str) -> None:
@@ -154,3 +159,23 @@ def test_credential_header_shapes_keep_their_name_and_lose_their_value(arg: str,
 @pytest.mark.parametrize("arg", ["token_count=5", "monkey=1", "max_tokens=100"])
 def test_a_name_that_only_contains_a_credential_word_is_untouched(arg: str) -> None:
     assert redact_secrets(arg) == arg
+
+
+@pytest.mark.parametrize("unit", ["x-", "-Hx-", "%20x-"])
+def test_a_very_long_chain_followed_by_a_secret_is_redacted_within_the_time_budget(unit: str) -> None:
+    message = f"{unit * LONG_CHAIN_LENGTH} X-Api-Key: notarealvalue"
+
+    started = time.perf_counter()
+    redacted = redact_secrets(message)
+
+    assert time.perf_counter() - started < TIME_BUDGET_SECONDS
+    assert "notarealvalue" not in redacted
+
+
+def test_a_header_name_of_one_hundred_characters_is_not_required_to_redact() -> None:
+    message = f"x-{'a' * 98}-key: notarealvalue"
+
+    started = time.perf_counter()
+    redact_secrets(message)
+
+    assert time.perf_counter() - started < TIME_BUDGET_SECONDS

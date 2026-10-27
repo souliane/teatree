@@ -31,6 +31,7 @@ from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Task
 from teatree.core.overlay import McpTool, McpToolGroup, OverlayConfig, OverlayConnectors
 from teatree.mcp.server import _required_services, build_server, declared_write_tool_seams
+from teatree.utils.run import redact_secrets
 from tests.factories import TaskFactory, TicketFactory
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
@@ -121,6 +122,18 @@ class TestCrashingToolAnswers(TestCase):
 
         text = self._text(asyncio.run(self._call(crash)))
         assert text == f"Error executing tool probe: RuntimeError: {'x' * 500}"
+
+    def test_redaction_scans_only_the_leading_ten_thousand_characters(self) -> None:
+        message = "a" * 11_000 + " token=notarealvalue"
+
+        def crash() -> str:
+            raise RuntimeError(message)
+
+        with patch("teatree.mcp.server.redact_secrets", wraps=redact_secrets) as redactor:
+            text = self._text(asyncio.run(self._call(crash)))
+
+        assert [len(call.args[0]) for call in redactor.call_args_list] == [10_000]
+        assert "notarealvalue" not in text
 
     def test_empty_crash_message_still_names_the_class(self) -> None:
         def crash() -> str:

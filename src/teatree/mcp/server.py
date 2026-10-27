@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _CRASH_DETAIL_CAP = 500
+# A header line longer than this drops the text after it before redaction.
 _CRASH_DETAIL_SCAN_CAP = 20 * _CRASH_DETAIL_CAP
 
 
