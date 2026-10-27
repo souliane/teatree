@@ -36,6 +36,10 @@ class TestRefusal:
         assert gate.handle_brief_anchor_lint(_dispatch()) is True
         assert "BRIEF-ANCHOR LINT" in capsys.readouterr().out
 
+    def test_a_job_path_identifier_does_not_refuse_dispatch(self) -> None:
+        prompt = "Inspect /srv/agent/.claude/jobs/4f861e60/tmp/out.md"
+        assert gate.handle_brief_anchor_lint(_dispatch(prompt)) is False
+
     def test_the_refusal_quotes_the_remedy_clause(self, capsys: pytest.CaptureFixture[str]) -> None:
         gate.handle_brief_anchor_lint(_dispatch())
         assert scanner.TRUST_THE_CODE_CLAUSE in capsys.readouterr().out
