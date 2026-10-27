@@ -62,3 +62,16 @@ class TestExistingCoverageUnchanged:
 
     def test_a_plain_word_is_untouched(self) -> None:
         assert redact_secrets("migrate") == "migrate"
+
+
+@pytest.mark.parametrize(
+    ("arg", "expected"),
+    [
+        ("refresh_token=notarealvalue", "refresh_token=<redacted>"),
+        ("client_secret=notarealvalue", "client_secret=<redacted>"),
+        ("private_token=notarealvalue", "private_token=<redacted>"),
+        ("PRIVATE-TOKEN: notarealvalue", "PRIVATE-TOKEN: <redacted>"),
+    ],
+)
+def test_credential_suffixes_and_private_token_header_are_redacted(arg: str, expected: str) -> None:
+    assert redact_secrets(arg) == expected

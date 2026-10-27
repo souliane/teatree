@@ -40,6 +40,7 @@ than core can.
 
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any, override
 
 from asgiref.sync import sync_to_async
@@ -144,7 +145,9 @@ class _NoShadowServer(MCPServer):
             return await super().call_tool(name, arguments, context)
         except UnexpectedToolError as unexpected:
             crash = unexpected.__cause__ or unexpected
-            detail = redact_secrets(str(crash))[:_CRASH_DETAIL_CAP]
+            detail = ""
+            with suppress(Exception):
+                detail = redact_secrets(str(crash))[:_CRASH_DETAIL_CAP]
             message = f"Error executing tool {name}: {type(crash).__name__}"
             if detail:
                 message += f": {detail}"

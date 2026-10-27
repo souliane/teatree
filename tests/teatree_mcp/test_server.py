@@ -128,6 +128,29 @@ class TestCrashingToolAnswers(TestCase):
 
         assert self._text(asyncio.run(self._call(crash))) == "Error executing tool probe: RuntimeError"
 
+    def test_crash_with_unprintable_message_still_names_the_class(self) -> None:
+        class UnprintableError(RuntimeError):
+            def __str__(self) -> str:
+                message = "str exploded token=notarealvalue"
+                raise RuntimeError(message)
+
+        def crash() -> str:
+            raise UnprintableError
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == "Error executing tool probe: UnprintableError"
+        assert "notarealvalue" not in text
+
+    def test_redaction_precedes_the_crash_detail_cap(self) -> None:
+        message = f"{'x' * 480} refresh_token=notarealvalue"
+
+        def crash() -> str:
+            raise RuntimeError(message)
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == f"Error executing tool probe: RuntimeError: {'x' * 480} refresh_token=<reda"
+        assert "notarealvalue" not in text
+
     def test_deliberate_tool_error_keeps_its_text(self) -> None:
         message = "bad input"
 
