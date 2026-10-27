@@ -2,7 +2,7 @@
   "mcpServers": {
     "teatree": {
       "command": "t3",
-      "args": ["mcp", "serve"]
+      "args": ["mcp", "serve", "--interactive"]
     }
   }
 }

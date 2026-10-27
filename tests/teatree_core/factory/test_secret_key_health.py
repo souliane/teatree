@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from django.db import DatabaseError
 from django.test import TestCase
 
 from teatree.core.factory.operational_health import HealthStatus, collect_signals, read_health, reconcile_health
@@ -35,6 +36,13 @@ class TestSecretKeyHealth(TestCase):
         assert "secret_key_signals" not in collection.unread
         reconcile_health()
         assert read_health().status == HealthStatus.RED
+
+    def test_a_failed_database_read_is_unread_not_a_critical_signal(self) -> None:
+        with patch.object(SealedSecret.objects, "key_health", side_effect=DatabaseError("database is locked")):
+            collection = secret_key_signals()
+        assert collection.signals == ()
+        assert collection.unread == ("secret_key_signals",)
+        assert not collection.complete
 
     def test_wrong_key_names_stored_and_active_ids(self) -> None:
         DbStore(self.source).write("alpha/token", "canary")

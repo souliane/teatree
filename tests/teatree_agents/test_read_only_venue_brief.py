@@ -33,7 +33,8 @@ from teatree.agents.read_only_venue_brief import (
 )
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.backends.github.client import GitHubCodeHost
-from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import LandscapeArtifact, RoundMetric, Session, Task, TaskAttempt, Ticket
+from teatree.core.review.review_delta import BRIEF_PATCH_CHARS
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -46,6 +47,15 @@ from tests.teatree_agents._read_only_review_world import (
 
 _ISSUE_URL = "https://github.com/example-org/example-repo/issues/5"
 _BODY = "## Problem\nThe planner needs the body.\n"
+
+
+def test_read_only_directive_advertises_only_worker_handled_mailbox_tools() -> None:
+    directive = " ".join(READ_ONLY_DIRECTIVE)
+    assert "If agent_mailbox tools are available" in directive
+    assert "worker" in directive
+    assert "no teatree MCP server" in directive
+
+
 _SURVEY = {"open_prs": [{"url": "https://forge.example/pr/7"}], "worktrees": [], "recommendations": [], "warnings": []}
 _T3_INVOCATION = re.compile(r"(?<![\w/:.-])t3 ")
 _WORKER_BRIEFS_AT_BASE = (
@@ -139,6 +149,10 @@ class TestTheReadOnlyVenueBrief(TestCase):
             ),
             patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
             patch("teatree.agents.read_only_venue_brief.fetch_branch", side_effect=fetch_error) as self.fetch,
+            patch(
+                "teatree.core.review.live_head.live_head_at",
+                return_value=SimpleNamespace(sha=(task.ticket.extra or {}).get("reviewed_sha", ""), unreadable=False),
+            ),
         ):
             return runner_mod._prepare_run(
                 task, preflight, phase=task.phase, handoff=handoff, credential=DispatchCredential()
@@ -375,6 +389,13 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "GH_TOKEN" in pr_call.call_args.kwargs["env"]
         assert "repos/example-org/example-repo/issues/5/comments?per_page=100" in api_call.call_args.args[0]
 
+    def test_non_forge_ticket_does_not_attempt_a_forge_read(self) -> None:
+        with patch("teatree.agents.read_only_venue_brief.get_backend_provider") as provider:
+            assert _issue(Ticket(issue_url="auto:local-task")) == ("", "")
+            assert _issue(Ticket(issue_url="")) == ("", "")
+            assert _issue(Ticket(issue_url=None)) == ("", "")
+        provider.assert_not_called()
+
     def test_gitlab_merge_request_reads_its_message_and_notes(self) -> None:
         ticket = Ticket(issue_url="https://gitlab.example/group/team/repo/-/merge_requests/17")
         host = Mock()
@@ -540,6 +561,113 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "Set gh_verify_result green only when WORKER CI says green" in context
         assert "git rev-parse HEAD" not in context
 
+    def test_delta_review_skips_the_forge_whole_pr_diff(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=1,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+fixed line\n",
+                "delta_files": ["src/example.py"],
+                "carried": [],
+            },
+        )
+        host = _Host()
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="green"),
+            ),
+            patch.object(host, "get_pr_file_diffs", side_effect=AssertionError("whole PR diff read")),
+        ):
+            prompt = self._prepare(task, host=host).prompt
+        assert "+fixed line" in prompt
+        assert "REVIEW CASE: delta" in prompt
+
+    def test_truncated_delta_refuses_the_read_only_venue(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=1,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+" * (BRIEF_PATCH_CHARS + 1),
+                "delta_files": ["src/example.py"],
+                "carried": [],
+            },
+        )
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="green"),
+            ),
+        ):
+            refusal = self._refusal(task)
+        assert "review delta patch was truncated" in str(refusal)
+
+    def test_empty_delta_still_shows_worker_ci(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=0,
+            detail={"case": "delta", "prior_head": "a" * 40, "patch": "", "delta_files": [], "carried": []},
+        )
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="2 runs green"),
+            ),
+        ):
+            prompt = self._prepare(task).prompt
+
+        assert "REVIEW CASE: delta" in prompt
+        assert f"WORKER CI at dispatched head {head}: green" in prompt
+
     def test_large_review_keeps_required_skill_and_full_diff_within_system_budget(self) -> None:
         head = "a" * 40
         ticket = Ticket.objects.create(
@@ -571,8 +699,8 @@ class TestTheReadOnlyVenueBrief(TestCase):
         context = self._system_context(prepared)
         delivered = f"{context}\n{prepared.prompt}"
         assert len(context.encode()) <= MAX_APPEND_BYTES
-        assert "Any other head is REFUSED and records nothing" in context
-        assert "OMITTING `reviewed_sha` is REFUSED too" in context
+        assert "A verdict for another head is REFUSED" in context
+        assert "Missing `reviewed_sha` is REFUSED" in context
         assert "required-review-rule " * 3800 in delivered
         assert "--- SKILL: review ---" in delivered
         assert "+review-evidence " * 7000 in prepared.prompt
@@ -609,10 +737,9 @@ class TestTheReadOnlyVenueBrief(TestCase):
                 return_value=SimpleNamespace(status="unreadable", detail="no workflow runs"),
             ),
         ):
-            prepared = self._prepare(task)
+            refusal = self._refusal(task)
 
-        assert f"WORKER CI at dispatched head {head}: unreadable" in prepared.prompt
-        assert "otherwise set pending or failed and return hold" in self._system_context(prepared)
+        assert "worker CI" in str(refusal)
 
     def test_remote_review_refuses_a_head_that_moves_during_the_diff_read(self) -> None:
         head = "a" * 40
@@ -660,6 +787,24 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
         assert body in self._prepare(self._task(), host=_Host({"body": body})).prompt
 
+    def test_review_diff_admits_200kib_and_names_300kib_refusal(self) -> None:
+        task = self._task()
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        with (
+            patch("teatree.agents.read_only_venue_brief._issue", return_value=("", "")),
+            patch("teatree.agents.read_only_venue_brief._fetch_target"),
+            patch("teatree.agents.read_only_venue_brief._review_diff", return_value=("head", "x" * (200 * 1024), "")),
+        ):
+            assert len(ReadOnlyFacts.gather(task, None).review_diff) == 200 * 1024
+        with (
+            patch("teatree.agents.read_only_venue_brief._issue", return_value=("", "")),
+            patch("teatree.agents.read_only_venue_brief._fetch_target"),
+            patch("teatree.agents.read_only_venue_brief._review_diff", return_value=("head", "x" * (300 * 1024), "")),
+            pytest.raises(HarnessFallbackError, match="review diff 307200 bytes > 262144"),
+        ):
+            ReadOnlyFacts.gather(task, None)
+
     def test_ticket_context_is_never_elided_with_a_t3_pointer(self) -> None:
         lines = [f"note {index}: {'z' * 60}" for index in range(450)]
         ticket = Ticket.objects.create(issue_url=f"{_ISSUE_URL}1", context="\n".join(lines))
@@ -696,7 +841,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
 
 
 class TestWorkerBriefsAreTheBaseBytes(TestCase):
-    """Captured with no skills loaded; a deliberate worker-brief change re-captures it."""
+    """Captured worker briefs; a deliberate prompt change re-captures the fixture."""
 
     def test_planning_coding_and_reviewing_worker_briefs_match_the_base_byte_for_byte(self) -> None:
         golden = json.loads(_WORKER_BRIEFS_AT_BASE.read_text(encoding="utf-8"))

@@ -28,7 +28,9 @@ from teatree.types import RawAPIDict
 # scanner only queries ``is:open`` PRs and partitions them by attention
 # state (failed pipeline / manual action / unresolved notes / plain open). The
 # snapshot unions them so the count reflects every open PR, drafts included.
-_OPEN_PR_SIGNAL_KINDS = frozenset({"my_pr.open", "my_pr.draft_notes", "my_pr.failed", "my_pr.manual_action"})
+_OPEN_PR_SIGNAL_KINDS = frozenset(
+    {"my_pr.open", "my_pr.draft_notes", "my_pr.findings_to_fix", "my_pr.failed", "my_pr.manual_action"}
+)
 
 CACHE_FILENAME = "open-prs.json"
 

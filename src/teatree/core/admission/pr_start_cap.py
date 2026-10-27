@@ -20,10 +20,21 @@ _PR_START_PHASES = tuple(
 )
 
 
+def started_unfinished_pull_requests() -> models.QuerySet["PullRequest"]:
+    pull_request = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
+    return pull_request.objects.live()
+
+
+def open_pr_start_cap_hold_reason() -> str | None:
+    urls = list(started_unfinished_pull_requests().order_by("pk").values_list("url", flat=True))
+    if len(urls) < OPEN_PR_START_CAP:
+        return None
+    return f"{len(urls)} open pull requests fill the start cap of {OPEN_PR_START_CAP}: {', '.join(urls)}"
+
+
 def new_pr_start_allowed_q() -> Q:
     ticket = cast("type[Ticket]", apps.get_model("core", "Ticket"))
-    pull_request = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
-    open_prs = pull_request.objects.live()
+    open_prs = started_unfinished_pull_requests()
     open_count = open_prs.order_by().values(_all=Value(1)).annotate(total=models.Count("*")).values("total")[:1]
     below_cap = LessThan(Coalesce(models.Subquery(open_count), Value(0)), OPEN_PR_START_CAP)
     own_pr = ticket_has_live_pr()
@@ -32,8 +43,7 @@ def new_pr_start_allowed_q() -> Q:
 
 
 def ticket_has_live_pr() -> Exists:
-    pull_request = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
-    return Exists(pull_request.objects.live().filter(ticket_id=OuterRef("ticket_id")))
+    return Exists(started_unfinished_pull_requests().filter(ticket_id=OuterRef("ticket_id")))
 
 
 def cap_hold_reason(task_pk: int) -> str | None:

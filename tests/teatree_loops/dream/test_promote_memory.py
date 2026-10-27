@@ -25,6 +25,7 @@ from teatree.core.models.dream_gap_ledger import record_gap_disposition
 from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import batch_promote as bp_module
 from teatree.loops.dream.batch_promote import PromotionBatch
+from teatree.loops.dream.destination import DestinationVerdict
 from teatree.loops.dream.gap_attach import attach_dream_gaps
 from teatree.loops.dream.merge import BindingConflict
 from teatree.loops.dream.promote_memory import (
@@ -113,6 +114,13 @@ class TriageDispositionTestCase(TestCase):
         # this exact way, so batching had nothing to batch. A memory-shaped
         # destination now promotes.
         row = _row(destination="memory/push-success-must-be-verified-by-ls-remote.md")
+        assert triage_disposition(row) is MemoryDisposition.CORE_GAP
+
+    def test_cited_core_path_recovers_an_ungrounded_hint(self) -> None:
+        row = _row(destination="unknown location")
+        row.verified_citation = "Observed in src/teatree/loops/dream/promote_memory.py:71"
+        row.save(update_fields=["verified_citation"])
+
         assert triage_disposition(row) is MemoryDisposition.CORE_GAP
 
 
@@ -214,6 +222,20 @@ class FileCoreGapTicketsTestCase(TestCase):
         outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
 
+    def test_unreadable_core_tree_does_not_demote_a_classified_gap(self) -> None:
+        row = _row(destination="unknown/path.py")
+        row.classify_core_gap()
+        verdict = DestinationVerdict(
+            rel_path="unknown/path.py", in_core_tree=False, verifiable=False, reason="core tree unavailable"
+        )
+
+        with patch("teatree.loops.dream.promote_memory.evidence_destination", return_value=verdict):
+            outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=PromotionBatch())
+
+        row.refresh_from_db()
+        assert outcomes[0].withheld is True
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+
     def test_a_queued_gap_is_stamped_with_its_promotion_anchor_and_leaves_the_queue(self) -> None:
         row = _row()
         Ticket.objects.create(issue_url=UMBRELLA)
@@ -279,7 +301,8 @@ class FileCoreGapTicketsTestCase(TestCase):
         batch = PromotionBatch()
         file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
-        self._assert_still_queued(row)
+        row.refresh_from_db()
+        assert (row.disposition, row.ticket_url) == (ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP, "")
 
     def test_a_dry_run_gap_is_never_stamped(self) -> None:
         row = _row()
@@ -476,6 +499,36 @@ class DeleteSourceMemoryFilesTestCase(TestCase):
             row.refresh_from_db()
             assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
 
+    def test_routed_fix_does_not_delete_absorbed_rows_extra_lesson(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "project" / "memory"
+            memory_dir.mkdir(parents=True)
+            routed_file = memory_dir / "routed.md"
+            extra_file = memory_dir / "extra.md"
+            routed_file.write_text("routed lesson")
+            extra_file.write_text("extra lesson")
+            routed = _row(source_files=[str(routed_file)])
+            routed.classify_core_gap()
+            routed.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+            new = ConsolidatedMemory.record_cluster(
+                cluster_key="k2",
+                rule="Keep the extra lesson.",
+                source_files=[str(routed_file), str(extra_file)],
+                member_count=2,
+                max_member_weight=90,
+                is_binding=False,
+                verified_citation="a cited mistake",
+            )
+            assert ConsolidatedMemory.objects.supersede_covered_by(new) == [new]
+
+            with patch("teatree.memory_audit.discover_memory_dirs", return_value=[memory_dir]):
+                retire_resolved_memories(MagicMock(spec=CodeHostBackend), is_resolved=lambda _row: True)
+
+            assert not routed_file.exists()
+            assert extra_file.exists()
+            new.refresh_from_db()
+            assert new.status == ConsolidatedMemory.Status.SUPERSEDED
+
     def test_retire_defers_the_row_when_the_file_cannot_be_confirmed_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory_dir = Path(tmp) / "project" / "memory"
@@ -556,6 +609,30 @@ class UngroundedDestinationTestCase(TestCase):
         assert outcomes[0].withheld is True
         assert "ghost_pkg" in outcomes[0].reason
         assert batch.pending == []
+
+    def test_a_stranded_ghost_row_is_classified_as_memory_once(self) -> None:
+        row = _row(destination=self.GHOST)
+        row.classify_core_gap()
+
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=PromotionBatch())
+
+        row.refresh_from_db()
+        assert outcomes[0].withheld is True
+        assert row.disposition == ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
+        assert not ConsolidatedMemory.objects.needs_ticket().filter(pk=row.pk).exists()
+
+    def test_a_stranded_row_uses_its_cited_path_at_the_promotion_chokepoint(self) -> None:
+        row = _row(destination="unknown location")
+        row.verified_citation = "Observed in src/teatree/loops/dream/promote_memory.py:71"
+        row.save(update_fields=["verified_citation"])
+        row.classify_core_gap()
+        batch = PromotionBatch()
+
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+
+        assert outcomes[0].filed is True
+        assert outcomes[0].withheld is False
+        assert len(batch.pending) == 1
 
     def test_a_grounded_destination_outside_the_legacy_prefixes_is_still_promoted(self) -> None:
         _row(destination="evals/scenarios/rules.yaml")

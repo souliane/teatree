@@ -14,6 +14,7 @@ writer standing in the directory.
 import shutil
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -39,6 +40,11 @@ class _CheckoutFixture(TestCase):
         git.run(repo=str(clone), args=["config", "user.email", "test@example.com"])
         git.run(repo=str(clone), args=["config", "user.name", "Test"])
         git.run(repo=str(clone), args=["commit", "--quiet", "--allow-empty", "-m", "base"])
+        origin = self.tmp / name / "origin.git"
+        origin.mkdir()
+        git.run(repo=str(origin), args=["init", "--quiet", "--bare", "--initial-branch=main"])
+        git.run(repo=str(clone), args=["remote", "add", "origin", str(origin)])
+        git.run(repo=str(clone), args=["push", "--quiet", "-u", "origin", "main"])
         return clone
 
     def _checkout(self, clone: Path, name: str, branch: str) -> Path:
@@ -48,15 +54,33 @@ class _CheckoutFixture(TestCase):
 
 
 class TestDisposalNeedsPositiveProof(_CheckoutFixture):
-    def test_a_directory_that_never_claimed_to_be_a_checkout_is_disposable(self) -> None:
+    def test_nonempty_directory_without_git_is_kept(self) -> None:
         partial = self.tmp / "checkouts" / "died-mid-add"
         partial.mkdir(parents=True)
         (partial / "half-written.txt").write_text("x\n", encoding="utf-8")
 
-        assert disposal_refusal(partial, clone=self.clone) == ""
+        assert "half-written.txt" in disposal_refusal(partial, clone=self.clone)
+
+    def test_unlistable_directory_returns_a_refusal(self) -> None:
+        partial = self.tmp / "checkouts" / "unlistable"
+        partial.mkdir(parents=True)
+
+        with patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+            assert "could not read directory" in disposal_refusal(partial, clone=self.clone)
 
     def test_a_path_that_is_not_there_is_disposable(self) -> None:
         assert disposal_refusal(self.tmp / "nothing-here", clone=self.clone) == ""
+
+    def test_an_empty_directory_with_an_in_flight_foreign_row_is_kept(self) -> None:
+        empty = self.tmp / "checkouts" / "empty"
+        empty.mkdir(parents=True)
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3", repos=["repo"])
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="repo", branch="feature", extra={"worktree_path": str(empty)}
+        )
+
+        assert "in-flight ticket" in disposal_refusal(empty, clone=self.clone)
+        assert disposal_refusal(empty, clone=self.clone, requesting_ticket_id=ticket.pk) == ""
 
     def test_a_checkout_the_acting_clone_vouches_for_is_disposable(self) -> None:
         # The ordinary leftover the reconcile step exists to reap: our own clone
@@ -114,9 +138,20 @@ class TestDisposalRefusesALiveWriter(_CheckoutFixture):
 
         assert disposal_refusal(checkout, clone=self.clone, requesting_ticket_id=occupant.pk) == ""
 
-    def test_an_idle_tickets_row_does_not_block_disposal(self) -> None:
+    def test_an_idle_in_flight_tickets_row_blocks_disposal(self) -> None:
         checkout = self._checkout(self.clone, "ours", "feature")
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1", repos=["repo"])
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="repo", branch="feature", extra={"worktree_path": str(checkout)}
+        )
+
+        assert "in-flight ticket" in disposal_refusal(checkout, clone=self.clone)
+
+    def test_a_released_tickets_row_does_not_block_disposal(self) -> None:
+        checkout = self._checkout(self.clone, "ours", "feature")
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/2", repos=["repo"], state=Ticket.State.MERGED
+        )
         Worktree.objects.create(
             ticket=ticket, overlay="test", repo_path="repo", branch="feature", extra={"worktree_path": str(checkout)}
         )

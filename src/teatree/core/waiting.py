@@ -30,11 +30,13 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_assignment import ReviewAssignment
 from teatree.core.models.waiting_item import WaitingItem
+from teatree.core.review.owner_waits import owner_kept_wait
 
 if TYPE_CHECKING:
     from teatree.core.factory.merge_backlog import SupersedeContext
@@ -67,7 +69,10 @@ class WaitingEntry:
     ref: str
     age: timedelta = field(default=timedelta())
     url: str = ""
+    overlay: str = ""
     entry_id: int | None = None
+    row_id: int | None = None
+    owner_only: bool = False
 
 
 def format_age(age: timedelta) -> str:
@@ -97,14 +102,20 @@ def gather_waiting(overlay: str) -> list[WaitingEntry]:
 
 
 def _question_entries(now: datetime) -> list[WaitingEntry]:
-    return [
-        WaitingEntry(
-            kind=WaitingKind.QUESTION,
-            ref=question.question.strip().replace("\n", " ")[:_QUESTION_REF_LEN],
-            age=now - question.created_at,
+    entries: list[WaitingEntry] = []
+    for question in DeferredQuestion.owner_pending():
+        card = QuestionCard.from_row(question.evidence, question.options_json)
+        entries.append(
+            WaitingEntry(
+                kind=WaitingKind.QUESTION,
+                ref=question.question.strip().replace("\n", " ")[:_QUESTION_REF_LEN],
+                age=now - question.created_at,
+                url=card.subject if card else "",
+                row_id=question.pk,
+                owner_only=owner_kept_wait(question, card),
+            )
         )
-        for question in DeferredQuestion.owner_pending()
-    ]
+    return entries
 
 
 def _merge_authorization_entries(now: datetime, overlay: str) -> list[WaitingEntry]:
@@ -129,6 +140,7 @@ def _merge_authorization_entries(now: datetime, overlay: str) -> list[WaitingEnt
                 ref=f"{pr.repo}#{pr.iid}",
                 age=now - waited_from,
                 url=pr.url,
+                overlay=pr.overlay,
             )
         )
     return entries
@@ -177,6 +189,7 @@ def _review_request_entries(now: datetime, overlay: str) -> list[WaitingEntry]:
             ref=assignment.mr_url,
             age=now - assignment.observed_at,
             url=assignment.mr_url,
+            overlay=assignment.overlay,
         )
         for assignment in qs
     ]

@@ -45,6 +45,10 @@ for raw in sys.stdin:
         error = {'code': -32600, 'message': f'{method}.runtimeWorkspaceRoots requires experimentalApi capability'}
         print(json.dumps({'id': request_id, 'error': error}), flush=True)
         continue
+    if method == 'thread/resume' and 'dynamicTools' in request.get('params', {}):
+        error = {'code': -32600, 'message': 'invalid resume dynamicTools'}
+        print(json.dumps({'id': request_id, 'error': error}), flush=True)
+        continue
     if method == 'initialize':
         experimental_api = request['params'].get('capabilities', {}).get('experimentalApi') is True
         response = {}
@@ -486,7 +490,11 @@ def test_public_harness_uses_shared_server_and_resumes_same_thread(tmp_path: Pat
     harness = CodexAppServerHarness(refusal=None, code_home=code_home)
 
     async def run() -> tuple[str, str]:
-        options = ClaudeAgentOptions(cwd=str(tmp_path), permission_mode="bypassPermissions")
+        options = ClaudeAgentOptions(
+            cwd=str(tmp_path),
+            permission_mode="bypassPermissions",
+            env={"T3_AGENT_MAILBOX_SOCKET": str(tmp_path / "mailbox.sock"), "T3_AGENT_MAILBOX_TOKEN": "test"},
+        )
         async with harness.open(options) as first:
             await first.query("first")
             first_messages = [message async for message in first.receive_response()]

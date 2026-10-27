@@ -24,6 +24,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.models import Rubric, RubricError, Ticket
+from teatree.core.models.rubric_waiver import waive_criterion
 from teatree.core.models.types import RubricGrade
 
 
@@ -123,6 +124,24 @@ class RubricCommands(TyperCommand):
             self.stderr.write(f"  refused: ticket {ticket_id} not found")
             raise SystemExit(1) from None
 
+    @command(name="rubric-waive")
+    def rubric_waive(
+        self,
+        ticket_id: int,
+        *,
+        text_hash: Annotated[str, typer.Option("--text-hash", help="Hash shown beside the criterion.")] = "",
+        waived_by: Annotated[str, typer.Option("--waived-by", help="Owner identity recording the waiver.")] = "",
+        reason: Annotated[str, typer.Option("--reason", help="Why this criterion is waived.")] = "",
+    ) -> None:
+        """Waive one rubric criterion by its text hash; an owner identity and a reason are required."""
+        ticket = self._resolve_rubric_ticket(ticket_id)
+        try:
+            waiver = waive_criterion(ticket, text_hash=text_hash, waived_by=waived_by, reason=reason)
+        except RubricError as exc:
+            self.stderr.write(f"  rubric-waive refused: {exc}")
+            raise SystemExit(1) from exc
+        self.stdout.write(f"  waived criterion {waiver['text_hash']}: {waiver['text']}")
+
     @command(name="rubric-set")
     def rubric_set(
         self,
@@ -202,6 +221,9 @@ class RubricCommands(TyperCommand):
         if fully_passed:
             clear_honesty_escalation_on_pass(ticket)
         self.stdout.write(f"  graded {graded} criteria on rubric {rubric.pk} (fully passed: {fully_passed})")
+        for grade in grades:
+            criterion = rubric.criteria.get(ordinal=grade["ordinal"])
+            self.stdout.write(f"  #{criterion.ordinal} {criterion.text_hash} {criterion.text}")
         return {
             "ticket_id": int(ticket.pk),
             "rubric_id": int(rubric.pk),

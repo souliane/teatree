@@ -49,6 +49,7 @@ from teatree.loop import stuck_ticket_redispatch
 from teatree.loop.stuck_ticket_redispatch import (
     DEFAULT_STUCK_IDLE_HOURS,
     _idle_threshold_hours,
+    idle_started_author_tickets,
     redispatch_stuck_tickets,
 )
 from teatree.loop.tick_recovery import _reap_stale_task_claims
@@ -137,6 +138,26 @@ class TestStuckTicketRedispatch(TestCase):
 
         assert redispatch_stuck_tickets() == 1
         assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).count() == 1
+
+    def test_held_review_is_idle_but_not_redispatched(self) -> None:
+        held = _stuck_ticket(state=Ticket.State.SELF_REVIEWED)
+        held.merge_extra(
+            set_keys={
+                "shipping_hold": {
+                    "reason": "no worktree row",
+                    "skipped": "no shippable diff",
+                    "held_at": timezone.now().isoformat(),
+                    "checked_at": "",
+                }
+            }
+        )
+        ordinary = _stuck_ticket(state=Ticket.State.SELF_REVIEWED)
+
+        assert held in idle_started_author_tickets(now=timezone.now(), threshold_hours=6)
+        assert redispatch_stuck_tickets() == 1
+        assert not held.tasks.filter(phase="shipping").exists()
+        assert not DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{held.pk}").exists()
+        assert ordinary.tasks.filter(phase="shipping", status=Task.Status.PENDING).count() == 1
 
     def test_ticket_with_no_activity_record_is_left_alone(self) -> None:
         # No transition and no task means idleness cannot be measured; the sweep

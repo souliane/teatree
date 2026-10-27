@@ -40,7 +40,9 @@ own default. An ordered per-skill route can instead pin an explicit Codex model.
 
 A verification phase uses Codex only when its read-only executor serves that phase and passes a live probe.
 Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` to `claude_sdk` for other
-harnesses. A Codex candidate is rejected on every unserved phase that bars write tools.
+harnesses. A Codex candidate is rejected on every unserved phase that bars write tools,
+except `bughunt`, `dogfood_smoke`, and `eval_local`, which use the current worker's
+write approval policy. Other harnesses retain the original phase tool restrictions.
 `planning`, `reviewing`, and `critic_reviewing` pass only after the live probe on that selection
 (see [Read-only executor](#read-only-executor)). `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
 name Codex, and `config_setting set` refuses a value outside them. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
@@ -101,8 +103,12 @@ A running Codex turn accepts operator input or a peer message through the App Se
 `turn/steer` with its open `expectedTurnId`. TeaTree reports `accepted_current_turn`
 only when the answer names that turn. A timeout, lost answer or turn-end race is
 `unknown_delivery` and is never replayed; an idle or ended turn rejects the input.
-In the worker's Codex sandbox, MCP is unavailable, so the task is a push-only
-mailbox recipient with no inbox copy.
+In the worker's Codex sandbox, MCP is unavailable. New threads receive mailbox
+dynamic tools, and the worker retains their inbox until the task exits. Resumed
+threads keep their creation-time tool catalog; their peer messages use the push
+path without claiming an inbox copy.
+For `not_accepted_in_time` with `queued_in_inbox` true, the message remains queued and a same key retry keeps waiting.
+With `queued_in_inbox` false, it is a settled rejection and a same key retry returns it immediately.
 
 ## Forge credential parity
 
@@ -280,10 +286,11 @@ credential before minting the task; an unreadable configured forge refuses the e
 stay inline across the system context and task message: whole skill blocks move to the task message when the
 system context would exceed 96 KiB. The worker keeps the review diff, comments and other facts under their
 separate caps.
+Tickets without a forge issue or pull request URL carry an empty issue body and comments.
 
 - **Image and mounts.** Its `ro-executor` stage starts from the pinned Ubuntu base with git, python3, tini,
   node and the pinned Codex package, and no `t3`, `gh`, `docker` or `pass`. Compose mounts only the deploy
-  checkout's `.git` (path identity, where the worktrees' gitdirs point), never the directory that holds
+  checkout's `.git` and, when that clone exists, the worker Codex source clone's `.git` (where worktrees' gitdirs point), never the directory that holds
   `deploy/teatree.env`, plus the clone volume and `t3-workspaces`, all read-only, over a read-only root,
   plus two tmpfs mounts: `/run/t3-ro` for Codex homes and `/run/t3-tmp` for `TMPDIR`. It runs as `nobody`
   (65534), which owns none of the trees it reads, so an owner-only file there stays unreadable, and its
@@ -305,6 +312,7 @@ separate caps.
   source that embeds the marker is no key. The run is refused, named and with nothing started, on a mount that
   accepts a write or is not declared, a declared mount that is missing or that the write probe or the
   secret scan skipped, any readable secret file, running as root or as the owner of a mounted tree, a
+  Git config with an embedded HTTP credential or auth header,
   checkout whose Git metadata it cannot read, a tmpfs whose control write fails, capabilities or a missing
   `no_new_privs`, any
   environment key outside the allowlist in the probe's own environment or in `/proc/1/environ`, `t3`,
@@ -324,7 +332,7 @@ separate caps.
   write-barring phase into the unsandboxed translation. The worker's own session and shared server refuse
   attested options before anything starts, and an executor server refuses another container's.
 - **Transport and login.** The executor app server runs as `docker exec -i ... setsid -w sh -c 'exec codex
-  app-server'` (plain `setsid` would return at once and end the exec's stdio) with a `PATH`-only docker CLI
+  --disable plugins app-server'` (plain `setsid` would return at once and end the exec's stdio) with a `PATH`-only docker CLI
   environment. It uses its own login, the pass entry `teatree/codex/ro-executor-auth-json-b64`, under its
   own lease in `<data dir>/codex-ro-executor`, so a read-only run never waits on the worker's lease. Under
   the lease no other server runs, so a stdlib sweep program (`codex_read_only_sweep_program`) first ends
@@ -348,6 +356,7 @@ separate caps.
 - **Per thread.** Each new thread attests again with its own roots and the live home. A home that holds
   `rules/*.rules`, `config.toml` or `plugins/` retires the server; the one retry then reopens the thread on a
   fresh server.
+  `t3 codex auth check --executor --phase <phase>` checks the live home again after its OK turn and fails if it was planted.
 - **Brief.** The executor has no `t3`, forge or data dir, so the worker reads the issue body, its
   comments (system notes left out, oldest first, each with its author and time), the ticket context, the
   predecessor handoff and the planning intake survey and puts them in the task message under fixed caps (64 KiB for
@@ -359,7 +368,7 @@ separate caps.
   A remote reviewing task also gets the full PR file diff, its dispatched head, and the worker's live
   workflow-run status at that head. An author-role self-review gets the branch diff in the task message.
   The worker reads the
-  live head before and after the diff; an unreadable file, changed head, empty diff or diff over 128 KiB refuses
+  live head before and after the diff; an unreadable file, changed head, empty diff or diff over 256 KiB refuses
   the run before Codex can return a verdict.
   The executor has no Skill tool and mounts no skill folder, so its system context embeds every
   required skill with CLI and posting-only sections omitted, names the others as not available, and points at no

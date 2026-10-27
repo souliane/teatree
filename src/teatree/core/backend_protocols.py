@@ -11,9 +11,10 @@ multiple concerns (e.g. GitLab provides code hosting and CI in one client).
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, TypedDict, runtime_checkable
+from typing import NotRequired, Protocol, TypedDict, runtime_checkable
 
 from teatree.core.evidence.forge_content import PrContentSnapshot
+from teatree.core.modelkit.forge_merge_state import MergeConflictState, PrMergeState
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.types import RawAPIDict
@@ -24,7 +25,7 @@ from teatree.types import RawAPIDict
 # door ``ReviewState`` comes through, and it puts ``HEAD_SHA_UNREADABLE`` beside
 # its siblings ``ROLLUP_QUERY_FAILED`` / ``CHANGED_PATHS_UNAVAILABLE``, which is
 # where a backend author looks for it anyway.
-__all__ = ["HEAD_SHA_UNREADABLE", "ReviewState"]
+__all__ = ["HEAD_SHA_UNREADABLE", "MergeConflictState", "PrMergeState", "ReviewState"]
 
 
 class BackendResolutionError(Exception):
@@ -53,6 +54,8 @@ class ApprovalState(TypedDict):
     approvals_left: int
     approved_by: list[str]
     unresolved_resolvable: int
+    count: NotRequired[int]
+    required: NotRequired[int]
 
 
 class PrOpenState(StrEnum):
@@ -183,47 +186,6 @@ class PullRequestSpec:
     assignee: str = ""
     reviewers: list[str] = field(default_factory=list)
     draft: bool = False
-
-
-class MergeConflictState(StrEnum):
-    """Whether the PR/MR conflicts with its target branch, per the forge.
-
-    Three-valued for the same reason :class:`DraftState` is: both forges compute
-    mergeability asynchronously, so "not conflicted" and "not answered yet" are
-    genuinely different facts and a ``bool`` collapses them into the benign one.
-    A conflict probe that launders an unanswered read into ``CLEAN`` makes the
-    conflict sweep silently inert — and one that launders it into ``CONFLICTED``
-    dispatches a fix for a merge request that has nothing wrong with it.
-
-    ``UNKNOWN`` is what every unreadable case maps to — a transport failure, an
-    unparsable payload, a forge that has not finished checking — and no consumer
-    acts on it in either direction.
-    """
-
-    CONFLICTED = "conflicted"
-    CLEAN = "clean"
-    UNKNOWN = "unknown"
-
-
-@dataclass(frozen=True, slots=True)
-class PrMergeState:
-    """The PR/MR's merge state from the forge — used for the §928 reconciliation.
-
-    ``state`` is the forge's PR state (``OPEN`` / ``MERGED`` / ``CLOSED``, always
-    upper-cased so ``is_merged`` works across GitHub and GitLab);
-    ``merge_commit_oid`` is the resulting squash/merge commit when the PR is
-    already merged (else ``""``). ``conflict`` is the target-branch conflict axis,
-    defaulting to ``UNKNOWN`` so a backend that cannot read it is never mistaken
-    for one reporting a clean merge.
-    """
-
-    state: str
-    merge_commit_oid: str
-    conflict: MergeConflictState = MergeConflictState.UNKNOWN
-
-    @property
-    def is_merged(self) -> bool:
-        return self.state.upper() == "MERGED"
 
 
 _ROLLUP_QUERY_FAILED_KEY = "_teatree_rollup_query_failed"
@@ -374,6 +336,9 @@ class IssueResolutionSpec:
 class CodeHostBackend(Protocol):
     """Canonical code-host interface for pull requests and issues."""
 
+    @property
+    def forge(self) -> str: ...  # pragma: no branch
+
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict: ...  # pragma: no branch
 
     def current_user(self) -> str: ...  # pragma: no branch
@@ -411,6 +376,8 @@ class CodeHostBackend(Protocol):
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_unshipped_branches(self, *, repo: str, prefix: str) -> list[str]: ...  # pragma: no branch
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 

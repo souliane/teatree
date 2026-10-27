@@ -14,18 +14,25 @@ from teatree.agents.live_client import (
     WorkerSessionFacts,
 )
 from teatree.core.models import PendingChatInjection, SessionCommand, Task, ThreadBinding
-from teatree.core.models.task_handoff import release_operator_pause
+from teatree.core.models.task_handoff import is_operator_paused, release_operator_pause
 from teatree.core.models.thread_binding import slack_command_id
-from teatree.core.models.usage_window_state import OPERATOR_PAUSED_PREFIX
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading
-from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply, configured_owner_id
+from teatree.loop.question_binding import (
+    AmbiguousCards,
+    BoundAnswer,
+    CardThreadStop,
+    UnmatchedCardThread,
+    apply_bound_answer,
+    configured_owner_id,
+)
 from teatree.loop.slack_answer.control_verbs import control_verb
 from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
-    from teatree.loop.slack_answer.cycle import SlackAnswerReport, _Unit
+    from teatree.loop.slack_answer.coalescing import _Unit
+    from teatree.loop.slack_answer.cycle import SlackAnswerReport
 
 SLACK_STEER_WAIT_SECONDS = 10.0
 
@@ -85,14 +92,7 @@ def _selected_task_id(text: str) -> int | None:
 def _pending_task(binding: ThreadBinding, text: str, *, paused_only: bool = False) -> Task | _AmbiguousSessions | None:
     tasks = list(Task.objects.filter(ticket_id=binding.ticket_id, status=Task.Status.PENDING).order_by("pk"))
     if paused_only:
-        tasks = [
-            task
-            for task in tasks
-            if task.not_before is not None
-            and str(task.attempts.order_by("-pk").values_list("error", flat=True).first() or "").startswith(
-                OPERATOR_PAUSED_PREFIX
-            )
-        ]
+        tasks = [task for task in tasks if task.not_before is not None and is_operator_paused(task)]
     selected = _selected_task_id(text)
     if selected is not None:
         tasks = [task for task in tasks if task.pk == selected]
@@ -181,7 +181,7 @@ def _command_reply(command: SessionCommand) -> str:
 
 
 def _post_live_reply(backend: "MessagingBackend", unit: "_Unit", reply: str) -> bool:
-    root = unit.lead.thread_ts
+    root = unit.lead.thread_ts or unit.slack_ts
     floor = unit.rows[-1].slack_ts
     if bot_reply_present_in_thread(
         backend, channel=unit.channel, thread_root=root, after_ts=floor, expected_ts=ExpectedReply(None, reply)
@@ -202,20 +202,24 @@ def _post_live_reply(backend: "MessagingBackend", unit: "_Unit", reply: str) -> 
     )
 
 
-def _post_bound_reply(
-    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", reply: str, *, kind: str
-) -> bool:
-    if not _mark_unit_loop_replied(unit, kind):
-        return True
+def _post_confirmed(backend: "MessagingBackend", unit: "_Unit", reply: str, *, kind: str) -> bool:
     try:
-        if not _post_live_reply(backend, unit, reply):
-            _unmark_unit_loop_replied(unit, kind=kind)
-            return True
+        posted = _post_live_reply(backend, unit, reply)
     except Exception:
         _unmark_unit_loop_replied(unit, kind=kind)
         raise
-    _confirm_unit_loop_replied(unit)
-    report.acked += 1
+    if posted:
+        _confirm_unit_loop_replied(unit)
+    else:
+        _unmark_unit_loop_replied(unit, kind=kind)
+    return posted
+
+
+def _post_bound_reply(
+    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", reply: str, *, kind: str
+) -> bool:
+    if _mark_unit_loop_replied(unit, kind) and _post_confirmed(backend, unit, reply, kind=kind):
+        report.acked += 1
     return True
 
 
@@ -240,6 +244,32 @@ def _choice_reply(
         f"Select a task for this ticket. Start your reply with {choices} to choose one.",
         kind=PendingChatInjection.AnswerKind.ACK,
     )
+
+
+_STOP_MESSAGES = {
+    CardThreadStop.TAPS_ONLY: "This card needs a button tap. Please choose an option on the card.",
+    CardThreadStop.CLOSED: "This card is no longer waiting for an answer. Please reply to a current card.",
+    CardThreadStop.NOT_WAITING: "Question #{question_id} is no longer waiting. Please reply to a current card.",
+    CardThreadStop.OPTIONS_ONLY: "This card accepts an option reply: {options}.",
+}
+
+
+def _card_result_reply(
+    backend: "MessagingBackend",
+    unit: "_Unit",
+    report: "SlackAnswerReport",
+    result: AmbiguousCards | UnmatchedCardThread | BoundAnswer | None,
+) -> bool:
+    if isinstance(result, AmbiguousCards):
+        choices = " or ".join(f"#{question_id}" for question_id in result.question_ids)
+        message = f"Questions are waiting in this thread. Start your reply with {choices} to choose one."
+    elif isinstance(result, UnmatchedCardThread):
+        message = _STOP_MESSAGES[result.reason].format(
+            question_id=result.question_id, options=", ".join(result.options)
+        )
+    else:
+        return False
+    return _post_bound_reply(backend, unit, report, message, kind=PendingChatInjection.AnswerKind.ACK)
 
 
 def _queue_pending_input(
@@ -273,9 +303,7 @@ def _resume_pending_task(
         released_task = Task.objects.filter(
             pk=existing.task_id, ticket_id=binding.ticket_id, status=Task.Status.PENDING, not_before__isnull=True
         ).first()
-        if released_task is not None and str(
-            released_task.attempts.order_by("-pk").values_list("error", flat=True).first() or ""
-        ).startswith(OPERATOR_PAUSED_PREFIX):
+        if released_task is not None and is_operator_paused(released_task):
             existing.outcome = "queued_resume"
             existing.save(update_fields=["outcome"])
             return _post_bound_reply(
@@ -334,16 +362,8 @@ def _replay_bound_command(
         "queued_followup": PendingChatInjection.AnswerKind.DELEGATED,
         "answered_resume": PendingChatInjection.AnswerKind.QUESTION_REPLY,
     }.get(command.outcome, PendingChatInjection.AnswerKind.SESSION)
-    if not _mark_unit_loop_replied(unit, kind):
+    if not _mark_unit_loop_replied(unit, kind) or not _post_confirmed(backend, unit, reply, kind=kind):
         return True
-    try:
-        if not _post_live_reply(backend, unit, reply):
-            _unmark_unit_loop_replied(unit, kind=kind)
-            return True
-    except Exception:
-        _unmark_unit_loop_replied(unit, kind=kind)
-        raise
-    _confirm_unit_loop_replied(unit)
     if command.outcome == "queued_followup":
         report.dispatched += 1
     elif command.outcome == "answered_resume":
@@ -393,9 +413,9 @@ def _live_receipt(
     unit: "_Unit",
     report: "SlackAnswerReport",
     binding: ThreadBinding,
-    reader: InboundReader,
+    route: tuple[InboundReader, BoundAnswer | None],
 ) -> bool:
-    bound_answer = bind_reply(unit.lead, reader=reader, owner_user_id=configured_owner_id(backend), text=unit.text)
+    reader, bound_answer = route
     if _replay_bound_command(backend, unit, report, binding, bound_answer):
         return True
     verb = control_verb(unit.text)
@@ -465,11 +485,7 @@ def _apply_live_session(
     return True
 
 
-def _reject_foreign_bound_unit(
-    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding | None
-) -> bool:
-    if binding is None:
-        return False
+def _reject_foreign_unit(backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport") -> bool:
     owner_id = configured_owner_id(backend)
     if owner_id and unit.lead.user_id == owner_id:
         return False

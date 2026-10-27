@@ -130,9 +130,6 @@ dogfood_smoke_overlay = "" # str — overlay the dogfood smoke run exercises
 [teatree.Loops.dream]
 dream_memory_promote = true # bool — let the dream pass promote a core-gap memory to a fix
 
-[teatree.Loops.followup]
-review_nag_max_interval_days = 30 # int — ceiling on the review nag's widening re-ask interval
-
 [teatree.Loops.housekeeping]
 auto_update_require_green_main = true # bool — only self-update onto a main whose CI is green
 pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clone
@@ -141,7 +138,9 @@ pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clo
 gitlab_events_subscription = "" # str — Pub/Sub subscription the inbox loop pulls GitLab webhook events from; empty is off
 
 [teatree.Loops.issue_implementer]
+issue_intake_idle_hold_hours = 0 # int — hours a started ticket may sit idle before intake claims nothing new; 0 is off
 issue_intake_pass_budget_seconds = 45.0 # float — seconds the intake scanner walks candidates before recording a resume point
+issue_intake_repos = [] # list — Repo slugs replacing the overlay-owned intake scope; undeclared repos allowed; branch-like prefixes rejected; empty or all-invalid uses owned repos
 
 [teatree.Loops.news]
 ask_before_creating_news_tickets = true # bool — ask the operator before the news scanner files a ticket
@@ -169,6 +168,7 @@ notion_write_denied_roots = [] # list — Notion ids never written under, even b
 on_behalf_auto_actions = ["post_e2e_evidence"] # list — actions the agent may take under the operator's identity unattended
 require_human_approval_to_answer = true # bool — require the operator to approve an answer before it is posted
 require_human_approval_to_merge = true # bool — require a recorded human approver before a merge
+review_nag_max_interval_days = 30 # int — ceiling on the review nag's widening re-ask interval
 substrate_auto_merge_authorized_by = "" # str — who authorized substrate changes to auto-merge
 substrate_self_signoff = false # bool — let a substrate change be signed off by its own author
 
@@ -188,7 +188,7 @@ review_skill_alternates = [] # list — extra skills whose recorded run also sat
 
 [teatree.Gates.Quality."Merge & done"]
 expected_required_contexts = [] # list — CI check names a pull request must carry before it can merge (workflow names on a plan-restricted GitHub Free fallback — #4844)
-forced_repro_gate_enabled = true # bool — require an executed pre-fix failing run for fix tickets at coding, testing and ship
+forced_repro_gate_enabled = true # bool — require an executed pre-fix failing run for fix tickets at coding, testing and ship; off also stops seeding the rubric criteria that demand one and makes observed_red optional
 
 [teatree.Gates.Quality."Critic & send proxy"]
 bulk_close_threshold = 5 # int — how many closes in one run count as a bulk action needing approval

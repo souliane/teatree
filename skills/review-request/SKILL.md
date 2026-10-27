@@ -103,6 +103,8 @@ Only after user approval, **for each Ready PR** run the single sanctioned post p
 t3 review-request post --mr-url <PR_URL> --approver <user-id> --ticket-id <ticket-id> --head-sha <full-40-char-head-sha> --title "<type(scope): description>"
 ```
 
+Omit `--ticket-id` and `--head-sha` only for a pull request no ticket owns: with them omitted the command reads the owning ticket from the PR ledger and runs the anti-vacuity and review-state gates against it, and skips both gates only when none exists.
+
 This is the **only** sanctioned post path. **Never** post a review request with a raw `messaging_from_overlay(...).post_message(...)` Bash call — that bypasses the dedup claim and the recorded-approval binding and is (correctly) blocked by the auto-mode classifier. The command:
 
 - runs `review_request_check`'s live-channel dedup internally and prints `{"action": "suppress", ...}` + exits 0 with **no post** on a live duplicate;

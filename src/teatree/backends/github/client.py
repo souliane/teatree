@@ -58,6 +58,8 @@ _OLDEST_FIRST = "sort=created&order=asc"
 class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBackend Protocol surface, not poor encapsulation.
     """CodeHost implementation backed by the ``gh`` CLI."""
 
+    forge: str = "github"
+
     def __init__(self, *, token: str = "") -> None:
         self._token = token
         self._notes = GitHubPrNotes(token)
@@ -169,6 +171,9 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """
         query = quote_plus(f"repo:{repo} is:pr is:merged merged:>={since}")
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
+    def list_unshipped_branches(self, *, repo: str, prefix: str) -> list[str]:
+        return _pr_reads.BranchReads.list_unshipped_branches(repo=repo, prefix=prefix, token=self._token)
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         """Return the PR's changed files (path + per-file additions/deletions/patch).
