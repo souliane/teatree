@@ -438,7 +438,10 @@ class TestExpediteCliRoundTrip(TestCase):
             ),
         )
         assert issued["issued"]
-        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_pending_stub()):
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_pending_stub()),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
+        ):
             merged = cast(
                 "dict[str, object]",
                 call_command(
