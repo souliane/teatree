@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -7,7 +8,7 @@ from django.test import TestCase
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.forge_pr_probe import GithubOpenPrHead
 from teatree.core.models import DeferredQuestion, TaskAttempt, UnshippedWorkRecord, Worktree
-from teatree.core.models.checkout_custody import ABANDONED_EXIT, Custody, Tenure
+from teatree.core.models.checkout_custody import ABANDONED_EXIT, RELEASED_EXIT, Custody, Tenure
 from teatree.core.models.worktree_occupancy import task_holder_id
 from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park
 from teatree.core.worktree.checkout_state import checkout_state
@@ -16,6 +17,7 @@ from tests.factories import PullRequestFactory, TaskFactory, TicketFactory, Work
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 _VENUE_CLEAR = ProcessTable(frozenset(), "/proc")
+_HOST_BLIND = ProcessTable(frozenset(), "/proc", (), ("pid 7 is unreadable by this uid",))
 
 
 class CheckoutSafetyTests(TestCase):
@@ -90,6 +92,76 @@ class CheckoutSafetyTests(TestCase):
         self.worktree.refresh_from_db()
         assert self.worktree.get_extra()["auto_attestation"]["process_evidence"] == "host"
 
+    def _commit_file(self, name: str) -> None:
+        (self.checkout / name).write_text(f"{name}\n")
+        run_strict(repo=str(self.checkout), args=["add", name])
+        run_strict(
+            repo=str(self.checkout),
+            args=["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", name],
+        )
+
+    def _record_tenure(self, ended: str) -> None:
+        prior = TaskFactory(ticket=self.ticket, phase="coding")
+        custody = Custody(
+            checkout_state(self.checkout, ticket=self.ticket).digest,
+            (
+                Tenure(
+                    task_holder_id(prior),
+                    "prior-session",
+                    "2026-10-27T12:00:00+00:00",
+                    ended,
+                    "2026-10-27T12:30:00+00:00",
+                ),
+            ),
+        )
+        self.worktree.merge_extra(set_keys={"attested_state": custody.anchor, "checkout_custody": custody.as_dict()})
+
+    def _push_with_owned_pr(self) -> ExitStack:
+        remote = self.root / "remote.git"
+        run_strict(repo=str(self.checkout), args=["init", "--bare", str(remote)])
+        run_strict(repo=str(self.checkout), args=["remote", "add", "origin", str(remote)])
+        run_strict(repo=str(self.checkout), args=["push", "origin", "feature"])
+        head = run_strict(repo=str(self.checkout), args=["rev-parse", "HEAD"])
+        url = "https://github.com/example/repo/pull/17"
+        PullRequestFactory(ticket=self.ticket, repo="example/repo", iid="17", url=url)
+        stack = ExitStack()
+        probe = "teatree.core.worktree.checkout_released"
+        stack.enter_context(patch(f"{probe}.git.remote_slug", return_value="example/repo"))
+        stack.enter_context(
+            patch(f"{probe}.git.remote_url", return_value="https://github.com/example/repo.git"),
+        )
+        stack.enter_context(
+            patch(
+                f"{probe}.forge_pr_probe.github_open_pr_head",
+                return_value=GithubOpenPrHead(url, "example/repo", "feature", head),
+            )
+        )
+        stack.enter_context(patch(f"{probe}.forge_pr_probe.github_exact_branch_head", return_value=head))
+        return stack
+
+    def _claim_pushed_head_after(self, ended: str) -> None:
+        self._record_tenure(ended)
+        self._commit_file("pushed.txt")
+        with self._push_with_owned_pr():
+            assert self._claim(_HOST_BLIND) is None
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["auto_attestation"]["process_evidence"] == "venue"
+
+    def test_pushed_head_claims_after_a_released_tenure_when_the_host_table_is_blind(self) -> None:
+        self._claim_pushed_head_after(RELEASED_EXIT)
+
+    def test_pushed_head_claims_after_an_abandoned_tenure_when_the_host_table_is_blind(self) -> None:
+        self._claim_pushed_head_after(ABANDONED_EXIT)
+
+    def test_foreign_edit_after_a_released_tenure_still_parks_when_the_host_table_is_blind(self) -> None:
+        self._record_tenure(RELEASED_EXIT)
+        self._commit_file("pushed.txt")
+        (self.checkout / "foreign.txt").write_text("unowned")
+        with self._push_with_owned_pr():
+            attempt = self._claim(_HOST_BLIND)
+        assert attempt is not None
+        assert attempt.error.startswith("checkout_parked:")
+
     def test_pushed_branch_without_an_owned_pr_parks(self) -> None:
         remote = self.root / "remote.git"
         run_strict(repo=str(self.checkout), args=["init", "--bare", str(remote)])
@@ -148,6 +220,19 @@ class CheckoutSafetyTests(TestCase):
         attempt = self._claim(host, venue)
         assert attempt is not None
         assert attempt.error.endswith("process table unavailable: pid 7 is unreadable by this uid")
+
+    def test_venue_proof_parks_when_a_process_works_inside_the_checkout(self) -> None:
+        self._record_prior_writer()
+        attempt = self._claim(_HOST_BLIND, ProcessTable(frozenset({self.checkout}), "/proc"))
+        assert attempt is not None
+        assert "live process in this venue" in attempt.error
+
+    def test_venue_proof_needs_the_claimants_exclusive_lease(self) -> None:
+        self._record_prior_writer()
+        with patch("teatree.core.worktree.checkout_safety.occupancy_holder", return_value=None):
+            attempt = self._claim(_HOST_BLIND)
+        assert attempt is not None
+        assert "no exclusive claimant lease" in attempt.error
 
     def test_foreign_edit_parks_quietly_then_retries(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")

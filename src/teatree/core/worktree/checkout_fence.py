@@ -107,15 +107,6 @@ def _reattest_changed_checkout(
     )
 
 
-def _fallback_attestation(
-    task: Task, worktree: Worktree, state: CheckoutState, evidence: CheckoutSafetyEvidence, attested: str | None
-) -> str:
-    custody = Custody.from_extra(worktree.get_extra())
-    if attested != state.digest and custody is not None and custody.tenures and not evidence.preserved.commits:
-        return f"checkout {worktree.worktree_path} prior custody could not be recovered"
-    return auto_attest_safe_checkout(task, worktree, state, evidence)
-
-
 def _accept_changed_checkout(
     task: Task,
     worktree: Worktree,
@@ -143,7 +134,7 @@ def _accept_changed_checkout(
     if (
         needs_recovery
         and not _reattest_changed_checkout(task, worktree, state, table, evidence)
-        and (reason := _fallback_attestation(task, worktree, state, evidence, attested))
+        and (reason := auto_attest_safe_checkout(task, worktree, state, evidence))
     ):
         raise CheckoutFenceError(reason)
 
