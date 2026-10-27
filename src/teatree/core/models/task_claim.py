@@ -334,9 +334,12 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
             raise InvalidTransitionError(msg)
         target = review_target_for_task(task)
         recorded = verdict_at(target) is not None if target is not None else False
-        returned_verdict = task.attempts.filter(
-            error="", result__review_verdict__verdict__in=["merge_safe", "hold", "unverified"]
-        ).exists()
+        returned_verdict = any(
+            isinstance(result, dict)
+            and isinstance(result.get("review_verdict"), dict)
+            and str(result["review_verdict"].get("verdict", "")).strip().lower() in {"merge_safe", "hold", "unverified"}
+            for result in task.attempts.filter(error="").values_list("result", flat=True)
+        )
         if target is not None and target.bind_live_head and returned_verdict:
             recorded = ReviewVerdict.objects.filter(
                 ticket=task.ticket, slug__iexact=target.slug, pr_id=target.pr_id

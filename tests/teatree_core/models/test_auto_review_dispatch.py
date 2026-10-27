@@ -15,6 +15,7 @@ from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Task, Ticket
 from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER, MAX_DISPATCH_ATTEMPTS, build_review_contract
+from teatree.core.models.codex_review_marker import CodexReviewMarker
 
 REVIEWING_PHASE = "reviewing"
 
@@ -63,6 +64,17 @@ class TestEnqueueCreatesClaimableTask:
 
 
 class TestDedupPerHead:
+    def test_resolved_codex_review_does_not_block_headless_evidence_producer(self) -> None:
+        marker = CodexReviewMarker.claim(slug=SLUG, pr_id=6230, head_sha=HEAD)
+        assert marker is not None
+        assert CodexReviewMarker.mark_resolved(slug=SLUG, pr_id=6230, head_sha=HEAD)
+
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+
+        assert row is not None
+        assert row.task is not None
+        assert row.task.phase == REVIEWING_PHASE
+
     def test_enqueue_reuses_existing_review_task_for_same_ticket_and_head(self) -> None:
         ticket = Ticket.objects.create(issue_url=URL, overlay="teatree", role=Ticket.Role.REVIEWER)
         ticket.merge_extra(set_keys={"reviewed_sha": HEAD})

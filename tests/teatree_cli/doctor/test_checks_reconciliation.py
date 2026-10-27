@@ -745,6 +745,22 @@ class TestReviewDispatchSaturation(TestCase):
         assert finding.is_alarm
         assert "attempt recorded without verdict" in finding.message
 
+    def test_unverified_saturation_names_the_evidence_gap(self) -> None:
+        row = self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
+        assert row.task is not None
+        TaskAttempt.objects.create(
+            task=row.task,
+            exit_code=0,
+            result={"review_verdict": {"verdict": "unverified", "evidence_gaps": ["ci_unreadable"]}},
+        )
+        AutoReviewDispatch.objects.filter(pk=row.pk).update(state=AutoReviewDispatch.State.UNVERIFIED)
+
+        finding = recon._check_review_dispatch_saturation()
+
+        assert finding.is_alarm
+        assert "ci_unreadable" in finding.message
+        assert "without verdict" not in finding.message
+
     def test_a_resolved_claim_never_alarms(self) -> None:
         self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
         AutoReviewDispatch.mark_resolved(slug=self.SLUG, pr_id=3920, head_sha=self.HEAD)

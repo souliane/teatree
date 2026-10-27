@@ -55,6 +55,24 @@ def test_own_issue_and_pr_constraints_are_not_discarded_as_attribution() -> None
     } == {("unchanged_file", "foo.py")}
 
 
+def test_quoted_targets_and_own_issue_instruction_remain_constraints() -> None:
+    assert {(item.kind, item.target) for item in extract_constraints('Do not touch "src/foo.py".')} == {
+        ("unchanged_file", "src/foo.py")
+    }
+    assert {(item.kind, item.target) for item in extract_constraints('Keep "settings.py" unchanged.')} == {
+        ("unchanged_file", "settings.py")
+    }
+    assert {item.kind for item in extract_constraints('Do not add a "new" setting.')} == {"no_setting"}
+    assert {item.kind for item in extract_constraints("Issue #5452 asks that you do not add a migration.")} == {
+        "no_migration"
+    }
+    assert {
+        item.kind
+        for item in extract_constraints("Issue #5452 asks that you do not add a migration.", own_issue_number="5452")
+    } == {"no_migration"}
+    assert extract_constraints("Issue #42 asks that you do not add a migration.", own_issue_number="5452") == ()
+
+
 def test_cli_settings_flag_is_not_a_ban_on_new_settings() -> None:
     brief = 'Use the advisor key without spawning: `--settings {"advisorModel": "<id>"}`.'
 

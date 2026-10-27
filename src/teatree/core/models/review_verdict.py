@@ -42,6 +42,7 @@ from teatree.core.models.merge_clear import SHA_FULL_LEN, ClearIssuanceError, Me
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_finding import Finding
 from teatree.core.models.review_hold_disposition import ReviewHoldDisposition
+from teatree.core.models.review_verdict_duplicate import refresh_duplicate_verdict
 from teatree.core.models.reviewer_identity import (
     is_independent_reviewer_identity,
     normalize_reviewer_identity,
@@ -444,14 +445,7 @@ class ReviewVerdict(models.Model):
             )
             if not created:
                 recorded = cls.objects.select_for_update().get(pk=recorded.pk)
-                if not isinstance(recorded.findings, list):
-                    msg = f"verdict {recorded.pk} findings is not a list"
-                    raise ReviewVerdictError(msg)
-                additions = [finding.as_dict() for finding in (findings or [])]
-                merged = [*recorded.findings, *(finding for finding in additions if finding not in recorded.findings)]
-                if merged != recorded.findings:
-                    recorded.findings = merged
-                    recorded.save(update_fields=["findings"])
+                refresh_duplicate_verdict(recorded, findings or [], gaps, normalized_verify)
             if conclude_review:
                 recorded.conclude_review(lock_holder=lock_holder)
             return recorded

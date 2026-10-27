@@ -34,6 +34,7 @@ from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
 from tests.factories import planned_ticket
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
+from tests.teatree_loop._review_fixture import complete_review_task
 
 
 def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
@@ -246,7 +247,7 @@ class TestCodexReviewZoneRevived(TestCase):
         # after the first review task completes, the same SHA does not re-dispatch.
         first = persist_agent_actions(_agent_actions(self._signal(pr_id=101, head_sha="csha-101")))
         assert len(first) == 1
-        first[0].complete_with_attempt()
+        complete_review_task(first[0])
         second = persist_agent_actions(_agent_actions(self._signal(pr_id=101, head_sha="csha-101")))
         assert second == []
         assert (
@@ -319,7 +320,7 @@ class TestCodexReviewZoneRevived(TestCase):
         )
         assert len(first) == 1
         assert first[0].ticket.extra["reviewed_sha"] == "csha-15-a"
-        first[0].complete_with_attempt()
+        complete_review_task(first[0])
         second = persist_agent_actions(
             _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/15", pr_id=15, head_sha="csha-15-b")),
         )
@@ -433,7 +434,7 @@ class TestSelfPrReviewZoneRevived(TestCase):
         from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
 
         record_review_context_for_test(first[0].ticket)
-        first[0].complete_with_attempt()
+        complete_review_task(first[0])
         second = persist_agent_actions(_agent_actions(self._signal(pr_id=201, head_sha="selfsha-201")))
         assert second == []
         assert Task.objects.filter(ticket__issue_url="https://github.com/o/r/pull/70", phase="reviewing").count() == 1
@@ -444,7 +445,7 @@ class TestSelfPrReviewZoneRevived(TestCase):
         from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
 
         record_review_context_for_test(first[0].ticket)
-        first[0].complete_with_attempt()
+        complete_review_task(first[0])
         second = persist_agent_actions(_agent_actions(self._signal(pr_id=202, head_sha="selfsha-202b")))
         assert len(second) == 1
 

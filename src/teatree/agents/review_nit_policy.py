@@ -3,11 +3,9 @@
 from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
-from teatree.agents.result_schema import AgentResultBlob, ReviewFinding, ReviewVerdictEnvelope
+from teatree.agents.result_schema import ReviewFinding, ReviewVerdictEnvelope
 from teatree.core.models.review_verdict import Finding, ReviewVerdict
 from teatree.core.review.finding_standard import FindingKind
-from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
-from teatree.core.review.nit_publish import review_nits
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -42,19 +40,3 @@ def normalize_review_envelope(envelope: ReviewVerdictEnvelope, ticket: "Ticket |
     ):
         normalized["verdict"] = ReviewVerdict.Verdict.MERGE_SAFE
     return normalized
-
-
-def drop_unpostable_nits(envelope: ReviewVerdictEnvelope, result: AgentResultBlob) -> ReviewVerdictEnvelope:
-    retained = []
-    for raw in envelope.get("findings", []):
-        finding = Finding.from_dict(raw)
-        if finding.kind == "nit":
-            try:
-                validate_nit_comments(review_nits((finding,)))
-            except NitLaneError as exc:
-                cast("list[str]", result.setdefault("decisions", [])).append(
-                    f"Dropped non-blocking nit: {finding.summary}; {exc}"
-                )
-                continue
-        retained.append(raw)
-    return {**envelope, "findings": retained}

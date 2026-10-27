@@ -379,11 +379,9 @@ class AutoReviewDispatch(models.Model):
                 transaction.set_rollback(True)
                 return None
             marker = apps.get_model("core", "CodexReviewMarker")
-            if (
-                marker.objects.filter(slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha)
-                .exclude(state="unverified")
-                .exists()
-            ):
+            if marker.objects.filter(
+                slug__iexact=slug, pr_id=pr_id, head_sha__iexact=head_sha, state="dispatched"
+            ).exists():
                 transaction.set_rollback(True)
                 return None
             row.refresh_from_db()

@@ -74,6 +74,19 @@ class _TaskCompletionHarness(TestCase):
 
 
 class RecheckBeforeCompleteTests(_TaskCompletionHarness):
+    def test_review_without_recorded_outcome_remains_pending(self) -> None:
+        task = self._task()
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        host = _Host(issues_by_url={self.URL: {"state": "closed"}})
+        overlay_patch, host_patch = self._patch(host)
+
+        with overlay_patch, host_patch:
+            task_completion({"task_id": task.pk, "issue_url": self.URL})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
     def test_completes_task_when_artifact_still_terminal(self) -> None:
         task = self._task()
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})

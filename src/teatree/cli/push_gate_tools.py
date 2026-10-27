@@ -16,7 +16,7 @@ import typer
 
 from teatree.quality.brief_constraints import ConstraintViolation
 from teatree.quality.changed_set import ChangedSetError
-from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_brief_constraints, run_push_gate, sweep_command
+from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_push_gate, sweep_command
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import CommandFailedError
 
@@ -30,28 +30,6 @@ def _ticket_for_worktree(repo_root: Path) -> "Ticket | None":
 
     worktree = Worktree.objects.filter(extra__worktree_path=str(repo_root.resolve())).select_related("ticket").first()
     return worktree.ticket if worktree is not None else None
-
-
-def _brief_for_worktree(repo_root: Path) -> str:
-    ticket = _ticket_for_worktree(repo_root)
-    if ticket is None:
-        return ""
-    from teatree.core.models import PlanArtifact, Task  # noqa: PLC0415 — Django is set up at call time
-
-    plan = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
-    tasks = Task.objects.filter(ticket=ticket, phase__in=("coding", "debugging"))
-    task = (
-        tasks.filter(status=Task.Status.CLAIMED).order_by("-created_at", "-pk").first()
-        or tasks.filter(status=Task.Status.COMPLETED).order_by("-created_at", "-pk").first()
-    )
-    return "\n".join(
-        part
-        for part in (
-            plan.plan_text if plan is not None else "",
-            task.execution_reason if task is not None else "",
-        )
-        if part
-    )
 
 
 def _emit_cmd(plan: PushGatePlan, repo_root: Path) -> str:
@@ -78,7 +56,7 @@ def _plan_as_dict(plan: PushGatePlan) -> dict:
 def _constraint_violations(repo_root: Path, base: str) -> tuple[ConstraintViolation, ...]:
     ticket = _ticket_for_worktree(repo_root)
     if ticket is None:
-        return run_brief_constraints(repo_root, base_ref=base, brief=_brief_for_worktree(repo_root))
+        return ()
     from teatree.core.gates.merge_quality_gate import (  # noqa: PLC0415 — Django is set up at call time
         ticket_brief_constraint_violations,
     )

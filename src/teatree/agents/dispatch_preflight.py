@@ -55,7 +55,8 @@ def standing_hold_brief_lines(task: "Task") -> tuple[str, ...]:
     lines = [
         (
             "A later independent merge_safe verdict must answer EVERY standing HOLD point in "
-            "review_verdict.hold_dispositions; each answer needs classification and citation."
+            "review_verdict.hold_dispositions: [{hold_id, points: [{index, classification: "
+            "disproved_premise|venue_limit, citation}]}]. Cite fresh evidence for each point."
         )
     ]
     for hold in holds:

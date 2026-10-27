@@ -263,8 +263,10 @@ def run_push_gate(
     )
 
 
-def run_brief_constraints(repo_root: Path, *, base_ref: str, brief: str) -> tuple[ConstraintViolation, ...]:
-    constraints = extract_constraints(brief)
+def run_brief_constraints(
+    repo_root: Path, *, base_ref: str, brief: str, own_issue_number: str = ""
+) -> tuple[ConstraintViolation, ...]:
+    constraints = extract_constraints(brief, own_issue_number=own_issue_number)
     if not constraints:
         return ()
     changed = changed_paths(base_ref, cwd=repo_root)

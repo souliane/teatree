@@ -22,8 +22,6 @@ FINDING_STANDARD = (
 
 def normalize_finding_kind(kind: str, severity: str) -> str:
     normalized = kind.strip().lower()
-    if normalized == FindingKind.NOTE:
-        return FindingKind.NOTE
     if severity.strip().lower() in BLOCKING_SEVERITIES:
         return FindingKind.BLOCKING
     if normalized == FindingKind.NIT:

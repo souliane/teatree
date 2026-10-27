@@ -29,17 +29,11 @@ here even if Wave A's own unit tests stay green.
 """
 
 import datetime as dt
-from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.utils.run import redact_secrets
-from teatree.utils.url_slug import pr_ref_from_url
-
-if TYPE_CHECKING:
-    from teatree.core.models import Task
-
 from teatree.cli.doctor.checks_external_outcomes import EXTERNAL_CHECKS
+from teatree.cli.doctor.checks_reviewing_ledger import _review_saturation_reason
 from teatree.cli.doctor.reconciliation_finding import Level, ReconciliationFinding, _alarm, _degraded, _now, _ok
 
 # ``notify_policy`` is enum-only (Django-free), so it is safe at module load — the
@@ -51,6 +45,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 # Django-free pure arithmetic, so it is safe beside ``notify_policy`` above — and it is
 # the ONE home for "how stale is stale", which a local re-derivation here would fork.
 from teatree.loops.loop_staleness import freeze_cutoff_seconds
+from teatree.utils.url_slug import pr_ref_from_url
 
 #: The 24h operational window most freeze/spin invariants are measured over.
 _DAY = dt.timedelta(hours=24)
@@ -455,29 +450,10 @@ def _check_review_dispatch_saturation(now: dt.datetime | None = None) -> Reconci
     return _alarm(
         check_id,
         f"Review-dispatch saturation alarm: {len(stranded)} claim(s) exhausted the retry budget "
-        f"with no verdict recorded. Causes by reason: {details}. Every armed review/critic for those heads "
-        f"died, so nothing will re-arm them and the merge gate stays unsatisfied — review each by hand "
+        f"without a terminal verdict. Causes by reason: {details}. Nothing will re-arm those heads "
+        f"and the merge gate stays unsatisfied — review each by hand "
         f"or push a new commit to arm a fresh head.",
     )
-
-
-def _review_saturation_reason(task: "Task | None") -> str:
-    if task is None:
-        return "no linked review task for this head"
-    attempt = task.attempts.exclude(error="").order_by("-pk").first()
-    error = (attempt.error if attempt is not None else task.failure_reason).strip()
-    if not error:
-        return "attempt recorded without verdict or failure reason" if task.attempts.exists() else "no recorded attempt"
-    lowered = error.casefold()
-    if "turn ceiling" in lowered or "maximum turns" in lowered:
-        return "turn ceiling"
-    if "brief refused" in lowered or "brief could not" in lowered:
-        return "refused brief"
-    if "credential" in lowered or "api_credit:" in lowered:
-        return "credential"
-    lines = [line.strip() for line in error.splitlines() if line.strip()]
-    cause = lines[-1] if lines[0].startswith("Traceback (most recent call last):") else lines[0]
-    return redact_secrets(cause)[:160]
 
 
 def _high_churn_counts() -> dict[str, tuple[int, int]]:

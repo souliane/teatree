@@ -119,6 +119,16 @@ class TestExpiredClaimIsReArmable:
 
 
 class TestResolvedIsTerminal:
+    def test_a_later_verdict_retires_an_unverified_claim(self) -> None:
+        row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+        assert row is not None
+        assert CodexReviewMarker.mark_unverified(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is True
+
+        assert CodexReviewMarker.mark_resolved(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is True
+        row.refresh_from_db()
+        assert row.state == CodexReviewMarker.State.RESOLVED
+        assert CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is None
+
     def test_a_resolved_claim_is_never_re_armed(self) -> None:
         row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
         assert row is not None

@@ -91,24 +91,19 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         '                                   "basis": "executed"|"documentation"|"venue_limit",',
         '                                   "summary": "...", "file": "...", "line": 0,',
         '                                   "citation": "...", "reproduction": "<run and result, if executed>"}]}',
-        (
-            'For a same-head HOLD, add "hold_dispositions": [{"hold_id": <id>, "points": '
-            '[{"index": <held finding index>, "classification": "disproved_premise"|"venue_limit", '
-            '"citation": "<fresh evidence>"}]}] to the merge_safe review_verdict.'
-        ),
-        "BLOCKING: wrong behaviour, false claim, untested shipped behaviour, vacuous test, redundant",
-        "test, duplicate definition, or red check. NIT: wording, naming, style, or placement.",
-        "Only BLOCKING findings may hold a review; NITs need a merge_safe verdict and follow-up.",
+        "BLOCKING: wrong behaviour, false claim, untested behaviour, vacuous or redundant test,",
+        "duplicate definition, or red check. NIT: wording, naming, style, placement.",
+        "Only BLOCKING may hold; NITs need merge_safe and follow-up.",
         ENVELOPE_FINDINGS_RULE,
         *(
             (
-                "Use unverified with evidence_gaps (ci_unreadable, tests_unavailable, or plan_unavailable) "
-                + "when a venue cannot establish a required fact; it grants no merge authority and re-arms review.",
+                "Use unverified with evidence_gaps (ci_unreadable, tests_unavailable, plan_unavailable) "
+                + "for unreadable evidence; it cannot clear a merge and re-arms review.",
             )
             if identity
             else ()
         ),
-        "A confirmed failed check or blocking code finding requires hold; PASS/LGTM/approve are refused.",
+        "Failed check or blocking finding means hold; PASS/LGTM/approve refused.",
         (
             (
                 "Use the dispatched head in the DIFF UNDER REVIEW block as the full 40-char `reviewed_sha`."
@@ -118,14 +113,14 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             if read_only_venue
             else ("`reviewed_sha` MUST be the full 40-char SHA you reviewed (`git rev-parse HEAD`):")
         ),
-        "A verdict for another head is REFUSED. On checkout mismatch, return",
+        "Wrong-head verdict refused; on checkout mismatch return",
         '  "review_head_mismatch": {"observed_sha": "<40-char SHA>", "reason": "<why>"}',
         "without review_verdict or owner question. Factory retries once at the live head; a repeat records a card.",
         'If CI, tests, or the plan cannot be read here, return "review_venue_limit":',
         '  {"limits": ["<limit>"]} without review_verdict; the factory retries elsewhere.',
-        "HOLD needs an observed code or check blocker, never a venue limit.",
-        "Missing `reviewed_sha` is REFUSED; never infer it from dispatch.",
-        "A blocking finding (blocker/major/high/critical) outside PR-changed files is REFUSED and records nothing.",
+        "HOLD needs observed code/check blocker, not a venue limit.",
+        "Missing `reviewed_sha` is refused.",
+        "Out-of-diff blocking findings are refused without recording.",
         "Branch-only probes may blame main; recheck on the MERGE RESULT.",
         *(
             ("If the merge result cannot be built here, report review_venue_limit.",)

@@ -8,7 +8,6 @@ from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.push_gate_tools import _brief_for_worktree
 from teatree.core.models import PlanArtifact, Session, Task, Ticket, Worktree
 from teatree.quality.brief_constraints import ConstraintViolation
 from teatree.quality.push_gate import PushGatePlan, PushGateResult
@@ -18,54 +17,6 @@ runner = CliRunner()
 
 
 class TestWorktreeBrief(TestCase):
-    def test_pending_future_coding_task_does_not_constrain_the_current_push(self) -> None:
-        ticket = Ticket.objects.create()
-        Worktree.objects.create(
-            ticket=ticket,
-            overlay="teatree",
-            repo_path="souliane/teatree",
-            branch="feature",
-            extra={"worktree_path": "/tmp/brief-pending-task"},
-        )
-        session = Session.objects.create(ticket=ticket)
-        PlanArtifact.objects.create(ticket=ticket, plan_text="Current plan")
-        Task.objects.create(
-            ticket=ticket,
-            session=session,
-            phase="coding",
-            status=Task.Status.COMPLETED,
-            execution_reason="No migration.",
-        )
-        future = Task.objects.create(
-            ticket=ticket,
-            session=session,
-            phase="coding",
-            status=Task.Status.PENDING,
-            execution_reason="No new setting.",
-        )
-
-        brief = _brief_for_worktree(Path("/tmp/brief-pending-task"))
-
-        assert brief == "Current plan\nNo migration."
-        assert "No new setting." not in brief
-
-        future.status = Task.Status.CLAIMED
-        future.save(update_fields=["status"])
-        assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo new setting."
-
-        future.status = Task.Status.FAILED
-        future.save(update_fields=["status"])
-        assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo migration."
-
-        Task.objects.create(
-            ticket=ticket,
-            session=session,
-            phase="debugging",
-            status=Task.Status.COMPLETED,
-            execution_reason="No extra migration.",
-        )
-        assert _brief_for_worktree(Path("/tmp/brief-pending-task")) == "Current plan\nNo extra migration."
-
     def test_push_checks_later_task_limit_against_its_own_round(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = make_git_repo(Path(raw))

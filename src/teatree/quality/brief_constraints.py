@@ -30,8 +30,12 @@ _EXAMPLE_GROUP = re.compile(r"\b(?:closed\s+grammar|for\s+example|e\.g\.|such\s+
 _BLOCK_QUOTE = re.compile(r"^[ \t]*>[^\n]*$", re.MULTILINE)
 _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|(?<!\w)\'[^\'\n]*\'|\u2018[^\u2019\n]*\u2019')
 _ATTRIBUTED = re.compile(
-    r"\b(?:(?:another|other|external)\s+(?:issue|pull\s+request|pr|mr)|"
-    r"(?:issue|pull\s+request|pr|mr)\s*#\d+)\b[^.;\n]{0,100}?"
+    r"\b(?:another|other|external)\s+(?:issue|pull\s+request|pr|mr)\b[^.;\n]{0,100}?"
+    r"\b(?:says?|said|states?|asks?|quotes?)\b[^.;\n]*",
+    re.IGNORECASE,
+)
+_NUMBERED_ATTRIBUTED = re.compile(
+    r"\b(?P<kind>issue|pull\s+request|pr|mr)\s*#(?P<number>\d+)\b[^.;\n]{0,100}?"
     r"\b(?:says?|said|states?|asks?|quotes?)\b[^.;\n]*",
     re.IGNORECASE,
 )
@@ -46,12 +50,23 @@ _STAYS = re.compile(rf"\b{_PATH}\s+(?:stays?|must\s+remain)\s+unchanged\b", re.I
 _DO_NOT_TOUCH = re.compile(rf"\b(?:do\s+not|don't)\s+(?:change|touch|edit)\s+{_PATH}\b", re.IGNORECASE)
 
 
-def extract_constraints(text: str) -> tuple[BriefConstraint, ...]:
+def extract_constraints(text: str, *, own_issue_number: str = "") -> tuple[BriefConstraint, ...]:
     text = _EXAMPLE_GROUP.sub("", text)
     text = _BLOCK_QUOTE.sub("", text)
-    text = _QUOTED.sub(".", text)
     text = _ATTRIBUTED.sub("", text)
+    text = _NUMBERED_ATTRIBUTED.sub(
+        lambda match: (
+            match.group()
+            if not own_issue_number
+            or (match.group("kind").lower() == "issue" and match.group("number") == own_issue_number)
+            else ""
+        ),
+        text,
+    )
     text = _ANOTHER_REQUIRES.sub("", text)
+    text = _QUOTED.sub(
+        lambda match: match.group()[1:-1] if re.fullmatch(r"[\w./-]+", match.group()[1:-1]) else ".", text
+    )
     found: dict[tuple[ConstraintKind, str], BriefConstraint] = {}
     for match in _NEGATIVE.finditer(text):
         scope = match.group(1).lower()

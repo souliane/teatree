@@ -297,7 +297,8 @@ def ticket_brief_constraint_violations(
 ) -> tuple[ConstraintViolation, ...]:
     plan = latest_plan_artifact(ticket)
     plan_text = plan.plan_text if plan is not None else ""
-    violations = run_brief_constraints(worktree, base_ref=base_ref, brief=plan_text)
+    own_issue_number = ticket.ticket_number if "/issues/" in ticket.issue_url else ""
+    violations = run_brief_constraints(worktree, base_ref=base_ref, brief=plan_text, own_issue_number=own_issue_number)
     if violations:
         return violations
     statuses = (Task.Status.COMPLETED, Task.Status.CLAIMED) if include_claimed else (Task.Status.COMPLETED,)
@@ -306,7 +307,7 @@ def ticket_brief_constraint_violations(
         .order_by("-created_at", "-pk")
         .first()
     )
-    if task is None or not extract_constraints(task.execution_reason):
+    if task is None or not extract_constraints(task.execution_reason, own_issue_number=own_issue_number):
         return violations
     extra = type(ticket).objects.values_list("extra", flat=True).get(pk=ticket.pk) or {}
     starts = extra.get("brief_start_heads") or {}
@@ -318,7 +319,12 @@ def ticket_brief_constraint_violations(
         raise ChangedSetError(message)
     if not git.check(repo=str(worktree), args=["merge-base", "--is-ancestor", start, "HEAD"]):
         start = base_ref
-    return (*violations, *run_brief_constraints(worktree, base_ref=start, brief=task.execution_reason))
+    return (
+        *violations,
+        *run_brief_constraints(
+            worktree, base_ref=start, brief=task.execution_reason, own_issue_number=own_issue_number
+        ),
+    )
 
 
 def _check_brief_constraints(ticket: "Ticket") -> None:
@@ -328,8 +334,9 @@ def _check_brief_constraints(ticket: "Ticket") -> None:
         .order_by("-created_at", "-pk")
         .first()
     )
-    if not extract_constraints(plan.plan_text if plan is not None else "") and not (
-        task and extract_constraints(task.execution_reason)
+    own_issue_number = ticket.ticket_number if "/issues/" in ticket.issue_url else ""
+    if not extract_constraints(plan.plan_text if plan is not None else "", own_issue_number=own_issue_number) and not (
+        task and extract_constraints(task.execution_reason, own_issue_number=own_issue_number)
     ):
         return
     worktree = dispatch_worktree_path(ticket)

@@ -195,7 +195,7 @@ class CodexReviewMarker(models.Model):
         legitimate no-op — most verdicts conclude a review this table never armed.
         """
         return retire_head_claim(
-            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            cls.objects.filter(state__in=(*cls._ACTIVE_STATES, cls.State.UNVERIFIED)),
             slug=slug,
             pr_id=pr_id,
             head_sha=head_sha,
