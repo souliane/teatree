@@ -28,6 +28,12 @@ class Settlement:
     observed_branch: str = ""
 
 
+class SettlementPassError(RuntimeError):
+    def __init__(self, message: str, applied: list[Settlement]) -> None:
+        super().__init__(message)
+        self.applied = tuple(applied)
+
+
 def _worktree_snapshot(rows: list[Worktree]) -> frozenset[tuple[int, str, str, str]]:
     return frozenset(
         (row.pk, row.repo_path, row.branch, str((row.extra or {}).get("worktree_path") or "")) for row in rows
@@ -123,7 +129,17 @@ def settle_held_tickets(*, dry_run: bool = False, now: datetime | None = None) -
         except Exception as exc:
             logger.exception("Shipping-hold settlement failed for ticket %s", ticket.pk)
             failures.append(f"{ticket.pk}: {type(exc).__name__}: {exc}")
+            if not dry_run:
+                try:
+                    _apply_settlement(
+                        ticket.pk,
+                        Settlement(ticket.pk, "hold", f"unverified: settlement failed ({type(exc).__name__}: {exc})"),
+                        now=current,
+                    )
+                except Exception as stamp_error:
+                    logger.exception("Shipping-hold failure stamp failed for ticket %s", ticket.pk)
+                    failures.append(f"{ticket.pk} stamp: {type(stamp_error).__name__}: {stamp_error}")
     if failures:
         msg = f"shipping-hold settlement failed: {'; '.join(failures)}"
-        raise RuntimeError(msg)
+        raise SettlementPassError(msg, results)
     return results

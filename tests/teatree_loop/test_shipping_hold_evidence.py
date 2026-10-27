@@ -111,6 +111,59 @@ def test_unreadable_branch_with_recorded_branch_is_unverified() -> None:
             assert "git (" in disk_evidence(ticket).unverified
 
 
+def test_alias_or_empty_remote_host_cannot_verify_named_checkout_absent() -> None:
+    ticket = _ticket()
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        path = root / "5346-ticket"
+        path.mkdir()
+        _git(path, "init", "-b", "main")
+        _git(path, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "base")
+        _git(path, "checkout", "-b", "5346-work")
+        _git(path, "remote", "add", "origin", "git@github-alias:souliane/teatree.git")
+        for remote in ("git@github-alias:souliane/teatree.git", "souliane/teatree.git"):
+            _git(path, "remote", "set-url", "origin", remote)
+            with patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root):
+                assert disk_evidence(ticket).unverified
+
+
+def test_named_checkout_without_origin_is_unverified() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        path = root / "5346-ticket"
+        path.mkdir()
+        _git(path, "init", "-b", "5346-work")
+        _git(path, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "base")
+        with patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root):
+            assert "no readable origin" in disk_evidence(_ticket()).unverified
+
+
+def test_unreadable_checkout_commit_probe_is_unverified() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        path = root / "5346-ticket"
+        path.mkdir()
+        _git(path, "init", "-b", "5346-work")
+        _git(path, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "base")
+        _git(path, "remote", "add", "origin", "https://github.com/souliane/teatree.git")
+        with (
+            patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root),
+            patch(
+                "teatree.loop.shipping_hold_evidence.worktree_has_commits_ahead", side_effect=RuntimeError("bad ref")
+            ),
+        ):
+            assert "bad ref" in disk_evidence(_ticket()).unverified
+
+
+def test_unreadable_issue_and_missing_forge_host_are_unverified() -> None:
+    assert "issue URL" in disk_evidence(Ticket(overlay="test", issue_url="", issue_number="")).unverified
+    with (
+        patch("teatree.loop.shipping_hold_evidence.get_overlay", return_value=object()),
+        patch("teatree.loop.shipping_hold_evidence.get_code_host_for_url", return_value=None),
+    ):
+        assert "no readable host" in forge_evidence(_ticket()).unverified
+
+
 def test_failed_forge_read_is_unverified() -> None:
     ticket = _ticket()
     host = Mock()

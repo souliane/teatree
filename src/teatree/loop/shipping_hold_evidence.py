@@ -84,13 +84,16 @@ def _checkout_evidence(path: Path, *, named: bool, ticket: Ticket) -> Evidence:
     if read_remote.returncode != 0:
         return Evidence(unverified=f"git ({path.name}: no readable origin remote)")
     remote = read_remote.stdout.strip()
-    if slug_from_remote(remote).lower() != slug.lower() or host_from_remote(remote) != host:
+    if slug_from_remote(remote).lower() != slug.lower():
         return Evidence()
+    if host_from_remote(remote) != host:
+        return Evidence(unverified=f"git ({path.name}: origin host differs from issue host)")
     try:
         probe = Worktree(repo_path=slug, branch=branch, extra={"worktree_path": str(path)})
-        return Evidence(found=f"checkout {path}") if worktree_has_commits_ahead(probe) else Evidence()
+        evidence = Evidence(found=f"checkout {path}") if worktree_has_commits_ahead(probe) else Evidence()
     except (WorktreeProbeUnverifiableError, OSError, ValueError, RuntimeError) as exc:
-        return Evidence(unverified=f"git ({type(exc).__name__}: {exc})")
+        evidence = Evidence(unverified=f"git ({type(exc).__name__}: {exc})")
+    return evidence
 
 
 def disk_evidence(ticket: Ticket) -> Evidence:
@@ -120,9 +123,12 @@ def forge_evidence(ticket: Ticket) -> Evidence:
         prefix = f"{number}-"
         branches = host.list_unshipped_branches(repo=slug, prefix=prefix)
         recorded = str((ticket.extra or {}).get("branch") or "")
-        if recorded and not recorded.startswith(prefix):
+        row_branches = ticket.worktrees.values_list("branch", flat=True) if ticket.pk else ()
+        for candidate in dict.fromkeys((recorded, *row_branches)):
+            if not candidate or candidate.startswith(prefix):
+                continue
             branches.extend(
-                name for name in host.list_unshipped_branches(repo=slug, prefix=recorded) if name == recorded
+                name for name in host.list_unshipped_branches(repo=slug, prefix=candidate) if name == candidate
             )
         if branches:
             return Evidence(found=f"branch {branches[0]}")

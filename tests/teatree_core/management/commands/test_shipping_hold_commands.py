@@ -6,12 +6,26 @@ from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import Ticket
 from teatree.loop.shipping_hold_evidence import Evidence
 
 
 class TestShippingHoldCommands(TestCase):
+    def test_held_but_not_due_is_visible_in_human_result(self) -> None:
+        Ticket.objects.create(
+            overlay="test",
+            role=Ticket.Role.AUTHOR,
+            state=Ticket.State.SELF_REVIEWED,
+            extra={"shipping_hold": {"reason": "awaiting evidence", "checked_at": timezone.now().isoformat()}},
+        )
+        output = StringIO()
+        errors = StringIO()
+        call_command("ticket", "settle-holds", stdout=output, stderr=errors)
+        assert "0 held ticket(s) checked" in errors.getvalue()
+        assert "1 held remaining" in errors.getvalue()
+
     def test_settle_holds_dry_run_reports_without_writing(self) -> None:
         ticket = Ticket.objects.create(
             overlay="test",

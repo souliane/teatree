@@ -54,3 +54,71 @@ def test_http_500_raises_instead_of_reporting_no_branches() -> None:
         pytest.raises(CommandFailedError),
     ):
         GitHubCodeHost(token="x").list_unshipped_branches(repo="souliane/teatree", prefix="5346-")
+
+
+def test_http_404_raises_instead_of_reporting_no_branches() -> None:
+    failure = CommandFailedError(["gh", "api"], 1, "", "HTTP 404")
+    with (
+        patch.object(pr_reads, "_gh_api_get", return_value={"default_branch": "main"}),
+        patch.object(pr_reads, "_run_gh", side_effect=failure),
+        pytest.raises(CommandFailedError),
+    ):
+        GitHubCodeHost(token="x").list_unshipped_branches(repo="souliane/teatree", prefix="5346-")
+
+
+def test_matching_refs_empty_page_is_verified_empty() -> None:
+    with (
+        patch.object(pr_reads, "_gh_api_get", return_value={"default_branch": "main"}),
+        patch.object(pr_reads, "_run_gh", return_value=SimpleNamespace(stdout="[[]]")),
+    ):
+        assert GitHubCodeHost(token="x").list_unshipped_branches(repo="souliane/teatree", prefix="5346-") == []
+
+
+def test_branch_with_no_commits_ahead_is_not_unshipped() -> None:
+    refs = [{"ref": "refs/heads/5346-work", "object": {"sha": "same"}}]
+    with (
+        patch.object(pr_reads, "_gh_api_get", side_effect=[{"default_branch": "main"}, {"ahead_by": 0}]),
+        patch.object(pr_reads, "_strict_list_pages", return_value=refs) as pages,
+    ):
+        assert GitHubCodeHost(token="x").list_unshipped_branches(repo="souliane/teatree", prefix="5346-") == []
+        pages.assert_called_once()
+
+
+@pytest.mark.parametrize("metadata", [{}, {"default_branch": ""}, None])
+def test_unreadable_default_branch_raises(metadata: object) -> None:
+    with patch.object(pr_reads, "_gh_api_get", return_value=metadata), pytest.raises(TypeError, match="default branch"):
+        GitHubCodeHost(token="x").list_unshipped_branches(repo="souliane/teatree", prefix="5346-")
+
+
+@pytest.mark.parametrize(
+    "ref", [{"ref": "refs/tags/5346-work", "object": {"sha": "abc"}}, {"ref": "refs/heads/5346-work"}]
+)
+def test_unreadable_branch_ref_raises(ref: dict[str, object]) -> None:
+    with (
+        patch.object(pr_reads, "_gh_api_get", return_value={"default_branch": "main"}),
+        patch.object(pr_reads, "_strict_list_pages", return_value=[ref]),
+        pytest.raises(TypeError, match="invalid branch ref"),
+    ):
+        GitHubCodeHost(token="x").list_unshipped_branches(repo="souliane/teatree", prefix="5346-")
+
+
+def test_unrelated_ref_does_not_trigger_comparison() -> None:
+    with (
+        patch.object(pr_reads, "_gh_api_get", return_value={"default_branch": "main"}) as read,
+        patch.object(
+            pr_reads, "_strict_list_pages", return_value=[{"ref": "refs/heads/other", "object": {"sha": "abc"}}]
+        ),
+    ):
+        assert GitHubCodeHost(token="x").list_unshipped_branches(repo="souliane/teatree", prefix="5346-") == []
+        read.assert_called_once()
+
+
+def test_unreadable_comparison_raises() -> None:
+    with (
+        patch.object(pr_reads, "_gh_api_get", side_effect=[{"default_branch": "main"}, {}]),
+        patch.object(
+            pr_reads, "_strict_list_pages", return_value=[{"ref": "refs/heads/5346-work", "object": {"sha": "abc"}}]
+        ),
+        pytest.raises(TypeError, match="invalid branch comparison"),
+    ):
+        GitHubCodeHost(token="x").list_unshipped_branches(repo="souliane/teatree", prefix="5346-")

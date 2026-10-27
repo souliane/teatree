@@ -398,6 +398,28 @@ class TestTicketTransitions(TestCase):
         assert ticket.state == Ticket.State.WORK_STARTED
         assert ticket.extra == {"branch": "5346-work"}
 
+    def test_shipping_transitions_clear_stale_hold_before_followup(self) -> None:
+        for state, transition in (
+            (Ticket.State.WORK_STARTED, "reconcile_reviewed"),
+            (Ticket.State.SELF_REVIEWED, "ship"),
+            (Ticket.State.SELF_REVIEWED, "reconcile_merged"),
+            (Ticket.State.MERGED, "reopen_for_followup"),
+        ):
+            with self.subTest(transition=transition):
+                ticket = Ticket.objects.create(
+                    state=state,
+                    extra={"shipping_hold": {"reason": "awaiting evidence"}, "branch": "5346-work"},
+                )
+                with (
+                    patch.object(Ticket, "refuse_unless_shippable"),
+                    patch("teatree.core.models.ticket.get_gate", return_value=lambda _: None),
+                ):
+                    getattr(ticket, transition)()
+                ticket.save()
+                ticket.refresh_from_db()
+                assert "shipping_hold" not in ticket.extra
+                assert ticket.extra["branch"] == "5346-work"
+
     def test_ignore_hides_ticket_from_in_flight(self) -> None:
         ticket = Ticket.objects.create()
         ticket.scope()

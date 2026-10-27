@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.models.self_review import SelfReview
 from teatree.core.review import pr_open_state as _pr_open_state
-from teatree.core.shipping_hold_notice import send_shipping_hold_notice
+from teatree.core.review.shipping_hold_notice import send_shipping_hold_notice
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import PrOpenState

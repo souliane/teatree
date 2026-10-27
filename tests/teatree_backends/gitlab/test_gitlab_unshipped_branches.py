@@ -22,6 +22,18 @@ def test_merged_head_is_shipped_and_extended_head_is_unshipped() -> None:
     assert list_unshipped_branches(client, project, repo="souliane/teatree", prefix="5346-") == ["5346-work"]
 
 
+def test_merged_or_unrelated_branch_is_skipped_before_merge_request_read() -> None:
+    client = MagicMock()
+    client.get_json_paginated.return_value = [
+        {"name": "5346-merged", "commit": {"id": "sha"}, "merged": True},
+        {"name": "other-work", "commit": {"id": "sha"}, "merged": False},
+    ]
+    assert (
+        list_unshipped_branches(client, SimpleNamespace(project_id=42), repo="souliane/teatree", prefix="5346-") == []
+    )
+    client.get_json_paginated.assert_called_once()
+
+
 @pytest.mark.parametrize("merged_item", [{}, {"sha": None}, {"sha": ""}])
 def test_malformed_merged_request_is_unverified(merged_item: dict[str, object]) -> None:
     branch = {"name": "5346-work", "commit": {"id": "new"}, "merged": False}

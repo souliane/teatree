@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from typing import TypedDict, cast
 from urllib.parse import quote, urlparse
 
-from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _run_gh, is_not_found
+from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _run_gh
 from teatree.backends.github.api import gh_api_get as _gh_api_get
 from teatree.backends.github.payloads import _GitHubPullRequestSummary, pr_open_state_from_payload
 from teatree.backends.types import dig
@@ -110,13 +110,8 @@ class BranchReads:
         if not isinstance(default, str) or not default:
             msg = f"GitHub {repo} has no readable default branch"
             raise TypeError(msg)
-        try:
-            endpoint = f"repos/{repo}/git/matching-refs/heads/{quote(prefix, safe='')}?per_page=100"
-            refs = _strict_list_pages(endpoint, token=token)
-        except CommandFailedError as exc:
-            if is_not_found(exc):
-                return []
-            raise
+        endpoint = f"repos/{repo}/git/matching-refs/heads/{quote(prefix, safe='')}?per_page=100"
+        refs = _strict_list_pages(endpoint, token=token)
         owner = repo.split("/", 1)[0]
         unshipped = []
         for ref in refs:

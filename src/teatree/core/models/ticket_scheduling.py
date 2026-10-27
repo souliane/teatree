@@ -252,7 +252,7 @@ class TicketSchedulingModel(TicketFacet):
             get_gate(gate)(self)
         with transaction.atomic():
             if (
-                phase == "shipping"
+                normalize_phase(phase) == "shipping"
                 and type(self).objects.select_for_update().filter(pk=self.pk, extra__has_key="shipping_hold").exists()
             ):
                 msg = "shipping held pending worktree and forge evidence"

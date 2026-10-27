@@ -6,6 +6,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.machine_output import emit
+from teatree.core.models.shipping_hold import held_author_tickets
 from teatree.loop.shipping_hold_settle import settle_held_tickets
 
 
@@ -34,6 +35,6 @@ class ShippingHoldCommands(TyperCommand):
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=f"{len(rows)} held ticket(s) checked",
+            human=f"{len(rows)} held ticket(s) checked; {held_author_tickets().count()} held remaining",
         )
         return rows

@@ -20,7 +20,7 @@ class TestShippingHold(TestCase):
 
     def test_rowless_note_sends_once_after_commit(self) -> None:
         ticket = self._ticket()
-        with patch("teatree.core.shipping_hold_notice.notify_user", return_value=True) as notify:
+        with patch("teatree.core.review.shipping_hold_notice.notify_user", return_value=True) as notify:
             with self.captureOnCommitCallbacks(execute=True) as callbacks:
                 hold_unshippable_review(ticket)
                 notify.assert_not_called()
@@ -46,7 +46,7 @@ class TestShippingHold(TestCase):
     def test_failed_note_does_not_undo_hold(self) -> None:
         ticket = self._ticket()
         with (
-            patch("teatree.core.shipping_hold_notice.notify_user", side_effect=RuntimeError("unavailable")),
+            patch("teatree.core.review.shipping_hold_notice.notify_user", side_effect=RuntimeError("unavailable")),
             self.captureOnCommitCallbacks(execute=True),
         ):
             hold_unshippable_review(ticket)

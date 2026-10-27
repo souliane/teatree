@@ -12,6 +12,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Task, Ticket, Worktree
+from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
+from teatree.loop.shipping_hold_evidence import Evidence
 from teatree.loop.shipping_hold_settle import Settlement, settle_held_tickets
 
 
@@ -78,6 +80,70 @@ class TestShippingHoldSettlement(TestCase):
         assert ticket.extra["shipping_skipped"] == "no shippable diff"
         assert "shipping_hold" not in ticket.extra
         assert ticket.extra["ignored_from"] == Ticket.State.SELF_REVIEWED
+
+    def test_row_branch_outside_issue_prefix_is_scanned_on_forge(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="custom-work")
+        with TemporaryDirectory() as directory:
+            results = self._run(Path(directory), _Host(["custom-work"]))
+        ticket.refresh_from_db()
+        assert results[0].action == "hold"
+        assert results[0].reason == "branch custom-work"
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+
+    def test_unreadable_recorded_checkout_stays_held(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-work")
+        with (
+            patch(
+                "teatree.loop.shipping_hold_settle.worktree_has_commits_ahead",
+                side_effect=WorktreeProbeUnverifiableError("bad ref"),
+            ),
+            patch("teatree.loop.shipping_hold_settle.disk_evidence", return_value=Evidence()),
+            patch("teatree.loop.shipping_hold_settle.forge_evidence", return_value=Evidence()),
+        ):
+            results = settle_held_tickets()
+        assert results[0].action == "hold"
+        assert results[0].reason == "unverified: git (bad ref)"
+
+    def test_failed_candidates_back_off_so_later_tickets_are_reached(self) -> None:
+        tickets = [self._ticket(number=5400 + index) for index in range(11)]
+        failed_ids = {ticket.pk for ticket in tickets[:10]}
+        now = timezone.now()
+
+        def read_disk(ticket: Ticket) -> Evidence:
+            if ticket.pk in failed_ids:
+                message = "disk unavailable"
+                raise RuntimeError(message)
+            return Evidence()
+
+        with (
+            patch("teatree.loop.shipping_hold_settle.disk_evidence", side_effect=read_disk),
+            patch("teatree.loop.shipping_hold_settle.forge_evidence", return_value=Evidence()),
+        ):
+            with pytest.raises(RuntimeError, match="shipping-hold settlement failed"):
+                settle_held_tickets(now=now)
+            results = settle_held_tickets(now=now)
+        assert [result.ticket_pk for result in results] == [tickets[-1].pk]
+        assert all(Ticket.objects.get(pk=ticket.pk).extra["shipping_hold"]["checked_at"] for ticket in tickets[:10])
+
+    def test_partial_applied_results_survive_a_failed_ticket(self) -> None:
+        failing = self._ticket(number=5410)
+        applied = self._ticket(number=5411)
+
+        def read_disk(ticket: Ticket) -> Evidence:
+            if ticket.pk == failing.pk:
+                message = "disk unavailable"
+                raise RuntimeError(message)
+            return Evidence()
+
+        with (
+            patch("teatree.loop.shipping_hold_settle.disk_evidence", side_effect=read_disk),
+            patch("teatree.loop.shipping_hold_settle.forge_evidence", return_value=Evidence()),
+            pytest.raises(RuntimeError) as error,
+        ):
+            settle_held_tickets()
+        assert [result.ticket_pk for result in error.value.applied] == [applied.pk]
 
     def test_row_removed_before_ticket_lock_stays_held(self) -> None:
         ticket = self._ticket()
@@ -330,7 +396,9 @@ class TestShippingHoldSettlement(TestCase):
         ):
             settle_held_tickets()
         ticket.refresh_from_db()
-        assert ticket.extra["shipping_hold"]["reason"] == "no worktree row"
+        assert ticket.extra["shipping_hold"]["reason"] == (
+            "unverified: settlement failed (RuntimeError: scheduler unavailable)"
+        )
         assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
 
     def test_claim_refusal_writes_nothing(self) -> None:
