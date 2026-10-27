@@ -63,6 +63,9 @@ EXPIRE_INTERVAL_SECONDS = 3600
 #: collapses to one cycle plus one trailing catch-up instead of one cycle per
 #: event, whatever the burst's source (#4707).
 WAKE_MIN_INTERVAL_SECONDS = 10
+#: The highest priority the task backend accepts (its range is -100..100): an owner's inbound message
+#: must be picked before any due scheduled timer.
+WAKE_PRIORITY = 100
 #: Grace past a tick's deadline before its still-RUNNING timer is deemed stranded.
 STUCK_GRACE_SECONDS = 60
 #: The headless-queue drain + stuck-run reaper cadence — the safety net that
@@ -501,7 +504,7 @@ def run_self_improve() -> dict[str, int]:
         return {"error": 1}
 
 
-@task(queue_name=LOOPS_QUEUE)
+@task(queue_name=LOOPS_QUEUE, priority=WAKE_PRIORITY)
 def wake_slack_answer() -> dict[str, int]:
     """Run ONE Slack-answer cycle immediately, triggered by an inbound Slack event.
 
@@ -522,6 +525,12 @@ def wake_slack_answer() -> dict[str, int]:
     at the far edge and returns, which is a trailing-edge debounce: the burst
     costs O(1) cycles and its last event is still answered, one interval late
     at worst rather than one cadence.
+
+    The wake rides the highest task priority: the queue orders READY rows by priority, then
+    ``run_after``, and an immediate enqueue carries the maximum ``run_after``, so at the default
+    priority it sorted behind every due loop timer and waited out a saturated pool. A wake that
+    finds the cycle lease held re-arms while unreplied rows remain, instead of leaving them to
+    the five-minute cadence.
     """
     if _pending_for_path(wake_slack_answer.module_path):
         return {"deduped": 1}
@@ -529,7 +538,13 @@ def wake_slack_answer() -> dict[str, int]:
     if last_finished is not None:
         wake_slack_answer.using(run_after=last_finished + dt.timedelta(seconds=WAKE_MIN_INTERVAL_SECONDS)).enqueue()
         return {"coalesced": 1}
-    return _run_slack_answer_cycle_under_lease()
+    from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    report = _run_slack_answer_cycle_under_lease()
+    if report.get("skipped_lease_held") and PendingChatInjection.loop_unreplied().exists():
+        wake_slack_answer.using(run_after=timezone.now() + dt.timedelta(seconds=WAKE_MIN_INTERVAL_SECONDS)).enqueue()
+        report["rearmed"] = 1
+    return report
 
 
 def ensure_maintenance_chains() -> None:

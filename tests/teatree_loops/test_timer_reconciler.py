@@ -18,7 +18,19 @@ from django.utils import timezone
 from django_tasks_db.models import DBTaskResult, get_date_max
 
 from teatree.core.claim_liveness import driving
-from teatree.core.models import BotPing, Loop, LoopState, Mode, ModeOverride, Session, Task, Ticket
+from teatree.core.models import (
+    BotPing,
+    DmContext,
+    Loop,
+    LoopLease,
+    LoopState,
+    Mode,
+    ModeOverride,
+    PendingChatInjection,
+    Session,
+    Task,
+    Ticket,
+)
 from teatree.core.tasks import execute_task
 from teatree.loops import off_live_tick_driver, timer_chains, timer_reconciler
 from teatree.loops.timer_reconciler import reap_stuck_runs
@@ -552,6 +564,63 @@ class TestMaintenanceChains(django.test.TestCase):
         assert result == {"skipped_lease_held": 1}
         # Skipping must NOT release the holder's lease.
         assert not LoopLease.objects.acquire(timer_reconciler.SLACK_ANSWER_LEASE, owner="worker-other")
+
+    def test_wake_slack_answer_is_picked_ahead_of_a_due_scheduled_timer(self) -> None:
+        # The queue orders READY rows by priority, then run_after. An immediate enqueue stores the
+        # maximum run_after, so at the default priority it sorted behind every due timer.
+        timer_reconciler.reconcile_timers.using(run_after=timezone.now() - dt.timedelta(seconds=60)).enqueue()
+        timer_reconciler.wake_slack_answer.enqueue()
+
+        first = DBTaskResult.objects.ready().filter(queue_name=timer_chains.LOOPS_QUEUE).first()
+
+        assert first is not None
+        assert first.task_path == timer_reconciler.wake_slack_answer.module_path
+
+    def test_the_debounced_wake_keeps_the_top_priority(self) -> None:
+        DBTaskResult.objects.create(
+            task_path=timer_reconciler.wake_slack_answer.module_path,
+            status=TaskResultStatus.SUCCESSFUL,
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            queue_name=timer_chains.LOOPS_QUEUE,
+            finished_at=timezone.now() - dt.timedelta(seconds=2),
+        )
+
+        timer_reconciler.wake_slack_answer.func()
+
+        rearmed = DBTaskResult.objects.get(
+            task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
+        )
+        assert rearmed.priority == timer_reconciler.WAKE_PRIORITY
+
+    def test_wake_slack_answer_rearms_when_the_lease_is_held_and_a_message_waits(self) -> None:
+        PendingChatInjection.record(channel="C1", slack_ts="1.0", text="question", context=DmContext(user_id="U1"))
+        assert LoopLease.objects.acquire(timer_reconciler.SLACK_ANSWER_LEASE, owner="cadence-run")
+
+        result = timer_reconciler.wake_slack_answer.func()
+
+        assert result == {"skipped_lease_held": 1, "rearmed": 1}
+        rearmed = DBTaskResult.objects.get(
+            task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
+        )
+        assert rearmed.priority == timer_reconciler.WAKE_PRIORITY
+        assert rearmed.run_after > timezone.now()
+
+    def test_wake_slack_answer_does_not_rearm_when_nothing_waits(self) -> None:
+        assert LoopLease.objects.acquire(timer_reconciler.SLACK_ANSWER_LEASE, owner="cadence-run")
+
+        result = timer_reconciler.wake_slack_answer.func()
+
+        assert result == {"skipped_lease_held": 1}
+        assert not DBTaskResult.objects.filter(
+            task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
+        ).exists()
+
+    def test_the_wake_path_delays_leave_room_inside_the_owners_first_reply_threshold(self) -> None:
+        owners_first_reply_threshold_seconds = 60
+        debounce_then_rearm = 2 * timer_reconciler.WAKE_MIN_INTERVAL_SECONDS
+
+        assert debounce_then_rearm <= owners_first_reply_threshold_seconds // 3
 
     def test_wake_slack_answer_releases_its_lease(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
