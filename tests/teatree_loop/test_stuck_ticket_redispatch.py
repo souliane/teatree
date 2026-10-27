@@ -156,6 +156,7 @@ class TestStuckTicketRedispatch(TestCase):
         assert held in idle_started_author_tickets(now=timezone.now(), threshold_hours=6)
         assert redispatch_stuck_tickets() == 1
         assert not held.tasks.filter(phase="shipping").exists()
+        assert not DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{held.pk}").exists()
         assert ordinary.tasks.filter(phase="shipping", status=Task.Status.PENDING).count() == 1
 
     def test_ticket_with_no_activity_record_is_left_alone(self) -> None:

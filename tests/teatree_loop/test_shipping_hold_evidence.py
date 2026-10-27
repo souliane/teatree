@@ -3,6 +3,7 @@
 import shutil
 import subprocess
 from pathlib import Path
+from subprocess import TimeoutExpired
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
@@ -87,6 +88,27 @@ def test_named_checkout_with_dangling_git_symlink_is_unverified() -> None:
         (checkout / ".git").symlink_to("missing-gitdir")
         with patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root):
             assert "git (" in disk_evidence(_ticket()).unverified
+
+
+def test_missing_workspaces_root_is_unverified() -> None:
+    with TemporaryDirectory() as directory:
+        missing = Path(directory) / "unmounted"
+        with patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=missing):
+            assert "workspaces root" in disk_evidence(_ticket()).unverified
+
+
+def test_checkout_git_timeout_is_unverified() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        checkout = root / "5346-ticket"
+        checkout.mkdir()
+        (checkout / ".git").mkdir()
+        with (
+            patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root),
+            patch("teatree.loop.shipping_hold_evidence.run_with_status", side_effect=TimeoutExpired("git", 5)) as run,
+        ):
+            assert "git (" in disk_evidence(_ticket()).unverified
+        assert run.call_args.kwargs["timeout"] > 0
 
 
 def test_named_checkout_with_unreadable_git_metadata_is_unverified() -> None:

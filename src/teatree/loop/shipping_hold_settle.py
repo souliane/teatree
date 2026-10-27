@@ -17,6 +17,7 @@ from teatree.loop.shipping_hold_evidence import disk_evidence, forge_evidence
 logger = logging.getLogger(__name__)
 RECHECK_INTERVAL = timedelta(minutes=15)
 PER_PASS_CAP = 10
+ROWLESS_REASON = "no worktree row; nothing on the workspaces root or the forge"
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,7 @@ def _decide(ticket: Ticket) -> Settlement:
     if unknown:
         return Settlement(ticket.pk, "hold", f"unverified: {unknown}")
     if not rows:
-        return Settlement(ticket.pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
+        return Settlement(ticket.pk, "hold", ROWLESS_REASON)
     return Settlement(ticket.pk, "ignore", "every source verified empty", _worktree_snapshot(rows), observed_branch)
 
 
@@ -86,7 +87,7 @@ def _apply_settlement(ticket_pk: int, result: Settlement, *, now: datetime) -> S
         if result.action == "ignore":
             current_rows = list(ticket.worktrees.select_for_update())  # select-for-update: caller-atomic
             if not current_rows:
-                result = Settlement(ticket_pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
+                result = Settlement(ticket_pk, "hold", ROWLESS_REASON)
             elif _worktree_snapshot(current_rows) != result.observed_worktrees:
                 result = Settlement(ticket_pk, "hold", "worktree rows changed; awaiting the workspace and forge check")
             elif str((ticket.extra or {}).get("branch") or "") != result.observed_branch:

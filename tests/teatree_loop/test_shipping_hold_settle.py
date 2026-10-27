@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from teatree.core.models import Task, Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
-from teatree.loop.shipping_hold_evidence import Evidence
+from teatree.loop.shipping_hold_evidence import Evidence, disk_evidence
 from teatree.loop.shipping_hold_settle import Settlement, settle_held_tickets
 
 
@@ -69,6 +69,16 @@ class TestShippingHoldSettlement(TestCase):
         assert ticket.extra["shipping_hold"]["checked_at"]
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
+    def test_rowless_dry_run_reports_hold(self) -> None:
+        ticket = self._ticket()
+        with TemporaryDirectory() as directory:
+            results = self._run(Path(directory), _Host(), dry_run=True)
+        assert results == [
+            Settlement(ticket.pk, "hold", "no worktree row; nothing on the workspaces root or the forge")
+        ]
+        ticket.refresh_from_db()
+        assert ticket.extra["shipping_hold"]["checked_at"] == ""
+
     def test_row_with_verified_empty_sources_is_ignored(self) -> None:
         ticket = self._ticket()
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="5346-work")
@@ -90,6 +100,61 @@ class TestShippingHoldSettlement(TestCase):
         assert results[0].action == "hold"
         assert results[0].reason == "branch custom-work"
         assert ticket.state == Ticket.State.SELF_REVIEWED
+
+    def test_other_recorded_repo_branch_keeps_ticket_held(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/other-repo", branch="5346-work")
+
+        def branches(*, repo: str, prefix: str) -> list[str]:
+            return ["5346-work"] if repo == "souliane/other-repo" and prefix == "5346-" else []
+
+        with (
+            TemporaryDirectory() as directory,
+            patch("teatree.loop.shipping_hold_evidence.get_overlay", return_value=object()),
+            patch("teatree.loop.shipping_hold_evidence.get_code_host_for_url") as backend,
+            patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=Path(directory)),
+        ):
+            backend.return_value.list_unshipped_branches.side_effect = branches
+            results = settle_held_tickets()
+        assert results[0].action == "hold"
+        assert results[0].reason == "branch 5346-work"
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+
+    def test_other_recorded_repo_checkout_is_evidence(self) -> None:
+        ticket = self._ticket()
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/other-repo", branch="5346-work")
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "5346-work" / "other-repo"
+            path.mkdir(parents=True)
+            _git(path, "init", "-b", "main")
+            _git(
+                path,
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "base",
+            )
+            _git(path, "checkout", "-b", "5346-work")
+            _git(
+                path,
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "work",
+            )
+            _git(path, "remote", "add", "origin", "https://github.com/souliane/other-repo.git")
+            with patch("teatree.loop.shipping_hold_evidence.worktree_root", return_value=root):
+                assert str(path) in disk_evidence(ticket).found
 
     def test_unreadable_recorded_checkout_stays_held(self) -> None:
         ticket = self._ticket()

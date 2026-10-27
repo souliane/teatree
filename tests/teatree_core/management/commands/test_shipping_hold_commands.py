@@ -10,9 +10,34 @@ from django.utils import timezone
 
 from teatree.core.models import Ticket
 from teatree.loop.shipping_hold_evidence import Evidence
+from teatree.loop.shipping_hold_settle import Settlement, SettlementPassError
 
 
 class TestShippingHoldCommands(TestCase):
+    def test_claim_refusal_is_reported(self) -> None:
+        Ticket.objects.create(
+            overlay="test",
+            role=Ticket.Role.AUTHOR,
+            state=Ticket.State.SELF_REVIEWED,
+            extra={"shipping_hold": {"reason": "awaiting evidence", "checked_at": ""}},
+        )
+        errors = StringIO()
+        with patch("teatree.core.managers_task_claim.claim_admission_block_reason", return_value="quiescing"):
+            call_command("ticket", "settle-holds", stderr=errors)
+        assert "settlement deferred: quiescing" in errors.getvalue()
+
+    def test_settle_holds_reports_applied_rows_after_later_failure(self) -> None:
+        output = StringIO()
+        errors = StringIO()
+        applied = Settlement(12, "hold", "unverified: forge")
+        with patch(
+            "teatree.core.management.commands._shipping_hold_commands.settle_held_tickets",
+            side_effect=SettlementPassError("ticket 13: forge unavailable", [applied]),
+        ):
+            call_command("ticket", "settle-holds", "--json", stdout=output, stderr=errors)
+        assert json.loads(output.getvalue()) == [{"ticket_id": 12, "action": "hold", "reason": "unverified: forge"}]
+        assert "ticket 13: forge unavailable" in errors.getvalue()
+
     def test_held_but_not_due_is_visible_in_human_result(self) -> None:
         Ticket.objects.create(
             overlay="test",

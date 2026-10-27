@@ -414,7 +414,8 @@ class Ticket(
     )
     def reconcile_reviewed(self) -> None:
         """Phase-driven, state-complete FSM catch-up to SELF_REVIEWED (#694, #798, #799, #808)."""
-        self.merge_extra(pop_keys=["shipping_hold"])
+        if self.state != self.State.SELF_REVIEWED:
+            self.merge_extra(pop_keys=["shipping_hold"])
 
     @transition(
         field="state",
