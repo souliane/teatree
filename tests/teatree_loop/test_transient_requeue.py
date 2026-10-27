@@ -364,7 +364,7 @@ class TestTransientRequeue(TestCase):
                 assert all(line in task.execution_reason for line in owner_stop_limits_lines())
                 assert not DeferredQuestion.objects.exists()
 
-    def test_second_refused_owner_card_escalates(self) -> None:
+    def test_second_refused_owner_card_halts_without_a_question(self) -> None:
         task = _failed_task(phase="planning")
         error = validate_result_keys(owner_stop("Is widget_count ready for ticket 104?") | {"summary": "x"})
         _add_failed_attempt(task, error=error)
@@ -376,7 +376,8 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert HALT_STAMP in task.execution_reason
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert not DeferredQuestion.objects.exists()
+        assert halted_retry_signals().signals
 
     def test_refused_rubric_grade_reopens_once_with_a_complete_grading_instruction(self) -> None:
         task = _failed_task(phase="reviewing", state=Ticket.State.TESTED)
@@ -395,7 +396,9 @@ class TestTransientRequeue(TestCase):
         assert requeue_transient_failed() == 0
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert HALT_STAMP in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
+        assert halted_retry_signals().signals
 
     def test_review_context_refusal_quoting_rubric_prefix_keeps_context_instruction(self) -> None:
         task = _failed_task(phase="reviewing", state=Ticket.State.TESTED)

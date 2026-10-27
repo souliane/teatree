@@ -150,6 +150,7 @@ class ReleasedPrHeadRecoveryTests(TestCase):
 
         with (
             patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table or self.clear),
+            patch("teatree.core.worktree.checkout_safety.read_process_table", return_value=self.clear),
             patch.object(forge_pr_probe, "_github_cli_stdout", side_effect=forge_stdout),
         ):
             return claim_task_checkout_or_park(self.claimant)

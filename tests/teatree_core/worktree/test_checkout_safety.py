@@ -15,6 +15,8 @@ from teatree.utils.git import run_strict
 from tests.factories import PullRequestFactory, TaskFactory, TicketFactory, WorktreeFactory
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
+_VENUE_CLEAR = ProcessTable(frozenset(), "/proc")
+
 
 class CheckoutSafetyTests(TestCase):
     def setUp(self) -> None:
@@ -27,9 +29,10 @@ class CheckoutSafetyTests(TestCase):
         self.task = TaskFactory(ticket=self.ticket, phase="coding")
         self.worktree = WorktreeFactory(ticket=self.ticket, extra={"worktree_path": str(self.checkout)})
 
-    def _claim(self, table: ProcessTable) -> TaskAttempt | None:
+    def _claim(self, table: ProcessTable, venue: ProcessTable = _VENUE_CLEAR) -> TaskAttempt | None:
         with (
             patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table),
+            patch("teatree.core.worktree.checkout_safety.read_process_table", return_value=venue),
             patch("teatree.core.worktree.checkout_fence.notify_user", create=True) as notify,
         ):
             attempt = claim_task_checkout_or_park(self.task)
@@ -137,6 +140,14 @@ class CheckoutSafetyTests(TestCase):
         assert self._claim(ProcessTable(frozenset(), "", ("host table unavailable",))) is None
         self.worktree.refresh_from_db()
         assert self.worktree.get_extra()["auto_attestation"]["process_evidence"] == "venue"
+
+    def test_unreadable_venue_processes_park_and_the_reason_names_them(self) -> None:
+        self._record_prior_writer()
+        host = ProcessTable(frozenset(), "", ("host table unavailable",))
+        venue = ProcessTable(frozenset(), "/proc", (), ("pid 7 is unreadable by this uid",))
+        attempt = self._claim(host, venue)
+        assert attempt is not None
+        assert attempt.error.endswith("process table unavailable: pid 7 is unreadable by this uid")
 
     def test_foreign_edit_parks_quietly_then_retries(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).update(branch="feature")

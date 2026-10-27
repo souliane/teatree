@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from teatree.core.models.checkout_proof import AutoAttestation
 
 _CLEAR = ProcessTable(frozenset(), "/proc")
+_VENUE_READ = "teatree.core.worktree.checkout_safety.read_process_table"
 
 
 class CheckoutFenceTests(TestCase):
@@ -338,7 +339,10 @@ class CheckoutFenceTests(TestCase):
         state = checkout_state(self.checkout)
         self.worktree.merge_extra(set_keys={"attested_state": f"owner:{state.digest}"})
         unavailable = ProcessTable(frozenset(), "", ("host process table unavailable",))
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=unavailable):
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=unavailable),
+            patch(_VENUE_READ, return_value=_CLEAR),
+        ):
             verify_task_checkout(self.task, str(self.checkout))
             with pytest.raises(CheckoutFenceError, match="claimant lease"):
                 verify_task_checkout(self.task, str(self.checkout))
@@ -580,7 +584,10 @@ class CheckoutFenceTests(TestCase):
         next_task = TaskFactory(ticket=self.ticket, phase="testing")
         next_task.claim(claimed_by="worker", claimed_by_session="s2")
         container_table = ProcessTable(frozenset(), "/host-proc", (), ("pid 7 unreadable by this uid",))
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=container_table):
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=container_table),
+            patch(_VENUE_READ, return_value=_CLEAR),
+        ):
             assert claim_task_checkout_or_park(next_task) is None
         row.refresh_from_db()
         assert row.get_extra()["attested_state"] == checkout_state(self.checkout).digest

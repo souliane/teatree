@@ -75,7 +75,7 @@ def _process_proof(task: Task, worktree: Worktree, table: ProcessTable) -> _Proc
     path = Path(worktree.worktree_path)
     venue = read_process_table(exclude_ancestors=True, venue_only=True)
     if not venue.usable or venue.eviction_gaps:
-        return f"checkout {path} process table unavailable: {venue.refuse_reason()}"
+        return f"checkout {path} process table unavailable: {venue.eviction_refuse_reason()}"
     if venue.holds(path):
         return f"checkout {path} has a live process in this venue"
     holder = occupancy_holder(worktree)
