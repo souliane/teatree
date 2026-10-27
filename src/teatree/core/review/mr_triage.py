@@ -17,15 +17,11 @@ call — or whose siblings are not ready — is never auto-pinged.
 A fact set matching no rung falls to :attr:`TriageAction.ASK_OWNER` — the ladder
 has no silent no-op, so an MR can never be dropped by a gap in the policy.
 
-Threshold provenance (:class:`TriageThresholds`). ``engineering_nag`` is DERIVED:
-it is the observed re-ping cadence, and the same 2 days
-:mod:`teatree.loop.scanners.review_nag` already enforces. ``devops_nag`` and
-``stale_no_review`` are INFERRED — the observed data BOUNDS them (DevOps was left
-longer than the engineering interval; an MR was drafted well before a fortnight)
-without fixing them — so both are named, overridable config settings rather than
-constants baked into the ladder. ``nag_backoff_cap`` is CHOSEN: nothing in the
-data fixes where re-asking should stop widening, so it is the operator's
-``review_nag_max_interval_days``, resolved by the transport and passed in.
+Defaults (:class:`TriageThresholds`). ``engineering_nag`` is 2 days, the same
+interval :mod:`teatree.loop.scanners.review_nag` uses. ``devops_nag`` is 5 days
+and ``stale_no_review`` is 7 days. Both are named, overridable config settings
+rather than constants in the ladder. ``nag_backoff_cap`` uses the operator's
+``review_nag_max_interval_days`` (default 30), resolved by the transport.
 
 :func:`fibonacci_step` is the one import here, and it carries no I/O either —
 this module multiplies by the sequence, it does not go and get one.
@@ -42,11 +38,10 @@ HEDGED_REVIEW_REQUEST_NOTE = "not sure if this is worth it... WDYT?"
 
 
 class RepoOwner(StrEnum):
-    """Which org function reviews a repo — the input that picks the nag patience.
+    """Which review-cadence class a repo belongs to.
 
-    DevOps is the PATIENT owner: an infrastructure MR waits on a rota with its own
-    cadence, so nagging it on the engineering interval is noise. Every "we do not
-    know who owns this repo" path resolves here, never to ENGINEERING.
+    DEVOPS is the optional slower cadence for repositories reviewed on a
+    different schedule. Unknown-owner paths resolve here, never to ENGINEERING.
     """
 
     ENGINEERING = "engineering"
@@ -161,7 +156,7 @@ class MrFacts:
 class TriageThresholds:
     """The durations the ladder reads, and the re-ask backoff built on them.
 
-    See the module docstring for the provenance of each. ``nag_backoff_cap``
+    See the module docstring for the defaults. ``nag_backoff_cap``
     mirrors the ``review_nag_max_interval_days`` setting the transport resolves.
     """
 
