@@ -10,6 +10,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents.phase_blocks import (
+    _reviewing_phase_lines,
     build_reviewer_dispatch_prompt,
     embedded_intake_survey_json,
     intake_survey_json,
@@ -23,7 +24,16 @@ from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import CANONICAL_PHASES
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
-from teatree.core.models import AutoReviewDispatch, ConfigSetting, LandscapeArtifact, PullRequest, Session, Task, Ticket
+from teatree.core.models import (
+    AutoReviewDispatch,
+    ConfigSetting,
+    LandscapeArtifact,
+    PullRequest,
+    RoundMetric,
+    Session,
+    Task,
+    Ticket,
+)
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
 from teatree.core.overlay_metadata import OverlayMetadata
@@ -34,6 +44,25 @@ def _task(phase: str, *, kind: Ticket.Kind = Ticket.Kind.FEATURE) -> Task:
     ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, kind=kind)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase)
+
+
+class TestReviewerMissingLiveHead(TestCase):
+    def test_missing_live_head_never_injects_a_local_full_diff(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example/repo/pull/8",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "a" * 40},
+        )
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+
+        with (
+            patch("teatree.agents.phase_blocks.plan_for_task", return_value=None),
+            patch("teatree.agents.phase_blocks._green_proof_binding_lines", return_value=()),
+            patch("teatree.agents.phase_blocks.review_diff_brief_lines", side_effect=AssertionError("local diff")),
+        ):
+            lines = _reviewing_phase_lines(task)
+
+        assert any("review_venue_limit" in line and "live head" in line for line in lines)
 
 
 class TestPhaseSpecificLinesDispatch(TestCase):
@@ -84,7 +113,8 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
 
     def test_the_reviewing_brief_requires_every_criterion_graded(self) -> None:
         brief = self._reviewing_brief()
-        assert "EVERY criterion" in brief
+        assert "Grade every row except CARRIED" in brief
+        assert "An ungraded RE-GRADE row records nothing" in brief
         assert "records nothing" in brief
 
     def test_the_reviewing_brief_says_a_pass_cites_a_test_and_a_fail_does_not(self) -> None:
@@ -113,6 +143,39 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
 
     def test_a_non_reviewing_brief_does_not_carry_it(self) -> None:
         assert "rubric_grades" not in "\n".join(phase_specific_lines(_task("coding"), []))
+
+    def test_delta_review_uses_persisted_patch_instead_of_whole_branch_diff(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example/repo/pull/1",
+            overlay="teatree",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewer")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=1,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+fixed line\n",
+                "delta_files": ["src/f.py"],
+                "carried": [],
+            },
+        )
+
+        with (
+            patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of(head)),
+            patch("teatree.agents.phase_blocks.review_diff_brief_lines", side_effect=AssertionError("whole diff")),
+        ):
+            brief = "\n".join(phase_specific_lines(task, []))
+
+        assert "REVIEW CASE: delta since aaaaaaaaaaaa" in brief
+        assert "+fixed line" in brief
 
     def test_every_phase_the_recorder_bills_for_coverage_is_shown_the_checklist(self) -> None:
         # The recorder refuses a verdict leaving a criterion ungraded, so a phase it bills
@@ -524,7 +587,12 @@ class TestReviewingGreenProofBinding(TestCase):
         return Task.objects.create(ticket=ticket, session=session, phase="reviewing")
 
     def _brief(self, **kwargs: str) -> str:
-        return "\n".join(phase_specific_lines(self._reviewer_task(**kwargs), []))
+        head = kwargs["reviewed_sha"]
+        with (
+            patch("teatree.core.review.live_head.live_head_at", return_value=LiveHeadRead.of(head)),
+            patch("teatree.agents.phase_blocks.live_head_at", return_value=LiveHeadRead.of(head)),
+        ):
+            return "\n".join(phase_specific_lines(self._reviewer_task(**kwargs), []))
 
     def test_brief_names_the_head_and_the_expect_sha_command(self) -> None:
         brief = self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha=self._HEAD)

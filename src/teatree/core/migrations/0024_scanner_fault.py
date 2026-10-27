@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0021_head_carry_over"),
+        ("core", "0023_round_metric"),
     ]
 
     operations = [
