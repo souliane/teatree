@@ -11,7 +11,7 @@ import datetime as dt
 import pytest
 from django.utils import timezone
 
-from teatree.core.models import CodexReviewMarker, DeferredQuestion, MRReviewLock, ReviewVerdict
+from teatree.core.models import CodexReviewMarker, MRReviewLock, ReviewVerdict
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -29,24 +29,6 @@ def _expire(row: CodexReviewMarker) -> None:
 
 class TestClaimDedupSurvives:
     """The pre-#3921 contract, unchanged: one dispatch per head while the claim is live."""
-
-    def test_three_recorded_verdicts_block_a_new_codex_head(self) -> None:
-        for index in range(3):
-            ReviewVerdict.objects.create(
-                slug=SLUG,
-                pr_id=PR_ID,
-                reviewed_sha=f"{index:040x}",
-                verdict="hold",
-                reviewer_identity="cold-reviewer",
-                reviewer_identity_normalized="cold-reviewer",
-                blast_class="logic",
-                gh_verify_result="green",
-                findings=[],
-            )
-
-        assert CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is None
-        assert not CodexReviewMarker.objects.exists()
-        assert DeferredQuestion.objects.filter(dedupe_marker=f"review-cap:{SLUG}:{PR_ID}").exists()
 
     def test_a_fresh_head_claims(self) -> None:
         row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD, overlay="teatree", variant="codex:review")

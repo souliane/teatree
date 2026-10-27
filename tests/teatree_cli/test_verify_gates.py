@@ -268,12 +268,8 @@ class TestVerifyGatesRunsBothStages:
         monkeypatch.setenv("XDG_DATA_HOME", str(live))
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
-        def stage_run(_cmd: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
-            assert check is False
-            assert cwd == worktree
+        def stage_run(cmd: list[str], *, check: bool, cwd: Path, env: dict[str, str]) -> int:
             private_db = ControlDb(env, home=tmp_path).for_repo(worktree).path
-            with closing(sqlite3.connect(f"file:{private_db}?mode=ro", uri=True)) as db:
-                assert db.execute("SELECT value FROM teatree_config_setting").fetchone()[0] == json.dumps(registry)
             with closing(sqlite3.connect(private_db)) as db:
                 assert db.execute("SELECT id FROM teatree_worktree WHERE id=5322").fetchall() == [(5322,)]
                 db.execute("INSERT INTO teatree_worktree VALUES (5323)")

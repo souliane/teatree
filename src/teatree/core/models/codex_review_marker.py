@@ -50,7 +50,7 @@ from django.db import models
 from django.utils import timezone
 
 from teatree.core.modelkit.expiring_claim import acquirable_q, retire_head_claim
-from teatree.core.models.auto_review_dispatch import DEFAULT_DISPATCH_TTL, MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
+from teatree.core.models.auto_review_dispatch import DEFAULT_DISPATCH_TTL, MAX_DISPATCH_ATTEMPTS
 
 
 class CodexReviewMarker(models.Model):
@@ -119,8 +119,6 @@ class CodexReviewMarker(models.Model):
         than inserting a second one, so the unique key still holds.
         """
         if not slug or not pr_id or not head_sha:
-            return None
-        if AutoReviewDispatch.review_cap_reached(slug=slug, pr_id=pr_id, pr_url=""):
             return None
         now = timezone.now()
         row, created = cls.objects.get_or_create(

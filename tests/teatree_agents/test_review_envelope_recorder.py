@@ -47,7 +47,6 @@ from teatree.core.models.types import AdequacySection, PlanAdequacy
 from teatree.core.review.live_head import LiveHeadRead
 from teatree.core.review.nit_lane import NitLaneError, NitPoint, NitReceipt
 from teatree.core.review.nit_publish import has_nit_receipts
-from teatree.core.review.verdict_findings_publish import PublishOutcome
 from teatree.loop.transient_requeue import requeue_transient_failed
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -197,7 +196,7 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         assert "review_venue_limit" in attempt.error
         assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
 
-    def test_delta_review_regrades_test_citation_after_source_change(self) -> None:
+    def test_delta_review_carries_untouched_test_citation_after_source_change(self) -> None:
         ticket = _author_ticket()
         prior = "a" * 40
         criteria = _criteria(ticket)
@@ -226,13 +225,12 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
                 "prior_head": prior,
                 "patch": "+fixed",
                 "delta_files": ["src/touched.py"],
-                "carried": [],
+                "carried": [0],
             },
         )
 
         result = _envelope(
             grades=[
-                {"ordinal": 0, "status": "pass", "rationale": _CITATION},
                 {"ordinal": 1, "status": "pass", "rationale": _CITATION},
             ]
         )
@@ -242,8 +240,54 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         ticket.refresh_from_db()
         grades = ticket.extra["rubric_grades_by_head"][_HEAD]
         assert grades[str(criteria[0].pk)]["grader_identity"] == _REVIEWER
-        assert grades[str(criteria[0].pk)]["rationale"] == _CITATION
+        assert grades[str(criteria[0].pk)]["rationale"] == "tests/unchanged.py:1"
         assert Rubric.objects.active_for_ticket(ticket).is_fully_passed_at(_HEAD)
+
+    def test_delta_refuses_a_carry_for_basename_or_prose(self) -> None:
+        for rationale in ("touched.py:1", "e.g. a helper changed"):
+            with self.subTest(rationale=rationale):
+                ticket = _author_ticket(pr_id=_PR_ID + (1 if rationale.startswith("touched") else 2))
+                prior = "a" * 40
+                criteria = _criteria(ticket)
+                for criterion, evidence in zip(criteria, (rationale, "src/untouched.py:1"), strict=True):
+                    criterion.record_grade(
+                        status="pass", grader_identity=_REVIEWER, reviewed_sha=prior, rationale=evidence
+                    )
+                ReviewVerdict.objects.create(
+                    ticket=ticket,
+                    slug=_SLUG,
+                    pr_id=int(ticket.pull_requests.first().iid),
+                    reviewed_sha=prior,
+                    verdict="hold",
+                    reviewer_identity=_REVIEWER,
+                    reviewer_identity_normalized=_REVIEWER,
+                    blast_class="logic",
+                    gh_verify_result="green",
+                    findings=[],
+                )
+                task = _reviewing_task_via_dispatch(pr_id=int(ticket.pull_requests.first().iid))
+                RoundMetric.objects.open(
+                    kind="review",
+                    ticket=ticket,
+                    subject=_HEAD,
+                    size=2,
+                    detail={
+                        "case": "delta",
+                        "prior_head": prior,
+                        "patch": "+fixed",
+                        "delta_files": ["src/touched.py"],
+                        "carried": [0],
+                    },
+                )
+
+                attempt = record_result_envelope(
+                    task,
+                    _envelope(grades=[{"ordinal": 1, "status": "pass", "rationale": _CITATION}]),
+                    phase="reviewing",
+                )
+
+                assert "#0" in attempt.error
+                assert not ReviewVerdict.objects.filter(ticket=ticket, reviewed_sha=_HEAD).exists()
 
     def test_delta_review_omitting_touched_criterion_records_no_verdict(self) -> None:
         ticket = _author_ticket()
@@ -303,7 +347,9 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         verdict["findings"] = [
             {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
         ]
-        with patch("teatree.agents.review_nit_policy.publish_nits", side_effect=NitLaneError("forge unavailable")):
+        with patch(
+            "teatree.agents.review_envelope_recorder.publish_nits", side_effect=NitLaneError("forge unavailable")
+        ):
             attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
         assert "forge unavailable" in attempt.error
         assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
@@ -348,11 +394,7 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
             {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
         ]
 
-        with patch(
-            "teatree.agents.review_envelope_recorder.publish_verdict_findings",
-            return_value=PublishOutcome(self_review=True),
-        ):
-            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
 
         assert attempt.error == ""
         recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
@@ -630,11 +672,7 @@ class TestDuplicateReviewTasksPreserveHolds(TestCase):
         first_verdict = first_result["review_verdict"]
         assert isinstance(first_verdict, dict)
         first_verdict["findings"] = [{"severity": "major", "summary": "fix the branch", "file": "a.py", "line": 1}]
-        with patch(
-            "teatree.agents.review_envelope_recorder.publish_verdict_findings",
-            return_value=PublishOutcome(self_review=True),
-        ):
-            assert record_result_envelope(first_task, first_result, phase="reviewing").error == ""
+        assert record_result_envelope(first_task, first_result, phase="reviewing").error == ""
 
         first_task.ticket.extra = {**first_task.ticket.extra, "reviewed_sha": _HEAD}
         first_task.ticket.save(update_fields=["extra"])
@@ -774,55 +812,6 @@ class TestAPhaseOutsideTheGradedSetOwesNoGrades(TestCase):
             RubricCriterion.Status.PENDING,
             RubricCriterion.Status.PENDING,
         ]
-
-    def test_codex_reviewing_records_its_required_envelope_verdict(self) -> None:
-        task = _reviewing_task_via_dispatch()
-        task.phase = "codex_reviewing"
-        task.save(update_fields=["phase"])
-
-        attempt = record_result_envelope(task, _envelope(), phase="codex_reviewing")
-
-        assert attempt.error == ""
-        assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD).exists()
-
-    def test_headless_hold_publishes_its_recorded_findings(self) -> None:
-        task = _reviewing_task_via_dispatch()
-        envelope = _envelope(verdict="hold")
-        verdict = envelope["review_verdict"]
-        assert isinstance(verdict, dict)
-        verdict["findings"] = [
-            {"severity": "major", "kind": "blocking", "summary": "Broken behavior", "file": "src/example.py", "line": 3}
-        ]
-        with patch(
-            "teatree.agents.review_envelope_recorder.publish_verdict_findings",
-            return_value=PublishOutcome(
-                published=True, comment_url="https://github.com/example/repo/pull/1#issuecomment-1"
-            ),
-            create=True,
-        ) as published:
-            attempt = record_result_envelope(task, envelope, phase="reviewing")
-
-        assert attempt.error == ""
-        assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD, verdict="hold").exists()
-        assert published.call_count == 1
-        assert published.call_args.kwargs["pr_url"] == _PR_URL
-
-    def test_headless_hold_publish_failure_is_recorded_after_verdict_lands(self) -> None:
-        task = _reviewing_task_via_dispatch()
-        envelope = _envelope(verdict="hold")
-        verdict = envelope["review_verdict"]
-        assert isinstance(verdict, dict)
-        verdict["findings"] = [
-            {"severity": "major", "kind": "blocking", "summary": "Broken behavior", "file": "src/example.py", "line": 3}
-        ]
-        with patch(
-            "teatree.agents.review_envelope_recorder.publish_verdict_findings",
-            side_effect=RuntimeError("forge unavailable"),
-        ):
-            attempt = record_result_envelope(task, envelope, phase="reviewing")
-
-        assert "forge unavailable" in attempt.error
-        assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD, verdict="hold").exists()
 
     def test_grades_on_a_non_review_phase_are_never_read(self) -> None:
         ticket = _author_ticket()

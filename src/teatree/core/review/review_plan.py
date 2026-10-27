@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
+from teatree.core.models.head_carry_over import HeadCarryOver
 from teatree.core.models.review_target import ReviewTarget, review_target_for_task
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.reviewer_identity import is_independent_reviewer_identity
@@ -22,7 +23,9 @@ if TYPE_CHECKING:
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
 
-_PATH = re.compile(r"[\w./-]+\.[A-Za-z0-9]+")
+_PATH = re.compile(
+    r"(?<![\w./-])(?:[\w.-]+/[\w./-]+|[\w.-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|kt|swift|rb|php|c|cc|cpp|h|hpp|sql|sh|md|json|yaml|yml|toml|cfg|ini|html|css|scss|txt))\b"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +107,7 @@ def _carry_ordinals(task: "Task", prior: str, files: frozenset[str]) -> frozense
     if not isinstance(grades, dict):
         return frozenset()
     carried: set[int] = set()
-    source_changed = any(not path.startswith(("tests/", "docs/")) for path in files)
+    changed_names = {Path(path).name for path in files}
     for criterion in rubric.criteria.all():
         grade = grades.get(str(criterion.pk))
         if not isinstance(grade, dict) or str(grade.get("status", "")).lower() != "pass":
@@ -112,11 +115,7 @@ def _carry_ordinals(task: "Task", prior: str, files: frozenset[str]) -> frozense
         if not is_independent_reviewer_identity(str(grade.get("grader_identity", ""))):
             continue
         cited = set(_PATH.findall(str(grade.get("rationale", ""))))
-        if (
-            cited
-            and not cited.intersection(files)
-            and (not source_changed or not all(path.startswith("tests/") for path in cited))
-        ):
+        if cited and changed_names.isdisjoint(Path(path).name for path in cited):
             carried.add(criterion.ordinal)
     return frozenset(carried)
 
@@ -159,12 +158,20 @@ def _prior_lines(task: "Task", prior: str) -> tuple[tuple[str, ...], tuple[str, 
 
 def _open_plan(task: "Task", ticket: "Ticket", target: ReviewTarget, head: str, repo: Path | str | None) -> RoundMetric:
     repo = repo or dispatch_worktree_path(ticket) or matching_clone(target.slug)
+    carried_heads = {
+        move.to_head: move
+        for move in HeadCarryOver.objects.filter(
+            slug__iexact=target.slug, pr_id=target.pr_id, outcome=HeadCarryOver.Outcome.CARRIED
+        )
+        if move.reviewed_by_carry
+    }
     prior_heads = list(
         dict.fromkeys(
-            ReviewVerdict.objects.for_pr(target.slug, target.pr_id)
+            row.reviewed_sha
+            for row in ReviewVerdict.objects.for_pr(target.slug, target.pr_id)
             .exclude(reviewed_sha=head)
             .order_by("-recorded_at", "-pk")
-            .values_list("reviewed_sha", flat=True)
+            if row.reviewed_sha not in carried_heads or row.recorded_at > carried_heads[row.reviewed_sha].recorded_at
         )
     )
     previous = RoundMetric.objects.filter(kind=RoundMetric.Kind.REVIEW, ticket=ticket).order_by("-round_number").first()
@@ -185,7 +192,7 @@ def _open_plan(task: "Task", ticket: "Ticket", target: ReviewTarget, head: str, 
             "case": delta.case,
             "reason": delta.reason,
             "prior_head": delta.prior_head,
-            "patch": delta.patch,
+            "patch": delta.patch[: BRIEF_PATCH_CHARS + 1],
             "delta_files": sorted(delta.files),
             "pr_files": sorted(delta.pr_files),
             "base_ref": base,

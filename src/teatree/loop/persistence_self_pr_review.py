@@ -20,7 +20,6 @@ import logging
 from django.db import transaction
 
 from teatree.core.models import Task, Ticket
-from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import _get_or_create_ticket, _owning_overlay
@@ -52,8 +51,6 @@ def handle_self_pr_review(action: DispatchAction) -> Task | None:
             extra={"reviewed_sha": head_sha, "self_pr_review_variant": variant},
         )
         if ticket.role != Ticket.Role.REVIEWER or has_open_task(ticket, phase="reviewing"):
-            return None
-        if AutoReviewDispatch.review_cap_reached(slug=slug, pr_id=pr_id, pr_url=pr_url):
             return None
         marker = CodexReviewMarker.claim(
             slug=slug,

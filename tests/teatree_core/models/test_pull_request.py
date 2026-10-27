@@ -6,7 +6,7 @@ souliane/teatree#443 split of test_models.py.
 from django.test import TestCase
 
 from teatree.core.merge.pr_url_record import record_unverified_pr_url
-from teatree.core.models import MergeClear, PullRequest, Ticket
+from teatree.core.models import PullRequest, Ticket
 
 
 class TestPullRequestModel(TestCase):
@@ -59,28 +59,6 @@ class TestPullRequestModel(TestCase):
         pr.mark_merged()
         pr.save()
         assert pr.state == PullRequest.State.MERGED
-
-
-class TestGatedTicket(TestCase):
-    def test_clear_fallback_and_pr_ledger_priority(self) -> None:
-        clear_ticket = Ticket.objects.create(overlay="test")
-        clear = MergeClear.objects.create(
-            ticket=clear_ticket,
-            slug="acme/widget",
-            pr_id=42,
-            reviewed_sha="a" * 40,
-            reviewer_identity="cold-reviewer",
-            gh_verify_result="green",
-            blast_class="logic",
-        )
-        assert PullRequest.objects.gated_ticket(slug="ACME/WIDGET", pr_id=42) == clear_ticket
-
-        pr_ticket = Ticket.objects.create(overlay="test")
-        PullRequest.objects.create(
-            ticket=pr_ticket, url="https://github.com/acme/widget/pull/42", repo="acme/widget", iid="42"
-        )
-        assert PullRequest.objects.gated_ticket(slug="ACME/WIDGET", pr_id=42) == pr_ticket
-        assert clear.ticket != pr_ticket
 
 
 _URL = "https://github.com/acme/widget/pull/42"

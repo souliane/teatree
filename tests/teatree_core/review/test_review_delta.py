@@ -1,4 +1,8 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 
 from teatree.core.review.review_delta import resolve_delta
 from tests._git_repo import run_git, run_git_captured
@@ -118,6 +122,68 @@ def test_one_file_pr_keeps_only_new_hunks_on_second_pass(tmp_path: Path) -> None
     assert "+first pass" not in delta.patch
 
 
+@pytest.mark.parametrize(
+    ("name", "git_config"), [("nested/touched.py", "noprefix"), ("a path with spaces.py", "default")]
+)
+def test_delta_tracks_changed_paths_with_git_config_and_spaces(tmp_path: Path, name: str, git_config: str) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "commit", "--allow-empty", "-m", "base")
+    _git(repo, "checkout", "-b", "feature")
+    path = repo / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for other in (path, repo / "second.py", repo / "third.py"):
+        other.write_text("before\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "prior")
+    prior = _git(repo, "rev-parse", "HEAD")
+    path.write_text("after\n")
+    _git(repo, "commit", "-am", "fix")
+    head = _git(repo, "rev-parse", "HEAD")
+    if git_config == "noprefix":
+        _git(repo, "config", "diff.noprefix", "true")
+
+    delta = resolve_delta(repo, [prior], head, "main", "main")
+
+    assert delta.case == "delta"
+    assert delta.files == frozenset({name})
+    assert "+after" in delta.patch
+
+
+def test_prior_commit_is_fetched_before_ancestry_check(tmp_path: Path) -> None:
+    prior = "a" * 40
+    head = "b" * 40
+    with (
+        patch("teatree.core.review.review_delta.run_with_status") as status,
+        patch("teatree.core.review.review_delta.git.run_strict_verbatim") as git_read,
+    ):
+        status.side_effect = [
+            SimpleNamespace(returncode=1),
+            SimpleNamespace(returncode=0),
+            SimpleNamespace(returncode=0),
+        ]
+        git_read.side_effect = ["diff --git a/touched.py b/touched.py\n+fixed\n", "touched.py\0other.py\0third.py\0"]
+
+        delta = resolve_delta(tmp_path, [prior], head, "main", "main")
+
+    assert delta.case == "delta"
+    assert any(call.kwargs["args"][:3] == ["fetch", "--no-tags", "origin"] for call in status.call_args_list)
+
+
+def test_git_patch_failure_names_a_full_review(tmp_path: Path) -> None:
+    with (
+        patch("teatree.core.review.review_delta.run_with_status", return_value=SimpleNamespace(returncode=0)),
+        patch("teatree.core.review.review_delta.git.run_strict_verbatim", side_effect=OSError("git failed")),
+    ):
+        delta = resolve_delta(tmp_path, ["a" * 40], "b" * 40, "main", "main")
+
+    assert delta.case == "full"
+    assert delta.reason == "git could not produce the delta (OSError)"
+
+
 def test_full_review_fallbacks_name_the_reason(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -136,6 +202,7 @@ def test_full_review_fallbacks_name_the_reason(tmp_path: Path) -> None:
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "large fix")
     head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "config", "diff.noprefix", "true")
 
     assert resolve_delta(repo, [], head, "main", "main").reason == "no prior verdict"
     assert resolve_delta(repo, [head], head, "main", "main").reason == "latest verdict already covers this head"

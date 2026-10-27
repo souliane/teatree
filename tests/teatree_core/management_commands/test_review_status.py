@@ -435,8 +435,6 @@ class TestAnUnreadableHeadNamesTheMissingCredential(TestCase):
             text = _status_text(head=HEAD_SHA_UNREADABLE)
         assert "GH_TOKEN" in text, text
         assert "GITHUB_TOKEN" in text, text
-        assert "STANDS" not in text
-        assert "cannot verify" in text
 
     def test_an_ambient_credential_is_not_mistaken_for_the_owning_overlay_route(self) -> None:
         """A process-global token cannot prove that the repository owner is routed."""

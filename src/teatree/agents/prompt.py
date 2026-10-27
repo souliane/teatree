@@ -33,7 +33,7 @@ from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import SessionCommand, Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.task_handoff import dispatch_reason
-from teatree.core.review.review_plan import plan_for_task
+from teatree.core.review.review_plan import ReviewPlan, plan_for_task
 
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
@@ -186,6 +186,20 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
     return "\n".join(lines)
 
 
+def _read_only_review_diff_lines(task: Task, facts: ReadOnlyFacts, plan: ReviewPlan | None) -> tuple[str, ...]:
+    if facts.review_diff:
+        diff = ("", f"DIFF UNDER REVIEW at dispatched head {facts.review_head}:", facts.review_diff)
+    elif plan is not None and plan.delta.case == "delta":
+        diff = ("", f"DIFF UNDER REVIEW at dispatched head {plan.head}:", plan.delta.patch)
+    elif normalize_phase(task.phase) == "reviewing" and task.ticket.role == Ticket.Role.AUTHOR:
+        diff = review_diff_brief_lines(task)
+    else:
+        diff = ()
+    if facts.review_head:
+        return (*diff, "", f"WORKER CI at dispatched head {facts.review_head}: {facts.review_checks}")
+    return diff
+
+
 def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     """The task message for the read-only executor: every fact inline and in full, and no CLI step."""
     ticket: Ticket = task.ticket
@@ -200,13 +214,7 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
         lines.extend(("", "Ticket context (durable knowledge store, in full):", facts.ticket_context))
     if facts.handoff:
         lines.extend(("", "Predecessor result (handoff JSON, in full):", facts.handoff))
-    if facts.review_diff:
-        lines.extend(("", f"DIFF UNDER REVIEW at dispatched head {facts.review_head}:", facts.review_diff))
-        lines.extend(("", f"WORKER CI at dispatched head {facts.review_head}: {facts.review_checks}"))
-    elif review_plan is not None and review_plan.delta.case == "delta":
-        lines.extend(("", f"DIFF UNDER REVIEW at dispatched head {review_plan.head}:", review_plan.delta.patch))
-    elif normalize_phase(task.phase) == "reviewing" and ticket.role == Ticket.Role.AUTHOR:
-        lines.extend(review_diff_brief_lines(task))
+    lines.extend(_read_only_review_diff_lines(task, facts, review_plan))
     if parent_summary := _parent_result_summary(task):
         lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))

@@ -66,23 +66,18 @@ during an in-flight review used to arm a second reviewer.
 """
 
 import datetime as dt
-import hashlib
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.expiring_claim import acquirable_q, retire_head_claim
-from teatree.core.modelkit.owner_decision import OwnerDecision
-from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 
 if TYPE_CHECKING:
-    from teatree.core.models.review_verdict import ReviewVerdict
     from teatree.core.models.task import Task
-    from teatree.core.models.ticket import Ticket
 
 #: The holder identity the loop scanner takes the per-MR review lock under. A
 #: verdict recorded for a head this dispatch armed releases that lock; a verdict
@@ -100,19 +95,6 @@ DEFAULT_DISPATCH_TTL: dt.timedelta = DEFAULT_LOCK_TTL
 #: forever would burn the agent lane on a PR that needs a human. Saturation is
 #: surfaced by ``t3 doctor check`` rather than left silent.
 MAX_DISPATCH_ATTEMPTS = 3
-MAX_RECORDED_REVIEWS = 3
-MAX_REVIEW_CAP_MARKER_CHARS = 64
-
-
-def _hold_was_carried(row: "ReviewVerdict", ticket: "Ticket | None") -> bool:
-    marker = f"{row.slug.casefold()}#{row.pr_id}:{row.reviewed_sha}:{row.reviewer_identity_normalized}"
-    for candidate in (row.ticket, ticket):
-        if candidate is None:
-            continue
-        provenance = (candidate.extra or {}).get("hold_carry_forward", {})
-        if isinstance(provenance, dict) and provenance.get(marker):
-            return True
-    return False
 
 
 def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) -> str:
@@ -365,8 +347,6 @@ class AutoReviewDispatch(models.Model):
             return None
         now = timezone.now()
         with transaction.atomic():
-            if cls.review_cap_reached(slug=slug, pr_id=pr_id, pr_url=pr_url):
-                return None
             row, created = cls.objects.get_or_create(
                 slug=slug,
                 pr_id=pr_id,
@@ -397,80 +377,6 @@ class AutoReviewDispatch(models.Model):
             )
             row.save(update_fields=["task"])
         return row
-
-    @staticmethod
-    def review_cap_reached(*, slug: str, pr_id: int, pr_url: str) -> bool:
-        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — circular ORM models
-        from teatree.core.models.head_carry_over import HeadCarryOver  # noqa: PLC0415 — circular ORM models
-        from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415 — circular ORM models
-        from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — circular ORM models
-
-        pr_rows = list(ReviewVerdict.objects.for_pr(slug, pr_id).select_related("ticket").order_by("recorded_at", "pk"))
-        ticket = PullRequest.objects.gated_ticket(slug=slug, pr_id=pr_id) or next(
-            (row.ticket for row in reversed(pr_rows) if row.ticket is not None), None
-        )
-        rows_by_id = {row.pk: row for row in pr_rows}
-        rows_by_id.update(
-            (row.pk, row)
-            for row in ReviewVerdict.objects.filter(ticket=ticket, ticket__isnull=False).select_related("ticket")
-        )
-        rows = sorted(rows_by_id.values(), key=lambda row: (row.recorded_at, row.pk))
-        by_head: dict[tuple[str, int, str], list[ReviewVerdict]] = {}
-        for row in rows:
-            by_head.setdefault((row.slug.casefold(), row.pr_id, row.reviewed_sha), []).append(row)
-        copied: set[tuple[str, int, str, str, str]] = set()
-        for repo_slug, number in {(row.slug.casefold(), row.pr_id) for row in rows}:
-            moves = HeadCarryOver.objects.filter(
-                slug__iexact=repo_slug, pr_id=number, outcome=HeadCarryOver.Outcome.CARRIED
-            )
-            for move in moves:
-                count = move.carried.get("review_verdicts", 0)
-                if isinstance(count, int) and count > 0:
-                    copied.update(
-                        (repo_slug, number, move.to_head, source.reviewer_identity_normalized, source.verdict)
-                        for source in by_head.get((repo_slug, number, move.from_head), [])[:count]
-                    )
-        for row in rows:
-            if row.verdict == ReviewVerdict.Verdict.HOLD and _hold_was_carried(row, ticket):
-                copied.add(
-                    (row.slug.casefold(), row.pr_id, row.reviewed_sha, row.reviewer_identity_normalized, row.verdict)
-                )
-        originals = [
-            row
-            for row in rows
-            if (row.slug.casefold(), row.pr_id, row.reviewed_sha, row.reviewer_identity_normalized, row.verdict)
-            not in copied
-        ]
-        heads = [row.reviewed_sha for row in originals]
-        if len(heads) < MAX_RECORDED_REVIEWS:
-            return False
-        card = QuestionCard(
-            decision=OwnerDecision.PRODUCT_SCOPE,
-            checked=("Three review verdicts were recorded for this ticket.",),
-            blocker="The automatic review limit has been reached.",
-            why="The pull request needs a human decision after three reviews.",
-            options=(
-                CardOption("Keep held", "Leave this pull request open for a manual review.", recommended=True),
-                CardOption("Close request", "Close the pull request after a human confirms it."),
-            ),
-        )
-        marker = f"review-cap:{slug.casefold()}:{pr_id}"
-        if len(marker) > MAX_REVIEW_CAP_MARKER_CHARS:
-            marker = f"review-cap:{hashlib.sha256(marker.encode()).hexdigest()[:32]}"
-        report = DeferredQuestion.record(
-            "How should this pull request proceed after three recorded reviews?",
-            dedupe_marker=marker,
-            card=card,
-        )
-        report.evidence = {
-            **report.evidence,
-            "ticket": ticket.issue_url if ticket is not None else "",
-            "pr": pr_url or f"{slug}#{pr_id}",
-            "reviewed_shas": heads[:MAX_RECORDED_REVIEWS],
-            "reviewed_refs": [f"{row.slug}#{row.pr_id}@{row.reviewed_sha}" for row in originals[:MAX_RECORDED_REVIEWS]],
-        }
-        report.save(update_fields=["evidence"])
-        return True
 
     @classmethod
     def _reclaim(cls, row: "AutoReviewDispatch", *, now: dt.datetime) -> bool:

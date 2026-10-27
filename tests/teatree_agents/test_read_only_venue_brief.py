@@ -148,6 +148,10 @@ class TestTheReadOnlyVenueBrief(TestCase):
             ),
             patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
             patch("teatree.agents.read_only_venue_brief.fetch_branch", side_effect=fetch_error) as self.fetch,
+            patch(
+                "teatree.core.review.live_head.live_head_at",
+                return_value=SimpleNamespace(sha=(task.ticket.extra or {}).get("reviewed_sha", ""), unreadable=False),
+            ),
         ):
             return runner_mod._prepare_run(
                 task, preflight, phase=task.phase, handoff=handoff, credential=DispatchCredential()
@@ -594,6 +598,38 @@ class TestTheReadOnlyVenueBrief(TestCase):
             prompt = self._prepare(task, host=host).prompt
         assert "+fixed line" in prompt
         assert "REVIEW CASE: delta" in prompt
+
+    def test_empty_delta_still_shows_worker_ci(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=0,
+            detail={"case": "delta", "prior_head": "a" * 40, "patch": "", "delta_files": [], "carried": []},
+        )
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="2 runs green"),
+            ),
+        ):
+            prompt = self._prepare(task).prompt
+
+        assert "REVIEW CASE: delta" in prompt
+        assert f"WORKER CI at dispatched head {head}: green" in prompt
 
     def test_large_review_keeps_required_skill_and_full_diff_within_system_budget(self) -> None:
         head = "a" * 40
