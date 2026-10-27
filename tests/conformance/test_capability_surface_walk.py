@@ -37,6 +37,7 @@ _JSON_OPTS = frozenset({"--json", "--format"})
 # reverse walk until it is registered as a capability or added here on purpose.
 INTENTIONALLY_UNREGISTERED_MODULES: frozenset[str] = frozenset(
     {
+        "github_webhook",
         "handover",
         "health",
         "loop_directives",

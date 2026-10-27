@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +18,11 @@ def _data(command: str) -> dict:
         "cwd": "/work/repo",
         "tool_input": {"command": command},
     }
+
+
+def test_a_checkout_with_a_dead_git_pointer_has_no_head(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text(f"gitdir: {tmp_path / 'gone' / 'worktrees' / 'x'}\n", encoding="utf-8")
+    assert hook_escape._head(str(tmp_path)) == ""
 
 
 def test_no_token_does_not_attempt_audit() -> None:

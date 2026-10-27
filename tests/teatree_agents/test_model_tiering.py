@@ -553,6 +553,15 @@ class TestResolvePhaseHarness:
         assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "reviewing") == AgentHarness.CLAUDE_SDK
         assert resolve_phase_harness("codex_app_server", "testing") == AgentHarness.CLAUDE_SDK
 
+    def test_codex_requesting_review_lifts_the_claude_sdk_pin_only_for_codex(self) -> None:
+        assert resolve_phase_harness("codex_app_server", "requesting_review") == "codex_app_server"
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "requesting_review") == AgentHarness.CLAUDE_SDK
+
+    @pytest.mark.parametrize("phase", ["answering", "shipping"])
+    def test_codex_runs_the_draft_phases_it_is_configured_for(self, phase: str) -> None:
+        assert resolve_phase_harness("codex_app_server", phase) == "codex_app_server"
+        assert resolve_phase_harness(AgentHarness.CLAUDE_SDK, phase) == AgentHarness.CLAUDE_SDK
+
     @pytest.mark.parametrize("phase", sorted(VERIFICATION_PHASES))
     def test_a_verification_phase_forces_claude_sdk_even_when_pydantic_ai_configured(self, phase: str) -> None:
         # The MAKER may run a cheap open-source model via pydantic_ai; the checker stays on Claude.
