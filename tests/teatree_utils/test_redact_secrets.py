@@ -11,9 +11,14 @@ The name test is by SUFFIX CLASS — ``KEY`` / ``SECRET`` / ``PASSWORD`` / ``TOK
 — because a per-variable list is a list someone forgets to extend.
 """
 
+import time
+
 import pytest
 
 from teatree.utils.run import redact_secrets
+
+CHAIN_LENGTH = 10_000
+TIME_BUDGET_SECONDS = 1.0
 
 
 class TestEnvAssignmentsAreRedacted:
@@ -75,3 +80,64 @@ class TestExistingCoverageUnchanged:
 )
 def test_credential_suffixes_and_private_token_header_are_redacted(arg: str, expected: str) -> None:
     assert redact_secrets(arg) == expected
+
+
+class TestRedactionCostIsLinearInMessageLength:
+    @pytest.mark.parametrize("unit", ["a-", "x-"])
+    def test_a_long_hyphen_chain_is_redacted_within_the_time_budget(self, unit: str) -> None:
+        message = unit * CHAIN_LENGTH
+
+        started = time.perf_counter()
+        redact_secrets(message)
+
+        assert time.perf_counter() - started < TIME_BUDGET_SECONDS
+
+    @pytest.mark.parametrize(
+        ("unit", "tail"),
+        [("a-", "token=notarealvalue"), ("x-", "X-Api-Key: notarealvalue")],
+    )
+    def test_a_secret_after_a_long_chain_is_still_redacted_within_the_time_budget(self, unit: str, tail: str) -> None:
+        message = f"{unit * CHAIN_LENGTH} {tail}"
+
+        started = time.perf_counter()
+        redacted = redact_secrets(message)
+
+        assert time.perf_counter() - started < TIME_BUDGET_SECONDS
+        assert "notarealvalue" not in redacted
+
+
+@pytest.mark.parametrize(
+    ("arg", "expected"),
+    [
+        ("token=notarealvalue", "token=<redacted>"),
+        ("access_token=notarealvalue", "access_token=<redacted>"),
+        ("key=notarealvalue", "key=<redacted>"),
+        ("secret=notarealvalue", "secret=<redacted>"),
+        ("api_key=notarealvalue", "api_key=<redacted>"),
+        ("--token=notarealvalue", "--token=<redacted>"),
+        ("--api-key=notarealvalue", "--api-key=<redacted>"),
+        ("--password=notarealvalue", "--password=<redacted>"),
+        ("--client_secret=notarealvalue", "--client_secret=<redacted>"),
+        ("https://example.test/api?page=2&api-key=notarealvalue", "https://example.test/api?page=2&api-key=<redacted>"),
+    ],
+)
+def test_credential_name_shapes_keep_their_name_and_lose_their_value(arg: str, expected: str) -> None:
+    assert redact_secrets(arg) == expected
+
+
+@pytest.mark.parametrize(
+    ("arg", "expected"),
+    [
+        ("Proxy-Authorization: Bearer notarealvalue", "Proxy-Authorization: <redacted>"),
+        ("X-Gitlab-Token: notarealvalue", "X-Gitlab-Token: <redacted>"),
+        ("X-Api-Key: notarealvalue", "X-Api-Key: <redacted>"),
+        ("--header=X-Api-Key: notarealvalue", "--header=X-Api-Key: <redacted>"),
+    ],
+)
+def test_credential_header_shapes_keep_their_name_and_lose_their_value(arg: str, expected: str) -> None:
+    assert redact_secrets(arg) == expected
+
+
+@pytest.mark.parametrize("arg", ["token_count=5", "monkey=1", "max_tokens=100"])
+def test_a_name_that_only_contains_a_credential_word_is_untouched(arg: str) -> None:
+    assert redact_secrets(arg) == arg

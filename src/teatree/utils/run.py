@@ -70,8 +70,11 @@ __all__ = [
 ]
 
 
-_SECRET_HEADER_RE = re.compile(r"(?i)(authorization|private-token|x-[\w-]*token|x-[\w-]*key)\s*:\s*\S.*")
-_SECRET_QUERY_RE = re.compile(r"(?i)\b((?:[a-z0-9]+[_-])*(?:token|secret|key|password))=[^&\s]+")
+_SECRET_HEADER_RE = re.compile(r"(?i)(authorization|private-token|(?<![\w-])x-[\w-]*(?:token|key))\s*:\s*\S.*")
+# The lookbehinds anchor the start of a hyphen-joined name run; without them every hyphen restarts a quadratic rescan.
+_SECRET_QUERY_RE = re.compile(
+    r"(?i)(?<![a-z0-9])(?<![a-z0-9][_-])((?:[a-z0-9]+[_-])*(?:token|secret|key|password))=[^&\s]+"
+)
 # An env-var ASSIGNMENT whose name ends in a credential class — a `-e NAME=value`
 # forward, an env prefix on a command. Keyed on the suffix rather than a list of
 # variable names, which is a list someone forgets to extend: matching only `TOKEN`
