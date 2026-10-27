@@ -436,20 +436,26 @@ class TestSelfImproveDispatchDetectionRoot(TestCase):
 
     def test_pathless_registry_entry_uses_installed_checkout_only_for_dispatch(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", extra={"source": "self_improve"})
+        other_ep = MagicMock()
+        other_ep.name = "other"
+        other_ep.value = "other:Overlay"
         ep = MagicMock()
         ep.name = "t3-teatree"
         ep.value = "installed:Overlay"
 
         with (
             patch("teatree.config.discover_overlays", return_value=[OverlayEntry("t3-teatree", "")]),
-            patch("teatree.core.worktree.clone_paths.entry_points", return_value=[ep]),
-            patch("teatree.core.worktree.clone_paths.resolve_ep_project_path", return_value=self.package),
+            patch("teatree.core.worktree.clone_paths.entry_points", return_value=[other_ep, ep]),
+            patch(
+                "teatree.core.worktree.clone_paths.resolve_ep_project_path",
+                side_effect=lambda locator: self.product if locator == other_ep.value else self.package,
+            ),
         ):
             assert dispatch_detection_root(ticket) == self.package
 
         with (
             patch("teatree.config.discover_overlays", return_value=[OverlayEntry("t3-teatree", "")]),
-            patch("teatree.core.worktree.clone_paths.entry_points", return_value=[ep]),
+            patch("teatree.core.worktree.clone_paths.entry_points", return_value=[other_ep, ep]),
             patch("teatree.core.worktree.clone_paths.resolve_ep_project_path", return_value=None),
             self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING"),
         ):
