@@ -75,6 +75,13 @@ Under load — a polluted prior-session context, a coordinator brief, several ti
 2. **Pin the id before the fetch.** State the single `<repo>#<iid>` (or full URL) you are about to fetch, then run the one `glab issue view` / `gh issue view` command above against exactly that id.
 3. **Never merge two tickets' context.** If the session has touched ticket A and the user now hands you ticket B, fetch B fresh and keep A's acceptance criteria, scope, and tenant out of B. Lessons carry; details do not.
 4. **One fetch, one ticket, then stop and read it.** Do not batch-fetch a menu of ids you "might" need; fetch the requested one and act on it.
+5. **In a headless run, record the split question.** When two tenant tickets are in play and no interactive question tool is available, ask which ticket to handle or name both tickets in the question. Use this one-line command, then stop:
+
+   ```bash
+   t3 <overlay> questions record '<question>'
+   ```
+
+   Add `--options '<json>'` after the closing quote when choices help the owner answer.
 
 Acting on a different ticket than the one requested — or smearing one ticket's spec onto another — is a retro-worthy failure even when an upstream brief made the conflation tempting.
 
