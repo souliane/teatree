@@ -29,6 +29,7 @@ _READ_ONLY_SKILL_SECTIONS = {
             "## Commands",
         }
     ),
+    "ticket": frozenset({"### 2a. The Acceptance Criteria Live on the Plan"}),
     "slack-formatting": frozenset(
         {
             "## Tables — use the formatter, never a hand-rolled pipe table",

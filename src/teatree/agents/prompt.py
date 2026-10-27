@@ -200,6 +200,15 @@ def _read_only_review_diff_lines(task: Task, facts: ReadOnlyFacts, plan: ReviewP
     return diff
 
 
+def _read_only_review_evidence_lines(facts: ReadOnlyFacts) -> tuple[str, ...]:
+    lines: list[str] = []
+    if facts.review_plan:
+        lines.extend(("", "CONTROL PLANE plan live measurement:", facts.review_plan))
+    if facts.review_red:
+        lines.extend(("", "CONTROL PLANE recorded RED-first evidence:", facts.review_red))
+    return tuple(lines)
+
+
 def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     """The task message for the read-only executor: every fact inline and in full, and no CLI step."""
     ticket: Ticket = task.ticket
@@ -207,7 +216,16 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     lines = _task_header_lines(task, extra)
     lines.extend(_format_pr_context(extra))
-    lines.extend(("", "Issue body (read from the forge for you):", facts.issue_body or "(empty)"))
+    triage = normalize_phase(task.phase) == "triage_assessing"
+    lines.extend(
+        (
+            "",
+            "Listed issues, each under its URL (read from the forge for you):"
+            if triage
+            else "Issue body (read from the forge for you):",
+            facts.issue_body or "(empty)",
+        )
+    )
     if facts.issue_comments:
         lines.extend(("", "Issue comments, oldest first (read from the forge for you):", facts.issue_comments))
     if facts.ticket_context:
@@ -215,13 +233,12 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     if facts.handoff:
         lines.extend(("", "Predecessor result (handoff JSON, in full):", facts.handoff))
     lines.extend(_read_only_review_diff_lines(task, facts, review_plan))
-    if facts.review_plan:
-        lines.extend(("", "CONTROL PLANE plan live measurement:", facts.review_plan))
-    if facts.review_red:
-        lines.extend(("", "CONTROL PLANE recorded RED-first evidence:", facts.review_red))
+    lines.extend(_read_only_review_evidence_lines(facts))
     if parent_summary := _parent_result_summary(task):
         lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))
+    if facts.draft_facts:
+        lines.extend(("", facts.draft_facts))
     if normalize_phase(task.phase) == "reviewing":
         lines.extend(
             read_only_text(line)
@@ -234,7 +251,9 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     lines.extend(("", "Instructions:", *_OWNER_STOP_LINES))
     if normalize_phase(task.phase) == "planning":
         lines.append("5. No CI gate can run here: say which checks the plan needs rather than claiming any ran.")
-    lines.append(final_output_reminder_line(task.phase))
+    if triage:
+        lines.append("5. The listed issues above are the pages to fetch: assess them from this text and fetch nothing.")
+    lines.append(final_output_reminder_line(task.phase, read_only_venue=True))
     return "\n".join(lines)
 
 
@@ -436,7 +455,9 @@ def _render_system_context(request: _ContextRequest, *, handoff: Path | None) ->
                 if read_only_venue
                 else _WRAP_UP_LINES
             ),
-            *envelope_contract_lines(task.phase, reviewer_identity=_assigned_reviewer_identity(task)),
+            *envelope_contract_lines(
+                task.phase, reviewer_identity=_assigned_reviewer_identity(task), read_only_venue=read_only_venue
+            ),
             "",
             "IMPORTANT: If only the owner can decide, STOP immediately and emit:",
             '  {"summary": "...", "needs_user_input": true, "user_input_kind": "<kind>",',

@@ -332,7 +332,7 @@ def _resolve_task_cwd(task: Task) -> str | None:
     """The ticket's materialised worktree (``extra['worktree_path']``), else a legacy path-valued ``repo_path``.
 
     ``Worktree.repo_path`` is a repo identifier, so it only counts when it happens to be an existing
-    directory. A scanner-dispatched repo-work phase (``architectural_review``) with no worktree falls back
+    directory. A scanner-dispatched repo-work phase (``_MAIN_CLONE_DISPATCH_PHASES``) with no worktree falls back
     to the overlay's main teatree clone (:func:`_main_clone_cwd`); every other phase keeps ``None``.
     """
     if path := dispatch_worktree_path(task.ticket):
@@ -348,7 +348,10 @@ def _resolve_task_cwd(task: Task) -> str | None:
 #: main clone instead of an unset cwd. ``architectural_review`` reads the whole
 #: teatree tree and cold-worktrees off it; the main-clone guard keeps its git
 #: read-only + ``worktree add`` while blocking any mutation of the shared clone.
-_MAIN_CLONE_DISPATCH_PHASES: frozenset[str] = frozenset({ARCHITECTURAL_REVIEW_PHASE})
+#: The triage assessor and the directive interpreter read that tree and write nothing.
+_MAIN_CLONE_DISPATCH_PHASES: frozenset[str] = frozenset(
+    {ARCHITECTURAL_REVIEW_PHASE, "triage_assessing", "directive_interpreting"}
+)
 
 
 def _main_clone_cwd(task: Task) -> str | None:

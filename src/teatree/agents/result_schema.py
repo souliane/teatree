@@ -11,6 +11,12 @@ from teatree.agents.result_payloads import (
     verdict_carries_payload,
 )
 from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
+from teatree.agents.result_schema_draft import (
+    REVIEW_REQUEST_SCHEMA_PROPERTY,
+    SHIP_READINESS_SCHEMA_PROPERTY,
+    ReviewRequestDraft,
+    ShipReadiness,
+)
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
 from teatree.agents.result_schema_review import (
     REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY,
@@ -155,6 +161,8 @@ class AgentResult(OwnerStop, total=False):
     work_item: WorkItemEnvelope
     fix_record: FixRecord
     ticket_sweep: TicketSweepEvidence
+    review_request: ReviewRequestDraft
+    ship_readiness: ShipReadiness
     next_steps: list[str]
     commands_executed: list[str]
     skill_application: list[SkillApplication]
@@ -382,6 +390,8 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "required": list(fix_record_required_fields(red_required=False)),
         },
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
+        "review_request": REVIEW_REQUEST_SCHEMA_PROPERTY,
+        "ship_readiness": SHIP_READINESS_SCHEMA_PROPERTY,
         **OWNER_STOP_SCHEMA_PROPERTIES,
         "next_steps": {
             "type": "array",
@@ -420,7 +430,8 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:   result is indistinguishable from a healthy review, so the absence was
 #:   invisible. The verdict is the only artifact the merge gate consumes, so it
 #:   is the only accepted evidence.
-#: - ``shipping``: at least one command executed (``git push``, ``gh pr``...).
+#: - ``shipping``: at least one command executed (``git push``, ``gh pr``...). A read-only executor run
+#:   returns ``ship_readiness`` instead, checked by ``result_schema_draft.executor_draft_evidence_error``.
 #: - ``scanning_news``: at least one ``article_suggestion`` returned — the
 #:   shell-denied scanner hands its candidates back through the envelope, so a
 #:   summary-only run is a silently-dropped scan (#9), refused here.
