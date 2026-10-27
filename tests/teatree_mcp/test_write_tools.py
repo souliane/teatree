@@ -54,7 +54,7 @@ class TestNotifyTicketRouting(TestCase):
     def test_mcp_dm_passes_invoking_ticket_to_notification(self) -> None:
         ticket = Ticket.objects.create(short_description="Bound")
         with (
-            patch("teatree.mcp.write_tools.resolve_invoking_ticket", return_value=ticket),
+            patch("teatree.agents.invoking_ticket.resolve_invoking_ticket", return_value=ticket),
             patch("teatree.mcp.write_tools.notify_user_outcome", return_value=DELIVERED) as notify,
         ):
             result = async_to_sync(write_tools._notify_user)("ticket note", idempotency_key="mcp-ticket-note")

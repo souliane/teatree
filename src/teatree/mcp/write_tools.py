@@ -30,7 +30,6 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.config.setting_taxonomy import owner_only_reason
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE
@@ -234,6 +233,8 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
         raise ToolError(OWNER_QUESTION_ROUTE)
 
     def deliver() -> NotifyOutcome:
+        from teatree.agents.invoking_ticket import resolve_invoking_ticket  # noqa: PLC0415 — deferred: MCP startup
+
         ticket = resolve_invoking_ticket()
         return notify_user_outcome(
             text,

@@ -57,7 +57,6 @@ from teatree.core.notify_types import (
     NotifyReason,
     blocked,
 )
-from teatree.core.owner_dm.ticket_dm_delivery import TicketDmRequest, deliver_ticket_dm, record_ticket_thread_post
 from teatree.core.send_proxy import SendChannel, SendRequest, route_send
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 from teatree.types import RawAPIDict
@@ -182,6 +181,12 @@ def notify_user_outcome(
     outgoing_blocks = options.blocks
     if audience is NotifyAudience.OWNER_QUESTION:
         outgoing_text, outgoing_blocks = _owner_question_payload(outgoing_text, outgoing_blocks, resolved_user_id)
+
+    from teatree.core.owner_dm.ticket_dm_delivery import (  # noqa: PLC0415 — deferred: load ticket routing on delivery
+        TicketDmRequest,
+        deliver_ticket_dm,
+        record_ticket_thread_post,
+    )
 
     if options.ticket_id is not None and not options.thread_ts:
         channel, posted_ts, failure = deliver_ticket_dm(
