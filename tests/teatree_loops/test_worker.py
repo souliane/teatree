@@ -231,6 +231,9 @@ def test_a_worker_running_nothing_answers_live_list_with_no_sessions() -> None:
     worker_mod._start_live_ingress()
 
     assert LiveClient().sessions() == []
+    assert len([peer for peer in live_mailbox.shared_broker().identities() if peer["harness"] == "orchestrator"]) == 1
+    worker_mod._start_live_ingress()
+    assert len([peer for peer in live_mailbox.shared_broker().identities() if peer["harness"] == "orchestrator"]) == 1
     assert WorkerSeams().start_live_ingress is worker_mod._start_live_ingress
 
 

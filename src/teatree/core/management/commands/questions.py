@@ -32,13 +32,16 @@ from django_typer.management import command, initialize
 
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.machine_output import MachineOutputCommand, emit
+from teatree.core.management.commands._task_cancel_auth import direct_owner_action
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.question_actions import dismiss_kept_for_owner
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.notify_question_drains import drain_deferred_questions, owner_quiet_now
 from teatree.core.table_output import print_table
+from teatree.utils.agent_spawn_marker import is_dispatched_agent_process
 
 
 class DeferredQuestionRow(TypedDict):
@@ -360,7 +363,7 @@ class Command(MachineOutputCommand):
             typer.Option("--resolver", help="Identity of the resolver (audit trail)."),
         ] = "",
     ) -> str:
-        """Dismiss pending questions without answering them.
+        """Dismiss pending questions without answering them; live owner limits require a direct owner command.
 
         Takes MANY ids because a backlog is dismissed by the class, not one at a
         time. A containerized invocation costs a round-trip of its own, so clearing
@@ -375,9 +378,22 @@ class Command(MachineOutputCommand):
         clean_reason = reason.strip() or "no longer relevant"
         dismissed: list[int] = []
         skipped: list[int] = []
+        refused: list[int] = []
+        direct_owner = direct_owner_action()
+        dispatched = is_dispatched_agent_process()
         for question_id in question_ids:
             try:
                 with transaction.atomic():
+                    pending = (
+                        DeferredQuestion.objects.select_for_update()
+                        .filter(pk=question_id, answered_at__isnull=True, dismissed_at__isnull=True)
+                        .first()
+                    )
+                    if pending is not None and dismiss_kept_for_owner(
+                        pending, direct_owner=direct_owner, dispatched=dispatched
+                    ):
+                        refused.append(question_id)
+                        continue
                     row = DeferredQuestion.consume(question_id, dismissed_reason=clean_reason)
                     if row is None:
                         skipped.append(question_id)
@@ -396,8 +412,10 @@ class Command(MachineOutputCommand):
                 raise SystemExit(2) from exc
         if skipped:
             self.stderr.write(f"not found or already resolved: {', '.join(str(i) for i in skipped)}")
+        if refused:
+            self.stderr.write(f"owner decision required: {', '.join(f'#{pk}' for pk in refused)}")
         if not dismissed:
-            raise SystemExit(1)
+            raise SystemExit(2 if refused else 1)
         return f"dismissed {len(dismissed)}: {', '.join(f'#{pk}' for pk in dismissed)}."
 
     @command()

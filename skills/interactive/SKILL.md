@@ -13,9 +13,9 @@ metadata:
 
 The shared Claude Code and Codex side of teatree: how skills reach an attended agent and the one rule that session must not break. Runtime-specific automation is called out explicitly below; reading this skill in Codex does not activate Claude's plugin hooks or start a loop.
 
-## Answer the owner's cards in his place (attended session only)
+## Resolve settled owner cards and agent asks
 
-This applies only to this attended session, below Rules 0-5. A headless factory run never answers a card addressed to the owner in his place.
+This attended session may act on settled scope and architecture cards below Rules 0-5. A headless orchestrator may answer its own agents' scope and architecture questions with recorded decisions from the same ticket over the direct mailbox; it does not dismiss live owner cards or write an owner answer. Both apply the four owner limits below.
 
 Read pending cards with `mcp__teatree__question_list`, then use `t3 <overlay> questions list --all --json` for answered or dismissed cards, which the MCP list omits. Honor a settled card with the same underlying facts; apply the recorded decision from answered cards when action remains, and do not ask again. Changed facts require a fresh read-only investigation.
 

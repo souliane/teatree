@@ -22,12 +22,12 @@ radius = 200
 ["Factory retries may re-attest interrupted writer files".coverage]
 "skills/interactive/SKILL.md" = 454
 
-["Only an attended session may answer"]
+["A headless orchestrator may answer"]
 radius = 180
-"BLUEPRINT.md" = ["af1d47e0b793b3f8"]
+"BLUEPRINT.md" = ["38f668675c4f5374"]
 
-["Only an attended session may answer".coverage]
-"BLUEPRINT.md" = 395
+["A headless orchestrator may answer".coverage]
+"BLUEPRINT.md" = 394
 
 [TaskCreated]
 # 400, not 300: at 300 the `ONE gate rides this event: handle_...` sentence in hooks/CLAUDE.md

@@ -39,8 +39,8 @@ OWNER_QUESTION_ROUTE = (
 )
 
 OWNER_ANSWER_ROUTE = (
-    "an owner question is answered only by the owner, in its Slack thread; if it no longer applies, "
-    "`t3 <overlay> questions dismiss <id> --reason '<evidence>'`."
+    "an owner answer arrives in its Slack thread; an agent may dismiss a settled scope or architecture card "
+    "with `t3 <overlay> questions dismiss <id> --reason '<evidence>'`; hard-limit decisions stay with the owner."
 )
 
 

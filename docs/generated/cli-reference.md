@@ -14929,7 +14929,8 @@ Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
 ```
 Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_IDS...
 
- Dismiss pending questions without answering them.
+ Dismiss pending questions without answering them; live owner limits require a
+ direct owner command.
 
  Takes MANY ids because a backlog is dismissed by the class, not one at a
  time. A containerized invocation costs a round-trip of its own, so clearing

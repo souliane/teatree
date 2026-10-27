@@ -879,7 +879,7 @@
           "name": "answer"
         },
         {
-          "help": "Dismiss pending questions without answering them",
+          "help": "Dismiss pending questions without answering them; live owner limits require a direct owner command",
           "name": "dismiss"
         },
         {

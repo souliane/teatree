@@ -450,7 +450,7 @@ Persist declared Notion pass-key routes without replacing database overrides.
 | `record` | Record a question by hand — the agent-facing capture surface |
 | `reachability` | Report which automated resolvers can decide each pending question (#4178) |
 | `answer` | Resolve pending internal questions; an owner question is answered only in its Slack thread |
-| `dismiss` | Dismiss pending questions without answering them |
+| `dismiss` | Dismiss pending questions without answering them; live owner limits require a direct owner command |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
 | `list` | List open questions, oldest first |
 

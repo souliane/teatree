@@ -215,10 +215,10 @@ def _release_t3_master() -> None:
 
 def _start_live_ingress() -> None:
     """Publish this worker's live socket at boot, so a worker running nothing answers ``live list`` with none."""
-    from teatree.agents.live_mailbox import shared_broker  # noqa: PLC0415 — deferred: agents runtime at call time
+    from teatree.agents.live_orchestrator import start_shared_orchestrator_peer  # noqa: PLC0415 — defer agents runtime
 
     try:
-        shared_broker()
+        start_shared_orchestrator_peer()
     except Exception:
         logger.warning("Live ingress could not start; operators cannot reach this worker's sessions", exc_info=True)
 

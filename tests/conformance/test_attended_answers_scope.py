@@ -11,16 +11,13 @@ SKILL = ROOT / "skills/interactive/SKILL.md"
 
 
 def _answer_policy() -> str:
-    return (
-        SKILL.read_text(encoding="utf-8").split("## Answer the owner's cards in his place", 1)[1].split("\n## ", 1)[0]
-    )
+    section = SKILL.read_text(encoding="utf-8").split("## Resolve settled owner cards and agent asks", 1)[1]
+    return section.split("\n## ", 1)[0]
 
 
-def test_attended_answer_scope_excludes_headless_runs() -> None:
-    assert (
-        "This applies only to this attended session, below Rules 0-5. "
-        "A headless factory run never answers a card addressed to the owner in his place."
-    ) in _answer_policy()
+def test_attended_answer_scope_names_headless_mailbox_and_owner_limit() -> None:
+    assert "A headless orchestrator may answer its own agents' scope and architecture questions" in _answer_policy()
+    assert "it does not dismiss live owner cards" in _answer_policy()
 
 
 def test_attended_answer_uses_interactive_resolver() -> None:
@@ -40,7 +37,7 @@ def _assert_prose_peg(anchor: str, path: str, *, expected_paths: set[str] | None
 
 @pytest.mark.parametrize(
     "anchor",
-    ["This hold requires the owner's per-PR authorization", "Only an attended session may answer"],
+    ["This hold requires the owner's per-PR authorization", "A headless orchestrator may answer"],
 )
 def test_blueprint_owner_rule_clauses_are_pegged(anchor: str) -> None:
     _assert_prose_peg(anchor, "BLUEPRINT.md")
@@ -74,7 +71,7 @@ def test_attended_checkout_teaches_custody_proven_factory_recovery() -> None:
 )
 def test_attended_answer_policy_keeps_owner_limits(limit: str) -> None:
     text = SKILL.read_text(encoding="utf-8")
-    assert "Answer the owner's cards in his place (attended session only)" in text
+    assert "Resolve settled owner cards and agent asks" in text
     assert "below Rules 0-5" in text
     assert limit in text
 
