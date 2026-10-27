@@ -643,4 +643,4 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
 
 ### Git History Rewriting
 
-The `filter-branch --msg-filter` recipe, the post-rewrite hash verification, and the rebase todo shorthand are in [`skills/ship/references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md).
+History rewrite recipes are in [`skills/ship/references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md).
