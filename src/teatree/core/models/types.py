@@ -487,7 +487,8 @@ class FixRecord(TypedDict, total=False):
 
     Produced by the fixing agent in its result envelope, validated and written by
     ``teatree.agents.fix_record_recorder``, read by ``core.gates.fix_dod_gate`` at
-    ``mark_delivered``. Every field is required and non-blank — a manifestation patch
+    ``mark_delivered``. Every field is required and non-blank when forced repro is on;
+    ``observed_red`` is optional when it is off — a manifestation patch
     with no stated root cause is exactly the case the gate exists to catch, so there
     is no partial credit.
 
@@ -525,16 +526,21 @@ class FixRecordOverride(TypedDict, total=False):
 FIX_RECORD_FIELDS: Final[tuple[str, ...]] = tuple(FixRecord.__annotations__)
 
 
-def fix_record_missing_fields(record: object) -> list[str]:
-    """The :data:`FIX_RECORD_FIELDS` *record* leaves absent or blank, in declaration order.
+def fix_record_required_fields(*, red_required: bool = True) -> tuple[str, ...]:
+    return FIX_RECORD_FIELDS if red_required else tuple(field for field in FIX_RECORD_FIELDS if field != "observed_red")
+
+
+def fix_record_missing_fields(record: object, *, red_required: bool = True) -> list[str]:
+    """The required fields *record* leaves absent or blank, in declaration order.
 
     The one parse shared by the gate that READS the stored record and the recorder
     that VALIDATES the returned one, so producer and consumer cannot drift. A
-    non-mapping (or absent) record yields every field — there is no partial credit.
+    non-mapping (or absent) record yields every required field — there is no partial credit.
     """
+    required = fix_record_required_fields(red_required=red_required)
     if not isinstance(record, dict):
-        return list(FIX_RECORD_FIELDS)
-    return [field for field in FIX_RECORD_FIELDS if not str(record.get(field, "")).strip()]
+        return list(required)
+    return [field for field in required if not str(record.get(field, "")).strip()]
 
 
 class IntegrationReviewOverride(TypedDict, total=False):

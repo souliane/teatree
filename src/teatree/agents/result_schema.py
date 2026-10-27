@@ -1,17 +1,4 @@
-"""Structured output schema for agent task results.
-
-Agents return JSON matching this schema. Any agent that can produce JSON works —
-Claude structured output just makes schema compliance guaranteed.
-
-Phase-specific evidence requirements (#1284 / codex #1282-6): a successful
-phase task must carry concrete evidence the work actually happened — not just
-a summary string. ``PHASE_REQUIRED_EVIDENCE`` names the per-phase fields the
-agent must supply (in addition to ``summary``); ``_record_success`` consults
-this map and refuses to complete the task when the claim has no evidence. The
-"DM sent successfully but didn't deliver" false-positive class is exactly the
-shape this prevents: a one-line summary advancing the FSM with no underlying
-proof.
-"""
+"""Structured result schema and phase evidence requirements for agent tasks."""
 
 from collections.abc import Callable
 from typing import TypedDict
@@ -36,7 +23,7 @@ from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPER
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy
+from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, fix_record_required_fields
 
 
 class FileChange(TypedDict, total=False):
@@ -461,10 +448,11 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                 "A fix-ticket's Definition-of-Done record, recorded server-side onto ticket.extra "
                 "(#4520). Required on a kind=fix ticket — the DoD gate refuses DELIVERED without "
                 "one — and ignored on any other. Omit the key entirely rather than returning a "
-                "partial object: a partial record is refused, an absent one is a no-op."
+                "partial object: a partial record is refused, an absent one is a no-op. "
+                "observed_red is required when the forced-repro gate is on."
             ),
             "properties": {field: {"type": "string"} for field in FIX_RECORD_FIELDS},
-            "required": list(FIX_RECORD_FIELDS),
+            "required": list(fix_record_required_fields(red_required=False)),
         },
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
         **OWNER_STOP_SCHEMA_PROPERTIES,

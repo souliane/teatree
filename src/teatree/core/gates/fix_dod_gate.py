@@ -18,13 +18,15 @@ Scope
     feature work.
 
 Satisfying artifact
-    A ``ticket.extra['fix_record']`` mapping with every field of
+    A ``ticket.extra['fix_record']`` mapping with every required field of
     :class:`~teatree.core.models.types.FixRecord` non-empty: ``root_cause`` (the
     deepest cause, not the symptom), ``evidence`` (why that is the cause),
-    ``regression_test`` (a RED-first regression/conformance test reference),
+    ``regression_test`` (a regression/conformance test reference, RED-first when
+    forced repro is on),
     ``observed_red`` (an attestation the test was seen failing against the
-    pre-fix code), and ``recurrence_fingerprint`` (a stable signature so a
-    recurrence detector can match a future failure back to this fix). A partial
+    pre-fix code; optional when forced repro is off), and ``recurrence_fingerprint``
+    (a stable signature so a recurrence detector can match a future failure back
+    to this fix). A partial
     record does NOT satisfy the gate — a manifestation patch with no root cause
     is exactly the case to catch.
 
@@ -53,11 +55,11 @@ loop's outer atomic rolls the advance back and the FSM stays put.
 """
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from teatree.core.modelkit.gate_registry import register_gate
+from teatree.core.modelkit.gate_registry import get_resolver, register_gate
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.models.types import FIX_RECORD_FIELDS, fix_record_missing_fields
+from teatree.core.models.types import fix_record_missing_fields, fix_record_required_fields
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -96,7 +98,9 @@ def missing_fix_record_fields(ticket: "Ticket") -> list[str]:
     :func:`~teatree.core.models.types.fix_record_missing_fields` parse, so the
     stored record and the returned envelope are judged by ONE predicate.
     """
-    return fix_record_missing_fields((ticket.extra or {}).get("fix_record"))
+    return fix_record_missing_fields(
+        (ticket.extra or {}).get("fix_record"), red_required=cast("bool", get_resolver("failing_run_required")(ticket))
+    )
 
 
 def check_fix_record_dod(ticket: "Ticket") -> None:
@@ -118,12 +122,13 @@ def check_fix_record_dod(ticket: "Ticket") -> None:
     missing = missing_fix_record_fields(ticket)
     if not missing:
         return
+    required = fix_record_required_fields(red_required=cast("bool", get_resolver("failing_run_required")(ticket)))
     msg = (
         f"Refusing to deliver fix-ticket {ticket} — its Definition of Done requires a "
         f"validated FixRecord and these fields are missing: {', '.join(missing)}. "
         f"A merged manifestation patch with no stated root cause is not done. The way "
         f"through is to RECORD one: the fixing agent returns a `fix_record` object in "
-        f"its result envelope carrying all of {', '.join(FIX_RECORD_FIELDS)}, and the "
+        f"its result envelope carrying all of {', '.join(required)}, and the "
         f"recorder writes it here. The override is the exception, not the route — for a "
         f"genuinely trivial or mis-classified fix: "
         f"`t3 <overlay> ticket fix-record-override <id> --reason '<why>'`."
