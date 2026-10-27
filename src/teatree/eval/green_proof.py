@@ -1,21 +1,29 @@
 """Verify one row per catalog scenario and version at the evaluated commit.
 
-The weekly and eval-heal combine jobs use this pure gate after merging shard
+The ``eval-ci-heal`` combine job uses this pure gate after merging shard
 summaries. A passing proof needs the exact catalog identity set, a matching SHA,
 consistent totals and no gating red. Retry recoveries are FLAKY, never PASS.
 Interactive behavioral reds remain visible but advisory; missing grading and
 infrastructure failures always block.
+
+:func:`evaluate_baseline` reuses the proof to answer the standing question a one-shard
+smoke run cannot: is a recent full-suite proof over the CURRENT catalog on record at all.
 """
 
 import dataclasses
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any
 
 from teatree.eval.api_errors import is_usage_limit_skip_reason
 
 #: The triage class a row carries when the producer wrote none — gating by construction.
 UNCLASSIFIED = "unclassified"
+
+#: How old the newest full-suite proof may be before the baseline reads STALE.
+BASELINE_MAX_AGE = timedelta(days=7)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -210,3 +218,88 @@ def evaluate_green_proof(payload: Mapping[str, Any], *, expected: Mapping[str, s
         rows=len(scenarios),
         outcome_counts=counts,
     )
+
+
+class BaselineState(StrEnum):
+    MISSING = "missing"
+    STALE = "stale"
+    NOT_GREEN = "not_green"
+    GREEN = "green"
+
+
+@dataclasses.dataclass(frozen=True)
+class BaselineStatus:
+    """Whether a recent full-catalog green proof is on record, and why not when it is not."""
+
+    state: BaselineState
+    detail: str
+
+    @property
+    def is_green(self) -> bool:
+        return self.state is BaselineState.GREEN
+
+    @property
+    def summary(self) -> str:
+        return f"BASELINE {self.state.name}: {self.detail}"
+
+
+def evaluate_baseline(
+    payloads: Sequence[Mapping[str, Any]],
+    *,
+    expected: Mapping[str, str],
+    now: datetime,
+    max_age: timedelta = BASELINE_MAX_AGE,
+) -> BaselineStatus:
+    """Judge the newest measured merged summary (*payloads*, newest first) against the CURRENT catalog.
+
+    A parked or empty summary measured nothing and is skipped. The first measured one must
+    cover *expected* exactly (:attr:`GreenProof.covers_the_catalog`, bound to its own SHA),
+    be no older than *max_age*, and carry no gating red; the verdict names the first check it fails.
+    """
+    payload = next((p for p in payloads if _measured_something(p)), None)
+    if payload is None:
+        return BaselineStatus(
+            BaselineState.MISSING,
+            "no full-suite eval-heal run is on record; dispatch eval-ci-heal.yml with no scenarios on main",
+        )
+    sha = str(payload.get("head_sha", ""))
+    proof = evaluate_green_proof(payload, expected=expected, expected_sha=sha)
+    if not proof.covers_the_catalog:
+        return BaselineStatus(
+            BaselineState.STALE,
+            f"the newest proof ({sha[:9]}) measured {proof.total} of {len(expected)} current scenario(s), "
+            "so it does not cover the catalog as it stands now",
+        )
+    generated_at = _instant(payload.get("generated_at"))
+    if generated_at is None:
+        return BaselineStatus(BaselineState.STALE, f"the newest proof ({sha[:9]}) carries no readable generated_at")
+    age = now - generated_at
+    if age > max_age:
+        return BaselineStatus(
+            BaselineState.STALE,
+            f"the newest full-suite proof ({sha[:9]}) is {age.days} day(s) old, limit {max_age.days}",
+        )
+    if not proof.is_green:
+        return BaselineStatus(
+            BaselineState.NOT_GREEN,
+            f"the newest proof ({sha[:9]}) has {len(proof.reds)} gating red(s), "
+            f"{proof.incomplete} incomplete, {len(proof.unmeasured)} unmeasured",
+        )
+    return BaselineStatus(
+        BaselineState.GREEN, f"{proof.passed}/{proof.total} passed at {sha[:9]}, {age.days} day(s) old"
+    )
+
+
+def _measured_something(payload: Mapping[str, Any]) -> bool:
+    scenarios = payload.get("scenarios")
+    return payload.get("parked") is not True and isinstance(scenarios, list) and bool(scenarios)
+
+
+def _instant(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
