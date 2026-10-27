@@ -21,7 +21,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core import notify as notify_module
-from teatree.core.models import BotPing, DeferredQuestion
+from teatree.core.models import BotPing, DeferredQuestion, Session, Task, Ticket
 from teatree.core.notify_question_drains import _REASK_BATCH, reask_escalated_questions
 from tests._owner_channel import OWNER_DECISION
 
@@ -74,6 +74,22 @@ class TestTheBumpRidesTheExistingRow(TestCase):
         _bump(backend)
 
         backend.post_message.assert_called_once()
+        assert backend.post_message.call_args.kwargs["thread_ts"] == row.slack_ts
+
+    def test_schedule_ticket_bump_stays_in_the_question_mirror(self) -> None:
+        ticket = Ticket.objects.create(issue_url="schedule:daily", short_description="Daily")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        posted_at = timezone.now() - dt.timedelta(hours=3)
+        row = DeferredQuestion.record(
+            "Which route?",
+            parked_task=task,
+            slack_channel=_CHANNEL,
+            slack_ts=f"{posted_at.timestamp():.6f}",
+            **OWNER_DECISION,
+        )
+        backend = _backend()
+
+        assert _bump(backend) == (1, 1)
         assert backend.post_message.call_args.kwargs["thread_ts"] == row.slack_ts
 
     def test_the_idempotency_key_carries_the_rows_own_step_on_its_schedule(self) -> None:
