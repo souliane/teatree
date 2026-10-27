@@ -8,7 +8,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from claude_agent_sdk.types import RateLimitType
@@ -2019,3 +2019,24 @@ class TestDriveClaimMarker(TestCase):
             run_agent(task, phase="coding", overlay_skill_metadata={})
 
         assert self._stored_marker(task) is None
+
+
+class TestAnOwnerAnswerHoldsNoIdleWindow(TestCase):
+    """The follow-up window keeps a finished run open and unrecorded; an answer must not wait on it (#5655)."""
+
+    @staticmethod
+    def _idle_window_for(phase: str) -> float:
+        with (
+            patch.object(runner_mod, "DEFAULT_IDLE_WINDOW_SECONDS", 60.0),
+            patch.object(runner_mod, "drive_with_heartbeat", new_callable=AsyncMock) as drive,
+        ):
+            asyncio.run(_drive_with_heartbeat(Mock(phase=phase), "p", Mock(), Mock(), watchdog=Mock()))
+        return drive.call_args.kwargs["runtime"].idle_window_seconds
+
+    def test_an_answering_run_ends_with_its_answer(self) -> None:
+        assert self._idle_window_for("answering") == pytest.approx(0.0)
+
+    def test_other_phases_keep_the_follow_up_window(self) -> None:
+        for phase in ("coding", "reviewing", "shipping"):
+            with self.subTest(phase=phase):
+                assert self._idle_window_for(phase) == pytest.approx(60.0)
