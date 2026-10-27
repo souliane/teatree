@@ -22,7 +22,11 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
-from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX, NO_ENVELOPE_ERROR
+from teatree.agents.envelope_refusal import (
+    MALFORMED_RUBRIC_GRADES_PREFIX,
+    NO_ENVELOPE_ERROR,
+    REVIEW_CONTEXT_REFUSAL_PREFIX,
+)
 from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.modelkit.task_failure_taxonomy import (
     CANCELLED_PREFIX,
@@ -395,6 +399,18 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_review_context_refusal_quoting_rubric_prefix_keeps_context_instruction(self) -> None:
+        task = _failed_task(phase="reviewing", state=Ticket.State.TESTED)
+        error = (
+            f"{REVIEW_CONTEXT_REFUSAL_PREFIX}unknown keys malformed rubric_grades: — review_context takes only entries"
+        )
+        _add_failed_attempt(task, error=error)
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert "exactly those keys corrected" in task.execution_reason
+        assert "TICKET RUBRIC" not in task.execution_reason
 
     def test_non_envelope_deterministic_failure_is_escalated_not_retried(self) -> None:
         # A real test failure is not an omitted-envelope class: no corrective

@@ -109,7 +109,7 @@ def is_owner_stop_refusal(error: str) -> bool:
 
 
 def is_rubric_grades_refusal(error: str) -> bool:
-    return MALFORMED_RUBRIC_GRADES_PREFIX.casefold() in error.casefold()
+    return error.casefold().startswith(MALFORMED_RUBRIC_GRADES_PREFIX.casefold())
 
 
 def returned_block_refusal(prefix: str, block: str, raw: Mapping[str, object], problems: Sequence[str]) -> str:
