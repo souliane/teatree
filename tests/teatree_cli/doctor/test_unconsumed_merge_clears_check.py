@@ -29,6 +29,7 @@ from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.clear_liveness_report import LISTED
 from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS
 from teatree.core.merge.clear_liveness import PROBE_CAP
+from teatree.core.models import MergeClear
 from tests.factories import MergeAuditFactory, MergeClearFactory
 
 _QUERY = "teatree.core.factory.clear_liveness_report.unconsumed_actionable_clear_rows"
@@ -67,6 +68,14 @@ class TestUnconsumedMergeClearsCheck(UnconsumedClearCheckBase):
         with patch("typer.echo") as echo:
             assert _check_missing_clear_actor_kind() is True
         assert any("no recorded actor kind" in str(call.args[0]) for call in echo.call_args_list)
+
+    def test_consumed_legacy_clearance_does_not_warn_forever(self) -> None:
+        self._stranded(pr_id=4201, hours=25)
+        MergeClear.objects.filter(pr_id=4201).update(consumed_at=self.now)
+
+        with patch("typer.echo") as echo:
+            assert _check_missing_clear_actor_kind() is True
+        echo.assert_not_called()
 
     def test_an_empty_backlog_passes(self) -> None:
         assert self._run() is True

@@ -77,6 +77,14 @@ ANTI_VACUITY_REFUSAL_PREFIX = "anti-vacuity recording refused: "
 MALFORMED_REVIEW_VERDICT_PREFIX = "malformed review_verdict: "
 
 
+def returned_grades_phrase(returned: object) -> str:
+    if returned is None:
+        return 'you returned no "rubric_grades" at all'
+    if isinstance(returned, list):
+        return f'your "rubric_grades" carried {len(returned)} grade(s)'
+    return f'your "rubric_grades" was a {type(returned).__name__}, not a JSON array'
+
+
 def review_envelope_shape_error(envelope: ReviewVerdictEnvelope) -> str:
     findings = envelope.get("findings", [])
     if not isinstance(findings, list) or any(not isinstance(item, dict) for item in findings):

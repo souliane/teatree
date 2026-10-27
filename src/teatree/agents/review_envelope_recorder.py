@@ -16,6 +16,7 @@ from django.db import transaction
 from teatree.agents.envelope_refusal import (
     MALFORMED_REVIEW_VERDICT_PREFIX,
     MALFORMED_RUBRIC_GRADES_PREFIX,
+    returned_grades_phrase,
     review_envelope_shape_error,
 )
 from teatree.agents.fix_record_recorder import fix_record_refusal
@@ -261,7 +262,7 @@ def _rubric_coverage_error(rubric: "Rubric | None", grades: "list[RubricGrade]",
     named = ", ".join(f"#{ordinal}" for ordinal in ungraded)
     return (
         f"{MALFORMED_RUBRIC_GRADES_PREFIX}criteria {named} of ticket {rubric.ticket.pk} are ungraded "
-        f"({_returned_grades_phrase(returned)}) — "
+        f"({returned_grades_phrase(returned)}) — "
         f"a verdict that leaves a criterion PENDING records nothing, because recording it would retire "
         f"this head's review claim while the done-gate still refuses the merge, leaving the head "
         f"unmergeable with no reviewer left to re-arm. You are the independent verifier: grade EVERY "
@@ -270,19 +271,6 @@ def _rubric_coverage_error(rubric: "Rubric | None", grades: "list[RubricGrade]",
         '"status": "pass"|"fail", "rationale": "<what proves it>"}] '
         f"— a PASS cites the test that proves it, a FAIL needs no citation"
     )
-
-
-def _returned_grades_phrase(returned: object) -> str:
-    """What the envelope actually carried under ``rubric_grades`` — the actionable half.
-
-    Naming only the criteria leaves a reviewer that returned ``{"0": "pass"}`` reading a
-    refusal about coverage when its payload was never a list of grades at all.
-    """
-    if returned is None:
-        return 'you returned no "rubric_grades" at all'
-    if isinstance(returned, list):
-        return f'your "rubric_grades" carried {len(returned)} grade(s)'
-    return f'your "rubric_grades" was a {type(returned).__name__}, not a JSON array'
 
 
 def _merge_safe_over_fail_error(
@@ -405,6 +393,7 @@ def _record_verdict_and_grades(
                 merge_result_retake=bool(envelope.get("merge_result_retake")),
                 live_checks=live_checks_at,
             )
+            _require_verdict_read_back(target)
             _record_hold_dispositions(recorded, envelope)
             if (
                 ticket is not None
@@ -607,3 +596,8 @@ def _unpersisted_verdict_error(target: ReviewTarget) -> str:
         f"{target.slug}#{target.pr_id} at the reviewed head {target.head_sha[:8]} on read-back, so "
         f"nothing downstream can see this judgement"
     )
+
+
+def _require_verdict_read_back(target: ReviewTarget) -> None:
+    if refusal := _unpersisted_verdict_error(target):
+        raise ReviewVerdictError(refusal)

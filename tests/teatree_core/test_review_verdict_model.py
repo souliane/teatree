@@ -153,7 +153,12 @@ class TestRecordContract(TestCase):
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 findings=[
-                    Finding(severity="blocker", kind="blocking", summary="CI rollup could not be read in this venue")
+                    Finding(
+                        severity="blocker",
+                        kind="blocking",
+                        basis="venue_limit",
+                        summary="CI rollup could not be read in this venue",
+                    )
                 ],
             )
 
@@ -169,7 +174,12 @@ class TestRecordContract(TestCase):
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="pending",
                 findings=[
-                    Finding(severity="blocker", kind="blocking", summary="verify-gates could not run in this venue")
+                    Finding(
+                        severity="blocker",
+                        kind="blocking",
+                        basis="venue_limit",
+                        summary="verify-gates could not run in this venue",
+                    )
                 ],
             )
 
@@ -184,7 +194,12 @@ class TestRecordContract(TestCase):
             reviewer_identity="cold-reviewer",
             gh_verify_result="failed",
             findings=[
-                Finding(severity="blocker", kind="blocking", summary="CI rollup could not be read in this venue")
+                Finding(
+                    severity="blocker",
+                    kind="blocking",
+                    basis="venue_limit",
+                    summary="CI rollup could not be read in this venue",
+                )
             ],
         )
 

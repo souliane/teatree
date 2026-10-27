@@ -56,6 +56,18 @@ MERGE_TRANSIENT_ATTEMPTS = 3
 MERGE_TRANSIENT_BASE_DELAY = 0.5
 
 
+def verified_merge_forge_account(query: CodeHostQuery) -> str:
+    try:
+        account = query.backend.current_user().strip()
+    except Exception as exc:
+        msg = "merge forge account could not be verified before execution"
+        raise MergePreconditionError(msg) from exc
+    if not account:
+        msg = "merge forge account could not be verified before execution"
+        raise MergePreconditionError(msg)
+    return account
+
+
 @dataclass(frozen=True, slots=True)
 class MergeOutcome:
     pr_id: int
@@ -583,11 +595,7 @@ def _merge_ticket_pr_inner(
         clear.bind_merge_mode(squash=squash)
         merge_query = CodeHostQuery.for_ref(ref)
         if clear.actor_kind:
-            forge_account = merge_query.backend.current_user().strip()
-            if not forge_account:
-                msg = "merge forge account could not be verified before execution"
-                raise MergePreconditionError(msg)
-            clear.merge_forge_account = forge_account
+            clear.merge_forge_account = verified_merge_forge_account(merge_query)
             clear.save(update_fields=["merge_forge_account"])
         merged_sha = execute_bound_merge(
             ref=ref, expected_head_oid=precheck.verified_sha, squash=squash, query=merge_query

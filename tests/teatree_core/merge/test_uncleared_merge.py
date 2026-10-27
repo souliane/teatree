@@ -22,11 +22,15 @@ class TestUnclearedMerge(TestCase):
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.for_ref") as query,
         ):
             query.return_value.required_checks_status.return_value = "pending"
+            query.return_value.backend.current_user.return_value = "merge-bot"
             merge_without_clear(ref=REF, expected_head_oid=HEAD)
-        assert MergeAudit.objects.get(merged_sha=MERGED).required_checks_status == "pending"
+        audit = MergeAudit.objects.get(merged_sha=MERGED)
+        assert audit.required_checks_status == "pending"
+        assert audit.forge_account == "merge-bot"
         clear = MergeClear.objects.get(slug=SLUG, pr_id=17)
         assert clear.actor_kind == MergeClear.ActorKind.FACTORY_LOOP
         assert clear.delegation == "solo_overlay_sweep"
+        assert clear.merge_forge_account == "merge-bot"
 
     def test_retry_does_not_duplicate_the_audit(self) -> None:
         record_owned_pr_for_test(slug=SLUG, pr_id=17, head_sha=HEAD)
@@ -36,12 +40,17 @@ class TestUnclearedMerge(TestCase):
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.for_ref") as query,
         ):
             query.return_value.required_checks_status.return_value = "green"
+            query.return_value.backend.current_user.return_value = "merge-bot"
             assert merge_without_clear(ref=REF, expected_head_oid=HEAD) == MERGED
             assert merge_without_clear(ref=REF, expected_head_oid=HEAD) == MERGED
         assert MergeAudit.objects.filter(merged_sha=MERGED).count() == 1
 
     def test_missing_verdict_leaves_the_merge_for_the_alert(self) -> None:
-        with patch("teatree.core.merge.uncleared_merge.execute_bound_merge", return_value=MERGED):
+        with (
+            patch("teatree.core.merge.uncleared_merge.execute_bound_merge", return_value=MERGED),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.for_ref") as query,
+        ):
+            query.return_value.backend.current_user.return_value = "merge-bot"
             assert merge_without_clear(ref=REF, expected_head_oid=HEAD) == MERGED
         assert not MergeAudit.objects.filter(merged_sha=MERGED).exists()
 
@@ -54,6 +63,7 @@ class TestUnclearedMerge(TestCase):
             patch("teatree.core.merge.uncleared_merge.record_merge_and_advance", side_effect=failure),
         ):
             query.return_value.required_checks_status.return_value = "green"
+            query.return_value.backend.current_user.return_value = "merge-bot"
             assert merge_without_clear(ref=REF, expected_head_oid=HEAD) == MERGED
         assert not MergeAudit.objects.filter(merged_sha=MERGED).exists()
         assert not MergeClear.objects.filter(slug=SLUG, pr_id=17).exists()

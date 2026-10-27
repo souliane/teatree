@@ -314,7 +314,7 @@ class ReviewVerdict(models.Model):
     blast_class = models.CharField(max_length=16, choices=MergeClear.BlastClass.choices)
     gh_verify_result = models.CharField(max_length=32, choices=MergeClear.VerifyResult.choices)
     findings = models.JSONField(default=list, blank=True)
-    evidence_gaps = models.JSONField(default=list, blank=True)
+    evidence_gaps = models.JSONField(default=list, db_default=[], blank=True)  # ty: ignore[no-matching-overload] — django-stubs omits JSONField.db_default
     recorded_at = models.DateTimeField(default=timezone.now)
 
     objects: ClassVar[ReviewVerdictManager] = ReviewVerdictManager()
@@ -498,20 +498,25 @@ class ReviewVerdict(models.Model):
         one. :class:`ReviewVerdictError` propagates on a genuinely-unwaivable
         source row so the caller can refuse cleanly rather than crash.
         """
-        return self.record(
-            pr_id=self.pr_id,
-            slug=self.slug,
-            reviewed_sha=reviewed_sha,
-            verdict=self.verdict,
-            reviewer_identity=self.reviewer_identity,
-            findings=self.structured_findings,
-            evidence_gaps=self.evidence_gaps,
-            blast_class=self.blast_class,
-            gh_verify_result=self.gh_verify_result,
-            ticket=self.ticket,
-            expedited=(self.gh_verify_result == MergeClear.VerifyResult.PENDING),
-            conclude_review=False,
-        )
+        with transaction.atomic():
+            carried = self.record(
+                pr_id=self.pr_id,
+                slug=self.slug,
+                reviewed_sha=reviewed_sha,
+                verdict=self.verdict,
+                reviewer_identity=self.reviewer_identity,
+                findings=self.structured_findings,
+                evidence_gaps=self.evidence_gaps,
+                blast_class=self.blast_class,
+                gh_verify_result=self.gh_verify_result,
+                ticket=self.ticket,
+                expedited=(self.gh_verify_result == MergeClear.VerifyResult.PENDING),
+                conclude_review=False,
+            )
+            for disposition in ReviewHoldDisposition.objects.filter(hold=self).select_related("clearing_verdict"):
+                clearing = disposition.clearing_verdict.carry_forward(reviewed_sha=reviewed_sha)
+                disposition.carry_forward(hold=carried, clearing_verdict=clearing)
+            return carried
 
     @property
     def structured_findings(self) -> list[Finding]:

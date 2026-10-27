@@ -388,7 +388,7 @@ def _check_unconsumed_merge_clears() -> bool:
 
 def _check_missing_clear_actor_kind() -> bool:
     try:
-        missing = apps.get_model("core", "MergeClear").objects.filter(actor_kind="").count()
+        missing = apps.get_model("core", "MergeClear").objects.filter(actor_kind="", consumed_at__isnull=True).count()
     except (DatabaseError, LookupError) as exc:
         typer.echo(f"WARN  Clearance actor-kind check crashed: {exc.__class__.__name__}: {exc}")
         return True

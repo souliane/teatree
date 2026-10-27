@@ -322,6 +322,9 @@ class TestDispatchedTaskReachesTerminalState:
 
         record_review_context_for_test(ticket)
 
+        ReviewVerdict.record(
+            pr_id=6230, slug=SLUG, reviewed_sha=HEAD, verdict="merge_safe", reviewer_identity="cold-reviewer"
+        )
         task.complete_with_attempt()
 
         ticket.refresh_from_db()

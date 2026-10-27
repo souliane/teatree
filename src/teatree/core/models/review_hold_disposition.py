@@ -105,3 +105,21 @@ class ReviewHoldDisposition(models.Model):
 
     def covers(self, hold: "ReviewVerdict") -> bool:
         return {point["index"] for point in self.points} == self.blocking_indices(hold)
+
+    def carry_forward(self, *, hold: "ReviewVerdict", clearing_verdict: "ReviewVerdict") -> "ReviewHoldDisposition":
+        _check_pair(self.hold, self.clearing_verdict)
+        _check_points(self.hold, self.points)
+        if (
+            hold.reviewed_sha != clearing_verdict.reviewed_sha
+            or hold.reviewer_identity_normalized != self.hold.reviewer_identity_normalized
+            or clearing_verdict.reviewer_identity_normalized != self.clearing_verdict.reviewer_identity_normalized
+        ):
+            msg = "carried disposition must preserve its reviewer identities at one head"
+            raise ReviewHoldDispositionError(msg)
+        row, created = type(self).objects.get_or_create(
+            hold=hold, clearing_verdict=clearing_verdict, defaults={"points": self.points}
+        )
+        if not created and row.points != self.points:
+            msg = "a carried disposition is immutable"
+            raise ReviewHoldDispositionError(msg)
+        return row

@@ -14,7 +14,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="reviewverdict",
             name="evidence_gaps",
-            field=models.JSONField(blank=True, default=list),
+            field=models.JSONField(blank=True, db_default=[], default=list),  # ty: ignore[no-matching-overload] — django-stubs omits JSONField.db_default
         ),
         migrations.AlterField(
             model_name="autoreviewdispatch",

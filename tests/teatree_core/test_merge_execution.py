@@ -195,7 +195,7 @@ class _GhStub:
         if "pulls" in joined and "merge" in joined:
             moved = "Head branch was modified. Review and try the merge again. (409)"
             return (1, "", moved) if self.merge_rc != 0 else (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, merge_path_stdout(joined), "")
+        return (0, '{"login": "merge-bot"}' if "api user" in joined else merge_path_stdout(joined), "")
 
 
 def _run(clear: MergeClear, stub: _GhStub, identity: str = "merge-loop") -> MergeOutcome:
@@ -386,6 +386,21 @@ class TestMergeClearActionable(TestCase):
 
 
 class TestMergeExecutionEdgeCases(TestCase):
+    def test_unreadable_merge_account_refuses_before_the_forge_write(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        clear = _clear(ticket, actor_kind=MergeClear.ActorKind.FACTORY_LOOP)
+        stub = _GhStub()
+
+        with (
+            patch(
+                "teatree.backends.github.client.GitHubCodeHost.current_user", side_effect=RuntimeError("forge offline")
+            ),
+            pytest.raises(MergePreconditionError, match="merge forge account could not be verified"),
+        ):
+            _run(clear, stub)
+
+        assert not any("pulls" in argv and "merge" in argv for argv in stub.calls)
+
     def test_non_mergeclear_input_is_refused(self) -> None:
         with pytest.raises(MergePreconditionError, match="requires a MergeClear"):
             merge_ticket_pr(clear=object(), executing_loop_identity="merge-loop")

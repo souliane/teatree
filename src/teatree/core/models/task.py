@@ -333,11 +333,11 @@ class Task(models.Model):
 
             park_for_user_input(self)
             return
-        if not self._review_skipped():
+        if not self.review_skipped():
             self._record_phase_visit()
         self._apply_phase_transition()
 
-    def _review_skipped(self) -> bool:
+    def review_skipped(self) -> bool:
         """Whether the latest attempt records a deliberate no-review disposition."""
         if normalize_phase(self.phase) != "reviewing":
             return False
@@ -364,7 +364,7 @@ class Task(models.Model):
 
     def _complete_reviewer_task_transition(self, ticket: Ticket) -> bool:
         """Distinguish a recorded no-review disposition from an actual review."""
-        if self._review_skipped():
+        if self.review_skipped():
             if ticket.state == Ticket.State.REVIEW_DELIVERED:
                 return False
             # A self-authored stray can share its reviewer ticket with an armed

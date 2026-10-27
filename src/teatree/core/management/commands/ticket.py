@@ -313,7 +313,7 @@ class Command(
         ] = "",
         actor_kind: Annotated[
             str,
-            typer.Option(help="Clearance issuer: owner, factory_loop, or hand_session."),
+            typer.Option(help="Clearance issuer: factory_loop or hand_session (must match the issuing session)."),
         ] = "",
         delegation: Annotated[
             str,

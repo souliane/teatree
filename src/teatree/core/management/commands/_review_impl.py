@@ -15,7 +15,7 @@ import json
 import os
 from dataclasses import dataclass
 from itertools import starmap
-from typing import TYPE_CHECKING, NoReturn, TypedDict
+from typing import TYPE_CHECKING, NoReturn, TypedDict, cast
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
@@ -366,7 +366,10 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
         )
         state = "safe_to_approve"
     else:
-        reason = "verdict is HOLD" if recorded.stands_as_hold() else f"live checks {live_checks!r}"
+        if recorded.verdict == ReviewVerdict.Verdict.UNVERIFIED:
+            reason = f"verdict is UNVERIFIED: {', '.join(cast('list[str]', recorded.evidence_gaps))}"
+        else:
+            reason = "verdict is HOLD" if recorded.stands_as_hold() else f"live checks {live_checks!r}"
         human = f"  not safe-to-approve at {recorded.reviewed_sha[:8]}: {reason} ({ref.slug}#{ref.pr_id})"
         state = "not_safe"
     speaking = _verdicts_for(ref, recorded.reviewed_sha)
