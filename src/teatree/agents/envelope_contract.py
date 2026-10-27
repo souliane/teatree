@@ -187,13 +187,13 @@ def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple
         "",
         "- End with exactly one plain JSON object; no code fence or trailing text.",
         "- `summary` (string) is required on every phase.",
-        "- `needs_user_input` is a boolean; when true, set `user_input_reason` (ONE question ending in `?`) and stop.",
-        "  Stop for the owner only with `user_input_kind`, `user_input_checked` (facts you checked), `user_input_card`",
-        '  {"why", "blocker", "options": [{"label", "description", "recommended"}]}; plain English:',
-        f"  {', '.join(OwnerDecision)}; an access or permission grant is credentials.",
+        "- Owner stop (`needs_user_input`: true): `user_input_reason` (one question ending ?), `user_input_kind`,",
+        (
+            '  `user_input_checked`, `user_input_card` {"why", "blocker", '
+            '"options": [{"label", "description", "recommended"}]}; stop.'
+        ),
+        f"  Kinds: {', '.join(OwnerDecision)}; access/permission grants: credentials.",
         *(f"  {line}" for line in owner_stop_limits_lines()),
-        "  Options: none or 2 to 4; when present, exactly one recommended option first.",
-        "  Option labels must be unique and nonblank, and each option needs a consequence.",
         "  Decide everything else yourself.",
         "- If skills were required for this dispatch, include `skill_application`: one",
         '  `{"skill": "name", "evidence": "short concrete reference"}` per skill.',

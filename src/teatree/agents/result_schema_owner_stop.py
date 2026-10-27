@@ -18,13 +18,16 @@ OWNER_STOP_SHAPE = (
 
 def owner_stop_limits_lines() -> tuple[str, ...]:
     return (
-        f"1 to {question_card.MAX_CHECKED_FACTS} checked facts.",
-        f"The question at most {question_card.MAX_QUESTION_CHARS} characters, one sentence ending in ?.",
-        f"Why, blocker, facts: each sentence at most {question_card.MAX_SENTENCE_CHARS} characters on one line.",
-        f"The whole card at most {question_card.MAX_WORDS} words.",
-        f"Each option label at most {question_card.MAX_LABEL_CHARS} characters.",
-        f"Each option consequence at most {question_card.MAX_CONSEQUENCE_CHARS} characters.",
-        "Use plain English: no ticket numbers, paths, flags or code names.",
+        (
+            f"Card: 1-{question_card.MAX_CHECKED_FACTS} facts; question max {question_card.MAX_QUESTION_CHARS} chars; "
+            f"why/blocker/facts one sentence each, max {question_card.MAX_SENTENCE_CHARS} chars, one line; "
+            f"max {question_card.MAX_WORDS} words total."
+        ),
+        (
+            f"Options: 0 or 2-4; labels unique/nonblank, max {question_card.MAX_LABEL_CHARS} chars; "
+            f"consequences max {question_card.MAX_CONSEQUENCE_CHARS} chars; exactly one recommended first; "
+            "plain English: no IDs, paths, flags or code names."
+        ),
     )
 
 

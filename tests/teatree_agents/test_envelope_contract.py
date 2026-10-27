@@ -63,28 +63,30 @@ class TestEnvelopeContractText(SimpleTestCase):
     def test_an_owner_stop_needs_the_checked_facts_and_everything_else_is_decided(self) -> None:
         text = "\n".join(envelope_contract_lines(_WORK_PHASE))
         assert "`user_input_checked`" in text
-        assert "access or permission grant is credentials" in text
+        assert "access/permission grants: credentials" in text
         assert "Decide everything else yourself" in text
 
     def test_owner_stop_limits_follow_the_recorder_constants_on_every_phase(self) -> None:
         for phase in ("coding", "reviewing", "planning"):
             text = "\n".join(envelope_contract_lines(phase)).casefold()
-            assert f"1 to {question_card.MAX_CHECKED_FACTS} checked facts" in text
-            assert f"question at most {question_card.MAX_QUESTION_CHARS} characters" in text
-            assert f"each sentence at most {question_card.MAX_SENTENCE_CHARS} characters" in text
-            assert f"whole card at most {question_card.MAX_WORDS} words" in text
-            assert f"option label at most {question_card.MAX_LABEL_CHARS} characters" in text
-            assert f"option consequence at most {question_card.MAX_CONSEQUENCE_CHARS} characters" in text
-            assert "no ticket numbers, paths, flags or code names" in text
+            assert f"1-{question_card.MAX_CHECKED_FACTS} facts" in text
+            assert f"question max {question_card.MAX_QUESTION_CHARS} chars" in text
+            assert f"max {question_card.MAX_SENTENCE_CHARS} chars, one line" in text
+            assert f"max {question_card.MAX_WORDS} words total" in text
+            assert f"labels unique/nonblank, max {question_card.MAX_LABEL_CHARS} chars" in text
+            assert f"consequences max {question_card.MAX_CONSEQUENCE_CHARS} chars" in text
+            assert "0 or 2-4" in text
+            assert "exactly one recommended first" in text
+            assert "no ids, paths, flags or code names" in text
 
     def test_each_owner_stop_limit_is_read_at_render_time(self) -> None:
         fragments = {
-            "MAX_CHECKED_FACTS": "1 to 7 checked facts",
-            "MAX_QUESTION_CHARS": "question at most 7 characters",
-            "MAX_SENTENCE_CHARS": "each sentence at most 7 characters",
-            "MAX_WORDS": "whole card at most 7 words",
-            "MAX_LABEL_CHARS": "option label at most 7 characters",
-            "MAX_CONSEQUENCE_CHARS": "option consequence at most 7 characters",
+            "MAX_CHECKED_FACTS": "1-7 facts",
+            "MAX_QUESTION_CHARS": "question max 7 chars",
+            "MAX_SENTENCE_CHARS": "max 7 chars, one line",
+            "MAX_WORDS": "max 7 words total",
+            "MAX_LABEL_CHARS": "labels unique/nonblank, max 7 chars",
+            "MAX_CONSEQUENCE_CHARS": "consequences max 7 chars",
         }
         for name, fragment in fragments.items():
             with self.subTest(name=name), patch.object(question_card, name, 7):

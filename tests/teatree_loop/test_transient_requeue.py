@@ -354,7 +354,7 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.PENDING
         assert "internal shorthand" in task.execution_reason
         assert "120 words" in task.execution_reason
-        assert "160 characters" in task.execution_reason
+        assert "160 chars" in task.execution_reason
         assert "[auto-corrective-retry]" in task.execution_reason
 
         _add_failed_attempt(task, error=error.replace("widget_count", "another_code_name"))
