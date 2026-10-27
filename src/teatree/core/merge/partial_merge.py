@@ -171,6 +171,16 @@ def read_merged_pr(clear: MergeClear, repo_slug: str) -> MergedPrReading:
     return reading
 
 
+def _branches_bound_to_merged_prs(ticket: Ticket) -> list[tuple[str, str]]:
+    """The ``pr_url_by_branch`` entries ship would adopt as if the merged pull request were still the branch's."""
+    merged_urls = set(
+        PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED).values_list("url", flat=True)
+    )
+    bound = (ticket.extra or {}).get("pr_url_by_branch")
+    bound = bound if isinstance(bound, dict) else {}
+    return [("pr_url_by_branch", branch) for branch, url in bound.items() if url in merged_urls]
+
+
 def hold_for_remainder(ticket: Ticket, reading: MergedPrReading, *, merged_pr: str) -> bool:
     """Keep *ticket* out of ``merged`` and queue one planning task for the declared remainder; ``True`` when held.
 
@@ -179,7 +189,10 @@ def hold_for_remainder(ticket: Ticket, reading: MergedPrReading, *, merged_pr: s
     per-tick reconcile from merging the same pull request again.
     """
     listing = f"Open after that merge ({len(reading.unmet)}):\n" + "\n".join(f"- {item}" for item in reading.unmet)
-    intent = f"{merged_pr} merged without closing the issue.\n{listing}"
+    intent = (
+        f"{merged_pr} merged without closing the issue. Start the remainder on a fresh branch from the default "
+        f"branch; the merged one has landed.\n{listing}"
+    )
     holdable = ticket.state in _REOPEN_FROM | _REWORK_FROM | Ticket.EARLY_STATES
     if not holdable or ticket.role != Ticket.Role.AUTHOR:
         return False
@@ -194,6 +207,7 @@ def hold_for_remainder(ticket: Ticket, reading: MergedPrReading, *, merged_pr: s
                 ticket.rework()
             stamp_reopened_over(ticket)
             ticket.save()
+            ticket.merge_extra(pop_keys=_branches_bound_to_merged_prs(ticket))
             ticket.begin_planning(intent=intent)
     except (InvalidTransitionError, TransitionNotAllowed):
         logger.warning("partial merge: ticket %s could not be held; treating the merge as complete", ticket.pk)

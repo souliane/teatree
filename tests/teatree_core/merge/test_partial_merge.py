@@ -14,7 +14,8 @@ from django.test import TestCase
 
 from teatree.core.merge import merge_ticket_pr
 from teatree.core.merge.partial_merge import CLOSING_PATTERN, MergedPrReading, PrLink
-from teatree.core.models import MergeAudit, PullRequest, Task, Ticket
+from teatree.core.models import MergeAudit, MergeClear, PullRequest, Task, Ticket
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.runners.ship import CLOSE_KEYWORD_RE
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from tests._forge_stub import CLEAN_PR_BODY, CLEAN_PR_TITLE
@@ -222,6 +223,20 @@ class TestPartOfWithDeclaredRemainder(TestCase):
                 assert ticket.state == Ticket.State.WORK_STARTED
                 assert len(_planning_tasks(ticket)) == 1
 
+    def test_the_merged_branch_is_no_longer_bound_to_its_pull_request(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        merged_url = "https://github.com/souliane/teatree/pull/859"
+        other_url = "https://github.com/souliane/teatree/pull/12"
+        Ticket.objects.filter(pk=ticket.pk).update(
+            extra={"pr_url_by_branch": {"5670-first-step": merged_url, "other-branch": other_url}}
+        )
+        ticket.refresh_from_db()
+
+        _merge(ticket, _STATUS_TABLE)
+
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_url_by_branch"] == {"other-branch": other_url}
+
     def test_the_fallback_remainder_comes_from_the_issue_acceptance_boxes(self) -> None:
         ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
 
@@ -270,6 +285,28 @@ class TestMergesThatStillReachMerged(TestCase):
         _merge(ticket, _STATUS_TABLE)
 
         assert _merge(ticket, _BOILERPLATE, pr_id=860) == Ticket.State.MERGED
+
+    def test_a_reviewer_ticket_keeps_the_merge(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        Ticket.objects.filter(pk=ticket.pk).update(role=Ticket.Role.REVIEWER)
+        ticket.refresh_from_db()
+
+        assert _merge(ticket, _STATUS_TABLE) == Ticket.State.MERGED
+        assert _planning_tasks(ticket) == []
+
+    def test_a_hold_that_fails_still_leaves_the_merge_recorded(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+
+        with (
+            patch("teatree.core.models.ticket.Ticket.begin_planning", side_effect=InvalidTransitionError("refused")),
+            self.assertLogs("teatree.core.merge.partial_merge", level=logging.WARNING),
+        ):
+            state = _merge(ticket, _STATUS_TABLE)
+
+        ticket.refresh_from_db()
+        assert state == ticket.state == Ticket.State.MERGED
+        assert MergeClear.objects.get(ticket=ticket).consumed_at is not None
+        assert MergeAudit.objects.filter(clear__ticket=ticket).count() == 1
 
     def test_a_ticket_with_no_edge_back_to_planning_keeps_the_merge(self) -> None:
         ticket = _ticket_in(Ticket.State.PLAN_RECORDED)
