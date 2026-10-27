@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from teatree.backends.gitlab.sync_terminal import apply_closed_status, apply_merged_status
+from teatree.core.cleanup.removal_proof import RemovalRefusedError
 from teatree.core.gates import dod_gate
 from teatree.core.intake.e2e_workitem import record_run
 from teatree.core.models import Ticket, Worktree
@@ -86,6 +87,25 @@ class TestApplyMergedStatusAllMerged(TestCase):
         assert any("cleanup failed" in e for e in result.errors)
         # Error must carry the repo + branch so the dashboard can point at the stuck worktree.
         assert any("org/repo" in e and "fix-4" in e for e in result.errors)
+
+    @patch(
+        "teatree.backends.gitlab.sync_terminal.cleanup_worktree",
+        side_effect=RemovalRefusedError("not proven shipped"),
+    )
+    def test_proof_refusal_keeps_worktree_without_sync_error(self, mock_cleanup: MagicMock) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/5",
+            state=Ticket.State.REVIEW_REQUESTED,
+            extra={"prs": {"url1": {"title": "MR1"}}},
+        )
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="org/repo", branch="fix-5")
+        result = SyncResult()
+
+        apply_merged_status(ticket, {"url1"}, result)
+
+        mock_cleanup.assert_called_once()
+        assert result.worktrees_cleaned == 0
+        assert result.errors == []
 
 
 class TestApplyClosedStatus(TestCase):

@@ -1,5 +1,7 @@
 """A phase pinned to claude_sdk, or one that bars write tools, never runs on another harness through a route."""
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -14,9 +16,11 @@ from tests.teatree_agents._route_fakes import (
     CLAUDE_LIKE,
     CLAUDE_SDK,
     MANAGED,
+    make_codex_available,
     register_stub_harnesses,
     route_config,
     routed_by,
+    write_codex_login,
 )
 
 
@@ -53,6 +57,21 @@ class TestRoutePinGuard(TestCase):
             dispatch = resolve_dispatch_harness(task, phase="bughunt", skills=["debug"])
 
         assert (dispatch.name, dispatch.route_candidate_index) == (CLAUDE_LIKE, 0)
+
+    def test_execution_phases_select_the_current_managed_worker_route(self) -> None:
+        home = Path(self.enterContext(TemporaryDirectory()))
+        make_codex_available(self, home)
+        write_codex_login(home)
+        for phase, skill in (
+            ("bughunt", "debug"),
+            ("dogfood_smoke", "dogfooding"),
+            ("eval_local", "running-evals"),
+        ):
+            with self.subTest(phase=phase):
+                task = Task.objects.create(ticket=self.ticket, session=self.session, phase=phase)
+                with routed_by(route_config(skill, "codex_app_server", CLAUDE_SDK)):
+                    dispatch = resolve_dispatch_harness(task, phase=phase, skills=[skill])
+                assert (dispatch.name, dispatch.route_candidate_index) == ("codex_app_server", 0)
 
     def test_a_phase_override_outside_the_pinned_verification_phases_leaves_a_route_alone(self) -> None:
         overrides = AgentConfig(phase_harness={"coding": AgentHarness.PYDANTIC_AI})

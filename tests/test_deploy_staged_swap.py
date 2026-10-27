@@ -475,6 +475,27 @@ class TestTheReadOnlyExecutorConvergesAlone:
         assert f"{_EXECUTOR} keeps its running container" in proc.stderr
 
 
+class TestTheCodexSourceGitMountFollowsTheCheckoutOrigin:
+    def test_a_checkout_without_an_origin_keeps_the_original_executor_mounts(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(checkout, tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        assert len(_executor_ups(calls)) == 1
+        assert not any("codex-source-git" in call or "test -d" in call for call in calls)
+
+    def test_an_origin_names_the_source_clone_git_mount(self, checkout: Path, tmp_path: Path) -> None:
+        origin = "https://example.test/example-org/example-repo.git"
+        subprocess.run([_GIT, "-C", str(checkout), "remote", "add", "origin", origin], check=True)
+
+        proc, calls = _run(checkout, tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        assert any("test -d" in call and call.endswith("workspace/example-org/example-repo/.git") for call in calls)
+        assert "codex-source-git" in calls[_executor_ups(calls)[0]]
+
+
 class TestInFlightWorkSurvivesTheSwap:
     def test_the_worker_is_drained_before_migrations_and_again_before_its_swap(
         self, checkout: Path, tmp_path: Path

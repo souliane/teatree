@@ -16,6 +16,7 @@ from teatree.loop.dispatch import dispatch
 from teatree.loop.pr_sweep_skip_surface import record_sweep_outcomes
 from teatree.loop.red_set_surface import record_red_set
 from teatree.loop.tick_recovery import _execute_mechanical, _persist_agent_dispatches
+from teatree.loop.unaudited_merge_alert import record_unaudited_merges
 
 if TYPE_CHECKING:
     from teatree.loop.tick import TickReport
@@ -25,5 +26,6 @@ def act_phase(report: "TickReport") -> None:
     report.actions = dispatch(report.signals, errors=report.errors)
     record_sweep_outcomes(report.signals)
     record_red_set(report.signals)
+    record_unaudited_merges(report.signals)
     _execute_mechanical(report)
     _persist_agent_dispatches(report)

@@ -6,13 +6,17 @@ unreachable to it, since ``gh run rerun --failed`` re-tests the run's pinned OLD
 base. Re-testing at the current base costs one run and is the only way to find
 out, so this module applies the merge-update rather than announcing it.
 
-Three bounds keep a genuinely broken PR from being update-looped. ONE ATTEMPT
+Four bounds keep a genuinely broken PR from being update-looped. ONE ATTEMPT
 PER HEAD: :class:`BranchUpdateAttempt` is claimed BEFORE the API call, so a PR
 that comes back red at the CURRENT base (same head, no longer behind) is never
 touched again and a failed call is not retried. A PER-TICK CAP
 (:data:`MAX_BRANCH_UPDATES_PER_TICK`) bounds the blast radius of a base that
 moves under many PRs at once. OWN PRS ONLY: an unattended push to a colleague's
-branch is never ours to make, so any other author keeps the flag.
+branch is never ours to make, so any other author keeps the flag. ONE UPDATE PER
+PATCH: a head the sweep's own update produced from a head with the same patch
+(:class:`~teatree.core.models.head_carry_over.HeadCarryOver`) that is red again is
+judged by its patch, not its base — a base that keeps moving must not mint a head
+(and its CI) per move.
 
 Every refusal degrades to the ``needs_branch_update`` flag, so a remedy the
 sweep declines to apply is surfaced for a human rather than dropped.
@@ -22,6 +26,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from teatree.core.models import HeadCarryOver
 from teatree.loop.scanners.pr_sweep_decision import pr_authored_by_self
 from teatree.loop.scanners.pr_sweep_ports import PrApiClient
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
@@ -92,7 +97,7 @@ def remedy_stale_base(pr: PrSummary, *, ctx: RemedyContext, budget: TickBudget) 
     """Merge-update *pr* when every bound allows it; otherwise flag the remedy."""
     if budget.remaining <= 0 or not pr_authored_by_self(author=pr.author, self_identities=ctx.self_identities):
         return _flag_needs_update(pr, flag=ctx.flag)
-    if not _claim_head(pr, overlay=ctx.overlay):
+    if _patch_already_updated(pr) or not _claim_head(pr, overlay=ctx.overlay):
         return _flag_needs_update(pr, flag=ctx.flag)
     if not _apply_update(pr, api=ctx.api):
         return _flag_needs_update(pr, flag=ctx.flag)
@@ -105,6 +110,11 @@ def remedy_stale_base(pr: PrSummary, *, ctx: RemedyContext, budget: TickBudget) 
         reason=_APPLIED_REASON,
         url=pr.url,
     )
+
+
+def _patch_already_updated(pr: PrSummary) -> bool:
+    """A sweep update already produced this head from a head with the same patch, so its red is the patch's own."""
+    return HeadCarryOver.objects.left_patch_unchanged_by_update(slug=pr.slug, pr_id=pr.number, head=pr.head_sha)
 
 
 def _claim_head(pr: PrSummary, *, overlay: str) -> bool:

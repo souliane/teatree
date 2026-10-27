@@ -38,9 +38,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
-from teatree.core.review.review_findings import find_bare_references
-from teatree.hooks import banned_terms_scanner
-from teatree.loops.dream.destination import classify_destination
+from teatree.loops.dream.destination import evidence_destination
 
 if TYPE_CHECKING:
     from teatree.loops.dream.batch_promote import PromotionBatch
@@ -76,7 +74,7 @@ def triage_disposition(row: ConsolidatedMemory) -> MemoryDisposition:
     tree takes that same conservative path, loudly — the alternative, leaving it
     untriaged, re-warns every pass forever and never drains.
     """
-    verdict = classify_destination(row.durable_destination)
+    verdict = evidence_destination(row.durable_destination, row.verified_citation, row.rule)
     if verdict.groundable:
         return MemoryDisposition.CORE_GAP
     if verdict.reason and row.durable_destination.strip():
@@ -185,8 +183,10 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
         gap_title,
     )
 
-    verdict = classify_destination(row.durable_destination)
+    verdict = evidence_destination(row.durable_destination, row.verified_citation, row.rule)
     if not verdict.groundable:
+        if verdict.verifiable:
+            row.classify_user_specific()
         logger.warning(
             "dream: refusing to promote cluster %s — its destination %r is ungrounded: %s.",
             row.cluster_key,
@@ -217,17 +217,6 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
         withheld=outcome.withheld,
         reason=outcome.reason,
     )
-
-
-def _withholding_reason(rendered: str) -> str:
-    """The reason a rendered body must be withheld (banned term / bare ref), or ``""``."""
-    banned = banned_terms_scanner.scan_text(rendered)
-    if banned is not None:
-        return f"contains banned term '{banned}'"
-    leaked = find_bare_references(rendered)
-    if leaked:
-        return f"contains bare reference(s): {', '.join(leaked)}"
-    return ""
 
 
 def retire_resolved_memories(

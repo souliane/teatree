@@ -65,7 +65,7 @@ class BoardPage:
     base_url: str
 
     def open(self) -> Response | None:
-        return self.page.goto(f"{self.base_url}/dash/board/")
+        return self.page.goto(f"{self.base_url}/dash/board/lifecycle/")
 
     @property
     def rail_nodes(self) -> Locator:
@@ -74,6 +74,9 @@ class BoardPage:
     @property
     def columns(self) -> Locator:
         return self.page.locator(".kanban-column")
+
+    def expand_column(self, state: str) -> None:
+        self.page.locator(f'details[data-state="{state}"] summary').click()
 
     def column(self, state: str) -> Locator:
         return self.page.locator(f'.kanban-column[data-state="{state}"]')
@@ -102,6 +105,21 @@ class BoardPage:
         # centre-point click on the article itself can land on one of them.
         self.card_by_id(ticket_id).locator(".card-desc").click()
         return DrawerPanel(self.page)
+
+
+@dataclass(frozen=True, slots=True)
+class PrBoardPage:
+    page: Page
+    base_url: str
+
+    def open(self) -> Response | None:
+        return self.page.goto(f"{self.base_url}/dash/board/")
+
+    def group(self, name: str) -> Locator:
+        return self.page.locator(f'[data-pr-group="{name}"]')
+
+    def card(self, ref: str) -> Locator:
+        return self.page.locator(f'[data-pr-card="{ref}"]')
 
 
 @dataclass(frozen=True, slots=True)

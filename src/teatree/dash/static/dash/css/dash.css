@@ -290,6 +290,40 @@ select:hover {
   --col-hue: var(--ink-muted);
 }
 
+.board-tabs {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+  margin-bottom: var(--sp-4);
+}
+.board-tabs a,
+.board-tabs strong {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.pr-groups .kanban-column {
+  width: min(320px, 82vw);
+}
+.pr-card-meta,
+.pr-card-next {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.pr-card-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0;
+  font-size: var(--text-xs);
+}
+.pr-card-facts dt {
+  color: var(--ink-muted);
+}
+.pr-card-facts dd {
+  margin: 0;
+}
+
 /* --- Kanban --- */
 .kanban-groups {
   display: flex;

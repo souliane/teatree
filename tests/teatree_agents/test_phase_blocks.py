@@ -49,6 +49,17 @@ class TestPhaseSpecificLinesDispatch(TestCase):
         assert "PHASE: bughunt" in lines
         assert any("find-then-verify" in line and "N=3" in line for line in lines)
 
+    def test_execution_phases_name_the_current_worker_and_their_command(self) -> None:
+        for phase, command in (
+            ("bughunt", "reproduce"),
+            ("dogfood_smoke", "t3 dogfood overlay-provision-smoke"),
+            ("eval_local", "t3 eval run"),
+        ):
+            with self.subTest(phase=phase):
+                brief = "\n".join(phase_specific_lines(_task(phase), []))
+                assert "current worker" in brief
+                assert command in brief
+
 
 class TestTheReviewerIsToldToGradeTheRubric(TestCase):
     """Nothing else grades the rubric, so an unbriefed reviewer leaves every merge refused.
@@ -180,14 +191,14 @@ class TestFixRecordDirective(TestCase):
     def test_a_fix_coding_brief_asks_for_record_red_by_default(self) -> None:
         assert "repro record-red" in self._brief("coding", Ticket.Kind.FIX)
 
-    def test_a_switched_off_fix_brief_keeps_the_fields_and_drops_record_red(self) -> None:
+    def test_a_switched_off_fix_brief_omits_failing_run_claims(self) -> None:
         ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
         for phase in ("coding", "debugging"):
             task = _task(phase, kind=Ticket.Kind.FIX)
             brief = "\n".join(phase_specific_lines(task, []))
             assert "THIS IS A FIX TICKET" in brief
-            assert all(field in brief for field in FIX_RECORD_FIELDS)
-            assert "repro record-red" not in brief
+            assert all(field in brief for field in FIX_RECORD_FIELDS if field != "observed_red")
+            assert not any(term in brief for term in ("observed_red", "RED-first", "repro record-red", "revert-to-RED"))
             task.ticket.refresh_from_db()
             assert "forced_repro_disabled_scopes" not in task.ticket.extra
 
@@ -212,6 +223,15 @@ class TestFixRecordDirective(TestCase):
         assert '"fix_record"' in brief
         assert "only with merge_safe" in brief
         assert "repro record-red" not in brief
+        assert '"observed_red"' in brief
+        assert "observed_red is your own revert-to-RED proof" in brief
+
+    def test_the_review_of_a_fix_pr_omits_failing_run_claims_when_switched_off(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False)
+        brief = self._review_brief_for_pr_owned_by(Ticket.Kind.FIX)
+        assert "only with merge_safe" in brief
+        assert all(field in brief for field in FIX_RECORD_FIELDS if field != "observed_red")
+        assert not any(term in brief for term in ("observed_red", "RED-first", "repro record-red", "revert-to-RED"))
 
     def test_an_issue_anchored_review_is_told_the_live_head_it_is_checked_against(self) -> None:
         live = "d" * 40
@@ -366,12 +386,13 @@ class TestEnvelopeVerdictPhasesIsExactlyWhatTheBriefTeaches(TestCase):
     #: asks for the envelope the orchestrator must record server-side.
     _RETURN_DIRECTIVE = "RECORD YOUR VERDICT BY RETURNING IT"
 
-    def test_reviewer_brief_keeps_full_dispatched_head_refusal(self) -> None:
+    def test_reviewer_brief_keeps_head_refusal_and_one_live_head_retry(self) -> None:
         brief = "\n".join(phase_specific_lines(_task("reviewing"), []))
-        assert "Any other head is REFUSED and records nothing" in brief
-        assert "one or return needs_user_input" in brief
-        assert "OMITTING `reviewed_sha` is REFUSED too" in brief
-        assert "dispatched one, so a verdict that names no head records nothing at all" in brief
+        assert "A verdict for another head is REFUSED" in brief
+        assert '"review_head_mismatch": {"observed_sha":' in brief
+        assert "without review_verdict or owner question" in brief
+        assert "Factory retries once at the live head" in brief
+        assert "Missing `reviewed_sha` is REFUSED" in brief
 
     def _phases_briefed_for_the_envelope(self) -> set[str]:
         return {

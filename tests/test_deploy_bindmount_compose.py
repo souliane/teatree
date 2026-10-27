@@ -75,6 +75,7 @@ EXTERNALIZED = {
 CREDENTIAL_PLANE = {
     f"{CONTAINER_HOME}/.password-store",
     f"{CONTAINER_HOME}/.gnupg",
+    f"{CONTAINER_HOME}/.config/teatree-master-key",
 }
 # Agent homes are container-owned.  They persist and are shared between init and
 # runtime roles, but can never import settings, skills, or credentials from the

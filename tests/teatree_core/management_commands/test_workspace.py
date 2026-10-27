@@ -2752,11 +2752,12 @@ class TestCleanupDryRunHelperPreviews(TestCase):
                 patch.object(git_mod, "run_strict", return_value=""),
                 patch.object(git_mod, "unsynced_commits", return_value=[]),
                 patch.object(git_mod, "worktree_remove") as mock_remove,
+                patch.object(ws_cleanup_mod, "removal_refusal", return_value=""),
             ):
                 line = ws_cleanup_mod._prune_gone_worktree("/repo", "feat-y", wt_path, dry_run=True)
 
         mock_remove.assert_not_called()
-        assert line == "WOULD Remove gone-remote worktree (branch kept): feat-y"
+        assert line == f"WOULD Remove gone-remote worktree (branch kept): feat-y [checkout: {wt_path}]"
 
     def test_pass1_strips_current_branch_marker_on_gone_branch(self) -> None:
         # `git branch -v` prefixes the checked-out branch with "* ". A gone
@@ -3811,7 +3812,29 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             branches = _git(work, "branch", "--format=%(refname:short)").split()
             assert "feature" not in branches, f"squash-merged branch should be pruned, got: {result!r}"
             assert not wt_path.exists(), "worktree should be removed for a squash-merged branch"
-            assert result == "Pruned squash-merged branch: feature"
+            assert result == f"Pruned squash-merged branch: feature [checkout: {wt_path}]"
+
+    def test_squash_prune_keeps_ignored_file_and_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            _git(work, "push", "-q", "origin", "feature")
+            _git(work, "checkout", "-q", "main")
+            wt_path = tmp / "wt-feature"
+            _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+            (work / ".git" / "info" / "exclude").write_text("notes.local\n", encoding="utf-8")
+            (wt_path / "notes.local").write_text("retain\n", encoding="utf-8")
+
+            line = ws_cleanup_mod._prune_squash_merged(
+                str(work), "feature", {"feature": str(wt_path)}, remote_ref_was_present=True
+            )
+
+            assert "SKIPPED" in line
+            assert "notes.local" in line
+            assert str(wt_path) in line
+            assert (wt_path / "notes.local").is_file()
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
 
     def test_unsynced_squash_merged_branch_without_linked_worktree_is_pruned(self) -> None:
         """A squash-merged branch with no linked worktree (empty wt_map) is still pruned."""
@@ -3932,6 +3955,22 @@ class TestPruneGoneRemoteWorktree(TestCase):
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split(), (
                 f"branch ref must be kept (recoverable), got: {cleaned!r}"
             )
+
+    def test_gone_remote_prune_keeps_ignored_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            wt_path, squash_sha = self._squash_merge_and_delete_remote(work, "feature")
+            (work / ".git" / "info" / "exclude").write_text("notes.local\n", encoding="utf-8")
+            (Path(wt_path) / "notes.local").write_text("retain\n", encoding="utf-8")
+
+            with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+                line = ws_cleanup_mod._prune_gone_worktree(str(work), "feature", wt_path)
+
+            assert "SKIPPED" in line
+            assert "notes.local" in line
+            assert wt_path in line
+            assert (Path(wt_path) / "notes.local").is_file()
 
     def test_gone_remote_busy_worktree_is_kept(self) -> None:
         # WT-PR-F rider: a clean, recoverable gone-remote worktree under LIVE work

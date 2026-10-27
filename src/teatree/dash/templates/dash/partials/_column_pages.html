@@ -1,0 +1,4 @@
+{% if column.prev_url or column.next_url %}<nav class="column-pages" aria-label="{{ column.label }} pages">
+  {% if column.prev_url %}<a href="{{ column.prev_url }}">Previous 50</a>{% endif %}
+  {% if column.next_url %}<a href="{{ column.next_url }}">Next 50</a>{% endif %}
+</nav>{% endif %}

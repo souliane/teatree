@@ -37,11 +37,13 @@ from teatree.core.models.task_phase_disposition import record_stuck_transition_q
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.question_heal import record_withheld
 from teatree.core.repair_loop import MAX_REOFFERS, IterationStalled, MaxIterationsExceeded, max_phase_iterations
+from teatree.core.review.pr_inventory import OpenPrRow
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import execute_provision
 from teatree.loop.ci_eval_heal_advance import advance_open_sessions
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
+from teatree.loop.pr_stall import repair_stalled_prs
 from teatree.loop.scanners import board_reconcile_issue_reopen as issue_reopen
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.scanners.memory_skim import MemorySkimScanner
@@ -59,7 +61,7 @@ from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 from tests._owner_channel import owner_card
 from tests.conformance._src_tree import REPO_ROOT
 from tests.conformance.test_owner_decision_allowlist import _calls
-from tests.factories import WorktreeFactory, planned_ticket
+from tests.factories import PullRequestFactory, TicketFactory, WorktreeFactory, planned_ticket
 from tests.teatree_agents.test_runner_own_pr_review_head import _BRANCH, _PR_URL, _SLUG, _Forge, _PrRepo
 from tests.teatree_agents.test_runner_review_verdict import _LIVE_RED, _contradiction_envelope, _exhaust_dispatch
 from tests.teatree_core._self_review_helpers import author_ticket, completed_self_review, head
@@ -334,6 +336,24 @@ def _exhaust_a_review_nag() -> None:
         ReviewNagScanner(messaging=FakeSlack(), host=FakeHost()).scan()
 
 
+def _hold_a_stalled_pr() -> None:
+    ticket = TicketFactory(state=Ticket.State.PR_OPENED)
+    url = "https://example.com/owner/repo/pull/5007"
+    PullRequestFactory(ticket=ticket, url=url)
+    repair_stalled_prs(
+        [
+            OpenPrRow(
+                ref="owner/repo!5007",
+                url=url,
+                age="2 d",
+                next_task="Fix failing CI",
+                started=True,
+                stall="Fix failing CI",
+            )
+        ]
+    )
+
+
 # Board reconcile and the outer-loop tick sweep every row, so each runs before the drivers whose rows it would act on.
 _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
     ("src/teatree/loop/scanners/board_reconcile_issue_reopen.py", "_escalate_revival_cap_once"): (
@@ -372,6 +392,7 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
     ("src/teatree/core/gates/review_request_batch_gate.py", "work_group_ready"): _hold_an_oversize_work_group,
     ("src/teatree/loop/scanners/mr_triage_scan.py", "scan"): _survey_a_missing_review,
     ("src/teatree/loop/scanners/review_nag.py", "_ask_owner_for_state"): _exhaust_a_review_nag,
+    ("src/teatree/loop/pr_stall.py", "_record_unresolved"): _hold_a_stalled_pr,
 }
 
 
