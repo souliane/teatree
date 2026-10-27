@@ -369,6 +369,11 @@ class TestQuotedHeavyPayloads:
             'echo "$(webpack --mode "$(echo production)")"',
             "echo \"$(printf ')' && make all)\"",
             'echo "$(echo "(" && tox)"',
+            'echo "$(echo "$(printf "(")" && make all)"',
+            'echo "$(echo "$(printf ")")" && make all)"',
+            'echo "$(echo "$(printf \')\')" && make all)"',
+            'echo "$(echo "$(echo "$(printf ")")")" && make all)"',
+            'echo "$(make all',
         ],
     )
     def test_heavy_word_inside_a_live_substitution_that_nests_parens_is_denied(self, command: str) -> None:
@@ -397,6 +402,8 @@ class TestHeavyWordIsNotACommand:
             "echo '$(cd x && (make all))'",
             'git commit -m "make the gate $(date) narrower"',
             "git commit -m \"$(cat <<'EOF'\nfix it's (see 1) fine\nEOF\n)\"",
+            "bash -n; foo -c 'make all'",
+            "echo " + "$(" * 12 + "echo 'hello world'" + ")" * 12,
         ],
     )
     def test_identifier_or_argument_passes(self, command: str) -> None:
@@ -491,6 +498,12 @@ class TestHeavyScanStaysBounded:
         command = "echo a" + "\n" * 8000 + "uv run pytest"
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
+    def test_sixteen_thousand_blank_lines_are_judged_in_under_a_second(self) -> None:
+        command = "echo a" + "\n" * 16_000 + "echo done"
+        started = time.process_time()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.process_time() - started < 1.0
+
     @pytest.mark.parametrize(
         ("wrapper", "flag"),
         [("xargs", "-P1"), ("xargs", "-P 1"), ("sudo", "-u"), ("nice", "-n"), ("env", "-u"), ("env", "-u A=1")],
@@ -513,6 +526,14 @@ class TestHeavyScanStaysBounded:
 
     def test_deeply_nested_substitutions_are_scanned_to_a_bounded_depth(self) -> None:
         command = "echo " + "$(" * 2000 + "make all" + ")" * 2000
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize("depth", [8, 9, 12, 400])
+    @pytest.mark.parametrize(
+        "payload", ["make all", "bash -c 'make all'", "eval 'make all'", "ssh host 'make all'", "echo `make all`"]
+    )
+    def test_a_payload_nested_past_the_scan_cap_is_still_denied(self, depth: int, payload: str) -> None:
+        command = "echo " + "$(" * depth + payload + ")" * depth
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
 

@@ -71,24 +71,45 @@ def _shell_tokens() -> ModuleType | None:
 
 
 _SUBSTITUTION_OPEN_RE = re.compile(r"\$\(|`")
-_BARE_PAREN_RE = re.compile(r"""\\.|'[^']*'|"(?:\\.|[^"\\])*"|([()])""", re.DOTALL)
+_BARE_PAREN_RE = re.compile(r"""\\.|'[^']*'|"|([()])""", re.DOTALL)
+_IN_DOUBLE_RE = re.compile(r"""\\.|"|\$\(""", re.DOTALL)
+_PAST_CAP_RE = re.compile(r"""\$\(|[`'"]""")
 _MAX_NESTING = 8
 _HEREDOC_PIPE_RE = re.compile(r"\|\s*(?:bash|sh|source|python3?)\b|>\(\s*(?:bash|sh)\b")
 _FILE_REDIRECT_RE = re.compile(r"(?<!<)>{1,2}\s*(?!\()([^\s<>|;&()]+)")
 _TEE_FILE_RE = re.compile(r"(?:^|[;&|])\s*tee(?:\s+-\S+)*\s+([^\s<>|;&()]+)")
 _FILE_WRITER_RE = re.compile(r"(?:^|[;&|$(])\s*(?P<cmd>cat|tee)\b[^;&|]*<<")
 _EXECUTED_FILE_RE = re.compile(
-    r"(?:^|[;&|\n])\s*(?:(?:/(?:[\w.-]+/)+)?(?:bash|sh)(?:\s+-\S+)*\s+|source\s+|\.\s+|(?=\./))"
+    r"(?:^|[;&|\n])[^\S\n]*(?:(?:/(?:[\w.-]+/)+)?(?:bash|sh)(?:\s+-\S+)*\s+|source\s+|\.\s+|(?=\./))"
     r"(\.?/?[^\s<>|;&]+)"
 )
 
 
-def _substitution_end(raw: str, start: int) -> int:
+def _double_quote_end(raw: str, index: int, nesting: int) -> int:
+    while match := _IN_DOUBLE_RE.search(raw, index):
+        if match[0] == '"':
+            return match.end()
+        index = match.end()
+        if match[0] == "$(":
+            index = _substitution_end(raw, match.start(), nesting + 1) + 1
+    return len(raw)
+
+
+def _substitution_end(raw: str, start: int, nesting: int = 0) -> int:
+    if nesting > _MAX_NESTING:
+        return len(raw)
     depth = 1
-    for match in _BARE_PAREN_RE.finditer(raw, start + 2):
-        depth += {"(": 1, ")": -1}.get(match[1], 0)
-        if not depth:
-            return match.start()
+    index = start + 2
+    while match := _BARE_PAREN_RE.search(raw, index):
+        index = match.end()
+        if match[0] == '"':
+            index = _double_quote_end(raw, index, nesting)
+        elif match[1] == "(":
+            depth += 1
+        elif match[1] == ")":
+            depth -= 1
+            if not depth:
+                return match.start()
     return len(raw)
 
 
@@ -217,6 +238,8 @@ def _word_text(lexer: ModuleType, tokens: list["Token"], depth: int) -> list[str
 
 def _heredoc_text(lexer: ModuleType, bodies: list["HeredocBody"], command: str, depth: int) -> list[str]:
     result: list[str] = []
+    if not bodies:
+        return result
     executed_files = {
         match.group(1).removeprefix("./"): match.start(1) for match in _EXECUTED_FILE_RE.finditer(command)
     }
@@ -234,8 +257,10 @@ def _heredoc_text(lexer: ModuleType, bodies: list["HeredocBody"], command: str, 
 @lru_cache(maxsize=4)
 def heavy_command_text(command: str, depth: int = 0) -> str:
     lexer = _shell_tokens()
-    if lexer is None or depth > _MAX_NESTING:
+    if lexer is None:
         return command
+    if depth > _MAX_NESTING:
+        return _PAST_CAP_RE.sub("\n", command)
     from hooks.scripts.mr_cli_fields import strip_heredoc  # noqa: PLC0415 — keep origin-only hooks cold (#4995)
 
     bodies: list[HeredocBody] = []
