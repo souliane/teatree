@@ -16,7 +16,16 @@ from teatree.agents.dispatch_preflight import (
     rubric_brief_lines,
 )
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
-from teatree.core.models import AutoReviewDispatch, PullRequest, Session, Task, Ticket, Worktree
+from teatree.core.models import (
+    AutoReviewDispatch,
+    PullRequest,
+    RedMrFixAttempt,
+    ReviewVerdict,
+    Session,
+    Task,
+    Ticket,
+    Worktree,
+)
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 from tests._git_repo import make_git_repo, run_git
@@ -62,6 +71,37 @@ class TestResolveHeadState(TestCase):
 
 
 class TestHeadStateBriefLines(TestCase):
+    def test_review_findings_debug_brief_inlines_every_standing_hold(self) -> None:
+        pr_url = "https://github.com/example/repo/pull/8"
+        head = "a" * 40
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/7")
+        PullRequest.objects.create(ticket=ticket, url=pr_url, repo="example/repo", iid="8")
+        RedMrFixAttempt.objects.create(pr_url=pr_url, head_sha=head, kind=RedMrFixAttempt.Kind.REVIEW_FINDINGS)
+        for reviewer, summary in (("cold-reviewer-one", "first blocker"), ("cold-reviewer-two", "second blocker")):
+            ReviewVerdict.objects.create(
+                ticket=ticket,
+                slug="example/repo",
+                pr_id=8,
+                reviewed_sha=head,
+                verdict=ReviewVerdict.Verdict.HOLD,
+                reviewer_identity=reviewer,
+                reviewer_identity_normalized=reviewer,
+                blast_class="logic",
+                gh_verify_result="green",
+                findings=[{"severity": "major", "kind": "blocking", "summary": summary, "file": "src/f.py", "line": 3}],
+            )
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="debugging",
+            execution_reason=f"Auto-scheduled review-findings fix — {pr_url}",
+        )
+
+        block = "\n".join(round_brief_lines(task))
+
+        assert "first blocker" in block
+        assert "second blocker" in block
+
     def test_coding_round_names_standard_and_missing_measured_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = _worktree_with_commit(Path(tmp), subject="fix: prior round")

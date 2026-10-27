@@ -188,9 +188,7 @@ class TestGhLineageReader:
         gh = _GitBackedGh(scenario.repo, reported_head=new)
 
         with (
-            patch("teatree.loop.scanners.head_lineage.find_project_root", return_value=scenario.repo),
-            patch("teatree.loop.scanners.head_lineage.unambiguous_clone_path", return_value=None),
-            patch("teatree.loop.scanners.head_lineage.git.remote_slug", return_value=SLUG),
+            patch("teatree.loop.scanners.head_lineage.matching_clone", return_value=scenario.repo),
         ):
             lineage = GhLineageReader(gh=gh)(
                 slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=scenario.old, new_head=new
@@ -232,8 +230,7 @@ class TestGhLineageReader:
         new = _merge_main_into_pr(scenario)
 
         with (
-            patch("teatree.loop.scanners.head_lineage.find_project_root", return_value=None),
-            patch("teatree.loop.scanners.head_lineage.unambiguous_clone_path", return_value=None),
+            patch("teatree.loop.scanners.head_lineage.matching_clone", return_value=None),
         ):
             lineage = GhLineageReader(gh=_GitBackedGh(scenario.repo, reported_head=new))(
                 slug=SLUG, pr_id=PR_ID, host_kind="github", old_head=scenario.old, new_head=new
