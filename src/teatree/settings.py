@@ -48,7 +48,7 @@ def _debug_enabled() -> bool:
 
     Default on preserves local-dev convenience (rich error pages). Nothing
     functional depends on it: ``/admin/`` mounts unconditionally and the
-    admin auto-login is gated on the loopback source address, not ``DEBUG``.
+    admin authentication uses a staff session, independent of ``DEBUG``.
     A long-running Django process with DEBUG on grows
     ``connection.queries`` unboundedly, so every long-running service (the
     worker AND the admin) sets ``T3_DEBUG=0`` to run with DEBUG off.
@@ -89,13 +89,9 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     # Collapse the repeated config / preset / loop reads one dashboard render issues
-    # into one each. Ahead of the auto-login below so that middleware's own settings
-    # read shares the memo with the view's.
+    # into one each for the view.
     "teatree.core.middleware.RequestScopedReadCacheMiddleware",
-    # Auto-login the single-operator admin as the superuser — gated on the
-    # loopback source (never DEBUG),
-    # so a non-loopback request is never auto-logged-in.
-    "teatree.core.middleware.LocalAdminAutoLoginMiddleware",
+    "teatree.core.middleware.OperatorLoginRequiredMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]

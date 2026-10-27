@@ -11,7 +11,6 @@ import re
 from unittest import mock
 from unittest.mock import patch
 
-from django.test import TestCase
 from django.urls import resolve, reverse
 
 from teatree.config.cold_defaults import DEFAULTS_TOML
@@ -46,6 +45,7 @@ from teatree.dash.views.settings import (
     settings_readouts,
 )
 from tests.teatree_dash._overlay_venue import core_overlay_only
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 _ROW_ID = re.compile(r'id="setting-([a-z0-9_]+)"')
 _H2 = re.compile(r"<h2[^>]*>(.*?)</h2>", re.DOTALL)
@@ -59,9 +59,9 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: read PER SCOPE that every cell in that column resolves from. Constant in the number of
 #: SETTINGS — the grid renders N scopes per row, so a per-cell read would be exactly the N+1
 #: these pins exist to catch — and it grows only with the number of scopes.
-_PAGE_QUERIES = 7
-_PANE_QUERIES = 4
-_READOUTS_QUERIES = 3
+_PAGE_QUERIES = 9
+_PANE_QUERIES = 6
+_READOUTS_QUERIES = 5
 
 
 def _section_slug(key: str) -> str:

@@ -1068,8 +1068,7 @@ created with no host value (the watchdog cannot reach the host's pass store).
 An existing env value always wins; the store is the fallback. So a box that still
 carries a literal in `teatree.env` keeps working, and a missing `pass` entry is a
 no-op (the `TEATREE_GH_TOKEN` preflight then fails loud; a missing admin password
-just yields a generated one, since loopback auto-login — not the password — is the
-admin boundary).
+just yields a generated one; `t3 admin` also issues a short-lived login link).
 
 The optional headless Codex harness uses this same credential plane, but its
 entry contains the complete base64-encoded `auth.json`, not a bare OAuth token.
@@ -1210,22 +1209,15 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   # then open http://localhost:8000/admin
   ```
 
-  There is **no admin login prompt**: the auto-login middleware authenticates the
-  first superuser on a `/admin/` request from loopback. The box binds the admin
-  to its real loopback, so the SSH-tunnelled request arrives as `127.0.0.1` and
-  clears the loopback check. The **SSH tunnel to the loopback, not an admin
-  password, is the security boundary**. A non-loopback request is never
-  auto-logged-in, so exposing the port off-loopback cannot open the admin.
-  `T3_ADMIN_USER` /
-  `T3_ADMIN_PASSWORD` still seed that superuser row deterministically (they matter
-  as a password only when auto-login does not apply). Because the boundary is
-  *loopback identity*, any same-host process — or a same-host reverse proxy — that
-  reaches `127.0.0.1:8000` is trusted as superuser, so keep the box's local access
-  as tight as its SSH access and never place a same-host reverse proxy in front of
-  the admin.
+  The admin and dashboard require a signed-in staff session even when the request
+  arrives from loopback. `t3 admin` and `t3 dashboard` issue a single-use login link valid for two minutes.
+  Password sign-in at `/login/` or `/admin/login/` remains available using the
+  superuser seeded by `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`. The SSH
+  tunnel keeps the service off the public network, while the login protects it
+  from other processes on the same host.
 
-- **`t3 dashboard` / `t3 admin` from an operator's own machine:** the same loopback
-  identity, reached without an SSH tunnel. `deploy/t3` runs the CLI in the stack, so
+- **`t3 dashboard` / `t3 admin` from an operator's own machine:** the same local
+  service, reached without an SSH tunnel. `deploy/t3` runs the CLI in the stack, so
   the command serves nothing (`teatree-admin` already does) — it starts a one-off
   `teatree-admin-forward-<port>` container publishing `127.0.0.1:<port>` on the HOST,
   bridges each connection through `docker exec` into the admin's own loopback, then
@@ -1242,10 +1234,9 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   Only the HOST side of the mapping is pinned to `127.0.0.1`, which is what keeps the
   dashboard local; the forwarder's own listener binds every interface because a
   published mapping delivers to a container's interface and never to its loopback.
-  Because the last hop is `docker exec`, gunicorn's peer stays `127.0.0.1` and the
-  auto-login above applies unchanged — a published port straight onto the admin would
-  NAT the source to the docker gateway and silently lose it. An url that does not
-  answer is refused with the cause instead of opening a browser at a dead page.
+  The last hop uses `docker exec` to reach gunicorn's loopback bind. The browser
+  opens the single-use login link recorded with owner-only file permissions. An url that does not answer is refused with the cause
+  instead of opening a browser at a dead page.
 
 - **`t3 <overlay> tool <leaf>` — the generic host hop:** the same shape as the two
   above, keyed on the command's SHAPE rather than a core verb, so an overlay owns a
@@ -1765,9 +1756,8 @@ sudo systemctl disable --now teatree-watchdog.timer && sudo rm -f /etc/systemd/s
 - **Headless orchestration is still maturing** — expect to babysit early runs via
   the admin dashboard and `docker compose logs` (and Slack once you wire it up).
 - **The admin runs under gunicorn** (a production WSGI server) bound to the box
-  loopback behind an SSH tunnel — never expose it publicly, and never place a
-  same-host reverse proxy in front of it: the auto-login trust model treats any
-  local `127.0.0.1` client (a proxy included) as superuser. Both long-running
+  loopback behind an SSH tunnel; every dashboard request needs a signed-in staff
+  session. Both long-running
   services (worker AND admin) run with `DEBUG` off to avoid `connection.queries`
   growth; `/admin/` mounts independent of `DEBUG`, so nothing here relies on it.
 - **The OAuth token shares your weekly Claude quota and does not auto-refresh** —

@@ -1,11 +1,13 @@
 """Tests for the top-level ``t3 admin`` command (run the Django admin)."""
 
 import os
+import stat
 import sys
 from pathlib import Path
 from shutil import rmtree
 from tempfile import mkdtemp
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import typer
 from django.contrib.auth import get_user_model
@@ -138,18 +140,26 @@ class AdminServerCommandTestCase(TestCase):
 
 
 class AdminBrowserTestCase(TestCase):
+    def test_browser_receives_a_single_use_login_link(self) -> None:
+        with patch("teatree.cli.admin._BROWSER_OPEN_DELAY_SECONDS", 0):
+            result, _run_server, browser_open = _invoke()
+
+        assert result.exit_code == 0
+        url = browser_open.call_args.args[0]
+        assert url.startswith("http://127.0.0.1:8000/login/local/")
+        assert self.client.get(urlsplit(url).path).headers["Location"] == "/admin/"
+
     def test_no_browser_flag_suppresses_open(self) -> None:
         result, _run_server, browser_open = _invoke("--no-browser")
         assert result.exit_code == 0
         browser_open.assert_not_called()
 
-    def test_browser_opens_admin_url_by_default(self) -> None:
-        # The browser is opened on a short timer so the server can bind first;
-        # join the timer so the assertion is deterministic.
-        with patch("teatree.cli.admin._BROWSER_OPEN_DELAY_SECONDS", 0):
-            result, _run_server, browser_open = _invoke()
+    def test_admin_service_does_not_print_a_login_link_to_logs(self) -> None:
+        with patch.dict("os.environ", {"TEATREE_ROLE": "admin"}):
+            result, _run_server, browser_open = _invoke("--no-browser")
         assert result.exit_code == 0
-        browser_open.assert_called_once_with("http://127.0.0.1:8000/admin/")
+        assert "login/local" not in result.output
+        browser_open.assert_not_called()
 
 
 class AdminHostForwardTestCase(TestCase):
@@ -159,7 +169,9 @@ class AdminHostForwardTestCase(TestCase):
         with patch("teatree.cli.admin._BROWSER_OPEN_DELAY_SECONDS", 0):
             result, _run_server, browser_open = _invoke(forward=ForwardResult(url="http://127.0.0.1:8803"))
         assert result.exit_code == 0
-        browser_open.assert_called_once_with("http://127.0.0.1:8803/admin/")
+        url = browser_open.call_args.args[0]
+        assert url.startswith("http://127.0.0.1:8803/login/local/")
+        assert self.client.get(urlsplit(url).path).headers["Location"] == "/admin/"
 
     def test_a_forward_that_could_not_be_established_is_reported(self) -> None:
         result, _run_server, _browser = _invoke("--no-browser", forward=ForwardResult(error="the stack is not up"))
@@ -175,11 +187,12 @@ class DashboardCommandTestCase(TestCase):
         with patch("teatree.cli.admin._BROWSER_OPEN_DELAY_SECONDS", 0):
             result, _run_server, browser_open = _invoke(target=_dashboard_app)
         assert result.exit_code == 0
-        browser_open.assert_called_once_with(f"http://127.0.0.1:8000{DASHBOARD_PATH}")
+        url = browser_open.call_args.args[0]
+        assert url.startswith("http://127.0.0.1:8000/login/local/")
+        assert self.client.get(urlsplit(url).path).headers["Location"] == DASHBOARD_PATH
 
     def test_dashboard_serves_on_loopback_like_the_admin(self) -> None:
-        # Same `_serve`, so the dashboard inherits the admin's loopback-only trust
-        # boundary rather than opening a second, wider one.
+        # Same `_serve`, so the dashboard inherits the admin's session boundary.
         result, run_server, _browser = _invoke("--no-browser", target=_dashboard_app)
         assert result.exit_code == 0
         run_server.assert_called_once_with("127.0.0.1", 8000)
@@ -206,8 +219,8 @@ class ContainerizedOperatorCliTestCase(TestCase):
     """`t3 dashboard` through deploy/t3 runs IN a container, where it must not serve.
 
     The stack's teatree-admin is already serving on the container's own loopback. A
-    second gunicorn there reaches no browser and collides with the first — and the url
-    the command printed, `http://127.0.0.1:8000/dash/board/`, is a CONTAINER address the
+    second gunicorn there reaches no browser and collides with the first — and a URL
+    printed with `http://127.0.0.1:8000/` is a CONTAINER address the
     host resolves to its own empty loopback. That is the ERR_CONNECTION_REFUSED.
     """
 
@@ -220,7 +233,7 @@ class ContainerizedOperatorCliTestCase(TestCase):
         result, *_ = _invoke_containerized(forward=self.reachable, data_dir=self.data_dir)
         assert result.exit_code == 0
         assert "127.0.0.1:8000" not in result.output
-        assert "http://127.0.0.1:8803/dash/board/" in result.output
+        assert "http://127.0.0.1:8803/login/local/" in result.output
 
     def test_it_does_not_start_a_second_gunicorn(self) -> None:
         _result, run_server, _browser, _forward, migrated = _invoke_containerized(
@@ -231,8 +244,11 @@ class ContainerizedOperatorCliTestCase(TestCase):
 
     def test_it_records_the_resolved_url_for_the_host_wrapper(self) -> None:
         _result, *_ = _invoke_containerized(forward=self.reachable, data_dir=self.data_dir)
-        recorded = (self.data_dir / BROWSE_URL_FILE).read_text(encoding="utf-8").strip()
-        assert recorded == "http://127.0.0.1:8803/dash/board/"
+        target = self.data_dir / BROWSE_URL_FILE
+        recorded = target.read_text(encoding="utf-8").strip()
+        assert recorded.startswith("http://127.0.0.1:8803/login/local/")
+        assert self.client.get(urlsplit(recorded).path).headers["Location"] == DASHBOARD_PATH
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
     def test_the_port_flag_selects_the_published_host_port(self) -> None:
         _result, _run, _browser, forward_call, _migrated = _invoke_containerized(

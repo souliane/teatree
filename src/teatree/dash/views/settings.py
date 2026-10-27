@@ -55,7 +55,6 @@ from teatree.dash.settings_editor import (
     scopes_of_column,
 )
 from teatree.dash.settings_readouts import ReadoutsView, build_readouts_view
-from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE, NavContext, actor, instance_label, nav_context
 
 if TYPE_CHECKING:
@@ -150,14 +149,12 @@ def _safety_refusal(request: "HttpRequest", key: str) -> str:
     return ""
 
 
-@require_loopback_or_staff
 @require_GET
 def settings(request: "HttpRequest") -> "HttpResponse":
     """The one settings page — the section nav, the selected section's grid, the readouts."""
     return render(request, "dash/settings.html", _page_context(request.GET.get("section", "").strip()))
 
 
-@require_loopback_or_staff
 @require_GET
 def settings_group(request: "HttpRequest", slug: str) -> "HttpResponse":
     """One section's rows — the right pane, and the whole cost of switching sections."""
@@ -168,7 +165,6 @@ def settings_group(request: "HttpRequest", slug: str) -> "HttpResponse":
     return render(request, "dash/partials/_settings_group.html", context)
 
 
-@require_loopback_or_staff
 @require_GET
 def settings_snapshot(request: "HttpRequest") -> "HttpResponse":
     """This instance's settings snapshot as JSON — the payload a peer fetches to diff against.
@@ -205,7 +201,6 @@ def _posted_documents(request: "HttpRequest") -> list[tuple[str, bytes]]:
     return documents
 
 
-@require_loopback_or_staff
 @require_http_methods(["GET", "POST"])
 def settings_compare(request: "HttpRequest") -> "HttpResponse":
     """This box beside every peer and every loaded record — what differs, and what an import could do.
@@ -235,7 +230,6 @@ def settings_compare(request: "HttpRequest") -> "HttpResponse":
     return render(request, "dash/settings_compare.html", context, status=status)
 
 
-@require_loopback_or_staff
 @require_GET
 def settings_readouts(request: "HttpRequest") -> "HttpResponse":
     """The resolved model / credential / self-repair readouts — the target of the htmx poll."""
@@ -246,7 +240,6 @@ def _unknown_setting(key: str) -> HttpResponseBadRequest:
     return HttpResponseBadRequest(f"unknown setting {key!r}; {config_key_hint(key)}")
 
 
-@require_loopback_or_staff
 @require_POST
 def settings_set(request: "HttpRequest", key: str) -> "HttpResponse":
     """POST one cell → the DB store, through the validating ``set_value`` seam.
@@ -312,7 +305,6 @@ def _cleared(request: "HttpRequest", key: str, scope: str) -> "HttpResponse":
     return _written(request, key)
 
 
-@require_loopback_or_staff
 @require_POST
 def settings_seed_set(request: "HttpRequest", table: str, name: str, field: str) -> "HttpResponse":
     """POST one seed cell — a loop's, preset's or schedule's own field — through the interchange.
@@ -333,7 +325,6 @@ def settings_seed_set(request: "HttpRequest", table: str, name: str, field: str)
     return HttpResponse(status=204)
 
 
-@require_loopback_or_staff
 @require_POST
 def settings_restore(request: "HttpRequest", key: str) -> "HttpResponse":
     """POST a restore-to-default — DELETE the DB row so the setting resolves its default again."""

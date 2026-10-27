@@ -17,14 +17,12 @@ from django.shortcuts import render
 from django.views.decorators.http import require_GET
 
 from teatree.dash.transcript import tail_transcript
-from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import nav_context
 
 if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
 
 
-@require_loopback_or_staff
 @require_GET
 def transcript(request: "HttpRequest", session_id: str) -> "HttpResponse":
     """Render the redacted tail of one agent session's transcript."""

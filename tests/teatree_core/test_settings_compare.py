@@ -297,7 +297,7 @@ class TestTheEndpoints(TestCase):
         assert self.client.post(reverse("dash:settings_snapshot"), **_LOOPBACK).status_code == 405
 
     def test_the_snapshot_route_is_refused_off_loopback(self) -> None:
-        response = self.client.get(reverse("dash:settings_snapshot"), REMOTE_ADDR="10.0.0.9")
+        response = self.client.get(reverse("dash:settings_snapshot"), REMOTE_ADDR="198.51.100.9")
         assert response.status_code == 403
 
     def test_the_compare_page_renders_with_no_peer_configured(self) -> None:
@@ -330,7 +330,7 @@ class TestTheEndpoints(TestCase):
         assert list(ConfigSetting.objects.values_list("scope", "key", "value")) == before
 
     def test_the_compare_page_is_refused_off_loopback(self) -> None:
-        assert self.client.get(reverse("dash:settings_compare"), REMOTE_ADDR="10.0.0.9").status_code == 403
+        assert self.client.get(reverse("dash:settings_compare"), REMOTE_ADDR="198.51.100.9").status_code == 403
 
     def test_the_settings_page_links_to_the_comparison(self) -> None:
         response = self.client.get(reverse("dash:settings"), **_LOOPBACK)

@@ -120,7 +120,12 @@ def _serve(*, host: str, port: int | None, no_browser: bool, path: str) -> None:
     superuser = _ensure_superuser()
     bound_port = port if port is not None else _DEFAULT_PORT
     forward = ensure_admin_forward()
-    browse_url = f"{forward.url}{path}" if forward.url else f"http://{host}:{bound_port}{path}"
+    base_url = forward.url or f"http://{host}:{bound_port}"
+    browse_url = (
+        f"{base_url}{path}"
+        if no_browser and os.environ.get("TEATREE_ROLE") == _ADMIN_ROLE
+        else _operator_login_url(base_url, superuser.username, path)
+    )
 
     typer.echo(f"teatree admin → {browse_url}")
     if forward.error:
@@ -153,9 +158,19 @@ def _publish_running_admin(*, port: int | None, path: str) -> None:
         _record_browse_url("")
         typer.echo(f"cannot reach the admin from the host: {forward.error}", err=True)
         raise typer.Exit(code=1)
-    browse_url = f"{forward.url}{path}"
+    superuser = _ensure_superuser()
+    browse_url = _operator_login_url(forward.url, superuser.username, path)
     _record_browse_url(browse_url)
     typer.echo(f"teatree admin → {browse_url}")
+
+
+def _operator_login_url(base_url: str, username: str, path: str) -> str:
+    from django.contrib.auth import get_user_model  # noqa: PLC0415 — Django is initialized by _serve.
+
+    from teatree.core.operator_login import create_local_login_link  # noqa: PLC0415 — Django is initialized by _serve.
+
+    user = get_user_model().objects.get(username=username)
+    return f"{base_url}{create_local_login_link(user, path)}"
 
 
 def _record_browse_url(url: str) -> None:
@@ -163,7 +178,10 @@ def _record_browse_url(url: str) -> None:
     target = data_dir_root() / BROWSE_URL_FILE
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(f"{url}\n", encoding="utf-8")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        with os.fdopen(os.open(target, flags, 0o600), "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(f"{url}\n")
     except OSError as exc:
         typer.echo(f"could not record the browse url at {target}: {exc}", err=True)
 

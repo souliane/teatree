@@ -1,16 +1,8 @@
-"""Defense-in-depth: dashboard control views refuse off-loopback anonymous callers (#3164).
-
-HARDENING #4: security rested only on the gunicorn loopback bind + the
-loopback-only auto-login middleware. A ``--host 0.0.0.0`` misconfig would expose
-loop-control mutations, the gate toggle, FSM transitions, and command output to
-an anonymous off-loopback caller. The view-level ``require_loopback_or_staff``
-gate closes that gap.
-"""
+"""Every dashboard route requires a staff session, including loopback requests."""
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import URLPattern, reverse
-from django.views.generic.base import RedirectView
 
 from teatree.dash import urls as dash_urls
 
@@ -20,12 +12,10 @@ _ARG_FOR_CONVERTER = {"IntConverter": 1, "StringConverter": "x", "PathConverter"
 
 
 def _gated_routes() -> list[str]:
-    """Every dashboard URL that serves a view — a bare redirect hands out no data, so it is exempt."""
+    """Every dashboard URL, including redirects."""
     routes = []
     for pattern in dash_urls.urlpatterns:
         assert isinstance(pattern, URLPattern)
-        if getattr(pattern.callback, "view_class", None) is RedirectView:
-            continue
         converters = pattern.pattern.converters
         kwargs = {name: _ARG_FOR_CONVERTER[type(converter).__name__] for name, converter in converters.items()}
         routes.append(reverse(f"dash:{pattern.name}", kwargs=kwargs))
@@ -39,7 +29,8 @@ class DashboardAccessGateTestCase(TestCase):
             {"mode": "afk"},
             REMOTE_ADDR=_NON_LOOPBACK,
         )
-        assert response.status_code == 403
+        assert response.status_code == 302
+        assert response.headers["Location"].startswith("/login/?next=")
 
     def test_off_loopback_anonymous_gate_toggle_is_refused(self) -> None:
         response = self.client.post(
@@ -47,14 +38,11 @@ class DashboardAccessGateTestCase(TestCase):
             {"enable": "0"},
             REMOTE_ADDR=_NON_LOOPBACK,
         )
-        assert response.status_code == 403
+        assert response.status_code == 302
 
-    def test_loopback_anonymous_request_passes_the_gate(self) -> None:
-        # 127.0.0.1 is the default test-client REMOTE_ADDR — the loopback bind the
-        # deploy relies on. The gate lets it through (an unknown preset then 400s,
-        # proving we reached the view, not the 403 gate).
+    def test_loopback_anonymous_request_requires_login(self) -> None:
         response = self.client.post(reverse("dash:mode-switch"), {"mode": "not-a-preset"})
-        assert response.status_code == 400
+        assert response.status_code == 302
 
     def test_off_loopback_staff_user_passes_the_gate(self) -> None:
         staff = get_user_model().objects.create_user("dashstaff", password="x", is_staff=True)
@@ -69,14 +57,13 @@ class DashboardAccessGateTestCase(TestCase):
 
 
 class EveryDashboardRouteIsGatedTestCase(TestCase):
-    """The gate is per-view, so a view that forgets it must redden here.
-
-    Asked with GET, so the gate must sit above the method decorator, as on every view today.
-    """
+    """The middleware must cover every URL, including bare redirects."""
 
     def test_an_off_loopback_anonymous_caller_is_refused_on_every_route(self) -> None:
         routes = _gated_routes()
         assert len(routes) > 30
         for route in routes:
             with self.subTest(route=route):
-                assert self.client.get(route, REMOTE_ADDR=_NON_LOOPBACK).status_code == 403
+                response = self.client.get(route, REMOTE_ADDR=_NON_LOOPBACK)
+                assert response.status_code == 302
+                assert response.headers["Location"].startswith("/login/?next=")

@@ -1128,7 +1128,8 @@ than two.
     httpx from its own loopback-bound `/dash/settings/snapshot.json`, reached through an
     `ssh -L` tunnel the operator already holds open. No instance publishes a port and no
     `ALLOWED_HOSTS` entry is added for this — the route sits behind the same
-    `require_loopback_or_staff` gate every other dash view carries. The snapshot PATH is
+    `OperatorLoginRequiredMiddleware` gate every other dash view carries. An anonymous
+    peer fetch reports that sign-in is required. The snapshot PATH is
     derived from the URLconf (`settings_peers.snapshot_url`), so the two ends cannot drift. A
     peer that does not answer is listed with its REASON rather than dropped: a comparison
     missing one box reads as agreement between the boxes that did answer.

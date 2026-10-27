@@ -48,6 +48,7 @@ MIDDLEWARE = [
     # Carried over from the project settings so the dashboard query-count pins
     # measure the plan production actually runs, memo included.
     "teatree.core.middleware.RequestScopedReadCacheMiddleware",
+    "teatree.core.middleware.OperatorLoginRequiredMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
 

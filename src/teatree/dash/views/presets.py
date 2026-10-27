@@ -15,7 +15,6 @@ from django.views.decorators.http import require_GET, require_POST
 
 from teatree.dash import audit
 from teatree.dash.preset_editor import build_preset_editor
-from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, error_page, is_htmx, nav_context
 from teatree.loops.preset_admin import create_preset, delete_preset, rename_preset, update_preset_meta
 from teatree.loops.preset_editing import PresetEditError, activate_preset, clear_preset_override, set_preset_entry
@@ -30,7 +29,6 @@ if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
 
 
-@require_loopback_or_staff
 @require_GET
 def presets(request: "HttpRequest") -> "HttpResponse":
     """The editor page — a tab per preset, plus the schedule slot editor."""
@@ -51,7 +49,6 @@ def _answer(request: "HttpRequest", preset: str = "", *, error: str = "") -> "Ht
     return render(request, "dash/partials/_presets_body.html", context, status=400 if error else 200)
 
 
-@require_loopback_or_staff
 @require_POST
 def preset_entry(request: "HttpRequest") -> "HttpResponse":
     """POST one loop's tri-state opinion within a preset (``on`` / ``off`` / ``inherit``)."""
@@ -66,7 +63,6 @@ def preset_entry(request: "HttpRequest") -> "HttpResponse":
     return _answer(request, preset)
 
 
-@require_loopback_or_staff
 @require_POST
 def preset_use(request: "HttpRequest") -> "HttpResponse":
     """POST the active preset override — activate one by name, or ``auto`` to clear it."""
@@ -82,7 +78,6 @@ def preset_use(request: "HttpRequest") -> "HttpResponse":
     return _answer(request, "" if name == "auto" else name)
 
 
-@require_loopback_or_staff
 @require_POST
 def preset_create(request: "HttpRequest") -> "HttpResponse":
     """POST a new, opinion-free preset."""
@@ -95,7 +90,6 @@ def preset_create(request: "HttpRequest") -> "HttpResponse":
     return _answer(request, name)
 
 
-@require_loopback_or_staff
 @require_POST
 def preset_meta(request: "HttpRequest") -> "HttpResponse":
     """POST a preset's description."""
@@ -108,7 +102,6 @@ def preset_meta(request: "HttpRequest") -> "HttpResponse":
     return _answer(request, name)
 
 
-@require_loopback_or_staff
 @require_POST
 def preset_rename(request: "HttpRequest") -> "HttpResponse":
     """POST a preset rename — the seam re-points every by-name referrer atomically."""
@@ -122,7 +115,6 @@ def preset_rename(request: "HttpRequest") -> "HttpResponse":
     return _answer(request, new_name)
 
 
-@require_loopback_or_staff
 @require_POST
 def preset_delete(request: "HttpRequest") -> "HttpResponse":
     """POST a preset deletion — refused while anything still resolves it by name."""
@@ -135,7 +127,6 @@ def preset_delete(request: "HttpRequest") -> "HttpResponse":
     return _answer(request)
 
 
-@require_loopback_or_staff
 @require_POST
 def schedule_activate(request: "HttpRequest") -> "HttpResponse":
     """POST the active schedule — switch calendars, or ``none`` to leave no L2 layer."""
@@ -151,7 +142,6 @@ def schedule_activate(request: "HttpRequest") -> "HttpResponse":
     return _answer(request)
 
 
-@require_loopback_or_staff
 @require_POST
 def schedule_slot(request: "HttpRequest") -> "HttpResponse":
     """POST a schedule slot — create when ``slot_id`` is absent, else update in place."""
@@ -171,7 +161,6 @@ def schedule_slot(request: "HttpRequest") -> "HttpResponse":
     return _answer(request)
 
 
-@require_loopback_or_staff
 @require_POST
 def schedule_slot_delete(request: "HttpRequest") -> "HttpResponse":
     """POST the removal of one schedule slot."""

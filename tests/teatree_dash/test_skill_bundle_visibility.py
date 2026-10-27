@@ -13,7 +13,6 @@ says so, wherever it is listed. An interactive attempt is exempt by construction
 runs inside the operator's own session and never resolves a bundle to record.
 """
 
-from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models.task_attempt import TaskAttempt
@@ -21,6 +20,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.dash.sessions import build_session_index
 from teatree.dash.skills import skill_bundle
 from tests.factories import TaskFactory, TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 
 State = Ticket.State
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}

@@ -1,81 +1,47 @@
-"""Tests for the loopback admin auto-login middleware."""
-
-from unittest.mock import patch
+"""Tests for dashboard authentication and request read caching."""
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
+from django.http import HttpResponse
 from django.test import RequestFactory, TestCase
 
 from teatree import request_cache
-from teatree.core.middleware import LocalAdminAutoLoginMiddleware, RequestScopedReadCacheMiddleware
+from teatree.core.middleware import OperatorLoginRequiredMiddleware, RequestScopedReadCacheMiddleware
 from teatree.core.models import ConfigSetting
 
 _LOOPBACK = "127.0.0.1"
 _NON_LOOPBACK = "10.0.0.7"
 
 
-class LocalAdminAutoLoginTestCase(TestCase):
-    def _run(self, path: str = "/admin/", *, remote_addr: str = _LOOPBACK, user=None, **extra: str):
-        request = RequestFactory().get(path, REMOTE_ADDR=remote_addr, **extra)
+class OperatorLoginRequiredTestCase(TestCase):
+    def _run(self, path: str, *, user=None, remote_addr: str = _LOOPBACK):
+        request = RequestFactory().get(path, REMOTE_ADDR=remote_addr)
         request.user = user if user is not None else AnonymousUser()
-        middleware = LocalAdminAutoLoginMiddleware(lambda _req: "ok")
-        with patch("teatree.core.middleware.login") as login_mock:
-            result = middleware(request)
-        assert result == "ok"
-        return login_mock
+        return OperatorLoginRequiredMiddleware(lambda _request: HttpResponse("ok"))(request)
 
-    def test_logs_in_superuser_on_loopback_admin(self) -> None:
-        superuser = get_user_model().objects.create_superuser("admin", email="", password="x")
-        login_mock = self._run()
-        login_mock.assert_called_once()
-        assert login_mock.call_args.args[1] == superuser
-
-    def test_logs_in_for_ipv6_loopback(self) -> None:
+    def test_superuser_in_database_does_not_authenticate_loopback_request(self) -> None:
         get_user_model().objects.create_superuser("admin", email="", password="x")
-        self._run(remote_addr="::1").assert_called_once()
+        response = self._run("/dash/board/")
+        assert response.status_code == 302
+        assert response.headers["Location"].startswith("/login/?next=")
 
-    def test_logs_in_superuser_on_loopback_dash_prefix(self) -> None:
-        # #3162: the dashboard at /dash/ rides the same loopback auto-login as
-        # /admin/. Fails RED if the prefix gate narrows back to admin-only.
-        superuser = get_user_model().objects.create_superuser("admin", email="", password="x")
-        login_mock = self._run("/dash/board")
-        login_mock.assert_called_once()
-        assert login_mock.call_args.args[1] == superuser
+    def test_anonymous_remote_and_forwarded_request_is_denied(self) -> None:
+        response = self._run("/admin/", remote_addr=_NON_LOOPBACK)
+        assert response.status_code == 302
 
-    def test_dash_not_logged_in_for_non_loopback(self) -> None:
-        # SECURITY: the loopback boundary covers /dash/ exactly as it covers
-        # /admin/ — a non-loopback dashboard request is never auto-logged-in.
-        get_user_model().objects.create_superuser("admin", email="", password="x")
-        self._run("/dash/board", remote_addr=_NON_LOOPBACK).assert_not_called()
+    def test_staff_session_is_allowed(self) -> None:
+        staff = get_user_model().objects.create_user("staff", is_staff=True)
+        assert self._run("/dash/board/", user=staff, remote_addr=_NON_LOOPBACK).status_code == 200
 
-    def test_not_logged_in_for_non_loopback(self) -> None:
-        # SECURITY: a non-loopback client must
-        # NEVER be auto-logged-in — the loopback check is the hard boundary that
-        # keeps an off-loopback admin port from silently opening the dashboard.
-        get_user_model().objects.create_superuser("admin", email="", password="x")
-        login_mock = self._run(remote_addr=_NON_LOOPBACK)
-        login_mock.assert_not_called()
+    def test_non_staff_session_is_denied(self) -> None:
+        user = get_user_model().objects.create_user("viewer")
+        assert self._run("/dash/board/", user=user).status_code == 302
 
-    def test_forwarded_header_cannot_spoof_loopback(self) -> None:
-        # SECURITY: the check reads REMOTE_ADDR, never a forwarded header. A
-        # non-loopback client sending `X-Forwarded-For: 127.0.0.1` must NOT be
-        # auto-logged-in — locks the property against a future regression that
-        # starts trusting forwarded headers.
-        get_user_model().objects.create_superuser("admin", email="", password="x")
-        login_mock = self._run(remote_addr=_NON_LOOPBACK, HTTP_X_FORWARDED_FOR=_LOOPBACK)
-        login_mock.assert_not_called()
-
-    def test_ignores_non_admin_paths(self) -> None:
-        get_user_model().objects.create_superuser("admin", email="", password="x")
-        self._run("/").assert_not_called()
-
-    def test_skips_when_already_authenticated(self) -> None:
-        superuser = get_user_model().objects.create_superuser("admin", email="", password="x")
-        self._run(user=superuser).assert_not_called()
-
-    def test_noop_when_no_superuser_exists(self) -> None:
-        self._run().assert_not_called()
+    def test_public_login_webhooks_and_static_remain_reachable(self) -> None:
+        for path in ("/login/", "/admin/login/", "/hooks/gitlab/", "/hooks/github/", "/favicon.ico", "/static/x.css"):
+            with self.subTest(path=path):
+                assert self._run(path).status_code == 200
 
 
 class RequestScopedReadCacheTestCase(TestCase):

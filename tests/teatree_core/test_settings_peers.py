@@ -97,6 +97,17 @@ class TestTheRowShowsTheAddressTheOperatorsForwardBinds:
         get.assert_called_once()
         post.assert_not_called()
 
+    def test_a_login_redirect_reports_that_the_peer_requires_sign_in(self) -> None:
+        response = httpx.Response(
+            200,
+            request=httpx.Request("GET", "http://127.0.0.1:9401/login/?next=/dash/settings/snapshot.json"),
+            text="<html>Sign in</html>",
+        )
+        with patch.object(settings_peers.httpx, "get", return_value=response):
+            row = settings_peers._fetch("box-b", "http://127.0.0.1:9401/", "", 1.0)
+
+        assert row.error == "peer requires sign-in"
+
 
 class TestTheTunnelAdviceOnlyAppearsWhereTheForwardIsInDoubt:
     """A peer that ANSWERED was reached over a working forward, whatever it answered.

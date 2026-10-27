@@ -11,7 +11,6 @@ from teatree.core.models.ticket import Ticket
 from teatree.dash.cycle_time import build_merge_summary
 from teatree.dash.pr_board import build_pr_board
 from teatree.dash.selectors import BoardFilters, KanbanBoard, KanbanColumn, build_kanban_columns
-from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import nav_context
 
 if TYPE_CHECKING:
@@ -88,7 +87,6 @@ def _board_context(request: "HttpRequest") -> BoardContext:
     return {"board": replace(board, groups=groups, hidden=hidden), "filters": filters, "page_params": paged}
 
 
-@require_loopback_or_staff
 @require_GET
 def board(request: "HttpRequest") -> "HttpResponse":
     """Full board page — the open pull requests grouped by who acts next."""
@@ -99,14 +97,12 @@ def board(request: "HttpRequest") -> "HttpResponse":
     )
 
 
-@require_loopback_or_staff
 @require_GET
 def board_prs_partial(request: "HttpRequest") -> "HttpResponse":
     """Just the PR groups — the target of the PR board's htmx poll (no page chrome)."""
     return render(request, "dash/partials/_pr_columns.html", {"pr_board": build_pr_board()})
 
 
-@require_loopback_or_staff
 @require_GET
 def board_lifecycle(request: "HttpRequest") -> "HttpResponse":
     """Full lifecycle page — the kanban of tickets grouped by ``Ticket.state``."""
@@ -117,7 +113,6 @@ def board_lifecycle(request: "HttpRequest") -> "HttpResponse":
     )
 
 
-@require_loopback_or_staff
 @require_GET
 def board_columns_partial(request: "HttpRequest") -> "HttpResponse":
     """Just the columns fragment — the target of the htmx poll (no page chrome)."""

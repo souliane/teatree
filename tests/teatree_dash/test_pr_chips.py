@@ -8,13 +8,13 @@ in it. The row already carries a human label for its state; the chip should use 
 and should carry the state as a class so the three read apart at a glance.
 """
 
-from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models import MergeVoid, PullRequest, Ticket
 from teatree.dash.selectors import build_kanban_columns, pr_chip
 from teatree.dash.ticket_detail import build_ticket_detail
 from tests.factories import PullRequestFactory, TicketFactory
+from tests.teatree_dash.staff_testcase import StaffDashboardTestCase as TestCase
 from tests.void_merge_fixtures import SLUG, landed_ticket, void_pr
 
 State = Ticket.State

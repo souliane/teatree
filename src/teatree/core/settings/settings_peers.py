@@ -195,6 +195,8 @@ def _fetch(label: str, base: str, note: str, timeout: float, tunnel_command: str
         target = fetch_target(url)
         response = httpx.get(target.url, timeout=timeout, follow_redirects=True, headers=target.headers)
         response.raise_for_status()
+        if response.url.path in {"/login/", "/admin/login/"}:
+            return PeerSnapshot(label=label, url=url, note=note, error="peer requires sign-in")
         payload = response.json()
     except Exception as exc:
         logger.info("peer %r could not be fetched from %s", label, url, exc_info=True)
