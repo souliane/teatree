@@ -13,9 +13,8 @@ import json
 import logging
 from collections.abc import Callable
 
-from teatree.agents.coding_prompt import _TEST_SELECTION_LINES, _coding_phase_directive
+from teatree.agents.coding_prompt import _TEST_SELECTION_LINES, _coding_phase_directive, _testing_phase_lines
 from teatree.agents.dispatch_preflight import (
-    branch_currency_brief_lines,
     declared_seams_brief_lines,
     head_state_brief_lines,
     review_diff_brief_lines,
@@ -408,11 +407,7 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
         ),
         ("For multi-repo tickets, review the combined diff and list all repos in `integration_review.repos`."),
         *(() if read_only_venue else _TEST_SELECTION_LINES),
-        *(
-            ()
-            if read_only_venue
-            else ("For a revert-to-RED or mutation probe, run only the pinned test node ids with -n0.",)
-        ),
+        *(() if read_only_venue else ("For a mutation probe, run only the pinned test node ids with -n0.",)),
         (
             "Use the supplied check-runs at the reviewed head for whole-tree evidence."
             if read_only_venue
@@ -492,24 +487,6 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
             except Exception:
                 logger.exception("Answering work-item overlay hook failed for ticket %s", task.ticket_id)
     return tuple(lines)
-
-
-def _testing_phase_lines(task: Task) -> tuple[str, ...]:
-    """The ``PHASE: testing`` block — branch currency and local test selection.
-
-    ``t3 tool verify-gates`` judges the worktree against ITSELF, so a branch can
-    pass every local gate and still not merge. The verdict is read at prompt-build
-    time (the same read-git-at-build-time pattern as :func:`head_state_brief_lines`)
-    so the tester starts from a fetched answer rather than a clean-looking tree.
-    """
-    return (
-        "",
-        "PHASE: testing — branch-currency preflight",
-        *branch_currency_brief_lines(task),
-        "",
-        "PHASE: testing — test selection",
-        *_TEST_SELECTION_LINES,
-    )
 
 
 def _shipping_phase_lines() -> tuple[str, ...]:

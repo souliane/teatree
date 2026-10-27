@@ -10,7 +10,9 @@ the two builder entry points. One-directional dependency: ``prompt`` imports
 from here; nothing here imports ``prompt``.
 """
 
+from teatree.agents.dispatch_preflight import branch_currency_brief_lines
 from teatree.agents.skill_injection import _ALWAYS_FULL_SKILLS, _explicit_load_name
+from teatree.core.models import Task
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _VERIFY_GATES_COMMAND = "t3 tool verify-gates"
@@ -26,6 +28,18 @@ _TEST_SELECTION_LINES: tuple[str, ...] = (
     "If FULL, run changed test files or pinned node ids locally and let CI run the whole tree.",
     "Never run a multi-thousand-test directory for one fix or mutation; CI owns whole-tree proof.",
 )
+
+
+def _testing_phase_lines(task: Task) -> tuple[str, ...]:
+    return (
+        "",
+        "PHASE: testing — branch-currency preflight",
+        *branch_currency_brief_lines(task),
+        "",
+        "PHASE: testing — test selection",
+        *_TEST_SELECTION_LINES,
+    )
+
 
 # Auto-injected into a long-running maker brief (PR-12): user-visible liveness
 # so a watchdog can tell "stuck" from "still working". The transport half is
