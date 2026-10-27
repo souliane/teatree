@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SessionCommand, ThreadBinding
 from teatree.core.models.thread_binding import slack_command_id
-from teatree.core.ticket_dm_delivery import record_ticket_thread_post
+from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, memoized_reader, read_inbound
 from teatree.loop.question_binding import (
@@ -84,12 +84,7 @@ from teatree.loop.slack_answer.simple_answer import (
     status_binding_reader,
     ticket_status_answer,
 )
-from teatree.loop.slack_answer.thread_readback import (
-    ExpectedReply,
-    bot_reply_match_in_thread,
-    bot_reply_present_in_thread,
-    resolve_thread_root,
-)
+from teatree.loop.slack_answer.thread_readback import bot_reply_match_in_thread, resolve_thread_root
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 
 logger = logging.getLogger(__name__)
@@ -125,33 +120,6 @@ def _default_resolver(overlay: str) -> MessagingBackend | None:
     from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: loaded at tick time
 
     return messaging_from_overlay(overlay or None)
-
-
-def verify_reply_visible(
-    backend: MessagingBackend,
-    *,
-    channel: str,
-    thread_root: str,
-    after_ts: str | None = None,
-    expected_ts: str | ExpectedReply | None = None,
-) -> bool:
-    """Confirm the just-posted reply is visible under its thread ROOT (#2061).
-
-    Reads the thread root's replies and confirms a bot reply is present. The
-    key is the thread ROOT, not the user-message ts: a reply posted with
-    ``thread_ts=<a non-root user-message ts>`` re-parents to the root, so a
-    read-back keyed on the user-message ts misses it and would wrongly stamp
-    a delivered reply as absent (or, on the dedup side, post a duplicate). An
-    absent reply — including the conservative outcome of an empty/raised read
-    — releases the provisional claim; no confirmed receipt is stamped.
-    """
-    return bot_reply_present_in_thread(
-        backend,
-        channel=channel,
-        thread_root=thread_root,
-        after_ts=after_ts,
-        expected_ts=expected_ts,
-    )
 
 
 def _react_eyes_once(backend: MessagingBackend, unit: _Unit) -> bool:
@@ -550,4 +518,4 @@ def run_slack_answer_cycle(
     return report
 
 
-__all__ = ["SlackAnswerReport", "run_slack_answer_cycle", "verify_reply_visible"]
+__all__ = ["SlackAnswerReport", "run_slack_answer_cycle"]

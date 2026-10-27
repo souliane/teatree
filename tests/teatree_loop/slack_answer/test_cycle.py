@@ -123,6 +123,22 @@ class RecordingBackend:
 
 
 class TestTicketThreadStatus:
+    @pytest.mark.parametrize("text", ["Can you explain the approach?", "What is the plan?"])
+    def test_bound_non_status_question_reaches_live_routing(self, text: str) -> None:
+        ticket = Ticket.objects.create(short_description="Explain the work")
+        ThreadBinding.bind(ticket=ticket, channel="C1", thread_ts="100.0")
+        row = PendingChatInjection.record(
+            channel="C1", slack_ts="101.0", text=text, context=DmContext(user_id=_USER_UID, thread_ts="100.0")
+        )
+        assert row is not None
+        backend = RecordingBackend()
+
+        with patch("teatree.loop.slack_answer.cycle._live_receipt", return_value=True) as live_receipt:
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        live_receipt.assert_called_once()
+        assert backend.replies == []
+
     def test_bound_status_uses_ticket_rows_without_statusline_or_model(self) -> None:
         ticket = Ticket.objects.create(overlay="", short_description="Fix retry")
         ThreadBinding.bind(ticket=ticket, channel="C1", thread_ts="100.0")

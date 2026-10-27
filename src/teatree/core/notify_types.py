@@ -104,6 +104,7 @@ class NotifyOptions:
     answering_slack_ts: str = ""
     blocks: list[RawAPIDict] | None = None
     thread_ts: str = ""
+    fallback_thread_ts: str = ""
     ticket_id: int | None = None
     question_id: int | None = None
     #: The caller asked for a DM, so the push/pull registry does not withhold it. For

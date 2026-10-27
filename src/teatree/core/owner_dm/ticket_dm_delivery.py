@@ -23,6 +23,7 @@ class TicketDmRequest:
     deliver: Callable[..., tuple[str, str, str]]
     post_root: Callable[[MessagingBackend, str, str], RawAPIDict]
     question_id: int | None = None
+    fallback_thread_ts: str = ""
 
 
 def _header(ticket: Ticket) -> str:
@@ -48,9 +49,9 @@ def _root_is_deleted(backend: MessagingBackend, channel: str, root_ts: str) -> b
 
 
 def _retire(thread: TicketDmThread) -> None:
-    thread.root_ts = ""
-    thread.generation += 1
-    thread.save(update_fields=["root_ts", "generation"])
+    TicketDmThread.objects.filter(pk=thread.pk, root_ts=thread.root_ts).update(
+        root_ts="", generation=F("generation") + 1
+    )
 
 
 def _open_header(request: TicketDmRequest, ticket: Ticket, thread: TicketDmThread, channel: str) -> None:
@@ -70,13 +71,12 @@ def _verify_header(request: TicketDmRequest, ticket: Ticket, thread: TicketDmThr
     except MessagingReadRefusedError as exc:
         if exc.error_code in _DELETED_ROOT_CODES:
             _retire(thread)
-        return f"ticket header unreadable: {exc}"
-    except (OSError, RuntimeError, ValueError) as exc:
-        return f"ticket header unreadable: {exc}"
+            return f"ticket header deleted: {exc}"
+        messages = []
+    except (OSError, RuntimeError, ValueError):
+        messages = []
     root = next((message for message in messages if str(message.get("ts", "")) == thread.root_ts), None)
-    if root is None:
-        return "ticket header unverified"
-    if root.get("subtype") == "tombstone":
+    if root is not None and root.get("subtype") == "tombstone":
         _retire(thread)
         return "ticket header deleted"
     ThreadBinding.bind(ticket=ticket, channel=channel, thread_ts=thread.root_ts)
@@ -99,8 +99,8 @@ def _ensure_root(request: TicketDmRequest, ticket: Ticket, channel: str) -> str:
             raise RuntimeError(msg)
         if not thread.root_ts:
             _open_header(request, ticket, thread, channel)
-        failure = _verify_header(request, ticket, thread, channel)
         root_ts = thread.root_ts
+    failure = _verify_header(request, ticket, thread, channel)
     if failure:
         raise RuntimeError(failure)
     return root_ts
@@ -110,11 +110,19 @@ def deliver_ticket_dm(request: TicketDmRequest) -> tuple[str, str, str]:
     ticket = Ticket.objects.filter(pk=request.ticket_id).first()
     if ticket is None or (ticket.issue_url and not is_forge_url(ticket.issue_url)):
         return request.deliver(
-            request.backend, user_id=request.user_id, text=request.text, blocks=request.blocks, thread_ts=""
+            request.backend,
+            user_id=request.user_id,
+            text=request.text,
+            blocks=request.blocks,
+            thread_ts=request.fallback_thread_ts,
         )
     if not ticket.issue_url and not (ticket.extra.get("issue_title") or ticket.short_description):
         return request.deliver(
-            request.backend, user_id=request.user_id, text=request.text, blocks=request.blocks, thread_ts=""
+            request.backend,
+            user_id=request.user_id,
+            text=request.text,
+            blocks=request.blocks,
+            thread_ts=request.fallback_thread_ts,
         )
     root_ready = False
 

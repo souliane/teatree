@@ -313,7 +313,7 @@ def _threading_slack() -> tuple[MagicMock, dict[str, str]]:
 
 
 def _owner_is_mid_conversation(thread_root: str = "900.0") -> None:
-    """Record the inbound event that makes ``_active_dm_thread`` report an open DM thread."""
+    """Record the inbound event that identifies the open DM thread."""
     IncomingEvent.objects.create(
         source=IncomingEvent.Source.SLACK,
         channel_ref=_CHANNEL,

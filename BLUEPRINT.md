@@ -643,7 +643,7 @@ Every facet hook defaults to empty / permissive so existing overlays keep workin
 
 ## 7. Backend Protocols and ABCs
 
-Ticket DM delivery uses `MessagingBackend.fetch_thread_replies` to verify each header before posting a body. The Slack implementation raises the core `MessagingReadRefusedError` with its refusal code: only `thread_not_found`, `message_not_found`, or a root tombstone proves deletion and permits a new generation; rate limits and unreadable replies preserve the current root. An unnamed notification posts at the DM root unless its invoking run resolves a ticket; a named thread keeps explicit precedence.
+Ticket DM delivery reads each header outside the SQLite write transaction; an unreadable reply never blocks the note. The Slack implementation raises the core `MessagingReadRefusedError` with its refusal code: only `thread_not_found`, `message_not_found`, or a root tombstone proves deletion and permits a new generation; rate limits and unreadable replies preserve the current root. An unnamed notification posts at the DM root unless its invoking run resolves a ticket through `T3_TICKET_ID`; a named thread keeps explicit precedence.
 
 Every external API concern is a `@runtime_checkable Protocol` in `teatree.core.backend_protocols` (the domain owns the abstractions it consumes; `backends` implements them). PR is the canonical term in core; GitLab MRs are translated at the API edge.
 

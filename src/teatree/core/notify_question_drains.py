@@ -59,6 +59,7 @@ from teatree.core.modelkit.reask_cadence import (
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding, TicketDmPost
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyOutcome, NotifyReason
+from teatree.core.owner_dm.question_ticket import single_question_ticket_id
 from teatree.core.owner_question_message import (
     bump_text,
     digest_text,
@@ -69,7 +70,6 @@ from teatree.core.owner_question_message import (
     withheld_message,
 )
 from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
-from teatree.core.question_ticket import single_question_ticket_id
 from teatree.loop.preset_resolution import owner_zone
 
 # How many deferred questions one tick may mirror. The backlog accumulates silently
@@ -329,6 +329,7 @@ def _post(
             backend=backend,
             user_id=user_id or None,
             thread_ts="" if ticket_id is not None else row.slack_ts,
+            fallback_thread_ts=row.slack_ts,
             ticket_id=ticket_id,
             question_id=row.pk if ticket_id is not None else None,
             linkify=False,

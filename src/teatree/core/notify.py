@@ -57,8 +57,8 @@ from teatree.core.notify_types import (
     NotifyReason,
     blocked,
 )
+from teatree.core.owner_dm.ticket_dm_delivery import TicketDmRequest, deliver_ticket_dm, record_ticket_thread_post
 from teatree.core.send_proxy import SendChannel, SendRequest, route_send
-from teatree.core.ticket_dm_delivery import TicketDmRequest, deliver_ticket_dm, record_ticket_thread_post
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 from teatree.types import RawAPIDict
 
@@ -194,6 +194,7 @@ def notify_user_outcome(
                 deliver=_deliver_dm,
                 post_root=_post_ticket_root,
                 question_id=options.question_id,
+                fallback_thread_ts=options.fallback_thread_ts,
             )
         )
     else:

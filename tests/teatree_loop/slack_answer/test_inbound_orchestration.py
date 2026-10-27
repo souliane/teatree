@@ -369,12 +369,9 @@ class TestNothingIsMarkedCompleteThatWasNot:
             "teatree.loop.slack_answer.cycle.build_simple_answer",
             lambda _row: "3 open MRs, none blocked.",
         )
-        monkeypatch.setattr(
-            "teatree.loop.slack_answer.cycle.verify_reply_visible",
-            lambda *_args, **_kwargs: False,
-        )
         row = _row("what are you working on?", ts="1.0")
         backend = RecordingBackend()
+        monkeypatch.setattr(backend, "fetch_thread_replies", lambda **_kwargs: [])
 
         run_slack_answer_cycle(
             messaging_resolver=_resolver(backend),

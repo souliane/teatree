@@ -25,6 +25,7 @@ NEEDS_WORK delegation path.
 """
 
 import os
+import re
 from typing import TYPE_CHECKING
 
 from teatree.agents.one_shot import OneShotSpec, run_one_shot
@@ -88,7 +89,7 @@ def _stage_a(text: str) -> str | None:
     return ``None`` so the cycle falls through to Stage B or delegation.
     """
     lowered = strip_urls(text.lower())
-    if not any(tok in lowered for tok in _DASHBOARD_TOKENS):
+    if not _mentions_dashboard(lowered):
         return None
     rendered = statusline_for_slack().strip()
     if not rendered:
@@ -99,9 +100,12 @@ def _stage_a(text: str) -> str | None:
 def is_status_question(text: str) -> bool:
     lowered = strip_urls(text.lower()).strip()
     return bool(
-        any(token in lowered for token in _DASHBOARD_TOKENS)
-        and ("?" in lowered or lowered.startswith(("status", "progress", "update")))
+        _mentions_dashboard(lowered) and ("?" in lowered or lowered.startswith(("status", "progress", "update")))
     )
+
+
+def _mentions_dashboard(text: str) -> bool:
+    return any(re.search(rf"(?<!\w){re.escape(token)}(?!\w)", text) for token in _DASHBOARD_TOKENS)
 
 
 def status_binding_reader(read: InboundReader, *, status_request: bool) -> InboundReader:

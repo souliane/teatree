@@ -1,7 +1,7 @@
 from django.test import TestCase
 
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket
-from teatree.core.question_ticket import single_question_ticket_id
+from teatree.core.owner_dm.question_ticket import single_question_ticket_id
 from tests._owner_channel import OWNER_DECISION
 
 

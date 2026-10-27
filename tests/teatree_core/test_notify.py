@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from django.db import OperationalError
+from django.db import OperationalError, connection
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
@@ -196,7 +196,7 @@ class TestNotifyUser(TestCase):
         assert send("third")
         assert len([thread_ts for _, thread_ts in posts if not thread_ts]) == 2
 
-    def test_refused_root_read_preserves_generation_and_blocks_body(self) -> None:
+    def test_refused_root_read_preserves_generation_and_delivers_body(self) -> None:
         ticket = Ticket.objects.create(short_description="Read refusal")
         backend = _backend()
         posts: list[tuple[str, str]] = []
@@ -217,13 +217,14 @@ class TestNotifyUser(TestCase):
             options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
         )
 
-        assert not outcome.sent
-        assert len(posts) == 1
+        assert outcome.sent
+        assert len(posts) == 2
         assert posts[0][1] == ""
+        assert posts[1][1] == "1700000000.000001"
         thread = TicketDmThread.objects.get(ticket=ticket)
         assert (thread.root_ts, thread.generation) == ("1700000000.000001", 0)
 
-    def test_failed_root_read_retries_without_a_second_header(self) -> None:
+    def test_failed_root_read_delivers_without_a_second_header(self) -> None:
         ticket = Ticket.objects.create(short_description="Read failure")
         backend = _backend()
         posts: list[tuple[str, str]] = []
@@ -244,10 +245,31 @@ class TestNotifyUser(TestCase):
                 options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
             ).sent
 
-        assert not send()
+        assert send()
         assert TicketDmThread.objects.get(ticket=ticket).root_ts == "1700000000.000001"
         assert send()
         assert len([thread_ts for _, thread_ts in posts if not thread_ts]) == 1
+        assert len(posts) == 2
+
+    def test_header_read_releases_the_write_transaction(self) -> None:
+        ticket = Ticket.objects.create(short_description="Read outside lock")
+        backend = _backend()
+        atomic_depth = len(connection.atomic_blocks)
+
+        def fetch(*, channel: str, thread_ts: str) -> list[RawAPIDict]:
+            assert len(connection.atomic_blocks) == atomic_depth
+            return [{"ts": thread_ts}]
+
+        backend.fetch_thread_replies.side_effect = fetch
+        outcome = notify_user_outcome(
+            "body",
+            kind=NotifyKind.INFO,
+            idempotency_key="read-outside-lock",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert outcome.sent
 
     def test_schedule_anchor_and_explicit_thread_keep_existing_routing(self) -> None:
         ticket = Ticket.objects.create(issue_url="schedule:daily", short_description="Daily")

@@ -16,7 +16,7 @@ from teatree.agents.live_client import (
 from teatree.core.models import PendingChatInjection, SessionCommand, Task, ThreadBinding
 from teatree.core.models.task_handoff import is_operator_paused, release_operator_pause
 from teatree.core.models.thread_binding import slack_command_id
-from teatree.core.ticket_dm_delivery import record_ticket_thread_post
+from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading
 from teatree.loop.question_binding import (

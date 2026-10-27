@@ -21,8 +21,8 @@ from teatree.loop.slack_answer.cycle import (
     _react_eyes_once,
     _Unit,
     run_slack_answer_cycle,
-    verify_reply_visible,
 )
+from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread
 from teatree.types import RawAPIDict
 
 
@@ -125,12 +125,12 @@ class TestVerifyReplyVisible:
                 msg = "network down"
                 raise RuntimeError(msg)
 
-        assert verify_reply_visible(Boom(), channel="C", thread_root="root.ts") is False
+        assert bot_reply_present_in_thread(Boom(), channel="C", thread_root="root.ts") is False
 
     def test_present_bot_reply_under_root_is_true(self) -> None:
         backend = RecordingBackend(thread_replies={"root.ts": [{"ts": "r-bot", "user": _BOT_UID, "text": "hi"}]})
 
-        assert verify_reply_visible(backend, channel="C", thread_root="root.ts") is True
+        assert bot_reply_present_in_thread(backend, channel="C", thread_root="root.ts") is True
 
 
 class TestReactEyesOnce:
