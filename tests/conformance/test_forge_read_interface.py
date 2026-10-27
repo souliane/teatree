@@ -40,6 +40,8 @@ _WRITE_TRANSPORT = frozenset(
         "_gh_api_write",
         "_gh_api_post",
         "_gh_api_patch",
+        "_gh_api_delete",
+        "_gh_api_empty",
         "_run_gh",
         "run_gh_unchecked",
         "gh_runner",
