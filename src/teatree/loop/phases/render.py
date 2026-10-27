@@ -93,7 +93,7 @@ def _append_self_improve_firings(zones: StatuslineZones) -> None:
             cause = payload.get("cause", "cause unreported")
             count = payload.get("count", 1)
             if not isinstance(kind, str) or not re.fullmatch(r"[a-z0-9_]{1,64}", kind) or kind == "unknown":
-                kind = detector if re.fullmatch(r"[a-z0-9_]{1,128}", detector) else "unknown"
+                kind = detector if re.fullmatch(r"[a-z0-9_]{1,128}", detector) else "detector_unreported"
             cause = (
                 cause
                 if isinstance(cause, str) and cause != "unknown" and re.fullmatch(r"[a-z0-9_\-]{1,64}", cause)
@@ -144,7 +144,7 @@ class _SelfImproveSummary:
         parts = []
         for index, (kind, causes) in enumerate(self.kinds[: self.visible_kinds]):
             total = sum(count for _, count in causes)
-            if kind == "unknown" and causes == [("cause unreported", total)]:
+            if kind == "detector_unreported" and causes == [("cause unreported", total)]:
                 parts.append(f"unknown {total}")
                 continue
             cause_parts = [f"{cause} {count}" for cause, count in causes[: self.visible_causes[index]]]
