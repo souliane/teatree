@@ -73,7 +73,9 @@ def _released_custody(task: Task, worktree: Worktree, custody: Custody) -> bool:
     )
 
 
-def _owned_github_pr_url(task: Task, path: str, state: CheckoutState, head: str) -> str | None:
+def owned_github_pr_url(
+    task: Task, path: str, state: CheckoutState, head: str, *, allow_ancestor: bool = False
+) -> str | None:
     origin = git.remote_slug(repo=path)
     origin_url = git.remote_url(repo=path)
     origin_host = host_from_remote(origin_url)
@@ -89,14 +91,19 @@ def _owned_github_pr_url(task: Task, path: str, state: CheckoutState, head: str)
         ref.slug.casefold() == origin.casefold() and origin_host == (urlsplit(pr_head.url).hostname or "").lower()
     )
     head_matches = (
-        pr_head.repository.casefold() == origin.casefold() and pr_head.branch == state.branch and pr_head.head == head
+        pr_head.repository.casefold() == origin.casefold()
+        and pr_head.branch == state.branch
+        and (
+            pr_head.head == head
+            or (allow_ancestor and git.check(repo=path, args=["merge-base", "--is-ancestor", head, pr_head.head]))
+        )
     )
     if not identity_matches or not head_matches:
         return None
     if not pr_owned_by_ticket(task, ref, pr_head.url):
         return None
     remote_head = forge_pr_probe.github_exact_branch_head(path, origin, state.branch, origin_host)
-    return pr_head.url if remote_head == head else None
+    return pr_head.url if remote_head == pr_head.head else None
 
 
 def _released_pr_head_proof(
@@ -112,7 +119,7 @@ def _released_pr_head_proof(
             repo=path, args=["merge-base", "--is-ancestor", anchor, head]
         ):
             return None
-        pr_url = _owned_github_pr_url(task, path, state, head)
+        pr_url = owned_github_pr_url(task, path, state, head)
         if pr_url is None:
             return None
     except (OSError, RuntimeError, ValueError) as exc:

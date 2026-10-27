@@ -151,14 +151,8 @@ class ReleasedPrHeadRecoveryTests(TestCase):
         with (
             patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table or self.clear),
             patch.object(forge_pr_probe, "_github_cli_stdout", side_effect=forge_stdout),
-            patch("teatree.core.worktree.checkout_fence.ask_owner_to_attest") as card,
-            patch("teatree.core.worktree.checkout_fence.notify_user") as page,
         ):
-            result = claim_task_checkout_or_park(self.claimant)
-        if result is None:
-            card.assert_not_called()
-            page.assert_not_called()
-        return result
+            return claim_task_checkout_or_park(self.claimant)
 
     def assert_clean_claim_then_restore(self) -> None:
         self.worktree.refresh_from_db()

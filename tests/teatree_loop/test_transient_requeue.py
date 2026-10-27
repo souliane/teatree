@@ -23,6 +23,7 @@ from django.utils import timezone
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.core.factory.halted_retries import halted_retry_signals
 from teatree.core.modelkit.task_failure_taxonomy import (
     CANCELLED_PREFIX,
     HEAD_SUPERSEDED_PREFIX,
@@ -50,7 +51,6 @@ from teatree.loop.transient_requeue import (
     HALT_STAMP,
     _escalate_once,
     _non_terminal_failed_tasks,
-    escalation_marker,
     requeue_transient_failed,
 )
 from teatree.loop.transient_requeue_disposal import SUPERSEDED_HEAD_STAMP
@@ -128,20 +128,17 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
-    def test_answered_escalation_does_not_re_escalate(self) -> None:
-        # #6: once escalated and parked, answering the question must NOT spawn a fresh
-        # escalation on the next tick — the row stamp is the durable, once-per-task dedup.
+    def test_halted_task_does_not_retry_or_create_a_question(self) -> None:
         task = _failed_task()
         _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
         assert requeue_transient_failed() == 0
-        question = DeferredQuestion.objects.get()
-        question.answered_at = timezone.now()
-        question.save(update_fields=["answered_at"])
-
-        assert requeue_transient_failed() == 0  # the parked row is excluded from the scan
-        assert DeferredQuestion.objects.count() == 1  # no second question after the answer
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason
+        assert requeue_transient_failed() == 0
+        assert not DeferredQuestion.objects.exists()
+        assert halted_retry_signals().signals
 
     def test_deterministic_failed_task_is_not_reopened(self) -> None:
         task = _failed_task()
@@ -171,7 +168,7 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_an_audit_row_between_identical_failures_breaks_stall_adjacency(self) -> None:
         task = _failed_task()
@@ -200,7 +197,7 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_verbatim_identical_outage_is_reopened_not_escalated(self) -> None:
         # The narrowing's other side: an outage says nothing about the work however often
@@ -242,7 +239,7 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_synthetic_cadence_ticket_over_cap_is_reopened_not_escalated(self) -> None:
         # architectural_review (and its cadence-scanner siblings) anchor on a synthetic
@@ -271,7 +268,7 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_tick_recovery_reopens_transient_failed(self) -> None:
         # The sweep is wired into the loop tick's recovery step, not just callable.
@@ -323,7 +320,7 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_testing_no_envelope_refusal_gets_the_corrective_retry(self) -> None:
         # #3905. A `testing` run that emitted no JSON at all used to be recorded
@@ -355,21 +352,23 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
-    def test_deterministic_non_coding_failure_is_escalated_not_retried(self) -> None:
-        # A planning evidence refusal is not a coder-envelope class: the coder
-        # note would be wrong, so no corrective retry — escalate instead.
+    def test_planning_evidence_refusal_gets_one_bounded_correction_then_halts(self) -> None:
         task = _failed_task(phase="planning")
         _add_failed_attempt(task, error="missing required evidence for phase 'planning'")
 
-        reopened = requeue_transient_failed()
+        assert requeue_transient_failed() == 1
 
         task.refresh_from_db()
-        assert reopened == 0
+        assert task.status == Task.Status.PENDING
+        assert "missing required evidence for phase 'planning'" in task.execution_reason
+        _add_failed_attempt(task, error="missing required evidence for phase 'planning' again")
+        assert requeue_transient_failed() == 0
+        task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert "[auto-corrective-retry]" not in task.execution_reason
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert HALT_STAMP in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
 
     def test_deterministic_failure_over_budget_is_escalated(self) -> None:
         cap = max_phase_iterations()
@@ -382,7 +381,7 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_deterministic_failure_on_terminal_ticket_is_left_alone(self) -> None:
         task = _failed_task(state=Ticket.State.PR_OPENED)
@@ -481,7 +480,7 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_lease_loss_with_live_successor_is_parked_not_escalated(self) -> None:
         # 3534: worker A loses its lease because a redispatch minted a fresh task B
@@ -533,7 +532,7 @@ class TestTransientRequeue(TestCase):
         newest.refresh_from_db()
         assert reopened == 0
         assert newest.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_failed_task_with_terminal_sibling_still_escalates(self) -> None:
         # A COMPLETED/FAILED sibling is not a live successor — the phase is not being
@@ -552,7 +551,7 @@ class TestTransientRequeue(TestCase):
         task.refresh_from_db()
         assert reopened == 0
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_live_successor_park_leaves_the_ticket_fsm_untouched(self) -> None:
         # The park must not advance the ticket past a phase that never completed. A row
@@ -604,7 +603,7 @@ class TestTransientRequeue(TestCase):
         assert predecessor.ticket.state == Ticket.State.TESTED
         assert not predecessor.ticket.tasks.completed_in_phase("reviewing").exists()
 
-    def test_churned_tasks_same_condition_collapse_to_one_question(self) -> None:
+    def test_churned_tasks_same_condition_collapse_to_one_health_signal(self) -> None:
         # THE FLOOD FIX: a stuck phase mints a FRESH Task row every redispatch cycle.
         # Two FAILED tasks on the same (ticket, phase) failing IDENTICALLY are ONE
         # standing condition — they must collapse to a single open DeferredQuestion,
@@ -618,7 +617,8 @@ class TestTransientRequeue(TestCase):
         requeue_transient_failed()
 
         # One condition ⇒ one question, despite two distinct FAILED task rows.
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert not DeferredQuestion.objects.exists()
+        assert len(halted_retry_signals().signals) == 1
 
     def test_distinct_conditions_do_not_over_collapse(self) -> None:
         # Guard on the dedup: two DIFFERENT failures on the same (ticket, phase) are
@@ -633,7 +633,8 @@ class TestTransientRequeue(TestCase):
 
         requeue_transient_failed()
 
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 2
+        assert not DeferredQuestion.objects.exists()
+        assert len(halted_retry_signals().signals) == 2
 
     def test_bounded_never_retries_endlessly(self) -> None:
         cap = max_phase_iterations()
@@ -660,12 +661,12 @@ class TestTransientRequeue(TestCase):
         # Escalated exactly once; re-running the sweep many more times never
         # reopens again and never spams another escalation.
         questions_after_exhaustion = DeferredQuestion.objects.filter(answered_at__isnull=True).count()
-        assert questions_after_exhaustion == 1
+        assert questions_after_exhaustion == 0
         for _ in range(10):
             assert requeue_transient_failed() == 0
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
 
 class TestTheSweepDropsAConversationNothingWillContinue(TestCase):
@@ -686,7 +687,7 @@ class TestTheSweepDropsAConversationNothingWillContinue(TestCase):
 
         requeue_transient_failed()
 
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
         assert not self._holds_thread(task)
 
     def test_a_retired_row_drops_its_conversation(self) -> None:
@@ -786,7 +787,7 @@ class TestExhaustionAutoRequeue(TestCase):
         assert requeue_transient_failed() == 0
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_repeated_session_limit_is_reopened_not_escalated_as_a_stall(self) -> None:
         # Two identical session-limit FAILED attempts in a row record two identical
@@ -943,7 +944,7 @@ class TestLandedReviewRetired(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert "[superseded-retired]" not in task.execution_reason
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
 
 class TestSelfRepairInsteadOfPaging(TestCase):
@@ -993,7 +994,7 @@ class TestSelfRepairInsteadOfPaging(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.count() == 1
+        assert DeferredQuestion.objects.count() == 0
 
     def test_a_genuine_decision_still_pages(self) -> None:
         task = _failed_task()
@@ -1001,7 +1002,7 @@ class TestSelfRepairInsteadOfPaging(TestCase):
 
         requeue_transient_failed()
 
-        assert DeferredQuestion.objects.count() == 1
+        assert DeferredQuestion.objects.count() == 0
 
 
 class TestDisposalReleasesTheWholeClaim(TestCase):
@@ -1123,29 +1124,27 @@ class TestSpawnFailureEscalation(TestCase):
         "work was attempted and nothing about the ticket's content is implicated."
     )
 
-    def _question(self) -> str:
-        return DeferredQuestion.objects.filter(answered_at__isnull=True).get().question
-
-    def test_a_spawn_failure_says_the_agent_could_not_start(self) -> None:
+    def test_a_spawn_failure_halts_with_its_cause_in_health(self) -> None:
         task = _failed_task(phase="testing")
         _add_failed_attempt(task, error=self._SPAWN_ERROR)
 
         requeue_transient_failed()
 
-        question = self._question()
-        assert "AGENT COULD NOT START" in question
-        assert "not implicated" in question
-        assert "investigate, rework, or ignore" not in question
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason
+        assert "agent could not be spawned" in halted_retry_signals().signals[0].summary
+        assert not DeferredQuestion.objects.exists()
 
-    def test_a_work_failure_keeps_the_ticket_adjudication_question(self) -> None:
+    def test_a_work_failure_halts_with_its_cause_in_health(self) -> None:
         task = _failed_task(phase="testing")
         _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
 
         requeue_transient_failed()
 
-        question = self._question()
-        assert "investigate, rework, or ignore" in question
-        assert "AGENT COULD NOT START" not in question
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason
+        assert "AssertionError" in halted_retry_signals().signals[0].summary
+        assert not DeferredQuestion.objects.exists()
 
     def test_a_spawn_failure_is_never_reopened_for_a_doomed_retry(self) -> None:
         task = _failed_task(phase="testing")
@@ -1164,7 +1163,7 @@ class TestSpawnFailureEscalation(TestCase):
 
         requeue_transient_failed()
 
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
 
 class TestTheKindDecidesTheRecovery(TestCase):
@@ -1206,7 +1205,7 @@ class TestTheKindDecidesTheRecovery(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_a_control_request_timeout_is_never_reopened(self) -> None:
         """The named sibling HALTs on the FIRST one: a retry walks into the same deadline.
@@ -1243,7 +1242,7 @@ class TestTheKindDecidesTheRecovery(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
 
 class TestARepairHaltIsInternalLikeItsSiblings(TestCase):
@@ -1264,12 +1263,13 @@ class TestARepairHaltIsInternalLikeItsSiblings(TestCase):
         TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error="coding failed")
         return task
 
-    def test_the_halt_escalation_never_reaches_the_owner_feed(self) -> None:
+    def test_the_halt_is_a_health_signal_without_a_question(self) -> None:
         task = self._halted_task()
         _escalate_once(task, reason="budget exhausted")
-        row = DeferredQuestion.objects.get()
-        assert row.audience == DeferredQuestion.Audience.INTERNAL
-        assert row.dedupe_marker == escalation_marker(task)
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
+        assert "coding failed" in halted_retry_signals().signals[0].summary
 
 
 _REASON = f"{HEAD_SUPERSEDED_PREFIX}souliane/teatree#4716 advanced from bf526560 to 21023d20"
@@ -1333,7 +1333,7 @@ class TestSupersededHeadReviewIsParkedNotPaged(TestCase):
         with _pr_is_live():
             requeue_transient_failed()
 
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_the_park_is_recorded_on_the_row_itself(self) -> None:
         task = self._superseded_review(claim_state=AutoReviewDispatch.State.SUPERSEDED)
@@ -1393,7 +1393,7 @@ class TestTheTicketPathParksAMovedHeadToo(TestCase):
         with _pr_is_live():
             requeue_transient_failed()
 
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
 
 class TestAStalePlanGetsItsPlanningPassWhereItIsParked(TestCase):
@@ -1440,7 +1440,9 @@ class TestAStalePlanGetsItsPlanningPassWhereItIsParked(TestCase):
         requeue_transient_failed()
 
         assert not task.ticket.tasks.filter(phase="planning").exists()
-        assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
 
     def test_repeated_plan_stale_cycles_halt_the_planning_pass(self) -> None:
         task = self._stale_coding_failure()
@@ -1450,7 +1452,9 @@ class TestAStalePlanGetsItsPlanningPassWhereItIsParked(TestCase):
         requeue_transient_failed()
 
         assert not task.ticket.tasks.filter(phase="planning").exists()
-        assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
 
     @override_settings(MAX_PHASE_ITERATIONS=5)
     def test_the_stale_plan_halt_trips_at_the_cap_and_not_below_it(self) -> None:
@@ -1642,7 +1646,7 @@ class TestARefusedReviewEnvelopeIsCorrectedOnceInItsOwnSession(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert HALT_STAMP in task.execution_reason
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_a_withheld_verdict_is_still_escalated_not_retried(self) -> None:
         task = _failed_task(phase="reviewing", state=Ticket.State.TESTED)

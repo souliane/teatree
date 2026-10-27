@@ -319,7 +319,7 @@ class TestResumeNeedsAPlan(TestCase):
 
 class TestAnOwnerActionCardResumesNothing(TestCase):
     def test_only_a_card_without_an_action_resumes_its_task(self) -> None:
-        action = ActionRequest(kind=OwnerActionKind.ATTEST, target="1", binding="digest")
+        action = ActionRequest(kind=OwnerActionKind.VOID, target="1", binding="digest")
         for card, marker, resumes in (
             (OWNER_CARD, "", True),
             (dataclasses.replace(OWNER_CARD, action=action), action_marker(action), False),

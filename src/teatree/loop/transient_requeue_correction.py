@@ -35,19 +35,23 @@ def corrective_note(task: Task, error: str) -> str | None:
     if CORRECTIVE_MARKER in task.execution_reason:
         return None
     phase = normalize_phase(task.phase)
+    note: str | None = None
     if phase == "reviewing" and error.startswith(VENUE_LIMIT_PREFIX):
-        return "Retry this review on another venue; the previous venue could not complete it."
-    if phase == "reviewing" and (head := wrong_head_retry_head(error)):
-        return (
+        note = "Retry this review on another venue; the previous venue could not complete it."
+    elif phase == "reviewing" and (head := wrong_head_retry_head(error)):
+        note = (
             f"Retry the review once at the live pull request head {head}. "
             f"Run `t3 review checkout {task.ticket.issue_url} --sha {head}` and verify HEAD. "
             "If checkout still resolves elsewhere, return review_head_mismatch with the observed SHA."
         )
-    if is_no_envelope_refusal(error) or (phase in CORRECTIVE_PHASES and is_recorder_refusal(error)):
-        return corrective_instruction(task.phase)
-    if phase == "reviewing" and is_review_shape_refusal(error):
-        return refused_envelope_instruction(error)
-    return None
+    elif is_no_envelope_refusal(error) or (phase != "reviewing" and is_recorder_refusal(error)):
+        if is_no_envelope_refusal(error) or phase in CORRECTIVE_PHASES:
+            note = corrective_instruction(task.phase)
+        else:
+            note = f"Correct the recorded refusal once and return the required phase evidence: {error}"
+    elif phase == "reviewing" and is_review_shape_refusal(error):
+        note = refused_envelope_instruction(error)
+    return note
 
 
 def retry_review_contract(task: Task, head: str) -> str:

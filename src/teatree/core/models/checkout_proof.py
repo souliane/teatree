@@ -53,6 +53,21 @@ class ReleasedPrHeadAttestation(TypedDict):
     holder: CheckoutHolderEvidence
 
 
+class SafeCheckoutPreservation(TypedDict):
+    commits: int
+    artifact_prefix: str
+
+
+class SafeCheckoutAttestation(TypedDict):
+    at: str
+    digest: str
+    branch: str
+    process_evidence: Literal["host", "venue"]
+    process_table: CheckoutProcessEvidence
+    holder: CheckoutHolderEvidence
+    preserved: SafeCheckoutPreservation
+
+
 class DeferredCheckoutExit(TypedDict):
     holder: str
     session: str
