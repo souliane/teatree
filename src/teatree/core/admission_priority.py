@@ -13,7 +13,7 @@ from django.db.models import Case, Exists, F, IntegerField, OuterRef, Q, Value, 
 from django.db.models.expressions import BaseExpression, OrderBy
 
 from teatree.core.admission.pr_start_cap import ticket_has_live_pr
-from teatree.core.modelkit.phases import ANSWERING_PHASES, cheap_phase_spellings, phase_spellings
+from teatree.core.modelkit.phases import cheap_phase_spellings, phase_spellings
 
 if TYPE_CHECKING:
     from teatree.core.models.pull_request import PullRequest
@@ -57,7 +57,7 @@ def _priority_part() -> Case:
 
 def _stage_part(started: Exists) -> Case:
     return Case(
-        When(phase__in=cheap_phase_spellings() | ANSWERING_PHASES, then=Value(_REVIEW_STAGE)),
+        When(phase__in=cheap_phase_spellings(), then=Value(_REVIEW_STAGE)),
         When(started, then=Value(_STARTED_PR_STAGE)),
         When(_new_ticket_autostart_q(), then=Value(_NEW_TICKET_STAGE)),
         default=Value(_CONTINUING_STAGE),
