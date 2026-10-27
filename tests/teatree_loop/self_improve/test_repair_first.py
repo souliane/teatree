@@ -176,7 +176,8 @@ class RepairFirstTests(TestCase):
 
     def test_wait_setting_rejects_invalid_values(self) -> None:
         assert _owner_wait(30) == dt.timedelta(minutes=30)
-        for invalid in (True, "30", 0, -1, 2.5, None):
+        assert _owner_wait(1440) == dt.timedelta(days=1)
+        for invalid in (True, "30", 0, -1, 2.5, None, 1441, 10**13):
             with self.subTest(value=invalid), self.assertLogs("teatree.config.settings_loop_owned", level="ERROR"):
                 assert _owner_wait(invalid) == dt.timedelta(minutes=60)
 
@@ -222,7 +223,7 @@ class RepairFirstTests(TestCase):
         assert len(due.owner_waits) == 1
         assert later.owner_waits == []
         assert len(deliveries) == 1
-        assert "TODO-" in deliveries[0][0]
+        assert f"Repair: ticket {first.actions[0].firing.ticket.pk}" in deliveries[0][0]
         assert "planning pending" in deliveries[0][0]
         assert deliveries[0][1].startswith("self-improve:still-open:")
 
@@ -309,6 +310,25 @@ class RepairFirstTests(TestCase):
             run_tier(Tier.CHEAP, detectors=[_Detector(None)], budget=BudgetVerdict.allow(), delivery=routes)
         assert deliveries == []
         assert SelfImproveFiring.objects.get(detector="repair_first_test").resolved_at is not None
+
+    def test_covered_absence_resolves_before_owner_wait_sweep(self) -> None:
+        start = timezone.now()
+        deliveries: list[str] = []
+        routes = DeliveryRoutes(
+            overlay_name="t3-teatree",
+            owner_wait=OwnerWaitChannel(
+                deliver=lambda text, _key: (deliveries.append(text), OwnerAlertDelivery(sent=True))[1],
+                quiet_now=lambda: False,
+                wait=dt.timedelta(minutes=30),
+            ),
+        )
+        with patch("django.utils.timezone.now", return_value=start):
+            run_tier(Tier.CHEAP, detectors=[_Detector(_incident())], budget=BudgetVerdict.allow(), delivery=routes)
+        with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=31)):
+            due = run_tier(Tier.CHEAP, detectors=[_Detector(None)], budget=BudgetVerdict.allow(), delivery=routes)
+        assert SelfImproveFiring.objects.get(detector="repair_first_test").resolved_at is not None
+        assert due.owner_waits == []
+        assert deliveries == []
 
     def test_reopened_incident_resets_wait_generation(self) -> None:
         start = timezone.now()

@@ -51,7 +51,7 @@ from teatree.loop.self_improve.detectors.base import (
 )
 from teatree.loop.self_improve.detectors.loop_health import HealthReading
 from teatree.loop.self_improve.persistence import resolve_absent_firings
-from teatree.loop.self_improve.repair_first import CycleEvidence, OwnerWaitChannel, sweep_owner_wait
+from teatree.loop.self_improve.repair_first import OwnerWaitChannel, sweep_owner_wait
 
 logger = logging.getLogger(__name__)
 
@@ -190,11 +190,11 @@ def run_tier(
     reports: list[DetectorReport] = []
     actions: list[ActionResult] = []
     degraded_scans: list[tuple[str, str]] = []
-    evidence = CycleEvidence(reported=set(), scans={})
+    reported: set[tuple[str, str]] = set()
     for detector in detector_list:
         if not verdict.ok and not getattr(detector, "always_on", False):
             continue
-        reported_before = evidence.reported.copy()
+        reported_before = reported.copy()
         try:
             observed_at = timezone.now()
             scan = (
@@ -202,7 +202,6 @@ def run_tier(
                 if isinstance(detector, ConfidenceAwareDetector)
                 else DetectorScan(detector.detect())
             )
-            evidence.scans[detector.name] = (scan, getattr(detector, "dedup_prefix", None))
             detected = scan.reports
             if not scan.complete:
                 degraded_scans.append((detector.name, scan.reason or "source_unknown"))
@@ -214,7 +213,7 @@ def run_tier(
             )
             fix = auto_fix_callable if auto_fix_callable is not None else _detector_auto_fix(detector)
             for report in detected:
-                evidence.reported.add((report.detector, report.dedup_key))
+                reported.add((report.detector, report.dedup_key))
                 reports.append(report)
                 record_factory_issue(report)
                 if not verdict.ok and report.auto_fix:
@@ -233,9 +232,8 @@ def run_tier(
         except Exception:
             logger.exception("self-improve detector %s raised", detector.name)
             degraded_scans.append((detector.name, "detector_raised"))
-            evidence.scans.pop(detector.name, None)
-            evidence.reported = reported_before
-    owner_waits = sweep_owner_wait(evidence, routes.owner_wait, now=timezone.now())
+            reported = reported_before
+    owner_waits = sweep_owner_wait(reported, routes.owner_wait, now=timezone.now())
     return TierResult(
         tier=tier,
         budget=verdict,

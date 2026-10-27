@@ -191,7 +191,7 @@ class LoopSelfImproveCommandTests(TestCase):
 
         assert [first.call_count, before_wait.call_count, due.call_count, later.call_count] == [0, 0, 1, 0]
         assert due.call_args.kwargs["options"].as_thread_root is True
-        assert f"TODO-{firing.ticket.pk}" in due.call_args.args[0]
+        assert f"Repair: ticket {firing.ticket.pk}" in due.call_args.args[0]
 
     def test_owner_quiet_hours_hold_the_delayed_message(self) -> None:
         start = timezone.now()

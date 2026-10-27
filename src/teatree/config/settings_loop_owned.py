@@ -31,10 +31,11 @@ from teatree.config.setting_parsers import (
 )
 
 logger = logging.getLogger(__name__)
+MAX_SELF_IMPROVE_OWNER_WAIT_MINUTES = 1440
 
 
 def parse_self_improve_owner_wait_minutes(raw: object) -> int:
-    if type(raw) is int and raw >= 1:
+    if type(raw) is int and 1 <= raw <= MAX_SELF_IMPROVE_OWNER_WAIT_MINUTES:
         return raw
     logger.error("Invalid self_improve_owner_wait_minutes %r; using 60", raw)
     return 60

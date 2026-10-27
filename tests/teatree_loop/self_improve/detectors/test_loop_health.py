@@ -72,6 +72,14 @@ class LoopHealthDetectorTests(TestCase):
             delivery=DeliveryRoutes(overlay_name="t3-teatree"),
         )
         ScannerFault.objects.record_failure("scanner[overlay]", "auth", "denied")
+        scanner_seen = run_tier(
+            Tier.CHEAP,
+            detectors=[LoopHealthDetector(read_health=lambda _now: _reading(stale=True))],
+            budget=BudgetVerdict.allow(),
+            delivery=DeliveryRoutes(overlay_name="t3-teatree"),
+        )
+        assert any("scanner::scanner[overlay]" in report.dedup_key for report in scanner_seen.reports)
+        ScannerFault.objects.heal("scanner[overlay]")
 
         def unreadable(_now: dt.datetime) -> LoopHealth:
             raise OSError
@@ -83,9 +91,12 @@ class LoopHealthDetectorTests(TestCase):
             delivery=DeliveryRoutes(overlay_name="t3-teatree"),
         )
         assert result.degraded_scans == [("loop_health", "loop_health_unreadable")]
-        assert any("scanner::scanner[overlay]" in report.dedup_key for report in result.reports)
+        assert not any("scanner::scanner[overlay]" in report.dedup_key for report in result.reports)
         assert SelfImproveFiring.objects.filter(
             detector="loop_health", dedup_key__contains="loop::", resolved_at__isnull=True
+        ).exists()
+        assert SelfImproveFiring.objects.filter(
+            detector="loop_health", dedup_key__contains="scanner::scanner[overlay]", resolved_at__isnull=False
         ).exists()
 
     def test_old_or_healed_scanner_faults_do_not_report_and_frozen_requires_admission(self) -> None:

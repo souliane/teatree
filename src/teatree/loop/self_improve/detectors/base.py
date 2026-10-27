@@ -109,17 +109,6 @@ class DetectorScan:
     candidate_keys: frozenset[str] | None = None
     reopen_keys: frozenset[str] = frozenset()
 
-    def covers(self, key: str, *, key_prefix: str | None = None) -> bool:
-        if not self.complete and not (
-            self.protected_keys or self.protected_prefixes or self.candidate_keys is not None
-        ):
-            return False
-        if key_prefix is not None and not key.startswith(key_prefix):
-            return False
-        if self.candidate_keys is not None and key not in self.candidate_keys:
-            return False
-        return key not in self.protected_keys and not any(key.startswith(prefix) for prefix in self.protected_prefixes)
-
 
 @runtime_checkable
 class ConfidenceAwareDetector(Protocol):

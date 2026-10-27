@@ -9,7 +9,7 @@ from typing import Any
 from django.utils import timezone
 
 from teatree.core.models.self_improve_firing import SelfImproveFiring
-from teatree.loop.self_improve.detectors.base import DetectorReport, DetectorScan
+from teatree.loop.self_improve.detectors.base import DetectorReport
 
 logger = logging.getLogger(__name__)
 
@@ -75,18 +75,6 @@ class OwnerWaitChannel:
     wait: dt.timedelta
 
 
-@dataclass(slots=True)
-class CycleEvidence:
-    reported: set[tuple[str, str]]
-    scans: dict[str, tuple[DetectorScan, str | None]]
-
-    def confirms(self, firing: SelfImproveFiring) -> bool:
-        if (firing.detector, firing.dedup_key) in self.reported:
-            return True
-        entry = self.scans.get(firing.detector)
-        return entry is not None and entry[0].covers(firing.dedup_key, key_prefix=entry[1])
-
-
 def wait_message(firing: SelfImproveFiring, marker: RepairMarker, wait: dt.timedelta) -> str:
     minutes = int(wait.total_seconds() // 60)
     lines = [f"[self-improve] Still open after {minutes} minutes: {marker.summary}"]
@@ -95,7 +83,7 @@ def wait_message(firing: SelfImproveFiring, marker: RepairMarker, wait: dt.timed
         phases = [f"{task.phase} {task.status}" for task in ticket.tasks.order_by("pk")]
         lines.extend(
             (
-                f"Repair: TODO-{ticket.pk} ({ticket.short_description})",
+                f"Repair: ticket {ticket.pk} ({ticket.short_description})",
                 f"Tried: {', '.join(phases) if phases else 'no task yet'}",
             )
         )
@@ -106,7 +94,9 @@ def wait_message(firing: SelfImproveFiring, marker: RepairMarker, wait: dt.timed
     return "\n".join(lines)
 
 
-def sweep_owner_wait(evidence: CycleEvidence, channel: OwnerWaitChannel | None, *, now: dt.datetime) -> list[int]:
+def sweep_owner_wait(
+    reported: set[tuple[str, str]], channel: OwnerWaitChannel | None, *, now: dt.datetime
+) -> list[int]:
     if channel is None or channel.quiet_now():
         return []
     notified: list[int] = []
@@ -114,7 +104,7 @@ def sweep_owner_wait(evidence: CycleEvidence, channel: OwnerWaitChannel | None, 
         marker = RepairMarker.from_payload(firing.payload)
         if marker is None or marker.notified_at is not None or now - marker.began_at < channel.wait:
             continue
-        if not evidence.confirms(firing):
+        if (firing.detector, firing.dedup_key) not in reported:
             continue
         key = f"self-improve:still-open:{firing.pk}:{int(marker.began_at.timestamp())}"
         try:
