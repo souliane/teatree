@@ -513,8 +513,8 @@ _KIB64: Final[int] = 64 * 1024
 _ABSOLUTE_BUDGET_S: Final[float] = 0.250
 _GROWTH_CEILING: Final[float] = 8.0
 _ABSOLUTE_TRIALS: Final[int] = 5
-# The ratio of two sub-millisecond measurements is the noise-sensitive half: a
-# neighbouring xdist worker read 4.0x as 9.8x at best-of-3.
+# CPU time excludes scheduling delays from neighbouring xdist workers; take the
+# fastest of nine to limit sub-millisecond clock noise.
 _GROWTH_TRIALS: Final[int] = 9
 # Round 7's own performance test built its pathology BEFORE the `=` only, which is
 # why it stayed green at 8934 ms: the value extent it scanned quadratically was
@@ -543,9 +543,9 @@ def _before_the_equals(unit: str, suffix: str, budget: int) -> str:
 
 def _fastest(text: str, trials: int) -> float:
     def once() -> float:
-        started = time.perf_counter()
+        started = time.process_time()
         redaction.redact_credentials(text)
-        return time.perf_counter() - started
+        return time.process_time() - started
 
     return min(once() for _ in range(trials))
 
