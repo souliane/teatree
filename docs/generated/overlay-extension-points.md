@@ -28,6 +28,7 @@ Base class: `teatree.core.overlay.OverlayBase`
 | `metadata.get_e2e_config` | No | `() -> dict[str, str]` | Return E2E runner configuration (runner, test_dir, settings_module, pytest_args, project_path, ref). |
 | `metadata.detect_variant` | No | `() -> str` | Detect the current tenant variant from environment. |
 | `metadata.get_tool_commands` | No | `() -> list[teatree.types.ToolCommand]` | Return overlay-specific tool commands for t3 <overlay> tool. |
+| `metadata.get_issue_repos` | No | `(issue_url: str) -> list[str]` | Return repository names needed by one issue URL; empty means no hint. |
 | `metadata.get_followup_repos` | No | `() -> list[str]` | Return GitLab project paths to sync MRs from. |
 
 ## Settings

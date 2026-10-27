@@ -12,6 +12,7 @@ setup`` runs), and :class:`FreshMigrateSeedsDefaultLoops` proves a migrate from
 """
 
 import importlib
+from unittest.mock import Mock, call
 
 import pytest
 from django.apps import apps
@@ -73,8 +74,8 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
     """A migrate from ``zero`` runs the seed ``RunPython`` and lands the rows."""
 
     def setUp(self) -> None:
-        call_command("migrate", "core", "zero", "--no-input", verbosity=0)
         self.addCleanup(call_command, "migrate", "core", "--no-input", verbosity=0)
+        call_command("migrate", "core", "zero", "--no-input", verbosity=0)
         call_command("migrate", "core", "--no-input", verbosity=0)
 
     def test_seeds_every_default_loop_once(self) -> None:
@@ -116,3 +117,18 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
         before = (Loop.objects.count(), Prompt.objects.count(), Mode.objects.count())
         _migration._seed_defaults(apps, connection.schema_editor())
         assert (Loop.objects.count(), Prompt.objects.count(), Mode.objects.count()) == before
+
+
+def test_interrupted_seed_setup_restores_default_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    migrate = Mock(side_effect=[RuntimeError("interrupted"), None])
+    monkeypatch.setattr(f"{__name__}.call_command", migrate)
+    case = FreshMigrateSeedsDefaultLoops("test_seeds_every_default_loop_once")
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        case.setUp()
+    case.doCleanups()
+
+    assert migrate.call_args_list == [
+        call("migrate", "core", "zero", "--no-input", verbosity=0),
+        call("migrate", "core", "--no-input", verbosity=0),
+    ]

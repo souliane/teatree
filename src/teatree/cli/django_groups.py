@@ -8,6 +8,15 @@ a focused module; the group type itself is :class:`~teatree.cli.django_group.Dja
 from teatree.cli.django_group import DjangoGroup
 
 DJANGO_GROUPS: dict[str, DjangoGroup] = {
+    "github-webhook": DjangoGroup(
+        "Create or remove a signed GitHub repository webhook.",
+        [
+            ("connect", "Create or reconcile a repository webhook and verify its ping."),
+            ("disconnect", "Remove an exact-URL repository webhook and its secret."),
+        ],
+        core_dispatch=True,
+        command_name="github_webhook",
+    ),
     "secrets": DjangoGroup(
         "Inspect, manage and copy sealed credentials.",
         [
@@ -343,6 +352,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("merge", "Execute the REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("dead-rows", "List every non-terminal ticket intake can never find (#4527)."),
+            ("settle-holds", "Check held no-diff reviews; --dry-run reads without changing tickets."),
             ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),
             ("fold", "Merge a member ticket's body into its host's, verbatim (#4344)."),
             ("fold-check", "Prove a host body still carries the folded member's substance (#4344)."),

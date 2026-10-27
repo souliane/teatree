@@ -10,6 +10,7 @@ envelope directive that keeps the run from being wasted.
 """
 
 import json
+import logging
 from collections.abc import Callable
 
 from teatree.agents.coding_prompt import _coding_phase_directive
@@ -21,6 +22,7 @@ from teatree.agents.dispatch_preflight import (
     round_brief_lines,
     rubric_brief_lines,
 )
+from teatree.agents.read_only_draft_blocks import REQUESTING_REVIEW_LINES, SHIPPING_LINES
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.gates.fix_dod_gate import is_fix
@@ -30,9 +32,13 @@ from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
-from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
+from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
-from teatree.core.review.live_head import live_head_at
+from teatree.core.overlay_loader import get_overlay_for_ticket
+from teatree.core.review.live_head import dispatch_review_target, live_head_at
+from teatree.core.review.review_plan import plan_for_task
+
+logger = logging.getLogger(__name__)
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
 # first, then grade every quality dimension.
@@ -89,11 +95,14 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         "A verdict for another head is REFUSED. On checkout mismatch, return",
         '  "review_head_mismatch": {"observed_sha": "<40-char SHA>", "reason": "<why>"}',
         "without review_verdict or owner question. Factory retries once at the live head; a repeat records a card.",
+        'If CI, tests, or the plan cannot be read here, return "review_venue_limit":',
+        '  {"limits": ["<limit>"]} without review_verdict; the factory retries elsewhere.',
+        "HOLD needs an observed code or check blocker, never a venue limit.",
         "Missing `reviewed_sha` is REFUSED; never infer it from dispatch.",
         "A blocking finding (blocker/major/high/critical) outside PR-changed files is REFUSED and records nothing.",
         "Branch-only probes may blame main; recheck on the MERGE RESULT.",
         *(
-            ("This venue cannot build it; return `hold` with the unverified concern.",)
+            ("If the merge result cannot be built here, report review_venue_limit.",)
             if read_only_venue
             else (
                 "Use `t3 review merge-tree` (plain directory, never a git worktree),",
@@ -104,7 +113,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             (
                 (
                     "Set gh_verify_result green only when WORKER CI says green at the dispatched head; "
-                    "otherwise set pending or failed and return hold."
+                    "otherwise report the observed status and judge only confirmed blockers."
                     if identity
                     else (
                         "Pre-PR self-review may return merge_safe with gh_verify_result pending; "
@@ -115,7 +124,7 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             if read_only_venue
             else ()
         ),
-        "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
+        "No review_verdict fails unless review_venue_limit or review_head_mismatch is returned.",
         *(_ASSIGNED_IDENTITY_LINES if identity else ()),
         "",
         "RUBRIC: grade here; independent verifier != maker:",
@@ -123,7 +132,8 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
             '  "rubric_grades": [{"ordinal": 0, "text_hash": "<hash from brief>", '
             '"status": "pass"|"fail", "rationale": "<what proves it>"}, ...]'
         ),
-        "Grade EVERY criterion or verdict records nothing. A PASS cites a test; a FAIL needs none.",
+        "Grade every row except CARRIED; grade to override a carry.",
+        "An ungraded RE-GRADE row records nothing. A PASS cites a test; a FAIL needs none.",
         "FAIL is a finding; no bypass overrides it. do NOT run `ticket rubric-grade`.",
     )
 
@@ -368,9 +378,16 @@ def _scanning_news_phase_lines() -> tuple[str, ...]:
 
 def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tuple[str, ...]:
     """The ``PHASE: reviewing`` block and its review evidence instructions."""
+    plan = plan_for_task(task)
+    reviewer_head_unverified = task.ticket.role == task.ticket.Role.REVIEWER and plan is None
+    unverified_line = (
+        "No verified live head is available for this PR. Do not review a stamped SHA or local diff; "
+        "return review_venue_limit naming the live head read failure."
+    )
     lines = [
         "",
         "PHASE: reviewing",
+        *((unverified_line,) if reviewer_head_unverified else ()),
         (
             (
                 "1. Review the DIFF UNDER REVIEW at the dispatched head; hold if it is absent or incomplete."
@@ -395,9 +412,14 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
         *_VERIFICATION_BRIEF_LINES,
         *(() if read_only_venue else _green_proof_binding_lines(task)),
         *_review_verdict_return_lines(assigned_reviewer_identity_for(task), read_only_venue=read_only_venue),
-        *(() if read_only_venue else rubric_brief_lines(task)),
+        *(() if read_only_venue else rubric_brief_lines(task, plan=plan)),
         *(() if read_only_venue else declared_seams_brief_lines(task)),
-        *(() if read_only_venue else review_diff_brief_lines(task)),
+        *(plan.brief_lines() if plan is not None and not read_only_venue else ()),
+        *(
+            ()
+            if read_only_venue or reviewer_head_unverified or (plan is not None and plan.delta.case == "delta")
+            else review_diff_brief_lines(task)
+        ),
     ]
     return tuple(lines)
 
@@ -410,7 +432,7 @@ def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
     ``origin/main`` and exited 0 while the reviewed head carried six failing
     check-runs, across eight consecutive reviews of one PR.
     """
-    target = review_target_for_task(task)
+    target = dispatch_review_target(task)
     if target is None:
         return ()
     head = target.head_sha
@@ -431,7 +453,7 @@ def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
     )
 
 
-def _answering_phase_lines(task: Task) -> tuple[str, ...]:
+def _answering_phase_lines(task: Task, *, read_only_venue: bool = False) -> tuple[str, ...]:
     """The ``PHASE: answering`` block — draft, then RETURN the answer envelope.
 
     The shell-denied answerer cannot post the reply itself; it hands the draft
@@ -452,8 +474,17 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
         if question:
             lines.append(f"The user's message: {question}")
     lines.extend(_ANSWER_RETURN_LINES)
+    if read_only_venue:
+        lines.append(
+            "The inbound event is under INBOUND EVENT in the task message; you reach no thread or forge from here."
+        )
     if owes_work_item(task.ticket):
         lines.extend(_WORK_ITEM_RETURN_LINES)
+        if task.ticket.overlay:
+            try:
+                lines.extend(get_overlay_for_ticket(task.ticket).metadata.work_item_return_lines())
+            except Exception:
+                logger.exception("Answering work-item overlay hook failed for ticket %s", task.ticket_id)
     return tuple(lines)
 
 
@@ -477,20 +508,16 @@ def _shipping_phase_lines() -> tuple[str, ...]:
         "",
         "PHASE: shipping — auto-review gate",
         "Before creating the PR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
-        "If the result shows `reviewing` in the `missing` list:",
-        "1. Spawn a sub-agent to review the diff. Use this exact dispatch prompt so the",
-        "   reviewer loads the overlay review conventions (do NOT abbreviate the skill block):",
+        "If `missing` includes `reviewing`:",
+        "1. Spawn a reviewer sub-agent with this exact prompt, including its skill block:",
         reviewer_dispatch,
-        (
-            "2. After the sub-agent completes, mark reviewing as visited:"
-            " `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."
-        ),
+        ("2. When it completes, mark reviewing visited: `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."),
         "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-        "If the result shows `retro` in the `missing` list:",
+        "If `missing` includes `retro`:",
         "1. Run `/t3:retro` to capture lessons from this session and commit any skill fixes.",
         "2. Mark retro as visited: `t3 <overlay> lifecycle visit-phase <ticket_id> retro`.",
         "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-        "Do NOT create a new session for the review — use a sub-agent within this session.",
+        "Review in this session's sub-agent, not a new session.",
     )
 
 
@@ -568,4 +595,7 @@ _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
 _READ_ONLY_PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
     "planning": lambda _task: _PLAN_RETURN_LINES,
     "reviewing": lambda task: _reviewing_phase_lines(task, read_only_venue=True),
+    "answering": lambda task: _answering_phase_lines(task, read_only_venue=True),
+    "requesting_review": lambda _task: REQUESTING_REVIEW_LINES,
+    "shipping": lambda _task: SHIPPING_LINES,
 }

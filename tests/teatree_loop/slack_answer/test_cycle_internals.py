@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.models import PendingChatInjection, Task
+from teatree.core.models import DmContext, PendingChatInjection, Task
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import (
     SlackAnswerReport,
@@ -21,8 +21,8 @@ from teatree.loop.slack_answer.cycle import (
     _react_eyes_once,
     _Unit,
     run_slack_answer_cycle,
-    verify_reply_visible,
 )
+from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread
 from teatree.types import RawAPIDict
 
 
@@ -56,6 +56,7 @@ class RecordingBackend:
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
     thread_replies: dict[str, list[RawAPIDict]] = field(default_factory=dict)
+    user_id: str = "UUSER"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -109,7 +110,7 @@ class FailingReactBackend(RecordingBackend):
 
 
 def _row(text: str, ts: str = "1.0") -> PendingChatInjection:
-    row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text)
+    row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text, context=DmContext(user_id="UUSER"))
     assert row is not None
     return row
 
@@ -125,12 +126,12 @@ class TestVerifyReplyVisible:
                 msg = "network down"
                 raise RuntimeError(msg)
 
-        assert verify_reply_visible(Boom(), channel="C", thread_root="root.ts") is False
+        assert bot_reply_present_in_thread(Boom(), channel="C", thread_root="root.ts") is False
 
     def test_present_bot_reply_under_root_is_true(self) -> None:
         backend = RecordingBackend(thread_replies={"root.ts": [{"ts": "r-bot", "user": _BOT_UID, "text": "hi"}]})
 
-        assert verify_reply_visible(backend, channel="C", thread_root="root.ts") is True
+        assert bot_reply_present_in_thread(backend, channel="C", thread_root="root.ts") is True
 
 
 class TestReactEyesOnce:

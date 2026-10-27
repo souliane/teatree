@@ -33,7 +33,8 @@ from teatree.agents.read_only_venue_brief import (
 )
 from teatree.agents.runner_preparation import PreparedRun
 from teatree.backends.github.client import GitHubCodeHost
-from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import LandscapeArtifact, RoundMetric, Session, Task, TaskAttempt, Ticket
+from teatree.core.review.review_delta import BRIEF_PATCH_CHARS
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -45,6 +46,13 @@ from tests.teatree_agents._read_only_review_world import (
 )
 
 _ISSUE_URL = "https://github.com/example-org/example-repo/issues/5"
+_LISTED_URLS = tuple(f"https://github.com/example-org/example-repo/issues/{number}" for number in (21, 22))
+_TRIAGE_REASON = (
+    "Periodic needs-triage assessment (cadence) | ASK-GATE: do NOT act on any issue.\nISSUES:\n"
+    + "\n".join(f"- {url} | Title {index} | needs-triage" for index, url in enumerate(_LISTED_URLS))
+)
+_UMBRELLA_DIRECTIVE_URL = "https://github.com/souliane/teatree/issues/3009#directive=3"
+_DIRECTIVE_REASON = "You are the teatree directive INTERPRETER (read-only).\nDirective (verbatim):\nnever retry a hold"
 _BODY = "## Problem\nThe planner needs the body.\n"
 
 
@@ -108,6 +116,24 @@ class _Host:
         return self.diffs
 
 
+class _IssuesHost(_Host):
+    def __init__(self, bodies: dict[str, str], *, unreadable: bool = False) -> None:
+        super().__init__()
+        self.bodies = bodies
+        self.unreadable = unreadable
+        self.comments_by_url: dict[str, list[dict[str, object]]] = {
+            url: [{"user": {"login": "example-dev"}, "body": f"note on {url}"}] for url in bodies
+        }
+
+    def get_issue(self, issue_url: str) -> dict[str, object]:
+        if self.unreadable:
+            return {"error": "Not found"}
+        return {"body": self.bodies.get(issue_url, "A body.")}
+
+    def list_issue_comments(self, *, issue_url: str) -> list[dict[str, object]]:
+        return self.comments_by_url.get(issue_url, [])
+
+
 def _provider(host: _Host) -> SimpleNamespace:
     return SimpleNamespace(get_code_host_for_url=lambda overlay, url: host)
 
@@ -148,6 +174,10 @@ class TestTheReadOnlyVenueBrief(TestCase):
             ),
             patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
             patch("teatree.agents.read_only_venue_brief.fetch_branch", side_effect=fetch_error) as self.fetch,
+            patch(
+                "teatree.core.review.live_head.live_head_at",
+                return_value=SimpleNamespace(sha=(task.ticket.extra or {}).get("reviewed_sha", ""), unreadable=False),
+            ),
         ):
             return runner_mod._prepare_run(
                 task, preflight, phase=task.phase, handoff=handoff, credential=DispatchCredential()
@@ -505,6 +535,76 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "--- SKILL: review ---" in self._system_context(prepared)
         assert len(self._system_context(prepared).encode()) <= MAX_APPEND_BYTES
 
+    def _phase_task(self, phase: str, *, issue_url: str, reason: str = "") -> Task:
+        ticket = Ticket.objects.create(issue_url=issue_url)
+        return Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase, execution_reason=reason
+        )
+
+    def test_real_scoping_triage_and_directive_briefs_are_admitted_without_a_teatree_command(self) -> None:
+        cases = {
+            "scoping": (f"{_ISSUE_URL}30", ""),
+            "triage_assessing": ("triage-assessor://example-overlay", _TRIAGE_REASON),
+            "directive_interpreting": (_UMBRELLA_DIRECTIVE_URL, _DIRECTIVE_REASON),
+        }
+        for phase, (issue_url, reason) in cases.items():
+            with self.subTest(phase=phase):
+                self.skills = self._phase_bundle(phase)
+
+                prepared = self._prepare(
+                    self._phase_task(phase, issue_url=issue_url, reason=reason),
+                    host=_IssuesHost(dict.fromkeys(_LISTED_URLS, "b")),
+                )
+                context = self._system_context(prepared)
+
+                assert context.startswith("\n".join(READ_ONLY_DIRECTIVE))
+                assert len(context.encode()) <= MAX_APPEND_BYTES
+                assert not _T3_INVOCATION.search(context), _T3_INVOCATION.findall(context)
+                assert not _T3_INVOCATION.search(prepared.prompt), _T3_INVOCATION.findall(prepared.prompt)
+
+    def test_triage_brief_inlines_every_listed_issue_with_its_comments(self) -> None:
+        host = _IssuesHost({_LISTED_URLS[0]: "Body of the first issue.", _LISTED_URLS[1]: "Body of the second issue."})
+        self.skills = self._phase_bundle("triage_assessing")
+
+        prepared = self._prepare(
+            self._phase_task("triage_assessing", issue_url="triage-assessor://example-overlay", reason=_TRIAGE_REASON),
+            host=host,
+        )
+
+        for url in _LISTED_URLS:
+            assert f"--- issue {url} ---\n{host.bodies[url]}" in prepared.prompt
+            assert f"--- comments on {url} ---" in prepared.prompt
+            assert f"note on {url}" in prepared.prompt
+        assert "fetch nothing" in prepared.prompt
+
+    def test_a_triage_brief_that_lists_no_readable_issue_refuses_the_executor_run(self) -> None:
+        self.skills = self._phase_bundle("triage_assessing")
+        host = _IssuesHost(dict.fromkeys(_LISTED_URLS, "b"))
+        no_issue = self._phase_task("triage_assessing", issue_url="triage-assessor://one", reason="ISSUES:\n")
+        not_forge = self._phase_task(
+            "triage_assessing", issue_url="triage-assessor://two", reason="ISSUES:\n- https://example.test/x | t | l"
+        )
+
+        assert "lists no issue to read" in str(self._refusal(no_issue, host))
+        assert "is not a forge issue" in str(self._refusal(not_forge, host))
+
+    def test_a_triage_listed_issue_that_cannot_be_read_refuses_the_executor_run(self) -> None:
+        self.skills = self._phase_bundle("triage_assessing")
+        host = _IssuesHost(dict.fromkeys(_LISTED_URLS, "b"), unreadable=True)
+        task = self._phase_task("triage_assessing", issue_url="triage-assessor://three", reason=_TRIAGE_REASON)
+
+        assert "the issue body could not be read" in str(self._refusal(task, host))
+
+    def test_directive_brief_carries_the_interpreter_contract_verbatim(self) -> None:
+        self.skills = self._phase_bundle("directive_interpreting")
+
+        prepared = self._prepare(
+            self._phase_task("directive_interpreting", issue_url=_UMBRELLA_DIRECTIVE_URL, reason=_DIRECTIVE_REASON)
+        )
+
+        assert _DIRECTIVE_REASON in prepared.prompt
+        assert _BODY not in prepared.prompt
+
     def test_real_review_bundles_deliver_required_skills_without_file_loads(self) -> None:
         for phase in ("reviewing", "critic_reviewing"):
             with self.subTest(phase=phase):
@@ -555,6 +655,113 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert "Use the dispatched head in the DIFF UNDER REVIEW block" in context
         assert "Set gh_verify_result green only when WORKER CI says green" in context
         assert "git rev-parse HEAD" not in context
+
+    def test_delta_review_skips_the_forge_whole_pr_diff(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=1,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+fixed line\n",
+                "delta_files": ["src/example.py"],
+                "carried": [],
+            },
+        )
+        host = _Host()
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="green"),
+            ),
+            patch.object(host, "get_pr_file_diffs", side_effect=AssertionError("whole PR diff read")),
+        ):
+            prompt = self._prepare(task, host=host).prompt
+        assert "+fixed line" in prompt
+        assert "REVIEW CASE: delta" in prompt
+
+    def test_truncated_delta_refuses_the_read_only_venue(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=1,
+            detail={
+                "case": "delta",
+                "prior_head": "a" * 40,
+                "patch": "+" * (BRIEF_PATCH_CHARS + 1),
+                "delta_files": ["src/example.py"],
+                "carried": [],
+            },
+        )
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="green"),
+            ),
+        ):
+            refusal = self._refusal(task)
+        assert "review delta patch was truncated" in str(refusal)
+
+    def test_empty_delta_still_shows_worker_ci(self) -> None:
+        head = "b" * 40
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/example-org/example-repo/pull/5",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": head},
+        )
+        task = self._task(ticket)
+        task.phase = "reviewing"
+        task.save(update_fields=["phase"])
+        RoundMetric.objects.open(
+            kind="review",
+            ticket=ticket,
+            subject=head,
+            size=0,
+            detail={"case": "delta", "prior_head": "a" * 40, "patch": "", "delta_files": [], "carried": []},
+        )
+        with (
+            patch(
+                "teatree.agents.read_only_venue_brief.live_head_at",
+                return_value=SimpleNamespace(sha=head, unreadable=False),
+            ),
+            patch(
+                "teatree.agents.read_only_venue_brief.live_checks_at",
+                return_value=SimpleNamespace(status="green", detail="2 runs green"),
+            ),
+        ):
+            prompt = self._prepare(task).prompt
+
+        assert "REVIEW CASE: delta" in prompt
+        assert f"WORKER CI at dispatched head {head}: green" in prompt
 
     def test_large_review_keeps_required_skill_and_full_diff_within_system_budget(self) -> None:
         head = "a" * 40
@@ -625,10 +832,9 @@ class TestTheReadOnlyVenueBrief(TestCase):
                 return_value=SimpleNamespace(status="unreadable", detail="no workflow runs"),
             ),
         ):
-            prepared = self._prepare(task)
+            refusal = self._refusal(task)
 
-        assert f"WORKER CI at dispatched head {head}: unreadable" in prepared.prompt
-        assert "otherwise set pending or failed and return hold" in self._system_context(prepared)
+        assert "worker CI" in str(refusal)
 
     def test_remote_review_refuses_a_head_that_moves_during_the_diff_read(self) -> None:
         head = "a" * 40

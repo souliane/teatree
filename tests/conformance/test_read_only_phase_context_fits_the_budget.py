@@ -5,6 +5,7 @@ from dataclasses import fields
 from django.test import TestCase
 
 from teatree.agents.context_budget import MAX_APPEND_BYTES
+from teatree.agents.read_only_draft_facts import DRAFT_FACTS_CAP_BYTES
 from teatree.agents.read_only_venue_brief import (
     HANDOFF_CAP_BYTES,
     ISSUE_BODY_CAP_BYTES,
@@ -15,6 +16,7 @@ from teatree.agents.read_only_venue_brief import (
     SURVEY_CAP_BYTES,
     TICKET_CONTEXT_CAP_BYTES,
     ReadOnlyFacts,
+    fit_read_only_context,
     read_only_system_context,
 )
 from tests.teatree_agents._read_only_review_world import STAND_IN_BYTES, read_only_context, read_only_review_world
@@ -27,6 +29,9 @@ _PHASES = (
     ("reviewing", False, "--- SKILL: review ---"),
     ("reviewing", True, "--- SKILL: review ---"),
     ("critic_reviewing", False, "--- SKILL: review ---"),
+    ("answering", False, "--- SKILL: answerer ---"),
+    ("requesting_review", False, "--- SKILL: review-request ---"),
+    ("shipping", False, "--- SKILL: ship ---"),
 )
 
 
@@ -40,6 +45,7 @@ class TestReadOnlyPhaseBudget(TestCase):
             "survey": SURVEY_CAP_BYTES,
             "review_diff": REVIEW_DIFF_CAP_BYTES,
             "review_checks": REVIEW_CHECKS_CAP_BYTES,
+            "draft_facts": DRAFT_FACTS_CAP_BYTES,
         }
         assert {field.name for field in fields(ReadOnlyFacts)} == {*caps, "review_head"}
         worst_bytes = MAX_APPEND_BYTES + sum(caps.values()) + 8 * 1024 + 40
@@ -49,12 +55,13 @@ class TestReadOnlyPhaseBudget(TestCase):
         sizes: dict[str, int] = {}
         with read_only_review_world():
             for phase, reviewer, lifecycle in _PHASES:
-                context = read_only_system_context(read_only_context(phase, reviewer=reviewer))
+                fitted, continued = fit_read_only_context(read_only_context(phase, reviewer=reviewer))
+                context = read_only_system_context(fitted)
                 label = f"{phase}:{'reviewer' if reviewer else 'author'}"
                 sizes[label] = len(context.encode())
                 assert context.startswith("\n".join(READ_ONLY_DIRECTIVE)), label
                 assert "--- RULES.md ---" in context, label
-                assert lifecycle in context, label
+                assert lifecycle in context + continued, label
                 assert "summary" in context, label
                 if phase == "planning":
                     assert all("x" * size in context for size in STAND_IN_BYTES.values() if size > 10_000), label

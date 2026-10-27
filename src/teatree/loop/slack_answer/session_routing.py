@@ -16,6 +16,7 @@ from teatree.agents.live_client import (
 from teatree.core.models import PendingChatInjection, SessionCommand, Task, ThreadBinding
 from teatree.core.models.task_handoff import is_operator_paused, release_operator_pause
 from teatree.core.models.thread_binding import slack_command_id
+from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading
 from teatree.loop.question_binding import (
@@ -27,7 +28,7 @@ from teatree.loop.question_binding import (
     configured_owner_id,
 )
 from teatree.loop.slack_answer.control_verbs import control_verb
-from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread
+from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_match_in_thread
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -183,23 +184,28 @@ def _command_reply(command: SessionCommand) -> str:
 def _post_live_reply(backend: "MessagingBackend", unit: "_Unit", reply: str) -> bool:
     root = unit.lead.thread_ts or unit.slack_ts
     floor = unit.rows[-1].slack_ts
-    if bot_reply_present_in_thread(
+    matched_ts = bot_reply_match_in_thread(
         backend, channel=unit.channel, thread_root=root, after_ts=floor, expected_ts=ExpectedReply(None, reply)
-    ):
+    )
+    if matched_ts is not None:
+        record_ticket_thread_post(unit.channel, root, matched_ts)
         return True
     posted = backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=reply)
     posted_ts = posted.get("ts")
-    return bool(
-        posted.get("ok") is True
-        and isinstance(posted_ts, str)
-        and bot_reply_present_in_thread(
+    matched_ts = (
+        bot_reply_match_in_thread(
             backend,
             channel=unit.channel,
             thread_root=root,
             after_ts=floor,
             expected_ts=ExpectedReply(posted_ts, reply),
         )
+        if posted.get("ok") is True and isinstance(posted_ts, str)
+        else None
     )
+    if matched_ts is not None:
+        record_ticket_thread_post(unit.channel, root, matched_ts)
+    return matched_ts is not None
 
 
 def _post_confirmed(backend: "MessagingBackend", unit: "_Unit", reply: str, *, kind: str) -> bool:
@@ -485,11 +491,7 @@ def _apply_live_session(
     return True
 
 
-def _reject_foreign_bound_unit(
-    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding | None
-) -> bool:
-    if binding is None:
-        return False
+def _reject_foreign_unit(backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport") -> bool:
     owner_id = configured_owner_id(backend)
     if owner_id and unit.lead.user_id == owner_id:
         return False

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.worktree.dev_repo import issue_url_slug, resolve_dev_repo, resolve_repo_names
 
 _GIT = "git"
@@ -55,6 +56,8 @@ class _ProductOverlay:
     def get_workspace_repos(self) -> list[str]:
         return ["backend", "frontend"]
 
+    metadata = OverlayMetadata()
+
 
 class TestResolveRepoNames:
     def test_explicit_repos_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,13 +72,51 @@ class TestResolveRepoNames:
             "souliane/teatree",
         ]
 
-    def test_no_dev_repo_falls_back_to_product_repos(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: None)
+    def test_dev_repo_precedes_declared_issue_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: "souliane/teatree")
 
         assert resolve_repo_names(_ProductOverlay(), "https://github.com/acme/backend/issues/1", "") == [
-            "backend",
-            "frontend",
+            "souliane/teatree",
         ]
+
+    def test_blank_issue_url_never_selects_the_overlay_repo_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: None)
+
+        assert resolve_repo_names(_ProductOverlay(), "", "") == []
+
+    def test_issue_with_no_derivable_repo_is_never_the_overlay_whole_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: None)
+
+        assert resolve_repo_names(_ProductOverlay(), "https://github.com/acme/tracker/issues/1", "") == []
+
+    def test_issue_owned_by_one_bare_repo_selects_only_that_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: None)
+
+        assert resolve_repo_names(_ProductOverlay(), "https://github.com/acme/backend/issues/1", "") == ["backend"]
+
+    def test_most_specific_full_slug_owns_issue(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        overlay = _ProductOverlay()
+        monkeypatch.setattr(overlay, "get_workspace_repos", lambda: ["backend", "sub/backend", "acme/sub/backend"])
+        monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: None)
+
+        assert resolve_repo_names(overlay, "https://gitlab.com/acme/sub/backend/-/issues/1", "") == ["acme/sub/backend"]
+
+    def test_overlay_issue_hint_wins_over_dev_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        overlay = _ProductOverlay()
+        monkeypatch.setattr(overlay.metadata, "get_issue_repos", lambda _url: ["frontend", "", "frontend"])
+        monkeypatch.setattr("teatree.core.worktree.dev_repo.resolve_dev_repo", lambda _url: "souliane/teatree")
+
+        assert resolve_repo_names(overlay, "https://github.com/acme/backend/issues/1", "") == ["frontend"]
+
+    def test_explicit_repos_skip_issue_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        overlay = _ProductOverlay()
+
+        def unexpected_hint(_url: str) -> list[str]:
+            raise RuntimeError
+
+        monkeypatch.setattr(overlay.metadata, "get_issue_repos", unexpected_hint)
+
+        assert resolve_repo_names(overlay, "https://github.com/acme/backend/issues/1", "frontend") == ["frontend"]
 
     def test_repo_branch_suffix_is_stripped_from_names(self) -> None:
         # #33: a `repo:branch` token contributes only the repo NAME here; the

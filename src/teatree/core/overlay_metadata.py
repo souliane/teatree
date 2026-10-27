@@ -19,6 +19,11 @@ __all__ = ["OverlayMetadata"]
 
 
 class OverlayMetadata:
+    DEFAULT_WORK_ITEM_RETURN_LINES: tuple[str, ...] = ()
+
+    def work_item_return_lines(self) -> tuple[str, ...]:
+        return self.DEFAULT_WORK_ITEM_RETURN_LINES
+
     def validate_pr(
         self, title: str, description: str, *, require_sections: bool = True, repo: str = ""
     ) -> ValidationResult:
@@ -78,6 +83,11 @@ class OverlayMetadata:
         return subject
 
     def get_followup_repos(self) -> list[str]:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
+        return []
+
+    def get_issue_repos(self, issue_url: str) -> list[str]:
+        """Optional repo hint for an issue; an empty answer leaves resolution to core."""
+        del self, issue_url
         return []
 
     @staticmethod

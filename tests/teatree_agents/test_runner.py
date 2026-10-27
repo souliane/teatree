@@ -1072,6 +1072,17 @@ class TestResolveTaskCwd(TestCase):
         ):
             assert _resolve_task_cwd(task) == "/ws/souliane/teatree"
 
+    def test_triage_and_directive_phases_with_no_worktree_start_in_the_main_clone(self) -> None:
+        from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
+
+        with tempfile.TemporaryDirectory() as clone_dir:
+            (Path(clone_dir) / ".git").mkdir()
+            for phase in ("triage_assessing", "directive_interpreting"):
+                ticket = planned_ticket()
+                task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase)
+                with self.subTest(phase=phase), patch.dict(os.environ, {"T3_REPO": clone_dir}):
+                    assert _resolve_task_cwd(task) == clone_dir
+
     def test_non_dispatch_phase_with_no_worktree_keeps_unset_cwd(self) -> None:
         # Only the scanner-dispatched review phase falls back to the main clone; every
         # other phase keeps the historical ``None`` when it has no ticket worktree.

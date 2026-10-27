@@ -21,9 +21,12 @@ from typing import Any
 
 import pytest
 from asgiref.sync import async_to_sync
+from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.config import SAFETY_POSTURE_KEYS, UserSettings
+from teatree.config import SAFETY_POSTURE_KEYS, UserSettings, get_effective_settings
+from teatree.config.reviewer_identities import effective_independent_reviewer_identities
+from teatree.config.trusted_authors import effective_trusted_issue_authors
 from teatree.core.models import ConfigSetting
 from teatree.mcp import write_tools
 from teatree.mcp.server import build_server
@@ -47,6 +50,7 @@ _DELEGATION_GLOBS = (
     "enforce_*",
     "*_threshold",
     "*_identities",
+    "user_identity_aliases",
     "*_paid_fallback",
 )
 
@@ -59,6 +63,7 @@ _DELEGATION_ATTACK_KEYS = (
     "send_proxy_allowlist",
     "independent_reviewer_identities",
     "autonomy",
+    "user_identity_aliases",
 )
 
 
@@ -161,6 +166,17 @@ class TestConfigSettingSetEndToEnd(TestCase):
         with pytest.raises(Exception, match="refused"):
             _call("config_setting_set", {"key": "substrate_auto_merge_authorized_by", "value": '"triage-bot"'})
         assert not ConfigSetting.objects.filter(key="substrate_auto_merge_authorized_by").exists()
+
+    def test_owner_aliases_are_cli_only_and_keep_identity_consumers(self) -> None:
+        with pytest.raises(Exception, match="refused"):
+            _call("config_setting_set", {"key": "user_identity_aliases", "value": '["alice"]'})
+        assert not ConfigSetting.objects.filter(key="user_identity_aliases").exists()
+
+        call_command("config_setting", "set", "user_identity_aliases", '["alice"]')
+        settings = get_effective_settings()
+        assert settings.user_identity_aliases == ["alice"]
+        assert "alice" in effective_independent_reviewer_identities(settings)
+        assert "alice" in effective_trusted_issue_authors(settings)
 
     def test_reviewed_settable_key_is_written(self) -> None:
         # A delegation-shaped but reviewed-benign tuning knob still goes through.

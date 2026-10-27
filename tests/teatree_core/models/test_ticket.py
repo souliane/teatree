@@ -385,6 +385,41 @@ class TestTicketTransitions(TestCase):
         assert ticket.state == Ticket.State.WORK_STARTED
         assert "tests_passed" not in ticket.extra
 
+    def test_rework_from_held_review_clears_shipping_hold(self) -> None:
+        ticket = Ticket.objects.create(
+            state=Ticket.State.SELF_REVIEWED,
+            extra={"shipping_hold": {"reason": "awaiting evidence"}, "branch": "5346-work"},
+        )
+
+        ticket.rework()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert ticket.extra == {"branch": "5346-work"}
+
+    def test_shipping_transitions_clear_stale_hold_before_followup(self) -> None:
+        for state, transition in (
+            (Ticket.State.WORK_STARTED, "reconcile_reviewed"),
+            (Ticket.State.SELF_REVIEWED, "ship"),
+            (Ticket.State.SELF_REVIEWED, "reconcile_merged"),
+            (Ticket.State.MERGED, "reopen_for_followup"),
+        ):
+            with self.subTest(transition=transition):
+                ticket = Ticket.objects.create(
+                    state=state,
+                    extra={"shipping_hold": {"reason": "awaiting evidence"}, "branch": "5346-work"},
+                )
+                with (
+                    patch.object(Ticket, "refuse_unless_shippable"),
+                    patch("teatree.core.models.ticket.get_gate", return_value=lambda _: None),
+                ):
+                    getattr(ticket, transition)()
+                ticket.save()
+                ticket.refresh_from_db()
+                assert "shipping_hold" not in ticket.extra
+                assert ticket.extra["branch"] == "5346-work"
+
     def test_ignore_hides_ticket_from_in_flight(self) -> None:
         ticket = Ticket.objects.create()
         ticket.scope()
@@ -462,17 +497,17 @@ class TestHasShippableDiff(TestCase):
 
         assert ticket.has_shippable_diff() is True
 
-    def test_review_with_no_diff_skips_shipping_and_auto_ignores(self) -> None:
+    def test_review_with_no_diff_holds_until_settled(self) -> None:
         ticket = self._make_ticket_with_worktree(commits_ahead=0)
         _advance_ticket_to_tested(ticket)
 
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
 
-        assert ticket.state == Ticket.State.IGNORED
-        assert ticket.extra.get("ignored_from") == Ticket.State.SELF_REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert ticket.extra["shipping_hold"]["reason"] == "awaiting the workspace and forge check"
         assert not ticket.tasks.filter(phase="shipping").exists()
-        assert "no shippable diff" in ticket.extra.get("shipping_skipped", "")
+        assert "no shippable diff" in ticket.extra["shipping_hold"]["skipped"]
 
     def test_review_schedules_shipping_when_branch_has_commits(self) -> None:
         ticket = self._make_ticket_with_worktree(commits_ahead=1)

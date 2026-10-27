@@ -65,6 +65,7 @@ class TestWorktreeProvisioner(TestCase):
 
         assert result.ok is False
         assert "no repos" in result.detail.lower()
+        assert result.retryable is True
 
     def test_duplicate_recorded_rows_use_the_first_row(self) -> None:
         ticket = self._scoped_ticket(repos=["repo-a"])

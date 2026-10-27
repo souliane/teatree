@@ -3,12 +3,14 @@
 from teatree.agents.envelope_refusal import (
     corrective_instruction,
     is_no_envelope_refusal,
+    is_owner_stop_refusal,
     is_recorder_refusal,
     is_review_shape_refusal,
+    is_rubric_grades_refusal,
     refused_envelope_instruction,
 )
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import WRONG_HEAD_RETRY_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import VENUE_LIMIT_PREFIX, WRONG_HEAD_RETRY_PREFIX
 from teatree.core.models import Task
 from teatree.core.models.auto_review_dispatch import build_review_contract
 from teatree.core.models.merge_clear import is_commit_sha
@@ -25,26 +27,41 @@ def corrective_note(task: Task, error: str) -> str | None:
     ``debugging`` (already in :data:`CORRECTIVE_PHASES`) plus every no-evidence,
     non-prose-exempt phase outside it (``architectural_review``, ``bughunt``, ``e2e``,
     ``codex_*``) — which the old gate left paging a human on the first prose-only run.
-    A RECORDER-side refusal stays gated on the set, except that a ``reviewing`` run whose
-    verdict envelope was refused for a misnamed, misplaced or malformed key is told that
-    refusal once — the reopened row resumes its own conversation, so the reviewer fixes
-    the keys without repeating the review. A withheld verdict is still a judgement to
-    surface. ``None`` for a genuine defect, and for a task whose one corrective retry is
-    already spent.
+    A RECORDER-side refusal stays gated on the set, except for an owner card on any phase
+    and a ``reviewing`` run whose envelope has misnamed, misplaced, or malformed keys.
+    The reopened row resumes its conversation for one correction. A withheld verdict
+    is still a judgement to surface. ``None`` for a genuine defect or a spent retry.
     """
     if CORRECTIVE_MARKER in task.execution_reason:
         return None
     phase = normalize_phase(task.phase)
+    if phase == "reviewing" and error.startswith(VENUE_LIMIT_PREFIX):
+        return "Retry this review on another venue; the previous venue could not complete it."
     if phase == "reviewing" and (head := wrong_head_retry_head(error)):
         return (
             f"Retry the review once at the live pull request head {head}. "
             f"Run `t3 review checkout {task.ticket.issue_url} --sha {head}` and verify HEAD. "
             "If checkout still resolves elsewhere, return review_head_mismatch with the observed SHA."
         )
+    if specific := _specific_refusal_note(phase, error):
+        return specific
     if is_no_envelope_refusal(error) or (phase in CORRECTIVE_PHASES and is_recorder_refusal(error)):
         return corrective_instruction(task.phase)
-    if phase == "reviewing" and is_review_shape_refusal(error):
-        return refused_envelope_instruction(error)
+    return refused_envelope_instruction(error) if phase == "reviewing" and is_review_shape_refusal(error) else None
+
+
+def _specific_refusal_note(phase: str, error: str) -> str | None:
+    if is_owner_stop_refusal(error):
+        return (
+            f"Your owner question was refused ({error}). Unless only the owner can make this decision, decide it "
+            "yourself from the standing rules and finish the work; if only the owner can, return the complete "
+            "result envelope with a card within those limits, plain JSON, nothing after it."
+        )
+    if phase == "reviewing" and is_rubric_grades_refusal(error):
+        return (
+            f"Your rubric grades were refused ({error}). Grade every criterion listed under TICKET RUBRIC "
+            "as it reads now, then return the whole rubric_grades array and complete result envelope."
+        )
     return None
 
 

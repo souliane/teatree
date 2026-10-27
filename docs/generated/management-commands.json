@@ -327,6 +327,20 @@
       "subcommands": []
     },
     {
+      "help": "Create or remove a signed GitHub repository webhook.",
+      "name": "github_webhook",
+      "subcommands": [
+        {
+          "help": "",
+          "name": "connect"
+        },
+        {
+          "help": "",
+          "name": "disconnect"
+        }
+      ]
+    },
+    {
       "help": "Hand all current work from this session to another session.",
       "name": "handover",
       "subcommands": [
@@ -1285,6 +1299,10 @@
         {
           "help": "Issue a per-diff CLEAR \u2014 the orchestrator's only merge output (BLUEPRINT \u00a717.4.2)",
           "name": "clear"
+        },
+        {
+          "help": "Check held no-diff reviews; --dry-run reads without writing",
+          "name": "settle-holds"
         },
         {
           "help": "Supersede the ticket's active tasks and queue one coding task carrying its held self-review's findings",
