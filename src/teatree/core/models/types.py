@@ -411,7 +411,7 @@ class PlanAdequacy(TypedDict, total=False):
     ``acceptance_criteria.content`` is the ticket's acceptance-criteria list, which
     ``PlanArtifact.record`` turns into the ticket's ``core.Rubric`` rows — the plan is
     the one home for it, and a reasoned negative there writes no rows and waives nothing
-    (the rubric gate's one waiver is the human-authorized ``ticket plan-bypass``).
+    (a reasoned negative does not grant the human-authorized plan bypass).
     """
 
     design: AdequacySection
