@@ -306,6 +306,7 @@ def execute_bound_merge(
     ref: PrRef,
     expected_head_oid: str,
     squash: bool = True,
+    query: CodeHostQuery | None = None,
 ) -> str:
     """Squash-merge bound to ``expected_head_oid`` — fail closed on head drift.
 
@@ -353,7 +354,10 @@ def execute_bound_merge(
     argument the gates above rest on, applied to the one post-merge fact that was
     written only by the keystone before (#3984).
     """
-    query = CodeHostQuery.for_ref(ref)
+    query = query or CodeHostQuery.for_ref(ref)
+    if query.ref != ref:
+        msg = "bound merge query does not match the reviewed pull request"
+        raise MergePreconditionError(msg)
     slug, pr_id = ref.slug, ref.pr_id
     # #3244 defence-in-depth: the solo-overlay bypass (``merge_pr_bound`` →
     # here) reaches this shared chokepoint with NO keystone preconditions run, so
@@ -577,7 +581,17 @@ def _merge_ticket_pr_inner(
         reconciled = True
     else:
         clear.bind_merge_mode(squash=squash)
-        merged_sha = execute_bound_merge(ref=ref, expected_head_oid=precheck.verified_sha, squash=squash)
+        merge_query = CodeHostQuery.for_ref(ref)
+        if clear.actor_kind:
+            forge_account = merge_query.backend.current_user().strip()
+            if not forge_account:
+                msg = "merge forge account could not be verified before execution"
+                raise MergePreconditionError(msg)
+            clear.merge_forge_account = forge_account
+            clear.save(update_fields=["merge_forge_account"])
+        merged_sha = execute_bound_merge(
+            ref=ref, expected_head_oid=precheck.verified_sha, squash=squash, query=merge_query
+        )
         reconciled = False
     # Post-merge, for the AUDIT only: no gate reads this back, so an ``unreadable``
     # verdict is stamped as-is rather than laundered into a false ``failed``.
@@ -591,6 +605,7 @@ def _merge_ticket_pr_inner(
             expedited_by=precheck.expedited_by,
             standing_delegation_by=precheck.standing_delegation_by,
             merged_without_squash=clear.merged_without_squash,
+            forge_account=clear.merge_forge_account,
         ),
     )
     logger.info(

@@ -2,6 +2,7 @@
 
 from typing import TypedDict
 
+from teatree.core.models.review_hold_disposition import HoldPointResponse
 from teatree.core.models.types import RubricGrade
 
 
@@ -44,3 +45,35 @@ class ReviewVerdictEnvelope(TypedDict, total=False):
     evidence_gaps: list[str]
     merge_result_retake: bool
     rubric_grades: list[RubricGrade]
+    hold_dispositions: list["HoldDispositionResponse"]
+
+
+class HoldDispositionResponse(TypedDict):
+    hold_id: int
+    points: list[HoldPointResponse]
+
+
+HOLD_DISPOSITIONS_SCHEMA_PROPERTY = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "hold_id": {"type": "integer"},
+            "points": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "classification": {"type": "string", "enum": ["venue_limit", "disproved_premise"]},
+                        "citation": {"type": "string"},
+                    },
+                    "required": ["index", "classification", "citation"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["hold_id", "points"],
+        "additionalProperties": False,
+    },
+}

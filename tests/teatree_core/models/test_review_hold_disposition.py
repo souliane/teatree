@@ -14,7 +14,15 @@ class TestReviewHoldDisposition(TestCase):
             reviewed_sha=_SHA,
             verdict="hold",
             reviewer_identity="first-reviewer",
-            findings=[Finding(severity="major", summary="premise is unproved", file="a.py", line=3)],
+            findings=[
+                Finding(
+                    severity="major",
+                    summary="premise is unproved",
+                    file="a.py",
+                    line=3,
+                    reproduction="pytest test_premise.py: failed",
+                )
+            ],
         )
         clearing = ReviewVerdict.record(
             pr_id=7,

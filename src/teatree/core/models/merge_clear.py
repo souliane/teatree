@@ -185,6 +185,8 @@ class ClearRequest:
     blast_class: str = "logic"
     ticket: "Ticket | None" = None
     human_authorizer: str = ""
+    actor_kind: str = "hand_session"
+    delegation: str = "none"
     executing_loop_identity: str = "merge-loop"
     # The forge the merge transport must bind to ("github" / "gitlab"), resolved
     # by ``teatree.core.merge.host_kind.resolve_host_kind`` at issuance and
@@ -208,6 +210,18 @@ def _assert_no_standing_hold_for_clear(*, slug: str, pr_id: int, head_sha: str) 
     verdict_model.objects.assert_no_standing_hold_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
 
 
+def _normalize_clear_actor(request: ClearRequest) -> tuple[str, str]:
+    actor_kind = request.actor_kind.strip().lower()
+    if actor_kind not in {choice.value for choice in MergeClear.ActorKind}:
+        msg = f"Unknown clearance actor kind {request.actor_kind!r}"
+        raise ClearIssuanceError(msg)
+    delegation = request.delegation.strip()
+    if not delegation:
+        msg = "Clearance delegation source is required (use 'none' when none applies)"
+        raise ClearIssuanceError(msg)
+    return actor_kind, delegation
+
+
 class MergeClear(models.Model):
     """One orchestrator-issued authorisation for exactly one PR merge (§17.4.2).
 
@@ -217,6 +231,11 @@ class MergeClear(models.Model):
     refuses to merge if GitHub's live head moved off it (§17.4.3, the
     TOCTOU/replay defence closed by ``expected_head_oid``).
     """
+
+    class ActorKind(models.TextChoices):
+        OWNER = "owner", "Owner"
+        FACTORY_LOOP = "factory_loop", "Factory loop"
+        HAND_SESSION = "hand_session", "Hand session"
 
     if TYPE_CHECKING:
         # Django synthesises the ``<fk>_id`` shadow at class-prep time — invisible to a
@@ -264,6 +283,9 @@ class MergeClear(models.Model):
     # merge action. This records *who approved* it so the FSM/audit stays
     # coherent.
     human_authorizer = models.CharField(max_length=255, blank=True, default="")
+    actor_kind = models.CharField(max_length=32, choices=ActorKind.choices, blank=True, default="")
+    delegation = models.CharField(max_length=255, blank=True, default="")
+    merge_forge_account = models.CharField(max_length=255, blank=True, default="")
     # The recorded human authoriser of a PENDING-checks expedite waiver (§17.4.3 /
     # PR-07), and the local-full-CI-green attestation SHA it is bound to. Both empty
     # for a normal CLEAR. Set together (via ``ticket clear --expedite-authorize
@@ -382,6 +404,7 @@ class MergeClear(models.Model):
             raise ClearIssuanceError(msg)
 
         authorizer = request.human_authorizer.strip()
+        actor_kind, delegation = _normalize_clear_actor(request)
         if authorizer and normalized_blast != cls.BlastClass.SUBSTRATE:
             msg = (
                 f"human_authorizer is only valid with blast_class=substrate "
@@ -416,6 +439,8 @@ class MergeClear(models.Model):
                     gh_verify_result=normalized_verify,
                     blast_class=normalized_blast,
                     human_authorizer=authorizer,
+                    actor_kind=actor_kind,
+                    delegation=delegation,
                     expedite_authorizer=expedite_authorizer,
                     local_ci_green_sha=attestation_sha,
                 )
@@ -630,6 +655,7 @@ class MergeAudit(models.Model):
     merged_sha = models.CharField(max_length=64)
     merged_at = models.DateTimeField(default=timezone.now)
     required_checks_status = models.CharField(max_length=32)
+    forge_account = models.CharField(max_length=255, blank=True, default="")
     # The #1335-reconciled ``owner/repo`` the gate actually merged against,
     # stamped at merge time inside ``record_merge_and_advance``'s atomic block
     # (#19). It is the merge-time truth the S1/S3 signal joins read FIRST — a

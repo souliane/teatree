@@ -29,7 +29,7 @@ from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
-from teatree.core.models import Task
+from teatree.core.models import ReviewHoldDisposition, ReviewVerdict, Task
 from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 from teatree.core.review.live_head import live_head_at
@@ -73,6 +73,11 @@ def _review_verdict_return_lines(identity: str, *, read_only_venue: bool = False
         '                     "blast_class": "substrate"|"logic"|"docs",',
         '                     "findings": [{"severity": "...", "kind": "blocking"|"nit",',
         '                                   "summary": "...", "file": "...", "line": 0}]}',
+        (
+            'For a same-head HOLD, add "hold_dispositions": [{"hold_id": <id>, "points": '
+            '[{"index": <held finding index>, "classification": "disproved_premise"|"venue_limit", '
+            '"citation": "<fresh evidence>"}]}] to the merge_safe review_verdict.'
+        ),
         "BLOCKING: wrong behaviour, false claim, untested shipped behaviour, vacuous test, redundant",
         "test, duplicate definition, or red check. NIT: wording, naming, style, or placement.",
         "Only BLOCKING findings may hold a review; NITs need a merge_safe verdict and follow-up.",
@@ -402,10 +407,33 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
         *_VERIFICATION_BRIEF_LINES,
         *(() if read_only_venue else _green_proof_binding_lines(task)),
         *_review_verdict_return_lines(assigned_reviewer_identity_for(task), read_only_venue=read_only_venue),
+        *_standing_hold_brief_lines(task),
         *(() if read_only_venue else rubric_brief_lines(task)),
         *(() if read_only_venue else declared_seams_brief_lines(task)),
         *(() if read_only_venue else review_diff_brief_lines(task)),
     ]
+    return tuple(lines)
+
+
+def _standing_hold_brief_lines(task: Task) -> tuple[str, ...]:
+    target = review_target_for_task(task)
+    if target is None or not target.head_sha:
+        return ()
+    holds = ReviewVerdict.objects.unreconciled_holds_at(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
+    if not holds:
+        return ()
+    lines = [
+        (
+            "A later independent merge_safe verdict must answer EVERY standing HOLD point in "
+            "review_verdict.hold_dispositions; each answer needs classification and citation."
+        )
+    ]
+    for hold in holds:
+        lines.append(
+            f"HOLD {hold.pk} by {hold.reviewer_identity}: indices "
+            f"{sorted(ReviewHoldDisposition.blocking_indices(hold))}"
+        )
+        lines.extend(f"  {index}: {finding.describe()}" for index, finding in enumerate(hold.structured_findings))
     return tuple(lines)
 
 

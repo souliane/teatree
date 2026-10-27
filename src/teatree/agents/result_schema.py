@@ -26,6 +26,7 @@ from teatree.agents.result_payloads import (
 from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
 from teatree.agents.result_schema_review import (
+    HOLD_DISPOSITIONS_SCHEMA_PROPERTY,
     REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY,
     ReviewFinding,
     ReviewHeadMismatch,
@@ -315,6 +316,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                     "type": "array",
                     "items": {"type": "string", "enum": ["ci_unreadable", "tests_unavailable", "plan_unavailable"]},
                 },
+                "hold_dispositions": HOLD_DISPOSITIONS_SCHEMA_PROPERTY,
                 "merge_result_retake": {
                     "type": "boolean",
                     "description": (

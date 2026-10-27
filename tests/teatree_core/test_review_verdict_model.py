@@ -87,7 +87,14 @@ class TestRecordContract(TestCase):
             verdict="hold",
             reviewer_identity="first-reviewer",
             findings=[
-                Finding(severity="blocker", summary="CI result may be stale", file="a.py", line=1, basis="venue_limit")
+                Finding(
+                    severity="blocker",
+                    summary="CI result is stale",
+                    file="a.py",
+                    line=1,
+                    basis="executed",
+                    reproduction="checked the run at this head: stale",
+                )
             ],
         )
         clearing = ReviewVerdict.record(
@@ -120,7 +127,15 @@ class TestRecordContract(TestCase):
             reviewed_sha=_SHA,
             verdict="hold",
             reviewer_identity="first-reviewer",
-            findings=[Finding(severity="major", summary="a second issue", file="b.py", line=2)],
+            findings=[
+                Finding(
+                    severity="major",
+                    summary="a second issue",
+                    file="b.py",
+                    line=2,
+                    reproduction="pytest test_second.py: failed",
+                )
+            ],
         )
 
         assert (
@@ -192,7 +207,12 @@ class TestRecordContract(TestCase):
         assert only.kind == "nit"
 
     def test_an_explicit_blocking_kind_survives_the_finding_round_trip(self) -> None:
-        finding = Finding(severity="minor", summary="false statement", kind="blocking")
+        finding = Finding(
+            severity="minor",
+            summary="false statement",
+            kind="blocking",
+            reproduction="pytest test_statement.py: failed",
+        )
 
         assert Finding.from_dict(finding.as_dict()).kind == "blocking"
 
@@ -623,7 +643,9 @@ class TestUnreconciledHoldsAt(TestCase):
             reviewed_sha=_SHA,
             verdict="hold",
             reviewer_identity="cold-reviewer-a",
-            findings=[Finding(severity="major", summary="first blocker")],
+            findings=[
+                Finding(severity="major", summary="first blocker", reproduction="pytest test_blocker.py: failed")
+            ],
             ticket=first_ticket,
         )
         original_time = first.recorded_at
@@ -633,7 +655,7 @@ class TestUnreconciledHoldsAt(TestCase):
             reviewed_sha=_SHA,
             verdict="hold",
             reviewer_identity="COLD-REVIEWER-A",
-            findings=[Finding(severity="minor", summary="later detail")],
+            findings=[Finding(severity="minor", summary="later detail", reproduction="pytest test_detail.py: failed")],
             ticket=second_ticket,
         )
 
@@ -649,7 +671,7 @@ class TestUnreconciledHoldsAt(TestCase):
             reviewed_sha=_SHA,
             verdict="hold",
             reviewer_identity="cold-reviewer-a",
-            findings=[Finding(severity="minor", summary="later detail")],
+            findings=[Finding(severity="minor", summary="later detail", reproduction="pytest test_detail.py: failed")],
         )
         assert [finding.summary for finding in again.structured_findings] == ["first blocker", "later detail"]
 
@@ -752,6 +774,24 @@ class TestStalenessAndSafety(TestCase):
 
 
 class TestFindingRoundTrip(TestCase):
+    def test_code_anchored_claim_without_reproduction_is_advisory(self) -> None:
+        finding = Finding(
+            severity="critical", kind="blocking", summary="Documentation claims a runtime failure", file="a.py", line=4
+        )
+        assert finding.kind == "note"
+        assert finding.severity == "note"
+
+    def test_executed_reproduction_still_blocks(self) -> None:
+        finding = Finding(
+            severity="critical",
+            kind="blocking",
+            summary="runtime failure",
+            file="a.py",
+            line=4,
+            reproduction="pytest test_a.py: failed",
+        )
+        assert finding.kind == "blocking"
+
     def test_line_coerced_from_string_digits(self) -> None:
         assert Finding.from_dict({"severity": "nit", "summary": "s", "file": "a.py", "line": "7"}).line == 7
 

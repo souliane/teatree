@@ -11,7 +11,10 @@ def test_nit_only_hold_becomes_merge_safe() -> None:
 
 
 def test_blocking_finding_overrides_merge_safe() -> None:
-    envelope = {"verdict": "merge_safe", "findings": [{"severity": "major", "summary": "wrong result"}]}
+    envelope = {
+        "verdict": "merge_safe",
+        "findings": [{"severity": "major", "summary": "wrong result", "reproduction": "pytest result: failed"}],
+    }
 
     assert normalize_review_envelope(envelope, None)["verdict"] == "hold"
 

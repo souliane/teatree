@@ -35,6 +35,7 @@ class MergeAuditStamps:
     expedited_by: str = ""
     standing_delegation_by: str = ""
     merged_without_squash: bool = False
+    forge_account: str = ""
 
 
 def _supersede_siblings(locked: MergeClear, *, repo_slug: str) -> None:
@@ -149,7 +150,9 @@ def record_merge_and_advance(
                 raise MergeReplayError(msg)
             locked.consumed_at = timezone.now()
             locked.merged_without_squash = stamps.merged_without_squash
-            locked.save(update_fields=["consumed_at", "merged_without_squash"])
+            if stamps.standing_delegation_by:
+                locked.delegation = "standing:substrate_auto_merge_authorized_by"
+            locked.save(update_fields=["consumed_at", "merged_without_squash", "delegation"])
             merge_audit_model.objects.create(
                 clear=locked,
                 merged_sha=merged_sha,
@@ -157,6 +160,7 @@ def record_merge_and_advance(
                 expedited_by=stamps.expedited_by,
                 repo_slug=repo_slug,
                 standing_delegation_by=stamps.standing_delegation_by,
+                forge_account=stamps.forge_account,
             )
             _supersede_siblings(locked, repo_slug=repo_slug)
             # The forge merge already landed, so the PR row is MERGED and a ticketless

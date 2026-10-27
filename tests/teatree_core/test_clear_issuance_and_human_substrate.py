@@ -146,6 +146,21 @@ def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
 class TestClearIssuanceSeam(TestCase):
     """``t3 ... ticket clear`` records the orchestrator's per-diff CLEAR."""
 
+    def test_clear_records_actor_kind_and_delegation(self) -> None:
+        clear = MergeClear.issue(
+            ClearRequest(
+                pr_id=858,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                actor_kind="factory_loop",
+                delegation="standing:substrate_auto_merge_authorized_by",
+            )
+        )
+
+        assert clear.actor_kind == "factory_loop"
+        assert clear.delegation == "standing:substrate_auto_merge_authorized_by"
+
     def test_factory_refuses_held_head_without_command_guard(self) -> None:
         ReviewVerdict.record(
             pr_id=859,
@@ -326,7 +341,10 @@ class TestClearIssuanceSeam(TestCase):
                 ticket_id=int(ticket.pk),
             ),
         )
-        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
+        ):
             merged = cast(
                 "dict[str, object]",
                 call_command("ticket", "merge", str(issued["clear_id"]), loop_identity="merge-loop"),
@@ -334,6 +352,7 @@ class TestClearIssuanceSeam(TestCase):
         ticket.refresh_from_db()
         assert merged["merged"]
         assert ticket.state == Ticket.State.MERGED
+        assert MergeAudit.objects.get(clear_id=issued["clear_id"]).forge_account == "merge-bot"
 
     def test_verdict_record_failure_rolls_back_the_issued_clear(self) -> None:
         """F3.2: issuance + verdict are atomic — a verdict failure leaves NO phantom CLEAR.
@@ -583,23 +602,26 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_clear_command_can_record_human_authorizer_for_substrate(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "871",
-                "souliane/teatree",
-                reviewed_sha=_SHA,
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="green",
-                blast_class="substrate",
-                human_authorize="owner:adrien",
-            ),
-        )
+        with patch.dict("os.environ", {"T3_AGENT_MAILBOX_SOCKET": "/tmp/test-mailbox"}):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "871",
+                    "souliane/teatree",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="substrate",
+                    human_authorize="owner:adrien",
+                ),
+            )
         assert result["issued"]
         clear = MergeClear.objects.get(pk=result["clear_id"])
         assert clear.human_authorizer == "owner:adrien"
+        assert clear.actor_kind == MergeClear.ActorKind.FACTORY_LOOP
+        assert clear.delegation == "per_clear:owner:adrien"
 
     def test_human_authorize_rejected_for_non_substrate(self) -> None:
         """``--human-authorize`` is meaningless off the substrate path — reject it loudly."""
@@ -631,10 +653,15 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.SUBSTRATE,
             human_authorizer="owner:adrien",
+            actor_kind=MergeClear.ActorKind.FACTORY_LOOP,
+            delegation="per_clear:owner:adrien",
         )
         record_merge_prerequisites_for_test(ticket, _SHA)
         seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
-        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
+        ):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -645,6 +672,9 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
                     human_authorized="owner:adrien",
                 ),
             )
+        clear.refresh_from_db()
+        assert clear.merge_forge_account == "merge-bot"
+        assert MergeAudit.objects.get(clear=clear).forge_account == "merge-bot"
         ticket.refresh_from_db()
         clear.refresh_from_db()
         assert result["merged"]

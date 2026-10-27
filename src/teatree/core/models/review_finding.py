@@ -51,28 +51,9 @@ class Finding:
 
     def __post_init__(self) -> None:
         kind = normalize_finding_kind(self.kind, self.severity)
-        if kind == FindingKind.BLOCKING and not self.reproduction.strip():
-            summary = self.summary.casefold()
-            venue_resource = any(
-                phrase in summary
-                for phrase in (
-                    "ci rollup",
-                    "verify-gates",
-                    "plan artifact",
-                    "red-first",
-                    "revert-to-red",
-                    "review venue",
-                )
-            )
-            venue_limit = any(
-                phrase in summary
-                for phrase in ("could not", "cannot", "unavailable", "no access", "not possible", "unable to")
-            )
-            docs_only = self.basis == "documentation" or self.citation.startswith(("https://docs.", "docs/"))
-            no_code_anchor = not self.file and not self.line
-            if docs_only or (no_code_anchor and (self.basis == "venue_limit" or (venue_resource and venue_limit))):
-                kind = FindingKind.NOTE
-                object.__setattr__(self, "severity", "note")
+        if kind == FindingKind.BLOCKING and not self.reproduction.strip() and self.basis != "follow_up":
+            kind = FindingKind.NOTE
+            object.__setattr__(self, "severity", "note")
         object.__setattr__(self, "kind", kind)
 
     def as_dict(self) -> FindingDict:

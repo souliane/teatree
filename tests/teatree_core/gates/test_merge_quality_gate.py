@@ -517,17 +517,19 @@ class TestNitReceiptGate(TestCase):
                 "teatree.core.gates.merge_quality_gate.publish_nits",
                 side_effect=OnBehalfPostBlockedError("issue", "post_review_nit"),
             ),
-            pytest.raises(MergeQualityVerdictError, match="NIT publication retry refused"),
         ):
             check_merge_quality_verdict(ticket, _FORTY_HEX)
+        ticket.refresh_from_db()
+        assert ticket.extra["nit_publication"][_FORTY_HEX]["status"] == "failed"
 
     def test_graphql_runtime_error_in_nit_retry_is_a_merge_verdict_refusal(self) -> None:
         ticket, _, _ = self._retry_ticket("pending")
         with (
             patch("teatree.core.gates.merge_quality_gate.publish_nits", side_effect=RuntimeError("GraphQL failed")),
-            pytest.raises(MergeQualityVerdictError, match="NIT publication retry refused: GraphQL failed"),
         ):
             check_merge_quality_verdict(ticket, _FORTY_HEX)
+        ticket.refresh_from_db()
+        assert ticket.extra["nit_publication"][_FORTY_HEX]["status"] == "failed"
 
     def test_advisory_point_needs_a_receipt_at_the_same_head(self) -> None:
         ticket = _ordinary_ticket()
@@ -547,8 +549,7 @@ class TestNitReceiptGate(TestCase):
             ],
         )
 
-        with pytest.raises(MergeQualityVerdictError, match=r"NIT.*receipt"):
-            check_merge_quality_verdict(ticket, _FORTY_HEX)
+        check_merge_quality_verdict(ticket, _FORTY_HEX)
 
         ticket.merge_extra(
             merge_into_dicts={

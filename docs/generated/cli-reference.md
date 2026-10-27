@@ -13171,6 +13171,10 @@ Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG
 │ --human-authorize                TEXT     ONLY for blast_class=substrate:    │
 │                                           the human/owner id authorising the │
 │                                           substrate merge.                   │
+│ --actor-kind                     TEXT     Clearance issuer: owner,           │
+│                                           factory_loop, or hand_session.     │
+│ --delegation                     TEXT     Authorization source; 'none' when  │
+│                                           no delegation applies.             │
 │ --expedite-authorize             TEXT     PENDING-checks waiver: the         │
 │                                           human/owner id authorising a merge │
 │                                           on queued (never FAILED) required  │

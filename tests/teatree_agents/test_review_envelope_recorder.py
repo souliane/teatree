@@ -20,6 +20,7 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import MALFORMED_FIX_RECORD_PREFIX, is_recorder_refusal
+from teatree.agents.phase_blocks import phase_specific_lines
 from teatree.core.gates.anti_vacuity_gate import check_anti_vacuity_attestation
 from teatree.core.gates.integration_review_gate import check_integration_review
 from teatree.core.gates.review_request_state_gate import check_reviewed_state, has_review_evidence
@@ -28,9 +29,13 @@ from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
 from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
 from teatree.core.models import (
     AutoReviewDispatch,
+    ClearRequest,
+    Finding,
     HonestyEscalation,
+    MergeClear,
     MRReviewLock,
     PullRequest,
+    ReviewHoldDisposition,
     ReviewVerdict,
     Rubric,
     RubricCriterion,
@@ -318,7 +323,7 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
             "teatree.agents.review_envelope_recorder.publish_nits", side_effect=NitLaneError("forge unavailable")
         ):
             attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
-        assert "forge unavailable" in attempt.error
+        assert attempt.error == ""
         assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
         ticket.refresh_from_db()
         assert ticket.extra["nit_publication"][_HEAD]["status"] == "failed"
@@ -347,8 +352,114 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
 
         attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
 
-        assert "comment check" in attempt.error
-        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.MERGE_SAFE
+        assert recorded.structured_findings == []
+        assert "this is missing a blank line" in str(attempt.result.get("decisions", []))
+
+    def test_rejected_nit_does_not_discard_a_blocking_finding(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "blocker",
+                "kind": "blocking",
+                "summary": "Runtime failure",
+                "file": "a.py",
+                "line": 1,
+                "basis": "executed",
+                "reproduction": "pytest test_a.py: failed",
+            },
+            {"severity": "nit", "kind": "nit", "summary": "this is missing a blank line", "file": "a.py", "line": 2},
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(ticket=ticket, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.HOLD
+        assert [finding.kind for finding in recorded.structured_findings] == ["blocking"]
+
+    def test_later_review_envelope_records_held_point_answers(self) -> None:
+        ticket = _author_ticket()
+        hold = ReviewVerdict.record(
+            pr_id=_PR_ID,
+            slug=_SLUG,
+            reviewed_sha=_HEAD,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            ticket=ticket,
+            findings=[
+                Finding(
+                    severity="major",
+                    kind="blocking",
+                    summary="Runtime failure",
+                    file="a.py",
+                    line=1,
+                    basis="executed",
+                    reproduction="pytest test_a.py: failed",
+                )
+            ],
+        )
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["hold_dispositions"] = [
+            {
+                "hold_id": hold.pk,
+                "points": [
+                    {
+                        "index": 0,
+                        "classification": "disproved_premise",
+                        "citation": "pytest test_a.py: passed at reviewed head",
+                    }
+                ],
+            }
+        ]
+
+        task = _reviewing_task_via_dispatch()
+        assert f"HOLD {hold.pk}" in "\n".join(phase_specific_lines(task, []))
+        attempt = record_result_envelope(task, result, phase="reviewing")
+
+        assert attempt.error == ""
+        disposition = ReviewHoldDisposition.objects.get(hold=hold, clearing_verdict__reviewer_identity=_REVIEWER)
+        clear = MergeClear.issue(
+            ClearRequest(pr_id=_PR_ID, slug=_SLUG, reviewed_sha=_HEAD, reviewer_identity=_REVIEWER)
+        )
+        assert clear.hold_disposition_ids == [disposition.pk]
+
+    def test_incomplete_hold_answers_roll_back_the_later_verdict(self) -> None:
+        ticket = _author_ticket()
+        hold = ReviewVerdict.record(
+            pr_id=_PR_ID,
+            slug=_SLUG,
+            reviewed_sha=_HEAD,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            ticket=ticket,
+            findings=[
+                Finding(severity="major", summary="first", reproduction="pytest test_first.py: failed"),
+                Finding(severity="major", summary="second", reproduction="pytest test_second.py: failed"),
+            ],
+        )
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["hold_dispositions"] = [
+            {
+                "hold_id": hold.pk,
+                "points": [{"index": 0, "classification": "disproved_premise", "citation": "first now passes"}],
+            }
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "unanswered" in attempt.error
+        assert not ReviewVerdict.objects.filter(pr_id=_PR_ID, reviewer_identity=_REVIEWER).exists()
+        assert not ReviewHoldDisposition.objects.filter(hold=hold).exists()
 
     def test_a_nit_ticket_treats_a_nit_finding_as_blocking(self) -> None:
         ticket = _author_ticket()
@@ -638,17 +749,26 @@ class TestDuplicateReviewTasksPreserveHolds(TestCase):
         first_result = _envelope(verdict="hold", reviewer="")
         first_verdict = first_result["review_verdict"]
         assert isinstance(first_verdict, dict)
-        first_verdict["findings"] = [{"severity": "major", "summary": "fix the branch", "file": "a.py", "line": 1}]
+        first_verdict["findings"] = [
+            {
+                "severity": "major",
+                "summary": "fix the branch",
+                "file": "a.py",
+                "line": 1,
+                "reproduction": "pytest test_branch.py: failed",
+            }
+        ]
         assert record_result_envelope(first_task, first_result, phase="reviewing").error == ""
 
         first_task.ticket.extra = {**first_task.ticket.extra, "reviewed_sha": _HEAD}
         first_task.ticket.save(update_fields=["extra"])
         second_task = Task.objects.create(ticket=first_task.ticket, session=first_task.session, phase="reviewing")
         second_task.claim(claimed_by="headless-reviewer")
-        assert record_result_envelope(second_task, _envelope(reviewer=""), phase="reviewing").error == ""
+        second_attempt = record_result_envelope(second_task, _envelope(reviewer=""), phase="reviewing")
+        assert "standing HOLD verdicts unanswered" in second_attempt.error
 
         rows = list(ReviewVerdict.objects.for_pr(_SLUG, _PR_ID))
-        assert len(rows) == 2
+        assert len(rows) == 1
         assert {row.reviewer_identity for row in rows} == {assigned_reviewer_identity(_PR_ID)}
         held = ReviewVerdict.objects.latest_for_pr(_SLUG, _PR_ID)
         assert held is not None

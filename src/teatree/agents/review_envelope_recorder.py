@@ -17,7 +17,7 @@ from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
 from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
-from teatree.agents.review_nit_policy import normalize_review_envelope
+from teatree.agents.review_nit_policy import drop_unpostable_nits, normalize_review_envelope
 from teatree.core.gates.integration_review_gate import distinct_repos
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
@@ -29,6 +29,8 @@ from teatree.core.models import (
     DeferredQuestion,
     Finding,
     ReviewEvidence,
+    ReviewHoldDisposition,
+    ReviewHoldDispositionError,
     ReviewVerdict,
     ReviewVerdictError,
     Rubric,
@@ -53,7 +55,7 @@ from teatree.core.models.reviewer_identity import (
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import live_head_at
-from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
+from teatree.core.review.nit_lane import NitLaneError
 from teatree.core.review.nit_publish import pr_url_for_nits, publish_nits, review_nits
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
@@ -165,6 +167,7 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
     envelope = normalize_review_envelope(envelope, ticket)
+    envelope = drop_unpostable_nits(envelope, result)
     result["review_verdict"] = envelope
     evidence_error = _additional_evidence_error(ticket, envelope, result)
     if evidence_error:
@@ -179,7 +182,6 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     return (
         ("" if unverified else _rubric_coverage_error(rubric, grades, returned=returned))
         or _merge_safe_over_fail_error(rubric, envelope, grades)
-        or _nit_comment_error(envelope)
         or _record_verdict_and_grades(task, result, envelope=envelope, target=target, rubric_grades=(rubric, grades))
         or _settle_recorded_verdict(task, target, rubric=rubric)
     )
@@ -325,11 +327,11 @@ def _publish_review_nits_with_recovery(ticket: "Ticket", target: ReviewTarget, f
     ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "pending"}}})
     try:
         _publish_review_nits(ticket, target, findings)
-    except NitLaneError as exc:
+    except RuntimeError as exc:
         ticket.merge_extra(
             merge_into_dicts={"nit_publication": {target.head_sha: {"status": "failed", "error": str(exc)}}}
         )
-        return f"review NIT publication refused: {exc}"
+        return ""
     ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "published"}}})
     return ""
 
@@ -381,7 +383,7 @@ def _record_verdict_and_grades(
                 )
             if ticket is not None and merge_safe and fix_record is not None:
                 ticket.record_fix_record(cast("FixRecord", fix_record))
-            ReviewVerdict.record(
+            recorded = ReviewVerdict.record(
                 pr_id=target.pr_id,
                 slug=target.slug,
                 reviewed_sha=target.head_sha,
@@ -397,6 +399,7 @@ def _record_verdict_and_grades(
                 merge_result_retake=bool(envelope.get("merge_result_retake")),
                 live_checks=live_checks_at,
             )
+            _record_hold_dispositions(recorded, envelope)
             if (
                 ticket is not None
                 and len(distinct_repos(ticket)) >= _MIN_INTEGRATION_REPOS
@@ -413,7 +416,7 @@ def _record_verdict_and_grades(
                 )
             if rubric is not None and not unverified:
                 rubric.apply_grades(grades, grader_identity=identity, reviewed_sha=target.head_sha)
-    except (ReviewVerdictError, NitLaneError) as exc:
+    except (ReviewVerdictError, NitLaneError, ReviewHoldDispositionError, ReviewVerdict.DoesNotExist) as exc:
         # The one refusal class a re-dispatch can never satisfy at this head is latched;
         # every other one names something the next reviewer could get right, so it keeps
         # the ordinary retry. The discrimination is the EXCEPTION TYPE — the raise site
@@ -428,14 +431,22 @@ def _record_verdict_and_grades(
     return _publish_review_nits_with_recovery(ticket or task.ticket, target, findings)
 
 
-def _nit_comment_error(envelope: ReviewVerdictEnvelope) -> str:
-    raw = envelope.get("findings")
-    findings = [Finding.from_dict(row) for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
-    try:
-        validate_nit_comments(review_nits(findings))
-    except NitLaneError as exc:
-        return f"review verdict recording refused: {exc}"
-    return ""
+def _record_hold_dispositions(recorded: ReviewVerdict, envelope: ReviewVerdictEnvelope) -> None:
+    responses = envelope.get("hold_dispositions", [])
+    if responses and recorded.verdict != ReviewVerdict.Verdict.MERGE_SAFE:
+        msg = "hold dispositions require a merge-safe verdict"
+        raise ReviewHoldDispositionError(msg)
+    if recorded.verdict == ReviewVerdict.Verdict.MERGE_SAFE:
+        standing = ReviewVerdict.objects.unreconciled_holds_at(
+            slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha
+        )
+        missing = {hold.pk for hold in standing} - {response["hold_id"] for response in responses}
+        if missing:
+            msg = f"merge-safe review leaves standing HOLD verdicts unanswered: {sorted(missing)}"
+            raise ReviewHoldDispositionError(msg)
+    for response in responses:
+        hold = ReviewVerdict.objects.get(pk=response["hold_id"])
+        ReviewHoldDisposition.record(hold=hold, clearing_verdict=recorded, points=response["points"])
 
 
 def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None") -> str:

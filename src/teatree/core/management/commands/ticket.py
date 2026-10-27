@@ -1,6 +1,7 @@
 """Ticket state management: transitions and listing for the loop and CLI."""
 
 import dataclasses
+import os
 from typing import Annotated, NoReturn, TypedDict
 
 import typer
@@ -310,6 +311,14 @@ class Command(
                 help="ONLY for blast_class=substrate: the human/owner id authorising the substrate merge.",
             ),
         ] = "",
+        actor_kind: Annotated[
+            str,
+            typer.Option(help="Clearance issuer: owner, factory_loop, or hand_session."),
+        ] = "",
+        delegation: Annotated[
+            str,
+            typer.Option(help="Authorization source; 'none' when no delegation applies."),
+        ] = "",
         expedite_authorize: Annotated[
             str,
             typer.Option(
@@ -387,6 +396,8 @@ class Command(
             blast_class=blast_class,
             ticket=resolved_ticket,
             human_authorizer=human_authorize,
+            actor_kind=actor_kind or ("factory_loop" if os.environ.get("T3_AGENT_MAILBOX_SOCKET") else "hand_session"),
+            delegation=delegation or (f"per_clear:{human_authorize.strip()}" if human_authorize.strip() else "none"),
             expedite_authorizer=expedite_authorize,
             local_ci_green_sha=local_ci_green_sha,
             executing_loop_identity=executing_loop_identity,

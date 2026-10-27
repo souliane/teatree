@@ -23,7 +23,7 @@ import django.test
 from django.utils import timezone
 
 import teatree.cli.doctor.run_checks as doctor_runner
-from teatree.cli.doctor.checks_loop import _check_unconsumed_merge_clears
+from teatree.cli.doctor.checks_loop import _check_missing_clear_actor_kind, _check_unconsumed_merge_clears
 from teatree.cli.doctor.run_checks import _run_loop_intent_gates
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.clear_liveness_report import LISTED
@@ -62,6 +62,12 @@ class UnconsumedClearCheckBase(django.test.TestCase):
 
 
 class TestUnconsumedMergeClearsCheck(UnconsumedClearCheckBase):
+    def test_doctor_reports_legacy_clearance_without_actor_kind(self) -> None:
+        self._stranded(pr_id=4200, hours=1)
+        with patch("typer.echo") as echo:
+            assert _check_missing_clear_actor_kind() is True
+        assert any("no recorded actor kind" in str(call.args[0]) for call in echo.call_args_list)
+
     def test_an_empty_backlog_passes(self) -> None:
         assert self._run() is True
 
