@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 import pytest
 
+from teatree.core.modelkit import question_card
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import (
     MAX_QUESTION_CHARS,
@@ -253,6 +254,17 @@ class TestCardProblems:
 
         assert problems
         assert any(expected in problem for problem in problems), problems
+
+    @pytest.mark.parametrize(("limit", "count"), [("MAX_OPTIONS", 5), ("MIN_OPTIONS", 1)])
+    def test_the_option_count_is_checked_against_the_stated_limits(
+        self, monkeypatch: pytest.MonkeyPatch, limit: str, count: int
+    ) -> None:
+        card = dataclasses.replace(SAMPLE_CARD, options=_options(*"ABCDE"[:count]))
+        assert any("option" in problem for problem in card.problems(SAMPLE_QUESTION))
+
+        monkeypatch.setattr(question_card, limit, count)
+
+        assert card.problems(SAMPLE_QUESTION) == []
 
     @pytest.mark.parametrize(
         "question",

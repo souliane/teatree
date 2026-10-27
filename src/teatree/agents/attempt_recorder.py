@@ -32,7 +32,7 @@ from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
-from teatree.agents.result_schema_owner_stop import OWNER_STOP_SHAPE
+from teatree.agents.result_schema_owner_stop import owner_stop_refusal
 from teatree.agents.review_context_recorder import record_returned_review_context
 from teatree.agents.review_envelope_recorder import (
     record_returned_review_envelope,
@@ -154,9 +154,11 @@ def validate_result_keys(result: AgentResultBlob) -> str:
         return ""
     if (card := QuestionCard.from_envelope(result)) is None:
         kinds = ", ".join(OwnerDecision)
-        return f"user_input_kind {result['user_input_kind']!r} is none of {kinds}; omit it for factory work"
+        return owner_stop_refusal(
+            f"user_input_kind {result['user_input_kind']!r} is none of {kinds}; omit it for factory work"
+        )
     if problems := card.problems(str(result.get("user_input_reason", ""))):
-        return f"{'; '.join(problems)}. {OWNER_STOP_SHAPE}"
+        return owner_stop_refusal("; ".join(problems))
     return ""
 
 
