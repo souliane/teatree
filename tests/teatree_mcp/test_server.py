@@ -8,11 +8,16 @@ transactional ``django_db`` fixture, no committed-transaction dance needed.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from unittest.mock import patch
 
+import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
-from mcp.types import Tool, ToolAnnotations
+from mcp import Client
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+from mcp.shared.exceptions import MCPError
+from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.core.factory.factory_signals import SIGNALS, VISIBILITY_SIGNALS
@@ -73,6 +78,94 @@ _MAILBOX_TOOLS = {
     "agent_mailbox_inbox",
     "agent_mailbox_wait",
 }
+
+
+class TestCrashingToolAnswers(TestCase):
+    async def _call(self, fn: Callable[[], str | Awaitable[str]]) -> CallToolResult:
+        with patch("teatree.mcp.server.get_all_overlays", return_value={}):
+            server = build_server()
+        server.add_tool(fn, name="probe")
+        async with Client(server) as client:
+            return await client.call_tool("probe")
+
+    def _text(self, result: CallToolResult) -> str:
+        assert result.is_error is True
+        assert isinstance(result.content[0], TextContent)
+        return result.content[0].text
+
+    def test_sync_crash_names_class_and_redacts_message(self) -> None:
+        message = "boom token=abc123"
+
+        def crash() -> str:
+            raise RuntimeError(message)
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == "Error executing tool probe: RuntimeError: boom token=<redacted>"
+        assert "abc123" not in text
+
+    def test_async_crash_names_class_and_redacts_message(self) -> None:
+        message = "boom token=abc123"
+
+        async def crash() -> str:
+            await asyncio.sleep(0)
+            raise RuntimeError(message)
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == "Error executing tool probe: RuntimeError: boom token=<redacted>"
+
+    def test_long_crash_message_is_capped(self) -> None:
+        message = "x" * 5000
+
+        def crash() -> str:
+            raise RuntimeError(message)
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == f"Error executing tool probe: RuntimeError: {'x' * 500}"
+
+    def test_empty_crash_message_still_names_the_class(self) -> None:
+        def crash() -> str:
+            raise RuntimeError
+
+        assert self._text(asyncio.run(self._call(crash))) == "Error executing tool probe: RuntimeError"
+
+    def test_deliberate_tool_error_keeps_its_text(self) -> None:
+        message = "bad input"
+
+        def refuse() -> str:
+            raise ToolError(message)
+
+        assert self._text(asyncio.run(self._call(refuse))) == "Error executing tool probe: bad input"
+
+    def test_resource_error_keeps_its_text(self) -> None:
+        message = "bad input"
+
+        def refuse() -> str:
+            raise ResourceError(message)
+
+        assert self._text(asyncio.run(self._call(refuse))) == "Error executing tool probe: bad input"
+
+    def test_protocol_error_remains_a_protocol_error(self) -> None:
+        message = "protocol says no"
+
+        def refuse() -> str:
+            raise MCPError(-32001, message)
+
+        with patch("teatree.mcp.server.get_all_overlays", return_value={}):
+            server = build_server()
+        server.add_tool(refuse, name="probe")
+        with pytest.raises(MCPError):
+            asyncio.run(server.call_tool("probe", {}))
+
+    def test_unexpected_crash_keeps_the_original_traceback_in_the_error_log(self) -> None:
+        message = "boom token=abc123"
+        crash = RuntimeError(message)
+
+        def fail() -> str:
+            raise crash
+
+        with self.assertLogs("mcp.server.mcpserver.server", level="ERROR") as logs:
+            self._text(asyncio.run(self._call(fail)))
+        assert any(record.exc_info and record.exc_info[1].__cause__ is crash for record in logs.records)
 
 
 class TestToolRegistration(TestCase):

@@ -53,10 +53,9 @@ def _forge_client(service: Service) -> CodeHostBackend:
 async def _run_hygiene_write(work: "Callable[[], dict[str, Any]]") -> dict[str, Any]:
     """Run *work* off-thread, translating a facade refusal into a ``ToolError``.
 
-    Under mcp 2.1+ any exception that is not a ``ToolError`` reaches the caller as
-    ``UnexpectedToolError("Error executing tool <name>")`` with the reason left on
-    the server (see ``tests/teatree_mcp/test_services_slack.py``) — an agent calling
-    a hygiene write tool would see an opaque failure instead of the refusal it needs
+    In this server, an unexpected tool exception arrives as an
+    ``UnexpectedToolError`` with a redacted, capped crash reason — an agent calling
+    a hygiene write tool would lose the full refusal it needs
     to self-correct (missing judgment, external ticket, sweep comment, leak block).
     """
     from teatree.core.issue_hygiene import (  # noqa: PLC0415 — deferred: ORM-adjacent import
