@@ -1,5 +1,6 @@
 from teatree.core.modelkit.gate_registry import get_resolver
 from teatree.core.models.ticket_data import TicketFacet
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 
 
 class TicketOverlayModel(TicketFacet):
@@ -12,12 +13,19 @@ class TicketOverlayModel(TicketFacet):
         """Derive overlay name from ``issue_url`` (see ``infer_overlay_for_url``)."""
         return str(get_resolver("infer_overlay_for_url")(self.issue_url))
 
+    @staticmethod
+    def creation_overlay(scope_overlay: str) -> str:
+        return scope_overlay or str(get_resolver("running_checkout_overlay")())
+
+    def would_apply_inferred_overlay(self, inferred: str) -> bool:
+        return bool(inferred and inferred != self.overlay and not is_synthetic_loop_umbrella_url(self.issue_url))
+
     def apply_inferred_overlay(self, inferred: str) -> bool:
         """Persist ``inferred`` overlay on a conclusive change (True when changed).
 
         A blank inference never blanks out a manually-set attribution.
         """
-        if not inferred or inferred == self.overlay:
+        if not self.would_apply_inferred_overlay(inferred):
             return False
         self.overlay = inferred
         type(self).objects.filter(pk=self.pk).update(overlay=inferred)
