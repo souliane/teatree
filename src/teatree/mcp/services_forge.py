@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
+_ISSUE_SEARCH_LIMIT = 10
 
 
 def _forge_client(service: Service) -> CodeHostBackend:
@@ -326,11 +327,28 @@ def _register_pr_reads(server: MCPServer, service: Service, prefix: str) -> None
 
 
 def _register_search_reads(server: MCPServer, service: Service, prefix: str) -> None:
-    async def issue_search(repo: str, query: str) -> list[dict[str, Any]]:
-        """Open issues in *repo* matching *query* (dup-check)."""
-        return await sync_to_async(
+    async def issue_search(repo: str, query: str) -> dict[str, Any]:
+        """Open issues in *repo* matching *query* (dup-check).
+
+        Up to 10 summaries with number, title, url, state, updated_at; truncated
+        is true when more match, so narrow the query.
+        """
+        matches = await sync_to_async(
             lambda: _forge_client(service).search_open_issues(repo=repo, query=query), thread_sensitive=True
         )()
+        return {
+            "issues": [
+                {
+                    "number": issue.get("number") or issue.get("iid"),
+                    "title": issue.get("title"),
+                    "url": issue.get("html_url") or issue.get("web_url"),
+                    "state": issue.get("state"),
+                    "updated_at": issue.get("updated_at"),
+                }
+                for issue in matches[:_ISSUE_SEARCH_LIMIT]
+            ],
+            "truncated": len(matches) > _ISSUE_SEARCH_LIMIT,
+        }
 
     async def issue_list_assigned(assignee: str) -> list[dict[str, Any]]:
         """Open issues assigned to *assignee*."""
