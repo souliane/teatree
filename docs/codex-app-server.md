@@ -43,7 +43,7 @@ Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` 
 harnesses. A Codex candidate is rejected on every unserved phase that bars write tools,
 except `bughunt`, `dogfood_smoke`, and `eval_local`, which use the current worker's
 write approval policy. Other harnesses retain the original phase tool restrictions.
-`planning`, `reviewing`, and `critic_reviewing` pass only after the live probe on that selection
+`planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, and `directive_interpreting` pass only after the live probe on that selection
 (see [Read-only executor](#read-only-executor)). `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
 name Codex, and `config_setting set` refuses a value outside them. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
 read-only phase; a route keyed by the phase's own skill still does. A ticket whose `extra` carries
@@ -274,7 +274,7 @@ into the error text.
 
 ## Read-only executor
 
-`teatree-ro-executor` is a separate container where Codex runs `planning`, `reviewing`, and `critic_reviewing`.
+`teatree-ro-executor` is a separate container where Codex runs `planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, and `directive_interpreting`.
 Codex's own read-only sandbox cannot start inside a container, so the
 read-only boundary is the executor's mounts, and the worker checks them live instead of trusting a flag.
 Codex cannot enforce Claude's shell-tool deny list. The worker accepts that mismatch only for a live-attested
@@ -395,7 +395,7 @@ Tickets without a forge issue or pull request URL carry an empty issue body and 
   mode, and removes everything it created. `live` repeats those checks on the deployed executor from inside
   `teatree-worker` while holding the executor lease; its docstring has the exact invocation.
 - **Routing served phases to Codex.** Once the executor login checks green, a Codex candidate
-  may run `planning`, `reviewing`, or `critic_reviewing` after the live probe. Other write-barring
+  may run `planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, or `directive_interpreting` after the live probe. Other write-barring
   phases still reject that candidate. The configured skill route and its fallback order remain in force, except
   that a candidate after the first whose resolved lane is metered is rejected unless `agent_route_paid_fallback`
   is on (see [`docs/blueprint/configuration.md`](blueprint/configuration.md)).

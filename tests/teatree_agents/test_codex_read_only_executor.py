@@ -615,8 +615,10 @@ def test_selection_runs_a_live_probe_exec(fake: FakeExecutor, monkeypatch: pytes
     assert [call[2] for call in probes] == [EXECUTOR_ID, EXECUTOR_ID]
 
 
-@pytest.mark.parametrize("phase", ["reviewing", "critic_reviewing"])
-def test_review_phases_are_probed_on_each_selection(
+@pytest.mark.parametrize(
+    "phase", ["reviewing", "critic_reviewing", "scoping", "triage_assessing", "directive_interpreting"]
+)
+def test_read_only_phases_are_probed_on_each_selection(
     fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch, managed: str, phase: str
 ) -> None:
     _applied(fake, monkeypatch)

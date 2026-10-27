@@ -38,6 +38,7 @@ ABSENT_TOOL: Final = "`<teatree tool, absent here>`"
 _TEATREE_COMMAND: Final = re.compile(r"(?<![\w/:.-])t3 ")
 _TEATREE_TOOL_SPAN: Final = re.compile(r"`[^`\n]*(?:(?<![\w/:.-])t3 |mcp__teatree__)[^`\n]*`")
 _TEATREE_CODE_FENCE: Final = re.compile(r"^[ \t]*```[^\n]*\n.*?^[ \t]*```[ \t]*$", re.MULTILINE | re.DOTALL)
+_TRIAGE_ISSUE_LINE: Final = re.compile(r"^- (https?://\S+) \|", re.MULTILINE)
 
 READ_ONLY_DIRECTIVE: Final = (
     "READ-ONLY VENUE: every checkout here is mounted read-only; only $TMPDIR is writable, and it is discarded.",
@@ -63,9 +64,10 @@ class ReadOnlyFacts:
     @classmethod
     def gather(cls, task: "Task", handoff: Path | None) -> "ReadOnlyFacts":
         """Read everything the brief inlines in the worker, or refuse: nothing is truncated on this venue."""
-        issue_body, issue_comments = _issue(task.ticket)
+        phase = normalize_phase(task.phase)
+        issue_body, issue_comments = _issue_facts(task, phase)
         review_head, review_diff, review_checks = _review_diff(task)
-        planning = normalize_phase(task.phase) == "planning"
+        planning = phase == "planning"
         survey = intake_survey_json(task) if planning else ""
         if planning and not survey:
             try:
@@ -164,19 +166,44 @@ def _refused(reason: str) -> ReadOnlyBriefRefusedError:
     )
 
 
+def _issue_facts(task: "Task", phase: str) -> tuple[str, str]:
+    """What the task reads as its issue; a loop-dispatched phase's input is its reason, not the umbrella issue."""
+    if phase == "triage_assessing":
+        return _triage_issues(task)
+    if phase == "directive_interpreting":
+        return "", ""
+    return _issue(task.ticket)
+
+
 def _issue(ticket: "Ticket") -> tuple[str, str]:
     """The issue or PR body and its comments, where owner decisions often land."""
-    if not ticket.issue_url or not slug_from_issue_or_pr_url(urlparse(ticket.issue_url).path):
+    return _issue_at(ticket, ticket.issue_url)
+
+
+def _triage_issues(task: "Task") -> tuple[str, str]:
+    """Every issue a triage assessment lists, body and comments, each under its URL: the executor reaches no forge."""
+    urls = _TRIAGE_ISSUE_LINE.findall(task.execution_reason)
+    if not urls or not all(slug_from_issue_or_pr_url(urlparse(url).path) for url in urls):
+        reason = "the triage assessment lists no issue to read" if not urls else "a listed issue is not a forge issue"
+        raise _refused(reason)
+    pages = [(url, *_issue_at(task.ticket, url)) for url in dict.fromkeys(urls)]
+    bodies = "\n\n".join(f"--- issue {url} ---\n{body}" for url, body, _ in pages)
+    comments = "\n\n".join(f"--- comments on {url} ---\n{text}" for url, _, text in pages if text)
+    return bodies, comments
+
+
+def _issue_at(ticket: "Ticket", issue_url: str) -> tuple[str, str]:
+    if not issue_url or not slug_from_issue_or_pr_url(urlparse(issue_url).path):
         return "", ""
     host = None
-    pr = pr_ref_from_url(ticket.issue_url)
+    pr = pr_ref_from_url(issue_url)
     try:
-        host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(ticket), ticket.issue_url)
+        host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(ticket), issue_url)
         if pr is not None:
             message = host.fetch_pr_message(slug=pr.slug, pr_id=pr.pr_id) if host is not None else None
             body = message.body if message is not None else None
         else:
-            issue = host.get_issue(ticket.issue_url) if host is not None else {}
+            issue = host.get_issue(issue_url) if host is not None else {}
             body = next((issue.get(key) for key in ("description", "body") if key in issue), None)
     except Exception as exc:
         reason = f"the issue body could not be read ({type(exc).__name__})"
@@ -188,7 +215,7 @@ def _issue(ticket: "Ticket") -> tuple[str, str]:
         if pr is not None:
             comments = host.list_pr_comments(repo=pr.slug, pr_iid=pr.pr_id) if host is not None else []
         else:
-            comments = host.list_issue_comments(issue_url=ticket.issue_url) if host is not None else []
+            comments = host.list_issue_comments(issue_url=issue_url) if host is not None else []
     except Exception as exc:  # same as the body: a plan must not miss a decision recorded in a comment
         reason = f"the issue comments could not be read ({type(exc).__name__})"
         raise _refused(reason) from exc
