@@ -203,7 +203,9 @@ def park_task_checkout(
         return attempt
     if attestable is not None:
         question = ask_owner_to_attest(task, attestable)
-        if question is not None:
+        if question is not None or task.pk in declined_attest_tasks(
+            attestable.worktree, attestable.state.digest, task_id=task.pk
+        ):
             return attempt
     try:
         notify_user(

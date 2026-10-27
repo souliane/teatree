@@ -43,7 +43,7 @@ class SkillDispatchError(ValueError):
         detail = detail or ", ".join(
             assurance["missing"] or sorted(set(assurance["requested"]) - set(assurance["injected"]))
         )
-        super().__init__(f"skill {assurance['status']}: {detail}")
+        super().__init__(f"skill {assurance['status']}: {detail}; checked HOME={Path.home()}")
 
     @classmethod
     def missing_document(cls, skill: str, path: str) -> "SkillDispatchError":

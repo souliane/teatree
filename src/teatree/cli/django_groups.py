@@ -9,11 +9,16 @@ from teatree.cli.django_group import DjangoGroup
 
 DJANGO_GROUPS: dict[str, DjangoGroup] = {
     "secrets": DjangoGroup(
-        "Inspect sealed credentials and plan a password-store import.",
+        "Inspect, manage and copy sealed credentials.",
         [
             ("status", "Show sealed-store key health and key IDs."),
             ("ls", "List sealed entry names."),
-            ("import-pass", "Classify password-store entries without copying values."),
+            ("import-pass", "Classify password-store entries; --apply copies row entries."),
+            ("set", "Seal a value from stdin or a hidden prompt."),
+            ("rm", "Remove a sealed entry."),
+            ("verify", "Check referenced sealed entries without printing values."),
+            ("get", "Print one secret line to a pipe."),
+            ("exec", "Run a command with secrets in its environment."),
         ],
         core_dispatch=True,
     ),
@@ -338,6 +343,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("merge", "Execute the REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("dead-rows", "List every non-terminal ticket intake can never find (#4527)."),
+            ("settle-holds", "Check held no-diff reviews; --dry-run reads without changing tickets."),
             ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),
             ("fold", "Merge a member ticket's body into its host's, verbatim (#4344)."),
             ("fold-check", "Prove a host body still carries the folded member's substance (#4344)."),

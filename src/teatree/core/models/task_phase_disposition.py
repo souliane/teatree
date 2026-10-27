@@ -2,7 +2,7 @@
 
 Split out of ``task.py`` (the Task-model lifecycle module): these helpers decide
 a completed phase task's FSM disposition — derive a transition's declared source
-states, auto-ignore an unshippable SELF_REVIEWED ticket, and escalate a genuine FSM
+states, hold an unshippable SELF_REVIEWED ticket, and escalate a genuine FSM
 wedge as a durable ``DeferredQuestion``. None of it is core Task lifecycle
 (claim / lease / complete / route), so it lives in its own concern module.
 """
@@ -19,6 +19,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.plan_decision import has_plan_decision
 from teatree.core.models.self_review import SelfReview
+from teatree.core.models.shipping_hold import hold_unshippable_review
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_worktree_checks import worktree_head_sha
 from teatree.core.repair_loop import max_phase_iterations, terminal_reason_fingerprint
@@ -51,23 +52,6 @@ _PHASE_TARGET_STATE: dict[str, str] = {
     "reviewing": Ticket.State.SELF_REVIEWED,
     "shipping": Ticket.State.PR_OPENED,
 }
-#: Lifecycle order used to compare a ticket's position to a phase's target.
-#: The off-ladder terminals IGNORED and REVIEW_DELIVERED are intentionally absent —
-#: a settled ticket is never a wedge (guarded via ``is_settled`` before the lookup).
-_STATE_ORDER: list[str] = [
-    Ticket.State.NOT_STARTED,
-    Ticket.State.SCOPED,
-    Ticket.State.WORK_STARTED,
-    Ticket.State.PLAN_RECORDED,
-    Ticket.State.CODED,
-    Ticket.State.TESTED,
-    Ticket.State.SELF_REVIEWED,
-    Ticket.State.PR_OPENED,
-    Ticket.State.REVIEW_REQUESTED,
-    Ticket.State.MERGED,
-    Ticket.State.RETRO_RECORDED,
-    Ticket.State.DELIVERED,
-]
 
 
 def transition_source_states(name: str) -> set[str]:
@@ -84,26 +68,13 @@ def transition_source_states(name: str) -> set[str]:
 
 
 def dispose_unshippable_review(ticket: Ticket) -> None:
-    """Auto-ignore a SELF_REVIEWED ticket ``review()`` found had no shippable diff.
-
-    ``review()`` lands SELF_REVIEWED and stamps ``extra["shipping_skipped"]`` when
-    there is no shippable diff (meta / already-shipped work). Without a
-    disposition that ticket rests at SELF_REVIEWED forever — nothing consumes the
-    marker, it never reaches a terminal state, and it holds its
-    issue-implementer budget marker and its in-flight WIP slot indefinitely.
-    Ignoring it is the explicit disposition: IGNORED is terminal (releasing
-    the marker via the completion signal and freeing the WIP slot), and the
-    ``shipping_skipped`` reason stays recorded in ``extra`` alongside
-    ``ignored_from``.
-    """
+    """Hold a no-diff review until workspace and forge evidence can settle it."""
     if ticket.state != Ticket.State.SELF_REVIEWED:
         return
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     if not extra.get("shipping_skipped"):
         return
-    logger.info("Ticket %s reviewed with no shippable diff; auto-ignoring (terminal disposition)", ticket.pk)
-    ticket.ignore()
-    ticket.save()
+    hold_unshippable_review(ticket)
 
 
 def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
@@ -259,11 +230,11 @@ def phase_output_reached(ticket: Ticket, phase: str) -> bool:
     position to compare, so both answer ``False``.
     """
     target = _PHASE_TARGET_STATE.get(normalize_phase(phase))
-    if target is None or ticket.state not in _STATE_ORDER:
+    if target is None or ticket.state not in Ticket.State.values or ticket.state in Ticket.off_ladder_states():
         return False
     if target == Ticket.State.CODED and ticket.owes_self_review_rework():
         return False
-    return _STATE_ORDER.index(ticket.state) >= _STATE_ORDER.index(target)
+    return Ticket.state_index(ticket.state) >= Ticket.state_index(target)
 
 
 def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Ticket) -> None:
@@ -333,7 +304,7 @@ def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket:
 
 
 def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, str]:
-    """Question pk -> reason, for each wedge row whose ticket went terminal or moved past it.
+    """Question pk -> reason, for each wedge row whose task was moved back over or ticket settled or advanced.
 
     Positive-only. "Moved past" needs the phase's output reached AND a task newer than the
     wedged one, so a refusal recorded on a ticket already past the phase stays pending
@@ -352,7 +323,15 @@ def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, st
         ticket = tickets.get(int(match["ticket"]))
         if ticket is None:
             continue
-        if ticket.state in Ticket.marker_release_states():
+        if (
+            (task_pk := _wedged_task_pk(match))
+            and (task := ticket.tasks.filter(pk=task_pk).first())
+            and ticket.transitions.moved_back_over(task)
+        ):
+            healed[question_pk] = (
+                f"ticket {ticket.pk} was moved back over the {match['phase']} wedge task {task.pk} ({ticket.state})"
+            )
+        elif ticket.state in Ticket.marker_release_states():
             healed[question_pk] = f"ticket {ticket.pk} is terminal ({ticket.state})"
         elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task_pk or 0) > _wedged_task_pk(match):
             healed[question_pk] = f"ticket {ticket.pk} moved past the {match['phase']} wedge ({ticket.state})"

@@ -1,4 +1,6 @@
 class MemoryStore:
+    label = "the memory store"
+
     def __init__(self) -> None:
         self.entries: dict[str, str] = {}
 
@@ -13,7 +15,11 @@ class MemoryStore:
         return self.entries.pop(key, None) is not None
 
     def names(self, prefix: str) -> frozenset[str]:
-        root = prefix.rstrip("/") + "/"
+        stem = prefix.rstrip("/")
+        root = f"{stem}/" if stem else ""
         return frozenset(
             name[len(root) :] for name in self.entries if name.startswith(root) and "/" not in name[len(root) :]
         )
+
+    def remedy(self, key: str) -> str:
+        return f"`memory set {key}`"

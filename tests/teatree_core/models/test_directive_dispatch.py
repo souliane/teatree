@@ -6,20 +6,81 @@ generation returns ``None`` (no second interpreter); a bumped generation arms a 
 one. The interpret task needs a ``Ticket``, so the dispatch anchors a synthetic one.
 """
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
-from teatree.core.models import Directive, DirectiveDispatch, Task
-from teatree.core.models.directive_dispatch import INTERPRET_PHASE, MAX_INTERPRET_ATTEMPTS
+from teatree.core.models import Directive, DirectiveDispatch, Task, Ticket
+from teatree.core.models.directive_dispatch import INTERPRET_PHASE, MAX_INTERPRET_ATTEMPTS, synthetic_interpret_ticket
 from teatree.core.models.task_handoff import schedule_resume
+from teatree.core.overlay_loader import get_overlay_for_ticket
+from tests.loop_ticket_git import installed_checkout_owner, installed_package_without_git
 
 
-def _directive() -> Directive:
-    return Directive.objects.capture("max 1 MR per repo for overlay X", source=Directive.Source.CLI)
+def _directive(scope_overlay: str = "") -> Directive:
+    return Directive.objects.capture(
+        "max 1 MR per repo for overlay X", source=Directive.Source.CLI, scope_overlay=scope_overlay
+    )
 
 
 class TestDirectiveDispatchEnqueue(TestCase):
+    def test_explicit_unknown_scope_is_stored_and_remains_invalid(self) -> None:
+        overlays = {"umbrella-owner": SimpleNamespace(get_workspace_repos=lambda: ["souliane/teatree"])}
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            row = DirectiveDispatch.enqueue(directive=_directive("no-such-overlay"), contract="c")
+        assert row is not None
+        assert row.task is not None
+        assert row.task.ticket.overlay == "no-such-overlay"
+        with pytest.raises(ImproperlyConfigured, match="not found"):
+            get_overlay_for_ticket(row.task.ticket)
+
+    def test_blank_scope_uses_only_the_unique_installed_checkout_owner(self) -> None:
+        for claimed, count in ((True, 1), (False, 1), (True, 2)):
+            with (
+                self.subTest(claimed=claimed, count=count),
+                installed_checkout_owner(claimed=claimed, registered_overlays=count) as expected,
+            ):
+                row = DirectiveDispatch.enqueue(directive=_directive(), contract="c")
+                assert row is not None
+                assert row.task is not None
+                assert row.task.ticket.overlay == expected
+
+    def test_package_without_git_uses_only_the_sole_registered_overlay(self) -> None:
+        for count in (0, 1, 2):
+            with self.subTest(count=count), installed_package_without_git(registered_overlays=count) as expected:
+                row = DirectiveDispatch.enqueue(directive=_directive(), contract="c")
+                assert row is not None
+                assert row.task is not None
+                assert row.task.ticket.overlay == expected
+                if count != 1:
+                    with pytest.raises(ImproperlyConfigured, match="has no overlay"):
+                        get_overlay_for_ticket(row.task.ticket)
+
+    def test_existing_interpret_ticket_does_not_resolve_creation_overlay(self) -> None:
+        directive = _directive()
+        ticket = synthetic_interpret_ticket(directive)
+        with patch.object(Ticket, "creation_overlay") as resolver:
+            assert synthetic_interpret_ticket(directive).pk == ticket.pk
+        resolver.assert_not_called()
+
+    def test_redispatch_preserves_the_first_scope(self) -> None:
+        directive = _directive("first-scope")
+        first = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert first is not None
+        assert first.task is not None
+        first.task.complete()
+        directive.scope_overlay = "second-scope"
+        directive.save(update_fields=["scope_overlay"])
+        second = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert second is not None
+        assert second.task is not None
+        assert second.task.ticket.overlay == "first-scope"
+
     def test_enqueue_creates_a_headless_interpret_task(self) -> None:
         row = DirectiveDispatch.enqueue(directive=_directive(), contract="interpret this directive")
         assert row is not None

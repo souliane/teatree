@@ -24,6 +24,7 @@ pytestmark = pytest.mark.django_db
 
 @dataclass
 class RecordingBackend:
+    user_id: str = "U1"
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
 

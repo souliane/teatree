@@ -28,6 +28,7 @@ class RenderedService(TypedDict):
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 ENTRYPOINT = DEPLOY / "entrypoint.sh"
+BOX_ENV_FILE = "teatree.env"  # gitignored and box-written: staged empty, never the box's real secrets
 SCRIPT_LOCATION = r'(?:\$\{?SCRIPT_DIR\}?|\$\(\s*dirname\s+"?\$\{?(?:BASH_SOURCE\[0\]|0)\}?"?\s*\))'
 SIBLING_REFERENCE = re.compile(rf"{SCRIPT_LOCATION}/([\w.-]+)")
 LOCATION_USE = re.compile(r"SCRIPT_DIR|BASH_SOURCE|dirname[^\n]*\$0|\$\{0[%#]")
@@ -228,8 +229,12 @@ def _stage_mounted_files(service: RenderedService, tmp_path: Path) -> Path:
     staged = tmp_path / "deploy"
     staged.mkdir()
     for name in ("entrypoint.sh", *SIBLINGS):
-        if _mounted(mounts, entrypoint.parent / name):
-            shutil.copyfile(DEPLOY / name, staged / name)
+        if not _mounted(mounts, entrypoint.parent / name):
+            continue
+        if name == BOX_ENV_FILE:
+            (staged / name).touch()
+        else:
+            shutil.copy(DEPLOY / name, staged / name)
     return staged
 
 
@@ -245,6 +250,8 @@ def test_entrypoint_reaches_role_dispatch_from_its_mounted_files(
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(caller_config))
 
     for name, service in _entrypoint_services(rendered_services).items():
+        if name == "teatree-webhooks":  # execs the listener before secret sourcing: its own test drives its real role
+            continue
         service_dir = tmp_path / name
         service_dir.mkdir()
         run = _run_staged_entrypoint(_stage_mounted_files(service, service_dir), service_dir, "unrecognized")

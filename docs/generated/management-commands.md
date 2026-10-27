@@ -546,7 +546,12 @@ Signal *pid* only if it maps to a dead target AND is confirmed non-live.
 | --- | --- |
 | `status` | Report key health without disclosing stored values |
 | `ls` | List sealed row names without decrypting values |
-| `import-pass` | Classify password-store names without copying their values |
+| `rm` | Remove NAME from the sealed store |
+| `verify` | Print ok\|absent\|unreadable per referenced entry, never a value; exit 1 if any is unreadable |
+| `get` | Print the first line of NAME from the active store; exit 1 absent, 2 unreadable, 3 on a terminal |
+| `import-pass` | Classify password-store names; with --apply copy them into sealed rows and print names and statuses only |
+| `set` | Seal a value read from stdin (or a hidden prompt) under NAME in the sealed store |
+| `exec` | Run COMMAND with each --env VAR=<entry> value in the child's environment only |
 
 ## `seed_loops`
 
@@ -636,6 +641,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `plan` | Record a PlanArtifact and advance the ticket WORK_STARTED → PLAN_RECORDED |
 | `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, address_self_review, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
+| `settle-holds` | Check held no-diff reviews; --dry-run reads without writing |
 | `rework-hold` | Supersede the ticket's active tasks and queue one coding task carrying its held self-review's findings |
 | `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
 | `list-clears` | List every unconsumed merge authorisation, each with the standing that hides it |

@@ -63,6 +63,17 @@ class TestEnqueueCreatesClaimableTask:
 
 
 class TestDedupPerHead:
+    def test_enqueue_reuses_existing_review_task_for_same_ticket_and_head(self) -> None:
+        ticket = Ticket.objects.create(issue_url=URL, overlay="teatree", role=Ticket.Role.REVIEWER)
+        ticket.merge_extra(set_keys={"reviewed_sha": HEAD})
+        existing = ticket.schedule_review()
+
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+
+        assert row is not None
+        assert row.task_id == existing.pk
+        assert Task.objects.filter(ticket=ticket, phase="reviewing").count() == 1
+
     def test_second_enqueue_same_head_returns_none_and_creates_no_second_task(self) -> None:
         first = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
         second = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")

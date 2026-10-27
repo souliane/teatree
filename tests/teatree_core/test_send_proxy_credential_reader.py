@@ -87,7 +87,7 @@ def test_no_posting_credential_read_pass_outside_the_proxy() -> None:
     assert not detail, f"posting-credential read_pass reads must route through the send-proxy:\n{detail}"
 
 
-@pytest.mark.parametrize("reader", ["read_pass", "read_pass_required", "read_pass_or_default"])
+@pytest.mark.parametrize("reader", ["read_pass", "read_pass_required"])
 def test_gate_flags_a_planted_posting_read_through_every_facade_reader(reader: str, tmp_path: pathlib.Path) -> None:
     (tmp_path / "core").mkdir()
     (tmp_path / "core" / "planted.py").write_text(f"token = {reader}('acme/slack-bot')\n")

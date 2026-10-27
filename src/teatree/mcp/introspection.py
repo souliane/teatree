@@ -12,6 +12,8 @@ from typing import Any
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, cold_reader, get_effective_settings
 from teatree.config.resolution import get_effective_setting
+from teatree.core.modelkit.owner_decision import owner_kept_decision
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import ConfigSetting, DeferredQuestion
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
@@ -22,22 +24,31 @@ _DEFAULT_COMMAND_LIMIT = 20
 _DEFAULT_QUESTION_LIMIT = 50
 
 
-def question_list(*, limit: int = _DEFAULT_QUESTION_LIMIT) -> list[dict[str, Any]]:
-    """Pending ``DeferredQuestion`` rows — the backlog awaiting the user's answer.
+def question_list(*, limit: int = _DEFAULT_QUESTION_LIMIT, offset: int = 0) -> list[dict[str, Any]]:
+    """Pending owner questions, oldest first.
 
-    The read counterpart to the ``question_answer`` write tool: delegates to
-    ``DeferredQuestion.pending`` (the same not-yet-answered/dismissed set the
-    Stop-hook nag and the deferred-question poster read), newest first. Each row
-    carries the question text, the raw ``options`` string, the originating
-    ``session_id``, and the Slack ``ts`` / ``channel`` when the question was
-    mirrored to Slack.
+    These rows require an authenticated owner reply in Slack; the internal
+    ``question_answer`` write tool cannot settle them. The list delegates to
+    ``DeferredQuestion.owner_pending`` (the not-yet-answered/dismissed owner set
+    that the deferred-question poster reads). Each row
+    carries the decision and owner-only flag alongside the question text,
+    raw ``options``, session, and Slack destination. ``offset`` pages beyond
+    the default 50 oldest rows.
     """
-    rows = DeferredQuestion.pending().order_by("-created_at", "-pk")[: _capped(limit, _DEFAULT_QUESTION_LIMIT)]
+    start = max(0, offset)
+    rows = DeferredQuestion.owner_pending().order_by("created_at", "pk")[
+        start : start + _capped(limit, _DEFAULT_QUESTION_LIMIT)
+    ]
     return [
         {
             "id": row.pk,
             "question": row.question,
             "options": row.options_json,
+            "decision": row.evidence.get("decision", ""),
+            "owner_only": owner_kept_decision(
+                card.decision if (card := QuestionCard.from_row(row.evidence, row.options_json)) else None,
+                row.dedupe_marker,
+            ),
             "session_id": row.session_id,
             "created_at": row.created_at.isoformat(),
             "slack_ts": row.slack_ts,

@@ -336,6 +336,9 @@ class IssueResolutionSpec:
 class CodeHostBackend(Protocol):
     """Canonical code-host interface for pull requests and issues."""
 
+    @property
+    def forge(self) -> str: ...  # pragma: no branch
+
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict: ...  # pragma: no branch
 
     def current_user(self) -> str: ...  # pragma: no branch
@@ -373,6 +376,8 @@ class CodeHostBackend(Protocol):
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_unshipped_branches(self, *, repo: str, prefix: str) -> list[str]: ...  # pragma: no branch
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 

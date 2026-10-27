@@ -320,12 +320,34 @@ starting Compose; `deploy.sh` creates it when `teatree.env` provides the value.
 For direct `docker compose` or `deploy/t3` calls, export the value or put it in
 `deploy/.env` as well; Compose does not read `teatree.env` for interpolation.
 
-The staged sealed store keeps its master key in the `teatree_control_db`
-named volume alongside `db.sqlite3` (mode 0600); that volume must be backed up
-and restored as one unit. `T3_MASTER_KEY_SOURCE=file:<absolute-path>` selects
-a different key file during bootstrap. The current deployment still reads
-`pass` through the default store slot; `t3 teatree secrets import-pass` only
-inventories candidate entries and does not migrate or delete credentials.
+The sealed store's master key lives outside `teatree_control_db`: a read-only
+directory bind at the container user's `.config/teatree-master-key`, mounted into exactly the
+services that mount the password store, with
+`T3_MASTER_KEY_SOURCE` pointing to that directory's `master.key`, set per
+service. A whole-volume backup or export of `teatree_control_db` must not carry the key,
+or the rows travel with the key that opens them. Keep a separate copy of the key file:
+losing it loses every sealed row. Provision it once on the host, as the deploy user,
+before the first write (`deploy.sh`, `roll.sh` and `deploy/t3` create the empty directory):
+
+```bash
+(
+    umask 077
+    set -C
+    head -c 32 /dev/urandom | base64 > "$HOME/.config/teatree-master-key/master.key"
+)
+```
+
+In a container a key path inside the control-DB directory is refused when a write
+would create it, and `t3 doctor` reports it (WARN while nothing is stored, FAIL once
+rows or the key exist there). The directory is mounted read-only, so a missing key
+cannot be created from a service; provision it on the host. The default store still
+reads `pass`. `t3 teatree secrets import-pass` inventories candidate entries;
+`import-pass --apply` copies eligible entries into sealed rows without deleting them from `pass`.
+Set `T3_SECRET_STORE=sealed` after verifying the copied rows. Container shell readers then use the sealed
+control DB through `secret-read.sh`; host deploy commands leave sealed values for the container to read.
+An unreadable selected store stops boot; a missing entry, or no `pass` executable under the `pass` selector,
+leaves that credential unset. `t3 teatree secrets verify` lists absent entries and exits 0; it exits 1 when
+any referenced entry is unreadable.
 
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
 bind mounts, deliberately decoupled from the data dir: the container's
@@ -1546,7 +1568,9 @@ mount instead, and the worker never takes the executor's word for it:
   `GIT_OPTIONAL_LOCKS`, `LANG` and `TZ`.
 - **Read-only mounts.** Of the deploy checkout only its `.git` (path identity), never the
   directory that holds `deploy/teatree.env`; plus the clone volume and the `t3-workspaces`
-  tree, all `read_only`, over a read-only root filesystem. The only writable paths are two
+  tree, all `read_only`, over a read-only root filesystem. When the worker's Codex source
+  clone exists, deploy adds only its `.git` through a volume subpath; a fresh install keeps
+  the original mounts. The only writable paths are two
   tmpfs mounts, `/run/t3-ro` (Codex homes) and `/run/t3-tmp` (`TMPDIR`), which are never
   persisted and are emptied at every app server start and stop. It mounts no control DB,
   data dir, credential store, agent home or docker socket.
@@ -1565,7 +1589,8 @@ mount instead, and the worker never takes the executor's word for it:
   `.env_*` other than templates, `.envrc`, `.netrc`, `.npmrc`, `.pypirc`,
   `.git-credentials`, `.pgpass`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`) or a private
   key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other than `*.pub`, found
-  by its content marker, so certificates and public keys pass). The secret it does hold is
+  by its content marker, so certificates and public keys pass). Git config with an embedded
+  HTTP credential or auth header is also refused. The secret it does hold is
   its own Codex login: the worker hydrates it from pass into a fresh `/run/t3-ro/codex-*` home per
   app server, persists a rotated token of the same account back to pass with a verifying
   re-read, and deletes the home only after that persist succeeded. Store it once with
@@ -1589,6 +1614,13 @@ waiting in its tmpfs, and after init, whose read-write clone mount creates the
 `t3-workspaces` mountpoint a fresh clone volume lacks. Either step failing does not stop
 the deploy: the worker and every other service still converge, and the deploy then fails
 with a message naming the executor. Until the executor deploys, served read-only phases on Codex are refused and try another route.
+The optional Codex source Git mount uses the worker's path in the executor, so
+worktree `.git` pointers resolve to the same Git directory. `deploy.sh` derives
+the volume subpath and mount target from the checkout's origin and passes them to
+compose; it passes the subpath to the worker for the read-only verdict's comparison.
+An empty value, which is what a worker recreated without it gets and what `deploy.sh` passes
+when origin yields no owner and repository, means no source clone and the original mounts;
+a malformed value refuses the executor with a reason naming the variable.
 A worker that had to be contained instead of drained leaves the running executor in
 place, because its tmpfs may still hold a rotated login that the next server start
 recovers. The next deploy replaces it.

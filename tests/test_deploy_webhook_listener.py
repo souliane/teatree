@@ -111,6 +111,7 @@ def test_listener_mounts_only_its_ledger_secrets_and_read_only_code() -> None:
         "teatree_control_db:/var/lib/teatree/control-db",
         f"{HOST_HOME}/.password-store:{CONTAINER_HOME}/.password-store",
         f"{HOST_HOME}/.gnupg:{CONTAINER_HOME}/.gnupg",
+        f"{HOST_HOME}/.config/teatree-master-key:{CONTAINER_HOME}/.config/teatree-master-key:ro",
         f"{CHECKOUT_ENTRYPOINT}:{CHECKOUT_ENTRYPOINT}:ro",
         f"{CHECKOUT_GIT_PINS}:{CHECKOUT_GIT_PINS}:ro",
         f"${{TEATREE_SOURCE_MOUNT:-teatree_src}}:{CONTAINER_HOME}/teatree:ro",

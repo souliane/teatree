@@ -2,6 +2,7 @@
 
 import io
 import json
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -130,10 +131,17 @@ class TestCheckoutAttestation(TestCase):
     def test_acceptance_retires_other_pending_cards_for_the_same_checkout(self) -> None:
         first = self._park_on_a_foreign_edit()
         later = TaskFactory(ticket=self.task.ticket, phase="retro")
-        other = ask_owner_to_attest(
+        question, card = attest_card(
             later, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
         )
-        assert other is not None
+        assert card.action is not None
+        legacy_action = ActionRequest(**card.action, task_id=later.pk)
+        other = DeferredQuestion.record(
+            question,
+            dedupe_marker=action_marker(legacy_action),
+            parked_task=later,
+            card=replace(card, action=legacy_action),
+        )
         assert other.pk != first.pk
         self._answer(first, "Accept")
 
@@ -149,6 +157,23 @@ class TestCheckoutAttestation(TestCase):
         assert not other.is_pending
         assert backend.update_message.call_args.kwargs["ts"] == "1800000000.000300"
         assert "This question no longer needs an answer" in backend.update_message.call_args.kwargs["text"]
+
+    def test_shared_card_acceptance_releases_both_waiting_steps(self) -> None:
+        card = self._park_on_a_foreign_edit()
+        later = TaskFactory(ticket=self.task.ticket, phase="retro")
+        park_task_checkout(
+            later,
+            reason="foreign edit",
+            attestable=CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True),
+        )
+        assert DeferredQuestion.owner_pending().filter(evidence__action__target=str(self.worktree.pk)).count() == 1
+        self._answer(card, "Accept")
+
+        assert self._carry_out() == [f"carried out {card.pk}"]
+        self.task.refresh_from_db()
+        later.refresh_from_db()
+        assert self.task.not_before is None
+        assert later.not_before is None
 
     def test_decline_keeps_the_task_parked_and_attests_nothing(self) -> None:
         row = self._park_on_a_foreign_edit()
@@ -401,7 +426,7 @@ class TestCheckoutAttestation(TestCase):
         assert self.task.not_before is None
         assert other_task.not_before is not None
 
-    def test_accept_keeps_a_declined_step_parked_on_the_same_checkout(self) -> None:
+    def test_accept_keeps_a_legacy_declined_step_parked_on_the_same_checkout(self) -> None:
         coding = self._park_on_a_foreign_edit()
         retro = TaskFactory(ticket=self.task.ticket, phase="retro")
         park_task_checkout(
@@ -409,7 +434,17 @@ class TestCheckoutAttestation(TestCase):
             reason="foreign edit",
             attestable=CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True),
         )
-        declined = retro.deferred_questions.get()
+        question, card = attest_card(
+            retro, CheckoutAttestation(self.worktree, checkout_state(self.checkout), host_evidence=True)
+        )
+        assert card.action is not None
+        legacy_action = ActionRequest(**card.action, task_id=retro.pk)
+        declined = DeferredQuestion.record(
+            question,
+            dedupe_marker=action_marker(legacy_action),
+            parked_task=retro,
+            card=replace(card, action=legacy_action),
+        )
         assert declined.mark_mirrored(channel="D0DEMOOWNER", slack_ts="1800000000.000200")
         self._answer(declined, "Decline")
         assert self._carry_out() == [f"declined {declined.pk}"]
@@ -491,29 +526,20 @@ class TestCheckoutAttestation(TestCase):
         assert renewed.pk != row.pk
         assert renewed.is_pending
 
-    def test_new_task_can_ask_before_and_after_a_decline_is_settled(self) -> None:
+    def test_declined_shared_card_is_not_asked_again_for_a_new_task(self) -> None:
         row = self._park_on_a_foreign_edit()
         self._answer(row, "Decline")
         later = TaskFactory(ticket=self.task.ticket, phase="coding")
         state = checkout_state(self.checkout)
 
-        renewed = ask_owner_to_attest(later, CheckoutAttestation(self.worktree, state, host_evidence=True))
-
-        assert renewed is not None
-        with self.subTest(stage="before_outcome"):
-            assert renewed.pk != row.pk
-            assert renewed.parked_task_id == later.pk
-            assert renewed.is_pending
-        renewed.mark_stale("new task will ask after the declined outcome")
+        before = ask_owner_to_attest(later, CheckoutAttestation(self.worktree, state, host_evidence=True))
+        assert before is None
         assert self._carry_out() == [f"declined {row.pk}"]
         after_outcome = TaskFactory(ticket=self.task.ticket, phase="coding")
-        again = ask_owner_to_attest(after_outcome, CheckoutAttestation(self.worktree, state, host_evidence=True))
+        after = ask_owner_to_attest(after_outcome, CheckoutAttestation(self.worktree, state, host_evidence=True))
 
-        with self.subTest(stage="after_outcome"):
-            assert again is not None
-            assert again.pk not in {row.pk, renewed.pk}
-            assert again.parked_task_id == after_outcome.pk
-            assert again.is_pending
+        assert after is None
+        assert DeferredQuestion.objects.filter(evidence__action__target=str(self.worktree.pk)).count() == 1
 
     def test_typed_accept_holds_the_card_for_a_new_task_and_never_attests(self) -> None:
         row = self._park_on_a_foreign_edit()

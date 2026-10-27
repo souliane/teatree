@@ -342,7 +342,11 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # its closed forms, the re-ping and the digest. Shared by the flat notify_question_drains.py, the
 # flat question_heal.py and loop/question_binding; it reads the DeferredQuestion model, so the
 # dependency-free modelkit cannot own it, and no subpackage owns the DeferredQuestion lifecycle.
-PINNED_FLAT_CORE_MODULES = 129
+# 131: +checking_types.py / checking_remaining.py (#5505) — carve-outs of the flat checking.py report
+# hub, beside _checking_gather.py. checking_types is the leaf both checking.py and checking_remaining.py
+# import, which breaks their cycle; checking_remaining gathers the live Remaining group and would push
+# checking.py past the 500-LOC module-health cap. No subpackage owns the check-in report.
+PINNED_FLAT_CORE_MODULES = 131
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:
