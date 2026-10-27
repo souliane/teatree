@@ -12,6 +12,9 @@ def test_marker_qualifies_kind_target_and_binding() -> None:
     assert marker != action_marker(ActionRequest(kind=OwnerActionKind.VOID, target="17", binding="digest"))
     assert marker != action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="18", binding="digest"))
     assert marker != action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="other"))
+    assert marker == action_marker(
+        ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="digest", host_evidence=False)
+    )
     assert marker != action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="digest", task_id=4))
     assert action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="digest", task_id=4)) != (
         action_marker(ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="digest", task_id=5))

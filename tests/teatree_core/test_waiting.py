@@ -1,9 +1,11 @@
 """Tests for the durable waiting-on-you gatherer (PR-21)."""
 
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
 
+from teatree.core.checking import owner_wait_items
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
@@ -11,7 +13,7 @@ from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.waiting_item import WaitingItem
 from teatree.core.waiting import WaitingKind, format_age, gather_waiting
-from tests._owner_channel import OWNER_DECISION
+from tests._owner_channel import OWNER_DECISION, owner_card
 
 
 def _kinds(overlay: str = "") -> list[str]:
@@ -39,6 +41,26 @@ class TestGatherWaiting:
         assert [e.kind for e in entries] == [WaitingKind.QUESTION]
         assert "region" in entries[0].ref
 
+    def test_question_carries_its_card_subject_and_row_id(self) -> None:
+        card = replace(owner_card(), subject="https://github.com/o/r/pull/31")
+        row = DeferredQuestion.record("May I merge this pull request?", card=card)
+
+        [entry] = gather_waiting("")
+
+        assert entry.url == card.subject
+        assert entry.row_id == row.pk
+        assert entry.owner_only is False
+
+    def test_unreadable_owner_card_remains_owner_only(self) -> None:
+        row = DeferredQuestion.objects.create(
+            question="Can I continue?", audience=DeferredQuestion.Audience.OWNER_QUESTION
+        )
+
+        [entry] = gather_waiting("")
+
+        assert entry.row_id == row.pk
+        assert entry.owner_only is True
+
     def test_manual_item_is_gathered(self) -> None:
         WaitingItem.objects.add("chase the finance sign-off")
         entries = gather_waiting("")
@@ -60,6 +82,10 @@ class TestGatherWaiting:
         assert [e.kind for e in entries] == [WaitingKind.REVIEW_REQUEST]
         assert entries[0].url == "https://github.com/o/r/pull/7"
 
+        [item] = owner_wait_items(overlay_slug="teatree")
+        assert item.label.startswith("[teatree] ")
+        assert item.detail == "waiting now"
+
     def test_approved_pr_without_clear_is_merge_authorization(self) -> None:
         ticket = Ticket.objects.create(overlay="teatree", issue_url="https://x/41")
         pr = PullRequest.objects.create(
@@ -71,6 +97,8 @@ class TestGatherWaiting:
         entries = gather_waiting("teatree")
         assert [e.kind for e in entries] == [WaitingKind.MERGE_AUTHORIZATION]
         assert entries[0].url == "https://github.com/o/r/pull/9"
+        [item] = owner_wait_items(overlay_slug="teatree")
+        assert item.label.startswith("[teatree] ")
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

@@ -10,8 +10,15 @@ validation primitives, so the maker / bad-SHA refusals mirror the CLEAR contract
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Rubric, RubricCriterion, RubricError, Session, Ticket
+from teatree.core.gates.rubric_gate import (
+    RubricNotSatisfiedError,
+    RubricNotVerifiedError,
+    check_rubric_satisfied,
+    check_rubric_verified,
+)
+from teatree.core.models import ConfigSetting, Rubric, RubricCriterion, RubricError, Session, Ticket
 from teatree.core.models.rubric import PHASE_CRITERIA, criterion_text_hash
+from teatree.core.models.rubric_waiver import waive_criterion
 from teatree.quality.falsifiable_criteria import falsifiability_violation
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -292,6 +299,99 @@ class TestThePhaseRubricHasContentOnDayOne(TestCase):
         criterion.record_grade(status=RubricCriterion.Status.FAIL, grader_identity="reviewer", reviewed_sha="a" * 40)
         criterion.refresh_from_db()
         assert criterion.status == RubricCriterion.Status.FAIL
+
+
+class TestADeploymentCanSwitchOffTheFailingRunCriteria(TestCase):
+    """`forced_repro_gate_enabled` off withholds the two criteria that demand a failing run.
+
+    A deployment that records no executed repro cannot satisfy "a RED pin exists and was
+    observed failing" or "a test that fails without the change", so seeding them gives it a
+    rubric no verifier can pass. The switch only stops the ADD: a row already on the rubric is
+    never pruned, graded over or re-added.
+    """
+
+    def _switch_off(self, scope: str | None = None) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, **({"scope": scope} if scope else {}))
+
+    def _visit(self, ticket: Ticket, *phases: str) -> list[str]:
+        session = Session.objects.create(ticket=ticket)
+        for phase in phases:
+            session.visit_phase(phase)
+        rubric = Rubric.objects.active_for_ticket(ticket)
+        return [] if rubric is None else [criterion.text for criterion in rubric.criteria]
+
+    def test_switched_off_planning_coding_and_fix_visits_leave_only_the_planning_criterion(self) -> None:
+        self._switch_off()
+        assert self._visit(_ticket(), "planning", "coding", "fix") == [PHASE_CRITERIA["planning"]]
+
+    def test_switched_on_the_same_visits_seed_every_phase_text(self) -> None:
+        assert self._visit(_ticket(), "planning", "coding", "fix") == [
+            PHASE_CRITERIA["planning"],
+            PHASE_CRITERIA["coding"],
+            PHASE_CRITERIA["fix"],
+        ]
+
+    def test_switched_off_the_other_phases_still_seed_their_criterion(self) -> None:
+        self._switch_off()
+        assert self._visit(_ticket(), "design", "investigation") == [
+            PHASE_CRITERIA["design"],
+            PHASE_CRITERIA["investigation"],
+        ]
+
+    def test_a_ticket_whose_only_visit_is_coding_has_no_rubric_and_both_done_gates_refuse_it(self) -> None:
+        self._switch_off()
+        ticket = _ticket()
+        assert self._visit(ticket, "coding") == []
+        assert Rubric.objects.active_for_ticket(ticket) is None
+        with pytest.raises(RubricNotSatisfiedError, match="no rubric is recorded"):
+            check_rubric_satisfied(ticket, _SHA, transition="merge")
+        with pytest.raises(RubricNotVerifiedError, match="no rubric is recorded"):
+            check_rubric_verified(ticket)
+
+    def test_a_graded_coding_criterion_keeps_its_grade_across_a_switched_off_coding_visit(self) -> None:
+        ticket = _ticket()
+        self._visit(ticket, "coding")
+        criterion = Rubric.objects.active_for_ticket(ticket).criteria.get()
+        criterion.record_grade(
+            status=RubricCriterion.Status.PASS, grader_identity="cold-reviewer", reviewed_sha=_SHA, rationale=_CITATION
+        )
+        self._switch_off()
+        self._visit(ticket, "coding")
+        criterion.refresh_from_db()
+        assert (criterion.status, criterion.grader_identity) == (RubricCriterion.Status.PASS, "cold-reviewer")
+
+    def test_a_coding_row_an_operator_deleted_is_not_re_added_while_switched_off(self) -> None:
+        ticket = _ticket()
+        Rubric.populate(ticket, ["the endpoint returns 201 for a fresh idempotency key"])
+        self._visit(ticket, "coding")
+        Rubric.objects.active_for_ticket(ticket).criteria.get(text=PHASE_CRITERIA["coding"]).delete()
+        self._switch_off()
+        assert self._visit(ticket, "coding") == ["the endpoint returns 201 for a fresh idempotency key"]
+
+    def test_a_waived_coding_row_is_not_re_added_with_the_switch_on(self) -> None:
+        ticket = _ticket()
+        self._visit(ticket, "planning", "coding")
+        waive_criterion(
+            ticket, text_hash=criterion_text_hash(PHASE_CRITERIA["coding"]), waived_by="alice", reason="no change code"
+        )
+        assert self._visit(ticket, "coding") == [PHASE_CRITERIA["planning"]]
+
+    def test_a_corrupt_switch_keeps_the_failing_run_criteria_seeded_and_logs(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=True, scope="acme")
+        ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").update(value="not-a-bool")
+        ticket = Ticket.objects.create(overlay="acme")
+        with self.assertLogs("teatree.core.gates.repro_gate", level="ERROR"):
+            assert self._visit(ticket, "coding") == [PHASE_CRITERIA["coding"]]
+
+    def test_the_switch_off_for_one_overlay_does_not_stop_seeding_on_another(self) -> None:
+        self._switch_off(scope="acme")
+        assert self._visit(Ticket.objects.create(overlay="acme"), "coding") == []
+        assert self._visit(_ticket(), "coding") == [PHASE_CRITERIA["coding"]]
+
+    def test_a_stored_null_rubric_waivers_does_not_stop_the_phase_criterion_being_added(self) -> None:
+        ticket = _ticket()
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"rubric_waivers": None})
+        assert self._visit(ticket, "planning") == [PHASE_CRITERIA["planning"]]
 
 
 class TestApplyGrades(TestCase):

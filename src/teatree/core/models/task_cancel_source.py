@@ -3,9 +3,16 @@
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 
+from django.db.models import Q
+
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX
 from teatree.core.models import Task, TaskAttempt
 
 CANCEL_SOURCE_KEY = "cancel_source"
+
+
+def operator_cancel_q() -> Q:
+    return Q(error__startswith=CANCELLED_PREFIX) | Q(result__has_key=CANCEL_SOURCE_KEY)
 
 
 def cancel_source(task: Task) -> str:

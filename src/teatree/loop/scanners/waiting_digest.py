@@ -42,12 +42,19 @@ class WaitingDigestScanner:
             entries = gather_waiting(self.overlay)
             if not entries:
                 return []
-            content_hash = _content_hash([(entry.kind, entry.ref) for entry in entries])
+            content_hash = _content_hash(
+                [(entry.kind, entry.ref, entry.url, entry.row_id or entry.entry_id or 0) for entry in entries]
+            )
             key = f"waiting_digest:{content_hash}"
             already_recorded = BotPing.objects.filter(
                 idempotency_key=key, status__in=[BotPing.Status.SENT, BotPing.Status.LOGGED]
             ).exists()
-            rows = [[entry.kind, format_age(entry.age), entry.ref] for entry in entries]
+            rows = []
+            for entry in entries:
+                subject = f"{entry.url} — {entry.ref}" if entry.url else entry.ref
+                if entry.row_id is not None:
+                    subject = f"Q{entry.row_id}: {subject}"
+                rows.append([entry.kind, format_age(entry.age), subject])
             message = render_table_message(["Kind", "Age", "Waiting on you"], rows, title="Waiting on you")
             # INTERNAL: logged terminally (never DM'd). ``notify_user`` short-circuits
             # before backend resolution, so ``blocks``/``backend``/``user_id`` are unused.
@@ -72,7 +79,6 @@ class WaitingDigestScanner:
         ]
 
 
-def _content_hash(pairs: list[tuple[str, str]]) -> str:
-    """Stable short hash over the (kind, ref) pairs, order-independent."""
-    joined = "\n".join(f"{kind}|{ref}" for kind, ref in sorted(pairs))
+def _content_hash(pairs: list[tuple[str, str, str, int]]) -> str:
+    joined = "\n".join(f"{kind}|{ref}|{url}|{row_id}" for kind, ref, url, row_id in sorted(pairs))
     return hashlib.sha256(joined.encode()).hexdigest()[:16]

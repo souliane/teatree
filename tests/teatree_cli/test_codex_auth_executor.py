@@ -74,8 +74,31 @@ def test_executor_check_runs_one_turn_through_the_executor(fake: FakeExecutor) -
     assert "Codex canary: PASS" in result.stdout
     launches = [call for call in fake.calls if call[:2] == ["exec", "-i"] and "setsid" in call]
     assert [call[call.index("setsid") - 1] for call in launches] == [EXECUTOR_ID]
-    assert [request["roots"] for request in fake.probe_requests] == [[], []]
+    assert [request["roots"] for request in fake.probe_requests] == [[], [], []]
     assert fake.homes() == []
+
+
+def test_executor_check_rejects_a_home_planted_during_the_turn(fake: FakeExecutor) -> None:
+    fake.plant_plugins_after_turn = True
+    fake.install()
+    try:
+        result = CliRunner().invoke(codex_app, ["auth", "check", "--executor", "--phase", "reviewing"])
+    finally:
+        codex_read_only_server.reset_executor_app_servers()
+
+    assert result.exit_code == 1
+    assert "Codex home holds plugins" in result.output
+    assert len(fake.thread_starts) == 1
+    assert len(fake.probe_requests) == 3
+    assert [request["home"] for request in fake.probe_requests][-1].startswith("/run/t3-ro/codex-")
+
+
+def test_executor_check_rejects_an_unserved_phase(fake: FakeExecutor) -> None:
+    result = CliRunner().invoke(codex_app, ["auth", "check", "--executor", "--phase", "coding"])
+
+    assert result.exit_code != 0
+    assert "coding" in result.output
+    assert fake.probe_requests == []
 
 
 def _refused_import(argv: list[str], login: object) -> str:

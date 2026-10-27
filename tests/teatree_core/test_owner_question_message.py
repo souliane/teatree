@@ -377,12 +377,73 @@ class TestTheRePingAndTheDigest(TestCase):
         old, now = self._asked(72)
         newer = _no_options_row()
 
+        DeferredQuestion.objects.filter(pk=old.pk).update(slack_ts=str((now - dt.timedelta(hours=72)).timestamp()))
+        old.refresh_from_db()
+
         assert digest_text([old, newer], now=now) == (
-            "2 decisions are waiting for you; the oldest was asked 3 days ago. Each one is in its own thread."
+            "1 decision is waiting for you; it was asked 3 days ago. It is in its own thread. 1 more is not posted yet."
         )
 
     def test_a_single_waiting_decision_reads_in_the_singular(self) -> None:
         row, now = self._asked(5)
+
+        DeferredQuestion.objects.filter(pk=row.pk).update(slack_ts=str((now - dt.timedelta(hours=5)).timestamp()))
+        row.refresh_from_db()
+
+        assert digest_text([row], now=now) == (
+            "1 decision is waiting for you; it was asked 5 hours ago. It is in its own thread."
+        )
+
+    def test_unposted_rows_have_no_thread_or_age_claim(self) -> None:
+        now = timezone.now()
+        old = _no_options_row()
+        newer = _card_row(_SAMPLE_QUESTION, _SAMPLE_CARD)
+        DeferredQuestion.objects.filter(pk=old.pk).update(created_at=now - dt.timedelta(days=34))
+
+        assert digest_text([old, newer], now=now) == ("2 decisions are waiting for you; they are not posted yet.")
+
+    def test_old_unposted_row_does_not_set_mixed_digest_age(self) -> None:
+        now = timezone.now()
+        old = _no_options_row()
+        posted = _card_row(_SAMPLE_QUESTION, _SAMPLE_CARD)
+        DeferredQuestion.objects.filter(pk=old.pk).update(created_at=now - dt.timedelta(days=34))
+        DeferredQuestion.objects.filter(pk=posted.pk).update(slack_ts=str((now - dt.timedelta(hours=3)).timestamp()))
+        posted.refresh_from_db()
+
+        assert digest_text([old, posted], now=now) == (
+            "1 decision is waiting for you; it was asked 3 hours ago. It is in its own thread. "
+            "1 more is not posted yet."
+        )
+
+    def test_mixed_digest_counts_only_posted_threads_and_their_oldest_age(self) -> None:
+        now = timezone.now()
+        posted_new = _card_row(_SAMPLE_QUESTION, _SAMPLE_CARD)
+        posted_old = _no_options_row()
+        unposted = _card_row("Can I archive the widget logs?", _SAMPLE_CARD)
+        DeferredQuestion.objects.filter(pk=posted_new.pk).update(
+            slack_ts=str((now - dt.timedelta(hours=3)).timestamp())
+        )
+        DeferredQuestion.objects.filter(pk=posted_old.pk).update(
+            slack_ts=str((now - dt.timedelta(hours=7)).timestamp())
+        )
+        DeferredQuestion.objects.filter(pk=unposted.pk).update(created_at=now - dt.timedelta(days=34))
+        posted_new.refresh_from_db()
+        posted_old.refresh_from_db()
+        unposted.refresh_from_db()
+
+        assert digest_text([posted_new, posted_old, unposted], now=now) == (
+            "2 decisions are waiting for you; the oldest was asked 7 hours ago. "
+            "Each one is in its own thread. 1 more is not posted yet."
+        )
+
+    def test_one_unposted_question_uses_singular_without_age(self) -> None:
+        assert digest_text([_no_options_row()], now=timezone.now()) == (
+            "1 decision is waiting for you; it is not posted yet."
+        )
+
+    def test_invalid_post_timestamp_uses_creation_time(self) -> None:
+        row, now = self._asked(5)
+        row.slack_ts = "invalid"
 
         assert digest_text([row], now=now) == (
             "1 decision is waiting for you; it was asked 5 hours ago. It is in its own thread."
