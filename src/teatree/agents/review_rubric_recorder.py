@@ -3,7 +3,7 @@
 import dataclasses
 from typing import TYPE_CHECKING
 
-from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX, returned_grades_phrase
+from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
 from teatree.core.models import ReviewVerdict, Rubric, RubricCriterion
 
 if TYPE_CHECKING:
@@ -25,6 +25,14 @@ class ReviewGrading:
         if self.carried and self.prior_head:
             pks = {str(pk) for pk in self.rubric.criteria.filter(ordinal__in=self.carried).values_list("pk", flat=True)}
             Rubric.carry_grades(self.rubric.ticket, from_head=self.prior_head, to_head=head, only=pks)
+
+
+def _returned_grades_phrase(returned: object) -> str:
+    if returned is None:
+        return 'you returned no "rubric_grades" at all'
+    if isinstance(returned, list):
+        return f'your "rubric_grades" carried {len(returned)} grade(s)'
+    return f'your "rubric_grades" was a {type(returned).__name__}, not a JSON array'
 
 
 def rubric_coverage_error(
@@ -54,7 +62,7 @@ def rubric_coverage_error(
     named = ", ".join(f"#{ordinal}" for ordinal in ungraded)
     return (
         f"{MALFORMED_RUBRIC_GRADES_PREFIX}criteria {named} of ticket {rubric.ticket.pk} are ungraded "
-        f"({returned_grades_phrase(returned)}) — "
+        f"({_returned_grades_phrase(returned)}) — "
         f"a verdict that leaves a criterion PENDING records nothing, because recording it would retire "
         f"this head's review claim while the done-gate still refuses the merge, leaving the head "
         f"unmergeable with no reviewer left to re-arm. You are the independent verifier: grade EVERY "
