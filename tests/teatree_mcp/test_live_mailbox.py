@@ -1607,6 +1607,7 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
             "harness": "claude_sdk",
             "label": "coding task 7",
             "ticket": "3",
+            "room": "3",
             "phase": "coding",
             "can_receive": True,
         }
