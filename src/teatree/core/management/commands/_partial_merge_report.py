@@ -8,7 +8,7 @@ from teatree.core.merge.partial_merge_report import PartialMergeReport, find_par
 
 
 class PartialMergeReportCommands(TyperCommand):
-    @command(name="partial-merge-report")
+    @command(name="partial-merge-report", help="List merged tickets whose open issue has a declared remainder.")
     def partial_merge_report(
         self,
         *,

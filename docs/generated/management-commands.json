@@ -1373,7 +1373,7 @@
           "name": "fix-record-override"
         },
         {
-          "help": "",
+          "help": "List merged tickets whose open issue has a declared remainder",
           "name": "partial-merge-report"
         },
         {
