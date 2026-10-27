@@ -13,10 +13,9 @@ agent-answered independently with no race and no double reply.
 
 Per unit, oldest-first, bounded to :data:`_BATCH` per cycle. First a
 no-LLM :eyes: receipt reaction, exactly once (``mark_eyes_reacted`` CAS)
-even across cycle re-runs. A bound thread reaches its ticket's live session
-first, including a reply to a queued ``DeferredQuestion``. When no live
-session accepts it, :func:`~teatree.loop.question_binding.bind_reply` can
-resolve the answer before ordinary routing, without a model turn. Otherwise
+even across cycle re-runs. The question binder sees a recorded card answer
+first; a ticket status request then uses ticket rows without a model turn.
+Other bound replies reach the ticket's live session before ordinary routing. Otherwise
 the unit is READ (:func:`~teatree.loop.inbound_reading.read_inbound` — one cheap
 model turn, keyword fallback) and routed on what it means, not on which
 keywords it contains:

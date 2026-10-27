@@ -83,7 +83,7 @@ def _token_budget_remaining() -> int | None:
 def _stage_a(text: str) -> str | None:
     """Zero-token answer from teatree's on-disk statusline, or ``None``.
 
-    The user only ever wants to see what is in the statusline — not the
+    An unbound status query shows only what is in the statusline — not the
     dashboard table (#1121). When the statusline file is empty/missing,
     return ``None`` so the cycle falls through to Stage B or delegation.
     """

@@ -13,9 +13,9 @@ The ladder, strongest evidence first:
 (a) an explicit ``#<id>`` prefix — the format the backlog digest already
 instructs the owner to reply in, and which until now nothing parsed — naming a
 question mirrored on the reply's own DM;
-(b) the reply's ``thread_ts`` — the pending card whose own mirror ts belongs to that thread; two
-pending cards bind NOTHING and the owner is asked to choose with ``#<id>``, and a card thread with no
-pending card (closed, tap-only, or a ``#<id>`` that is not waiting) gets a note instead of a silent drop;
+(b) the reply's ``thread_ts`` — in a ticket root, the newest recorded post before
+the reply must name a pending card; in an older card thread, two candidate cards
+bind NOTHING and the owner is asked to choose with ``#<id>``;
 (c) a top-level reply when exactly ONE live question is mirrored on the channel.
 
 More than one candidate and no thread or id binds NOTHING. The newest-pending-
