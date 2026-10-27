@@ -508,17 +508,17 @@ class TestThreadCardReplies(TestCase):
         assert card.is_pending
         assert "Slack read refused" in " ".join(logs.output)
 
-    def test_non_owner_reply_is_rejected_and_logged(self) -> None:
+    def test_non_owner_reply_is_rejected_without_receipt(self) -> None:
         card = _card("700.1")
         backend = Backend(user_id=OWNER_SLACK_ID)
         _event(backend, ts="700.2", root="700.1", user="U_OTHER")
 
-        with self.assertLogs("teatree.loop.question_binding", level="INFO") as logs:
-            _cycle(backend)
+        _cycle(backend)
 
         card.refresh_from_db()
         assert card.is_pending
-        assert "author is not the owner" in " ".join(logs.output)
+        assert backend.reactions == []
+        assert backend.replies == []
 
     def test_api_app_post_in_unrelated_thread_stays_filtered_and_leaves_card_pending(self) -> None:
         card = _card("800.1")
