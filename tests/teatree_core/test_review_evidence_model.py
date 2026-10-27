@@ -17,6 +17,21 @@ def ticket(db) -> Ticket:
 
 
 class TestRecordValidation:
+    @pytest.mark.parametrize("repos", [[], ["org/a"]])
+    def test_insufficient_repos_reject_before_overlay_lookup(self, ticket: Ticket, repos: list[str]) -> None:
+        with (
+            patch("teatree.core.overlay_loader.get_overlay_for_ticket", side_effect=RuntimeError("unavailable")),
+            pytest.raises(ReviewEvidenceError, match="≥ 2 distinct repos"),
+        ):
+            ReviewEvidence.record(
+                ticket=ticket,
+                kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
+                reviewer_identity="cold-reviewer",
+                verdict="ok",
+                head_sha=_SHA,
+                repos=repos,
+            )
+
     def test_cold_review_does_not_read_project_path_mapping(self, ticket: Ticket) -> None:
         with patch("teatree.core.overlay_loader.get_overlay_for_ticket", side_effect=RuntimeError("unavailable")):
             row = ReviewEvidence.record(

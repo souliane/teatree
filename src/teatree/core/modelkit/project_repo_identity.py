@@ -33,7 +33,7 @@ class ProjectRepoIdentity:
                 result.append(cleaned)
         return result
 
-    def covers(self, required: Iterable[str], covered: Iterable[str]) -> bool:
-        return {self.canonical(repo) for repo in required if str(repo).strip()} <= {
-            self.canonical(repo) for repo in covered if str(repo).strip()
+    def covers(self, required: Iterable[str] | None, covered: Iterable[str] | None) -> bool:
+        return {self.canonical(repo) for repo in required or [] if str(repo).strip()} <= {
+            self.canonical(repo) for repo in covered or [] if str(repo).strip()
         }

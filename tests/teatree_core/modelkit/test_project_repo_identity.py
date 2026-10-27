@@ -27,6 +27,13 @@ def test_coverage_compares_canonical_identities() -> None:
     assert identity.covers([], [])
 
 
+def test_coverage_accepts_missing_repo_lists() -> None:
+    identity = ProjectRepoIdentity({"teatree": "souliane/teatree"})
+    assert identity.covers(None, None)
+    assert identity.covers(None, ["teatree"])
+    assert not identity.covers(["teatree"], None)
+
+
 def test_empty_declaration_keeps_old_string_comparison() -> None:
     identity = ProjectRepoIdentity({})
     assert identity.distinct(["teatree", "souliane/teatree"]) == ["teatree", "souliane/teatree"]

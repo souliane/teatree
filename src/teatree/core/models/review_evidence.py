@@ -170,12 +170,9 @@ class ReviewEvidence(models.Model):
             )
             raise ReviewEvidenceError(msg)
 
-        identity = (
-            project_repo_identity_for_ticket(ticket)
-            if normalized_kind == cls.Kind.INTEGRATION_REVIEW
-            else ProjectRepoIdentity({})
-        )
-        normalized_repos = identity.distinct(repos)
+        normalized_repos = ProjectRepoIdentity({}).distinct(repos)
+        if normalized_kind == cls.Kind.INTEGRATION_REVIEW and len(normalized_repos) >= _MIN_INTEGRATION_REPOS:
+            normalized_repos = project_repo_identity_for_ticket(ticket).distinct(normalized_repos)
         if normalized_kind == cls.Kind.INTEGRATION_REVIEW and len(normalized_repos) < _MIN_INTEGRATION_REPOS:
             msg = (
                 f"an integration review must cover ≥ {_MIN_INTEGRATION_REPOS} distinct repos (got "
