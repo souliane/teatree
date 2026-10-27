@@ -5,6 +5,8 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
+from teatree.agents.envelope_contract import envelope_contract_lines
+from teatree.agents.result_schema import required_evidence_for_phase
 from teatree.agents.ship_readiness_recorder import NOT_READY_PREFIX, record_returned_ship_readiness
 from teatree.core.models import Session, Task, Ticket
 
@@ -53,6 +55,12 @@ class TestOnlyAReadyVerdictShips(TestCase):
             f"{NOT_READY_PREFIX}the ship gates refused it: shipping requires: reviewing"
         )
 
+    def test_a_ready_verdict_returned_while_stopping_for_the_owner_ships_nothing(self) -> None:
+        result = {"needs_user_input": True, "ship_readiness": {"ready": True}}
+
+        assert record_returned_ship_readiness(self.task, result, phase="shipping", shipper=self.shipper) == ""
+        assert self.shipper.shipped == []
+
     def test_another_phase_or_an_absent_verdict_is_a_no_op(self) -> None:
         assert record_returned_ship_readiness(self.task, {}, phase="shipping", shipper=self.shipper) == ""
         assert (
@@ -99,6 +107,25 @@ class TestTheRecorderEntryPoint(TestCase):
 
         assert "must return `ship_readiness`" in attempt.error
 
+    def test_a_claude_run_carrying_only_a_ship_readiness_verdict_is_refused_and_ships_nothing(self) -> None:
+        with patch("teatree.agents.ship_readiness_recorder.call_command_streamed") as ship:
+            attempt = self._record({"summary": "did nothing", "ship_readiness": {"ready": True}}, "claude_sdk")
+
+        assert "missing required evidence for phase 'shipping'" in attempt.error
+        assert "[commands_executed]" in attempt.error
+        ship.assert_not_called()
+
+    def test_a_claude_run_never_runs_pr_create_for_a_verdict_it_also_returns(self) -> None:
+        Ticket.objects.filter(pk=self.ticket.pk).update(state=Ticket.State.PR_OPENED)
+        with patch("teatree.agents.ship_readiness_recorder.call_command_streamed") as ship:
+            attempt = self._record(
+                {"summary": "shipped", "commands_executed": ["t3 pr create 1"], "ship_readiness": {"ready": True}},
+                "claude_sdk",
+            )
+
+        assert attempt.error == ""
+        ship.assert_not_called()
+
     def test_a_claude_run_still_records_on_commands_executed(self) -> None:
         Ticket.objects.filter(pk=self.ticket.pk).update(state=Ticket.State.PR_OPENED)
         with patch("teatree.agents.ship_readiness_recorder.call_command_streamed") as ship:
@@ -106,3 +133,18 @@ class TestTheRecorderEntryPoint(TestCase):
 
         assert attempt.error == ""
         ship.assert_not_called()
+
+
+class TestTheWorkerShippingBriefIsUnchanged(TestCase):
+    def test_a_worker_shipping_run_is_taught_and_held_to_commands_executed_alone(self) -> None:
+        taught = "\n".join(envelope_contract_lines("shipping"))
+
+        assert required_evidence_for_phase("shipping") == ("commands_executed",)
+        assert "ALSO requires a non-empty `commands_executed`" in taught
+        assert "ship_readiness" not in taught
+
+    def test_the_executor_shipping_brief_teaches_the_verdict_it_must_return(self) -> None:
+        taught = "\n".join(envelope_contract_lines("shipping", read_only_venue=True))
+
+        assert "ALSO requires a non-empty `ship_readiness`" in taught
+        assert "ALSO requires a non-empty `commands_executed`" not in taught

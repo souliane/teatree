@@ -58,6 +58,38 @@ class TestTheWorkerSendsTheDraft(TestCase):
         assert refusal.startswith(NOT_SENT_PREFIX)
         assert self.poster.calls == []
 
+    def test_another_tickets_open_pull_request_is_not_this_tickets_to_request(self) -> None:
+        elsewhere = Ticket.objects.create(role=Ticket.Role.AUTHOR, overlay="t3-teatree")
+        PullRequest.objects.create(ticket=elsewhere, url=_OTHER_URL, repo="example-org/other-repo", iid="9")
+
+        refusal = self._record({"ready": True, "pr_url": _OTHER_URL, "title": "feat: elsewhere"})
+
+        assert refusal.startswith(NOT_SENT_PREFIX)
+        assert self.poster.calls == []
+
+    def test_chat_markup_in_the_title_reaches_the_poster_escaped(self) -> None:
+        title = "feat: <!channel> <!subteam^S123> <@U123> <https://evil.example|label> a&b"
+
+        assert self._record({"ready": True, "title": title}) == ""
+
+        (call,) = self.poster.calls
+        assert call["title"] == (
+            "feat: &lt;!channel&gt; &lt;!subteam^S123&gt; &lt;@U123&gt; &lt;https://evil.example|label&gt; a&amp;b"
+        )
+        assert not {"<", ">"} & set(call["title"])
+
+    def test_a_draft_returned_while_stopping_for_the_owner_posts_nothing(self) -> None:
+        draft = {"ready": True, "pr_url": _OWN_URL, "title": "feat: x"}
+
+        refusal = record_returned_review_request(
+            self.task,
+            {"needs_user_input": True, "review_request": draft},
+            phase="requesting_review",
+            poster=self.poster,
+        )
+
+        assert (refusal, self.poster.calls) == ("", [])
+
     def test_a_single_open_pull_request_needs_no_url(self) -> None:
         assert self._record({"ready": True}) == ""
         assert [call["mr_url"] for call in self.poster.calls] == [_OWN_URL]
@@ -119,3 +151,15 @@ class TestTheExecutorMustReturnTheDraft(TestCase):
 
     def test_a_claude_run_with_a_summary_only_envelope_still_records(self) -> None:
         assert self._record("claude_sdk").error == ""
+
+    def test_a_claude_run_never_posts_a_review_request_draft(self) -> None:
+        with patch("teatree.agents.review_request_recorder.call_command_streamed") as post:
+            attempt = record_result_envelope(
+                self.task,
+                {"summary": "asked", "review_request": {"ready": True}},
+                phase="requesting_review",
+                usage=AttemptUsage(selected_harness="claude_sdk"),
+            )
+
+        assert attempt.error == ""
+        post.assert_not_called()

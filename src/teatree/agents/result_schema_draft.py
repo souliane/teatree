@@ -64,11 +64,16 @@ SHIP_READINESS_SCHEMA_PROPERTY: JSONSchema = {
 }
 
 
+def is_executor_draft_run(phase: str, selected_harness: str) -> bool:
+    """Whether this run is a draft phase on the read-only executor: the only run the draft recorders act on."""
+    return normalize_phase(phase) in EXECUTOR_DRAFT_FIELDS and selected_harness == EXECUTOR_HARNESS
+
+
 def executor_draft_evidence_error(phase: str, result: Mapping[str, object], *, selected_harness: str) -> str:
     """The refusal for an executor run that returned no draft or readiness verdict, else ``""``."""
-    field = EXECUTOR_DRAFT_FIELDS.get(normalize_phase(phase))
-    if field is None or selected_harness != EXECUTOR_HARNESS or result.get("needs_user_input"):
+    if not is_executor_draft_run(phase, selected_harness) or result.get("needs_user_input"):
         return ""
+    field = EXECUTOR_DRAFT_FIELDS[normalize_phase(phase)]
     if isinstance(result.get(field), Mapping):
         return ""
     return f"missing required evidence for phase '{phase}': a read-only executor run must return `{field}`"

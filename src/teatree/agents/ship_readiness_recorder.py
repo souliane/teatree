@@ -30,9 +30,12 @@ def record_returned_ship_readiness(
 ) -> str:
     """Queue *task*'s ship when the executor judged it ready; return a refusal otherwise, or ``""`` once queued.
 
-    A no-op on every other phase and on a result that returned no verdict (the evidence gate owns that).
+    A no-op on every other phase, on a result that returned no verdict (the evidence gate owns that) and on a
+    run that stopped for the owner, whose verdict is not final.
     """
     if normalize_phase(phase or task.phase) != "shipping" or "ship_readiness" not in result:
+        return ""
+    if result.get("needs_user_input"):
         return ""
     verdict = result["ship_readiness"]
     if not isinstance(verdict, Mapping):

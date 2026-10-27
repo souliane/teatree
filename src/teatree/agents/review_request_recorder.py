@@ -49,9 +49,12 @@ def record_returned_review_request(
 ) -> str:
     """Post the drafted request for *task*'s own pull request; return a refusal, or ``""`` when it landed.
 
-    A no-op on every other phase and on a result that returned no draft (the evidence gate owns that).
+    A no-op on every other phase, on a result that returned no draft (the evidence gate owns that) and on a
+    run that stopped for the owner, whose draft is not final.
     """
     if normalize_phase(phase or task.phase) != "requesting_review" or "review_request" not in result:
+        return ""
+    if result.get("needs_user_input"):
         return ""
     target = _target(task, result["review_request"])
     if isinstance(target, str):
@@ -86,7 +89,10 @@ def _own_open_pull_request(task: Task, wanted: str) -> PullRequest | None:
 
 
 def _subject(raw: object) -> str:
-    return " ".join(raw.split())[:_MAX_TITLE_CHARS] if isinstance(raw, str) else ""
+    if not isinstance(raw, str):
+        return ""
+    plain = " ".join(raw.split())[:_MAX_TITLE_CHARS]
+    return plain.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _reasons(draft: Mapping[str, object]) -> str:

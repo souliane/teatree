@@ -455,8 +455,8 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:   result is indistinguishable from a healthy review, so the absence was
 #:   invisible. The verdict is the only artifact the merge gate consumes, so it
 #:   is the only accepted evidence.
-#: - ``shipping``: at least one command executed (``git push``, ``gh pr``...), or the
-#:   ``ship_readiness`` verdict a read-only executor run returns for the worker to act on.
+#: - ``shipping``: at least one command executed (``git push``, ``gh pr``...). A read-only executor run
+#:   returns ``ship_readiness`` instead, checked by ``result_schema_draft.executor_draft_evidence_error``.
 #: - ``scanning_news``: at least one ``article_suggestion`` returned — the
 #:   shell-denied scanner hands its candidates back through the envelope, so a
 #:   summary-only run is a silently-dropped scan (#9), refused here.
@@ -490,7 +490,7 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "codex_adversarial_reviewing": ("review_verdict",),
     "critic_reviewing": ("critic_verdict",),
     "directive_interpreting": ("directive_interpretation",),
-    "shipping": ("commands_executed", "ship_readiness"),
+    "shipping": ("commands_executed",),
     "scanning_news": ("article_suggestions",),
     "triage_assessing": ("triage_recommendations",),
     "answering": ("answer",),

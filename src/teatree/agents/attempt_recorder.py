@@ -32,7 +32,7 @@ from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
-from teatree.agents.result_schema_draft import executor_draft_evidence_error
+from teatree.agents.result_schema_draft import executor_draft_evidence_error, is_executor_draft_run
 from teatree.agents.result_schema_owner_stop import owner_stop_refusal
 from teatree.agents.review_context_recorder import record_returned_review_context
 from teatree.agents.review_envelope_recorder import (
@@ -226,7 +226,9 @@ def record_result_envelope(
     if checked.error:
         return _record_failure(task, error=checked.error, result=result, usage=usage)
 
-    server_side_error = _record_returned_envelopes(task, result, phase=phase)
+    server_side_error = _record_returned_envelopes(
+        task, result, phase=phase, executor_draft_run=is_executor_draft_run(phase or task.phase, usage.selected_harness)
+    )
     if server_side_error:
         return _record_failure(task, error=server_side_error, result=result, usage=usage)
 
@@ -395,7 +397,11 @@ def _check_before_recording(
         return _PreRecordCheck(action_error, result)
 
     evidence_error = (
-        check_evidence(result, phase or task.phase)
+        (
+            ""
+            if is_executor_draft_run(phase or task.phase, usage.selected_harness)
+            else check_evidence(result, phase or task.phase)
+        )
         or _answering_work_item_error(task, result, phase)
         or executor_draft_evidence_error(phase or task.phase, result, selected_harness=usage.selected_harness)
     )
@@ -417,7 +423,7 @@ def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) 
     return missing_work_item_error(task, result)
 
 
-def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str, executor_draft_run: bool) -> str:
     """Record every shell-denied hand-back that carries a maker≠checker write, short-circuit.
 
     A headless phase denied the shell RETURNS its typed verdict/sketch instead of
@@ -437,10 +443,12 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
         return critic_error
     fix_error = record_returned_fix_record(task, result)
     sweep_error = fix_error or verify_returned_ticket_sweep(result)
-    draft_error = (
-        sweep_error
-        or record_returned_review_request(task, result, phase=phase)
-        or record_returned_ship_readiness(task, result, phase=phase)
+    draft_error = sweep_error or (
+        executor_draft_run
+        and (
+            record_returned_review_request(task, result, phase=phase)
+            or record_returned_ship_readiness(task, result, phase=phase)
+        )
     )
     return draft_error or record_returned_directive_interpretation(task, result)
 
