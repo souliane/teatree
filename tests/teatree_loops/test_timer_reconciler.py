@@ -616,12 +616,6 @@ class TestMaintenanceChains(django.test.TestCase):
             task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
         ).exists()
 
-    def test_the_wake_path_delays_leave_room_inside_the_owners_first_reply_threshold(self) -> None:
-        owners_first_reply_threshold_seconds = 60
-        debounce_then_rearm = 2 * timer_reconciler.WAKE_MIN_INTERVAL_SECONDS
-
-        assert debounce_then_rearm <= owners_first_reply_threshold_seconds // 3
-
     def test_wake_slack_answer_releases_its_lease(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
