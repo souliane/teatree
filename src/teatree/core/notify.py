@@ -58,7 +58,7 @@ from teatree.core.notify_types import (
     blocked,
 )
 from teatree.core.send_proxy import SendChannel, SendRequest, route_send
-from teatree.core.ticket_dm_delivery import TicketDmRequest, deliver_ticket_dm
+from teatree.core.ticket_dm_delivery import TicketDmRequest, deliver_ticket_dm, record_ticket_thread_post
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 from teatree.types import RawAPIDict
 
@@ -214,6 +214,8 @@ def notify_user_outcome(
         )
         finalize_failed(idempotency_key=idempotency_key, error=failure)
         return blocked(NotifyReason.DELIVERY_FAILED, error=failure)
+    if options.thread_ts:
+        record_ticket_thread_post(channel, options.thread_ts, posted_ts)
     # ``channel`` and ``posted_ts`` are both non-empty here — ``_deliver_dm``
     # only returns no failure when both are set, so no defensive re-check.
     try:

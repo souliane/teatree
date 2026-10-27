@@ -288,6 +288,25 @@ class TestNotifyUser(TestCase):
         assert backend.post_message.call_args.kwargs["thread_ts"] == ""
         assert not TicketDmThread.objects.filter(ticket=ticket).exists()
 
+    def test_explicit_send_into_ticket_root_records_its_post(self) -> None:
+        ticket = Ticket.objects.create(short_description="Existing thread")
+        TicketDmThread.objects.create(ticket=ticket, channel="D-USER", root_ts="1700000000.000001")
+        backend = _backend()
+        backend.post_message.return_value = {"ok": True, "ts": "1700000000.000002"}
+
+        outcome = notify_user_outcome(
+            "progress note",
+            kind=NotifyKind.INFO,
+            idempotency_key="explicit-ticket-root",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", thread_ts="1700000000.000001"),
+        )
+
+        assert outcome.sent
+        assert TicketDmPost.objects.filter(
+            channel="D-USER", slack_ts="1700000000.000002", thread__ticket=ticket
+        ).exists()
+
     def test_happy_path_posts_dm_and_records_audit_with_permalink(self) -> None:
         backend = _backend()
         sent = notify_user(
