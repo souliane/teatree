@@ -139,7 +139,10 @@ def _issue_expedite_clear(
 
 
 def _run(clear: MergeClear, stub: _GhStub, *, expedite_authorized: str = "") -> MergeOutcome:
-    with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
+    with (
+        patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
+        patch("teatree.backends.github.client.GitHubCodeHost.current_user", return_value="merge-bot"),
+    ):
         return merge_ticket_pr(
             clear=clear,
             executing_loop_identity="merge-loop",
