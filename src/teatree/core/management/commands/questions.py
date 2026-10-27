@@ -30,11 +30,13 @@ import typer
 from django.db import transaction
 from django_typer.management import command, initialize
 
+from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.question_text import question_fingerprint
+from teatree.core.models.session import Session
 from teatree.core.notify_question_drains import drain_deferred_questions, owner_quiet_now
 from teatree.core.table_output import print_table
 
@@ -181,7 +183,15 @@ class Command(MachineOutputCommand):
                 raise SystemExit(2)
             card = QuestionCard(decision=kind, checked=tuple(checked or ()), blocker=blocker, why=why, options=options)
         try:
-            row = DeferredQuestion.record(question, options_json=options_json, dedupe_marker=dedupe_marker, card=card)
+            ticket = resolve_invoking_ticket()
+            session = (
+                Session.objects.filter(ticket=ticket).order_by("-started_at", "-pk").first()
+                if ticket is not None
+                else None
+            )
+            row = DeferredQuestion.record(
+                question, options_json=options_json, dedupe_marker=dedupe_marker, card=card, task_session=session
+            )
         except DeferredQuestionError as exc:
             self.stderr.write(f"{exc}. {OWNER_QUESTION_ROUTE}" if card else str(exc))
             raise SystemExit(2) from exc

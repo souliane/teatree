@@ -23,7 +23,7 @@ from teatree.core.gates.t3_master_gate import t3_master_verdict
 from teatree.core.machine_output import emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify_question_drains import owner_quiet_now
-from teatree.core.notify_types import NotifyKind, NotifyOptions, NotifyOutcome, NotifyReason
+from teatree.core.notify_types import NotifyKind, NotifyOutcome, NotifyReason
 from teatree.loop.self_improve.repair_first import OwnerAlertDelivery, OwnerWaitChannel
 from teatree.loops.loop_staleness import loop_health
 
@@ -71,7 +71,6 @@ def _deliver_owner_wait(text: str, key: str) -> "OwnerAlertDelivery":
         kind=NotifyKind.INFO,
         idempotency_key=key,
         audience=NotifyAudience.OWNER_ESCALATION,
-        options=NotifyOptions(as_thread_root=True),
     )
     return _delivery(outcome)
 
