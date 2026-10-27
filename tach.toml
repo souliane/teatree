@@ -86,6 +86,8 @@ layers = [
 expose = [
   "_FORGE_READ_TIMEOUT_SECONDS",
   "_gh_api_patch",
+  "_gh_api_delete",
+  "_gh_api_empty",
   "_gh_api_post",
   "_run_gh",
   "gh_api_get",
