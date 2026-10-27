@@ -403,6 +403,9 @@ class Ticket(
         """Land the rework of a held self-review at CODED so it is re-tested and re-reviewed."""
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
+        extra = self._extra()
+        extra.pop("shipping_hold", None)
+        self.extra = extra
         self.schedule_testing(parent_task=parent_task)
 
     @transition(
@@ -412,6 +415,8 @@ class Ticket(
     )
     def reconcile_reviewed(self) -> None:
         """Phase-driven, state-complete FSM catch-up to SELF_REVIEWED (#694, #798, #799, #808)."""
+        if self.state != self.State.SELF_REVIEWED:
+            self.merge_extra(pop_keys=["shipping_hold"])
 
     @transition(
         field="state",
@@ -490,6 +495,7 @@ class Ticket(
         """Schedule push + PR creation."""
         self.refuse_unless_shippable()
         self._consume_pending_phase_tasks("shipping")
+        self.merge_extra(pop_keys=["shipping_hold"])
 
     @transition(field="state", source=State.PR_OPENED, target=State.REVIEW_REQUESTED)
     def request_review(self) -> None:
@@ -508,6 +514,7 @@ class Ticket(
     def reconcile_merged(self) -> None:
         """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343)."""
         get_gate("merge_evidence")(self)
+        self.merge_extra(pop_keys=["shipping_hold"])
 
     @transition(field="state", source=[State.MERGED, State.RETRO_RECORDED], target=State.RETRO_RECORDED)
     def retrospect(self) -> None:
@@ -524,6 +531,7 @@ class Ticket(
     @transition(field="state", source=[State.MERGED, State.DELIVERED], target=State.SELF_REVIEWED)
     def reopen_for_followup(self) -> None:
         """Reopen a terminally-shipped ticket to SELF_REVIEWED for a follow-up PR (#3327)."""
+        self.merge_extra(pop_keys=["shipping_hold"])
         stamp_reopened_over(self)
 
     @transition(field="state", source=[State.CODED, State.TESTED, State.SELF_REVIEWED], target=State.WORK_STARTED)
@@ -531,6 +539,7 @@ class Ticket(
         extra = self._extra()
         extra.pop("tests_passed", None)
         extra.pop(PLANNING_HANDOFF_KEY, None)
+        extra.pop("shipping_hold", None)
         self.extra = extra
         self._cancel_pending_tasks()
 

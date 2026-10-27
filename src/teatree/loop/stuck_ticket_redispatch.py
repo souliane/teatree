@@ -63,6 +63,7 @@ from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanErro
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task
 from teatree.core.models.self_review import SelfReview
+from teatree.core.models.shipping_hold import is_shipping_held
 from teatree.core.models.task_repair_queries import (
     adjacent_work_attempts,
     ticket_phase_iterations,
@@ -187,6 +188,8 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
     """
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
+        if is_shipping_held(ticket):
+            continue
         phase = _recoverable_phase(ticket)
         if phase is None:
             continue

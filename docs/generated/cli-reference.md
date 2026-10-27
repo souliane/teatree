@@ -12772,6 +12772,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
+│ settle-holds                 Check held no-diff reviews; --dry-run reads     │
+│                              without changing tickets.                       │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
 │                              no-bulk-close guard.                            │
 │ fold                         Merge a member ticket's body into its host's,   │
@@ -13357,6 +13359,20 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the rows as JSON.                                       │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket settle-holds`
+
+```
+Usage: t3 teatree ticket settle-holds [OPTIONS]
+
+ Check held no-diff reviews; --dry-run reads without writing.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run                                                                    │
+│ --json                                                                       │
+│ --help             Show this message and exit.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
