@@ -68,7 +68,7 @@ def synthetic_interpret_ticket(directive: Directive) -> Ticket:
         defaults={
             "role": Ticket.Role.AUTHOR,
             "short_description": f"interpret directive #{directive.pk}",
-            "overlay": Ticket.creation_overlay(directive.scope_overlay),
+            "overlay": lambda: Ticket.creation_overlay(directive.scope_overlay),
         },
     )
     return ticket

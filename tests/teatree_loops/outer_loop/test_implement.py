@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
@@ -15,8 +17,9 @@ from teatree.core.models import (
     Task,
     Ticket,
 )
+from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.loops.outer_loop.implement import schedule_experiment_fix
-from tests.loop_ticket_git import installed_checkout_owner
+from tests.loop_ticket_git import installed_checkout_owner, installed_package_without_git
 
 
 class TestScheduleExperimentFix(TestCase):
@@ -53,11 +56,33 @@ class TestScheduleExperimentFix(TestCase):
         assert task.ticket.overlay == "another-overlay"
 
     def test_blank_overlay_uses_only_the_unique_installed_checkout_owner(self) -> None:
-        for claimed in (True, False):
-            with self.subTest(claimed=claimed), installed_checkout_owner(claimed=claimed) as expected:
+        for claimed, count in ((True, 1), (False, 1), (True, 2)):
+            with (
+                self.subTest(claimed=claimed, count=count),
+                installed_checkout_owner(claimed=claimed, registered_overlays=count) as expected,
+            ):
                 task = schedule_experiment_fix(self._admitted())
                 assert task is not None
                 assert task.ticket.overlay == expected
+
+    def test_package_without_git_uses_only_the_sole_registered_overlay(self) -> None:
+        for count in (0, 1, 2):
+            with self.subTest(count=count), installed_package_without_git(registered_overlays=count) as expected:
+                task = schedule_experiment_fix(self._admitted())
+                assert task is not None
+                assert task.ticket.overlay == expected
+                if count != 1:
+                    with pytest.raises(ImproperlyConfigured, match="has no overlay"):
+                        get_overlay_for_ticket(task.ticket)
+
+    def test_existing_ticket_does_not_resolve_creation_overlay(self) -> None:
+        experiment = self._admitted(overlay="first-scope")
+        schedule_experiment_fix(experiment)
+        experiment.state = OuterLoopExperiment.State.ADMITTED
+        experiment.save(update_fields=["state"])
+        with patch.object(Ticket, "creation_overlay") as resolver:
+            assert schedule_experiment_fix(experiment) is None
+        resolver.assert_not_called()
 
     def test_creates_a_synthetic_ticket_and_transitions(self) -> None:
         exp = self._admitted()

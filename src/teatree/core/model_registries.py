@@ -14,13 +14,13 @@ overwrites the same key), so a second ``ready()`` (test re-entry, in-process
 ``call_command``) is a no-op, not a duplicate-key error.
 """
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-import teatree
+from teatree import paths
 from teatree.core import overlay_loader
 from teatree.core.models.self_review import SelfReview
 from teatree.core.review import pr_open_state as _pr_open_state
+from teatree.utils.git import remote_slug
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import PrOpenState
@@ -39,9 +39,11 @@ def _resolve_overlay_name(name: str) -> str | None:
 
 
 def _running_checkout_overlay() -> str:
-    return overlay_loader.overlay_name_of(
-        overlay_loader.get_overlay_for_repo(str(Path(teatree.__file__).resolve().parents[2]))
-    )
+    repo = str(paths.teatree_source_root())
+    if not remote_slug(repo=repo):
+        overlays = overlay_loader.get_all_overlays()
+        return next(iter(overlays)) if len(overlays) == 1 else ""
+    return overlay_loader.overlay_name_of(overlay_loader.get_overlay_for_repo(repo))
 
 
 def _read_pr_open_state(ticket: "Ticket") -> "PrOpenState":

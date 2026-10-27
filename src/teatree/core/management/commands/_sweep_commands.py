@@ -205,7 +205,8 @@ class SweepCommands(TyperCommand):
         Walks every ticket with an ``issue_url`` and re-runs overlay
         inference (now routed through ``get_workspace_repos()``). Rows whose
         stored overlay differs from a *conclusive* inference are corrected;
-        an inconclusive (empty) inference never blanks an existing value.
+        synthetic umbrella tickets retain their creation overlay, including blank.
+        An inconclusive (empty) inference never blanks an existing value.
         Use ``--dry-run`` to preview.
         """
         results: list[ReattributeResult] = []

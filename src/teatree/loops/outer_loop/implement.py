@@ -51,7 +51,7 @@ def schedule_experiment_fix(
         defaults={
             "role": Ticket.Role.AUTHOR,
             "short_description": experiment.hypothesis.strip()[:80],
-            "overlay": Ticket.creation_overlay(experiment.overlay),
+            "overlay": lambda: Ticket.creation_overlay(experiment.overlay),
         },
     )
     ticket.merge_extra(set_keys={_EXPERIMENT_KEY: experiment.pk, _TARGET_KEY: experiment.target_provider_id})

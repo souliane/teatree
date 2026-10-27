@@ -74,7 +74,7 @@ def schedule_directive_implementation(
         defaults={
             "role": Ticket.Role.AUTHOR,
             "short_description": short,
-            "overlay": Ticket.creation_overlay(directive.scope_overlay),
+            "overlay": lambda: Ticket.creation_overlay(directive.scope_overlay),
         },
     )
     ticket.merge_extra(set_keys={_DIRECTIVE_KEY: directive.pk})
