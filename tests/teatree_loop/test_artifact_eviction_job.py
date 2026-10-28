@@ -11,6 +11,7 @@ import datetime as _dt
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -94,6 +95,21 @@ class CadenceTests(TestCase):
         marker.save(update_fields=["last_freed_at"])
 
         assert [s.kind for s in ArtifactEvictionScanner().scan()] == [_SIGNAL]
+
+
+def test_pressure_shortens_artifact_cadence_without_running_every_tick() -> None:
+    marker = SimpleNamespace(
+        last_artifact_sweep_at=timezone.now() - _dt.timedelta(minutes=6),
+        last_disk_free_gb=16.0,
+    )
+    scanner = ArtifactEvictionScanner(cadence_minutes=30, disk_crit_free_gb=10.0)
+
+    assert not scanner._cadence_blocks(marker)
+    marker.last_artifact_sweep_at = timezone.now() - _dt.timedelta(minutes=2)
+    assert scanner._cadence_blocks(marker)
+    marker.last_artifact_sweep_at = timezone.now() - _dt.timedelta(minutes=6)
+    marker.last_disk_free_gb = 30.0
+    assert scanner._cadence_blocks(marker)
 
 
 class WiringTests(TestCase):

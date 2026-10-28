@@ -712,6 +712,10 @@ drain_worker() {
 }
 
 build_ro_executor() {
+    if ! require_build_space deploy; then
+        _EXECUTOR_FAILURE="insufficient free space for its image build"
+        return 0
+    fi
     if ! TEATREE_BUILD_CONTEXT="$BUILD_CONTEXT" compose build "$EXECUTOR_SERVICE"; then
         _EXECUTOR_FAILURE="its image did not build"
         echo "deploy: $EXECUTOR_SERVICE did not build (the cause is above); deploying everything else and failing at the end." >&2
@@ -831,6 +835,7 @@ remaining_services() {
 staged_swap() {
     # Build first and recreate nothing: the longest phase of a convergence now runs
     # against a fully live stack, and a build failure costs no availability at all.
+    require_build_space deploy || return 1
     TEATREE_BUILD_CONTEXT="$BUILD_CONTEXT" compose build || return 1
     build_ro_executor
 
