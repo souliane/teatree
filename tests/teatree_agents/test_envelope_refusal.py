@@ -60,6 +60,7 @@ class TestRecorderRefusal(SimpleTestCase):
         assert is_recorder_refusal("Agent result contains unexpected keys: bogus")
         assert is_recorder_refusal("result is not valid JSON: Expecting value")
         assert is_recorder_refusal("result must be a JSON object")
+        assert is_recorder_refusal("sweep_proposals_refused: a fold target is invalid")
 
     def test_matching_is_case_insensitive(self) -> None:
         assert is_recorder_refusal("RESULT MUST BE A JSON OBJECT")

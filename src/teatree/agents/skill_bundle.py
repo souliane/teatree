@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.agents.phase_agent_skills import declared_skills_for_phase
@@ -16,6 +17,7 @@ __all__ = [
     "active_overlay_review_skills",
     "active_overlay_stage_skills",
     "configured_lifecycle_skill",
+    "resolve_executor_sweep_bundle",
     "resolve_skill_bundle",
     "stage_skills_for_dispatch",
 ]
@@ -207,6 +209,13 @@ def _dispatch_cwd(detection_root: Path | None) -> Path:
     return cwd
 
 
+@dataclass(frozen=True, slots=True)
+class _BundleOptions:
+    skill_index: SkillIndex | None = None
+    stage_skills: list[str] | None = None
+    lifecycle_skill_override: str = ""
+
+
 def resolve_skill_bundle(
     *,
     phase: str,
@@ -227,20 +236,35 @@ def resolve_skill_bundle(
     headless coding dispatch loads ``architecture-design`` rather than only
     ``code``.
     """
-    if stage_skills is None:
-        stage_skills = active_overlay_stage_skills(phase)
-    lifecycle_skill_override = configured_lifecycle_skill(phase) if phase == "backlog_sweep" else ""
+    return _resolve_bundle(phase, overlay_skill_metadata, detection_root, _BundleOptions(skill_index, stage_skills))
+
+
+def resolve_executor_sweep_bundle(
+    *, overlay_skill_metadata: SkillMetadata, detection_root: Path | None, stage_skills: list[str]
+) -> list[str]:
+    return _resolve_bundle(
+        "backlog_sweep",
+        overlay_skill_metadata,
+        detection_root,
+        _BundleOptions(stage_skills=stage_skills, lifecycle_skill_override=configured_lifecycle_skill("backlog_sweep")),
+    )
+
+
+def _resolve_bundle(
+    phase: str, overlay_skill_metadata: SkillMetadata, detection_root: Path | None, options: _BundleOptions
+) -> list[str]:
+    stage_skills = options.stage_skills if options.stage_skills is not None else active_overlay_stage_skills(phase)
     policy = SkillLoadingPolicy()
     result = policy.select_for_runtime_phase(
         cwd=_dispatch_cwd(detection_root),
         phase=phase,
         overlay_skill_metadata=overlay_skill_metadata,
-        skill_index=skill_index,
+        skill_index=options.skill_index,
         companion_skills=active_overlay_companion_skills(),
         pr_review_companion=active_overlay_pr_review_companion(),
         review_skills=active_overlay_review_skills(),
         stage_skills=stage_skills,
         agent_declared_skills=declared_skills_for_phase(phase),
-        lifecycle_skill_override=lifecycle_skill_override,
+        lifecycle_skill_override=options.lifecycle_skill_override,
     )
     return result.skills

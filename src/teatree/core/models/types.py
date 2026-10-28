@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Final, TypedDict
 from teatree.core.models.checkout_custody import WorktreeCheckoutExtra
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 from teatree.core.models.repo_expansion import TicketRepoExtra
+from teatree.core.models.sweep_types import SweepDispatchWindow, SweepFoldProposalRecord, SweepPendingRun
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -127,21 +128,10 @@ class ShippingHold(TypedDict):
     checked_at: str
 
 
-class SweepDispatchWindow(TypedDict):
-    task_id: int
-    index: list[str]
-    examined: list[str]
-    external_count: int
-
-
-class SweepFoldProposalRecord(TypedDict):
-    folds: list[dict[str, str]]
-    run_id: str
-
-
 class TicketExtra(TicketRepoExtra, total=False):
     sweep_dispatch_window: SweepDispatchWindow
     sweep_fold_proposals: dict[str, SweepFoldProposalRecord]
+    sweep_pending_run: SweepPendingRun
     tests_passed: bool
     nit_follow_up: bool
     nit_lane_receipts: dict[str, JSONObject]

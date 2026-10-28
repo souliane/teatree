@@ -115,22 +115,25 @@ class TestSweepProposalRecording(TestCase):
         assert TicketSweepRun.objects.get().examined_count == 2
 
     def test_real_citations_are_kept_in_record_and_safe_in_owner_card(self) -> None:
-        member = "https://github.com/example-org/example-repo/issues/1"
         host = "https://github.com/example-org/example-repo/issues/2"
+        members = [f"https://github.com/example-org/example-repo/issues/{number}" for number in (1, 3, 4)]
         citations = [
             "Shipped in merged PR #123",
             "Covered by tests/foo.py and src/foo.py via snake_case --flag <!channel>",
             "same module " * 30 + "PR #124",
         ]
         proposals = {
-            "examined": [member],
-            "folds": [{"member_url": member, "host_url": host, "citation": citation} for citation in citations],
+            "examined": members,
+            "folds": [
+                {"member_url": fold_member, "host_url": host, "citation": citation}
+                for fold_member, citation in zip(members, citations, strict=True)
+            ],
             "gaps": [],
         }
         with patch(
             "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
         ):
-            attempt = self._record(proposals, index_urls=[member, host])
+            attempt = self._record(proposals, index_urls=[*members, host])
 
         self.ticket.refresh_from_db()
         assert attempt.error == "", attempt.error
@@ -163,6 +166,26 @@ class TestSweepProposalRecording(TestCase):
         assert "examined" in attempt.error
         assert TicketSweepRun.objects.count() == 0
 
+    def test_conflicting_fold_graph_refuses_before_asking(self) -> None:
+        urls = [f"https://github.com/example-org/example-repo/issues/{number}" for number in (1, 2, 3)]
+        for folds in (
+            [(urls[0], urls[1]), (urls[0], urls[2])],
+            [(urls[0], urls[1]), (urls[1], urls[0])],
+        ):
+            proposals = {
+                "examined": urls,
+                "folds": [{"member_url": member, "host_url": host, "citation": "same work"} for member, host in folds],
+                "gaps": [],
+            }
+            with patch(
+                "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+            ):
+                attempt = self._record(proposals)
+
+            assert "fold" in attempt.error
+            assert DeferredQuestion.objects.count() == 0
+            assert TicketSweepRun.objects.count() == 0
+
     def test_examined_window_accepts_any_order(self) -> None:
         urls = [f"https://github.com/example-org/example-repo/issues/{number}" for number in (1, 2)]
         attempt = self._record({"examined": urls[::-1], "folds": [], "gaps": []}, expected_examined=urls)
@@ -184,7 +207,6 @@ class TestSweepProposalRecording(TestCase):
             self.task,
             {"sweep_proposals": {"examined": ["invalid"], "folds": [], "gaps": []}},
             phase="backlog_sweep",
-            selected_harness="codex_app_server",
         )
 
         assert error == ""
@@ -264,6 +286,49 @@ class TestSweepProposalRecording(TestCase):
         assert "host changed" in attempt.error
         assert TicketSweepRun.objects.incomplete().count() == 1
         assert TicketSweepRun.objects.recent().count() == 0
+
+    def test_later_task_finishes_a_partially_attached_run_without_losing_its_count(self) -> None:
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
+        )
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
+
+        def attach_then_fail(*_args: object, **kwargs: object) -> None:
+            run_id = _args[_args.index("--sweep-run-id") + 1]
+            TicketSweepRun.objects.record_change(run_id=run_id, issue_url=host.issue_url)
+            raise SystemExit(1)
+
+        with (
+            patch(
+                "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+            ),
+            patch("teatree.agents.sweep_proposals_recorder.call_command_streamed", side_effect=attach_then_fail),
+        ):
+            first = self._record(proposals, index_urls=[host.issue_url])
+        assert first.error
+        assert TicketSweepRun.objects.incomplete().count() == 1
+
+        self.task = Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            phase="backlog_sweep",
+            execution_reason="ASK-GATE: return proposals",
+        )
+        self.task.claim(claimed_by="loop-slot")
+        with (
+            patch(
+                "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+            ),
+            patch("teatree.agents.sweep_proposals_recorder.batch_entries", return_value=[{"gap_key": "gap-a"}]),
+            patch("teatree.agents.sweep_proposals_recorder.call_command_streamed") as attach,
+        ):
+            second = self._record({"examined": [], "folds": [], "gaps": []})
+
+        assert second.error == "", second.error
+        attach.assert_not_called()
+        assert TicketSweepRun.objects.incomplete().count() == 0
+        assert [run.changed_count for run in TicketSweepRun.objects.recent()] == [0, 1]
 
     def test_fold_host_may_come_from_the_index_outside_the_body_window(self) -> None:
         member = "https://github.com/example-org/example-repo/issues/1"

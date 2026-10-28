@@ -15,8 +15,8 @@ from teatree.agents.phase_blocks import intake_survey_json
 from teatree.agents.read_only_draft_facts import DRAFT_FACTS_CAP_BYTES, DraftFactsUnavailableError, draft_phase_facts
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.intake.landscape_persist import ensure_planning_landscape
-from teatree.core.modelkit.phases import SWEEP_ASK_GATE_MARKER, normalize_phase
-from teatree.core.models import Ticket, TicketSweepRun
+from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE, SWEEP_ASK_GATE_MARKER, normalize_phase
+from teatree.core.models import Task, Ticket
 from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.overlay_repos import owned_repo_slugs
@@ -30,7 +30,7 @@ from teatree.utils.git_sync import fetch_branch
 from teatree.utils.url_slug import pr_ref_from_url, repo_namespaced_key_from_path, slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
-    from teatree.core.models import Task
+    from teatree.core.models.sweep_types import SweepDispatchWindow
     from teatree.core.overlay import OverlayBase
 
 ISSUE_BODY_CAP_BYTES: Final = 64 * 1024
@@ -253,16 +253,15 @@ def _sweep_issue_facts(task: "Task") -> tuple[str, str]:
     if len(index.encode()) > ISSUE_BODY_CAP_BYTES or len(window.encode()) > ISSUE_COMMENTS_CAP_BYTES:
         reason = "read-only brief over budget: backlog issue index or window"
         raise _refused(reason)
-    task.ticket.merge_extra(
-        set_keys={
-            "sweep_dispatch_window": {
-                "task_id": task.pk,
-                "index": urls,
-                "examined": [url for url, _, _, _ in window_rows],
-                "external_count": sum(not own for _, _, _, own in window_rows),
-            }
-        }
-    )
+    snapshot: SweepDispatchWindow = {
+        "task_id": task.pk,
+        "index": urls,
+        "examined": [url for url, _, _, _ in window_rows],
+        "external_count": sum(not own for _, _, _, own in window_rows),
+    }
+    task.ticket.refresh_from_db(fields=["extra"])
+    if task.ticket.extra.get("sweep_dispatch_window") != snapshot:
+        task.ticket.merge_extra(set_keys={"sweep_dispatch_window": snapshot})
     return index, window
 
 
@@ -306,11 +305,11 @@ def _sweep_rows_and_window(
             int(urlparse(row[0]).path.rstrip("/").rsplit("/", 1)[1]),
         )
     )
-    finished = TicketSweepRun.objects.filter(
-        source="loop", overlay=task.ticket.overlay, finished_at__isnull=False
+    prior_dispatches = Task.objects.filter(
+        phase=BACKLOG_SWEEP_PHASE, ticket__overlay=task.ticket.overlay, pk__lt=task.pk
     ).count()
     pages = max(1, (len(rows) + 19) // 20)
-    start = (finished % pages) * 20
+    start = (prior_dispatches % pages) * 20
     return rows, rows[start : start + 20]
 
 

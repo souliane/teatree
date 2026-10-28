@@ -158,7 +158,10 @@ def prepare_run(
         required_inline=required_inline,
         required_explicit=required_explicit,
         rendered_context=SkillDelivery(
-            f"{system_context}\n{prompt}", partial(_read_only_skill_text, sweep_skill_name=lifecycle_skill)
+            f"{system_context}\n{prompt}",
+            partial(_read_only_skill_text, sweep_skill_name=lifecycle_skill)
+            if phase == "backlog_sweep"
+            else _read_only_skill_text,
         )
         if read_only_venue
         else f"{system_context}\n{prompt}",

@@ -7,7 +7,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents.read_only_venue_brief import ReadOnlyBriefRefusedError, _sweep_issue_facts
-from teatree.core.models import Session, Task, Ticket, TicketSweepRun
+from teatree.core.models import Session, Task, Ticket
 
 
 class TestSweepFacts(TestCase):
@@ -42,15 +42,24 @@ class TestSweepFacts(TestCase):
         ):
             return _sweep_issue_facts(self.task)
 
-    def test_index_flags_external_authors_and_rotates_a_twenty_issue_window(self) -> None:
+    def test_index_flags_external_authors_and_bounds_a_twenty_issue_window(self) -> None:
         index, first = self._facts()
-        run = TicketSweepRun.objects.begin(source="loop", overlay="example")
-        TicketSweepRun.objects.finish(run_id=run.run_id)
-        _, second = self._facts()
 
         assert "ext" in index.splitlines()[1]
         assert "/issues/1" in first
         assert "/issues/21" not in first
+
+    def test_failed_sweep_advances_the_next_task_window(self) -> None:
+        _, first = self._facts()
+        self.task = Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            phase="backlog_sweep",
+            execution_reason="ASK-GATE: return proposals",
+        )
+        _, second = self._facts()
+
+        assert "/issues/1" in first
         assert "/issues/21" in second
         assert "/issues/1" not in second
 

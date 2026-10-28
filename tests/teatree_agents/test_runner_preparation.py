@@ -12,14 +12,62 @@ from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.prompt import build_task_prompt
 from teatree.agents.read_only_venue_brief import ReadOnlyFacts
-from teatree.agents.runner import run_agent
+from teatree.agents.runner import _preflight, run_agent
 from teatree.agents.runner_preparation import Preflight, prepare_run
-from teatree.core.models import Session, Task
+from teatree.core.models import Session, Task, TaskAttempt
+from teatree.skill_support.pin_shadow import SkillPinRefusalError
 from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, fake_sdk, success_stream
 
 
 class TestPreparedSkillBrief(TestCase):
+    def test_executor_sweep_refuses_an_unresolvable_configured_skill_pin(self) -> None:
+        ticket = planned_ticket(repos=["souliane/teatree"], overlay="t3-teatree")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="backlog_sweep")
+        task.claim(claimed_by="loop-slot")
+        dispatch = DispatchHarness(
+            harness=SimpleNamespace(capabilities=HarnessCapabilities(read_only_venue=True)),
+            name="codex_app_server",
+            provider=None,
+            model=None,
+        )
+        with (
+            patch("teatree.agents.runner.prepare_own_pr_review_head", return_value=None),
+            patch("teatree.agents.runner.pre_harness_refusal", return_value=None),
+            patch("teatree.agents.runner.staged_skills_or_refusal", return_value=([], [])),
+            patch("teatree.agents.runner._resolve_backend_or_failure", return_value=dispatch),
+            patch("teatree.agents.runner.resolve_executor_sweep_bundle", side_effect=SkillPinRefusalError("bad pin")),
+        ):
+            refusal = _preflight(task, phase="backlog_sweep", overlay_skill_metadata={})
+
+        assert isinstance(refusal, TaskAttempt)
+        assert "bad pin" in refusal.error
+
+    def test_sweep_skill_override_is_applied_only_after_executor_selection(self) -> None:
+        ticket = planned_ticket(repos=["souliane/teatree"], overlay="t3-teatree")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="backlog_sweep")
+        settings = SimpleNamespace(backlog_sweep_skill="custom-sweep")
+
+        for read_only in (False, True):
+            dispatch = DispatchHarness(
+                harness=SimpleNamespace(capabilities=HarnessCapabilities(read_only_venue=read_only)),
+                name="codex_app_server" if read_only else "claude_sdk",
+                provider=None,
+                model=None,
+            )
+            with (
+                patch("teatree.agents.runner.prepare_own_pr_review_head", return_value=None),
+                patch("teatree.agents.runner.pre_harness_refusal", return_value=None),
+                patch("teatree.agents.runner.staged_skills_or_refusal", return_value=([], [])),
+                patch("teatree.agents.runner._resolve_backend_or_failure", return_value=dispatch) as select,
+                patch("teatree.agents.skill_bundle.get_effective_settings", return_value=settings),
+            ):
+                preflight = _preflight(task, phase="backlog_sweep", overlay_skill_metadata={})
+
+            assert isinstance(preflight, Preflight)
+            select.assert_called_once_with(task, phase="backlog_sweep", skills=[])
+            assert ("custom-sweep" in preflight.skills) is read_only
+
     def test_claude_sweep_still_embeds_all_declared_skills(self) -> None:
         ticket = planned_ticket(repos=["souliane/teatree"], overlay="t3-teatree")
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="backlog_sweep")

@@ -132,6 +132,7 @@ OWNER_STOP_REFUSAL_PREFIX = "owner stop card refused: "
 MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
 MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
 MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
+SWEEP_PROPOSALS_REFUSAL_PREFIX = "sweep_proposals_refused: "
 
 
 class FailureKind(models.TextChoices):

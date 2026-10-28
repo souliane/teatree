@@ -232,7 +232,6 @@ def record_result_envelope(
         result,
         phase=phase,
         executor_draft_run=is_executor_draft_run(phase or task.phase, usage.selected_harness),
-        selected_harness=usage.selected_harness,
     )
     if server_side_error:
         return _record_failure(task, error=server_side_error, result=result, usage=usage)
@@ -428,9 +427,7 @@ def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) 
     return missing_work_item_error(task, result)
 
 
-def _record_returned_envelopes(
-    task: Task, result: AgentResultBlob, *, phase: str, executor_draft_run: bool, selected_harness: str
-) -> str:
+def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str, executor_draft_run: bool) -> str:
     """Record every shell-denied hand-back that carries a maker≠checker write, short-circuit.
 
     A headless phase denied the shell RETURNS its typed verdict/sketch instead of
@@ -455,7 +452,7 @@ def _record_returned_envelopes(
         and (
             record_returned_review_request(task, result, phase=phase)
             or record_returned_ship_readiness(task, result, phase=phase)
-            or record_returned_sweep_proposals(task, result, phase=phase, selected_harness=selected_harness)
+            or record_returned_sweep_proposals(task, result, phase=phase)
         )
     )
     return draft_error or record_returned_directive_interpretation(task, result)

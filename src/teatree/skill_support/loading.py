@@ -255,6 +255,8 @@ class SkillLoadingPolicy:
         (which drives the review-companion branch below and the returned result).
         """
         default_lifecycle_skill = self.lifecycle_for_phase(phase)
+        if phase == "backlog_sweep" and lifecycle_skill_override:
+            default_lifecycle_skill = "sweeping-tickets"
         lifecycle_skill = lifecycle_skill_override or default_lifecycle_skill
         ordered = self._base_detected_skills(
             cwd=cwd,

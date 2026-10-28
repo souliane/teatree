@@ -39,6 +39,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     MALFORMED_RUBRIC_GRADES_PREFIX,
     MALFORMED_TICKET_SWEEP_PREFIX,
     OWNER_STOP_REFUSAL_PREFIX,
+    SWEEP_PROPOSALS_REFUSAL_PREFIX,
 )
 
 #: Prefix the agent runner stamps on a run that emitted no JSON object at all.
@@ -72,6 +73,7 @@ _RECORDER_REFUSAL_MARKERS = (
     REVIEW_CONTEXT_REFUSAL_PREFIX.strip().casefold(),
     ANTI_VACUITY_REFUSAL_PREFIX.strip().casefold(),
     OWNER_STOP_REFUSAL_PREFIX.strip().casefold(),
+    SWEEP_PROPOSALS_REFUSAL_PREFIX.strip().casefold(),
 )
 
 #: The recorder refusals a REVIEWER fixes by re-emitting its envelope. ``missing required

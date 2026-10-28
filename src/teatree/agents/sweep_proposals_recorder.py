@@ -14,6 +14,7 @@ from teatree.core.machine_output import call_command_streamed
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import SWEEP_ASK_GATE_MARKER, normalize_phase
 from teatree.core.modelkit.question_card import CardOption, QuestionCard, internal_shorthand
+from teatree.core.modelkit.task_failure_taxonomy import SWEEP_PROPOSALS_REFUSAL_PREFIX
 from teatree.core.models import DeferredQuestion, Task, Ticket, TicketSweepRun
 from teatree.core.models.dream_gap_ledger import batch_entries
 from teatree.core.overlay import OverlayBase
@@ -23,7 +24,7 @@ from teatree.core.self_forge_identities import require_self_authored_issue
 from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
 from teatree.utils.url_slug import repo_namespaced_key_from_path, slug_from_issue_or_pr_url
 
-REFUSAL_PREFIX = "sweep_proposals_refused: "
+REFUSAL_PREFIX = SWEEP_PROPOSALS_REFUSAL_PREFIX
 QUESTION_CITATION_CHARS = 240
 
 
@@ -35,37 +36,68 @@ def _invalid(reason: str) -> Never:
     raise SweepProposalError(reason)
 
 
-def record_returned_sweep_proposals(
-    task: Task, result: Mapping[str, object], *, phase: str, selected_harness: str
-) -> str:
+def record_returned_sweep_proposals(task: Task, result: Mapping[str, object], *, phase: str) -> str:
     if (
         normalize_phase(phase or task.phase) != "backlog_sweep"
-        or selected_harness != "codex_app_server"
         or result.get("needs_user_input")
         or "sweep_proposals" not in result
     ):
         return ""
-    if SWEEP_ASK_GATE_MARKER not in task.execution_reason:
-        return f"{REFUSAL_PREFIX}the sweep lacks the ASK-GATE marker"
+    try:
+        if SWEEP_ASK_GATE_MARKER not in task.execution_reason:
+            _invalid("the sweep lacks the ASK-GATE marker")
+        _resume_pending_run(task)
+        task.ticket.refresh_from_db(fields=["extra"])
+        extra = task.ticket.extra if isinstance(task.ticket.extra, dict) else {}
+        recorded = extra.get("sweep_fold_proposals")
+        if isinstance(recorded, dict) and str(task.pk) in recorded:
+            return ""
+        validated = _validate(task, result["sweep_proposals"])
+        examined, external_count, folds, gaps = validated
+        run = TicketSweepRun.objects.begin(source="loop", overlay=task.ticket.overlay)
+        task.ticket.merge_extra(
+            set_keys={
+                "sweep_pending_run": {
+                    "task_id": task.pk,
+                    "run_id": run.run_id,
+                    "examined_count": len(examined),
+                    "external_count": external_count,
+                    "folds": folds,
+                    "gaps": gaps,
+                }
+            }
+        )
+        _resume_pending_run(task)
+    except SweepProposalError as exc:
+        return f"{REFUSAL_PREFIX}{exc}"
+    return ""
+
+
+def _resume_pending_run(task: Task) -> None:
     task.ticket.refresh_from_db(fields=["extra"])
     extra = task.ticket.extra if isinstance(task.ticket.extra, dict) else {}
-    recorded = extra.get("sweep_fold_proposals")
-    if isinstance(recorded, dict) and str(task.pk) in recorded:
-        return ""
+    pending = extra.get("sweep_pending_run")
+    if not isinstance(pending, dict):
+        return
     try:
-        validated = _validate(task, result["sweep_proposals"])
-    except SweepProposalError as exc:
-        return f"{REFUSAL_PREFIX}{exc}"
-    examined, external_count, folds, gaps = validated
-    run = TicketSweepRun.objects.begin(source="loop", overlay=task.ticket.overlay)
-    try:
-        _apply(task, run.run_id, folds, gaps)
-    except SweepProposalError as exc:
-        return f"{REFUSAL_PREFIX}{exc}"
-    TicketSweepRun.objects.finish(
-        run_id=run.run_id, examined_count=len(examined), external_skipped_count=external_count
-    )
-    return ""
+        prior_task = Task.objects.get(pk=pending["task_id"], ticket=task.ticket)
+        run = TicketSweepRun.objects.get(run_id=pending["run_id"], overlay=task.ticket.overlay)
+        folds = pending["folds"]
+        gaps = pending["gaps"]
+        if run.finished_at is None:
+            _apply(prior_task, run.run_id, folds, gaps)
+            TicketSweepRun.objects.finish(
+                run_id=run.run_id,
+                examined_count=pending["examined_count"],
+                external_skipped_count=pending["external_count"],
+            )
+        task.ticket.merge_extra(
+            merge_into_dicts={"sweep_fold_proposals": {str(prior_task.pk): {"folds": folds, "run_id": run.run_id}}},
+            pop_keys=["sweep_pending_run"],
+        )
+    except (Exception, SystemExit) as exc:
+        message = f"a pending sweep could not be finished ({type(exc).__name__}: {exc})"
+        raise SweepProposalError(message) from exc
 
 
 def _owner_citation(raw: str) -> str:
@@ -129,9 +161,6 @@ def _apply(task: Task, run_id: str, folds: list[dict[str, str]], gaps: list[tupl
                 )
             except (Exception, SystemExit) as exc:
                 raise SweepProposalError(output.getvalue().strip() or str(exc)) from exc
-        task.ticket.merge_extra(
-            merge_into_dicts={"sweep_fold_proposals": {str(task.pk): {"folds": folds, "run_id": run_id}}}
-        )
     except SweepProposalError:
         raise
     except (Exception, SystemExit) as exc:
@@ -162,8 +191,26 @@ def _validate(task: Task, raw: object) -> tuple[list[str], int, list[dict[str, s
     if len(examined) != len(expected) or len(set(examined)) != len(examined) or set(examined) != set(expected):
         _invalid("examined does not match the dispatched issue window")
     folds = [_validate_fold(item, examined, index_urls, repos, overlay) for item in folds_raw]
+    _validate_fold_graph(folds)
     gaps = [_validate_gap(item, task, index_urls, repos, overlay) for item in gaps_raw]
     return examined, external_count, folds, gaps
+
+
+def _validate_fold_graph(folds: list[dict[str, str]]) -> None:
+    hosts_by_member: dict[str, str] = {}
+    for fold in folds:
+        member, host = fold["member_url"], fold["host_url"]
+        if member in hosts_by_member:
+            _invalid("a fold member appears more than once")
+        hosts_by_member[member] = host
+    for member in hosts_by_member:
+        seen: set[str] = set()
+        current = member
+        while current in hosts_by_member:
+            if current in seen:
+                _invalid("folds form a cycle")
+            seen.add(current)
+            current = hosts_by_member[current]
 
 
 def _validated_examined(raw: list[object], repos: set[str]) -> list[str]:
