@@ -62,6 +62,36 @@ class TestQuestionCoordinator(TestCase):
         assert total == 1
         assert pending.is_pending
 
+    def test_same_question_with_different_checked_facts_stays_pending(self) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(
+            question,
+            card=dataclasses.replace(owner_card(), checked=("The package is actively maintained.",)),
+        )
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(
+            question,
+            card=dataclasses.replace(owner_card(), checked=("The package is no longer maintained.",)),
+        )
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 1
+        assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
+
+    def test_same_question_on_different_subject_stays_pending(self) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(question, card=dataclasses.replace(owner_card(), subject="Widget scheduling"))
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        pending = DeferredQuestion.record(
+            question, card=dataclasses.replace(owner_card(), subject="Payment processing")
+        )
+
+        _mirrored, total = drain_unmirrored_deferred_questions()
+
+        assert total == 1
+        assert DeferredQuestion.objects.get(pk=pending.pk).is_pending
+
     def test_database_read_failure_leaves_card_pending_and_logs(self) -> None:
         pending = DeferredQuestion.record("Should we adopt the new dependency?", card=owner_card())
 

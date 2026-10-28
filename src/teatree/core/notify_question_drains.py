@@ -148,14 +148,14 @@ def _in_flight(now: dt.datetime) -> Q:
     return Q(status=BotPing.Status.SENDING, posted_at__gt=now - BotPing.SENDING_STALE_AFTER)
 
 
-def _question_pings_left(*, reserved: int) -> int:
+def _question_pings_left() -> int:
     now = timezone.now()
     delivered = Q(
         status__in=(BotPing.Status.SENT, BotPing.Status.SENT_UNVERIFIED),
         posted_at__gt=now - _CEILING_WINDOW,
     )
     spent = BotPing.objects.filter(_question_ping_keys(), delivered | _in_flight(now)).count()
-    return OWNER_QUESTION_PINGS_PER_HOUR - spent - reserved
+    return OWNER_QUESTION_PINGS_PER_HOUR - spent
 
 
 def owner_quiet_now() -> bool:
@@ -164,7 +164,7 @@ def owner_quiet_now() -> bool:
 
 
 @contextmanager
-def _question_ping_slot(*, reserved: int = 0, first_post: bool = False) -> Generator[bool]:
+def _question_ping_slot(*, first_post: bool = False) -> Generator[bool]:
     if not first_post and owner_quiet_now():
         logger.info("Owner question pings are held until 08:00 (quiet hours)")
         yield False
@@ -179,7 +179,7 @@ def _question_ping_slot(*, reserved: int = 0, first_post: bool = False) -> Gener
         return
     try:
         with _held_question_ping_slot() as held:
-            open_slot = held and (first_post or _question_pings_left(reserved=reserved) > 0)
+            open_slot = held and (first_post or _question_pings_left() > 0)
             if held and not open_slot:
                 logger.info(
                     "Owner question pings are at %d this hour; the backlog waits for the next slot",

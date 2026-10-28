@@ -57,10 +57,15 @@ def _basis_matches(row: DeferredQuestion, basis: DeferredQuestion) -> bool:
         row.question
     ):
         return False
-    if not isinstance(basis.evidence, dict):
+    if not isinstance(row.evidence, dict) or not isinstance(basis.evidence, dict):
         return False
-    card = QuestionCard.from_row(basis.evidence, basis.options_json)
-    return card is not None and card.decision is OwnerDecision.ARCHITECTURE and not card.problems(basis.question)
+    row_card = QuestionCard.from_row(row.evidence, row.options_json)
+    basis_card = QuestionCard.from_row(basis.evidence, basis.options_json)
+    if row_card is None or basis_card is None:
+        return False
+    if basis_card.decision is not OwnerDecision.ARCHITECTURE or basis_card.problems(basis.question):
+        return False
+    return row_card.checked == basis_card.checked and row_card.subject == basis_card.subject
 
 
 def coordinate_answer(row: DeferredQuestion, basis: DeferredQuestion, answer: str) -> DeferredQuestion | None:
