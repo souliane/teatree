@@ -21,7 +21,10 @@ KEEPALIVE_EXPIRY_SECONDS = 30.0
 SUMMARY_INTERVAL_SECONDS = 60.0
 CONNECT_JITTER_SECONDS = (0.1, 0.5)
 
-_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+CONNECT_TIMEOUT_SECONDS = 5.0
+MAX_SAME_ORIGIN_REDIRECTS = 5
+
+_TIMEOUT = httpx.Timeout(15.0, connect=CONNECT_TIMEOUT_SECONDS)
 _REPLAYED_METHODS = frozenset({"GET", "HEAD"})
 _STALE_KEEPALIVE_ERRORS = (httpx.RemoteProtocolError, httpx.ReadError)
 _CONNECT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
@@ -30,6 +33,14 @@ _RNG = random.SystemRandom()
 
 def _connect_jitter() -> float:
     return _RNG.uniform(*CONNECT_JITTER_SECONDS)
+
+
+def _bounded(seconds: float) -> httpx.Timeout:
+    return httpx.Timeout(seconds, connect=min(seconds, CONNECT_TIMEOUT_SECONDS))
+
+
+def _origin(url: str | httpx.URL) -> str:
+    return str(httpx.URL(url).copy_with(path="", query=None, fragment=None))
 
 
 class _ConnectionTrace:
@@ -41,6 +52,19 @@ class _ConnectionTrace:
             self.opened = True
 
 
+def _same_origin_redirects(url: str, fetch: Callable[[str], httpx.Response]) -> httpx.Response:
+    response = fetch(url)
+    for _ in range(MAX_SAME_ORIGIN_REDIRECTS):
+        location = response.headers.get("location")
+        if not response.is_redirect or not location:
+            break
+        target = str(response.url.join(location))
+        if _origin(target) != _origin(url):
+            break
+        response = fetch(target)
+    return response
+
+
 class ForgeSession:
     """One forge origin's pooled client, behind the verbs the forge backends use."""
 
@@ -49,39 +73,53 @@ class ForgeSession:
         self._client = client
 
     def get(self, url: str, *, headers: Headers, timeout: float) -> httpx.Response:
-        return self._owner.send("GET", url, lambda: self._client.get(url, headers=headers, timeout=timeout))
+        return self._owner.send(
+            "GET",
+            url,
+            lambda: _same_origin_redirects(
+                url, lambda target: self._client.get(target, headers=headers, timeout=_bounded(timeout))
+            ),
+        )
 
     def delete(self, url: str, *, headers: Headers, timeout: float) -> httpx.Response:
-        return self._owner.send("DELETE", url, lambda: self._client.delete(url, headers=headers, timeout=timeout))
+        return self._owner.send(
+            "DELETE", url, lambda: self._client.delete(url, headers=headers, timeout=_bounded(timeout))
+        )
 
     def post(self, url: str, *, headers: Headers, json: object, timeout: float) -> httpx.Response:
         return self._owner.send(
-            "POST", url, lambda: self._client.post(url, headers=headers, json=json, timeout=timeout)
+            "POST", url, lambda: self._client.post(url, headers=headers, json=json, timeout=_bounded(timeout))
         )
 
     def put(self, url: str, *, headers: Headers, json: object, timeout: float) -> httpx.Response:
-        return self._owner.send("PUT", url, lambda: self._client.put(url, headers=headers, json=json, timeout=timeout))
+        return self._owner.send(
+            "PUT", url, lambda: self._client.put(url, headers=headers, json=json, timeout=_bounded(timeout))
+        )
 
     def upload(
         self, url: str, *, headers: Headers, files: Mapping[str, tuple[str, BinaryIO]], timeout: float
     ) -> httpx.Response:
         return self._owner.send(
-            "POST", url, lambda: self._client.post(url, headers=headers, files=files, timeout=timeout)
+            "POST", url, lambda: self._client.post(url, headers=headers, files=files, timeout=_bounded(timeout))
         )
 
     def close(self) -> None:
         self._client.close()
 
     def request(
-        self, method: str, url: str, *, headers: Headers, payload: str | Mapping[str, str] | None, timeout: float
+        self, method: str, url: str, *, headers: Headers, payload: str | Mapping[str, object] | None, timeout: float
     ) -> httpx.Response:
         content = payload if isinstance(payload, str) else None
         fields = None if isinstance(payload, str) else payload
-        return self._owner.send(
-            method,
-            url,
-            lambda: self._client.request(method, url, headers=headers, content=content, json=fields, timeout=timeout),
-        )
+
+        def send(target: str) -> httpx.Response:
+            return self._client.request(
+                method, target, headers=headers, content=content, json=fields, timeout=_bounded(timeout)
+            )
+
+        if method not in _REPLAYED_METHODS:
+            return self._owner.send(method, url, lambda: send(url))
+        return self._owner.send(method, url, lambda: _same_origin_redirects(url, send))
 
 
 class ForgeConnections:
@@ -109,7 +147,7 @@ class ForgeConnections:
         self._reused = 0
 
     def session_for(self, url: str) -> ForgeSession:
-        origin = str(httpx.URL(url).copy_with(path="", query=None, fragment=None))
+        origin = _origin(url)
         with self._lock:
             if (session := self._sessions.get(origin)) is None:
                 client = httpx.Client(

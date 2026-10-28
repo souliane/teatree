@@ -4,11 +4,17 @@ import logging
 import socket
 import threading
 from contextlib import closing
+from unittest.mock import patch
 
 import httpx
 import pytest
 
-from teatree.utils.forge_http import SUMMARY_INTERVAL_SECONDS, ForgeConnections
+from teatree.utils.forge_http import (
+    CONNECT_TIMEOUT_SECONDS,
+    MAX_SAME_ORIGIN_REDIRECTS,
+    SUMMARY_INTERVAL_SECONDS,
+    ForgeConnections,
+)
 from tests._forge_server import forge_server
 
 _NO_HEADERS: dict[str, str] = {}
@@ -129,3 +135,60 @@ def test_a_summary_of_requests_against_reused_connections_is_logged_once_a_minut
     assert [r.getMessage() for r in caplog.records if "last minute" in r.getMessage()] == [
         "forge pool: 4 requests, 3 on reused connections, in the last minute"
     ]
+
+
+def test_a_get_follows_a_redirect_that_stays_on_the_same_origin() -> None:
+    with forge_server() as server, closing(ForgeConnections(max_connections=4)) as connections:
+        server.redirects = {"/old": "/new"}
+        session = connections.session_for(server.base)
+
+        response = session.get(f"{server.base}/old", headers=_NO_HEADERS, timeout=5)
+
+        assert response.status_code == 200
+        assert server.paths == ["/old", "/new"]
+
+
+def test_a_get_never_follows_a_redirect_to_another_host() -> None:
+    with forge_server() as server, closing(ForgeConnections(max_connections=4)) as connections:
+        server.redirects = {"/old": f"http://127.0.0.2:{server.server_port}/steal"}
+        session = connections.session_for(server.base)
+
+        response = session.get(f"{server.base}/old", headers={"PRIVATE-TOKEN": "secret"}, timeout=5)
+
+        assert response.status_code == 301
+        assert server.paths == ["/old"]
+
+
+def test_a_redirect_loop_stops_after_the_cap() -> None:
+    with forge_server() as server, closing(ForgeConnections(max_connections=4)) as connections:
+        server.redirects = {"/loop": "/loop"}
+        session = connections.session_for(server.base)
+
+        response = session.get(f"{server.base}/loop", headers=_NO_HEADERS, timeout=5)
+
+        assert response.status_code == 301
+        assert len(server.paths) == MAX_SAME_ORIGIN_REDIRECTS + 1
+
+
+def test_a_write_is_never_redirected() -> None:
+    with forge_server() as server, closing(ForgeConnections(max_connections=4)) as connections:
+        server.redirects = {"/old": "/new"}
+        session = connections.session_for(server.base)
+
+        response = session.post(f"{server.base}/old", headers=_NO_HEADERS, json={}, timeout=5)
+
+        assert response.status_code == 301
+        assert server.paths == ["/old"]
+
+
+@pytest.mark.parametrize(
+    ("requested", "connect"),
+    [(60.0, CONNECT_TIMEOUT_SECONDS), (2.0, 2.0)],
+)
+def test_the_connect_limit_survives_a_per_call_timeout(requested: float, connect: float) -> None:
+    with closing(ForgeConnections(max_connections=4)) as connections:
+        session = connections.session_for("https://forge.example/")
+        with patch.object(httpx.Client, "get") as get:
+            session.get("https://forge.example/x", headers=_NO_HEADERS, timeout=requested)
+
+    assert get.call_args.kwargs["timeout"] == httpx.Timeout(requested, connect=connect)

@@ -12,8 +12,9 @@ import logging
 import os
 import re
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import TypedDict, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -59,11 +60,23 @@ def _api_url(endpoint: str) -> str:
 class _ApiOptions:
     method: str
     headers: dict[str, str]
-    fields: dict[str, str]
+    fields: Mapping[str, object]
     paginate: bool
     slurp: bool
     silent: bool
     jq: str
+
+
+class _GraphqlBody(TypedDict, total=False):
+    query: str
+    variables: dict[str, str]
+
+
+def _graphql_body(fields: Mapping[str, str]) -> _GraphqlBody:
+    body = _GraphqlBody(query=fields.get("query", ""))
+    if variables := {name: value for name, value in fields.items() if name != "query"}:
+        body["variables"] = variables
+    return body
 
 
 def _parse_api_options(args: tuple[str, ...], token: str) -> _ApiOptions:
@@ -94,7 +107,8 @@ def _parse_api_options(args: tuple[str, ...], token: str) -> _ApiOptions:
             index += 1
             continue
         raise CommandFailedError(list(args), 2, "", f"Unsupported pooled gh api option: {option}")
-    return _ApiOptions(method, headers, fields, "--paginate" in flags, "--slurp" in flags, "--silent" in flags, jq)
+    body = _graphql_body(fields) if args[2] == "graphql" else fields
+    return _ApiOptions(method, headers, body, "--paginate" in flags, "--slurp" in flags, "--silent" in flags, jq)
 
 
 def _request_api(

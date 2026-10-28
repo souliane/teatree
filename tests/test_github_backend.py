@@ -23,6 +23,7 @@ from teatree.backends.github.api import gh_api_get as _gh_api_get
 from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
 from teatree.backends.github.api import gh_api_search_paginated as _gh_api_search_paginated
 from teatree.backends.github.projects import _gh_graphql
+from teatree.utils.forge_http import CONNECT_TIMEOUT_SECONDS
 from teatree.utils.throttled_log import reset_throttle
 
 
@@ -312,7 +313,7 @@ class TestRunGhTimeout:
     def test_threads_timeout_into_subprocess(self) -> None:
         with _pooled_reply() as request, _no_gh_subprocess():
             _run_gh("gh", "api", "x", token="routed-token", timeout=12.5)
-        assert request.call_args.kwargs["timeout"] == pytest.approx(12.5)
+        assert request.call_args.kwargs["timeout"] == httpx.Timeout(12.5, connect=CONNECT_TIMEOUT_SECONDS)
 
     def test_default_leaves_the_subprocess_unbounded(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
@@ -338,7 +339,9 @@ class TestGhApiPost:
     def test_bounds_timeout(self) -> None:
         with _pooled_reply() as request, _no_gh_subprocess():
             _gh_api_post("/test", {}, token="tok")
-        assert request.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
+        assert request.call_args.kwargs["timeout"] == httpx.Timeout(
+            _FORGE_READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS
+        )
 
     def test_no_token_refuses_ambient_auth(self) -> None:
         with (

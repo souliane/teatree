@@ -17,6 +17,12 @@ class ForgeServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), _Handler)
         self.connections = 0
         self.methods: list[str] = []
+        self.paths: list[str] = []
+        self.bodies: list[bytes] = []
+        self.redirects: dict[str, str] = {}
+        self.links: dict[str, str] = {}
+        self.statuses: dict[str, int] = {}
+        self.payloads: dict[str, object] = {}
         self.drop_when: Callable[[int], bool] = lambda _served: False
         self.delay_seconds = 0.0
 
@@ -38,17 +44,24 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _answer(self) -> None:
         server = cast("ForgeServer", self.server)
-        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        server.bodies.append(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
         server.methods.append(self.command)
+        server.paths.append(self.path)
         time.sleep(server.delay_seconds)
         if server.drop_when(self.served):
             self.close_connection = True
             return
         self.served += 1
-        body = json.dumps({"ok": True}).encode()
-        self.send_response(200)
+        body = json.dumps(server.payloads.get(self.path, {"ok": True})).encode()
+        if self.path in server.redirects:
+            self.send_response(301)
+            self.send_header("Location", server.redirects[self.path])
+        else:
+            self.send_response(server.statuses.get(self.path, 200))
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if link := server.links.get(self.path):
+            self.send_header("Link", link)
         self.end_headers()
         self.wfile.write(body)
 
