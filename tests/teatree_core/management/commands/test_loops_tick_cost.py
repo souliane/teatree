@@ -12,7 +12,9 @@ import pytest
 from django.core.management import call_command
 
 from teatree.core.models import Loop, LoopLease
+from teatree.core.review.pr_inventory import OpenPrRow
 from teatree.loop.dispatch import dispatch
+from teatree.loop.pr_stall import StallRepair
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.tick import DispatchAction, TickReport
 from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
@@ -62,6 +64,22 @@ class TestTickCostRecording(django.test.TestCase):
         )
 
         assert self._run_tick(report) == {"idle": False, "busy": True}
+
+    def test_a_stall_repair_without_signals_or_actions_is_busy(self) -> None:
+        row = OpenPrRow(
+            ref="repo#1", url="https://example.com/pr/1", age="1 day", next_task="repair", started=False, stall="review"
+        )
+        repair = StallRepair(ref=row.ref, cause=row.stall, action="queued TODO-1 debugging")
+        report = TickReport(started_at=dt.datetime.now(dt.UTC))
+
+        with (
+            patch("teatree.core.management.commands.loops_tick.open_pr_rows", return_value=[row]),
+            patch("teatree.core.management.commands.loops_tick.repair_stalled_prs", return_value=[repair]) as repaired,
+        ):
+            sampled = self._run_tick(report)
+
+        repaired.assert_called_once_with([row])
+        assert sampled == {"idle": False, "busy": True}
 
     def test_a_lease_lost_skip_is_idle(self) -> None:
         sampled = self._run_tick(TickReport(started_at=dt.datetime.now(dt.UTC)), owns_lease=False)
