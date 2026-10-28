@@ -40,6 +40,7 @@ from teatree.cli.verify_gates import (
     _prek_config,
     _resource_refusal,
     _snapshot_control_db,
+    _stage_commands,
     _stage_env,
 )
 from teatree.core.models import PlanArtifact, Ticket, Worktree
@@ -416,12 +417,21 @@ class TestVerifyGatesRunsBothStages:
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0
         calls = _calls(run)
-        assert all(c[:4] == ["timeout", "--signal=TERM", "--kill-after=15s", "600s"] for c in calls)
+        assert all(
+            c[:4] == ["timeout", "--signal=TERM", "--kill-after=15s", "600s"]
+            for c in calls
+            if c[-2:] != ["--hook-stage", "pre-push"]
+        )
         assert any(c[4:] == ["prek", "run", "--files", "README.md"] for c in calls)
         # One push-stage run — the gate CI re-runs that the bare run skips.
         push = [c for c in calls if "--hook-stage" in c]
         assert push, "verify-gates must invoke the push stage"
         assert push[0][-2:] == ["--hook-stage", "pre-push"]
+
+    def test_pre_push_deadline_includes_shared_lock_wait(self, tmp_path: Path) -> None:
+        stages = _stage_commands(["--all-files"], tmp_path, tmp_path)
+        push = next(command for label, command in stages if label.startswith("pre-push"))
+        assert push[:4] == ["timeout", "--signal=TERM", "--kill-after=15s", "2100s"]
 
     def test_invokes_the_manual_stage_hooks_ci_gates_on(self, worktree: Path) -> None:
         """CI's test-path-mirror job runs a ``stages: [manual]`` hook no commit/push run fires."""
