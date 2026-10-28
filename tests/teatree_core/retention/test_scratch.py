@@ -1,6 +1,7 @@
 """Agent-scratch retention sweep — the guards, the report, and the fail-closed paths (#4165)."""
 
 import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -210,6 +211,21 @@ class ScratchSweepPlanTests(ScratchSweepTestCase):
 
 
 class ScratchSweepApplyTests(ScratchSweepTestCase):
+    def test_expired_budget_keeps_old_scratch_and_reports_deferred_work(self) -> None:
+        stale = _scratch(self.root, "old-worker-scratch", days=1)
+        sweep = ScratchSweep(
+            root=self.root,
+            retention_days=1 / 6,
+            proc_root=self.proc,
+            deadline=time.monotonic() - 1,
+        )
+
+        result = sweep.apply()
+
+        assert stale.exists()
+        assert result.refused
+        assert "budget exhausted" in result.probe_gap
+
     def test_apply_removes_the_stale_tree_and_reports_the_bytes(self) -> None:
         stale = self.root / "wt4081venv"
         stale.mkdir()

@@ -12,7 +12,7 @@ Docker disk reclaim: build cache and unused images are typically the largest
 reclaimable consumers on a host that builds often, and file-cache purging alone
 does not touch them. The disk ladder routes the sanctioned
 :func:`teatree.docker.reclaim.reclaim_disk` (build cache + DANGLING-only images
-+ UNREFERENCED-only volumes via a FIXED argv that can never contain ``-a`` /
++ UNREFERENCED-only volumes plus guarded test images, never ``image prune -a`` /
 ``system prune``), so a running container's images, a tagged application image,
 and an attached DB volume backing a live worktree all survive. It is
 non-destructive by construction, so — like the cache purge and ``uv cache
@@ -160,7 +160,13 @@ def _resolve_disk_allowlist(payload: ActionPayload) -> list[str]:
 def _execute_disk(plan: FreePlan, payload: ActionPayload, marker: "ResourcePressureMarker") -> bool:
     steps = ("allowlisted caches", "uv cache", "statusline scratch", "docker", "done worktrees")
     cursor = marker.disk_reclaim_cursor % len(steps)
-    deadline = time.monotonic() + DISK_PASS_BUDGET_SECONDS
+    requested = payload.get("budget_seconds")
+    budget = (
+        min(float(requested), DISK_PASS_BUDGET_SECONDS)
+        if isinstance(requested, int | float)
+        else DISK_PASS_BUDGET_SECONDS
+    )
+    deadline = time.monotonic() + budget
     for index in range(cursor, len(steps)):
         if time.monotonic() >= deadline:
             plan.steps.append(
@@ -214,15 +220,15 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
     """Run the safe Docker disk reclaim; return GB reclaimed (best-effort).
 
     Delegates to :func:`teatree.docker.reclaim.reclaim_disk` — the fixed-argv
-    build-cache + dangling-image + unreferenced-volume prune that can never use
-    ``-a``/``system prune``, so a running container's images are never reaped.
+    build-cache + dangling-image + unreferenced-volume prune, plus guarded test
+    image removal. The image prune never uses ``-a``/``system prune``.
     A failure (no docker daemon, a prune error) is swallowed and recorded so
     the freeing pass continues; the per-step reclaimed bytes land in the plan.
     A venue that cannot reach dockerd ran nothing, so it says so rather than
     logging a 0B reclaim the next reader takes for "nothing to reclaim" (#4585).
     """
     try:
-        report = reclaim_disk()
+        report = reclaim_disk(include_unused_test_images=True)
     except Exception:
         logger.exception("free_resources: docker disk reclaim failed — swallowed")
         return 0.0
@@ -231,6 +237,7 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
         return 0.0
     reclaimed_gb = report.total_bytes / GIB
     plan.steps.append(f"  → docker reclaimed {report.total_human}")
+    plan.steps.extend(f"  → REFUSED {label}: {reason}" for label, reason in report.failures)
     return reclaimed_gb
 
 

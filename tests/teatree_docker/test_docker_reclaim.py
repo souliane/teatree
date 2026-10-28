@@ -69,6 +69,76 @@ def test_reclaim_set_is_exactly_the_three_safe_prunes(monkeypatch):
     ]
 
 
+def test_pressure_reclaim_removes_only_old_owned_test_images(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            tag = cmd[-1]
+            if tag == "teatree-test":
+                return CompletedProcess(
+                    cmd,
+                    0,
+                    '{"Id":"sha256:test","Created":"2020-01-01T00:00:00Z",'
+                    '"RepoTags":["teatree-test:latest"],'
+                    '"Config":{"Labels":{"io.teatree.reclaimable-test-image":"true"}}}',
+                    "",
+                )
+            return CompletedProcess(cmd, 1, "", "No such image")
+        if cmd[:2] == ["docker", "ps"]:
+            return CompletedProcess(cmd, 0, "", "")
+        if cmd[:3] == ["docker", "image", "rm"]:
+            return CompletedProcess(cmd, 0, "Deleted: sha256:test\n", "")
+        return CompletedProcess(cmd, 0, "Total reclaimed space: 0B\n", "")
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", fake_run)
+    report = reclaim.reclaim_disk(include_unused_test_images=True)
+
+    assert [call for call in calls if call[:3] == ["docker", "image", "rm"]] == [
+        ["docker", "image", "rm", "sha256:test"]
+    ]
+    assert any(step.label == "unused test image teatree-test" for step in report.steps)
+
+
+@pytest.mark.parametrize("guard", ["young", "foreign_label", "other_tag", "container", "unreadable"])
+def test_pressure_reclaim_keeps_unproven_test_images(monkeypatch, guard):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            if cmd[-1] != "teatree-test":
+                return CompletedProcess(cmd, 1, "", "No such image")
+            if guard == "unreadable":
+                return CompletedProcess(cmd, 1, "", "daemon unavailable")
+            created = "2999-01-01T00:00:00Z" if guard == "young" else "2020-01-01T00:00:00Z"
+            label = "false" if guard == "foreign_label" else "true"
+            tags = '["teatree-test:latest","important:latest"]' if guard == "other_tag" else '["teatree-test:latest"]'
+            return CompletedProcess(
+                cmd,
+                0,
+                '{"Id":"sha256:test","Created":"'
+                + created
+                + '","RepoTags":'
+                + tags
+                + ',"Config":{"Labels":{"io.teatree.reclaimable-test-image":"'
+                + label
+                + '"}}}',
+                "",
+            )
+        if cmd[:2] == ["docker", "ps"]:
+            return CompletedProcess(cmd, 0, "container-id\n" if guard == "container" else "", "")
+        return CompletedProcess(cmd, 0, "Total reclaimed space: 0B\n", "")
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", fake_run)
+    report = reclaim.reclaim_disk(include_unused_test_images=True)
+
+    assert not any(call[:3] == ["docker", "image", "rm"] for call in calls)
+    if guard == "unreadable":
+        assert any("daemon unavailable" in reason for _, reason in report.failures)
+
+
 def test_image_prune_never_passes_dash_a(monkeypatch):
     """``-a`` / ``--all`` / ``-af`` on the image prune reaps tagged application images — banned."""
     fake = _FakePrune()

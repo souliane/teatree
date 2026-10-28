@@ -446,6 +446,15 @@ class ResourcePressureScanner:
     def _classify(self, *, reading: ResourceReading, marker: "ResourcePressureMarker") -> list[ScanSignal]:
         inert = _inert_signals(reading)
         disk_crit = reading.disk_ladder_gb < effective_disk_floor_gb(self.disk_crit_free_gb)
+        if disk_crit and getattr(marker, "reclaim_blocked_since", None) is not None:
+            reclaimed = getattr(marker, "last_reclaimed_gb", 0.0) or 0.0
+            inert.append(
+                ScanSignal(
+                    kind="resource.reclaim_blocked",
+                    summary=f"disk {reading.disk_ladder_gb:.1f} GB free; last reclaimed {reclaimed:.2f} GB",
+                    payload={"resource": "disk", "free_gb": reading.disk_ladder_gb, "last_reclaimed_gb": reclaimed},
+                )
+            )
         ram_crit = reading.ram_ladder_gb < self.ram_crit_avail_gb
         _track_consecutive_critical(marker=marker, ram_crit=ram_crit)
         if disk_crit or ram_crit:

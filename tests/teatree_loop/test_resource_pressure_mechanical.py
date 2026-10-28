@@ -237,7 +237,7 @@ class DiskDockerReclaimTests(TestCase):
         with patch.object(mechanical_resources, "reclaim_disk") as mock_reclaim:
             mock_reclaim.return_value = _fake_reclaim_report()
             free_resources({"resource": "disk", "disk_cache_allowlist": []})
-        mock_reclaim.assert_called_once()
+        mock_reclaim.assert_called_once_with(include_unused_test_images=True)
 
     def test_reclaimed_docker_bytes_counted_in_plan(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415

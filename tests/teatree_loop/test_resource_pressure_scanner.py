@@ -29,6 +29,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.resource_pressure import (
@@ -786,6 +787,19 @@ class CleanupPayloadTests(_ScannerHarness):
         signals = self._scan_with(disk_gb=5.0, ram_gb=100.0, scanner=scanner)
         disk_sig = next(s for s in signals if s.kind == "resource.cleanup_needed")
         assert disk_sig.payload["disk_cache_allowlist"] == ["~/.cache/pre-commit"]
+
+    def test_unrecovered_pressure_reports_free_and_last_reclaimed_on_statusline(self) -> None:
+        marker = ResourcePressureMarker.load()
+        marker.reclaim_blocked_since = timezone.now()
+        marker.last_reclaimed_gb = 1.25
+        marker.save(update_fields=["reclaim_blocked_since", "last_reclaimed_gb"])
+
+        signals = self._scan_with(disk_gb=16.0, ram_gb=100.0)
+
+        status = next(signal for signal in signals if signal.kind == "resource.reclaim_blocked")
+        assert "16.0 GB free" in status.summary
+        assert "1.25 GB" in status.summary
+        assert dispatch([status])[0].zone == "action_needed"
 
     def test_the_payload_does_not_carry_the_artifact_retention_window(self) -> None:
         """The sweep moved off this ladder (#4244), so this signal no longer configures it.

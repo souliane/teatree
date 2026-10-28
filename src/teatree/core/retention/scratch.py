@@ -44,6 +44,7 @@ guessing.
 import logging
 import os
 import shutil
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -116,7 +117,7 @@ class ScratchSweepPlan:
     """What a sweep would reclaim (or did), size-ranked, with every keep explained."""
 
     root: str
-    retention_days: int
+    retention_days: float
     entries: tuple[ScratchEntry, ...]
     probe_gap: str = ""
     applied: bool = False
@@ -189,7 +190,7 @@ class _TreeStats:
     holds_git_repo: bool
 
 
-def _tree_stats(path: Path) -> _TreeStats:
+def _tree_stats(path: Path, *, deadline: float | None = None) -> _TreeStats:
     """Size, tree-wide newest mtime, and ad-hoc-repo detection in ONE walk."""
     try:
         top = path.lstat()
@@ -216,6 +217,9 @@ def _tree_stats(path: Path) -> _TreeStats:
         unreadable = True
 
     for root, dirs, files in os.walk(path, onerror=_blind, followlinks=False):
+        if deadline is not None and time.monotonic() >= deadline:
+            unreadable = True
+            break
         if ".git" in dirs or ".git" in files:
             holds_git = True
         file_stats, files_denied = _lstat_all(root, files)
@@ -281,7 +285,7 @@ class ScratchSweep:
     """
 
     root: Path
-    retention_days: int
+    retention_days: float
     proc_root: Path
     """REQUIRED — a default here is a seam that silently reads the live ``/proc``.
 
@@ -293,10 +297,19 @@ class ScratchSweep:
     probe_root: Path | None = None
     uid: int | None = None
     now: datetime | None = None
+    deadline: float | None = None
 
     def plan(self) -> ScratchSweepPlan:
         """Classify every top-level entry under the root, size-ranked, touching nothing."""
         children, unlistable = self._children()
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            return ScratchSweepPlan(
+                root=str(self.root),
+                retention_days=self.retention_days,
+                entries=(),
+                probe_gap="pass budget exhausted before scratch could be checked",
+                refused=True,
+            )
         if self.retention_days <= 0:
             off = f"retention disabled (scratch_retention_days={self.retention_days})"
             # The listing failure travels even here: the residency line is a claim
@@ -313,11 +326,17 @@ class ScratchSweep:
         cutoff = self._cutoff()
         held = frozenset(normalized_spelling(path) for path in view.held)
         normalized_reserved = frozenset(normalized_spelling(path) for path in reserved)
-        entries = [self._classify(child, cutoff=cutoff, held=held, reserved=normalized_reserved) for child in children]
+        entries = []
+        for child in children:
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                break
+            entries.append(self._classify(child, cutoff=cutoff, held=held, reserved=normalized_reserved))
+        deferred = len(children) - len(entries)
         return ScratchSweepPlan(
             root=str(self.root),
             retention_days=self.retention_days,
             entries=_ranked(entries),
+            probe_gap=f"pass budget exhausted; {deferred} entry(ies) deferred" if deferred else "",
         )
 
     def _unsighted_gap(self, view: ProcessTableView) -> str:
@@ -348,12 +367,14 @@ class ScratchSweep:
         cutoff = self._cutoff()
         reclaimed = 0
         for entry in plan.candidates:
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                break
             path = Path(entry.path)
             # Re-walk the WHOLE tree immediately before the unlink, not just the
             # top-level entry: the box provisions continuously, and a nested file
             # written since the plan is live work the top-level stat alone would
             # miss (the exact gap tree-wide staleness exists to close).
-            stats = _tree_stats(path)
+            stats = _tree_stats(path, deadline=self.deadline)
             if stats.newest_mtime is None or stats.newest_mtime >= cutoff:
                 continue
             if _remove(path):
@@ -372,7 +393,7 @@ class ScratchSweep:
         """A plan that removes nothing but still reports what is resident and why."""
         entries = []
         for child in children:
-            stats = _tree_stats(child)
+            stats = _tree_stats(child, deadline=self.deadline)
             entries.append(
                 ScratchEntry(
                     path=str(child),
@@ -421,7 +442,7 @@ class ScratchSweep:
         held: frozenset[str],
         reserved: frozenset[str],
     ) -> ScratchEntry:
-        stats = _tree_stats(child)
+        stats = _tree_stats(child, deadline=self.deadline)
         keep = self._keep_reason(child, stats=stats, cutoff=cutoff, held=held, reserved=reserved)
         return ScratchEntry(
             path=str(child),
@@ -547,10 +568,12 @@ def resolve_scratch_sweep(configured: str = "") -> ScratchSweep:
     return ScratchSweep(root=root, retention_days=0, proc_root=_VENUE_PROC)
 
 
-def sweep_scratch(*, configured_root: str, retention_days: int, apply: bool) -> ScratchSweepPlan:
+def sweep_scratch(
+    *, configured_root: str, retention_days: float, apply: bool, deadline: float | None = None
+) -> ScratchSweepPlan:
     """Plan (or apply) the scratch retention sweep for the resolved root."""
     resolved = resolve_scratch_sweep(configured_root)
-    sweep = replace(resolved, retention_days=retention_days)
+    sweep = replace(resolved, retention_days=retention_days, deadline=deadline)
     return sweep.apply() if apply else sweep.plan()
 
 

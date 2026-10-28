@@ -1,9 +1,11 @@
-"""Safe disk reclaim: only the three zero-data-loss Docker prunes, never ``-a``.
+"""Safe disk reclaim: three guarded prunes and pressure-only owned test images.
 
 On a "free disk space" request the safe reclaims are build cache (rebuildable,
 usually the largest), DANGLING-only images, and UNREFERENCED-only volumes. These
 never touch a running stack, a tagged application image, or an attached DB volume
-backing a live worktree.
+backing a live worktree. The optional pressure path removes only old, labelled
+test images whose sole tag belongs to the local harness and which have no
+container references.
 
 The danger this module forecloses is the ``-a`` blast: ``docker image prune -af``
 removes every unused image including the application images (forcing full
@@ -35,9 +37,11 @@ derived from the reclaim set itself so the advice can never drift from what the
 command would have run.
 """
 
+import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from teatree.docker.venue import DockerVenue, docker_venue
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
@@ -45,6 +49,9 @@ from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 logger = logging.getLogger(__name__)
 
 _PRUNE_TIMEOUT = 25
+_TEST_IMAGE_LABEL = "io.teatree.reclaimable-test-image"
+_TEST_IMAGE_TAGS = ("teatree-test", "teatree-lint-local")
+_TEST_IMAGE_IDLE = timedelta(hours=4)
 
 # docker image/volume prune print "Total reclaimed space: <size>"; builder prune
 # prints "Total:\t<size>". Both summary shapes are parsed to one size string.
@@ -227,15 +234,64 @@ def _run_prune(argv: list[str]) -> PruneOutcome:
     return PruneOutcome(reclaimed=reclaimed, bytes_reclaimed=_parse_size(reclaimed))
 
 
-def reclaim_disk(*, dry_run: bool = False) -> ReclaimReport:
+def _test_image_step(tag: str) -> ReclaimStep:
+    label = f"unused test image {tag}"
+    argv = ["docker", "image", "rm", tag]
+    try:
+        inspected = run_allowed_to_fail(
+            ["docker", "image", "inspect", "--format", "{{json .}}", tag], expected_codes=None, timeout=5
+        )
+        if inspected.returncode != 0:
+            failure = (
+                None if "No such image" in inspected.stderr else inspected.stderr.strip() or "image inspect failed"
+            )
+            return ReclaimStep(argv, label, PruneOutcome("0B", 0, failure=failure))
+        image = json.loads(inspected.stdout)
+        created = datetime.fromisoformat(image["Created"])
+        labels = image["Config"]["Labels"] or {}
+        image_id = image["Id"]
+        owned = labels.get(_TEST_IMAGE_LABEL) == "true" and image["RepoTags"] == [f"{tag}:latest"]
+        old = created.tzinfo is not None and created <= datetime.now(tz=UTC) - _TEST_IMAGE_IDLE
+        identified = isinstance(image_id, str) and image_id.startswith("sha256:")
+        if not (owned and old and identified):
+            return ReclaimStep(argv, label, PruneOutcome("0B", 0))
+        containers = run_allowed_to_fail(
+            ["docker", "ps", "-a", "--filter", f"ancestor={image_id}", "--format", "{{.ID}}"],
+            expected_codes=None,
+            timeout=5,
+        )
+        if containers.returncode != 0 or containers.stdout.strip():
+            failure = containers.stderr.strip() or "container probe failed" if containers.returncode != 0 else None
+            return ReclaimStep(argv, label, PruneOutcome("0B", 0, failure=failure))
+        argv = ["docker", "image", "rm", image_id]
+        removed = run_allowed_to_fail(argv, expected_codes=None, timeout=5)
+        if removed.returncode != 0:
+            return ReclaimStep(
+                argv, label, PruneOutcome("0B", 0, failure=removed.stderr.strip() or "image removal failed")
+            )
+        return ReclaimStep(argv, label, PruneOutcome("image removed (shared layers unmeasured)", 0))
+    except (FileNotFoundError, PermissionError, TimeoutExpired, ValueError, KeyError, TypeError) as exc:
+        return ReclaimStep(argv, label, PruneOutcome("0B", 0, failure=str(exc)))
+
+
+def reclaim_disk(*, dry_run: bool = False, include_unused_test_images: bool = False) -> ReclaimReport:
     """Reclaim disk via the three safe Docker prunes; report per-step + total.
 
     ``dry_run`` plans the reclaim set without running anything destructive — the
     ``planned`` steps carry the exact argv that would run.
     """
     planned = tuple(ReclaimStep(argv=list(argv), label=label) for argv, label in _SAFE_STEPS)
+    if include_unused_test_images:
+        planned += tuple(
+            ReclaimStep(["docker", "image", "rm", tag], f"unused test image {tag}") for tag in _TEST_IMAGE_TAGS
+        )
     venue = docker_venue()
     if dry_run or not venue.reachable:
         return ReclaimReport(steps=(), planned=planned, dry_run=dry_run, venue=venue)
-    steps = tuple(ReclaimStep(argv=step.argv, label=step.label, outcome=_run_prune(step.argv)) for step in planned)
+    steps = tuple(
+        ReclaimStep(argv=step.argv, label=step.label, outcome=_run_prune(step.argv))
+        for step in planned[: len(_SAFE_STEPS)]
+    )
+    if include_unused_test_images:
+        steps += tuple(_test_image_step(tag) for tag in _TEST_IMAGE_TAGS)
     return ReclaimReport(steps=steps, planned=planned, dry_run=False, venue=venue)

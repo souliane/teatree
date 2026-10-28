@@ -47,6 +47,8 @@ it: a stamp naming an unreachable path, and a dir carrying no stamp at all, are
 both MISSING EVIDENCE — kept with the gap reported, never proof of death.
 """
 
+import bisect
+import os
 import shutil
 import stat
 import time
@@ -57,11 +59,125 @@ from teatree import paths
 from teatree.core.cleanup import checkout_registry, owner_stamps
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.preview import preview_line
+from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.cleanup.unshipped_work import ARTIFACT_NAMESPACE as SALVAGE_NAME
 from teatree.core.gates.idle_stack import worktree_protects_against_reap
 from teatree.core.models import Worktree
+from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.core.retention.scratch import _tree_stats
 
 _STAMP_NAMES = frozenset({paths.OWNER_STAMP_NAME, paths.OWNER_LOCATION_NAME})
+_IDLE_DB_SECONDS = 3 * 60 * 60
+
+
+def reap_idle_isolated_databases(workspace: Path, *, deadline: float | None = None) -> list[str]:
+    """Remove only idle SQLite copies owned by registered, inactive live checkouts."""
+    del workspace
+    table = read_process_table()
+    if reason := table.eviction_refuse_reason():
+        return [f"REFUSED idle database reclaim: process probe unsighted — {reason}"]
+    candidates, gap = _idle_database_candidates()
+    if gap:
+        return [f"REFUSED idle database reclaim: {gap}"]
+    if not candidates:
+        return []
+    marker = ResourcePressureMarker.load()
+    rows = _registered_database_owners()
+    start = bisect.bisect_right(candidates, Path(marker.idle_db_cursor)) if marker.idle_db_cursor else 0
+    outcomes: list[str] = []
+    for env_dir in candidates[start:] + candidates[:start]:
+        if deadline is not None and time.monotonic() >= deadline:
+            outcomes.append("DEFER idle database copies — pass budget exhausted")
+            break
+        owners = rows.get(env_dir.name, [])
+        row = owners[0] if len(owners) == 1 else None
+        outcome, refused = _reclaim_one_idle_database(env_dir, row=row, table=table, deadline=deadline)
+        outcomes.append(outcome)
+        if refused:
+            break
+        marker.idle_db_cursor = str(env_dir)
+        marker.save(update_fields=["idle_db_cursor"])
+    return outcomes
+
+
+def _registered_database_owners() -> dict[str, list[Worktree]]:
+    rows: dict[str, list[Worktree]] = {}
+    for row in Worktree.objects.select_related("ticket"):
+        extra = row.extra if isinstance(row.extra, dict) else {}
+        if checkout := extra.get("worktree_path"):
+            rows.setdefault(paths.isolated_slug(Path(str(checkout))), []).append(row)
+    return rows
+
+
+def _idle_database_candidates() -> tuple[list[Path], str]:
+    codex_home = Path(os.environ.get("T3_CODEX_HOME") or paths.data_dir_root() / "codex-home")
+    roots = (paths.auto_isolated_worktrees_dir(), codex_home / ".local/share/teatree-worktrees")
+    candidates: list[Path] = []
+    for root in dict.fromkeys(roots):
+        try:
+            candidates.extend(entry for entry in root.iterdir() if entry.is_dir())
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return [], f"cannot list {root} ({exc})"
+    return sorted(candidates), ""
+
+
+def _reclaim_one_idle_database(
+    env_dir: Path, *, row: Worktree | None, table: ProcessTable, deadline: float | None
+) -> tuple[str, bool]:
+    if reason := _idle_database_keep_reason(env_dir, row=row, table=table, deadline=deadline):
+        return f"KEPT idle database '{env_dir}': {reason}", False
+    fresh = read_process_table()
+    if refusal := fresh.eviction_refuse_reason():
+        return f"REFUSED idle database reclaim: process probe unsighted — {refusal}", True
+    if reason := _idle_database_keep_reason(env_dir, row=row, table=fresh, deadline=deadline):
+        return f"KEPT idle database '{env_dir}': {reason}", False
+    try:
+        for name in ("db.sqlite3-wal", "db.sqlite3-shm", "db.sqlite3"):
+            (env_dir / name).unlink(missing_ok=True)
+    except OSError as exc:
+        return f"FAILED idle database '{env_dir}': {exc}", False
+    return f"RECLAIMED idle database '{env_dir / 'db.sqlite3'}'", False
+
+
+def _idle_database_keep_reason(
+    env_dir: Path, *, row: Worktree | None, table: ProcessTable, deadline: float | None
+) -> str:
+    if row is None:
+        return "no registered checkout can prove its ticket is idle"
+    return _idle_database_owner_reason(env_dir, row) or _idle_database_file_reason(env_dir, table, deadline=deadline)
+
+
+def _idle_database_owner_reason(env_dir: Path, row: Worktree) -> str:
+    extra = row.extra if isinstance(row.extra, dict) else {}
+    checkout = Path(str(extra.get("worktree_path", "")))
+    if paths.IsolatedEnvDir(env_dir).owner != checkout or not (checkout / ".git").exists():
+        return "owner stamp or checkout cannot be verified"
+    if row.ticket.has_active_work():
+        return "its ticket has an active task or session"
+    if is_clean_ignored(row.branch, overlay=row.overlay) or any(
+        protected in row.branch.lower() for protected in ("evidence", "rescue", "backup")
+    ):
+        return "its checkout is protected evidence or backup"
+    return ""
+
+
+def _idle_database_file_reason(env_dir: Path, table: ProcessTable, *, deadline: float | None) -> str:
+    if env_dir.is_symlink() or any(
+        (env_dir / name).is_symlink() for name in ("db.sqlite3", "db.sqlite3-wal", "db.sqlite3-shm")
+    ):
+        return "a symlink cannot be reclaimed"
+    if table.holds(env_dir):
+        return "open by a live process"
+    stats = _tree_stats(env_dir, deadline=deadline)
+    if stats.holds_git_repo:
+        return "the env dir holds git state"
+    if stats.newest_mtime is None:
+        return "its tree cannot be fully read"
+    if stats.newest_mtime >= time.time() - _IDLE_DB_SECONDS:
+        return "a file in its tree was written in the last 3 hours"
+    return "database copy is absent" if not (env_dir / "db.sqlite3").is_file() else ""
 
 
 def _has_unmappable_live_worktree() -> bool:

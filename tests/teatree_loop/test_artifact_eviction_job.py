@@ -8,6 +8,7 @@ ladder's anti-thrash gate does not read.
 """
 
 import datetime as _dt
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -23,6 +24,7 @@ from teatree.config import UserSettings
 from teatree.core.cleanup.artifact_eviction import ArtifactEvictionPlan
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.core.retention.scratch import ScratchSweepPlan
 from teatree.core.tasks import TeardownDispatch
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import _run_job
@@ -96,20 +98,19 @@ class CadenceTests(TestCase):
 
         assert [s.kind for s in ArtifactEvictionScanner().scan()] == [_SIGNAL]
 
+    def test_pressure_shortens_artifact_cadence_without_running_every_tick(self) -> None:
+        marker = SimpleNamespace(
+            last_artifact_sweep_at=timezone.now() - _dt.timedelta(minutes=6),
+            last_disk_free_gb=16.0,
+        )
+        scanner = ArtifactEvictionScanner(cadence_minutes=30, disk_crit_free_gb=10.0)
 
-def test_pressure_shortens_artifact_cadence_without_running_every_tick() -> None:
-    marker = SimpleNamespace(
-        last_artifact_sweep_at=timezone.now() - _dt.timedelta(minutes=6),
-        last_disk_free_gb=16.0,
-    )
-    scanner = ArtifactEvictionScanner(cadence_minutes=30, disk_crit_free_gb=10.0)
-
-    assert not scanner._cadence_blocks(marker)
-    marker.last_artifact_sweep_at = timezone.now() - _dt.timedelta(minutes=2)
-    assert scanner._cadence_blocks(marker)
-    marker.last_artifact_sweep_at = timezone.now() - _dt.timedelta(minutes=6)
-    marker.last_disk_free_gb = 30.0
-    assert scanner._cadence_blocks(marker)
+        assert not scanner._cadence_blocks(marker)
+        marker.last_artifact_sweep_at = timezone.now() - _dt.timedelta(minutes=2)
+        assert scanner._cadence_blocks(marker)
+        marker.last_artifact_sweep_at = timezone.now() - _dt.timedelta(minutes=6)
+        marker.last_disk_free_gb = 30.0
+        assert scanner._cadence_blocks(marker)
 
 
 class WiringTests(TestCase):
@@ -381,3 +382,41 @@ class UnattendedHousekeepingTests(TestCase):
 
         deadline = reap.call_args.kwargs["deadline"]
         assert 0 < deadline - time.monotonic() <= MIN_TICK_DEADLINE_SECONDS / 2
+
+    def test_the_scheduled_sweep_reclaims_idle_live_database_copies(self) -> None:
+        with patch(f"{_SWEEP}.reap_idle_isolated_databases", return_value=["RECLAIMED idle database copy"]) as idle:
+            plan = self._sweep()
+
+        assert idle.call_count == 1
+        assert "RECLAIMED idle database copy" in plan
+
+    def test_the_scheduled_sweep_runs_four_hour_worker_scratch_cleanup(self) -> None:
+        result = ScratchSweepPlan(root="/tmp", retention_days=1 / 6, entries=(), applied=True)
+        with (
+            patch.dict(os.environ, {"TEATREE_ROLE": "worker"}),
+            patch(f"{_SWEEP}.sweep_scratch", return_value=result) as scratch,
+        ):
+            plan = self._sweep()
+
+        assert [call.kwargs["configured_root"] for call in scratch.call_args_list] == ["/tmp", "/var/tmp"]
+        assert all(call.kwargs["retention_days"] == pytest.approx(1 / 6) for call in scratch.call_args_list)
+        assert "worker scratch" in plan
+
+    def test_unrecovered_pressure_sends_one_owner_question_with_the_refusal(self) -> None:
+        marker = ResourcePressureMarker.load()
+        marker.last_disk_free_gb = 16.0
+        marker.save(update_fields=["last_disk_free_gb"])
+        with (
+            patch(
+                f"{_SWEEP}.measure_resources",
+                return_value=SimpleNamespace(disk_free_gb=16.0, disk_probe_degraded=False),
+            ),
+            patch(f"{_SWEEP}.reap_idle_isolated_databases", return_value=["REFUSED: open-file probe unsighted"]),
+            patch(f"{_SWEEP}.notify_user", return_value=True) as notify,
+        ):
+            self._sweep()
+            self._sweep()
+
+        assert notify.call_count == 1
+        assert "open-file probe unsighted" in notify.call_args.args[0]
+        assert ResourcePressureMarker.load().reclaim_blocked_since is not None

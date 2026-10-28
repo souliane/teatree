@@ -14,4 +14,24 @@ class Migration(migrations.Migration):
             name="disk_reclaim_cursor",
             field=models.PositiveSmallIntegerField(default=0),
         ),
+        migrations.AddField(
+            model_name="resourcepressuremarker",
+            name="idle_db_cursor",
+            field=models.TextField(blank=True, default=""),
+        ),
+        migrations.AddField(
+            model_name="resourcepressuremarker",
+            name="last_reclaimed_gb",
+            field=models.FloatField(default=0.0),
+        ),
+        migrations.AddField(
+            model_name="resourcepressuremarker",
+            name="reclaim_blocked_since",
+            field=models.DateTimeField(blank=True, null=True),
+        ),
+        migrations.AddField(
+            model_name="resourcepressuremarker",
+            name="last_reclaim_notice_at",
+            field=models.DateTimeField(blank=True, null=True),
+        ),
     ]

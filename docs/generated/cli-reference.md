@@ -5614,6 +5614,8 @@ Usage: t3 worker [OPTIONS] [COMMAND] [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ run      Run the singleton loop-timer worker — the cadence owner (#1796).    │
+│ reclaim  Run a bounded disk reclaim in the worker venue before a deploy      │
+│          build.                                                              │
 │ status   Report the worker: flock holder, admitted loops, timers, staleness, │
 │          and the agent admission ceiling.                                    │
 │ ensure   Spawn a detached worker iff the flock is free.                      │
@@ -5635,6 +5637,20 @@ Usage: t3 worker run [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 worker reclaim`
+
+```
+Usage: t3 worker reclaim [OPTIONS]
+
+ Run a bounded disk reclaim in the worker venue before a deploy build.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --budget-seconds        INTEGER RANGE [1<=x<=240]  [default: 90]             │
+│ --help                                             Show this message and     │
+│                                                    exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
