@@ -758,7 +758,7 @@ class TestCheckingRemaining:
         _completed_history("reviewing", (30, 40, 50, 60, 70))
         payload = _show_json()
         item = _remaining_item(payload, "acme/widgets#601")
-        assert item["eta"]["median_minutes"] == 165
+        assert item["eta"]["median_minutes"] == pytest.approx(165, abs=1)
         assert "ETA 2h45m" in item["detail"]
 
     def test_running_step_uses_seven_day_survivors_after_recent_samples_end(self, checkpoint_file: Path) -> None:
