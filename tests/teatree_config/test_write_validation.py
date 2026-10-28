@@ -2,6 +2,7 @@
 
 import pytest
 
+from teatree.config.setting_registries import BOX_GLOBAL_SETTINGS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 
 
@@ -46,3 +47,30 @@ class TestValidateConfigWrite:
     @pytest.mark.parametrize(("raw", "kept"), [(0.25, 0.25), (1, 1.0), ("2.0", 2.0)])
     def test_a_per_core_factor_inside_its_range_is_kept(self, raw: object, kept: float) -> None:
         assert validate_config_write("admission_write_concurrency_per_core", raw) == pytest.approx(kept)
+
+    @pytest.mark.parametrize(
+        ("key", "valid", "invalid"),
+        [
+            ("admission_load_brake_per_core", 2.0, 0.0),
+            ("admission_load_resume_per_core", 1.5, 7.0),
+        ],
+    )
+    def test_load_factors_are_validated_on_write(self, key: str, valid: float, invalid: float) -> None:
+        assert validate_config_write(key, valid) == pytest.approx(valid)
+        with pytest.raises(ConfigWriteError, match="between"):
+            validate_config_write(key, invalid)
+
+    @pytest.mark.parametrize(("raw", "kept"), [(1, 1), ("4", 4), (16, 16)])
+    def test_a_forge_pool_cap_inside_its_range_is_kept(self, raw: object, kept: int) -> None:
+        assert validate_config_write("forge_pool_max_connections", raw) == kept
+
+    @pytest.mark.parametrize("invalid", [0, 17, -3])
+    def test_a_forge_pool_cap_outside_its_range_is_refused(self, invalid: int) -> None:
+        with pytest.raises(ConfigWriteError, match="between"):
+            validate_config_write("forge_pool_max_connections", invalid)
+
+    def test_the_forge_pool_cap_cannot_be_overridden_per_overlay(self) -> None:
+        assert "forge_pool_max_connections" in BOX_GLOBAL_SETTINGS
+
+    def test_load_factors_cannot_be_overridden_per_overlay(self) -> None:
+        assert {"admission_load_brake_per_core", "admission_load_resume_per_core"} <= BOX_GLOBAL_SETTINGS

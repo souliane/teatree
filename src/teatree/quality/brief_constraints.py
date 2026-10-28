@@ -16,6 +16,7 @@ class BriefConstraint:
     kind: ConstraintKind
     target: str
     source: str
+    allowed_settings: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,10 @@ _PATH = r"([\w./-]+\.(?:py|md|toml|yaml|yml|json|cfg|ini))"
 _KEEP = re.compile(rf"\b(?:keep|leave)\s+{_PATH}\s+unchanged\b", re.IGNORECASE)
 _STAYS = re.compile(rf"\b{_PATH}\s+(?:stays?|must\s+remain)\s+unchanged\b", re.IGNORECASE)
 _DO_NOT_TOUCH = re.compile(rf"\b(?:do\s+not|don't)\s+(?:change|touch|edit)\s+{_PATH}\b", re.IGNORECASE)
+_ALLOWED_SETTINGS = re.compile(
+    r"^Allowed setting additions: ([A-Za-z_]\w*\.[A-Za-z_]\w*(?:,[ \t]*[A-Za-z_]\w*\.[A-Za-z_]\w*)*)[ \t]*$",
+    re.MULTILINE,
+)
 
 
 def extract_constraints(text: str, *, own_issue_number: str = "") -> tuple[BriefConstraint, ...]:
@@ -67,6 +72,9 @@ def extract_constraints(text: str, *, own_issue_number: str = "") -> tuple[Brief
     text = _QUOTED.sub(
         lambda match: match.group()[1:-1] if re.fullmatch(r"[\w./-]+", match.group()[1:-1]) else ".", text
     )
+    allowed_settings = frozenset(
+        name.strip() for match in _ALLOWED_SETTINGS.finditer(text) for name in match.group(1).split(",")
+    )
     found: dict[tuple[ConstraintKind, str], BriefConstraint] = {}
     for match in _NEGATIVE.finditer(text):
         scope = match.group(1).lower()
@@ -79,7 +87,9 @@ def extract_constraints(text: str, *, own_issue_number: str = "") -> tuple[Brief
             ("no_public_name", r"\bpublic\s+(?:names?|api|symbols?)\b"),
         ):
             if re.search(pattern, scope):
-                found[kind, ""] = BriefConstraint(kind, "", match.group(0).strip())
+                found[kind, ""] = BriefConstraint(
+                    kind, "", match.group(0).strip(), allowed_settings if kind == "no_setting" else frozenset()
+                )
     for pattern in (_KEEP, _STAYS, _DO_NOT_TOUCH):
         for match in pattern.finditer(text):
             target = match.group(1).removeprefix("./")
@@ -155,7 +165,8 @@ def _source_violation(
             return ConstraintViolation(
                 constraint.kind, path, f"source could not be parsed for {path}; constraint unverified"
             )
-        if added := sorted(new_names - old_names):
+        added = sorted(new_names - old_names - constraint.allowed_settings)
+        if added:
             return ConstraintViolation(constraint.kind, path, f"{path} adds {', '.join(added)}")
     return None
 

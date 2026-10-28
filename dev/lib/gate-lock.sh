@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
-acquire_push_gate_lock() {
-    local lock_started=$SECONDS
+select_push_gate_lock_path() {
     local lock_path=""
     if [ -n "${T3_PUSH_GATE_LOCK:-}" ]; then
         lock_path="$T3_PUSH_GATE_LOCK"
@@ -12,12 +11,18 @@ acquire_push_gate_lock() {
     fi
     T3_PUSH_GATE_LOCK_PATH="$lock_path"
     export T3_PUSH_GATE_LOCK_PATH
+}
+
+acquire_push_gate_lock() {
+    local lock_started=$SECONDS
+    select_push_gate_lock_path
+    local lock_path="$T3_PUSH_GATE_LOCK_PATH"
 
     # Never fall back to another path: a second lock file excludes nobody.
     if ! exec 9<>"$lock_path"; then
         T3_PUSH_GATE_LOCK_WAIT_S=$((SECONDS - lock_started))
         export T3_PUSH_GATE_LOCK_WAIT_S
-        echo "=== push-gate: ABORTED: cannot open lock $lock_path (fix its permissions); no check ran ===" >&2
+        echo "=== push-gate: ABORTED: cannot open lock $lock_path (fix its permissions); stage 3 (the incremental sweep) did not run ===" >&2
         return 75
     fi
 
@@ -32,7 +37,7 @@ acquire_push_gate_lock() {
     exec 9>&-
     # 75 is the helper's timed-out wait, already reported with its holder.
     if [ "$lock_rc" -ne 75 ]; then
-        echo "=== push-gate: ABORTED: lock helper failed (rc=$lock_rc) for $lock_path; no check ran ===" >&2
+        echo "=== push-gate: ABORTED: lock helper failed (rc=$lock_rc) for $lock_path; stage 3 (the incremental sweep) did not run ===" >&2
     fi
     return 75
 }

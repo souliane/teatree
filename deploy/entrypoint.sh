@@ -877,16 +877,28 @@ ensure_clone() {
         # from the first boot. SELF-HEAL: a stray feature branch checked out on
         # the runtime clone (or one whose upstream was deleted after its PR
         # merged) must never brick the H24 deploy — recover to the default
-        # branch automatically; only a genuinely diverged default branch (local
-        # commits that cannot fast-forward) still fails loud.
+        # branch automatically when the tracked tree is clean; a dirty tree or
+        # genuinely diverged default branch still fails loud.
         git -C "$CLONE_DIR" fetch --prune origin
         local default_branch current
         default_branch="$(git -C "$CLONE_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
         default_branch="${default_branch:-main}"
         current="$(git -C "$CLONE_DIR" symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
         if [ "$current" != "$default_branch" ]; then
-            echo "entrypoint: runtime clone was on '$current' (not '$default_branch') - self-healing to the default branch (any stray work stays on its branch)" >&2
-            git -C "$CLONE_DIR" checkout --force "$default_branch"
+            local dirty detached_sha
+            dirty="$(git -C "$CLONE_DIR" status --porcelain --untracked-files=no)"
+            if [ -n "$dirty" ]; then
+                echo "entrypoint: FATAL runtime clone has local modifications; refusing checkout from '$current':" >&2
+                printf '%s\n' "$dirty" >&2
+                exit 1
+            fi
+            if [ "$current" = DETACHED ]; then
+                detached_sha="$(git -C "$CLONE_DIR" rev-parse HEAD)"
+                git -C "$CLONE_DIR" update-ref "refs/t3-rescue/$detached_sha" "$detached_sha"
+                echo "entrypoint: saved detached runtime commit $detached_sha at refs/t3-rescue/$detached_sha" >&2
+            fi
+            echo "entrypoint: runtime clone was on '$current' (not '$default_branch') - self-healing to the default branch" >&2
+            git -C "$CLONE_DIR" checkout "$default_branch"
         fi
         git -C "$CLONE_DIR" merge --ff-only "origin/$default_branch" || {
             if git -C "$CLONE_DIR" merge-base --is-ancestor HEAD "origin/$default_branch"; then

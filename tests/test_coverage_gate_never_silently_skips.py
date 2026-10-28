@@ -114,7 +114,7 @@ def _t3_reports(stdout: str, *, returncode: int = 0, raises: Exception | None = 
 
 @pytest.fixture
 def t3_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+    monkeypatch.setattr("shutil.which", _t3_on_path)
 
 
 class TestEveryUnmeasuredDeclineAnnouncesItself:
@@ -145,7 +145,7 @@ class TestEveryUnmeasuredDeclineAnnouncesItself:
     def test_missing_t3_notes_the_skip(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr(router.shutil, "which", _no_t3)
+        monkeypatch.setattr("shutil.which", _no_t3)
         assert handle_block_uncovered_diff(_create_in(_shipping_repo(tmp_path))) is False
         err = capsys.readouterr().err
         assert _SKIP_MARKER in err

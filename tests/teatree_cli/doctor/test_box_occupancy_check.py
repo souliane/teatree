@@ -37,9 +37,9 @@ def _quota(weekly: float = 0.0) -> QuotaSignal:
     )
 
 
-def _report(load1: float, *, agents: int = 3, weekly: float = 0.0) -> str:
+def _report(load1: float, *, agents: int = 3, weekly: float = 0.0, brake_per_core: float = BRAKE_LOAD_PER_CORE) -> str:
     """The check's own output for a stated box, with its verdict asserted advisory."""
-    machine = MachineSignal(cores=_CORES, load1=load1, ram_available_gb=20.0)
+    machine = MachineSignal(cores=_CORES, load1=load1, ram_available_gb=20.0, load_brake_per_core=brake_per_core)
     with (
         patch(_MACHINE, return_value=machine),
         patch(_QUOTA, return_value=_quota(weekly)),
@@ -102,6 +102,11 @@ class TestAlwaysPrintsBothNumbers(django.test.TestCase):
     def test_the_warn_fires_at_the_same_watermark_the_governor_brakes_on(self) -> None:
         assert _report(_WATERMARK).startswith("WARN")
         assert _report(_WATERMARK - 0.1).startswith("OK")
+
+    def test_configured_brake_factor_changes_the_readout_and_verdict(self) -> None:
+        report = _report(24.0, brake_per_core=4.0)
+        assert report.startswith("OK")
+        assert "brake watermark 32" in report
 
     def test_an_idle_factory_on_a_thrashing_box_is_still_reported(self) -> None:
         # The recorded shape: nothing the factory owns is running, and the box is melting.

@@ -148,3 +148,18 @@ def test_no_setting_covers_registry_keys_and_no_public_name_covers_constants() -
         extract_constraints("No new setting or public name."), changes, before=before, after=after
     )
     assert {item.kind for item in violations} == {"no_setting", "no_public_name"}
+
+
+def test_named_setting_exception_preserves_the_other_setting_blocks() -> None:
+    path = "src/teatree/config/settings.py"
+    changes = ChangedSet((ChangeEntry("M", path),), "origin/main")
+    before = {path: "class AppSettings:\n    old: int = 1\n"}
+    brief = "No new setting.\nAllowed setting additions: AppSettings.approved"
+    approved = {path: "class AppSettings:\n    old: int = 1\n    approved: int = 2\n"}
+    extra = {path: approved[path] + "    unapproved: int = 3\n"}
+
+    assert check_constraints(extract_constraints(brief), changes, before=before, after=approved) == ()
+    violations = check_constraints(extract_constraints(brief), changes, before=before, after=extra)
+    assert len(violations) == 1
+    assert violations[0].kind == "no_setting"
+    assert "AppSettings.unapproved" in violations[0].detail

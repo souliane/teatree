@@ -124,8 +124,8 @@ class TestPushGateLock:
 
 
 @pytest.mark.integration
-class TestThePushGateRunsNoCheckWithoutTheLock:
-    def test_an_unopenable_lock_runs_no_stage(self, tmp_path: Path) -> None:
+class TestThePushGateRunsNoIncrementalSweepWithoutTheLock:
+    def test_an_unopenable_lock_runs_only_serial_checks(self, tmp_path: Path) -> None:
         install_uv_stub(tmp_path)
         lock = tmp_path / "absent" / "push-gate.lock"
 
@@ -134,10 +134,11 @@ class TestThePushGateRunsNoCheckWithoutTheLock:
         )
 
         assert completed.returncode == 75, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
-        assert stages == []
+        assert len(stages) == 2
+        assert [run.lock for run in stage_runs(tmp_path)] == ["unavailable", "unavailable"]
         assert f"=== push-gate: ABORTED: cannot open lock {lock}" in completed.stderr
 
-    def test_a_timed_out_wait_runs_no_stage(self, tmp_path: Path) -> None:
+    def test_a_timed_out_wait_runs_only_serial_checks(self, tmp_path: Path) -> None:
         install_uv_stub(tmp_path)
         lock = tmp_path / "push-gate.lock"
         with lock.open("w+", encoding="utf-8") as holder:
@@ -147,7 +148,8 @@ class TestThePushGateRunsNoCheckWithoutTheLock:
             )
 
         assert completed.returncode == 75, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
-        assert stages == []
+        assert len(stages) == 2
+        assert [run.lock for run in stage_runs(tmp_path)] == ["held", "held"]
 
     def test_a_held_lock_runs_every_stage_and_names_this_run(self, tmp_path: Path) -> None:
         install_uv_stub(tmp_path)
@@ -157,9 +159,9 @@ class TestThePushGateRunsNoCheckWithoutTheLock:
         assert completed.returncode == 0, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
         assert len(stages) == 3
         assert "pid=" in (tmp_path / "push-gate.lock").read_text(encoding="utf-8")
-        assert [run.lock for run in stage_runs(tmp_path)] == ["held"] * 3
+        assert [run.lock for run in stage_runs(tmp_path)] == ["free", "free", "held"]
 
-    def test_two_pushers_never_run_their_checks_at_once(self, tmp_path: Path) -> None:
+    def test_two_pushers_never_run_their_incremental_sweeps_at_once(self, tmp_path: Path) -> None:
         lock = tmp_path / "shared.lock"
         env = {"T3_PUSH_GATE_LOCK": str(lock), "T3_PUSH_GATE_LOCK_WAIT_SECONDS": "120", "UV_STUB_STAGE_SLEEP": "0.5"}
         first_lane, second_lane = tmp_path / "first", tmp_path / "second"
@@ -176,13 +178,28 @@ class TestThePushGateRunsNoCheckWithoutTheLock:
         assert [lane.returncode for lane in completed] == [0, 0], [lane.stderr for lane in completed]
         first_runs, second_runs = stage_runs(first_lane), stage_runs(second_lane)
         assert len(first_runs) == len(second_runs) == 3
-        assert max(run.ended for run in first_runs) <= min(run.started for run in second_runs)
+        assert first_runs[2].ended <= second_runs[2].started
 
 
 def test_push_gate_acquires_before_sizing_the_worker_pool() -> None:
     body = _PUSH_GATE.read_text(encoding="utf-8")
 
     assert body.index("acquire_push_gate_lock") < body.index("bound_xdist_workers_to_memory")
+
+
+def test_push_gate_sizes_the_worker_pool_just_before_the_locked_stage() -> None:
+    body = _PUSH_GATE.read_text(encoding="utf-8")
+
+    assert body.index("bound_xdist_workers_to_memory") < body.index("record_push_gate_bound")
+    assert body.index("record_push_gate_bound") < body.index("record_push_gate_stage 3")
+    assert body.index("record_push_gate_stage 2") < body.index("bound_xdist_workers_to_memory")
+
+
+def test_lock_starts_after_the_two_serial_safety_stages() -> None:
+    body = _PUSH_GATE.read_text(encoding="utf-8")
+
+    assert body.index("record_push_gate_stage 2") < body.index("acquire_push_gate_lock")
+    assert body.index("acquire_push_gate_lock") < body.index("record_push_gate_stage 3")
 
 
 def test_push_gate_closes_the_lock_for_every_stage() -> None:
@@ -210,3 +227,25 @@ def test_lock_helper_keeps_the_portable_path_fallbacks() -> None:
     assert "/host-tmp/t3-push-gate.lock" in body
     assert "/tmp/t3-push-gate.lock" in body
     assert 'exec 9<>"$lock_path"' in body
+
+
+class TestLockAbortSaysWhatDidNotRun:
+    def test_an_unopenable_lock_reports_that_stage_three_did_not_run(self, tmp_path: Path) -> None:
+        result = _run_bash(
+            f'. dev/lib/gate-lock.sh; T3_PUSH_GATE_LOCK="{tmp_path}/missing-dir/push-gate.lock" acquire_push_gate_lock'
+        )
+
+        assert result.returncode == 75
+        assert "stage 3 (the incremental sweep) did not run" in result.stderr
+        assert "no check ran" not in result.stderr
+
+    def test_a_failing_lock_helper_reports_that_stage_three_did_not_run(self, tmp_path: Path) -> None:
+        result = _run_bash(
+            f'. dev/lib/gate-lock.sh; T3_PUSH_GATE_LOCK="{tmp_path}/push-gate.lock" '
+            "T3_PUSH_GATE_LOCK_WAIT_SECONDS=not-a-number acquire_push_gate_lock"
+        )
+
+        assert result.returncode == 75
+        assert "lock helper failed" in result.stderr
+        assert "stage 3 (the incremental sweep) did not run" in result.stderr
+        assert "no check ran" not in result.stderr

@@ -488,7 +488,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
             patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=_provider(host)),
             patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
             patch("teatree.backends.forge_merge_rpc.run_allowed_to_fail", return_value=pr_response) as pr_call,
-            patch("teatree.backends.github.api.run_checked", return_value=comments_response) as api_call,
+            patch("teatree.backends.github.api._run_pooled_api", return_value=comments_response) as api_call,
         ):
             body, comments = _issue(ticket)
 

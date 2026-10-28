@@ -12,7 +12,6 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
-from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
 from teatree.core.models import (
     DeferredQuestion,
     Directive,
@@ -108,17 +107,18 @@ class TestScheduleDirectiveImplementation(TestCase):
             assert schedule_directive_implementation(directive) is None
         resolver.assert_not_called()
 
-    def test_open_pr_cap_holds_new_mechanism_ticket(self) -> None:
+    def test_twenty_live_pull_requests_allow_new_mechanism_ticket(self) -> None:
         directive = _admitted()
-        for index in range(OPEN_PR_START_CAP):
+        for index in range(20):
             PullRequest.objects.record_opened(
                 ticket=Ticket.objects.create(),
                 url=f"https://github.com/example-org/example-repo/pull/{index + 800}",
             )
-        assert schedule_directive_implementation(directive) is None
+        task = schedule_directive_implementation(directive)
         directive.refresh_from_db()
-        assert directive.state == Directive.State.ADMITTED
-        assert directive.ticket_id is None
+        assert task is not None
+        assert directive.state == Directive.State.IMPLEMENTING
+        assert directive.ticket_id == task.ticket_id
 
     def test_anchors_the_ticket_links_it_back_and_moves_to_implementing(self) -> None:
         directive = _admitted()

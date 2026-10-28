@@ -74,13 +74,13 @@ class TestOverlayScopeLayering(TestCase):
 
     def test_overlay_db_row_for_speak_merges_onto_global(self) -> None:
         # The per-overlay ``speak`` row MERGES onto the global base — only the keys
-        # the overlay row sets override. Here the global row sets local=all + slack on;
-        # the overlay row sets only slack off, so local stays ``all`` and slack flips off.
+        # the overlay row sets override. Here the legacy global row sets local=all + slack on;
+        # the overlay row sets only slack off, so local becomes ``dm`` and slack flips off.
         ConfigSetting.objects.set_value("speak", value={"local": "all", "slack": True})
         ConfigSetting.objects.set_value("speak", value={"slack": False}, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         speak = get_effective_settings().speak
-        assert speak.local is LocalPlayback.ALL
+        assert speak.local is LocalPlayback.DM
         assert speak.slack is False
 
 

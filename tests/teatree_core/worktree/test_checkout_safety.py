@@ -7,7 +7,7 @@ from django.test import TestCase
 
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.forge_pr_probe import GithubOpenPrHead
-from teatree.core.models import DeferredQuestion, TaskAttempt, UnshippedWorkRecord, Worktree
+from teatree.core.models import DeferredQuestion, TaskAttempt, Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.models.checkout_custody import ABANDONED_EXIT, RELEASED_EXIT, Custody, Tenure
 from teatree.core.models.worktree_occupancy import task_holder_id
 from teatree.core.worktree.checkout_fence import claim_task_checkout_or_park
@@ -298,3 +298,71 @@ class CheckoutSafetyTests(TestCase):
 
         assert attempt is not None
         assert "index lock" in attempt.error
+
+    def _hand_off_from(self, *earlier: tuple[Ticket, str]) -> None:
+        tenures = tuple(
+            Tenure(
+                task_holder_id(TaskFactory(ticket=ticket, phase=phase)),
+                "prior",
+                "2026-10-27T12:00:00+00:00",
+                RELEASED_EXIT,
+                "2026-10-27T12:30:00+00:00",
+            )
+            for ticket, phase in earlier
+        )
+        custody = Custody(checkout_state(self.checkout, ticket=self.ticket).digest, tenures)
+        self.worktree.merge_extra(set_keys={"attested_state": custody.anchor, "checkout_custody": custody.as_dict()})
+        self._commit_file("handed-off.txt")
+        self.task = TaskFactory(ticket=self.ticket, phase="testing")
+
+    def test_hand_off_between_phases_of_one_ticket_bundles_unpushed_commits_and_claims(self) -> None:
+        self._hand_off_from((self.ticket, "coding"), (self.ticket, "reviewing"))
+        assert self._claim(ProcessTable(frozenset(), "/proc")) is None
+        record = UnshippedWorkRecord.objects.get(checkout_path=str(self.checkout))
+        assert len(record.unpushed_commits) == 3
+        assert Path(f"{record.artifact_prefix}.commits.patch").stat().st_size > 0
+
+    def test_hand_off_after_a_tenure_of_another_ticket_still_parks(self) -> None:
+        self._hand_off_from((TicketFactory(), "coding"), (self.ticket, "coding"))
+        attempt = self._claim(ProcessTable(frozenset(), "/proc"))
+        assert attempt is not None
+        assert "owned pull request" in attempt.error
+
+    def test_hand_off_whose_latest_tenure_is_another_tickets_still_parks(self) -> None:
+        self._hand_off_from((self.ticket, "coding"), (TicketFactory(), "coding"))
+        attempt = self._claim(ProcessTable(frozenset(), "/proc"))
+        assert attempt is not None
+        assert "owned pull request" in attempt.error
+
+    def test_hand_off_after_the_ticket_opened_a_pull_request_still_needs_the_owned_pr(self) -> None:
+        PullRequestFactory(ticket=self.ticket)
+        self._hand_off_from((self.ticket, "coding"), (self.ticket, "reviewing"))
+        attempt = self._claim(ProcessTable(frozenset(), "/proc"))
+        assert attempt is not None
+        assert "owned pull request" in attempt.error
+
+    def test_hand_off_parks_when_the_bundle_does_not_match(self) -> None:
+        self._hand_off_from((self.ticket, "coding"), (self.ticket, "reviewing"))
+        with patch("teatree.core.worktree.checkout_safety.bundle_path") as artifact:
+            artifact.return_value.is_file.return_value = True
+            artifact.return_value.read_text.return_value = "not the patch"
+            attempt = self._claim(ProcessTable(frozenset(), "/proc"))
+        assert attempt is not None
+        assert "could not be preserved" in attempt.error
+
+    def test_hand_off_parks_when_the_bundle_cannot_be_written(self) -> None:
+        self._hand_off_from((self.ticket, "coding"), (self.ticket, "reviewing"))
+        with patch("teatree.core.worktree.checkout_safety.capture_unshipped_work", return_value=None):
+            attempt = self._claim(ProcessTable(frozenset(), "/proc"))
+        assert attempt is not None
+        assert "could not be preserved" in attempt.error
+
+    def test_pushed_branch_without_an_owned_pr_still_parks_after_a_released_hand_off(self) -> None:
+        self._hand_off_from((self.ticket, "coding"), (self.ticket, "reviewing"))
+        remote = self.root / "remote.git"
+        run_strict(repo=str(self.checkout), args=["init", "--bare", str(remote)])
+        run_strict(repo=str(self.checkout), args=["remote", "add", "origin", str(remote)])
+        run_strict(repo=str(self.checkout), args=["push", "origin", "feature"])
+        attempt = self._claim(ProcessTable(frozenset(), "/proc"))
+        assert attempt is not None
+        assert "owned pull request" in attempt.error

@@ -169,6 +169,41 @@ class TestEnsureCloneOnline:
         assert result.returncode != 0
         assert "has diverged" in result.stderr
 
+    def test_dirty_feature_branch_is_preserved(self, tmp_path: Path) -> None:
+        origin = _make_origin_and_clone(tmp_path)
+        _git(origin.clone, "checkout", "-b", "feature")
+        (origin.clone / "a.txt").write_text("local edit\n", encoding="utf-8")
+
+        result = _run_ensure_clone(tmp_path, clone_dir=origin.clone, repo_url=origin.url, force_offline=False)
+
+        assert result.returncode != 0
+        assert "a.txt" in result.stderr
+        assert (origin.clone / "a.txt").read_text(encoding="utf-8") == "local edit\n"
+        branch = subprocess.run(
+            [_GIT, "-C", str(origin.clone), "branch", "--show-current"], check=True, capture_output=True, text=True
+        )
+        assert branch.stdout.strip() == "feature"
+
+    def test_detached_commit_gets_rescue_ref_before_checkout(self, tmp_path: Path) -> None:
+        origin = _make_origin_and_clone(tmp_path)
+        _git(origin.clone, "checkout", "--detach")
+        (origin.clone / "detached.txt").write_text("keep\n", encoding="utf-8")
+        _git(origin.clone, "add", "detached.txt")
+        _git(origin.clone, "commit", "-m", "detached work")
+        detached_sha = _head(origin.clone)
+
+        result = _run_ensure_clone(tmp_path, clone_dir=origin.clone, repo_url=origin.url, force_offline=False)
+
+        assert result.returncode == 0, result.stderr
+        assert _head(origin.clone) == origin.commit2
+        rescue = subprocess.run(
+            [_GIT, "-C", str(origin.clone), "rev-parse", f"refs/t3-rescue/{detached_sha}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert rescue.stdout.strip() == detached_sha
+
 
 class TestEnsureCloneOffline:
     def test_existing_clone_runs_baked_snapshot_without_fetching(self, tmp_path: Path) -> None:
