@@ -14,6 +14,7 @@ from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.report import ScenarioResult
 from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 from teatree.eval.surface import is_advisory
+from teatree.llm.anthropic_limits import CreditExhaustedError
 
 
 class UsageLimitAfterFailureError(UsageLimitReachedError):
@@ -32,7 +33,7 @@ def run_trials_with_limit_evidence(
 
     try:
         return run_pass_at_k(spec, tracked, k=k, require=require)
-    except UsageLimitReachedError as exc:
+    except (UsageLimitReachedError, CreditExhaustedError) as exc:
         if require == "all" and any(result.measured_failure for result in observed):
             raise UsageLimitAfterFailureError from exc
         raise
@@ -90,9 +91,11 @@ def run_pass_at_k_results(
             results.append(
                 _run_scenario_with_progress(spec, trial, trials=trials, require=require, position=(index, len(specs)))
             )
-        except UsageLimitReachedError as exc:
+        except (UsageLimitReachedError, CreditExhaustedError) as exc:
             failed = (isinstance(exc, UsageLimitAfterFailureError) and not is_advisory(spec)) or any(
                 result.verdict == "fail" and not is_advisory(specs[position]) for position, result in enumerate(results)
             )
+            if isinstance(exc, CreditExhaustedError) and not failed:
+                raise
             exit_on_usage_limit_or_prior_red(summary_md=summary_md, failed_before_limit=failed)
     return results

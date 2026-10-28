@@ -1,7 +1,11 @@
 """Every read-only phase's real system context fits the executor budget with production-sized skills."""
 
+import sys
 from dataclasses import fields
+from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.agents.context_budget import MAX_APPEND_BYTES
@@ -19,7 +23,10 @@ from teatree.agents.read_only_venue_brief import (
     fit_read_only_context,
     read_only_system_context,
 )
+from tests._budget_report import skill_report
 from tests.teatree_agents._read_only_review_world import STAND_IN_BYTES, read_only_context, read_only_review_world
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _HEADROOM_BYTES = 4096
 _CODEX_WINDOW_TOKENS = 258_400
@@ -51,18 +58,30 @@ class TestReadOnlyPhaseBudget(TestCase):
         worst_bytes = MAX_APPEND_BYTES + sum(caps.values()) + 8 * 1024 + 40
         assert 5 * worst_bytes <= 4 * _CODEX_WINDOW_TOKENS * _MEASURED_BYTES_PER_TOKEN
 
+    def test_an_overrun_names_the_skill_sections_and_what_this_branch_changed(self) -> None:
+        with (
+            patch.object(sys.modules[__name__], "_HEADROOM_BYTES", MAX_APPEND_BYTES),
+            pytest.raises(AssertionError, match=r"largest skill sections: .*Skill bytes changed on this branch"),
+        ):
+            self.test_every_read_only_phase_keeps_headroom_and_required_guidance()
+
     def test_every_read_only_phase_keeps_headroom_and_required_guidance(self) -> None:
         sizes: dict[str, int] = {}
+        contexts: dict[str, str] = {}
         with read_only_review_world():
             for phase, reviewer, lifecycle in _PHASES:
                 fitted, continued = fit_read_only_context(read_only_context(phase, reviewer=reviewer))
                 context = read_only_system_context(fitted)
                 label = f"{phase}:{'reviewer' if reviewer else 'author'}"
                 sizes[label] = len(context.encode())
+                contexts[label] = context
                 assert context.startswith("\n".join(READ_ONLY_DIRECTIVE)), label
                 assert "--- RULES.md ---" in context, label
                 assert lifecycle in context + continued, label
                 assert "summary" in context, label
                 if phase == "planning":
                     assert all("x" * size in context for size in STAND_IN_BYTES.values() if size > 10_000), label
-        assert all(size <= MAX_APPEND_BYTES - _HEADROOM_BYTES for size in sizes.values()), sizes
+        over = {label: size for label, size in sizes.items() if size > MAX_APPEND_BYTES - _HEADROOM_BYTES}
+        assert not over, (
+            f"read-only contexts over the append budget: {over}. {skill_report(contexts[next(iter(over))], _REPO_ROOT)}"
+        )

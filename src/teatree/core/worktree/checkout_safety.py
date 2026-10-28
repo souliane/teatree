@@ -18,7 +18,7 @@ from teatree.core.forge_push_refs import head_is_detached, operation_in_progress
 from teatree.core.models import Task, Worktree
 from teatree.core.models.checkout_custody import Custody
 from teatree.core.models.worktree_occupancy import occupancy_holder, task_holder_id
-from teatree.core.worktree.checkout_recovery import checkout_state_unchanged, interrupted_writer
+from teatree.core.worktree.checkout_recovery import checkout_state_unchanged, interrupted_writer, released_hand_off
 from teatree.core.worktree.checkout_released import owned_github_pr_url
 from teatree.utils import git
 
@@ -100,7 +100,7 @@ def _preserve_unpushed(
         return _Preservation(0, "")
     if not trusted_attestation:
         custody = Custody.from_extra(worktree.get_extra())
-        if custody is None or interrupted_writer(task, custody) is None:
+        if custody is None or (interrupted_writer(task, custody) is None and not released_hand_off(task, custody)):
             return _Preservation(0, "", requires_pr=True)
     record = capture_unshipped_work(path, branch=state.branch, overlay=task.ticket.overlay)
     if (

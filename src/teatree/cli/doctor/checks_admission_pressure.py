@@ -107,10 +107,7 @@ def _check_box_occupancy() -> bool:
     machine, not a fault in the factory, and reddening the run on it would train the
     operator to ignore a red run. Crash-proof: any error degrades to OK.
     """
-    from teatree.core.admission_governor import (  # noqa: PLC0415 — deferred: keeps CLI startup light
-        BRAKE_LOAD_PER_CORE,
-        read_machine_signal,
-    )
+    from teatree.core.admission_governor import read_machine_signal  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.core.models import Task  # noqa: PLC0415 — ORM import needs the app registry
 
     try:
@@ -120,7 +117,7 @@ def _check_box_occupancy() -> bool:
         typer.echo(f"WARN  Box-occupancy check crashed: {exc.__class__.__name__}: {exc}")
         return True
     cores = machine.load_scope_cores
-    watermark = BRAKE_LOAD_PER_CORE * cores
+    watermark = machine.load_brake_per_core * cores
     reading = (
         f"factory agents in flight: {agents}; box load {machine.load1:.1f} on {cores} core(s) "
         f"({machine.load1 / cores:.1f} per core, brake watermark {watermark:.0f}){_pressure_reading(machine)}"

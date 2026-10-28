@@ -10,10 +10,12 @@ canonical path so the checkout's location cannot move it either.
 
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.agents import prompt
@@ -28,12 +30,14 @@ from teatree.core.models import Session, Task, Ticket
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
+from tests._budget_report import skill_report
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SKILLS_DIR = _REPO_ROOT / "skills"
 
 #: Room left for what a real dispatch adds on top (PR context, parent summary, survey).
 _HEADROOM_BYTES = 4096
+_MIN_SPARE_BYTES = 2048
 
 #: Stands in for the checkout's skills dir, so a long worktree path and CI's `/app` get one verdict.
 _CANONICAL_SKILLS_DIR = "/opt/teatree/skills"
@@ -84,9 +88,19 @@ class TestEveryPhaseFitsTheBudget(TestCase):
             for phase in sorted(KNOWN_PHASES):
                 context = _rendered_context(_dispatch_task(phase))
                 size = _measured_bytes(context, _SKILLS_DIR)
-                if "…truncated" in context or size > ceiling:
-                    over.append(f"{phase}: {size} B (ceiling {ceiling} B, truncated={'…truncated' in context})")
+                if "…truncated" in context or size > ceiling - _MIN_SPARE_BYTES:
+                    over.append(
+                        f"{phase}: {size} B (headroom ceiling {ceiling - _MIN_SPARE_BYTES} B, "
+                        f"truncated={'…truncated' in context}). {skill_report(context, _REPO_ROOT)}"
+                    )
         assert not over, "phase contexts over the append budget:\n" + "\n".join(over)
+
+    def test_an_overrun_names_the_skill_sections_and_what_this_branch_changed(self) -> None:
+        with (
+            patch.object(sys.modules[__name__], "_HEADROOM_BYTES", MAX_APPEND_BYTES),
+            pytest.raises(AssertionError, match=r"largest skill sections: .*Skill bytes changed on this branch"),
+        ):
+            self.test_no_phase_context_is_truncated_or_over_the_headroom()
 
     def test_the_review_run_fits_with_its_full_generic_companion_embedded(self) -> None:
         ceiling = MAX_APPEND_BYTES - _HEADROOM_BYTES

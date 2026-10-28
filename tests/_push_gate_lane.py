@@ -33,12 +33,15 @@ def append(log, line):
 append("UV_STUB_ENVS", os.environ.get("UV_PROJECT_ENVIRONMENT", {NO_REDIRECT!r}))
 append("UV_STUB_DJANGO_SETTINGS", os.environ.get("DJANGO_SETTINGS_MODULE", {NO_REDIRECT!r}))
 stage = len(open(os.environ["UV_STUB_ENVS"], encoding="utf-8").read().splitlines())
-with open(os.environ["T3_PUSH_GATE_LOCK_PATH"], "a", encoding="utf-8") as probe:
-    try:
-        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        lock = "free"
-    except BlockingIOError:
-        lock = "held"
+try:
+    with open(os.environ["T3_PUSH_GATE_LOCK_PATH"], "a", encoding="utf-8") as probe:
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock = "free"
+        except BlockingIOError:
+            lock = "held"
+except OSError:
+    lock = "unavailable"
 started = time.time()
 time.sleep(float(os.environ.get("UV_STUB_STAGE_SLEEP", "0")))
 append("UV_STUB_STAGES", f"{{stage}} {{lock}} {{started}} {{time.time()}}")
