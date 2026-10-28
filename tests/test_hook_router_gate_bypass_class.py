@@ -134,7 +134,7 @@ class TestF1DoubleSpaceBypass:
     def test_f1b_double_space_glab_mr_create_triggers_mr_validation(self, monkeypatch, capsys):
         """Glab  mr  create (double space) must be caught by validate-MR gate."""
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         data = {
             "tool_name": "Bash",
@@ -149,7 +149,7 @@ class TestF1DoubleSpaceBypass:
     def test_f1b_double_space_glab_mr_update_triggers_mr_validation(self, monkeypatch, capsys):
         """Glab  mr  update (double space) must be caught by validate-MR gate."""
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Bad title")
         data = {
             "tool_name": "Bash",
@@ -180,7 +180,7 @@ class TestF1DoubleSpaceBypass:
     def test_f1b_single_space_glab_mr_create_still_caught(self, monkeypatch):
         """Existing single-space form must not regress."""
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         data = {
             "tool_name": "Bash",
