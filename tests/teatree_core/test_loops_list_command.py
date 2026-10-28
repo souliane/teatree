@@ -372,3 +372,56 @@ class TestLoopsListSurfacesAWithheldAnchor(django.test.TestCase):
         payload = json.loads(_run("--json"))
         audit = next(entry for entry in payload["loops"] if entry["name"] == "audit")
         assert audit["last_attempt_at"] == attempted.isoformat()
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListCost(django.test.TestCase):
+    """Each loop's measured idle tick cost, and the ranking by the share of one core it takes (#4999)."""
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        self._loop("cold", delay_seconds=600)
+        self._loop("hot", delay_seconds=60, idle_cpu_seconds=6.0, busy_cpu_seconds=18.0)
+        self._loop("warm", delay_seconds=300, idle_cpu_seconds=6.0)
+
+    @staticmethod
+    def _loop(name: str, **fields: object) -> None:
+        Loop.objects.create(name=name, prompt=_prompt(), enabled=True, **fields)
+
+    def _line(self, name: str) -> str:
+        return next(ln for ln in _run().splitlines() if ln.strip().startswith(name))
+
+    def test_a_measured_loop_renders_its_idle_cost_and_core_share(self) -> None:
+        assert "idle 6.0s/tick = 10.0% core" in self._line("hot")
+
+    def test_an_unmeasured_loop_renders_no_cost(self) -> None:
+        assert "idle" not in self._line("cold")
+
+    def test_json_carries_the_cost_fields(self) -> None:
+        hot = next(entry for entry in json.loads(_run("--json"))["loops"] if entry["name"] == "hot")
+        assert (hot["idle_cpu_seconds"], hot["busy_cpu_seconds"], hot["idle_core_share"]) == pytest.approx(
+            (6.0, 18.0, 0.1)
+        )
+
+    def test_json_nulls_the_cost_of_an_unmeasured_loop(self) -> None:
+        cold = next(entry for entry in json.loads(_run("--json"))["loops"] if entry["name"] == "cold")
+        assert (cold["idle_cpu_seconds"], cold["busy_cpu_seconds"], cold["idle_core_share"]) == (None, None, None)
+
+    def test_by_cost_ranks_by_core_share_with_unmeasured_loops_last(self) -> None:
+        names = [entry["name"] for entry in json.loads(_run("--json", "--by-cost"))["loops"]]
+        assert names == ["hot", "warm", "cold"]
+
+    def test_the_default_order_is_by_name(self) -> None:
+        names = [entry["name"] for entry in json.loads(_run("--json"))["loops"]]
+        assert names == ["cold", "hot", "warm"]
+
+    def test_the_footer_sums_the_idle_share_of_the_loops_that_run(self) -> None:
+        assert _run().splitlines()[-1] == "idle total: 12.0% of one core"
+
+    def test_the_footer_leaves_out_a_loop_that_is_off(self) -> None:
+        Loop.objects.filter(name="hot").update(enabled=False)
+        assert _run().splitlines()[-1] == "idle total: 2.0% of one core"
+
+    def test_no_footer_without_any_measurement(self) -> None:
+        Loop.objects.update(idle_cpu_seconds=None)
+        assert "idle total" not in _run()
