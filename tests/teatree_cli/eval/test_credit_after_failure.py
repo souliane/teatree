@@ -83,13 +83,16 @@ class TestPassAtKLane:
 
         assert exit_info.value.exit_code == 1
 
-    def test_a_dead_key_with_nothing_measured_before_it_parks(self) -> None:
+    def test_a_dead_key_with_nothing_measured_before_it_parks_naming_the_credit_cause(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         trial = _trial(_Script(_dead_key))
 
         with pytest.raises(typer.Exit) as exit_info, park_credit_exhaustion():
             run_pass_at_k_results([_spec("alpha")], trial, trials=1, require="all", summary_md=None)
 
         assert exit_info.value.exit_code == MEASURED_NOTHING_EXIT_CODE
+        assert "ABORTED: credits exhausted" in capsys.readouterr().err
 
 
 class TestMatrixLane:
