@@ -2,6 +2,7 @@
 
 from teatree.agents.envelope_refusal import (
     corrective_instruction,
+    is_comment_check_refusal,
     is_no_envelope_refusal,
     is_owner_stop_refusal,
     is_recorder_refusal,
@@ -39,6 +40,8 @@ def corrective_note(task: Task, error: str) -> str | None:
     note: str | None = None
     if phase == "reviewing" and error.startswith(VENUE_LIMIT_PREFIX):
         note = "Retry this review on another venue; the previous venue could not complete it."
+    elif phase == "reviewing" and is_comment_check_refusal(error):
+        note = f"Revise the refused review comment once, validate it against the current diff, and retry: {error}"
     elif phase == "reviewing" and (head := wrong_head_retry_head(error)):
         note = (
             f"Retry the review once at the live pull request head {head}. "

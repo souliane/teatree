@@ -12,6 +12,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.factory.stuck_ticket_halt import record_ticket_halt
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import (
     ImplementedIssueMarker,
@@ -26,12 +27,12 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.intake_idle_hold import idle_hold_reason
 from teatree.loop.scanner_factories import _issue_intake_scanner_for
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
-from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
 from tests.factories import PullRequestFactory
 from tests.teatree_loop._fleet_claim_stub import FleetClaimStub
 from tests.teatree_loop.test_issue_intake_wiring import _PATCH_TARGET, _authored_host, _backend_with_host, _enabled
 
 ISSUE = "https://github.com/souliane/teatree/issues/100"
+STUCK_HALT_MARKER = "stuck-redispatch-halt:{pk}"
 _HOLDER_NUMBERS = itertools.count(900)
 
 
@@ -135,6 +136,11 @@ class ManyLivePullRequestsAllowIntakeTests(_IdleHoldCase):
 
 
 class NoHoldTests(_IdleHoldCase):
+    def test_a_ticket_with_a_current_health_halt_does_not_hold(self) -> None:
+        holder = _holder(idle_hours=7)
+        record_ticket_halt(holder, reason="budget spent")
+        assert self._claimed() == [ISSUE]
+
     def test_an_hour_of_idleness_leaves_claiming_unchanged(self) -> None:
         _holder(idle_hours=1)
         assert self._claimed() == [ISSUE]

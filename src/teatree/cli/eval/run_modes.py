@@ -9,7 +9,8 @@ the typer surface and the runner loop.
 """
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,7 @@ from teatree.eval.skip_guard import (
     graded_nothing,
 )
 from teatree.eval.surface import is_advisory
+from teatree.llm.anthropic_limits import CreditExhaustedError
 
 if TYPE_CHECKING:
     from teatree.core.models import EvalRunRecord
@@ -46,6 +48,15 @@ if TYPE_CHECKING:
 #: an explicit cell flag — which is why :func:`_unmeasured_scenarios` dispatches on type
 #: rather than every lane spelling the extraction itself.
 GuardedResult = ScenarioResult | PassAtKResult | MatrixRow
+
+
+@contextmanager
+def park_credit_exhaustion() -> Generator[None]:
+    try:
+        yield
+    except CreditExhaustedError as exc:
+        typer.echo(f"ABORTED: {exc}", err=True)
+        raise typer.Exit(code=MEASURED_NOTHING_EXIT_CODE) from exc
 
 
 def _unmeasured_scenarios(results: Sequence[GuardedResult]) -> list[str]:

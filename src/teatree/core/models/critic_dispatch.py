@@ -158,6 +158,24 @@ class CriticDispatch(models.Model):
             )
         )
 
+    @classmethod
+    def spend_reopen(cls, task: "Task") -> bool:
+        """Compare-and-set one more attempt onto the claim *task* serves while it has budget. True iff spent.
+
+        The fresh deadline keeps :meth:`saturated` false while the reopened task runs.
+        """
+        return bool(
+            cls.objects.filter(
+                task=task,
+                task__status=Task.Status.FAILED,
+                state=cls.State.DISPATCHED,
+                attempts__lt=MAX_DISPATCH_ATTEMPTS,
+            ).update(
+                deadline=timezone.now() + DEFAULT_DISPATCH_TTL,
+                attempts=models.F("attempts") + 1,
+            )
+        )
+
     @staticmethod
     def _critic_is_active(row: "CriticDispatch") -> bool:
         return Task.objects.filter(pk=row.task_id, status__in=Task.Status.active()).exists()

@@ -56,22 +56,8 @@ fi
 start_push_gate_record
 trap 'finish_push_gate_record "$?"' EXIT
 
-# Serialise the machine-wide memory-heavy sweep before measuring its worker budget.
 . dev/lib/gate-lock.sh
-gate_lock_rc=0
-acquire_push_gate_lock || gate_lock_rc=$?
-record_push_gate_lock
-if [ "$gate_lock_rc" -ne 0 ]; then
-    exit "$gate_lock_rc"
-fi
-
-# `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
-# change — so a memory-capped container spawns host-many workers and dies as an opaque
-# xdist crash. Bound the pool from available cgroup memory instead (an explicit
-# PYTEST_XDIST_AUTO_NUM_WORKERS is a ceiling; an uncapped box is left alone).
-. dev/lib/xdist-workers.sh
-bound_xdist_workers_to_memory
-record_push_gate_bound
+select_push_gate_lock_path
 
 # A bare `uv run` from a workspace MEMBER syncs the ROOT's shared `.venv`, reconciling it
 # to the member's dependency set while this gate is importing from it — so the run dies
@@ -126,5 +112,21 @@ elif [ "$conformance_rc" -ne 0 ]; then
 fi
 
 echo "=== [3/3] incremental push gate: scoped doctest + ast-grep (FULL on uncertainty) ==="
+# Serial checks can run while another push holds the incremental-sweep lock.
+gate_lock_rc=0
+acquire_push_gate_lock || gate_lock_rc=$?
+record_push_gate_lock
+if [ "$gate_lock_rc" -ne 0 ]; then
+    exit "$gate_lock_rc"
+fi
+
+# `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
+# change — so a memory-capped container spawns host-many workers and dies as an opaque
+# xdist crash. Bound the pool from available cgroup memory instead (an explicit
+# PYTEST_XDIST_AUTO_NUM_WORKERS is a ceiling; an uncapped box is left alone).
+. dev/lib/xdist-workers.sh
+bound_xdist_workers_to_memory
+record_push_gate_bound
+
 record_push_gate_stage 3
 "${UV_PROJECT_RUN[@]}" run t3 tool push-gate --run 9>&-

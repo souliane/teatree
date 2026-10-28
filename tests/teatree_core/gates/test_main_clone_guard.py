@@ -50,6 +50,10 @@ class TestBlockedMutations:
             "git checkout main -- src/app.py",
             "cd subdir && git checkout feature",
             "git -C /some/clone checkout feature",
+            "gh pr checkout 42",
+            "gh --repo owner/repo pr checkout 42",
+            "glab mr checkout 42",
+            "cd subdir && glab mr checkout 42",
         ],
     )
     def test_working_tree_mutation_is_blocked(self, command: str) -> None:
@@ -89,6 +93,8 @@ class TestAllowedOperations:
             "git checkout",
             # git invocation with only a global option and no subcommand.
             "git -C /some/clone",
+            "gh pr list",
+            "glab mr view 42",
             "git --no-pager",
             # not a git command at all.
             "ls -la",

@@ -29,7 +29,6 @@ architectural_review_cadence_hours
 architectural_review_skill
 artifact_idle_days
 ask_before_backlog_sweep_closes
-ask_before_creating_news_tickets
 auto_update_require_green_main
 autoload
 autonomy
@@ -199,4 +198,8 @@ worktree_containment_gate_enabled
 write_wip
 issue_intake_idle_hold_hours
 RETIRED agent_compaction_keep_recent
+RETIRED ask_before_creating_news_tickets
 self_improve_owner_wait_minutes
+admission_load_brake_per_core
+admission_load_resume_per_core
+forge_pool_max_connections

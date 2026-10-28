@@ -634,6 +634,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.backends.forge_pool"
+layer = "domain"
+depends_on = ["teatree.utils"]
+
+[[modules]]
 path = "teatree.backends.types"
 layer = "domain"
 depends_on = []
@@ -673,6 +678,7 @@ depends_on = [
   "teatree.backends.errors",
   "teatree.backends.types",
   "teatree.backends.http_retry",
+  "teatree.backends.forge_pool",
   "teatree.backends.forge_merge_rpc",
   "teatree.backends.slack"
 ]
@@ -680,7 +686,7 @@ depends_on = [
 [[modules]]
 path = "teatree.backends.github.api"
 layer = "domain"
-depends_on = []
+depends_on = ["teatree.backends.forge_pool"]
 
 [[modules]]
 path = "teatree.backends.github.reads"

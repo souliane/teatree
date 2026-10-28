@@ -13,6 +13,7 @@ from teatree.core.management.commands.pr import _assert_commits_ahead_of_base, _
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay import OverlayRuntime
 from teatree.types import RunCommand
+from tests._git_repo import make_git_repo, run_git
 
 from ._shared import _MOCK_OVERLAY
 
@@ -473,6 +474,24 @@ class TestRunVisualQAGate(TestCase):
         ticket, worktree = self._ticket_and_worktree()
 
         assert self._repo_given_to_changed_files(ticket, worktree) == "/tmp/wt"
+
+    def test_records_checkout_head_and_path_in_visual_qa_summary(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5537")
+        with tempfile.TemporaryDirectory() as checkout:
+            repo = make_git_repo(Path(checkout))
+            head = run_git(repo, "rev-parse", "HEAD")
+            worktree = Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="souliane/teatree",
+                branch="feat-slug",
+                extra={"worktree_path": checkout},
+            )
+
+            assert self._repo_given_to_changed_files(ticket, worktree) == checkout
+            ticket.refresh_from_db()
+            assert ticket.extra["visual_qa"]["head_sha"] == head
+            assert ticket.extra["visual_qa"]["repo_path"] == str(Path(checkout).resolve())
 
     def test_skip_reason_propagates(self) -> None:
         ticket, worktree = self._ticket_and_worktree()

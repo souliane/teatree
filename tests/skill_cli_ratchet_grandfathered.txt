@@ -54,11 +54,9 @@ skills/platforms/references/gitlab.md::glab mr update
 skills/platforms/references/gitlab.md::glab mr view
 skills/platforms/references/gitlab.md::glab prints first
 skills/platforms/references/slack.md::t3 review-request check
-skills/review/SKILL.md::gh issue view
 skills/review/SKILL.md::gh pr diff
 skills/review/SKILL.md::gh pr list
 skills/review/SKILL.md::gh pr view
-skills/review/SKILL.md::glab issue view
 skills/review/SKILL.md::glab mr diff
 skills/review/SKILL.md::glab mr list
 skills/review/SKILL.md::glab mr view
@@ -87,7 +85,6 @@ skills/rules/references/sub-agents.md::glab ci status
 skills/rules/references/verification.md::gh pr view
 skills/rules/references/verification.md::glab mr view
 skills/rules/references/worked-dispatch-examples.md::gh pr create
-skills/scanning-news/SKILL.md::gh issue list
 skills/setup/SKILL.md::gh auth status
 skills/setup/SKILL.md::glab auth status
 skills/setup/SKILL.md::t3 config_setting set

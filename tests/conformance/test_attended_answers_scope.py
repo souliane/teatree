@@ -58,6 +58,11 @@ def test_factory_checkout_route_is_pegged() -> None:
     _assert_prose_peg("Unsafe checkout state stays parked for an internal retry", "skills/workspace/SKILL.md")
 
 
+def test_attended_checkout_teaches_custody_proven_factory_recovery() -> None:
+    windows = _assert_prose_peg("Factory retries may re-attest interrupted writer files", "skills/interactive/SKILL.md")
+    assert any("this does not attest hand edits" in window for window in windows)
+
+
 @pytest.mark.parametrize(
     "limit",
     [

@@ -32,8 +32,11 @@ from hooks.scripts.resume_admission import (
 from hooks.scripts.state_files import read_lines
 from teatree.core import admission_governor
 from teatree.core.admission_governor import MachineSignal
+from teatree.core.admission_pressure import BRAKE_LOAD_PER_CORE
 
 _SESSION = "s-4108"
+# Half the hard watermark of an 8-core box: the same pressure the pin used when that watermark was 40.
+_HALF_THE_WATERMARK_LOAD = 0.5 * 8 * BRAKE_LOAD_PER_CORE
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +98,7 @@ class TestRestoredFleetCount:
 
 class TestResumeAdvisory:
     def test_an_over_ceiling_resume_names_the_count_and_the_ceiling(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _on_box(monkeypatch, _machine(cores=8, load1=20.0))
+        _on_box(monkeypatch, _machine(cores=8, load1=_HALF_THE_WATERMARK_LOAD))
         _fleet(12)
         advisory = resume_admission_advisory(_SESSION, "resume")
         assert "12" in advisory
@@ -124,7 +127,7 @@ class TestResumeAdvisory:
 
     def test_terminated_agents_do_not_warn_on_history(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The append-only dispatch ledger outlives the agents; only the live set restores."""
-        _on_box(monkeypatch, _machine(cores=8, load1=20.0))
+        _on_box(monkeypatch, _machine(cores=8, load1=_HALF_THE_WATERMARK_LOAD))
         _fleet(12)
         for i in range(10):
             handle_subagent_stop_track_agent({"session_id": _SESSION, "agent_id": f"a{i:04d}"})

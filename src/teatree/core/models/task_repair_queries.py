@@ -18,6 +18,7 @@ from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
     from teatree.core.models.task_attempt import TaskAttempt, TaskAttemptQuerySet
+    from teatree.core.models.ticket import Ticket
 
 
 _AUDIT_PREFIXES = (CANCELLED_PREFIX, SUPERSEDED_PREFIX, PLAN_STALE_PREFIX, LEASE_EXPIRED_PREFIX)
@@ -46,10 +47,17 @@ def repair_iterations(attempts: "TaskAttemptQuerySet") -> list["TaskAttempt"]:
 
 
 def _ticket_phase_attempts(ticket_id: int, phase: str) -> "TaskAttemptQuerySet":
-    return _attempt_model().objects.filter(
+    attempts = _attempt_model().objects.filter(
         task__ticket_id=ticket_id,
         task__phase__in=phase_spellings(normalize_phase(phase)),
     )
+    if normalize_phase(phase) in {"reviewing", "codex_reviewing"}:
+        ticket = cast(
+            "Ticket | None", apps.get_model("core", "Ticket").objects.only("role", "extra").filter(pk=ticket_id).first()
+        )
+        if ticket is not None and ticket.role == "reviewer":
+            attempts = attempts.filter(pk__gt=int((ticket.extra or {}).get("review_window_after_attempt") or 0))
+    return attempts
 
 
 def ticket_phase_iterations(ticket_id: int, phase: str) -> list["TaskAttempt"]:

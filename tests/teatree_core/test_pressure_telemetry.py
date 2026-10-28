@@ -133,7 +133,7 @@ class MemoryCauseTelemetryTests(TestCase):
             root = Path(directory)
             provider = TracerProvider()
             provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=root)))
-            machine = MachineSignal(cores=4, load1=13.0, ram_available_gb=5.0)
+            machine = MachineSignal(cores=4, load1=0.0, ram_available_gb=5.0)
             brake = MachineBrake(braked=True)
             with patch("teatree.core.admission_governor._shed_at", return_value=0.9):
                 decision = decide_admission(quota=UNREAD_QUOTA, machine=machine, load_brake=brake)

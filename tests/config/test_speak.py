@@ -1,7 +1,7 @@
 # test-path: cross-cutting
 """``LocalPlayback`` / ``SpeakConfig`` parsing + DB-home ``speak`` resolution (#2060).
 
-The schema: a ``speak`` config with a ``local`` enum (``off`` / ``dm`` / ``all``)
+The schema: a ``speak`` config with a ``local`` enum (``off`` / ``dm``)
 and a ``slack`` bool, fully independent. ``speak`` is DB-home (legacy file tier
 removed) — it resolves from a JSON-dict ``ConfigSetting`` row (rebuilt bespoke via
 ``speak_from_subtable``). Covers: defaults when absent, parse, partial keys, a clean
@@ -21,10 +21,10 @@ class TestLocalPlaybackEnum:
     def test_parse_each_value(self) -> None:
         assert LocalPlayback.parse("off") is LocalPlayback.OFF
         assert LocalPlayback.parse("dm") is LocalPlayback.DM
-        assert LocalPlayback.parse("all") is LocalPlayback.ALL
+        assert LocalPlayback.parse("all") is LocalPlayback.DM
 
     def test_parse_is_case_and_whitespace_insensitive(self) -> None:
-        assert LocalPlayback.parse("  ALL ") is LocalPlayback.ALL
+        assert LocalPlayback.parse("  ALL ") is LocalPlayback.DM
 
     def test_parse_rejects_typo(self) -> None:
         with pytest.raises(ValueError, match="Invalid speak local"):
@@ -39,29 +39,20 @@ class TestSpeakConfigHelpers:
         cfg = SpeakConfig()
         assert cfg.enabled() is False
         assert cfg.speaks_dms() is False
-        assert cfg.speaks_in_client_turns() is False
 
     def test_enabled_when_local_on_or_slack_on(self) -> None:
         assert SpeakConfig(local=LocalPlayback.DM).enabled() is True
-        assert SpeakConfig(local=LocalPlayback.ALL).enabled() is True
         assert SpeakConfig(slack=True).enabled() is True
         assert SpeakConfig(local=LocalPlayback.OFF, slack=False).enabled() is False
 
-    def test_speaks_dms_when_local_dm_or_all(self) -> None:
+    def test_speaks_dms_when_local_dm(self) -> None:
         assert SpeakConfig(local=LocalPlayback.DM).speaks_dms() is True
-        assert SpeakConfig(local=LocalPlayback.ALL).speaks_dms() is True
         assert SpeakConfig(local=LocalPlayback.OFF).speaks_dms() is False
         # slack never enables local play
         assert SpeakConfig(local=LocalPlayback.OFF, slack=True).speaks_dms() is False
 
-    def test_speaks_in_client_turns_only_when_local_all_regardless_of_slack(self) -> None:
-        assert SpeakConfig(local=LocalPlayback.ALL).speaks_in_client_turns() is True
-        assert SpeakConfig(local=LocalPlayback.ALL, slack=True).speaks_in_client_turns() is True
-        assert SpeakConfig(local=LocalPlayback.DM).speaks_in_client_turns() is False
-        assert SpeakConfig(local=LocalPlayback.OFF).speaks_in_client_turns() is False
-
     def test_to_dict_has_local_string_and_slack_bool(self) -> None:
-        assert SpeakConfig(local=LocalPlayback.ALL, slack=True).to_dict() == {"local": "all", "slack": True}
+        assert SpeakConfig(local=LocalPlayback.DM, slack=True).to_dict() == {"local": "dm", "slack": True}
         assert SpeakConfig().to_dict() == {"local": "off", "slack": False}
 
 
@@ -76,7 +67,7 @@ class TestPresenceFields:
     def test_to_dict_omits_empty_presence_fields(self) -> None:
         # A speak config that opts OUT of meeting-mute must serialize byte-identically
         # to the pre-#2171 shape, so no stored config is disturbed.
-        assert SpeakConfig(local=LocalPlayback.ALL, slack=True).to_dict() == {"local": "all", "slack": True}
+        assert SpeakConfig(local=LocalPlayback.DM, slack=True).to_dict() == {"local": "dm", "slack": True}
 
     def test_to_dict_includes_set_presence_fields(self) -> None:
         cfg = SpeakConfig(presence_backend="msteams", presence_token_ref="ms/tok")
@@ -89,7 +80,7 @@ class TestPresenceFields:
 
     def test_resolve_speak_reads_presence_fields(self) -> None:
         cfg = resolve_speak({"speak": {"local": "all", "presence_backend": "msteams", "presence_token_ref": "ms/tok"}})
-        assert cfg == SpeakConfig(local=LocalPlayback.ALL, presence_backend="msteams", presence_token_ref="ms/tok")
+        assert cfg == SpeakConfig(local=LocalPlayback.DM, presence_backend="msteams", presence_token_ref="ms/tok")
 
     def test_parse_setting_round_trips_presence(self) -> None:
         canonical = parse_speak_setting({"local": "dm", "presence_backend": "msteams"})
@@ -113,7 +104,19 @@ class TestSpeakDbResolution(TestCase):
 
     def test_row_parsed(self) -> None:
         ConfigSetting.objects.set_value("speak", value={"local": "all", "slack": True})
-        assert get_effective_settings().speak == SpeakConfig(local=LocalPlayback.ALL, slack=True)
+        assert get_effective_settings().speak == SpeakConfig(local=LocalPlayback.DM, slack=True)
+
+    def test_legacy_all_preserves_presence_and_overlay_inheritance(self) -> None:
+        ConfigSetting.objects.set_value(
+            "speak",
+            value={"local": "all", "presence_backend": "msteams", "presence_token_ref": "ms/tok"},
+        )
+        ConfigSetting.objects.set_value("speak", value={"slack": True}, scope="my-overlay")
+        config = get_effective_settings("my-overlay").speak
+        assert config == SpeakConfig(
+            local=LocalPlayback.DM, slack=True, presence_backend="msteams", presence_token_ref="ms/tok"
+        )
+        assert config.to_dict()["local"] == "dm"
 
     def test_partial_keys_default_the_rest(self) -> None:
         ConfigSetting.objects.set_value("speak", value={"slack": True})
@@ -165,7 +168,7 @@ class TestResolveSpeakDirect:
 
     def test_sub_table_function_level(self) -> None:
         assert resolve_speak({"speak": {"local": "all", "slack": True}}) == SpeakConfig(
-            local=LocalPlayback.ALL, slack=True
+            local=LocalPlayback.DM, slack=True
         )
 
 
@@ -185,10 +188,10 @@ class TestPerOverlaySpeakMerge(TestCase):
         # Global sets local=all; the overlay row sets only slack → local is inherited.
         ConfigSetting.objects.set_value("speak", value={"local": "all"})
         ConfigSetting.objects.set_value("speak", value={"slack": True}, scope="my-overlay")
-        assert get_effective_settings("my-overlay").speak == SpeakConfig(local=LocalPlayback.ALL, slack=True)
+        assert get_effective_settings("my-overlay").speak == SpeakConfig(local=LocalPlayback.DM, slack=True)
 
     def test_overlay_row_overrides_local(self) -> None:
         # Global sets slack=true; the overlay row sets local=all → slack inherited, local overridden.
         ConfigSetting.objects.set_value("speak", value={"slack": True})
         ConfigSetting.objects.set_value("speak", value={"local": "all"}, scope="my-overlay")
-        assert get_effective_settings("my-overlay").speak == SpeakConfig(local=LocalPlayback.ALL, slack=True)
+        assert get_effective_settings("my-overlay").speak == SpeakConfig(local=LocalPlayback.DM, slack=True)

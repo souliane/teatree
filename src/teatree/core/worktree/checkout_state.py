@@ -3,6 +3,7 @@
 import hashlib
 import stat
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -78,11 +79,21 @@ def checkout_state(checkout: Path, *, ticket: "Ticket | None" = None) -> Checkou
     return CheckoutState(digest, commits_ahead, _changed_paths(status), branch)
 
 
-def _changed_paths(porcelain_z: str) -> int:
-    entries = iter(filter(None, porcelain_z.split("\0")))
-    count = 0
-    for entry in entries:
-        count += 1
+def _entry_paths(porcelain_z: str) -> list[list[str]]:
+    fields = iter(filter(None, porcelain_z.split("\0")))
+    entries = []
+    for entry in fields:
+        paths = [entry[3:]]
         if {"R", "C"} & set(entry[:2]):
-            next(entries, None)  # -z writes a rename's source path as its own field
-    return count
+            paths.extend(islice(fields, 1))  # -z writes a rename's source path as its own field
+        entries.append(paths)
+    return entries
+
+
+def _changed_paths(porcelain_z: str) -> int:
+    return len(_entry_paths(porcelain_z))
+
+
+def uncommitted_paths(checkout: Path) -> list[Path]:
+    status = run_strict_verbatim(repo=str(checkout), args=["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    return [checkout / path for paths in _entry_paths(status) for path in paths]

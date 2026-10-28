@@ -45,6 +45,8 @@ import logging
 import math
 from dataclasses import dataclass
 
+from teatree.config import get_effective_settings
+from teatree.config.settings_provisioning import ADMISSION_LOAD_FACTOR_MAX, ADMISSION_LOAD_FACTOR_MIN
 from teatree.core.admission import machine_load
 from teatree.core.admission.metered_spend import read_metered_signal
 from teatree.core.admission.write_ceiling import AdmissionCeiling, admission_ceiling
@@ -52,6 +54,7 @@ from teatree.core.admission_pressure import (
     BRAKE_LOAD_PER_CORE,
     RAM_BRAKE_FLOOR_GB,
     RAM_RESUME_FLOOR_GB,
+    RESUME_LOAD_PER_CORE,
     SHED_AT_DEFAULT,
     UNBRAKED,
     AdmissionPressure,
@@ -223,6 +226,20 @@ def _shed_at() -> float:
     return resolve_shed_at(configured)
 
 
+def _load_factors() -> tuple[float, float]:
+    try:
+        settings = get_effective_settings()
+        brake = float(settings.admission_load_brake_per_core)
+        resume = float(settings.admission_load_resume_per_core)
+    except Exception:
+        logger.exception("load watermarks unreadable — keeping shipped defaults")
+        return BRAKE_LOAD_PER_CORE, RESUME_LOAD_PER_CORE
+    if not (ADMISSION_LOAD_FACTOR_MIN <= resume < brake <= ADMISSION_LOAD_FACTOR_MAX):
+        logger.warning("invalid load watermark pair %.3g/%.3g — keeping shipped defaults", brake, resume)
+        return BRAKE_LOAD_PER_CORE, RESUME_LOAD_PER_CORE
+    return brake, resume
+
+
 def pressure_for(
     *,
     quota: QuotaSignal,
@@ -337,7 +354,9 @@ def resume_agent_ceiling(machine: MachineSignal) -> int:
     """
     base = max(1, math.floor(max(1, machine.cores) * HOST_AGENT_POPULATION_PER_CORE))
     headroom = min(
-        box_load_headroom(load1=machine.load1, cores=machine.load_scope_cores),
+        box_load_headroom(
+            load1=machine.load1, cores=machine.load_scope_cores, brake_per_core=machine.load_brake_per_core
+        ),
         ram_headroom(machine.ram_available_gb),
     )
     return max(1, math.floor(base * headroom))
@@ -446,6 +465,7 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
     platform with no load average reads ``0.0``: an unknown load is inert wherever it is
     consumed (no brake, full :func:`box_load_headroom`), never a manufactured clamp.
     """
+    brake_per_core, resume_per_core = _load_factors()
     host = host_pressure.read_host_pressure()
     if host is not None:
         memory_cap_gb = None
@@ -465,6 +485,8 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
             swap_mib_per_s=host.swap_mib_per_s,
             vm_pressure_level=host.vm_pressure_level,
             load_cores=host.cores,
+            load_brake_per_core=brake_per_core,
+            load_resume_per_core=resume_per_core,
         )
     load1, cores = machine_load.read_load_and_cores()
     # The cap rides along only on OUR OWN reading: a caller's figure has an unknown scope,
@@ -480,6 +502,8 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
         load1=load1,
         ram_available_gb=ram_available_gb,
         memory_cap_gb=memory_cap_gb,
+        load_brake_per_core=brake_per_core,
+        load_resume_per_core=resume_per_core,
     )
 
 

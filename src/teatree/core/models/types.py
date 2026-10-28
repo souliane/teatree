@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Final, TypedDict
 from teatree.core.models.checkout_custody import WorktreeCheckoutExtra
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 from teatree.core.models.repo_expansion import TicketRepoExtra
+from teatree.types import VisualQASummary
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -35,31 +36,6 @@ class SlackAnswerContext(TypedDict, total=False):
     implies_work: bool
     work_summary: str
     work_issue_url: str
-
-
-class VisualQAPageError(TypedDict):
-    kind: str
-    message: str
-
-
-class VisualQAPageDetail(TypedDict):
-    url: str
-    errors: list[VisualQAPageError]
-
-
-class VisualQASummary(TypedDict, total=False):
-    repo_path: str
-    head_sha: str
-    targets: list[str]
-    skipped_reason: str
-    not_run_reason: str
-    base_url: str
-    pages_checked: int
-    errors: int
-    details: list[VisualQAPageDetail]
-    unchecked_reasons: dict[str, str]
-    report_markdown: str
-    bypass: dict[str, str]
 
 
 class PRApprovalsSerialized(TypedDict, total=False):
@@ -188,6 +164,8 @@ class TicketExtra(TicketRepoExtra, total=False):
     mr_title_generated: str
     labels: list[str]
     reviewed_sha: str
+    review_window_after_attempt: int
+    stuck_halt: dict[str, str | int]
     review_retry_head_by_task: dict[str, str]
     review_retry_after_move: dict[str, str]
     # What the FORGE last reported. Overwritten with the live value on every scan, so a
@@ -238,6 +216,8 @@ class TicketExtra(TicketRepoExtra, total=False):
     rubric_grades_by_head: "dict[str, dict[str, dict[str, str]]]"
     rubric_grades_recorded: bool
     rubric_waivers: list[dict[str, str | int]]
+    # Owner waivers of one LLM merge-critic item, keyed by item slug; read by ``unmet_items``.
+    merge_item_waivers: dict[str, dict[str, str]]
     # #1661 per-ticket FixRecord read by ``fix_dod_gate`` at ``mark_delivered`` for
     # ``kind=fix``; written from the agent result envelope by
     # ``agents.fix_record_recorder``. ``fix_record_override`` is the audited escape

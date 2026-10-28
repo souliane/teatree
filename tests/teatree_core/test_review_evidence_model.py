@@ -1,5 +1,7 @@
 """``ReviewEvidence`` guarded factory + gate-lookup manager (PR-08 / migration M3)."""
 
+from unittest.mock import patch
+
 import pytest
 
 from teatree.core.models import Ticket
@@ -15,6 +17,45 @@ def ticket(db) -> Ticket:
 
 
 class TestRecordValidation:
+    @pytest.mark.parametrize("repos", [[], ["org/a"]])
+    def test_insufficient_repos_reject_before_overlay_lookup(self, ticket: Ticket, repos: list[str]) -> None:
+        with (
+            patch("teatree.core.overlay_loader.get_overlay_for_ticket", side_effect=RuntimeError("unavailable")),
+            pytest.raises(ReviewEvidenceError, match="≥ 2 distinct repos"),
+        ):
+            ReviewEvidence.record(
+                ticket=ticket,
+                kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
+                reviewer_identity="cold-reviewer",
+                verdict="ok",
+                head_sha=_SHA,
+                repos=repos,
+            )
+
+    def test_cold_review_does_not_read_project_path_mapping(self, ticket: Ticket) -> None:
+        with patch("teatree.core.overlay_loader.get_overlay_for_ticket", side_effect=RuntimeError("unavailable")):
+            row = ReviewEvidence.record(
+                ticket=ticket,
+                kind=ReviewEvidence.Kind.COLD_REVIEW,
+                reviewer_identity="cold-reviewer",
+                verdict="ok",
+                head_sha=_SHA,
+                repos=["teatree", "souliane/teatree"],
+            )
+        assert row.repos == ["teatree", "souliane/teatree"]
+
+    def test_integration_review_rejects_two_spellings_of_one_project(self, ticket: Ticket) -> None:
+        with pytest.raises(ReviewEvidenceError, match="≥ 2 distinct repos"):
+            ReviewEvidence.record(
+                ticket=ticket,
+                kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
+                reviewer_identity="cold-reviewer",
+                verdict="ok",
+                head_sha=_SHA,
+                repos=["teatree", "souliane/teatree"],
+            )
+        assert ReviewEvidence.objects.for_ticket(ticket).count() == 0
+
     def test_records_a_cold_review_row(self, ticket: Ticket) -> None:
         row = ReviewEvidence.record(
             ticket=ticket,
@@ -95,6 +136,30 @@ class TestRecordValidation:
 
 
 class TestManagerLookups:
+    def test_empty_coverage_needs_no_overlay_lookup(self, ticket: Ticket) -> None:
+        with patch("teatree.core.overlay_loader.get_overlay_for_ticket", side_effect=RuntimeError("unavailable")):
+            assert ReviewEvidence.objects.has_integration_review_covering(ticket, []) is True
+
+    @pytest.mark.parametrize(
+        ("recorded", "required"),
+        [
+            (["teatree", "org/b"], ["souliane/teatree", "org/b"]),
+            (["souliane/teatree", "org/b"], ["teatree", "org/b"]),
+        ],
+    )
+    def test_integration_review_covers_declared_project_both_directions(
+        self, ticket: Ticket, recorded: list[str], required: list[str]
+    ) -> None:
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
+            reviewer_identity="cold-reviewer",
+            verdict="ok",
+            head_sha=_SHA,
+            repos=recorded,
+        )
+        assert ReviewEvidence.objects.has_integration_review_covering(ticket, required) is True
+
     def test_has_cold_review_false_then_true(self, ticket: Ticket) -> None:
         assert ReviewEvidence.objects.has_cold_review(ticket) is False
         ReviewEvidence.record(

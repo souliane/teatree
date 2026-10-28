@@ -22,11 +22,10 @@ OWNER_KEPT_DECISIONS = frozenset(
         OwnerDecision.IRREVERSIBLE,
     }
 )
-HELD_PR_MARKER_PREFIX = "owner-wait:held-pr:"
 
 
-def owner_kept_decision(decision: OwnerDecision | None, dedupe_marker: str) -> bool:
-    return decision is None or decision in OWNER_KEPT_DECISIONS or dedupe_marker.startswith(HELD_PR_MARKER_PREFIX)
+def owner_kept_decision(decision: OwnerDecision | None) -> bool:
+    return decision is None or decision in OWNER_KEPT_DECISIONS
 
 
 OWNER_QUESTION_ROUTE = (
@@ -54,7 +53,6 @@ def owner_decision(value: object) -> OwnerDecision | None:
 
 
 __all__ = [
-    "HELD_PR_MARKER_PREFIX",
     "OWNER_ANSWER_ROUTE",
     "OWNER_KEPT_DECISIONS",
     "OWNER_QUESTION_ROUTE",
