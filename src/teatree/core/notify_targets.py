@@ -11,8 +11,82 @@ closes). Re-exported from ``teatree.core.notify`` so existing
 """
 
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
+from html import escape
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from teatree.config import load_config
+from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.models.operator_identity import OperatorIdentity, canonical_operator_key
+from teatree.types import RawAPIDict
+
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket
+
+
+@runtime_checkable
+class OperatorDmConfigurable(Protocol):
+    def allow_operator_dms(self, resolver: Callable[[], frozenset[str]]) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class Addressee:
+    user_id: str
+    is_owner: bool = True
+    fallback_requester: str = ""
+
+
+def addressee_for(ticket: "Ticket", *, owner_id: str | None = None) -> Addressee:
+    owner = resolve_user_id() if owner_id is None else owner_id
+    if not ticket.requested_by:
+        return Addressee(owner)
+    try:
+        key = canonical_operator_key(ticket.requested_by)
+    except ValueError:
+        return Addressee(owner)
+    platform, handle = key.split(":", 1)
+    identity = OperatorIdentity.objects.filter(
+        platform=platform, handle=handle, user__is_active=True, user__is_superuser=True
+    ).first()
+    if identity is None:
+        return Addressee(owner)
+    slack = OperatorIdentity.objects.filter(user=identity.user, platform="slack").first()
+    if slack is None:
+        return Addressee(owner, fallback_requester=key)
+    return Addressee(slack.handle, is_owner=slack.handle == owner)
+
+
+def resolve_ticket_addressee(ticket_id: int | None, *, owner_id: str) -> Addressee:
+    if ticket_id is None:
+        return Addressee(owner_id)
+    from teatree.core.models import Ticket  # noqa: PLC0415 — deferred model lookup avoids a core import cycle
+
+    ticket = Ticket.objects.filter(pk=ticket_id).first()
+    return addressee_for(ticket, owner_id=owner_id) if ticket is not None else Addressee(owner_id)
+
+
+def label_fallback(text: str, blocks: list[RawAPIDict] | None, requester: str) -> tuple[str, list[RawAPIDict] | None]:
+    if not requester:
+        return text, blocks
+    label = f"Requester: {escape(requester, quote=False)}"
+    section: RawAPIDict = {"type": "section", "text": {"type": "mrkdwn", "text": label}}
+    labeled_blocks: list[RawAPIDict] | None = [section, *blocks] if blocks is not None else None
+    return f"{label}\n{text}", labeled_blocks
+
+
+def registered_operator_slack_ids() -> frozenset[str]:
+    return frozenset(
+        OperatorIdentity.objects.filter(platform="slack", user__is_active=True, user__is_superuser=True).values_list(
+            "handle", flat=True
+        )
+    )
+
+
+def configure_operator_dm_policy(backend: MessagingBackend | None) -> MessagingBackend | None:
+    if isinstance(backend, OperatorDmConfigurable):
+        backend.allow_operator_dms(registered_operator_slack_ids)
+    return backend
 
 
 def resolve_user_id() -> str:
@@ -91,4 +165,12 @@ def _sole_overlay_field(overlays: dict, key: str) -> str:
     return str(entry.get(key, "") or "")
 
 
-__all__ = ["resolve_user_channel", "resolve_user_id"]
+__all__ = [
+    "Addressee",
+    "addressee_for",
+    "configure_operator_dm_policy",
+    "label_fallback",
+    "resolve_ticket_addressee",
+    "resolve_user_channel",
+    "resolve_user_id",
+]

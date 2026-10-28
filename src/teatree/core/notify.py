@@ -47,7 +47,13 @@ from teatree.core.notify_ledger import (
     record_outbound_claim,
     record_pulled,
 )
-from teatree.core.notify_targets import resolve_user_channel, resolve_user_id
+from teatree.core.notify_targets import (
+    Addressee,
+    label_fallback,
+    resolve_ticket_addressee,
+    resolve_user_channel,
+    resolve_user_id,
+)
 from teatree.core.notify_types import (
     DEFAULT_NOTIFY_OPTIONS,
     DELIVERED,
@@ -57,7 +63,7 @@ from teatree.core.notify_types import (
     NotifyReason,
     blocked,
 )
-from teatree.core.send_proxy import SendChannel, SendRequest, route_send
+from teatree.core.send_proxy import SendChannel, SendRequest, SendVerdict, route_send
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 from teatree.types import RawAPIDict
 
@@ -141,24 +147,22 @@ def notify_user_outcome(
 
     early = _preflight_result(
         audience, idempotency_key, kind=kind_value, text=text, requested_push=options.requested_push
-    )
+    ) or already_sent_noop(idempotency_key)
     if early is not None:
         return early
-
-    already = already_sent_noop(idempotency_key)
-    if already is not None:
-        return already
 
     resolved_backend, backend_refusal = (
         (options.backend, NotifyReason.NONE) if options.backend is not None else resolve_owner_dm_backend()
     )
-    resolved_user_id = options.user_id if options.user_id is not None else resolve_user_id()
+    addressee = resolve_ticket_addressee(
+        options.ticket_id, owner_id=options.user_id if options.user_id is not None else resolve_user_id()
+    )
 
     # Split, never conflated: the halves have different fixes, and a joint
     # message is what let a green "owner id resolves" doctor line coexist with a
     # dead transport for a full day. The backend half carries its own typed
     # refusal (none-at-all vs several-pick-one) from :func:`resolve_owner_dm_backend`.
-    if resolved_backend is None or not resolved_user_id:
+    if resolved_backend is None or not addressee.user_id:
         reason = backend_refusal if resolved_backend is None else NotifyReason.NO_USER_ID
         record_noop(
             idempotency_key=idempotency_key,
@@ -173,14 +177,14 @@ def notify_user_outcome(
     if gate is not None:
         return gate
 
-    _route_through_send_proxy(text, destination=resolved_user_id)
+    if proxy_gate := _operator_proxy_gate(text, idempotency_key, addressee):
+        return proxy_gate
 
-    payload_text = maybe_linkify(text) if options.linkify else text
-
-    outgoing_text = format_notification(payload_text, kind_value)
+    outgoing_text = format_notification(maybe_linkify(text) if options.linkify else text, kind_value)
     outgoing_blocks = options.blocks
+    outgoing_text, outgoing_blocks = label_fallback(outgoing_text, outgoing_blocks, addressee.fallback_requester)
     if audience is NotifyAudience.OWNER_QUESTION:
-        outgoing_text, outgoing_blocks = _owner_question_payload(outgoing_text, outgoing_blocks, resolved_user_id)
+        outgoing_text, outgoing_blocks = _owner_question_payload(outgoing_text, outgoing_blocks, addressee.user_id)
 
     from teatree.core.owner_dm.ticket_dm_delivery import (  # noqa: PLC0415 — deferred: load ticket routing on delivery
         TicketDmRequest,
@@ -192,7 +196,7 @@ def notify_user_outcome(
         channel, posted_ts, failure = deliver_ticket_dm(
             TicketDmRequest(
                 backend=resolved_backend,
-                user_id=resolved_user_id,
+                user_id=addressee.user_id,
                 text=outgoing_text,
                 blocks=outgoing_blocks,
                 ticket_id=options.ticket_id,
@@ -205,7 +209,7 @@ def notify_user_outcome(
     else:
         channel, posted_ts, failure = _deliver_dm(
             resolved_backend,
-            user_id=resolved_user_id,
+            user_id=addressee.user_id,
             text=outgoing_text,
             blocks=outgoing_blocks,
             thread_ts=options.thread_ts,
@@ -450,23 +454,27 @@ def _deliver_dm(
     return channel, posted_ts, ""
 
 
-def _route_through_send_proxy(text: str, *, destination: str) -> None:
-    """Audit this bot→user DM through the #117 send-proxy (self-DM, never gated).
+def _operator_proxy_gate(text: str, idempotency_key: str, addressee: Addressee) -> NotifyOutcome | None:
+    verdict = _route_through_send_proxy(text, destination=addressee.user_id, is_self_dm=addressee.is_owner)
+    if addressee.is_owner or (verdict is not None and verdict.allowed and not verdict.payload_redacted):
+        return None
+    error = verdict.reason if verdict is not None else "send-proxy unavailable"
+    if verdict is not None and verdict.payload_redacted:
+        error = "send-proxy redacted an operator DM"
+    finalize_failed(idempotency_key=idempotency_key, error=error)
+    return blocked(NotifyReason.DELIVERY_FAILED, error=error)
 
-    ``notify_user`` is the bot talking to its own operator, so the DM is a
-    self-destination (``is_self_dm=True``): the proxy records a ``SendAudit`` row
-    but never blocks it or redacts it (the never-lockout carve-out — the user
-    must see everything the bot sends them). Best-effort: the route is guarded so
-    a proxy failure can never break the notify path.
-    """
+
+def _route_through_send_proxy(text: str, *, destination: str, is_self_dm: bool) -> SendVerdict | None:
+    """Only the owner's DM receives the send-proxy self-DM carve-out."""
     try:
-        route_send(
+        return route_send(
             SendRequest(
                 channel=SendChannel.SLACK,
                 destination=destination,
                 payload=text,
                 action="notify_user",
-                is_self_dm=True,
+                is_self_dm=is_self_dm,
             ),
         )
     except Exception as exc:  # noqa: BLE001 — send-proxy audit is a side path; never break notify.

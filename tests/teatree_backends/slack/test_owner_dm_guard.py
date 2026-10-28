@@ -13,7 +13,7 @@ import pytest
 
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.backends.slack.routing import OwnerDmOnlyError, assert_owner_dm
+from teatree.backends.slack.routing import OperatorDms, OwnerDmOnlyError, assert_owner_dm
 from teatree.backends.slack.token_policy import SlackOp
 
 _OWNER_DM = "D-owner"
@@ -25,6 +25,23 @@ def _dm_only_bot() -> SlackBotBackend:
 
 
 class TestAssertOwnerDm:
+    def test_registered_operator_id_is_allowed_but_public_channel_is_not(self) -> None:
+        assert_owner_dm(
+            "U-operator",
+            owner_dm_only=True,
+            dm_channel_id=_OWNER_DM,
+            user_id=_OWNER_UID,
+            operator_dms=OperatorDms(user_ids=frozenset({"U-operator"})),
+        )
+        with pytest.raises(OwnerDmOnlyError):
+            assert_owner_dm(
+                "C-public",
+                owner_dm_only=True,
+                dm_channel_id=_OWNER_DM,
+                user_id=_OWNER_UID,
+                operator_dms=OperatorDms(user_ids=frozenset({"U-operator"})),
+            )
+
     def test_no_op_when_not_owner_restricted(self) -> None:
         # A full-profile bot never raises, whatever the destination.
         assert_owner_dm("C-any", owner_dm_only=False, dm_channel_id=_OWNER_DM, user_id=_OWNER_UID)
@@ -45,6 +62,55 @@ class TestAssertOwnerDm:
 
 
 class TestBackendFunnelGuards:
+    def test_registered_operator_dm_uses_bot_token(self) -> None:
+        bot = SlackBotBackend(
+            bot_token="xoxb-test",
+            user_token="xoxp-test",
+            user_id=_OWNER_UID,
+            dm_channel_id=_OWNER_DM,
+            owner_dm_only=True,
+        )
+        bot.allow_operator_dms(lambda: frozenset({"U-operator"}))
+
+        def response(method: str, **_kwargs: object) -> dict[str, object]:
+            return (
+                {"ok": True, "channel": {"id": "D-operator"}}
+                if method == "conversations.open"
+                else {"ok": True, "ts": "1.0"}
+            )
+
+        with patch.object(bot._http, "post", side_effect=response) as transport:
+            channel = bot.open_dm("U-operator")
+            bot.post_message(channel=channel, text="question")
+            bot.post_message(channel="U-operator", text="direct question")
+            bot.post_routed(channel="U-operator", text="follow-up")
+
+        assert channel == "D-operator"
+        assert [call.kwargs["token"] for call in transport.call_args_list] == ["xoxb-test"] * 4
+
+    def test_removed_operator_cannot_use_a_previously_opened_dm(self) -> None:
+        allowed = {"U-operator"}
+        bot = _dm_only_bot()
+        bot.allow_operator_dms(lambda: frozenset(allowed))
+        with patch.object(bot._http, "post", return_value={"ok": True, "channel": {"id": "D-operator"}}):
+            assert bot.open_dm("U-operator") == "D-operator"
+        allowed.clear()
+        with pytest.raises(OwnerDmOnlyError):
+            bot.post_message(channel="D-operator", text="refused")
+
+    def test_operator_lookup_failure_keeps_owner_dm_live_and_refuses_operator(self) -> None:
+        bot = _dm_only_bot()
+
+        def unavailable() -> frozenset[str]:
+            message = "operator database unavailable"
+            raise RuntimeError(message)
+
+        bot.allow_operator_dms(unavailable)
+        with patch.object(bot._http, "post", return_value={"ok": True, "ts": "1.0"}):
+            assert bot.post_message(channel=_OWNER_DM, text="owner message")["ok"]
+        with pytest.raises(RuntimeError, match="operator database unavailable"):
+            bot.open_dm("U-operator")
+
     def test_channel_token_refuses_non_owner(self) -> None:
         bot = _dm_only_bot()
         with pytest.raises(OwnerDmOnlyError):

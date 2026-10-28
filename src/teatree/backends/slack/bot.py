@@ -41,13 +41,22 @@ re-probed on the next call so a transient failure that recovers
 resolves correctly.
 """
 
+from collections.abc import Callable
+
 from teatree.backends.slack import egress
 from teatree.backends.slack.audio_upload import AudioDmRequest, upload_audio_dm
 from teatree.backends.slack.dm_history import read_single_message, read_thread_replies
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.inbound import SlackInbound
 from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
-from teatree.backends.slack.routing import assert_owner_call, assert_owner_dm, is_self_dm, select_routed_token
+from teatree.backends.slack.routing import (
+    DmGuard,
+    OperatorDmRegistry,
+    assert_owner_call,
+    assert_owner_dm,
+    is_self_dm,
+    select_routed_token,
+)
 from teatree.backends.slack.self_identity import OwnSlackIdentity, resolve_own_identity, strip_self_audio_attachments
 from teatree.backends.slack.token_policy import SlackOp, channel_token
 from teatree.backends.slack.token_validation import (
@@ -127,21 +136,10 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         self._app_token = app_token
         self._user_token = user_token
         self._user_id = user_id
-        # Pre-provisioned IM channel id (#1342). When a per-overlay bot is
-        # registered through ``t3 setup``, the setup-time provisioner calls
-        # ``conversations.open`` once and persists the resulting channel id
-        # in the DB ``overlays`` registry under the overlay's ``slack_dm_channel_id`` field.
-        # Threading it here short-circuits every subsequent ``open_dm(user_id)``
-        # for the configured user so DMs route through this bot's IM rather
-        # than failing ``channel_not_found`` (which previously caused silent
-        # fallback through whichever bot already had an IM with the user —
-        # the per-overlay attribution leak the issue reports).
         self._dm_channel_id = dm_channel_id
-        # dm_only profile: refuse every outbound but the owner's own DM (enforced
-        # at the ``_channel_token`` / ``_route_token`` funnels and in ``_post``).
         self._owner_dm_only = owner_dm_only
-        # The owner IM ``conversations.open`` returned, so the guard accepts it where no DM channel id is configured.
         self._owner_im = ""
+        self._operator_dms = OperatorDmRegistry()
         self._http = SlackHttpClient()
         # #1395 voice/token gate.
         self._voice_gate = VoiceTokenGate(dm_channel_id=dm_channel_id)
@@ -227,9 +225,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         remembering it. *wrap_exempt_reason* is the one sanctioned escape; a post
         carrying ``blocks`` keeps its text as written (the blocks are what is read).
         """
-        assert_owner_call(
-            method, payload, owner_dm_only=self._owner_dm_only, dm_channel_id=self._guard_dm, user_id=self._user_id
-        )
+        assert_owner_call(method, payload, guard=self._dm_guard)
         auth = token or self._bot_token
         if not auth:
             return {}
@@ -268,7 +264,15 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         a transport failure on it would spuriously abort a read the user
         token could serve.
         """
-        assert_owner_dm(channel, owner_dm_only=self._owner_dm_only, dm_channel_id=self._guard_dm, user_id=self._user_id)
+        assert_owner_dm(
+            channel,
+            owner_dm_only=self._owner_dm_only,
+            dm_channel_id=self._guard_dm,
+            user_id=self._user_id,
+            operator_dms=self._operator_dms,
+        )
+        if op is SlackOp.WRITE and channel.startswith("U") and channel in self._operator_dms.snapshot().user_ids:
+            return self._bot_token
         if not self._user_token or not self._bot_token or channel.startswith("D") or op is SlackOp.READ:
             return channel_token(
                 channel,
@@ -431,6 +435,13 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def _guard_dm(self) -> str:
         return self._dm_channel_id or self._owner_im
 
+    @property
+    def _dm_guard(self) -> DmGuard:
+        return DmGuard(self._owner_dm_only, self._guard_dm, self._user_id, self._operator_dms)
+
+    def allow_operator_dms(self, resolver: Callable[[], frozenset[str]]) -> None:
+        self._operator_dms.configure(resolver)
+
     def update_message(self, *, channel: str, ts: str, text: str, blocks: list[RawAPIDict]) -> RawAPIDict:
         """Replace a message the bot posted; its blocks are required (Slack keeps the old ones when omitted)."""
         if self._owner_dm_only and not self._guard_dm:
@@ -455,18 +466,23 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         return is_self_dm(channel, dm_channel_id=self._dm_channel_id, user_id=self._user_id)
 
     def _route_token(self, channel: str) -> str:
-        """The token a #1750-routed post/react to *channel* goes out under (self-DM→bot, else→xoxp)."""
-        assert_owner_dm(channel, owner_dm_only=self._owner_dm_only, dm_channel_id=self._guard_dm, user_id=self._user_id)
+        """Choose the bot for owner/operator DMs and the user token for other destinations."""
+        assert_owner_dm(
+            channel,
+            owner_dm_only=self._owner_dm_only,
+            dm_channel_id=self._guard_dm,
+            user_id=self._user_id,
+            operator_dms=self._operator_dms,
+        )
         return select_routed_token(
             channel,
-            dm_channel_id=self._dm_channel_id,
-            user_id=self._user_id,
+            guard=self._dm_guard,
             bot_token=self._bot_token,
             user_token=self._user_token,
         )
 
     def route_token(self, channel: str) -> str:
-        """Public accessor over the #1750 destination router (self-DM→bot, else→xoxp).
+        """Public accessor over the #1750 destination router (owner/operator DM→bot, else→xoxp).
 
         The classifier ``post_routed`` / ``react_routed`` and
         :class:`~teatree.core.on_behalf_egress.OnBehalfSlackEgress` consult to choose
@@ -506,6 +522,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         channel = open_im_channel(self._post, user_id)
         if self._owner_dm_only and user_id == self._user_id:
             self._owner_im = channel
+        self._operator_dms.remember(user_id, channel)
         return channel
 
     def join_conversation(self, channel: str) -> RawAPIDict:

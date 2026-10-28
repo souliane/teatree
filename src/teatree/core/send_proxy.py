@@ -43,6 +43,7 @@ from django.db import DatabaseError, transaction
 
 from teatree.config import get_effective_settings
 from teatree.core.gates.privacy_gate import PrivacyGateResult, format_refusal, overlay_privacy_rules, scan_outbound_text
+from teatree.core.notify_targets import registered_operator_slack_ids
 from teatree.core.session_identity import current_session_id
 from teatree.utils import secrets
 
@@ -169,6 +170,8 @@ def destination_allowed(channel: SendChannel, destination: str, *, overlay: str,
     An empty allowlist denies every non-self destination.
     """
     if is_self_dm:
+        return True
+    if channel is SendChannel.SLACK and destination.startswith("U") and destination in registered_operator_slack_ids():
         return True
     patterns = _allowlist(overlay)
     if not patterns:
