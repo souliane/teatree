@@ -131,6 +131,7 @@ class _RouteRetry:
     overlay_skill_metadata: SkillMetadata
     handoff: Path | None
     dispatch: DispatchHarness
+    account: str = ""
 
     def after(self, record: _RouteFailureRecord, *, learn_failure: bool = True) -> TaskAttempt:
         attempt = _record_route_failure_attempt(self.task, self.dispatch, record)
@@ -201,6 +202,7 @@ def _retry_route_exception(
         fallback=fallback,
         agent_session_id=exc.agent_session_id if isinstance(exc, HarnessFallbackError) else "",
         kind=exc.kind if isinstance(exc, HarnessFallbackError) else None,
+        account=route_retry.account,
     )
     if isinstance(exc, HarnessFallbackError) and exc.side_effects_started:
         attempt = _record_route_failure_attempt(task, preflight.dispatch, record)
@@ -371,6 +373,7 @@ def _run_agent(
     if isinstance(ready, TaskAttempt):
         return ready
     credential, prepared = ready
+    route_retry = replace(route_retry, account=credential.account)
 
     # Resolved HERE, not inside the coroutine (#3980): Django refuses a synchronous ORM read to a
     # thread that owns a running event loop, and the config resolver catches that refusal and
@@ -459,6 +462,7 @@ def _run_agent(
         CeilingSalvage(
             phase=phase,
             lane=lane,
+            account=credential.account,
             provenance=DispatchProvenance(
                 reasoning_effort=preflight.dispatch.effort
                 or resolve_provenance_effort(resolve_spawn_effort, phase, preflight.dispatch.name),

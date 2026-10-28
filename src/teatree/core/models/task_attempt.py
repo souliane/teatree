@@ -303,6 +303,7 @@ class TaskAttempt(models.Model):
         SUCCESS = "success", "Success"
         REFUSAL = "refusal", "Refusal"
         CRASH = "crash", "Crash"
+        PARKED = "parked", "Parked"
 
     #: The terminal outcomes that are a FAILURE — the one predicate every failure
     #: count filters on, so the standup and the two ``checking`` surfaces can never
@@ -353,6 +354,7 @@ class TaskAttempt(models.Model):
     # souliane/teatree#657: the Layer-2 lane this attempt's tokens are
     # attributable to, so #2565's two-lane cost strategy is observable.
     lane = models.CharField(max_length=16, choices=Lane.choices, blank=True, default="")
+    account = models.CharField(max_length=255, blank=True, default="")
     # #2009 repair-loop budget: 1-based attempt number for this attempt's
     # (ticket, normalized-phase), spanning re-queued Task rows. Auto-stamped on
     # insert; 0 only on a transient unsaved instance.
@@ -524,6 +526,8 @@ class TaskAttempt(models.Model):
         """
         if self.exit_code is None:
             return ""
+        if self.error.startswith(PARK_ERROR_PREFIXES):
+            return self.Outcome.PARKED
         if self.exit_code == 0:
             return self.Outcome.REFUSAL if self.error else self.Outcome.SUCCESS
         return self.Outcome.CRASH

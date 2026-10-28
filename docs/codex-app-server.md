@@ -172,6 +172,8 @@ gap; closing it needs a Codex-side change.
   parks the task for as long once a side effect started or an outcome already made tool calls. Other
   failures keep the two-minute hold. `t3 codex auth import` clears the
   stored Codex holds.
+- A failed turn keeps agent text separate from the turn's terminal error message; a crash narrative
+  cannot hold the route without a classified limit, typed failure, or provider status.
 - `t3 doctor check` prints one Codex line: login present (file modification time) or missing, the last
   long hold, and a warning while a Codex route exists with no active usage window.
 

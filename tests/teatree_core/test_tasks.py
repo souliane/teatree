@@ -1779,6 +1779,7 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
             f"short-verb 'review' PENDING task was not consumed (status={zombie.status}); "
             f"_consume_pending_phase_tasks compared raw phase"
         )
+        assert zombie.attempts.filter(error__startswith="superseded: ").exists()
 
     def test_canonical_pending_task_still_consumed(self) -> None:
         # Regression guard: the canonical spelling must keep being consumed.
@@ -1793,6 +1794,32 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
 
         zombie.refresh_from_db()
         assert zombie.status == Task.Status.COMPLETED
+
+    def test_unpushed_coding_followup_is_kept_pending(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, agent_id="t")
+        followup = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "repo"
+            remote = Path(directory) / "remote.git"
+            _init_repo_with_branch(repo, branch="feature", commits_ahead=0)
+            run_strict(repo=str(directory), args=["init", "--bare", str(remote)])
+            run_strict(repo=str(repo), args=["remote", "add", "origin", str(remote)])
+            run_strict(repo=str(repo), args=["push", "origin", "main", "feature"])
+            run_strict(repo=str(repo), args=["fetch", "origin"])
+            (repo / "pending.txt").write_text("not pushed\n")
+            run_strict(repo=str(repo), args=["add", "pending.txt"])
+            run_strict(repo=str(repo), args=["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "pending"])
+            Worktree.objects.create(
+                ticket=ticket, repo_path=str(repo), branch="feature", extra={"worktree_path": str(repo)}
+            )
+
+            ticket._consume_pending_phase_tasks("coding")
+
+        followup.refresh_from_db()
+        assert followup.status == Task.Status.PENDING
+        assert not followup.attempts.exists()
 
 
 class TestHeadlessClaimLease(TestCase):

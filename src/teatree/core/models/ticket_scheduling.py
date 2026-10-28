@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 
 from django.apps import apps
 from django.db import transaction
+from django.utils import timezone
 from django_fsm import TransitionNotAllowed, can_proceed
 
 from teatree.config import Mode, get_effective_settings
@@ -12,7 +13,9 @@ from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, SelfReviewReworkRefusedError
 from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.ticket_data import TicketFacet
-from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths
+from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths, dispatch_worktree
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.managers import TaskQuerySet
@@ -28,6 +31,20 @@ PLANNING_HANDOFF_KEY = "planning_handoff"
 
 def _auto_ship_enabled() -> bool:
     return get_effective_settings().mode == Mode.AUTO
+
+
+def _checkout_has_unpushed_commits(ticket: "Ticket") -> bool:
+    worktree = dispatch_worktree(ticket)
+    if worktree is None:
+        return False
+    try:
+        count = git.run_strict(
+            repo=worktree.worktree_path,
+            args=["rev-list", "--count", f"refs/remotes/origin/{worktree.branch}..HEAD"],
+        )
+        return int(count) > 0
+    except (CommandFailedError, OSError, ValueError):
+        return False
 
 
 class SelfReviewRework(NamedTuple):
@@ -369,7 +386,8 @@ class TicketSchedulingModel(TicketFacet):
         the consume-side mirror of #757's ``completed_in_phase``): a raw
         ``phase=phase`` filter missed a short-verb ``review`` task stored
         by the unnormalized ``tasks create <id> review`` path, leaving it
-        as a zombie session.
+        as a zombie session. A never-run coding follow-up remains pending while its
+        checkout holds commits the remote branch has not received.
 
         The bulk ``UPDATE`` is deliberate — a per-row ``save()`` would re-enter
         the ``post_save`` headless auto-enqueue — so the sessions the terminal
@@ -379,10 +397,28 @@ class TicketSchedulingModel(TicketFacet):
         """
         from teatree.core.models.session import Session  # noqa: PLC0415 — import cycle
         from teatree.core.models.task import Task  # noqa: PLC0415 — import cycle
+        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — import cycle
 
-        consumed = Task.objects.pending_in_phase(phase).filter(ticket=self)
-        sessions = list(Session.objects.filter(pk__in=consumed.values("session_id")))
-        consumed.update(
+        pending = list(Task.objects.pending_in_phase(phase).filter(ticket=self))
+        keep_for_push = phase in {"coding", "debugging"} and _checkout_has_unpushed_commits(cast("Ticket", self))
+        consumed = []
+        for task in pending:
+            has_attempt = task.attempts.exists()
+            if keep_for_push and not has_attempt:
+                continue
+            if not has_attempt:
+                TaskAttempt.objects.create(
+                    task=task,
+                    ended_at=timezone.now(),
+                    exit_code=1,
+                    error=f"{SUPERSEDED_PREFIX}phase transition consumed an unrun {phase} task",
+                )
+            consumed.append(task.pk)
+        if not consumed:
+            return
+        consumed_ids = set(consumed)
+        sessions = list(Session.objects.filter(pk__in=[task.session_id for task in pending if task.pk in consumed_ids]))
+        Task.objects.filter(pk__in=consumed).update(
             status=Task.Status.COMPLETED,
             claimed_at=None,
             claimed_by="",

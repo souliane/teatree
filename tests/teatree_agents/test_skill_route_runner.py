@@ -268,6 +268,22 @@ class TestSkillRouteRuntimeFallback(TestCase):
         assert not parked.task.attempts.filter(failure_kind="result_error").exists()
         assert not AgentRouteAvailability.objects.exists()
 
+    def test_agent_crash_narration_does_not_hold_a_route(self) -> None:
+        terminal = result_message(
+            is_error=True,
+            subtype="error_during_execution",
+            result="The process timed out while discussing authorization and credentials.",
+        )
+        self._register("codex_like", scripted_session([terminal]))
+
+        attempt = self._run(self._config("codex_like"))
+
+        attempt.task.refresh_from_db()
+        assert attempt.error.startswith("result_error:")
+        assert attempt.task.status == Task.Status.FAILED
+        assert attempt.task.not_before is None
+        assert not AgentRouteAvailability.objects.exists()
+
     def test_selected_candidate_effort_reaches_spawn_and_attempt_provenance(self) -> None:
         self._register("codex_like", FakeHarnessSession)
         config = AgentConfig(

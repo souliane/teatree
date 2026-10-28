@@ -1,16 +1,20 @@
 """A routed candidate refused for credit has spent its key, not the route: rotate, else wait for the plans."""
 
 import contextlib
+import datetime as dt
 import os
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import patch
 
+from claude_agent_sdk.types import RateLimitInfo
 from django.test import TestCase
 from django.utils import timezone
 
 import teatree.agents.harness as harness_mod
 from teatree.agents.runner import run_agent
+from teatree.agents.runner_route_recording import RouteFailureRecord
+from teatree.agents.runner_stream import HarnessOutcome
 from teatree.core.models import (
     LIMIT_PARKED_PREFIX,
     AgentRouteAvailability,
@@ -42,6 +46,35 @@ _SUCCESS = success_stream({"summary": "done", "files_modified": [{"path": "src/x
 _SESSION_REFUSAL = result_message(
     subtype="error_during_execution", is_error=True, result="You've hit your five-hour limit."
 )
+
+
+def test_route_hold_uses_the_reported_reset() -> None:
+    reset = timezone.now() + dt.timedelta(hours=3)
+    outcome = HarnessOutcome(
+        agent_text="",
+        result_message=_SESSION_REFUSAL,
+        stuck_reason=None,
+        rate_limit_info=RateLimitInfo(status="rejected", rate_limit_type="five_hour", resets_at=int(reset.timestamp())),
+    )
+
+    hold = RouteFailureRecord(reason="subscription_session: limit", skills=[], outcome=outcome).hold
+
+    assert hold is not None
+    assert dt.timedelta(hours=2, minutes=59) < hold < dt.timedelta(hours=3, minutes=1)
+
+
+def test_access_denial_ignores_a_key_lifetime_as_its_reset() -> None:
+    expiration = timezone.now() + dt.timedelta(days=365)
+    outcome = HarnessOutcome(
+        agent_text="",
+        result_message=result_message(subtype="error_during_execution", is_error=True, api_error_status=403),
+        stuck_reason=None,
+        rate_limit_info=RateLimitInfo(
+            status="rejected", rate_limit_type="five_hour", resets_at=int(expiration.timestamp())
+        ),
+    )
+
+    assert RouteFailureRecord(reason="http 403", skills=[], outcome=outcome).hold == dt.timedelta(hours=1)
 
 
 @contextlib.contextmanager
@@ -84,6 +117,7 @@ class TestRoutedMeteredCreditRefusal(TestCase):
         assert AnthropicTokenUsage.objects.get(pass_path=KEY_1).is_exhausted
         assert not AgentRouteAvailability.objects.exists()
         assert attempt.exit_code == 0
+        assert list(self.task.attempts.order_by("pk").values_list("account", flat=True)) == [KEY_1, KEY_2]
 
     def test_every_key_spent_parks_until_the_plan_reset_outside_the_route_hold_cap(self) -> None:
         route_metered_keys(self, [KEY_1, KEY_2])
@@ -157,6 +191,7 @@ class TestRoutedMeteredCreditRefusal(TestCase):
         assert AgentRouteAvailability.objects.filter(harness=CLAUDE_SDK).exists()
         assert not AnthropicTokenUsage.objects.exists()
         assert self.task.status == Task.Status.PENDING
+        assert self.task.attempts.order_by("pk").first().account == KEY_1
 
 
 class TestRoutedSubscriptionLimit(TestCase):
@@ -200,3 +235,4 @@ class TestRoutedSubscriptionLimit(TestCase):
         assert AnthropicActivePick.objects.pick_for("oauth", "") == second
         assert AnthropicTokenUsage.objects.get(pass_path=first).is_exhausted
         assert not AgentRouteAvailability.objects.exists()
+        assert attempt.account == first

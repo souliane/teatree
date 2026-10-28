@@ -24,6 +24,7 @@ from teatree.agents.credential_policy import (
 from teatree.agents.harness import resolve_harness
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.runner import _resolve_dispatch_lane
+from teatree.agents.usage_window import maybe_park_for_active_window
 from teatree.config import AgentHarnessProvider
 from teatree.config.cross_key_consistency import check_harness_provider_pair
 from teatree.config.schema import setting_choices
@@ -99,6 +100,14 @@ class TestExhaustionRule(CredentialPolicyCase):
     def test_an_uncleared_future_window_reads_exhausted(self) -> None:
         _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
         assert subscription_lane_exhausted() is True
+
+    def test_newly_available_oauth_account_overrides_an_old_all_accounts_window(self) -> None:
+        _plan_window(ALL_ACCOUNTS_EXHAUSTED_CAUSE)
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/new/oauth"])
+        task = _claimed_task()
+
+        assert subscription_lane_exhausted() is False
+        assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is None
 
     def test_an_elapsed_window_does_not(self) -> None:
         now = timezone.now()

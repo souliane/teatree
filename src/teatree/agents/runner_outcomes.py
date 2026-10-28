@@ -156,7 +156,7 @@ def _failure_usage(outcome: HarnessOutcome, *, lane: str, transport: Transport) 
         context_tokens=outcome.context_tokens,
         model_fell_back=outcome.model_fell_back,
     )
-    usage = _attempt_usage(outcome.result_message, observation)
+    usage = replace(_attempt_usage(outcome.result_message, observation), account=transport.account)
     if outcome.session_id and not usage.agent_session_id:
         usage = replace(usage, agent_session_id=outcome.session_id)
     receipt = usage.skill_assurance
@@ -199,7 +199,7 @@ def record_outcome(
             transport=routed_transport,
         )
         or cli_too_old_failure(task, outcome, lane=salvage.lane, transport=routed_transport)
-        or record_success(task, outcome, phase=salvage.phase, lane=salvage.lane, provenance=salvage.provenance)
+        or record_success(task, outcome, phase=salvage.phase, lane=salvage.lane, transport=routed_transport)
     )
     record_skill_assurance_attempt(task, attempt)
     return attempt
@@ -234,13 +234,13 @@ def record_success(
     *,
     phase: str = "",
     lane: str = "",
-    provenance: DispatchProvenance | None = None,
+    transport: Transport = UNROUTED,
 ) -> TaskAttempt:
     """Record a successful SDK run via the shared recorder."""
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — avoids recorder cycle
     from teatree.agents.runner_result import parse_result  # noqa: PLC0415 — keeps result parsing off module import path
 
-    provenance = provenance or DispatchProvenance()
+    provenance = transport.provenance or DispatchProvenance()
     usage = _attempt_usage(
         outcome.result_message,
         UsageObservation(
@@ -253,6 +253,7 @@ def record_success(
             model_fell_back=outcome.model_fell_back,
         ),
     )
+    usage = replace(usage, account=transport.account)
     parsed = parse_result(outcome.agent_text)
     if provenance.skill_assurance is not None:
         prior_loads = (

@@ -1,8 +1,9 @@
 """Failure-attempt recording and learned availability for ordered skill routes."""
 
+import contextlib
 import traceback
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from django.utils import timezone
 
@@ -11,16 +12,11 @@ from teatree.agents.harness_registry import HarnessFallbackKind
 from teatree.agents.runner_failure_taxonomy import limit_match
 from teatree.agents.runner_stream import HarnessOutcome
 from teatree.agents.runner_usage import DispatchProvenance, UsageObservation, _attempt_usage
-from teatree.agents.skill_routing import (
-    QUOTA_AUTH_HOLD,
-    record_route_unavailable,
-    runtime_fallback_reason,
-    sticky_reason,
-)
+from teatree.agents.skill_routing import QUOTA_AUTH_HOLD, record_route_unavailable
 from teatree.config.agent_spawn import AgentRouteCandidate
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.checkout_exit import attest_checkout_on_park
-from teatree.llm.anthropic_limits import SUBSCRIPTION_LIMIT_CAUSES, LimitCause
+from teatree.llm.anthropic_limits import SUBSCRIPTION_LIMIT_CAUSES, LimitCause, believable_refusal_reset, window_horizon
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +27,8 @@ class RouteFallback:
 
 NO_ROUTE_FALLBACK = RouteFallback()
 _STICKY_KINDS = frozenset({HarnessFallbackKind.AUTH, HarnessFallbackKind.QUOTA, HarnessFallbackKind.QUOTA_EXHAUSTED})
+_SERVER_ERROR_START = 500
+_SERVER_ERROR_END = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,8 +49,32 @@ class RouteFailureRecord:
     @property
     def hold(self) -> timedelta | None:
         """How long the failed candidate stays out and its task parked; ``None`` is the short default."""
-        sticky = self.kind in _STICKY_KINDS if self.kind is not None else sticky_reason(self.reason)
-        return QUOTA_AUTH_HOLD if sticky else None
+        if self.kind is not None:
+            return QUOTA_AUTH_HOLD if self.kind in _STICKY_KINDS else None
+        if self.outcome is None:
+            return None
+        match = limit_match(
+            self.outcome.result_message,
+            self.outcome.rate_limit_info,
+            metered_transport=self.lane == TaskAttempt.Lane.METERED,
+        )
+        if match is None:
+            return None
+        reset = match.stated_reset
+        epoch = self.outcome.rate_limit_info.resets_at if self.outcome.rate_limit_info is not None else None
+        if epoch is not None:
+            with contextlib.suppress(ValueError, OverflowError, OSError):
+                reset = datetime.fromtimestamp(epoch, tz=UTC)
+        now = timezone.now()
+        if (
+            reset is not None
+            and match.cause in {LimitCause.PROVIDER_ACCESS_DENIED, LimitCause.PROVIDER_BUDGET}
+            and believable_refusal_reset(reset.timestamp(), now=now.timestamp()) is None
+        ):
+            reset = None
+        if reset is not None and reset > now and window_horizon(match.cause) is not None:
+            return reset - now
+        return QUOTA_AUTH_HOLD
 
 
 def selected_fallback_reason(fallback: RouteFallback, dispatch: DispatchHarness) -> str:
@@ -99,8 +121,7 @@ def record_route_failure_attempt(
             model_fell_back=record.outcome is not None and record.outcome.model_fell_back,
         ),
     )
-    if record.agent_session_id:
-        usage = replace(usage, agent_session_id=record.agent_session_id)
+    usage = replace(usage, account=record.account, agent_session_id=record.agent_session_id or usage.agent_session_id)
     return TaskAttempt.objects.create(
         task=task,
         ended_at=timezone.now(),
@@ -152,7 +173,10 @@ def fallback_reason_for_outcome(outcome: HarnessOutcome, *, metered_transport: b
         if lane == TaskAttempt.Lane.SUBSCRIPTION and matched.cause in SUBSCRIPTION_LIMIT_CAUSES:
             return None
         return matched.as_reason()
-    from teatree.agents.runner_outcomes import failure_reason  # noqa: PLC0415 — avoids route/outcome import cycle
-
-    reason = failure_reason(outcome)
-    return runtime_fallback_reason(reason or "")
+    message = outcome.result_message
+    if message is None or not message.is_error:
+        return None
+    status = message.api_error_status
+    if status in {408, 425} or (status is not None and _SERVER_ERROR_START <= status < _SERVER_ERROR_END):
+        return f"api_error_status={status}"
+    return None

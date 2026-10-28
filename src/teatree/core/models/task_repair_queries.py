@@ -5,12 +5,7 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import (
-    CANCELLED_PREFIX,
-    LEASE_EXPIRED_PREFIX,
-    PLAN_STALE_PREFIX,
-    SUPERSEDED_PREFIX,
-)
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, LEASE_EXPIRED_PREFIX, PLAN_STALE_PREFIX
 from teatree.core.models.usage_window_state import PARK_ERROR_PREFIXES
 from teatree.core.repair_loop import STALL_REPEAT_THRESHOLD
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
@@ -20,7 +15,7 @@ if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt, TaskAttemptQuerySet
 
 
-_AUDIT_PREFIXES = (CANCELLED_PREFIX, SUPERSEDED_PREFIX, PLAN_STALE_PREFIX, LEASE_EXPIRED_PREFIX)
+_AUDIT_PREFIXES = (CANCELLED_PREFIX, PLAN_STALE_PREFIX, LEASE_EXPIRED_PREFIX)
 
 
 def _attempt_model() -> "type[TaskAttempt]":
