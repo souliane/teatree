@@ -86,7 +86,11 @@ class _RootSend:
 
 def deliver_ticket_dm(request: TicketDmRequest) -> tuple[str, str, str]:
     ticket = Ticket.objects.filter(pk=request.ticket_id).first()
-    if ticket is None or (ticket.issue_url and not is_forge_url(ticket.issue_url)):
+    if (
+        ticket is None
+        or (ticket.issue_url and not is_forge_url(ticket.issue_url))
+        or (not ticket.issue_url and not (ticket.extra.get("issue_title") or ticket.short_description))
+    ):
         return request.deliver(
             request.backend,
             user_id=request.user_id,
