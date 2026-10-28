@@ -56,6 +56,9 @@ class TestNonCredentialArgsAreUntouched:
             "T3_E2E_TARGET=dev",
             "--keyfile=/etc/ssl/app.pem",
             "monkey=1",
+            "the bearer of this note",
+            "https://example.test:8443?next=a@b",
+            '{"name": "abc123XYZ"}',
         ],
     )
     def test_ordinary_assignment_is_unchanged(self, arg: str) -> None:
@@ -103,6 +106,23 @@ class TestCredentialHeadersAreRedacted:
         assert redact_secrets(arg) == expected
 
 
+class TestBearerUserinfoAndQuotedCredentialsAreRedacted:
+    @pytest.mark.parametrize(
+        ("arg", "expected"),
+        [
+            ("retry with bearer abc123XYZ now", "retry with bearer <redacted> now"),
+            ("https://user:abc123XYZ@host.test:8443/path", "https://user:<redacted>@host.test:8443/path"),
+            ("scheme://abc123XYZ@host.test", "scheme://<redacted>@host.test"),
+            ('{"access_token": "abc123XYZ"}', '{"access_token": "<redacted>"}'),
+            ('{"client_secret":"abc123XYZ"}', '{"client_secret":"<redacted>"}'),
+            ("{'password': 'abc123XYZ'}", "{'password': '<redacted>'}"),
+            ('{"api-key" : "abc123XYZ"}', '{"api-key" : "<redacted>"}'),
+        ],
+    )
+    def test_the_surrounding_text_survives_and_the_value_is_lost(self, arg: str, expected: str) -> None:
+        assert redact_secrets(arg) == expected
+
+
 def _best_cpu_time(message: str) -> float:
     # CPU time, not wall time: a process descheduled on a loaded box must not skew the ratio.
     best = float("inf")
@@ -116,9 +136,17 @@ def _best_cpu_time(message: str) -> float:
 class TestRedactionCostIsLinearInMessageLength:
     @pytest.mark.parametrize(
         ("unit", "tail"),
-        [("a-", "token=notarealvalue"), ("x-", "X-Api-Key: notarealvalue")],
+        [
+            ("a-", "token=notarealvalue"),
+            ("x-", "X-Api-Key: notarealvalue"),
+            ("bearer ", "Bearer notarealvalue"),
+            ("://a:", "://user:notarealvalue@host"),
+            ('"a-', '"client_secret": "notarealvalue"'),
+        ],
     )
-    def test_a_longer_hyphen_chain_costs_proportionally_more_and_is_still_redacted(self, unit: str, tail: str) -> None:
+    def test_a_longer_repetitive_message_costs_proportionally_more_and_is_still_redacted(
+        self, unit: str, tail: str
+    ) -> None:
         short = f"{unit * CHAIN_UNITS} {tail}"
         long = f"{unit * CHAIN_UNITS * CHAIN_GROWTH} {tail}"
 

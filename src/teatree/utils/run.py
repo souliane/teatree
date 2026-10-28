@@ -81,6 +81,14 @@ _SECRET_QUERY_RE = re.compile(
 # variable names, which is a list someone forgets to extend: matching only `TOKEN`
 # published `T3_SECRET_KEY` and an `ANTHROPIC_API_KEY` into transcripts.
 _SECRET_ENV_ASSIGN_RE = re.compile(r"(?:\A|(?<=[=\s]))([A-Z][A-Z0-9_]*(?:KEY|SECRET|PASSWORD|TOKEN))=(\S+)")
+# A value after `Bearer` is a credential only from 8 token characters on, so "the bearer of this note" stays readable.
+_SECRET_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[a-z0-9._~+/-]{8,}=*")
+# The password (or lone token) of a URL's `user:password@` / `token@` userinfo, never the host or port.
+_SECRET_URL_USERINFO_RE = re.compile(r"(?<=://)([^\s/@:?#]+:)?[^\s/@?#]+(?=@)")
+# A quoted credential-named key (JSON, or a Python dict repr) and its quoted value; both quotes must match.
+_SECRET_QUOTED_PAIR_RE = re.compile(
+    r"""(?i)((["'])(?:[a-z0-9]+[_-])*(?:token|secret|key|password)\2\s*:\s*)\2(?:(?!\2)[^\\]|\\.)*\2"""
+)
 
 
 def redact_secrets(arg: str) -> str:
@@ -96,6 +104,9 @@ def redact_secrets(arg: str) -> str:
     """
     redacted = _SECRET_HEADER_RE.sub(lambda m: f"{m.group(1)}: <redacted>", arg)
     redacted = _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=<redacted>", redacted)
+    redacted = _SECRET_QUOTED_PAIR_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>{m.group(2)}", redacted)
+    redacted = _SECRET_BEARER_RE.sub(lambda m: f"{m.group(1)}<redacted>", redacted)
+    redacted = _SECRET_URL_USERINFO_RE.sub(lambda m: f"{m.group(1) or ''}<redacted>", redacted)
     return _SECRET_ENV_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=<redacted>", redacted)
 
 
