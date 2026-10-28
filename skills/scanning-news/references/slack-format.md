@@ -1,16 +1,16 @@
 # Press-review digest — read when composing a scan result
 
 The scan returns candidates in `article_suggestions`; it does not post a DM.
-After recording new `PENDING` rows, the loop records one owner delivery through `notify_user`,
+After settling new article rows, the loop records one owner delivery through `notify_user`,
 deduped with `news-digest-<task pk>`.
 
 `teatree.core.news_digest.render_digest` renders the digest:
 
 ```text
-Press review — <YYYY-MM-DD> — <N> candidate(s) queued behind the ask-gate.
-Nothing is filed as an issue until you approve.
+Press review — <YYYY-MM-DD> — <N> article decision(s) recorded.
 
-- <article link|title> — <rationale>
+- <article link|title> — Filed <issue link|issue> — <rationale>
+- <article link|title> — Dropped — <rationale>
 ```
 
 Each article link is clickable Slack mrkdwn; file paths and code symbols in the

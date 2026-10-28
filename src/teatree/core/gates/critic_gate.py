@@ -263,7 +263,10 @@ def _evidence_row_refusal(ticket: "Ticket", head_sha: str, items: list[CriticIte
 
 def _record_new_critic_verdict(dispatch: CriticDispatch, envelope: dict) -> CriticVerdict:
     from teatree.core.review.nit_lane import validate_nit_comments  # noqa: PLC0415 — validation runs when recording
-    from teatree.core.review.nit_publish import critic_nits  # noqa: PLC0415 — validation runs when recording
+    from teatree.core.review.nit_publish import (  # noqa: PLC0415 — validation runs when recording
+        critic_nits,
+        pr_url_for_nits,
+    )
 
     raw_items = envelope.get("items")
     if dispatch.transition == "merge" and isinstance(raw_items, list):
@@ -271,7 +274,8 @@ def _record_new_critic_verdict(dispatch: CriticDispatch, envelope: dict) -> Crit
         items = [
             CriticItemVerdict.coerce(item, nit_follow_up=nit_follow_up) for item in raw_items if isinstance(item, dict)
         ]
-        validate_nit_comments(critic_nits(items))
+        points = critic_nits(items)
+        validate_nit_comments(points, pr_url=pr_url_for_nits(dispatch.ticket, dispatch.head_sha) if points else "")
         if refusal := _evidence_row_refusal(dispatch.ticket, dispatch.head_sha, items):
             raise CriticEvidenceUnavailableError(refusal)
     return CriticVerdict.record_from_envelope(

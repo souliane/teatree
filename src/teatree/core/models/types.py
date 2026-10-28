@@ -165,6 +165,8 @@ class TicketExtra(TicketRepoExtra, total=False):
     mr_title_generated: str
     labels: list[str]
     reviewed_sha: str
+    review_window_after_attempt: int
+    stuck_halt: dict[str, str | int]
     review_retry_head_by_task: dict[str, str]
     review_retry_after_move: dict[str, str]
     # What the FORGE last reported. Overwritten with the live value on every scan, so a

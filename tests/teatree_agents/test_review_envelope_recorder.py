@@ -13,7 +13,7 @@ unmergeable forever. ATOMICITY: the verdict, the claim retirement, the lock rele
 the grades land in ONE transaction, so a refused grade rolls the verdict back with it.
 """
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from django.test import TestCase
@@ -26,7 +26,7 @@ from teatree.core.gates.integration_review_gate import check_integration_review
 from teatree.core.gates.review_request_state_gate import check_reviewed_state, has_review_evidence
 from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
-from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX, FailureKind, classify_failure
 from teatree.core.models import (
     AutoReviewDispatch,
     ClearRequest,
@@ -484,6 +484,9 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         ]
 
         with (
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
             patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
             patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
             patch(
@@ -502,6 +505,90 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         ticket.refresh_from_db()
         assert has_nit_receipts(ticket, _PR_URL, _HEAD, (NitPoint("a.py", 2, "rename helper"),))
 
+    def test_public_nit_home_path_refuses_before_verdict_recording(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "nit",
+                "kind": "nit",
+                "summary": "Inspect /home/example/private.txt",  # privacy-scan:allow (fake fixture path, not PII)
+                "file": "a.py",
+                "line": 2,
+            }
+        ]
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+        ):
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "review verdict recording refused" in attempt.error
+        assert "generic:home_path" in attempt.error
+        assert classify_failure(attempt.error) == FailureKind.RECORDING_REFUSED
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_public_nit_file_home_path_refuses_before_verdict_recording(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "nit",
+                "kind": "nit",
+                "summary": "Rename helper",
+                "file": "/home/example/private.txt",  # privacy-scan:allow (fake fixture path, not PII)
+                "line": 0,
+            }
+        ]
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+        ):
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "review verdict recording refused" in attempt.error
+        assert "generic:home_path" in attempt.error
+        assert classify_failure(attempt.error) == FailureKind.RECORDING_REFUSED
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
+    def test_private_nit_home_path_records_and_publishes(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "nit",
+                "kind": "nit",
+                "summary": "Inspect /home/example/private.txt",  # privacy-scan:allow (fake fixture path, not PII)
+                "file": "a.py",
+                "line": 2,
+            }
+        ]
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False),
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch(
+                "teatree.core.review.nit_publish.track_nits",
+                return_value=NitReceipt("https://github.com/souliane/teatree/issues/10", ("thread-1",), _HEAD),
+            ) as track,
+        ):
+            provider.return_value.get_code_host_for_url.return_value = object()
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+        track.assert_called_once()
+
     def test_review_nit_publish_failure_keeps_a_recovery_marker(self) -> None:
         ticket = _author_ticket()
         result = _envelope(grades=_full_pass(), verdict="hold")
@@ -510,14 +597,57 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         verdict["findings"] = [
             {"severity": "nit", "kind": "nit", "summary": "rename helper", "file": "a.py", "line": 2}
         ]
-        with patch(
-            "teatree.agents.review_envelope_recorder.publish_nits", side_effect=NitLaneError("forge unavailable")
+        with (
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+            patch(
+                "teatree.agents.review_envelope_recorder.publish_nits", side_effect=NitLaneError("forge unavailable")
+            ),
         ):
             attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
         assert "forge unavailable" in attempt.error
         assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
         ticket.refresh_from_db()
         assert ticket.extra["nit_publication"][_HEAD]["status"] == "failed"
+
+    def test_post_time_privacy_refusal_keeps_the_verdict_recoverable(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass(), verdict="hold")
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["findings"] = [
+            {
+                "severity": "nit",
+                "kind": "nit",
+                "summary": "Inspect /home/example/private.txt",  # privacy-scan:allow (fake fixture path, not PII)
+                "file": "a.py",
+                "line": 2,
+            }
+        ]
+        host = Mock()
+        host.fetch_live_head_sha.return_value = _HEAD
+        host.get_pr_file_diffs.return_value = {"a.py": "@@ -1 +1,3 @@\n+one\n+two\n+three"}
+        host.list_review_threads.return_value = []
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", side_effect=[False, True]),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+            patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
+            patch("teatree.core.review.nit_lane.confirmed_self_identity_set", return_value={"alice"}),
+            patch("teatree.core.review.nit_lane.is_self_authored", return_value=True),
+        ):
+            provider.return_value.get_code_host_for_url.return_value = host
+            attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "review NIT publication refused" in attempt.error
+        assert "generic:home_path" in attempt.error
+        assert ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+        ticket.refresh_from_db()
+        assert ticket.extra["nit_publication"][_HEAD]["status"] == "failed"
+        host.submit_pr_review.assert_not_called()
 
     def test_nit_only_hold_without_merge_safe_evidence_records_nothing(self) -> None:
         ticket = _author_ticket()
