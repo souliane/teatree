@@ -1782,15 +1782,16 @@ class TestMalformedEnvelopeCorrection(TestCase):
         assert "valid JSON object" in task.execution_reason
         assert not DeferredQuestion.objects.exists()
 
-    def test_unexpected_keys_on_same_phase_still_escalates(self) -> None:
+    def test_unexpected_keys_on_same_phase_gets_the_existing_recorder_correction(self) -> None:
         task = _failed_task(phase="codex_adversarial_reviewing")
         _add_failed_attempt(task, error="Agent result contains unexpected keys: skill")
 
-        assert requeue_transient_failed() == 0
+        assert requeue_transient_failed() == 1
 
         task.refresh_from_db()
-        assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert task.status == Task.Status.PENDING
+        assert "[auto-corrective-retry]" in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
 
     def test_spent_correction_marker_still_escalates(self) -> None:
         task = _failed_task(phase="codex_adversarial_reviewing")
@@ -1802,4 +1803,5 @@ class TestMalformedEnvelopeCorrection(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert HALT_STAMP in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
