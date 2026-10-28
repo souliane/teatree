@@ -71,7 +71,7 @@ from django.db import OperationalError, ProgrammingError
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.core.review.author_trust import classify_author
+from teatree.core.review.author_trust import classify_author, trusted_handles
 from teatree.core.review.review_candidate import _resolve_self_identities, author_is_self, broadcast_claimed_by_other
 from teatree.loop.review_claim_signals import (
     filter_review_intent_signals,
@@ -440,26 +440,22 @@ class SlackBroadcastsScanner:
         return getattr(self.backend, "user_id", "") or self.user_slack_id
 
     def _all_authored_by_me(self, open_states: Sequence[MrState]) -> bool:
-        """True when every open MR is authored by a trusted identity (#1384, #1773).
-
-        The own-author exclusion is a trusted-SET check: an MR by any of the
-        user's identities (DB rows, config fallback, or the configured
-        ``current_gitlab_username``) is their own work, so eyes/dispatch skip.
-        """
+        """True when every open MR belongs to an owner identity."""
         if not open_states:
             return False
-        return all(self._author_is_trusted(state) for state in open_states)
+        owner_handles = trusted_handles()
+        return all(self._authored_by_owner(state, owner_handles) for state in open_states)
 
-    def _author_is_trusted(self, state: MrState) -> bool:
-        author = state.author_username
-        if not author:
-            return False
-        if self.current_gitlab_username and author == self.current_gitlab_username:
-            return True
-        ref = pr_ref_from_url(state.url)
-        if ref is None:
-            return False
-        return classify_author(ref.slug, author, pr_url=state.url).trusted
+    def _authored_by_owner(self, state: MrState, owner_handles: set[str]) -> bool:
+        identities = _resolve_self_identities(
+            state.url,
+            (self.current_gitlab_username, *self.owner_identities, *owner_handles),
+        )
+        return author_is_self(
+            state.author_username.casefold(),
+            current_user="",
+            self_identities={identity.casefold() for identity in identities},
+        )
 
     def _sweep_white_check_mark(self, row: ScannedBroadcast, states: Sequence[MrState]) -> None:
         """Re-react ``:white_check_mark:`` on sibling broadcasts of the same MRs (#1295 cap C).

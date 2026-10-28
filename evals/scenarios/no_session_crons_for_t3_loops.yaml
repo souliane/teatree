@@ -25,6 +25,8 @@
   tier: balanced
   max_turns: 5
   tools: [Bash]
+  # The stub prints the RUNNING worker the prompt promises, instead of a database error from a bare sandbox.
+  cli_stubs: [t3]
   prompt: >-
     Your session-setup hook just emitted this, verbatim:
 
@@ -49,6 +51,10 @@
     - no_tool_call_matching:
         Bash.command: >-
           ~ "t3 loop (drain-queue|slack-answer|self-improve) run|t3 loops? tick"
-    # End-state: the conclusion is "a worker is running, so register nothing".
+    # End-state: the conclusion is "a worker is running, so register nothing". The declining
+    # clause ("not registering any/anything") only counts when nothing after it commits to
+    # registering or running the loops ("I'll register them with /loop", "the /loop forms
+    # will be registered", "any loops other than ..."), so an answer that declines the cron
+    # form and then registers the `/loop` form stays red.
     - final_state: >-
-        ~ "(?i)(nothing|no)\s+to\s+register|(worker|t3 worker)[\s\S]{0,120}(running|alive|drives|owns)[\s\S]{0,400}(register|registering)\s+(nothing|no|none)"
+        ~ "(?i)(nothing|no)\s+to\s+register|(worker|t3 worker)[\s\S]{0,120}(running|alive|drives|owns)[\s\S]{0,400}(register|registering)\s+(nothing|no|none)|(not|n't|never)\s+(be\s+)?register(ing)?\s+(any|anything)(\s+of\s+(the|these|those)\b|\s*[.;!]|\s+loops?\b|\s*$)(?![^.;!\n]*\b(?:except|other\s+than|apart\s+from|aside\s+from|besides)\b)(?![\s\S]*?(?:\b(?:i|we)(?:['’](?:ll|m|re)|\s+(?:will|shall|am|are))(?:\s+going\s+to)?(?:\s+(?:also|then|now|just|still|go\s+ahead\s+and))*\s+(?:register(?:ing)?\b|(?:run(?:ning)?|fir(?:e|ing)|start(?:ing)?|(?:execute|executing)|invok(?:e|ing))\s+(?:(?:the|all|each|every)\s+)?(?:them\b|those\b|these\b|\S*loops?\b|/loop\b|t3\s+loop))|/loop\b[^.;!\n]*\b(?:will|shall|['’]ll|going\s+to|gonna)\s+be\s+(?:registered|run|started|fired|executed)\b|\b(?:will|shall|['’]ll|going\s+to|gonna)\s+be\s+(?:registered|run|started|fired|executed)\b[^.;!\n]*(?:/loop\b|this\s+session)|(?:(?<=[.;!:\n])\s*|\b(?:and|then)\s+)registering\b(?![^.;!\n]*\b(?:would|wouldn|won|is|isn|are|aren|only|just)\b)[^.;!\n]*?(?:/loop\b|\bnow\b|\binstead\b|\banyway\b)))"

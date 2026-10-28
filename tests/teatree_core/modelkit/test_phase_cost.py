@@ -8,6 +8,7 @@ what is not, and — the safety property — that anything unrecognised is EXPEN
 """
 
 from teatree.core.modelkit.phases import (
+    ANSWERING_PHASES,
     CHEAP_PHASES,
     KNOWN_PHASES,
     RETIRING_PHASES,
@@ -24,7 +25,7 @@ from teatree.core.modelkit.phases import (
 _MUST_STAY_EXPENSIVE = ("coding", "testing", "debugging", "e2e", "planning", "retro", "bughunt")
 
 #: Background assessors and responders: they gate no merge, so they stay off the review lane.
-_BACKGROUND_PHASES = ("triage_assessing", "answering", "directive_interpreting", "scanning_news", "short_describe")
+_BACKGROUND_PHASES = ("triage_assessing", "directive_interpreting", "scanning_news", "short_describe")
 
 
 class TestPhaseCost:
@@ -79,3 +80,18 @@ class TestPhaseCost:
         assert "review" in spellings
         assert "coding" not in spellings
         assert all(phase_cost(spelling) is PhaseCost.CHEAP for spelling in spellings)
+
+
+class TestOwnerAnsweringIsItsOwnClass:
+    def test_answering_is_neither_coding_nor_a_review_or_retiring_seat(self) -> None:
+        assert phase_cost("answering") is PhaseCost.ANSWERING
+        assert phase_cost("  Answering ") is PhaseCost.ANSWERING
+        assert CheapClass.of("answering") is None
+        assert not ANSWERING_PHASES & CHEAP_PHASES
+
+    def test_the_answering_phase_is_a_real_registered_phase(self) -> None:
+        assert ANSWERING_PHASES <= KNOWN_PHASES
+
+    def test_a_phase_that_merely_resembles_answering_stays_expensive(self) -> None:
+        assert phase_cost("answer") is PhaseCost.EXPENSIVE
+        assert phase_cost("answering_review") is PhaseCost.EXPENSIVE

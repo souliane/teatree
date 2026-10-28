@@ -9,10 +9,11 @@ from django.utils import timezone
 import teatree.agents.runner as runner_mod
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.runner import TaskUsage, run_agent
+from teatree.core.factory.halted_retries import halted_retry_signals
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.loop.transient_requeue import HALT_STAMP, escalation_marker, requeue_transient_failed
+from teatree.loop.transient_requeue import HALT_STAMP, requeue_transient_failed
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
 from tests.teatree_agents._route_fakes import (
@@ -78,8 +79,12 @@ class TestACancelIsParkedWhileAFaultStillEscalates(TestCase):
         session = Session.objects.create(ticket=self.ticket, agent_id=phase)
         return Task.objects.create(ticket=self.ticket, session=session, phase=phase)
 
-    def _halt_row(self, task: Task) -> DeferredQuestion:
-        return DeferredQuestion.objects.get(dedupe_marker=escalation_marker(task))
+    def _halt_signal(self, task: Task) -> str:
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason
+        return next(
+            signal.summary for signal in halted_retry_signals().signals if f":{task.phase}:" in signal.fingerprint
+        )
 
     def test_cancelled_task_parks_without_question(self) -> None:
         self.cancelled.refresh_from_db()
@@ -87,16 +92,13 @@ class TestACancelIsParkedWhileAFaultStillEscalates(TestCase):
 
         assert self.reopened == 0
         assert not DeferredQuestion.objects.filter(question__contains=self._CANCEL_REASON).exists()
-        assert DeferredQuestion.pending().count() == 2
+        assert not DeferredQuestion.objects.exists()
         assert self.cancelled.status == Task.Status.FAILED
         assert HALT_STAMP in self.cancelled.execution_reason
         assert str(self.cancelled.pk) not in self.ticket.extra.get("pydantic_ai_threads", {})
 
-    def test_superseded_without_successor_still_escalates_internal(self) -> None:
-        assert self._halt_row(self.superseded).audience == DeferredQuestion.Audience.INTERNAL
+    def test_superseded_without_successor_has_a_halt_signal(self) -> None:
+        assert "ticket reworked" in self._halt_signal(self.superseded)
 
-    def test_unclassified_failure_still_escalates_internal_halt(self) -> None:
-        row = self._halt_row(self.broken)
-
-        assert row.audience == DeferredQuestion.Audience.INTERNAL
-        assert row.dedupe_marker.startswith("repair-halt:")
+    def test_unclassified_failure_has_a_halt_signal(self) -> None:
+        assert "AssertionError" in self._halt_signal(self.broken)

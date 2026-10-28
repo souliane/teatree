@@ -124,17 +124,18 @@ class TestTheHookRefusesTheRoundStart:
 
         assert _refused(verdict)
         reason = verdict["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "needs_user_input" in reason
+        assert "bounded continuation" in reason
         assert f"{PUSHED_ROUND_CEILING} rounds" in reason
 
-    def test_the_handoff_never_promises_a_resume_a_kindless_stop_does_not_get(self) -> None:
+    def test_the_refusal_asks_for_no_user_input_and_names_the_factory_continuation(self) -> None:
         ceiling = RoundCeiling(enforce_by_observation=False, clock=_Clock())
         _push_rounds(ceiling, PUSHED_ROUND_CEILING)
 
         reason = _hook(ceiling, "git push")["hookSpecificOutput"]["permissionDecisionReason"]
 
-        assert "resumes from here" not in reason
-        assert "nothing resumes on its own" in reason
+        assert "needs_user_input" not in reason
+        assert "the factory is stopping this run" in reason.lower()
+        assert "check the branch and pipeline" in reason
 
     def test_a_refused_or_failed_push_is_not_a_round(self) -> None:
         ceiling = RoundCeiling(enforce_by_observation=False, clock=_Clock())
