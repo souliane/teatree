@@ -245,6 +245,7 @@ class SkillLoadingPolicy:
         review_skills: list[str] | None = None,
         stage_skills: list[str] | None = None,
         agent_declared_skills: list[str] | None = None,
+        lifecycle_skill_override: str = "",
     ) -> SkillSelectionResult:
         """Resolve a dispatched phase's bundle.
 
@@ -254,7 +255,8 @@ class SkillLoadingPolicy:
         for a phase with no agent file, and still resolves ``lifecycle_skill``
         (which drives the review-companion branch below and the returned result).
         """
-        lifecycle_skill = self.lifecycle_for_phase(phase)
+        default_lifecycle_skill = self.lifecycle_for_phase(phase)
+        lifecycle_skill = lifecycle_skill_override or default_lifecycle_skill
         ordered = self._base_detected_skills(
             cwd=cwd,
             overlay_skill_metadata=overlay_skill_metadata,
@@ -262,7 +264,11 @@ class SkillLoadingPolicy:
             companion_skills=companion_skills,
         )
         if agent_declared_skills:
-            ordered.extend(s for s in agent_declared_skills if isinstance(s, str) and s)
+            ordered.extend(
+                lifecycle_skill if s == default_lifecycle_skill else s
+                for s in agent_declared_skills
+                if isinstance(s, str) and s
+            )
         elif lifecycle_skill:
             ordered.append(lifecycle_skill)
         # #1135: a reviewer sub-agent dispatch (phase resolving to the

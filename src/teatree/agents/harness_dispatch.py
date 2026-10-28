@@ -302,7 +302,11 @@ def _skill_route_selection(
     phase_candidates: list[str],
 ) -> SkillRouteSelection | None:
     config = resolve_agent_config()
-    primary_skill = SkillLoadingPolicy.lifecycle_for_phase(context.phase or "")
+    primary_skill = (
+        get_effective_settings().backlog_sweep_skill
+        if context.phase == "backlog_sweep"
+        else SkillLoadingPolicy.lifecycle_for_phase(context.phase or "")
+    )
     route = resolve_skill_route(
         config.skill_models,
         skills,

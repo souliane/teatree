@@ -153,6 +153,14 @@ class TestSelfImproveSkillBundle(TestCase):
 
 
 class TestResolveSkillBundleStageSkillThreading(TestCase):
+    def test_sweep_bundle_uses_configured_skill(self) -> None:
+        settings = SimpleNamespace(backlog_sweep_skill="custom-sweep")
+        with patch.object(skill_bundle, "get_effective_settings", return_value=settings):
+            bundle = resolve_skill_bundle(phase="backlog_sweep", overlay_skill_metadata={}, stage_skills=[])
+
+        assert "custom-sweep" in bundle
+        assert "sweeping-tickets" not in bundle
+
     def test_threaded_stage_skills_bypass_internal_resolution(self) -> None:
         # #3206: when the dispatch pre-resolves the overlay stage skills and
         # threads them in, resolve_skill_bundle must not re-resolve them.

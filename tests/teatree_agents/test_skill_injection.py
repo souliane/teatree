@@ -9,6 +9,7 @@ from teatree.agents.context_budget import enforce_budget
 from teatree.agents.skill_assurance import SkillDispatchError
 from teatree.agents.skill_injection import (
     _is_primary,
+    _read_only_skill_text,
     _read_skill_contents,
     _read_skill_contents_scoped,
     build_subagent_skill_preamble,
@@ -93,6 +94,15 @@ def test_read_only_venue_drops_the_review_sections_that_only_drive_the_cli(monke
     assert not any(heading in rendered for heading in _REVIEW_SECTIONS_THAT_ONLY_DRIVE_THE_CLI)
     assert "### Giving Code Review" in rendered
     assert len(raw) - len(rendered) > 8_000
+
+
+def test_configured_sweep_skill_drops_command_only_sections() -> None:
+    body = "# Custom sweep\n\n## Command Reference\nRun a command.\n\n## Decision Rules\nReturn proposals.\n"
+
+    rendered = _read_only_skill_text("custom-sweep", body, sweep_skill_name="custom-sweep")
+
+    assert "Run a command" not in rendered
+    assert "Return proposals" in rendered
 
 
 def test_read_only_venue_keeps_slack_style_without_posting_instructions(monkeypatch: pytest.MonkeyPatch) -> None:

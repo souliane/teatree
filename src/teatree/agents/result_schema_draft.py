@@ -45,7 +45,7 @@ class SweepFold(TypedDict):
 
 
 class SweepGap(TypedDict):
-    host_ticket_id: int
+    host_url: str
     gap_keys: list[str]
 
 
@@ -106,10 +106,10 @@ SWEEP_PROPOSALS_SCHEMA_PROPERTY: JSONSchema = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "host_ticket_id": {"type": "integer"},
+                    "host_url": {"type": "string"},
                     "gap_keys": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["host_ticket_id", "gap_keys"],
+                "required": ["host_url", "gap_keys"],
             },
         },
     },

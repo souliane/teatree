@@ -6,7 +6,9 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
+from teatree.agents.sweep_proposals_recorder import record_returned_sweep_proposals
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket, TicketSweepRun
+from teatree.core.models.task_handoff import resume_on_answer
 
 
 class TestSweepProposalRecording(TestCase):
@@ -31,16 +33,22 @@ class TestSweepProposalRecording(TestCase):
         provider = SimpleNamespace(get_code_host_for_url=lambda _overlay, _url: object())
         examined = proposals.get("examined", []) if isinstance(proposals, dict) else []
         expected = expected_examined if expected_examined is not None else examined
+        self.ticket.merge_extra(
+            set_keys={
+                "sweep_dispatch_window": {
+                    "task_id": self.task.pk,
+                    "index": index_urls if index_urls is not None else expected,
+                    "examined": expected,
+                    "external_count": 0,
+                }
+            }
+        )
         with (
             patch("teatree.agents.sweep_proposals_recorder.get_overlay_for_ticket", return_value="overlay"),
             patch(
                 "teatree.agents.sweep_proposals_recorder.owned_repo_slugs", return_value=("example-org/example-repo",)
             ),
             patch("teatree.agents.sweep_proposals_recorder.get_backend_provider", return_value=provider),
-            patch(
-                "teatree.agents.sweep_proposals_recorder.sweep_window_evidence",
-                return_value=(index_urls if index_urls is not None else expected, expected, 0),
-            ),
         ):
             return record_result_envelope(
                 self.task,
@@ -75,8 +83,97 @@ class TestSweepProposalRecording(TestCase):
         self.ticket.refresh_from_db()
         assert attempt.error == ""
         assert len(self.ticket.extra["sweep_fold_proposals"]) == 1
-        assert DeferredQuestion.objects.filter(parked_task=self.task).count() == 1
+        question = DeferredQuestion.objects.get()
+        assert member in question.question or member in question.evidence.get("quoted", "")
+        assert host in question.question or host in question.evidence.get("quoted", "")
+        assert "same module" in question.evidence.get("quoted", "") or "same module" in question.evidence.get("why", "")
+        assert question.parked_task_id is None
+        answered = question.apply_answer("Approve", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        assert answered is not None
+        assert resume_on_answer(answered, answered.parked_task) is None
+        assert Task.objects.filter(parent_task=self.task).count() == 0
         assert TicketSweepRun.objects.get().examined_count == 2
+
+    def test_recording_does_not_reread_a_changed_issue_listing(self) -> None:
+        self.ticket.merge_extra(
+            set_keys={
+                "sweep_dispatch_window": {"task_id": self.task.pk, "index": [], "examined": [], "external_count": 0}
+            }
+        )
+        attempt = self._record({"examined": [], "folds": [], "gaps": []})
+
+        assert attempt.error == "", attempt.error
+
+    def test_duplicate_examined_url_refuses_a_window(self) -> None:
+        url = "https://github.com/example-org/example-repo/issues/1"
+        attempt = self._record({"examined": [url, url], "folds": [], "gaps": []}, expected_examined=[url])
+
+        assert "examined" in attempt.error
+        assert TicketSweepRun.objects.count() == 0
+
+    def test_examined_window_accepts_any_order(self) -> None:
+        urls = [f"https://github.com/example-org/example-repo/issues/{number}" for number in (1, 2)]
+        attempt = self._record({"examined": urls[::-1], "folds": [], "gaps": []}, expected_examined=urls)
+
+        assert attempt.error == "", attempt.error
+        assert TicketSweepRun.objects.get().examined_count == 2
+
+    def test_completed_task_skips_validation_on_retry(self) -> None:
+        proposals = {"examined": [], "folds": [], "gaps": []}
+        assert self._record(proposals).error == ""
+        error = record_returned_sweep_proposals(
+            self.task,
+            {"sweep_proposals": {"examined": ["invalid"], "folds": [], "gaps": []}},
+            phase="backlog_sweep",
+            selected_harness="codex_app_server",
+        )
+
+        assert error == ""
+        assert TicketSweepRun.objects.count() == 1
+
+    def test_question_failure_leaves_no_idempotency_marker(self) -> None:
+        member = "https://github.com/example-org/example-repo/issues/1"
+        host = "https://github.com/example-org/example-repo/issues/2"
+        proposals = {
+            "examined": [member],
+            "folds": [{"member_url": member, "host_url": host, "citation": "same module"}],
+            "gaps": [],
+        }
+        with (
+            patch(
+                "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+            ),
+            patch(
+                "teatree.agents.sweep_proposals_recorder.DeferredQuestion.record",
+                side_effect=RuntimeError("question unavailable"),
+            ),
+        ):
+            attempt = self._record(proposals, index_urls=[member, host])
+
+        self.ticket.refresh_from_db()
+        assert "question unavailable" in attempt.error
+        assert str(self.task.pk) not in self.ticket.extra.get("sweep_fold_proposals", {})
+
+    def test_attach_gap_refusal_includes_command_reason(self) -> None:
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
+        )
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
+
+        def refuse(*_args: object, stream: object, **_kwargs: object) -> None:
+            stream.write("attach-gaps refused: host changed")
+            raise SystemExit(1)
+
+        with (
+            patch(
+                "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+            ),
+            patch("teatree.agents.sweep_proposals_recorder.call_command_streamed", side_effect=refuse),
+        ):
+            attempt = self._record(proposals, index_urls=[host.issue_url])
+
+        assert "host changed" in attempt.error
 
     def test_fold_host_may_come_from_the_index_outside_the_body_window(self) -> None:
         member = "https://github.com/example-org/example-repo/issues/1"
@@ -160,7 +257,7 @@ class TestSweepProposalRecording(TestCase):
         host = Ticket.objects.create(
             overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
         )
-        proposals = {"examined": [], "folds": [], "gaps": [{"host_ticket_id": host.pk, "gap_keys": ["gap-a"]}]}
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
         with (
             patch(
                 "teatree.agents.sweep_proposals_recorder.require_self_authored_issue",
@@ -168,7 +265,7 @@ class TestSweepProposalRecording(TestCase):
             ),
             patch("teatree.agents.sweep_proposals_recorder.call_command_streamed") as attach,
         ):
-            attempt = self._record(proposals)
+            attempt = self._record(proposals, index_urls=[host.issue_url])
 
         assert attempt.error == ""
         run = TicketSweepRun.objects.get()
@@ -184,7 +281,7 @@ class TestSweepProposalRecording(TestCase):
         proposals = {
             "examined": [],
             "folds": [{"member_url": "external", "host_url": "host", "citation": "same module"}],
-            "gaps": [{"host_ticket_id": host.pk, "gap_keys": ["gap-a"]}],
+            "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}],
         }
         with (
             patch(
@@ -192,7 +289,7 @@ class TestSweepProposalRecording(TestCase):
             ),
             patch("teatree.agents.sweep_proposals_recorder.call_command_streamed") as attach,
         ):
-            attempt = self._record(proposals)
+            attempt = self._record(proposals, index_urls=[host.issue_url])
 
         assert attempt.error
         attach.assert_not_called()
@@ -202,14 +299,14 @@ class TestSweepProposalRecording(TestCase):
         host = Ticket.objects.create(
             overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
         )
-        proposals = {"examined": [], "folds": [], "gaps": [{"host_ticket_id": host.pk, "gap_keys": ["gap-a"]}]}
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
         with (
             patch(
                 "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
             ),
             patch("teatree.agents.sweep_proposals_recorder.call_command_streamed") as attach,
         ):
-            attempt = self._record(proposals)
+            attempt = self._record(proposals, index_urls=[host.issue_url])
 
         assert "offered" in attempt.error
         attach.assert_not_called()
@@ -222,14 +319,14 @@ class TestSweepProposalRecording(TestCase):
             issue_url="https://github.com/example-org/example-repo/issues/2",
             extra={"dream_gap_batch": [{"gap_key": "gap-a"}]},
         )
-        proposals = {"examined": [], "folds": [], "gaps": [{"host_ticket_id": host.pk, "gap_keys": ["gap-a"]}]}
+        proposals = {"examined": [], "folds": [], "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}]}
         with (
             patch(
                 "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
             ),
             patch("teatree.agents.sweep_proposals_recorder.call_command_streamed") as attach,
         ):
-            attempt = self._record(proposals)
+            attempt = self._record(proposals, index_urls=[host.issue_url])
 
         assert attempt.error == ""
         attach.assert_not_called()

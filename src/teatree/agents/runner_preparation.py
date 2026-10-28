@@ -39,7 +39,7 @@ from teatree.agents.skill_assurance import (
 from teatree.agents.skill_injection import _read_only_skill_text
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
-from teatree.config import AgentHarnessProvider, cold_reader
+from teatree.config import AgentHarnessProvider, cold_reader, get_effective_settings
 from teatree.core.autocompact_advisory import native_context_window
 from teatree.core.models import Task, TaskAttempt
 from teatree.credential_config import AllTokensExhaustedError
@@ -126,7 +126,11 @@ def prepare_run(
     """Refuse an undelivered mandatory skill before creating billable options."""
     skills = preflight.skills
     dispatch = preflight.dispatch
-    lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
+    lifecycle_skill = (
+        get_effective_settings().backlog_sweep_skill
+        if phase == "backlog_sweep"
+        else SkillLoadingPolicy.lifecycle_for_phase(phase)
+    )
     prompt, system_context, continued_skills = _brief(task, preflight, lifecycle_skill=lifecycle_skill, handoff=handoff)
     read_only_venue = dispatch.harness.capabilities.read_only_venue
     stage_present = stage_skills_present(task, skills, configured=preflight.stage_skills)

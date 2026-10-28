@@ -127,7 +127,21 @@ class ShippingHold(TypedDict):
     checked_at: str
 
 
+class SweepDispatchWindow(TypedDict):
+    task_id: int
+    index: list[str]
+    examined: list[str]
+    external_count: int
+
+
+class SweepFoldProposalRecord(TypedDict):
+    folds: list[dict[str, str]]
+    run_id: str
+
+
 class TicketExtra(TicketRepoExtra, total=False):
+    sweep_dispatch_window: SweepDispatchWindow
+    sweep_fold_proposals: dict[str, SweepFoldProposalRecord]
     tests_passed: bool
     nit_follow_up: bool
     nit_lane_receipts: dict[str, JSONObject]

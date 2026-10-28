@@ -16,7 +16,7 @@ from teatree.agents.read_only_draft_facts import DRAFT_FACTS_CAP_BYTES, DraftFac
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.intake.landscape_persist import ensure_planning_landscape
 from teatree.core.modelkit.phases import SWEEP_ASK_GATE_MARKER, normalize_phase
-from teatree.core.models import TicketSweepRun
+from teatree.core.models import Ticket, TicketSweepRun
 from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.overlay_repos import owned_repo_slugs
@@ -24,13 +24,13 @@ from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import dispatch_review_target, live_head_at
 from teatree.core.review.review_delta import BRIEF_PATCH_CHARS
 from teatree.core.review.review_plan import plan_for_task
-from teatree.core.self_forge_identities import issue_author_is_self, issue_author_login, self_identity_set
+from teatree.core.self_forge_identities import issue_is_self_authored, self_identity_set
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils.git_sync import fetch_branch
 from teatree.utils.url_slug import pr_ref_from_url, repo_namespaced_key_from_path, slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
-    from teatree.core.models import Task, Ticket
+    from teatree.core.models import Task
     from teatree.core.overlay import OverlayBase
 
 ISSUE_BODY_CAP_BYTES: Final = 64 * 1024
@@ -238,7 +238,14 @@ def _issue_at(ticket: "Ticket", issue_url: str) -> tuple[str, str]:
 
 def _sweep_issue_facts(task: "Task") -> tuple[str, str]:
     rows, window_rows = _sweep_rows_and_window(task)
-    index = "\n".join(f"- {url} | {'self' if own else 'ext'} | {title}" for url, title, _, own in rows)
+    urls = [url for url, _, _, _ in rows]
+    hosts = set(
+        Ticket.objects.filter(overlay=task.ticket.overlay, issue_url__in=urls).values_list("issue_url", flat=True)
+    )
+    index = "\n".join(
+        f"- {url} | {'self' if own else 'ext'} | {title}{' | gap host' if own and url in hosts else ''}"
+        for url, title, _, own in rows
+    )
     window = "\n\n".join(
         f"ISSUE {url} ({'self' if own else 'ext'})\nTITLE: {title}\nBODY EXCERPT:\n{body}"
         for url, title, body, own in window_rows
@@ -246,16 +253,31 @@ def _sweep_issue_facts(task: "Task") -> tuple[str, str]:
     if len(index.encode()) > ISSUE_BODY_CAP_BYTES or len(window.encode()) > ISSUE_COMMENTS_CAP_BYTES:
         reason = "read-only brief over budget: backlog issue index or window"
         raise _refused(reason)
+    task.ticket.merge_extra(
+        set_keys={
+            "sweep_dispatch_window": {
+                "task_id": task.pk,
+                "index": urls,
+                "examined": [url for url, _, _, _ in window_rows],
+                "external_count": sum(not own for _, _, _, own in window_rows),
+            }
+        }
+    )
     return index, window
 
 
 def sweep_window_evidence(task: "Task") -> tuple[list[str], list[str], int]:
-    rows, window = _sweep_rows_and_window(task)
-    return (
-        [url for url, _, _, _ in rows],
-        [url for url, _, _, _ in window],
-        sum(not own for _, _, _, own in window),
-    )
+    task.ticket.refresh_from_db(fields=["extra"])
+    extra = task.ticket.extra if isinstance(task.ticket.extra, dict) else {}
+    snapshot = extra.get("sweep_dispatch_window")
+    if not isinstance(snapshot, dict) or snapshot.get("task_id") != task.pk:
+        message = "the dispatched issue window is absent"
+        raise ValueError(message)
+    index, examined, external_count = (snapshot.get(key) for key in ("index", "examined", "external_count"))
+    if not isinstance(index, list) or not isinstance(examined, list) or not isinstance(external_count, int):
+        message = "the dispatched issue window is invalid"
+        raise TypeError(message)
+    return index, examined, external_count
 
 
 def _sweep_rows_and_window(
@@ -264,8 +286,12 @@ def _sweep_rows_and_window(
     if SWEEP_ASK_GATE_MARKER not in task.execution_reason:
         reason = "a backlog sweep needs the ASK-GATE marker"
         raise _refused(reason)
-    overlay = get_overlay_for_ticket(task.ticket)
-    repos = owned_repo_slugs(overlay)
+    try:
+        overlay = get_overlay_for_ticket(task.ticket)
+        repos = owned_repo_slugs(overlay)
+    except Exception as exc:
+        reason = f"the owned issue repositories could not be read ({type(exc).__name__})"
+        raise _refused(reason) from exc
     if not repos:
         reason = "the overlay has no owned issue repositories"
         raise _refused(reason)
@@ -300,7 +326,7 @@ def _list_sweep_issues(overlay: "OverlayBase", repos: tuple[str, ...]) -> list[t
             url, title, body = _sweep_issue_row(issue, repo)
             if identities is None:
                 identities = self_identity_set(url, host=host)
-            rows.append((url, title, body, issue_author_is_self(issue_author_login(issue), identities)))
+            rows.append((url, title, body, issue_is_self_authored(issue, url, identities)))
     return rows
 
 
@@ -311,6 +337,8 @@ def _sweep_issue_row(issue: object, repo: str) -> tuple[str, str, str]:
     url = issue.get("web_url") or issue.get("html_url")
     title = issue.get("title")
     body = issue.get("body", issue.get("description", ""))
+    if body is None:
+        body = ""
     if (
         not isinstance(url, str)
         or not isinstance(title, str)

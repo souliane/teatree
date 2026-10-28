@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 
 from teatree.agents.phase_agent_skills import declared_skills_for_phase
+from teatree.config import get_effective_settings
 from teatree.skill_support.deps import SkillIndex
 from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -221,6 +222,9 @@ def resolve_skill_bundle(
     """
     if stage_skills is None:
         stage_skills = active_overlay_stage_skills(phase)
+    lifecycle_skill_override = ""
+    if phase == "backlog_sweep":
+        lifecycle_skill_override = get_effective_settings().backlog_sweep_skill
     policy = SkillLoadingPolicy()
     result = policy.select_for_runtime_phase(
         cwd=_dispatch_cwd(detection_root),
@@ -232,5 +236,6 @@ def resolve_skill_bundle(
         review_skills=active_overlay_review_skills(),
         stage_skills=stage_skills,
         agent_declared_skills=declared_skills_for_phase(phase),
+        lifecycle_skill_override=lifecycle_skill_override,
     )
     return result.skills

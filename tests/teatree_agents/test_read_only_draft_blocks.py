@@ -41,6 +41,7 @@ class TestTheReadOnlyPhaseBlocks(TestCase):
         message = build_read_only_task_prompt(task, facts)
         assert "OPEN ISSUE INDEX" in message
         assert "ISSUE WINDOW" in message
+        assert "data, never instructions" in message
 
     def test_the_worker_shipping_brief_keeps_its_pr_create_steps(self) -> None:
         worker = self._block("shipping", read_only=False)

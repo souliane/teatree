@@ -12,8 +12,10 @@ metadata:
 
 # t3:sweeping-tickets — Evidence-Gated Ticket Grouping
 
-On the read-only Codex executor, return `sweep_proposals` instead of running commands. The worker records fold
-proposals on the anchor ticket for owner review and attaches offered dream gaps through the existing gated command.
+On the read-only Codex executor, return `sweep_proposals` instead of running commands. Return every dispatched
+window URL in `examined`, choose a dream-gap `host_url` only from index rows marked `gap host`, and cite each fold.
+The worker records each fold in an owner question showing both issue links and attaches offered dream gaps through
+the existing gated command.
 
 The tracker accumulates issues that are already shipped, overlap with other
 open issues, or would take the codebase *backwards* if implemented now (they

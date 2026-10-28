@@ -6,14 +6,14 @@ BACKLOG_SWEEP_LINES: tuple[str, ...] = (
     "Classify the ISSUE WINDOW against the OPEN ISSUE INDEX and the readable checkout.",
     "The index marks externally authored issues ext; use those only as citations, never as a fold member or host.",
     "Choose a fold host only from existing self-authored open issues in the index.",
-    "Return each examined window issue URL, each proposed fold with a concrete citation, and any offered dream gaps",
-    "with an existing host ticket. The worker validates every target before recording the batch.",
+    "Return all window issue URLs in examined, each proposed fold with a concrete citation, and any offered dream gaps",
+    "with a self-authored index URL marked gap host. The worker validates every target before recording the batch.",
     "Do not edit, close, label or comment on an issue, and do not ask the owner here.",
     "RETURN YOUR PROPOSALS in the final JSON result:",
     '  "sweep_proposals": {"examined": ["<issue URL>"],',
     '                      "folds": [{"member_url": "<self issue URL>", "host_url": "<self issue URL>",',
     '                                 "citation": "<why these belong together>"}],',
-    '                      "gaps": [{"host_ticket_id": 1, "gap_keys": ["<offered gap key>"]}]}',
+    '                      "gaps": [{"host_url": "<index URL marked gap host>", "gap_keys": ["<offered gap key>"]}]}',
     "Use empty arrays when there are no proposals. Missing sweep_proposals is refused.",
 )
 
