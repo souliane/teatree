@@ -5896,7 +5896,7 @@ Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ list    List DB-configured autonomous loops: name, enabled, delay, last run, │
-│         next due.                                                            │
+│         next due, idle tick cost.                                            │
 │ audit   Report every shipped loop/preset/schedule missing, disabled, not     │
 │         ticking, or diverged.                                                │
 │ delete  Delete a loop row — a loop that ships by default needs ``--confirm   │
@@ -5911,14 +5911,16 @@ Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 loops list [OPTIONS]
 
- List DB-configured autonomous loops: name, enabled, delay, last run, next due.
+ List DB-configured autonomous loops: name, enabled, delay, last run, next due,
+ idle tick cost.
 
  Read-only: it reads the ``Loop`` table and prints it — never ticks, marks a
  run, or mutates a row.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit the loops as JSON.                                      │
-│ --help          Show this message and exit.                                  │
+│ --json             Emit the loops as JSON.                                   │
+│ --by-cost          Rank by the share of one core the idle ticks take.        │
+│ --help             Show this message and exit.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10107,12 +10109,13 @@ Usage: t3 teatree workspace relocate [OPTIONS]
 ```
 Usage: t3 teatree workspace list-orphans [OPTIONS]
 
- List orphan branches (commits ahead of origin/main AND no open PR) across the
- workspace; ``[]`` if none.
+ List branch verdicts; orphans have unmerged work but no PR; ``[]`` means no
+ branch.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit JSON.                                                   │
-│ --help          Show this message and exit.                                  │
+│ --branch        TEXT  Scan only this branch.                                 │
+│ --json                Emit JSON.                                             │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

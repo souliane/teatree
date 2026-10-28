@@ -10,8 +10,10 @@ interrupted-provision DB heal used by ``start`` (#1038).
 
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, TypedDict
+from pathlib import Path
+from typing import TYPE_CHECKING
 
+from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.cleanup.preview import preview_line
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
@@ -22,6 +24,11 @@ from teatree.utils import git
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
+
+
+def worktree_root() -> Path:
+    # The per-overlay worktree root differs from the clone-discovery root.
+    return _config_worktree_root()
 
 
 def report_worktree_probes(
@@ -50,27 +57,6 @@ def report_worktree_probes(
         total += summary.total
         total_failures += summary.failures
     return total, total_failures
-
-
-class OrphanEntry(TypedDict):
-    repo: str
-    branch: str
-    status: str
-    ahead_count: int
-
-
-def list_orphan_entries() -> list["OrphanEntry"]:
-    """JSON-serialisable orphan-branch list (commits ahead of origin/main, no open PR)."""
-    return [
-        OrphanEntry(repo=r.repo, branch=r.branch, status=r.status.value, ahead_count=r.ahead_count)
-        for r in find_orphans_in_workspace()
-    ]
-
-
-def render_orphans(entries: list["OrphanEntry"]) -> str:
-    """The human view of :func:`list_orphan_entries` — one line per orphan branch."""
-    lines = "".join(f"{e['repo']} ({e['branch']}) — {e['ahead_count']} ahead, {e['status']}\n" for e in entries)
-    return lines or "No orphan branches.\n"
 
 
 def warn_orphans(write: Callable[[str], None]) -> None:

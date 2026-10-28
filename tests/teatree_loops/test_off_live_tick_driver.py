@@ -15,8 +15,10 @@ from django.tasks import TaskResultStatus
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
+from teatree.core.models.loop import OFF_LIVE_TICK_NAMES
+from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID, RUNNER_PID_ENV, RUNNER_SESSION_ENV
 from teatree.loops import off_live_tick_driver
-from teatree.loops.deadlined_tick import TickOutcome, run_deadlined_argv
+from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER, TickOutcome, run_deadlined_argv
 from teatree.loops.dream.loop import DREAM_OFF_TICK_DEADLINE_SECONDS
 from teatree.loops.off_live_tick_driver import (
     drive_off_live_tick_loops,
@@ -44,32 +46,36 @@ class TestOffLiveTickDriver(django.test.TestCase):
 
     def setUp(self) -> None:
         DBTaskResult.objects.all().delete()
-        self._ran: list[tuple[list[str], float]] = []
+        self._ran: list[tuple[list[str], float, dict[str, str]]] = []
 
-    def _record(self, argv: list[str], *, label: str, deadline: float) -> TickOutcome:
-        self._ran.append((argv, deadline))
+    def _record(self, argv: list[str], *, label: str, deadline: float, env: dict[str, str]) -> TickOutcome:
+        self._ran.append((argv, deadline, env))
         return {"timed_out": False, "returncode": 0}
 
     def test_fires_every_registered_off_live_tick_loops_own_tick_command(self) -> None:
         with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", self._record):
             result = off_live_tick_driver.drive_off_live_tick_loops.func()
 
-        driven = {tuple(argv[-2:]) for argv, _deadline in self._ran}
+        driven = {tuple(argv[-2:]) for argv, _deadline, _env in self._ran}
         assert driven == {("directive", "tick"), ("dream", "tick"), ("outer", "tick")}
         assert result["driven"] == 3
         # Each runs as its own `python -m teatree <cmd> tick` subprocess, deadlined at
         # the loop's OWN ceiling when it declares one and the shared default otherwise.
         declared = {name: deadline for name, _argv, deadline in off_live_tick_commands()}
-        by_command = {tuple(argv[-2:]): deadline for argv, deadline in self._ran}
-        for argv, deadline in self._ran:
+        assert set(declared) == OFF_LIVE_TICK_NAMES
+        by_command = {tuple(argv[-2:]): deadline for argv, deadline, _env in self._ran}
+        for argv, deadline, env in self._ran:
             assert argv[1:3] == ["-m", "teatree"]
             assert deadline in set(declared.values())
+            assert env[TICK_SUBPROCESS_ENV_MARKER] == "1"
+            assert env[RUNNER_SESSION_ENV] == LOOP_RUNNER_SESSION_ID
+            assert env[RUNNER_PID_ENV].isdigit()
         assert by_command["dream", "tick"] == DREAM_OFF_TICK_DEADLINE_SECONDS
         assert by_command["outer", "tick"] == off_live_tick_driver.DEADLINE_SECONDS
         assert by_command["directive", "tick"] == off_live_tick_driver.DEADLINE_SECONDS
 
     def test_reschedules_itself_before_running_the_ticks(self) -> None:
-        def _explode(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+        def _explode(argv: list[str], *, label: str, deadline: float, env: dict[str, str]) -> TickOutcome:
             raise _ExplodingTickError
 
         with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _explode):
@@ -101,7 +107,7 @@ class TestOffLiveTickDriver(django.test.TestCase):
         ).exists()
 
     def test_counts_a_timed_out_tick_without_aborting_the_rest(self) -> None:
-        def _timeout(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+        def _timeout(argv: list[str], *, label: str, deadline: float, env: dict[str, str]) -> TickOutcome:
             return {"timed_out": True, "returncode": None}
 
         with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _timeout):
@@ -112,7 +118,7 @@ class TestOffLiveTickDriver(django.test.TestCase):
     def test_counts_a_nonzero_exit_as_failed_rather_than_a_healthy_drive(self) -> None:
         # These counts are the pass's only record, so a tick command that ran and exited
         # nonzero must not be indistinguishable from one that did its work.
-        def _exit_one(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+        def _exit_one(argv: list[str], *, label: str, deadline: float, env: dict[str, str]) -> TickOutcome:
             return {"timed_out": False, "returncode": 1}
 
         with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _exit_one):
@@ -121,7 +127,7 @@ class TestOffLiveTickDriver(django.test.TestCase):
         assert result == {"driven": 3, "timed_out": 0, "failed": 3}
 
     def test_counts_a_runner_that_never_started_as_failed(self) -> None:
-        def _explode(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+        def _explode(argv: list[str], *, label: str, deadline: float, env: dict[str, str]) -> TickOutcome:
             raise _ExplodingTickError(label)
 
         with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _explode):
