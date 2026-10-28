@@ -12,7 +12,7 @@ from teatree.core.models.deferred_question import DeferredQuestionError
 
 class TestQuestionActions(TestCase):
     def test_record_refuses_an_action_marker_without_the_matching_card(self) -> None:
-        action = ActionRequest(kind=OwnerActionKind.ATTEST, target="17", binding="digest")
+        action = ActionRequest(kind=OwnerActionKind.VOID, target="17", binding="digest")
         marker = action_marker(action)
         with pytest.raises(DeferredQuestionError, match="reserved"):
             DeferredQuestion.record("Should I accept this checkout?", dedupe_marker=marker)
@@ -29,7 +29,7 @@ class TestQuestionActions(TestCase):
         )
         with pytest.raises(DeferredQuestionError, match="reserved"):
             DeferredQuestion.record(
-                "Should I accept this checkout?", dedupe_marker="owner-action:attest:wrong", card=card
+                "Should I accept this checkout?", dedupe_marker="owner-action:void:wrong", card=card
             )
         with pytest.raises(DeferredQuestionError, match="reserved"):
             DeferredQuestion.record("Should I accept this checkout?", dedupe_marker="other", card=card)

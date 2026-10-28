@@ -87,8 +87,9 @@ fi
 SCRATCH="$(mktemp -d)"
 # The same "<pid> <heartbeat> <deadline>" record deploy.sh keeps, so the watchdog and the doctor
 # read a roll as a convergence in flight; the beat stops with this shell and never holds fd 9.
-ROLL_DEADLINE=$(($(date -u +%s) + DRAIN_TIMEOUT + 3600))
-write_deploy_record "$$" "$ROLL_DEADLINE"
+ROLL_STARTED=$(date -u +%s)
+ROLL_DEADLINE=$((ROLL_STARTED + DRAIN_TIMEOUT + 3600))
+write_deploy_record "$$" "$ROLL_DEADLINE" "$ROLL_STARTED"
 (
     exec 9>&-
     while sleep "$RECORD_REFRESH_SECONDS" && kill -0 "$$" 2>/dev/null; do

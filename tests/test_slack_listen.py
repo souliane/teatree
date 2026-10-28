@@ -242,6 +242,53 @@ class TestCheckCommand:
         assert len(lines) == 1
         assert "human" in lines[0]
 
+    def test_a_colleagues_dm_is_neither_emitted_nor_acknowledged(self) -> None:
+        def im(user: str, ts: str) -> dict:
+            event = {"type": "message", "channel_type": "im", "user": user, "text": "hi", "ts": ts}
+            return {"overlay": "ov", "event": {**event, "channel": _DM_CHANNEL}}
+
+        fake = _RouteAwareFake()
+        with (
+            patch(
+                "teatree.backends.slack.receiver.drain_event_queue",
+                return_value=[im("U_COLLEAGUE", "1.0"), im(_USER_ID, "2.0")],
+            ),
+            patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: fake),
+        ):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == 0
+        assert [json.loads(line)["ts"] for line in result.stdout.strip().splitlines()] == ["2.0"]
+        assert fake.react_routed_calls == [(_DM_CHANNEL, "2.0", "eyes")]
+
+    def test_a_dm_with_no_resolvable_owner_is_not_emitted(self) -> None:
+        event = {"type": "message", "channel_type": "im", "user": _USER_ID, "text": "hi", "ts": "1.0"}
+        with (
+            patch(
+                "teatree.backends.slack.receiver.drain_event_queue", return_value=[{"overlay": "ov", "event": event}]
+            ),
+            patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: None),
+        ):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == EMPTY_QUEUE_EXIT_CODE
+
+    def test_incomplete_ims_are_skipped_before_backend_resolution(self) -> None:
+        events = [
+            {"overlay": "ov", "event": {"type": "message", "channel_type": "im", "user": _USER_ID, "text": ""}},
+            {"overlay": "ov", "event": {"type": "message", "channel_type": "im", "text": "hi"}},
+        ]
+        with (
+            patch("teatree.backends.slack.receiver.drain_event_queue", return_value=events),
+            patch(
+                "teatree.cli.slack.listen.messaging_from_overlay", side_effect=AssertionError("incomplete event")
+            ) as resolve,
+        ):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == EMPTY_QUEUE_EXIT_CODE
+        resolve.assert_not_called()
+
     def test_ack_on_user_own_dm_stays_ungated(self) -> None:
         """The :eyes: ack on the user's OWN inbound DM stays ungated (self branch)."""
         events = [

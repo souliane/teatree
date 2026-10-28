@@ -28,6 +28,7 @@ from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.runner import HarnessOutcome
 from teatree.agents.runner_interruption import _record_stuck_outcome
 from teatree.core.backend_protocols import PrOpenState
+from teatree.core.intake.fix_first import DEFAULT_STUCK_IDLE_HOURS, stuck_idle_hours
 from teatree.core.mode_resolution import set_mode_override
 from teatree.core.modelkit.task_failure_taxonomy import (
     CANCELLED_PREFIX,
@@ -46,12 +47,7 @@ from teatree.core.models.transition import TicketTransition
 from teatree.core.repair_loop import max_phase_iterations
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from teatree.loop import stuck_ticket_redispatch
-from teatree.loop.stuck_ticket_redispatch import (
-    DEFAULT_STUCK_IDLE_HOURS,
-    _idle_threshold_hours,
-    idle_started_author_tickets,
-    redispatch_stuck_tickets,
-)
+from teatree.loop.stuck_ticket_redispatch import idle_started_author_tickets, redispatch_stuck_tickets
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.utils.git_run import run_strict
 from tests._pr_open_state_stub import pr_open_state
@@ -201,7 +197,7 @@ class TestStuckTicketRedispatch(TestCase):
 
     def test_bad_idle_threshold_setting_falls_back_to_default(self) -> None:
         with override_settings(STUCK_TICKET_IDLE_HOURS="not-a-number"):
-            assert _idle_threshold_hours() == DEFAULT_STUCK_IDLE_HOURS
+            assert stuck_idle_hours() == DEFAULT_STUCK_IDLE_HOURS
 
     def test_ticket_with_an_open_task_is_left_alone(self) -> None:
         ticket = _stuck_ticket()

@@ -13,9 +13,8 @@ import json
 import logging
 from collections.abc import Callable
 
-from teatree.agents.coding_prompt import _coding_phase_directive
+from teatree.agents.coding_prompt import _TEST_SELECTION_LINES, _coding_phase_directive, _testing_phase_lines
 from teatree.agents.dispatch_preflight import (
-    branch_currency_brief_lines,
     declared_seams_brief_lines,
     head_state_brief_lines,
     review_diff_brief_lines,
@@ -334,6 +333,11 @@ def intake_survey_lines(survey_json: str) -> tuple[str, ...]:
         "INTAKE LANDSCAPE SURVEY (produced by ticket-intake — CONSUME, do not re-derive):",
         "Plan AGAINST this: an open PR for the issue → finish+merge it, not fresh; a merged",
         "PR → surface for close; an in-flight worktree → build on it, never overwrite.",
+        (
+            "fix_first lists open defects and stuck tickets; list red or flaky gates in the touched "
+            "area from live checks (or name unreadable checks). A FEATURE waits behind them (Rule 6): "
+            "defer or split it, or record the owner's lift in the plan."
+        ),
         survey_json,
     )
 
@@ -380,6 +384,11 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
     """The ``PHASE: reviewing`` block and its review evidence instructions."""
     plan = plan_for_task(task)
     reviewer_head_unverified = task.ticket.role == task.ticket.Role.REVIEWER and plan is None
+    probe_kinds = (
+        "revert-to-RED and mutation"
+        if failing_run_required(gated_ticket_for_review_task(task) or task.ticket)
+        else "mutation"
+    )
     unverified_line = (
         "No verified live head is available for this PR. Do not review a stamped SHA or local diff; "
         "return review_venue_limit naming the live head read failure."
@@ -408,6 +417,13 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
             " a `hold` owes none."
         ),
         ("For multi-repo tickets, review the combined diff and list all repos in `integration_review.repos`."),
+        *(() if read_only_venue else _TEST_SELECTION_LINES),
+        *(() if read_only_venue else (f"Run {probe_kinds} probes by pinned node id with -n0.",)),
+        (
+            "Use the supplied check-runs at the reviewed head for whole-tree evidence."
+            if read_only_venue
+            else "Read check-runs at the reviewed head for whole-tree evidence."
+        ),
         *(() if read_only_venue else ("2. Run /t3:next to wrap up.",)),
         *_VERIFICATION_BRIEF_LINES,
         *(() if read_only_venue else _green_proof_binding_lines(task)),
@@ -486,17 +502,6 @@ def _answering_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
             except Exception:
                 logger.exception("Answering work-item overlay hook failed for ticket %s", task.ticket_id)
     return tuple(lines)
-
-
-def _testing_phase_lines(task: Task) -> tuple[str, ...]:
-    """The ``PHASE: testing`` block — the dispatch-time branch-currency verdict (#2663).
-
-    ``t3 tool verify-gates`` judges the worktree against ITSELF, so a branch can
-    pass every local gate and still not merge. The verdict is read at prompt-build
-    time (the same read-git-at-build-time pattern as :func:`head_state_brief_lines`)
-    so the tester starts from a fetched answer rather than a clean-looking tree.
-    """
-    return ("", "PHASE: testing — branch-currency preflight", *branch_currency_brief_lines(task))
 
 
 def _shipping_phase_lines() -> tuple[str, ...]:

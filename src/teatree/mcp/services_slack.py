@@ -36,9 +36,8 @@ def _client() -> MessagingBackend:
 class MentionQueueUnreadableError(ToolError):
     """``slack_mentions`` found no queue to read — never "the user was not mentioned".
 
-    A ``ToolError`` because only that class keeps its text on the way out of
-    ``call_tool``; any other exception reaches the agent as a reasonless
-    ``UnexpectedToolError``, which is the silent-empty this refusal replaced.
+    A ``ToolError`` keeps this refusal's full text on the way out of ``call_tool``;
+    an unexpected crash instead carries a redacted, capped reason.
     """
 
     def __init__(self) -> None:
@@ -75,7 +74,7 @@ async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[
     When both tokens are configured, non-DMs use the user token and DMs retry a bot
     membership refusal as the user; bot-only reads use the bot, and user-only reads
     use the user. ``[]`` means genuinely empty. Backend refusals become ``ToolError``
-    here because only its text survives ``call_tool``.
+    here so the full refusal text survives ``call_tool``.
     """
     try:
         return await sync_to_async(

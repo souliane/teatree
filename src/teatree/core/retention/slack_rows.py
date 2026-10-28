@@ -5,6 +5,7 @@ import datetime as dt
 from django.db import models
 
 from teatree.core.models import BotPing, PendingChatInjection
+from teatree.core.retention.owner_registry import configured_slack_owner_ids
 
 DM_RETENTION_DAYS = 30
 SENT_TEXT_RETENTION_DAYS = 7
@@ -12,7 +13,11 @@ LONG_PAYLOAD_RETENTION_DAYS = 30
 
 
 def pending_rows(cutoff: dt.datetime) -> models.QuerySet:
-    return PendingChatInjection.objects.prunable(cutoff)
+    old_rows = PendingChatInjection.objects.filter(received_at__lt=cutoff)
+    foreign = models.Q(pk__in=[])
+    for overlay, owner_id in configured_slack_owner_ids().items():
+        foreign |= models.Q(overlay=overlay) & ~models.Q(user_id=owner_id)
+    return old_rows.filter(models.Q(loop_replied_at__isnull=False) | foreign)
 
 
 def sent_text_rows(cutoff: dt.datetime) -> models.QuerySet:

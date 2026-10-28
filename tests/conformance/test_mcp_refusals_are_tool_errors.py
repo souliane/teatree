@@ -1,11 +1,10 @@
 """Every deliberate refusal in ``teatree.mcp`` reaches the agent as a ``ToolError``.
 
 mcp's tool wrapper (``tools/base.py``) re-raises a ``ToolError`` WITH its text and
-everything else as ``UnexpectedToolError("Error executing tool <name>")``, reason
-stripped. So a refusal raised as a plain ``RuntimeError`` still fires and still stops
-the call — it just stops telling the agent why, which is the silent-empty every one of
-these refusals was written to replace. The failure is invisible: the gate works, the
-test that asserts the raise passes, and only the caller is left guessing.
+unexpected crashes as ``UnexpectedToolError("Error executing tool <name>")``. The
+server adds a redacted, capped crash cause to the latter. A refusal raised as a
+plain ``RuntimeError`` therefore loses its full actionable text, which is why
+deliberate refusals must be ``ToolError``.
 
 Two shapes carry a refusal out of this package, and the walk covers both. A ``raise``
 written here is pinned by requiring the class to derive from ``ToolError``. A refusal
@@ -41,6 +40,7 @@ _MIN_REFUSING_SEAM_CALLS = 1
 #: classified deliberately — that forcing function is the point of an explicit ledger.
 _NOT_A_REFUSAL: dict[tuple[str, str], str] = {
     ("server.py", "ToolNameCollisionError"): "raised at registration time, before any tool can be called",
+    ("server.py", "UnexpectedToolError"): "preserves the SDK crash type with a redacted, capped cause",
     ("command_catalogue.py", "RuntimeError"): "unregistered provider — teatree.cli never imported, a wiring bug",
     ("review_seam.py", "RuntimeError"): "unregistered factory — teatree.cli never imported, a wiring bug",
     ("services_notion.py", "RuntimeError"): "unregistered factory — t3 mcp serve never registered it, a wiring bug",
@@ -104,7 +104,7 @@ def _called_name(node: ast.Call) -> str:
 
 
 def scan_module(label: str, tree: ast.Module, accepted: frozenset[str]) -> list[Violation]:
-    """Refusals in *tree* that would reach the agent with their reason stripped."""
+    """Refusals in *tree* that would reach the agent without their full reason."""
     guarded = _guarded_nodes(tree, accepted)
     violations: list[Violation] = []
     for node in ast.walk(tree):
@@ -130,7 +130,7 @@ def _live_violations() -> list[Violation]:
     return [v for path, tree in modules for v in scan_module(path.name, tree, accepted)]
 
 
-def test_no_mcp_refusal_reaches_the_agent_with_its_reason_stripped() -> None:
+def test_no_mcp_refusal_loses_its_full_reason() -> None:
     assert _live_violations() == []
 
 
