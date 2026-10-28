@@ -14,6 +14,7 @@ from teatree.agents.attempt_recorder import (
     validate_result_keys,
 )
 from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
+from teatree.core.issue_hygiene import CreateOutcome
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.task_failure_taxonomy import (
     OWNER_STOP_REFUSAL_PREFIX,
@@ -36,6 +37,8 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.self_forge_identities import ExternalIssueRefusedError
+from teatree.core.send_proxy import OutboundBlockedError
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 from tests._owner_channel import assert_a_plain_card, owner_stop
 from tests.teatree_core.models._shared import _init_repo_with_branch
@@ -529,6 +532,21 @@ class TestLandingVerifiedCompletion(TestCase):
         assert task.status == Task.Status.FAILED
 
 
+def _news_file_candidate(**overrides: object) -> dict[str, object]:
+    candidate: dict[str, object] = {
+        "title": "Agent evals",
+        "url": "https://ex.com/a",
+        "rationale": "Improve eval coverage",
+        "action": "file",
+        "backlog_checked": True,
+        "base_red": False,
+        "duplicate_of": "",
+        "ticket_title": "Add agent eval coverage",
+        "ticket_body": "The agent eval coverage is missing this pattern.",
+    }
+    return candidate | overrides
+
+
 class TestScanningNewsEnvelopeChannel(TestCase):
     """A shell-denied scanning_news agent hands candidates back through the envelope (#9)."""
 
@@ -540,7 +558,7 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         return task
 
     @patch("teatree.core.models.pending_article_suggestion.check_url")
-    def test_article_suggestions_round_trip_to_pending_rows(self, check_url: object) -> None:
+    def test_article_suggestions_round_trip_to_settled_rows(self, check_url: object) -> None:
         check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
         task = self._claimed()
         record_result_envelope(
@@ -559,11 +577,255 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         assert rows.count() == 2
         assert set(rows.values_list("url", flat=True)) == {"https://ex.com/a", "https://ex.com/b"}
         assert {row.overlay for row in rows} == {"acme"}
-        assert {row.status for row in rows} == {PendingArticleSuggestion.Status.PENDING}
+        assert {row.status for row in rows} == {PendingArticleSuggestion.Status.DROPPED}
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.agents.reactive_envelope_recorders.create_or_extend_by_marker")
+    @patch("teatree.agents.reactive_envelope_recorders._resolved_code_host")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_news_scan_files_fit_candidate_and_settles_row(
+        self, check_url: MagicMock, code_host: MagicMock, create_issue: MagicMock, notify: MagicMock
+    ) -> None:
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        create_issue.return_value = CreateOutcome(
+            kind="created_new", issue_url="https://github.com/souliane/teatree/issues/9000"
+        )
+        code_host.return_value.get_issue.side_effect = lambda _: {"body": create_issue.call_args.kwargs["draft"].body}
+        record_result_envelope(
+            self._claimed(),
+            {
+                "summary": "one fitting idea",
+                "article_suggestions": [_news_file_candidate()],
+            },
+        )
+        row = PendingArticleSuggestion.objects.get()
+        assert row.status == PendingArticleSuggestion.Status.FILED
+        assert row.issue_url == "https://github.com/souliane/teatree/issues/9000"
+        assert row.decided_at is not None
+        assert DeferredQuestion.objects.count() == 0
+        assert create_issue.call_count == 1
+        assert create_issue.call_args.kwargs["draft"].labels == ("from-news-scan", "needs-triage")
+        code_host.assert_called_once_with("acme")
+        notify.assert_called_once()
+
+    @patch("teatree.agents.reactive_envelope_recorders.create_or_extend_by_marker")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_news_scan_drops_red_base_without_filing_or_card(
+        self, check_url: MagicMock, create_issue: MagicMock
+    ) -> None:
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        record_result_envelope(
+            self._claimed(),
+            {
+                "summary": "base already red",
+                "article_suggestions": [_news_file_candidate(base_red=True)],
+            },
+        )
+        row = PendingArticleSuggestion.objects.get()
+        assert row.status == PendingArticleSuggestion.Status.DROPPED
+        assert row.decided_at is not None
+        assert DeferredQuestion.objects.count() == 0
+        create_issue.assert_not_called()
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.agents.reactive_envelope_recorders.append_description_section")
+    @patch("teatree.agents.reactive_envelope_recorders.open_candidates")
+    @patch("teatree.agents.reactive_envelope_recorders._resolved_code_host")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_news_scan_extends_a_confirmed_open_duplicate(
+        self, check_url: MagicMock, code_host: MagicMock, open_issues: MagicMock, append: MagicMock, notify: MagicMock
+    ) -> None:
+        target = "https://github.com/souliane/teatree/issues/9001"
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        open_issues.return_value = {target: {"html_url": target}}
+        record_result_envelope(
+            self._claimed(),
+            {"summary": "one duplicate", "article_suggestions": [_news_file_candidate(duplicate_of=target)]},
+        )
+        row = PendingArticleSuggestion.objects.get()
+        assert row.status == PendingArticleSuggestion.Status.FILED
+        assert row.issue_url == target
+        assert append.call_args.kwargs["issue_url"] == target
+        assert append.call_args.kwargs["section"].action == "news_scan_candidate"
+        code_host.assert_called_once_with("acme")
+        notify.assert_called_once()
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.agents.reactive_envelope_recorders.create_or_extend_by_marker")
+    @patch("teatree.agents.reactive_envelope_recorders._resolved_code_host")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_two_articles_for_one_idea_share_the_issue_marker(
+        self, check_url: MagicMock, code_host: MagicMock, create_issue: MagicMock, notify: MagicMock
+    ) -> None:
+        issue_url = "https://github.com/souliane/teatree/issues/9000"
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        create_issue.side_effect = [
+            CreateOutcome(kind="created_new", issue_url=issue_url),
+            CreateOutcome(kind="extended_existing", issue_url=issue_url),
+        ]
+        code_host.return_value.get_issue.side_effect = lambda _: {"body": create_issue.call_args.kwargs["draft"].body}
+        record_result_envelope(
+            self._claimed(),
+            {
+                "summary": "one idea from two articles",
+                "article_suggestions": [
+                    _news_file_candidate(url="https://ex.com/a"),
+                    _news_file_candidate(url="https://ex.com/b", ticket_title="  ADD agent   eval coverage "),
+                ],
+            },
+        )
+        rows = list(PendingArticleSuggestion.objects.all())
+        assert len(rows) == 2
+        assert {row.issue_url for row in rows} == {issue_url}
+        assert create_issue.call_count == 2
+        first, second = create_issue.call_args_list
+        assert first.kwargs["marker"] == second.kwargs["marker"]
+        code_host.assert_called()
+        notify.assert_called_once()
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.agents.reactive_envelope_recorders.append_description_section")
+    @patch("teatree.agents.reactive_envelope_recorders.open_candidates")
+    @patch("teatree.agents.reactive_envelope_recorders._resolved_code_host")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_unknown_open_duplicate_drops_without_creating_a_copy(
+        self, check_url: MagicMock, code_host: MagicMock, open_issues: MagicMock, append: MagicMock, notify: MagicMock
+    ) -> None:
+        target = "https://github.com/souliane/teatree/issues/9001"
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        open_issues.return_value = {}
+        record_result_envelope(
+            self._claimed(),
+            {"summary": "stale duplicate", "article_suggestions": [_news_file_candidate(duplicate_of=target)]},
+        )
+        row = PendingArticleSuggestion.objects.get()
+        assert row.status == PendingArticleSuggestion.Status.DROPPED
+        assert "no longer open" in row.decision_reason
+        append.assert_not_called()
+        code_host.assert_called_once_with("acme")
+        notify.assert_called_once()
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.agents.reactive_envelope_recorders.append_description_section")
+    @patch("teatree.agents.reactive_envelope_recorders.open_candidates")
+    @patch("teatree.agents.reactive_envelope_recorders._resolved_code_host")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_external_duplicate_is_recorded_without_editing_or_copying_it(
+        self, check_url: MagicMock, code_host: MagicMock, open_issues: MagicMock, append: MagicMock, notify: MagicMock
+    ) -> None:
+        target = "https://github.com/souliane/teatree/issues/9001"
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        open_issues.return_value = {target: {"html_url": target}}
+        append.side_effect = ExternalIssueRefusedError(target, "other", "not self-authored")
+        record_result_envelope(
+            self._claimed(),
+            {"summary": "external duplicate", "article_suggestions": [_news_file_candidate(duplicate_of=target)]},
+        )
+        row = PendingArticleSuggestion.objects.get()
+        assert row.status == PendingArticleSuggestion.Status.DROPPED
+        assert target in row.decision_reason
+        code_host.assert_called_once_with("acme")
+        notify.assert_called_once()
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.agents.reactive_envelope_recorders.create_or_extend_by_marker")
+    @patch("teatree.agents.reactive_envelope_recorders._resolved_code_host")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_external_marker_conflict_is_dropped_without_a_second_issue(
+        self, check_url: MagicMock, code_host: MagicMock, create_issue: MagicMock, notify: MagicMock
+    ) -> None:
+        target = "https://github.com/souliane/teatree/issues/9001"
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        create_issue.return_value = CreateOutcome(kind="external_conflict", issue_url=target)
+        record_result_envelope(
+            self._claimed(),
+            {"summary": "external issue", "article_suggestions": [_news_file_candidate()]},
+        )
+        row = PendingArticleSuggestion.objects.get()
+        assert row.status == PendingArticleSuggestion.Status.DROPPED
+        assert target in row.decision_reason
+        code_host.return_value.get_issue.assert_not_called()
+        notify.assert_called_once()
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.agents.reactive_envelope_recorders.create_or_extend_by_marker")
+    @patch("teatree.agents.reactive_envelope_recorders._resolved_code_host")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_missing_forge_issue_url_rolls_back_candidate(
+        self, check_url: MagicMock, code_host: MagicMock, create_issue: MagicMock, notify: MagicMock
+    ) -> None:
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        create_issue.return_value = CreateOutcome(kind="created_new")
+        with pytest.raises(RuntimeError, match="no issue URL"):
+            record_result_envelope(
+                self._claimed(), {"summary": "no URL", "article_suggestions": [_news_file_candidate()]}
+            )
+        assert PendingArticleSuggestion.objects.count() == 0
+        code_host.assert_called_once_with("acme")
+        notify.assert_not_called()
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.agents.reactive_envelope_recorders.create_or_extend_by_marker")
+    @patch("teatree.agents.reactive_envelope_recorders._resolved_code_host")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_news_scan_rolls_back_candidate_when_filing_fails(
+        self, check_url: MagicMock, code_host: MagicMock, create_issue: MagicMock, notify: MagicMock
+    ) -> None:
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        for failure in (RuntimeError("forge unavailable"), OutboundBlockedError("privacy refused")):
+            with self.subTest(failure=type(failure).__name__):
+                create_issue.side_effect = failure
+                with pytest.raises(type(failure), match=str(failure)):
+                    record_result_envelope(
+                        self._claimed(),
+                        {"summary": "retry needed", "article_suggestions": [_news_file_candidate()]},
+                    )
+                assert PendingArticleSuggestion.objects.count() == 0
+        notify.assert_not_called()
+        assert code_host.call_count == 2
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.agents.reactive_envelope_recorders.create_or_extend_by_marker")
+    @patch("teatree.agents.reactive_envelope_recorders._resolved_code_host")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_news_scan_refuses_an_unconfirmed_forge_write(
+        self, check_url: MagicMock, code_host: MagicMock, create_issue: MagicMock, notify: MagicMock
+    ) -> None:
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        create_issue.return_value = CreateOutcome(
+            kind="created_new", issue_url="https://github.com/souliane/teatree/issues/9000"
+        )
+        code_host.return_value.get_issue.return_value = {"body": "stale issue body"}
+        with pytest.raises(RuntimeError, match="could not be confirmed"):
+            record_result_envelope(
+                self._claimed(),
+                {"summary": "unconfirmed", "article_suggestions": [_news_file_candidate()]},
+            )
+        assert PendingArticleSuggestion.objects.count() == 0
+        notify.assert_not_called()
 
     @patch("teatree.agents.reactive_envelope_recorders.notify_user")
     @patch("teatree.core.models.pending_article_suggestion.check_url")
-    def test_new_candidate_records_pending_row_and_one_digest_without_question(
+    def test_news_scan_drops_incomplete_filing_evidence(self, check_url: MagicMock, notify: MagicMock) -> None:
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        cases = (
+            ("unchecked", {"backlog_checked": False}, "backlog"),
+            ("unknown-base", {"base_red": None}, "base"),
+            ("no-draft", {"ticket_body": ""}, "draft"),
+            ("declined", {"action": "drop", "decision_reason": "no scoped benefit"}, "no scoped benefit"),
+        )
+        for suffix, overrides, reason in cases:
+            with self.subTest(suffix=suffix):
+                item = _news_file_candidate(url=f"https://ex.com/{suffix}", **overrides)
+                record_result_envelope(self._claimed(), {"summary": "settled", "article_suggestions": [item]})
+                row = PendingArticleSuggestion.objects.get(url=item["url"])
+                assert row.status == PendingArticleSuggestion.Status.DROPPED
+                assert reason in row.decision_reason
+        assert notify.call_count == len(cases)
+
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_new_candidate_records_settled_row_and_one_digest_without_question(
         self, check_url: MagicMock, notify: MagicMock
     ) -> None:
         check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
@@ -576,7 +838,7 @@ class TestScanningNewsEnvelopeChannel(TestCase):
             },
         )
         row = PendingArticleSuggestion.objects.get()
-        assert row.status == PendingArticleSuggestion.Status.PENDING
+        assert row.status == PendingArticleSuggestion.Status.DROPPED
         assert row.url == "https://ex.com/a"
         assert DeferredQuestion.objects.count() == 0
         notify.assert_called_once()
