@@ -439,7 +439,15 @@ class ReleasedHandOffTests(TestCase):
         assert not self._hand_off(self._open(self.claimant))
 
     def test_the_claimants_tenure_must_still_be_open(self) -> None:
-        assert not self._hand_off(self._released(self.prior), self._released(self.claimant))
+        closed = Tenure(
+            task_holder_id(self.claimant),
+            self.claimant.claimed_by_session,
+            "2026-10-27T13:00:00+00:00",
+            RELEASED_EXIT,
+            "2026-10-27T13:30:00+00:00",
+        )
+
+        assert not self._hand_off(self._released(self.prior), closed)
 
     def test_the_open_tenure_must_be_the_claimants(self) -> None:
         stranger = TaskFactory(ticket=self.ticket, phase="testing")
