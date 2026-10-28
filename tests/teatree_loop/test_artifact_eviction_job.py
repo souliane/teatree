@@ -8,9 +8,12 @@ ladder's anti-thrash gate does not read.
 """
 
 import datetime as _dt
+import os
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -20,8 +23,11 @@ from django.utils import timezone
 from teatree import paths
 from teatree.config import UserSettings
 from teatree.core.cleanup.artifact_eviction import ArtifactEvictionPlan
-from teatree.core.models import Ticket, Worktree
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models import BotPing, Ticket, Worktree
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.core.notify_types import DELIVERED, NotifyKind, NotifyOutcome, NotifyReason, blocked
+from teatree.core.retention.scratch import ScratchSweepPlan
 from teatree.core.tasks import TeardownDispatch
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import _run_job
@@ -94,6 +100,20 @@ class CadenceTests(TestCase):
         marker.save(update_fields=["last_freed_at"])
 
         assert [s.kind for s in ArtifactEvictionScanner().scan()] == [_SIGNAL]
+
+    def test_pressure_shortens_artifact_cadence_without_running_every_tick(self) -> None:
+        marker = SimpleNamespace(
+            last_artifact_sweep_at=timezone.now() - _dt.timedelta(minutes=6),
+            last_disk_free_gb=16.0,
+        )
+        scanner = ArtifactEvictionScanner(cadence_minutes=30, disk_crit_free_gb=10.0)
+
+        assert not scanner._cadence_blocks(marker)
+        marker.last_artifact_sweep_at = timezone.now() - _dt.timedelta(minutes=2)
+        assert scanner._cadence_blocks(marker)
+        marker.last_artifact_sweep_at = timezone.now() - _dt.timedelta(minutes=6)
+        marker.last_disk_free_gb = 30.0
+        assert scanner._cadence_blocks(marker)
 
 
 class WiringTests(TestCase):
@@ -209,7 +229,16 @@ class MarkerCouplingTests(TestCase):
         marker = ResourcePressureMarker.load()
         assert marker.last_freed_at is None, "the control: nothing has stamped it"
 
-        sweep_artifacts({"artifact_idle_days": 2.0})
+        with (
+            patch.dict(os.environ, {"TEATREE_ROLE": "worker"}),
+            patch(
+                f"{_SWEEP}.sweep_scratch",
+                return_value=ScratchSweepPlan(
+                    root="/tmp", retention_days=1 / 6, entries=(), refused=True, probe_gap="unsighted"
+                ),
+            ),
+        ):
+            sweep_artifacts({"artifact_idle_days": 2.0})
 
         marker.refresh_from_db()
         assert marker.last_freed_at is None, "a loss-free sweep must not trip the anti-thrash gate"
@@ -229,7 +258,14 @@ class MarkerCouplingTests(TestCase):
         marker.last_plan = ladder_plan
         marker.save(update_fields=["last_plan"])
 
-        sweep_artifacts({"artifact_idle_days": 2.0})
+        with (
+            patch.dict(os.environ, {"TEATREE_ROLE": "worker"}),
+            patch(
+                f"{_SWEEP}.sweep_scratch",
+                return_value=ScratchSweepPlan(root="/tmp", retention_days=1 / 6, entries=(), refused=True),
+            ),
+        ):
+            sweep_artifacts({"artifact_idle_days": 2.0})
 
         marker.refresh_from_db()
         assert marker.last_plan == ladder_plan, "the artifact sweep overwrote the ladder's plan"
@@ -284,14 +320,7 @@ class BoundedPassTests(TestCase):
 
 
 @override_settings(TASKS={"default": {"BACKEND": "django_tasks_db.DatabaseBackend"}})
-class UnattendedHousekeepingTests(TestCase):
-    """The sweep is the unattended caller the teardown backlog and the env-dir reaper never had (#4923).
-
-    Both ran only when an operator typed ``clean-all`` (or never: the drain had no caller),
-    so a long-running factory accumulated terminal tickets' worktrees and orphan control-DB
-    copies until the disk filled. The sweep already runs on its own cadence on a healthy disk.
-    """
-
+class _SweepFixture(TestCase):
     def setUp(self) -> None:
         from teatree.loop import mechanical_artifacts  # noqa: PLC0415 — deferred
 
@@ -310,6 +339,15 @@ class UnattendedHousekeepingTests(TestCase):
 
         sweep_artifacts({"artifact_idle_days": 2.0})
         return ResourcePressureMarker.load().last_artifact_plan
+
+
+class UnattendedHousekeepingTests(_SweepFixture):
+    """The sweep is the unattended caller the teardown backlog and the env-dir reaper never had (#4923).
+
+    Both ran only when an operator typed ``clean-all`` (or never: the drain had no caller),
+    so a long-running factory accumulated terminal tickets' worktrees and orphan control-DB
+    copies until the disk filled. The sweep already runs on its own cadence on a healthy disk.
+    """
 
     def _orphan_env_dir(self) -> Path:
         owner = self.workspace / "merged-and-removed"
@@ -365,3 +403,140 @@ class UnattendedHousekeepingTests(TestCase):
 
         deadline = reap.call_args.kwargs["deadline"]
         assert 0 < deadline - time.monotonic() <= MIN_TICK_DEADLINE_SECONDS / 2
+
+    def test_the_scheduled_sweep_reclaims_idle_live_database_copies(self) -> None:
+        with patch(f"{_SWEEP}.reap_idle_isolated_databases", return_value=["RECLAIMED idle database copy"]) as idle:
+            plan = self._sweep()
+
+        assert idle.call_count == 1
+        assert "RECLAIMED idle database copy" in plan
+
+    def test_the_scheduled_sweep_runs_four_hour_worker_scratch_cleanup(self) -> None:
+        result = ScratchSweepPlan(root="/tmp", retention_days=1 / 6, entries=(), applied=True)
+        with (
+            patch.dict(os.environ, {"TEATREE_ROLE": "worker"}),
+            patch(f"{_SWEEP}.sweep_scratch", return_value=result) as scratch,
+        ):
+            plan = self._sweep()
+
+        assert [call.kwargs["configured_root"] for call in scratch.call_args_list] == ["/tmp", "/var/tmp"]
+        assert all(call.kwargs["retention_days"] == pytest.approx(1 / 6) for call in scratch.call_args_list)
+        assert "worker scratch" in plan
+
+    def test_a_service_that_is_not_the_worker_never_sweeps_scratch(self) -> None:
+        for role in ("admin", ""):
+            with (
+                self.subTest(role=role),
+                patch.dict(os.environ, {"TEATREE_ROLE": role}),
+                patch(f"{_SWEEP}.sweep_scratch") as scratch,
+            ):
+                self._sweep()
+
+            scratch.assert_not_called()
+
+    def test_the_scheduled_sweep_persists_each_root_cursor_for_the_next_tick(self) -> None:
+        partial = ScratchSweepPlan(
+            root="/tmp",
+            retention_days=1 / 6,
+            entries=(),
+            applied=True,
+            probe_gap="pass budget exhausted; 1 entry(ies) deferred",
+            last_checked_path="/tmp/b-young",
+        )
+        complete = ScratchSweepPlan(root="/tmp", retention_days=1 / 6, entries=(), applied=True)
+        with (
+            patch.dict(os.environ, {"TEATREE_ROLE": "worker"}),
+            patch(f"{_SWEEP}.sweep_scratch", side_effect=[partial, complete, complete, complete]) as scratch,
+        ):
+            self._sweep()
+            marker = ResourcePressureMarker.load()
+            assert marker.scratch_tmp_cursor == "/tmp/b-young"
+            self._sweep()
+
+        assert scratch.call_args_list[2].kwargs["start_after"] == "/tmp/b-young"
+        assert ResourcePressureMarker.load().scratch_tmp_cursor == ""
+
+
+class ReclaimNoticeTests(_SweepFixture):
+    """A low disk reclaim cannot fix is told to the owner as information, at most once per UTC day (#5615)."""
+
+    DAY_ONE = _dt.datetime(2026, 10, 28, 23, 59, 30, tzinfo=_dt.UTC)
+    DAY_TWO = _dt.datetime(2026, 10, 29, 0, 0, 30, tzinfo=_dt.UTC)
+
+    def setUp(self) -> None:
+        super().setUp()
+        marker = ResourcePressureMarker.load()
+        marker.last_disk_free_gb = 16.0
+        marker.save(update_fields=["last_disk_free_gb"])
+        self.enterContext(
+            patch(f"{_SWEEP}.reap_idle_isolated_databases", return_value=["REFUSED: probe unsighted for pid 4242"])
+        )
+
+    def _passes(self, readings: list[float], *, outcome: NotifyOutcome = DELIVERED, at: _dt.datetime | None = None):
+        notify = patch(f"{_SWEEP}.notify_user_outcome", return_value=outcome)
+        clock = patch("django.utils.timezone.now", return_value=at) if at else nullcontext()
+        with notify as sent, clock:
+            for free_gb in readings:
+                reading = SimpleNamespace(disk_free_gb=free_gb, disk_probe_degraded=False)
+                with patch(f"{_SWEEP}.measure_resources", return_value=reading):
+                    self._sweep()
+        return sent
+
+    def test_seven_passes_oscillating_around_the_floor_send_exactly_one_message(self) -> None:
+        sent = self._passes([16, 30, 16, 30, 16, 30, 16])
+
+        assert sent.call_count == 1
+
+    def test_an_undeliverable_notice_is_not_retried_on_every_pass(self) -> None:
+        sent = self._passes([16] * 7, outcome=blocked(NotifyReason.NO_MESSAGING_BACKEND))
+
+        assert sent.call_count == 3
+
+    def test_flapping_does_not_hand_an_undeliverable_notice_a_fresh_budget(self) -> None:
+        sent = self._passes([16, 30, 16, 30, 16, 30, 16], outcome=blocked(NotifyReason.DELIVERY_FAILED))
+
+        assert sent.call_count == 3
+
+    def test_a_notice_the_pulled_surface_took_settles_the_day(self) -> None:
+        sent = self._passes([16] * 5, outcome=blocked(NotifyReason.ROUTED_TO_PULL))
+
+        assert sent.call_count == 1
+
+    def test_a_new_utc_day_gets_its_own_notice_and_its_own_attempt_budget(self) -> None:
+        first = self._passes([16] * 3, at=self.DAY_ONE)
+        second = self._passes([16] * 3, at=self.DAY_TWO)
+
+        keys = [call.kwargs["idempotency_key"] for call in (*first.call_args_list, *second.call_args_list)]
+        assert keys == ["resource-reclaim-blocked:2026-10-28", "resource-reclaim-blocked:2026-10-29"]
+
+    def test_the_notice_informs_in_plain_words_and_asks_nothing(self) -> None:
+        sent = self._passes([16])
+
+        text = sent.call_args.args[0]
+        assert sent.call_args.kwargs["kind"] == NotifyKind.INFO
+        assert sent.call_args.kwargs["audience"] == NotifyAudience.OWNER_ESCALATION
+        assert "16.0 GB free" in text
+        assert "17.0 GB" in text
+        assert "reclaimed" in text
+        assert not any(leak in text for leak in ("4242", "REFUSED", "SKIP", "?"))
+
+    def test_through_the_real_egress_the_flapping_box_is_recorded_once_and_never_as_a_question(self) -> None:
+        with patch(f"{_SWEEP}.measure_resources") as measure:
+            for free_gb in (16, 30, 16, 30, 16, 30, 16):
+                measure.return_value = SimpleNamespace(disk_free_gb=free_gb, disk_probe_degraded=False)
+                self._sweep()
+
+        rows = BotPing.objects.filter(idempotency_key__startswith="resource-reclaim-blocked:")
+        assert [(row.kind, row.audience) for row in rows] == [("info", "owner_escalation")]
+
+    def test_recovery_ends_the_episode_but_keeps_the_days_notice_budget(self) -> None:
+        marker = ResourcePressureMarker.load()
+        marker.reclaim_blocked_since = timezone.now()
+        marker.last_reclaim_notice_at = timezone.now()
+        marker.save(update_fields=["reclaim_blocked_since", "last_reclaim_notice_at"])
+
+        self._passes([30])
+
+        marker.refresh_from_db()
+        assert marker.reclaim_blocked_since is None
+        assert marker.last_reclaim_notice_at is not None

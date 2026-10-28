@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, cast
 from django.db.models import Max
 from django.utils import timezone
 
-from teatree.core.cleanup.reclaim_pressure import reclaim_is_stalled
+from teatree.core.cleanup.reclaim_pressure import effective_disk_floor_gb, reclaim_is_stalled
 from teatree.core.factory.dream_staleness import dream_fallen_behind
 from teatree.core.factory.halted_retries import halted_retry_signals, stuck_ticket_halt_signals
 from teatree.core.factory.harness_provider_consistency import harness_provider_mismatches
@@ -402,7 +402,7 @@ def _reclaim_stall_signals() -> SignalCollection:
         marker = ResourcePressureMarker.load()
         free_gb = marker.last_disk_free_gb
         streak = marker.zero_yield_passes
-        crit_gb = get_effective_settings(None).disk_crit_free_gb
+        crit_gb = effective_disk_floor_gb(get_effective_settings(None).disk_crit_free_gb)
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
         warn_throttled(logger, "health-reclaim-stall", "reclaim-stall health read failed — skipped", exc_info=True)
         return SignalCollection(unread=("_reclaim_stall_signals",))

@@ -147,6 +147,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # rendered exactly like a healthy one. An inert probe is the operator's problem to
     # fix, not background noise, so it sits in action_needed next to real pressure.
     "resource.probe_inert": "action_needed",
+    "resource.reclaim_blocked": "action_needed",
     # #4244 A probe that answered about the CONTAINER rootfs instead of the host volume is
     # confidently wrong rather than absent — same operator remedy, so the same zone.
     "resource.probe_degraded": "action_needed",
