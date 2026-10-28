@@ -57,7 +57,7 @@ def standalone_pytest_env(root: Path) -> dict[str, str]:
 
 
 def pytest_command(*args: str) -> list[str]:
-    return [sys.executable, "-m", "pytest", "--no-migrations", *args]
+    return [sys.executable, "-m", "pytest", "--ds=tests.django_settings", "--no-migrations", *args]
 
 
 def make_probe(tmp_path: Path) -> Path:
@@ -98,7 +98,7 @@ def launch_pytest(
         env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = settings.worker_cap
     with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
         run = subprocess.Popen(
-            [sys.executable, "-m", "pytest", "--no-migrations", "-p", "pool_probe_plugin", *args, "-vv", NODE],
+            pytest_command("-p", "pool_probe_plugin", *args, "-vv", NODE),
             cwd=REPO,
             env=env,
             stdout=stdout,

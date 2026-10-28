@@ -69,7 +69,7 @@ for seed in "${SEEDS[@]}"; do
     echo "=== [3/3] curated order-safe set under shuffled collection (seed ${seed}) ==="
     # -n0 is load-bearing: xdist would isolate a polluter from its victim across
     # workers, defeating the whole order-dependence audit.
-    uv run --group shuffle pytest -n0 -q -p randomly \
+    uv run --group shuffle pytest -n0 -q --teatree-selected-full -p randomly \
         --randomly-seed="${seed}" \
         -o required_plugins=pytest-randomly \
         -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn \
