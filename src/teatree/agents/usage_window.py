@@ -41,7 +41,13 @@ from teatree.core.models import LIMIT_PARKED_PREFIX, ModeOverride, Task, TaskAtt
 from teatree.core.models.checkout_exit import attest_checkout_on_park
 from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.llm.anthropic_limits import SUBSCRIPTION_LIMIT_CAUSES, LimitCause, LimitMatch, window_horizon
+from teatree.llm.anthropic_limits import (
+    SUBSCRIPTION_LIMIT_CAUSES,
+    LimitCause,
+    LimitMatch,
+    classify_limit,
+    window_horizon,
+)
 
 if TYPE_CHECKING:
     from teatree.agents.attempt_recorder import AttemptUsage
@@ -279,6 +285,13 @@ def _rotate_or_none(
         )
     if healthy is None:
         return None
+    if signal.account and healthy == signal.account:
+        return record_park(
+            task,
+            reason=f"{LIMIT_PARKED_PREFIX}{match.as_reason()} — signing account still selected",
+            not_before=_future_park_instant(reset, moment),
+            usage=signal.usage,
+        )
     logger.info("Task %s rotating off an exhausted subscription account to a healthy one", task.pk)
     return _requeue_for_rotation(task, moment=moment, usage=signal.usage)
 
@@ -367,17 +380,29 @@ _ROUTE_WINDOW_PARK = f"{LIMIT_PARKED_PREFIX}route window"
 
 def park_on_timed_rejections(task: Task, rejected: Sequence["HarnessRejection"]) -> TaskAttempt | None:
     """Park until the earliest rejected route candidate can retry; ``None`` when every rejection is permanent."""
-    timed = [(rejection.retry_at, rejection) for rejection in rejected if rejection.retry_at is not None]
+    capped = _consecutive_route_hold_parks(task) >= _MAX_CONSECUTIVE_ROUTE_HOLD_PARKS
+    timed = [
+        (rejection.retry_at, rejection, _time_bounded_usage_hold(rejection))
+        for rejection in rejected
+        if rejection.retry_at is not None
+    ]
+    if capped:
+        timed = [(retry_at, rejection, window) for retry_at, rejection, window in timed if not rejection.held or window]
     if not timed:
         return None
-    retry_at, first = min(timed, key=itemgetter(0))
-    if first.held and _consecutive_route_hold_parks(task) >= _MAX_CONSECUTIVE_ROUTE_HOLD_PARKS:
-        return None
+    retry_at, first, window = min(timed, key=itemgetter(0))
     not_before = _future_park_instant(retry_at, timezone.now())
-    kind = _ROUTE_HOLD_PARK if first.held else _ROUTE_WINDOW_PARK
+    kind = _ROUTE_WINDOW_PARK if window or not first.held else _ROUTE_HOLD_PARK
     reason = f"{kind} until {not_before.isoformat()}; route candidates: " + "; ".join(map(str, rejected))
     logger.warning("Task %s parked: %s", task.pk, reason)
     return record_park(task, reason=reason, not_before=not_before)
+
+
+def _time_bounded_usage_hold(rejection: "HarnessRejection") -> bool:
+    if not rejection.held:
+        return False
+    match = classify_limit(rejection.reason)
+    return match is not None and window_horizon(match.cause) is not None
 
 
 def _consecutive_route_hold_parks(task: Task) -> int:

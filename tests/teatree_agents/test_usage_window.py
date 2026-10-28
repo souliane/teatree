@@ -18,12 +18,14 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 import teatree.agents.runner as runner_mod
 from teatree.agents.attempt_recorder import AttemptUsage
 from teatree.agents.harness import PydanticAiHarness
+from teatree.agents.harness_registry import HarnessRejection
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.usage_window import (
     ELAPSED_RESET_GRACE,
     LimitSignal,
     effective_resets_at,
     maybe_park_for_active_window,
+    park_on_timed_rejections,
     park_or_rotate_on_limit,
     park_task_on_all_exhausted,
     park_task_on_limit,
@@ -472,6 +474,55 @@ class TestAdmissionGuard(django.test.TestCase):
         assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now) is None
 
 
+class TestTimedRouteRejections(django.test.TestCase):
+    def test_weekly_limit_remains_parkable_after_two_route_holds(self) -> None:
+        task = _claimed_task()
+        for _ in range(2):
+            TaskAttempt.objects.create(task=task, exit_code=1, error=f"{LIMIT_PARKED_PREFIX}route hold auth")
+        retry_at = timezone.now() + timedelta(hours=3)
+        rejection = HarnessRejection(
+            "claude_sdk", LimitMatch("weekly limit", LimitCause.SUBSCRIPTION_WEEKLY).as_reason(), retry_at, held=True
+        )
+
+        attempt = park_on_timed_rejections(task, [rejection])
+
+        assert attempt is not None
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == retry_at
+
+    def test_capped_auth_hold_yields_to_a_later_usage_window(self) -> None:
+        task = _claimed_task()
+        for _ in range(2):
+            TaskAttempt.objects.create(task=task, exit_code=1, error=f"{LIMIT_PARKED_PREFIX}route hold auth")
+        now = timezone.now()
+        auth = HarnessRejection("first", "authentication failed", now + timedelta(hours=1), held=True)
+        weekly = HarnessRejection(
+            "second",
+            LimitMatch("weekly limit", LimitCause.SUBSCRIPTION_WEEKLY).as_reason(),
+            now + timedelta(hours=3),
+            held=True,
+        )
+
+        attempt = park_on_timed_rejections(task, [auth, weekly])
+
+        assert attempt is not None
+        task.refresh_from_db()
+        assert task.not_before == weekly.retry_at
+        assert attempt.error.startswith(f"{LIMIT_PARKED_PREFIX}route window")
+
+    def test_capped_auth_hold_without_another_window_returns_none(self) -> None:
+        task = _claimed_task()
+        for _ in range(2):
+            TaskAttempt.objects.create(task=task, exit_code=1, error=f"{LIMIT_PARKED_PREFIX}route hold auth")
+
+        attempt = park_on_timed_rejections(
+            task, [HarnessRejection("first", "authentication failed", timezone.now() + timedelta(hours=1), held=True)]
+        )
+
+        assert attempt is None
+
+
 class TestParkOrRotateOnLimit(django.test.TestCase):
     """Multi-account #C1: a mid-run subscription limit ROTATES to a healthy account before parking.
 
@@ -512,6 +563,27 @@ class TestParkOrRotateOnLimit(django.test.TestCase):
         assert AnthropicActivePick.objects.pick_for("oauth", "") == "acct/2/oauth", "the sticky pick rotated"
         exhausted = AnthropicTokenUsage.objects.get(pass_path="acct/1/oauth")
         assert exhausted.is_exhausted, "the spent account is recorded exhausted so the selector routes off it"
+
+    def test_reselection_of_the_signing_account_waits_for_its_reset(self) -> None:
+        now = timezone.now()
+        reset = (now + timedelta(hours=3)).replace(microsecond=0)
+        task = _claimed_task()
+
+        with patch("teatree.credential_config.record_reactive_exhaustion_and_reselect", return_value="acct/a"):
+            attempt = park_or_rotate_on_limit(
+                task,
+                _WEEKLY_MATCH,
+                lane=TaskAttempt.Lane.SUBSCRIPTION,
+                now=now,
+                signal=LimitSignal(sdk_resets_at=int(reset.timestamp()), account="acct/a"),
+            )
+
+        assert attempt is not None
+        assert attempt.error.startswith(LIMIT_PARKED_PREFIX)
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.not_before == reset
+        assert not UsageWindowState.objects.exists()
 
     def test_all_accounts_exhausted_parks_the_lane_keyed_on_earliest_reset(self) -> None:
         # account-1 hits its limit and the other accounts are ALREADY exhausted → there is no

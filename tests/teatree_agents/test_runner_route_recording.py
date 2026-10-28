@@ -14,11 +14,14 @@ from teatree.agents.runner import run_agent
 from teatree.core.models import (
     LIMIT_PARKED_PREFIX,
     AgentRouteAvailability,
+    AnthropicActivePick,
     AnthropicTokenUsage,
+    ConfigSetting,
     Session,
     Task,
     TaskAttempt,
 )
+from teatree.core.models.anthropic_token_usage import TokenHealthReading
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
 from tests.teatree_agents._metered_keys import KEY_1, KEY_2, cap_the_plans, route_metered_keys
@@ -36,6 +39,9 @@ _REFUSAL = result_message(
     subtype="error_during_execution", is_error=True, result="The request failed: you are out of credits."
 )
 _SUCCESS = success_stream({"summary": "done", "files_modified": [{"path": "src/x.py", "action": "modified"}]})
+_SESSION_REFUSAL = result_message(
+    subtype="error_during_execution", is_error=True, result="You've hit your five-hour limit."
+)
 
 
 @contextlib.contextmanager
@@ -151,3 +157,46 @@ class TestRoutedMeteredCreditRefusal(TestCase):
         assert AgentRouteAvailability.objects.filter(harness=CLAUDE_SDK).exists()
         assert not AnthropicTokenUsage.objects.exists()
         assert self.task.status == Task.Status.PENDING
+
+
+class TestRoutedSubscriptionLimit(TestCase):
+    def test_session_limit_rotates_account_without_holding_the_route(self) -> None:
+        first = "anthropic/first/oauth"
+        second = "anthropic/second/oauth"
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", [first, second])
+        AnthropicActivePick.objects.set_pick("oauth", "", first)
+        for path in (first, second):
+            AnthropicTokenUsage.objects.record(
+                path,
+                TokenHealthReading(
+                    organization_id="org",
+                    utilization_5h=0.1,
+                    utilization_7d=0.1,
+                    status_5h="allowed",
+                    status_7d="allowed",
+                    reset_5h=None,
+                    reset_7d=None,
+                ),
+                now=timezone.now(),
+            )
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        with (
+            routed_by(route_config(_SKILL, CLAUDE_SDK)),
+            patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=[_SKILL]),
+            patch("teatree.llm.credentials.read_pass", side_effect=lambda path: path),
+            patch.object(Task, "renew_lease", lambda self, **_kw: None),
+            scripted_sdk([_SESSION_REFUSAL]),
+        ):
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata=SkillMetadata())
+
+        task.refresh_from_db()
+        assert attempt.error.startswith(f"{LIMIT_PARKED_PREFIX}rotating")
+        assert task.status == Task.Status.PENDING
+        assert task.not_before is not None
+        assert task.not_before <= timezone.now()
+        assert AnthropicActivePick.objects.pick_for("oauth", "") == second
+        assert AnthropicTokenUsage.objects.get(pass_path=first).is_exhausted
+        assert not AgentRouteAvailability.objects.exists()

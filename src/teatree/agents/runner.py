@@ -428,6 +428,7 @@ def _run_agent(
     route_failure = _fallback_reason_for_outcome(
         outcome,
         metered_transport=harness.capabilities.metered_lane,
+        lane=lane,
     )
     if preflight.dispatch.route_candidate_index is not None and route_failure:
         return route_retry.after(

@@ -20,7 +20,7 @@ from teatree.agents.skill_routing import (
 from teatree.config.agent_spawn import AgentRouteCandidate
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.checkout_exit import attest_checkout_on_park
-from teatree.llm.anthropic_limits import LimitCause
+from teatree.llm.anthropic_limits import SUBSCRIPTION_LIMIT_CAUSES, LimitCause
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,11 +144,13 @@ def park_until(task: Task, not_before: datetime) -> None:
     task.park(not_before=not_before)
 
 
-def fallback_reason_for_outcome(outcome: HarnessOutcome, *, metered_transport: bool) -> str | None:
+def fallback_reason_for_outcome(outcome: HarnessOutcome, *, metered_transport: bool, lane: str = "") -> str | None:
     if outcome.driver_ended:
         return None
     matched = limit_match(outcome.result_message, outcome.rate_limit_info, metered_transport=metered_transport)
     if matched is not None:
+        if lane == TaskAttempt.Lane.SUBSCRIPTION and matched.cause in SUBSCRIPTION_LIMIT_CAUSES:
+            return None
         return matched.as_reason()
     from teatree.agents.runner_outcomes import failure_reason  # noqa: PLC0415 — avoids route/outcome import cycle
 
