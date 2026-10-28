@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
-from contextlib import closing, nullcontext, suppress
+from contextlib import closing, nullcontext
 from dataclasses import replace
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -209,24 +209,17 @@ def test_attended_join_refuses_untrusted_peer_credentials(broker: LiveMailboxBro
 def test_attended_join_skips_an_untrusted_socket_before_the_live_worker(
     broker: LiveMailboxBroker, tmp_path: Path
 ) -> None:
-    untrusted = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    untrusted.bind(str(tmp_path / "w-0000.sock"))
-    untrusted.listen()
-
-    def answer_as_rogue() -> None:
-        peer, _ = untrusted.accept()
-        with peer, suppress(BrokenPipeError):
-            peer.sendall(b'{"result":{"address":"rogue","token":"rogue"}}\n')
-
-    rogue = threading.Thread(target=answer_as_rogue, daemon=True)
-    rogue.start()
-    try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as untrusted:
+        untrusted.bind(str(tmp_path / "w-0000.sock"))
+        untrusted.listen()
         with InteractiveMailboxLease.connect(tmp_path) as joined:
             assert broker.identity_of(joined.address) is not None
             assert joined.address != "rogue"
-    finally:
-        untrusted.close()
-        rogue.join(timeout=2)
+        untrusted.settimeout(2)
+        peer, _ = untrusted.accept()
+        with peer:
+            peer.settimeout(2)
+            assert peer.recv(1024) == b""
 
 
 def test_only_an_attended_identity_may_register_without_a_ticket(broker: LiveMailboxBroker) -> None:
@@ -1614,6 +1607,7 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
             "harness": "claude_sdk",
             "label": "coding task 7",
             "ticket": "3",
+            "room": "3",
             "phase": "coding",
             "can_receive": True,
         }
@@ -1693,6 +1687,27 @@ def test_runner_binding_keeps_the_launch_flags(broker: LiveMailboxBroker) -> Non
         assert identity is not None
         assert isinstance(options.mcp_servers, dict)
         assert cast("McpStdioServerConfig", options.mcp_servers["teatree"])["args"] == launch
+
+
+def test_runner_binding_passes_ticket_to_child_and_restores_environment(broker: LiveMailboxBroker) -> None:
+    options = ClaudeAgentOptions(
+        env={"KEEP": "value"},
+        mcp_servers={"teatree": {"type": "stdio", "command": "t3", "args": ["mcp", "serve"]}},
+    )
+    with bound_task_mailbox(options, _TASK, broker=broker):
+        assert options.env["T3_TICKET_ID"] == "3"
+        assert isinstance(options.mcp_servers, dict)
+        teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
+        assert teatree["env"]["T3_TICKET_ID"] == "3"
+    assert options.env == {"KEEP": "value"}
+
+
+def test_runner_without_mailbox_child_restores_environment() -> None:
+    options = ClaudeAgentOptions(env={"KEEP": "value"})
+    with bound_task_mailbox(options, _TASK) as identity:
+        assert identity is None
+        assert options.env["T3_TICKET_ID"] == "3"
+    assert options.env == {"KEEP": "value"}
 
 
 def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytest.LogCaptureFixture) -> None:

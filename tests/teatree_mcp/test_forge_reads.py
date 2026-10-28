@@ -4,7 +4,7 @@ Each new tool rides an existing :class:`~teatree.core.backend_protocols.CodeHost
 method (no protocol change), resolved through the same ``_forge_client`` seam the
 shipped forge reads use. A scripted fake backend keeps the tools hermetic — no
 ``gh`` / ``glab`` binary, no network — while proving each tool forwards the right
-arguments and returns the backend payload verbatim.
+arguments and keeps each read's declared output contract.
 """
 
 from typing import Any
@@ -20,19 +20,20 @@ from teatree.mcp.server import build_server
 from tests.teatree_mcp._call_tool_result import structured as _structured
 
 
-class _GithubOverlay:
-    def __init__(self) -> None:
-        self.config = OverlayConfig(required_third_party_services=frozenset({Service.GITHUB}))
+class _ForgeOverlay:
+    def __init__(self, service: Service) -> None:
+        self.config = OverlayConfig(required_third_party_services=frozenset({service}))
         self.connectors = OverlayConnectors()
 
 
 class _FakeForge:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.search_results: list[dict[str, Any]] = []
 
     def search_open_issues(self, *, repo: str, query: str) -> list[dict[str, Any]]:
         self.calls.append(("search_open_issues", {"repo": repo, "query": query}))
-        return [{"number": 7, "title": "flaky test"}]
+        return self.search_results
 
     def list_assigned_issues(self, *, assignee: str) -> list[dict[str, Any]]:
         self.calls.append(("list_assigned_issues", {"assignee": assignee}))
@@ -82,8 +83,9 @@ class _FakeForge:
 
 
 def _call(tool: str, args: dict[str, Any], fake: _FakeForge) -> Any:
+    service = Service.GITLAB if tool.startswith("gitlab_") else Service.GITHUB
     with (
-        patch("teatree.mcp.server.get_all_overlays", return_value={"a": _GithubOverlay()}),
+        patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ForgeOverlay(service)}),
         patch("teatree.mcp.services_forge._forge_client", return_value=fake),
     ):
         result = async_to_sync(build_server().call_tool)(tool, args)
@@ -93,10 +95,103 @@ def _call(tool: str, args: dict[str, Any], fake: _FakeForge) -> Any:
 class TestForgeReadTools(TestCase):
     def test_issue_search_forwards_repo_and_query(self) -> None:
         fake = _FakeForge()
+        fake.search_results = [
+            {
+                "number": 7,
+                "title": "flaky test",
+                "html_url": "https://github.com/acme/widgets/issues/7",
+                "state": "open",
+                "updated_at": "2026-10-01T00:00:00Z",
+            }
+        ]
         result = _call("github_issue_search", {"repo": "acme/widgets", "query": "flaky"}, fake)
 
-        assert result == [{"number": 7, "title": "flaky test"}]
+        assert result == {
+            "issues": [
+                {
+                    "number": 7,
+                    "title": "flaky test",
+                    "url": "https://github.com/acme/widgets/issues/7",
+                    "state": "open",
+                    "updated_at": "2026-10-01T00:00:00Z",
+                }
+            ],
+            "truncated": False,
+        }
         assert fake.calls[0] == ("search_open_issues", {"repo": "acme/widgets", "query": "flaky"})
+
+    def test_issue_search_bounds_and_projects_both_forges(self) -> None:
+        for service, prefix, issue_url in (
+            (Service.GITHUB, "github", "https://github.com/acme/widgets/issues/"),
+            (Service.GITLAB, "gitlab", "https://gitlab.com/acme/widgets/-/issues/"),
+        ):
+            with self.subTest(service=service):
+                fake = _FakeForge()
+                fake.search_results = [
+                    {
+                        "number": number,
+                        "iid": number,
+                        "title": f"issue {number}",
+                        "html_url": f"{issue_url}{number}",
+                        "web_url": f"{issue_url}{number}",
+                        "state": "opened",
+                        "updated_at": "2026-10-01T00:00:00Z",
+                        "body": "large body " * 500,
+                        "labels": ["private"],
+                    }
+                    for number in range(1, 31)
+                ]
+                result = _call(f"{prefix}_issue_search", {"repo": "acme/widgets", "query": "issue"}, fake)
+
+                assert result["truncated"] is True
+                assert len(result["issues"]) == 10
+                for number, issue in enumerate(result["issues"], start=1):
+                    assert issue == {
+                        "number": number,
+                        "title": f"issue {number}",
+                        "url": f"{issue_url}{number}",
+                        "state": "opened",
+                        "updated_at": "2026-10-01T00:00:00Z",
+                    }
+
+    def test_gitlab_issue_search_uses_iid_and_web_url(self) -> None:
+        fake = _FakeForge()
+        fake.search_results = [
+            {
+                "iid": 17,
+                "title": "a GitLab issue",
+                "web_url": "https://gitlab.com/acme/widgets/-/issues/17",
+                "state": "opened",
+                "updated_at": "2026-10-01T00:00:00Z",
+            }
+        ]
+
+        result = _call("gitlab_issue_search", {"repo": "acme/widgets", "query": "issue"}, fake)
+
+        assert result["issues"] == [
+            {
+                "number": 17,
+                "title": "a GitLab issue",
+                "url": "https://gitlab.com/acme/widgets/-/issues/17",
+                "state": "opened",
+                "updated_at": "2026-10-01T00:00:00Z",
+            }
+        ]
+        assert result["truncated"] is False
+
+    def test_issue_search_truncation_boundary(self) -> None:
+        for count in (0, 9, 10, 11):
+            with self.subTest(count=count):
+                fake = _FakeForge()
+                fake.search_results = [
+                    {"number": number, "title": "issue", "html_url": f"https://github.com/acme/widgets/issues/{number}"}
+                    for number in range(count)
+                ]
+
+                result = _call("github_issue_search", {"repo": "acme/widgets", "query": "issue"}, fake)
+
+                assert len(result["issues"]) == min(count, 10)
+                assert result["truncated"] is (count > 10)
 
     def test_issue_list_assigned_forwards_assignee(self) -> None:
         fake = _FakeForge()

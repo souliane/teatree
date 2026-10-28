@@ -17,6 +17,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+
 _MERGE_RPC_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
     "fetch_live_head_sha": [
         ("slug", inspect.Parameter.KEYWORD_ONLY),
@@ -85,6 +86,10 @@ def test_gitlab_code_host_implements_every_merge_rpc_method() -> None:
 
 
 _WAVE2_READ_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
+    "list_unshipped_branches": [
+        ("repo", inspect.Parameter.KEYWORD_ONLY),
+        ("prefix", inspect.Parameter.KEYWORD_ONLY),
+    ],
     "list_prs": [
         ("repo", inspect.Parameter.KEYWORD_ONLY),
         ("state", inspect.Parameter.KEYWORD_ONLY),
@@ -197,3 +202,8 @@ def test_both_hosts_are_runtime_code_host_backends() -> None:
         GitLabCodeHost(token="x", base_url="https://gitlab.com/api/v4"),
         CodeHostBackend,
     )
+
+
+def test_each_code_host_names_its_forge() -> None:
+    assert GitHubCodeHost().forge == "github"
+    assert GitLabCodeHost(token="x", base_url="https://gitlab.com/api/v4").forge == "gitlab"

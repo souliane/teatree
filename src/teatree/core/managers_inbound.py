@@ -6,17 +6,12 @@ task lifecycle) because the inbound queue is a separate concern: it answers
 """
 
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, cast
 
-from django.apps import apps
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
 from teatree.utils.forge import FORGES
-
-if TYPE_CHECKING:
-    from teatree.core.models.incoming_event import IncomingEvent
 
 __all__ = ["IncomingEventQuerySet", "ReplyDispatchQuerySet"]
 
@@ -69,19 +64,6 @@ class IncomingEventQuerySet(models.QuerySet):
     def dead_lettered(self) -> models.QuerySet:
         """Poisoned events that exhausted their retries — the dead-letter view (#673)."""
         return self.filter(dead_lettered_at__isnull=False).order_by("-dead_lettered_at", "-pk")
-
-    def active_dm_thread(self, *, channel: str) -> str:
-        incoming_event_model = cast("type[IncomingEvent]", apps.get_model("core", "IncomingEvent"))
-
-        if not channel:
-            return ""
-        latest = (
-            self.filter(source=incoming_event_model.Source.SLACK, channel_ref=channel)
-            .order_by("-received_at", "-pk")
-            .values_list("thread_ref", flat=True)
-            .first()
-        )
-        return latest or ""
 
 
 class ReplyDispatchQuerySet(models.QuerySet):

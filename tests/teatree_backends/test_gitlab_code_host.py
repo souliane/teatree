@@ -1233,6 +1233,7 @@ def test_get_mr_approvals_uses_canonical_approvals_left_not_fallback() -> None:
     state = host.get_mr_approvals(repo="org/repo", pr_iid=12)
 
     assert state["approvals_left"] == 2
+    assert (state["count"], state["required"]) == (1, 1)
 
 
 def test_list_issue_comments_returns_notes_from_page_two() -> None:

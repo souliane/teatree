@@ -49,7 +49,7 @@ from uuid import uuid4
 import httpx
 
 from teatree.cli.slack.manifest import _CONFIG_REFRESH_REF, _CONFIG_TOKEN_REF, SlackManifestError, rotate_config_token
-from teatree.utils.secrets import read_pass, remove_pass, write_pass
+from teatree.utils.secrets import SecretStoreError, read_pass, remove_pass, write_pass
 
 #: Where the pair's issue time is recorded, so age is knowable without calling
 #: Slack. It lives beside the tokens in ``pass`` rather than in the config DB so
@@ -171,6 +171,7 @@ class ConfigTokenStore:
         fails, which the caller turns into a refusal rather than a rotation.
         """
         witness = f"teatree-writability-probe-{uuid4().hex}"
+        probe_failed = True
         try:
             if not write_pass(self.writability_probe_key, witness):
                 raise SlackConfigTokenStoreUnwritableError(self._unwritable_message("the write was rejected"))
@@ -178,8 +179,15 @@ class ConfigTokenStore:
                 raise SlackConfigTokenStoreUnwritableError(
                     self._unwritable_message("the write reported success but could not be read back")
                 )
+            probe_failed = False
+        except SecretStoreError as exc:
+            raise SlackConfigTokenStoreUnwritableError(self._unwritable_message("the store raised an error")) from exc
         finally:
-            remove_pass(self.writability_probe_key)
+            try:
+                remove_pass(self.writability_probe_key)
+            except SecretStoreError as exc:
+                if not probe_failed:
+                    raise SlackConfigTokenStoreUnwritableError(self._unwritable_message("the cleanup failed")) from exc
 
     def _unwritable_message(self, reason: str) -> str:
         return (
@@ -212,15 +220,19 @@ class ConfigTokenStore:
 
     @staticmethod
     def _write_verified(key: str, value: str, what: str) -> None:
+        failure: SecretStoreError | None = None
         for _ in range(_PERSIST_ATTEMPTS):
-            if write_pass(key, value) and read_pass(key) == value:
-                return
+            try:
+                if write_pass(key, value) and read_pass(key) == value:
+                    return
+            except SecretStoreError as exc:
+                failure = exc
         message = (
             f"could not persist the rotated Slack app-config {what} to `pass {key}` "
             f"after {_PERSIST_ATTEMPTS} attempts. Slack already invalidated the previous "
             f"pair when it issued this one, so the credential must be re-minted at {_REMINT_URL}"
         )
-        raise SlackConfigTokenPersistError(message)
+        raise SlackConfigTokenPersistError(message) from failure
 
 
 def ensure_fresh_config_token(

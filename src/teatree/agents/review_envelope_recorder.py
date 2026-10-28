@@ -18,13 +18,18 @@ from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
 from teatree.agents.review_nit_policy import normalize_review_envelope
+from teatree.agents.review_rubric_recorder import ReviewGrading, merge_safe_over_fail_error, rubric_coverage_error
 from teatree.core.gates.integration_review_gate import distinct_repos
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.project_repo_identity import project_repo_identity_for_ticket
-from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import (
+    REVIEW_UNRECORDABLE_PREFIX,
+    VENUE_LIMIT_PREFIX,
+    WRONG_HEAD_RETRY_PREFIX,
+)
 from teatree.core.models import (
     ChecksContradictionError,
     DeferredQuestion,
@@ -32,14 +37,15 @@ from teatree.core.models import (
     ReviewEvidence,
     ReviewVerdict,
     ReviewVerdictError,
+    RoundMetric,
     Rubric,
-    RubricCriterion,
     RubricError,
     Task,
 )
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
 from teatree.core.models.review_evidence import ReviewEvidenceError
 from teatree.core.models.review_target import (
+    MOVED_REVIEW_RETRY_HEADS_KEY,
     ReviewTarget,
     review_target_for_task,
     unattachable_verdict_refusal,
@@ -52,37 +58,72 @@ from teatree.core.models.reviewer_identity import (
 )
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
+from teatree.core.review.live_head import live_head_at
 from teatree.core.review.nit_lane import NitLaneError, validate_nit_comments
 from teatree.core.review.nit_publish import pr_url_for_nits, publish_nits, review_nits
+from teatree.core.review.review_plan import plan_for_task
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
+
+
+def review_head_mismatch_refusal(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+    if "review_head_mismatch" not in result:
+        return ""
+    if normalize_phase(phase or task.phase) not in ENVELOPE_VERDICT_PHASES or "review_verdict" in result:
+        return "review_head_mismatch requires a reviewing phase without a verdict"
+    mismatch = result["review_head_mismatch"]
+    if not isinstance(mismatch, dict) or not all(
+        isinstance(mismatch.get(key), str) and mismatch[key].strip() for key in ("observed_sha", "reason")
+    ):
+        return "review_head_mismatch requires observed_sha and reason"
+    target = review_target_for_task(task)
+    if target is None:
+        return unattachable_verdict_refusal(task)
+    live = live_head_at(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind)
+    if live.unreadable or not live.sha:
+        return "outage_death: review head mismatch; live pull request head could not be read"
+    return f"{WRONG_HEAD_RETRY_PREFIX}{live.sha}; checkout resolved to {mismatch['observed_sha']}: {mismatch['reason']}"
+
+
+def review_venue_limit_refusal(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+    if "review_venue_limit" not in result:
+        return ""
+    if normalize_phase(phase or task.phase) not in ENVELOPE_VERDICT_PHASES or "review_verdict" in result:
+        return "review_venue_limit requires a reviewing phase without review_verdict"
+    limit = result["review_venue_limit"]
+    reasons = limit.get("limits") if isinstance(limit, dict) else None
+    if (
+        not isinstance(reasons, list)
+        or not reasons
+        or not all(isinstance(reason, str) and reason.strip() for reason in reasons)
+    ):
+        return "review_venue_limit requires nonempty limits"
+    return VENUE_LIMIT_PREFIX + "; ".join(reasons)
+
+
+def settle_review_venue_limit(task: Task, error: str) -> None:
+    if not error.startswith(VENUE_LIMIT_PREFIX):
+        return
+    target = review_target_for_task(task)
+    if target is None or not target.head_sha:
+        return
+    ticket = gated_ticket_for_review_task(task) or task.ticket
+    RoundMetric.objects.settle(
+        kind=RoundMetric.Kind.REVIEW, ticket=ticket, subject=target.head_sha, outcome="venue_limit"
+    )
+
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import FixRecord, RubricGrade
 
-#: Reviewing phases whose returned ``review_verdict`` the orchestrator records
-#: server-side (corr-11) — the shell-free envelope seam. Both members now ALSO
-#: carry the shell (``phase_tools.VERDICT_REVIEW_PHASES``). ``reviewing`` still
-#: hands the verdict back through this seam: its headless brief
-#: (``phase_blocks._review_verdict_return_lines``) returns the envelope rather than
-#: shelling out. ``e2e_reviewing``'s live recording path is instead the shell
-#: ``t3 <overlay> review record`` from its ``/t3:e2e-review`` skill; its envelope
-#: membership here is currently dormant (nothing in production returns an
-#: ``e2e_reviewing`` verdict), so exactly one recording path fires per run and no
-#: double-record occurs. The
-#: ``codex_*`` variants are deliberately absent: no server-side envelope seam,
-#: shell-only.
+
+#: Codex phases record through the shell; headless and E2E envelopes use this seam.
 _REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
 
 #: Verdict-recording phases that also OWE rubric coverage — the ones whose brief carries
 #: the checklist (``phase_blocks._reviewing_phase_lines`` injects ``rubric_brief_lines``).
-#: Narrower than :data:`_REVIEW_VERDICT_PHASES` on purpose: ``e2e_reviewing`` is shown no
-#: criteria, so demanding coverage there would refuse a checklist its agent never saw, and
-#: briefing it instead would arm a second recording path beside its shell
-#: ``t3 <overlay> review record``. That is the SAME set, for the same reason, as the phases
-#: whose brief returns the envelope at all, so it IS that set rather than a second spelling
-#: of it. Pinned against the brief by ``tests/teatree_agents/test_phase_blocks.py``.
+#: Only the headless reviewing brief supplies rubric criteria.
 _RUBRIC_GRADED_PHASES = ENVELOPE_VERDICT_PHASES
 _MIN_INTEGRATION_REPOS = 2
 
@@ -144,6 +185,8 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
     envelope = normalize_review_envelope(envelope, ticket)
+    plan = plan_for_task(task, create=False)
+    carried = plan.valid_carried(task, target.head_sha) if plan is not None else frozenset()
     evidence_error = _additional_evidence_error(ticket, envelope, result)
     if evidence_error:
         return evidence_error
@@ -154,11 +197,17 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     except RubricError as exc:
         return f"{MALFORMED_RUBRIC_GRADES_PREFIX}{exc}"
     return (
-        _rubric_coverage_error(rubric, grades, returned=returned)
-        or _merge_safe_over_fail_error(rubric, envelope, grades)
+        rubric_coverage_error(rubric, grades, returned=returned, carried=carried)
+        or merge_safe_over_fail_error(rubric, envelope, grades)
         or _nit_comment_error(envelope)
-        or _record_verdict_and_grades(task, result, envelope=envelope, target=target, rubric_grades=(rubric, grades))
-        or _settle_recorded_verdict(task, target, rubric=rubric)
+        or _record_verdict_and_grades(
+            task,
+            result,
+            envelope=envelope,
+            target=target,
+            grading=ReviewGrading(rubric, grades, carried, plan.delta.prior_head if plan is not None else ""),
+        )
+        or _settle_recorded_verdict(task, target, rubric=rubric, outcome=str(envelope.get("verdict", "")))
     )
 
 
@@ -180,7 +229,14 @@ def _bound_review_target(task: Task, envelope: ReviewVerdictEnvelope) -> tuple[R
     )
     if binding.error:
         if binding.superseded:
-            _supersede_moved_head(target)
+            with transaction.atomic():
+                _supersede_moved_head(target)
+                if binding.retry_head and target.armed_by is AutoReviewDispatch:
+                    task.ticket.merge_extra(
+                        merge_into_dicts={MOVED_REVIEW_RETRY_HEADS_KEY: {binding.retry_head: str(task.pk)}}
+                    )
+        elif binding.retry_head:
+            return None, f"{WRONG_HEAD_RETRY_PREFIX}{binding.retry_head}; {binding.error}"
         return None, binding.error
     return dataclasses.replace(target, head_sha=binding.head), ""
 
@@ -202,114 +258,13 @@ def _recorded_reviewer_identity(target: ReviewTarget, envelope: "ReviewVerdictEn
     return assigned_reviewer_identity(target.pr_id)
 
 
-def _rubric_coverage_error(rubric: "Rubric | None", grades: "list[RubricGrade]", *, returned: object) -> str:
-    """Refuse a verdict that leaves any criterion of *rubric* ungraded, or ``""``.
-
-    ORDERING IS LOAD-BEARING, which is why this runs BEFORE any write.
-    ``ReviewVerdict.record`` retires the per-head claim and releases the review lock in
-    the same transaction that records the verdict — so a verdict written over a
-    half-graded rubric leaves nothing to re-arm review, while the done-gate goes on
-    refusing the merge for the PENDING criterion. The head is then unmergeable forever.
-
-    A ticket with no rubric, and a PR no ticket owns, owe no grades at all: that is
-    byte-for-byte the subject ``core.merge.ticket_gates`` already skips, and widening it
-    here would refuse a colleague's PR the merge gate never grades.
-    """
-    if rubric is None:
-        return ""
-    ungraded = rubric.ungraded_ordinals(grades)
-    if not ungraded:
-        return ""
-    named = ", ".join(f"#{ordinal}" for ordinal in ungraded)
-    return (
-        f"{MALFORMED_RUBRIC_GRADES_PREFIX}criteria {named} of ticket {rubric.ticket.pk} are ungraded "
-        f"({_returned_grades_phrase(returned)}) — "
-        f"a verdict that leaves a criterion PENDING records nothing, because recording it would retire "
-        f"this head's review claim while the done-gate still refuses the merge, leaving the head "
-        f"unmergeable with no reviewer left to re-arm. You are the independent verifier: grade EVERY "
-        f"criterion and return the verdict again, as "
-        f'"rubric_grades": [{{"ordinal": <int>, "status": "pass"|"fail", "rationale": "<what proves it>"}}] '
-        f"— a PASS cites the test that proves it, a FAIL needs no citation"
-    )
-
-
-def _returned_grades_phrase(returned: object) -> str:
-    """What the envelope actually carried under ``rubric_grades`` — the actionable half.
-
-    Naming only the criteria leaves a reviewer that returned ``{"0": "pass"}`` reading a
-    refusal about coverage when its payload was never a list of grades at all.
-    """
-    if returned is None:
-        return 'you returned no "rubric_grades" at all'
-    if isinstance(returned, list):
-        return f'your "rubric_grades" carried {len(returned)} grade(s)'
-    return f'your "rubric_grades" was a {type(returned).__name__}, not a JSON array'
-
-
-def _merge_safe_over_fail_error(
-    rubric: "Rubric | None", envelope: "ReviewVerdictEnvelope", grades: "list[RubricGrade]"
-) -> str:
-    """Refuse a ``merge_safe`` verdict carrying a criterion the same envelope grades FAIL.
-
-    The sibling of ``ReviewVerdict._assert_checks_admit_merge_safe`` one field over: that
-    one refuses merge_safe over checks the reviewer itself reported RED, this one over an
-    acceptance criterion the reviewer itself grades unmet. Both are a contradiction between
-    two fields ONE reviewer wrote in ONE envelope, and neither is a statement about the tree.
-
-    Recorded, it retires the per-head claim and releases the lock, and the done-gate then
-    refuses the merge on a FAIL no bypass overrides — recoverable only by a push that mints
-    a new head. Refusing before the write keeps the head re-reviewable instead.
-
-    Scoped to a rubric that EXISTS, like the coverage refusal beside it: with no rubric the
-    grade is stamped nowhere, so there is no FAIL for the done-gate to refuse the merge on.
-    """
-    if rubric is None or str(envelope.get("verdict", "")).strip().lower() != ReviewVerdict.Verdict.MERGE_SAFE:
-        return ""
-    failed = [grade["ordinal"] for grade in grades if grade["status"].strip().lower() == RubricCriterion.Status.FAIL]
-    if not failed:
-        return ""
-    named = ", ".join(f"#{ordinal}" for ordinal in failed)
-    return (
-        f"{MALFORMED_RUBRIC_GRADES_PREFIX}your verdict is merge_safe but you graded criteria {named} FAIL — "
-        f"one envelope cannot both vouch for the head and record an unmet acceptance criterion, and a FAIL is "
-        f"never overridable, so recording this would retire the review claim onto a merge the done-gate refuses "
-        f"forever. Return `hold` if the criteria really are unmet, or re-grade them honestly if they are not"
-    )
-
-
-def _publish_review_nits(ticket: "Ticket", target: ReviewTarget, findings: list[Finding]) -> None:
-    points = review_nits(findings)
-    if not points:
-        return
-    pr_url = pr_url_for_nits(ticket, target.head_sha)
-    if not pr_url:
-        message = "review NIT has no attributable pull request URL"
-        raise NitLaneError(message)
-    publish_nits(ticket, pr_url, target.head_sha, points)
-
-
-def _publish_review_nits_with_recovery(ticket: "Ticket", target: ReviewTarget, findings: list[Finding]) -> str:
-    if not review_nits(findings):
-        return ""
-    ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "pending"}}})
-    try:
-        _publish_review_nits(ticket, target, findings)
-    except NitLaneError as exc:
-        ticket.merge_extra(
-            merge_into_dicts={"nit_publication": {target.head_sha: {"status": "failed", "error": str(exc)}}}
-        )
-        return f"review NIT publication refused: {exc}"
-    ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "published"}}})
-    return ""
-
-
 def _record_verdict_and_grades(
     task: Task,
     result: AgentResultBlob,
     *,
     envelope: ReviewVerdictEnvelope,
     target: ReviewTarget,
-    rubric_grades: "tuple[Rubric | None, list[RubricGrade]]",
+    grading: ReviewGrading,
 ) -> str:
     """Write the verdict and the rubric grades in ONE transaction, or return the refusal.
 
@@ -323,11 +278,10 @@ def _record_verdict_and_grades(
     the branch advanced to) rather than the reviewer's raw assertion, so a grade can never
     vouch for a tree the verdict does not.
     """
-    rubric, grades = rubric_grades
     fix_record = result.get("fix_record")
-    if fix_record is not None and (refusal := fix_record_refusal(fix_record)):
-        return refusal
     ticket = gated_ticket_for_review_task(task)
+    if fix_record is not None and (refusal := fix_record_refusal(fix_record, ticket=ticket)):
+        return refusal
     merge_safe = str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.MERGE_SAFE
     raw_findings = envelope.get("findings", [])
     findings = (
@@ -377,8 +331,7 @@ def _record_verdict_and_grades(
                     head_sha=target.head_sha,
                     repos=[str(repo) for repo in integration_review.get("repos", [])],
                 )
-            if rubric is not None:
-                rubric.apply_grades(grades, grader_identity=identity, reviewed_sha=target.head_sha)
+            grading.apply(identity=identity, head=target.head_sha)
     except (ReviewVerdictError, NitLaneError) as exc:
         # The one refusal class a re-dispatch can never satisfy at this head is latched;
         # every other one names something the next reviewer could get right, so it keeps
@@ -394,6 +347,29 @@ def _record_verdict_and_grades(
     return _publish_review_nits_with_recovery(ticket or task.ticket, target, findings)
 
 
+def _publish_review_nits_with_recovery(ticket: "Ticket", target: ReviewTarget, findings: list[Finding]) -> str:
+    if not (points := review_nits(findings)):
+        return ""
+    ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "pending"}}})
+    try:
+        publish_nits(ticket, _nit_pr_url(ticket, target.head_sha), target.head_sha, points)
+    except NitLaneError as exc:
+        ticket.merge_extra(
+            merge_into_dicts={"nit_publication": {target.head_sha: {"status": "failed", "error": str(exc)}}}
+        )
+        return f"review NIT publication refused: {exc}"
+    ticket.merge_extra(merge_into_dicts={"nit_publication": {target.head_sha: {"status": "published"}}})
+    return ""
+
+
+def _nit_pr_url(ticket: "Ticket", head_sha: str) -> str:
+    pr_url = pr_url_for_nits(ticket, head_sha)
+    if not pr_url:
+        message = "review NIT has no attributable pull request URL"
+        raise NitLaneError(message)
+    return pr_url
+
+
 def _nit_comment_error(envelope: ReviewVerdictEnvelope) -> str:
     raw = envelope.get("findings")
     findings = [Finding.from_dict(row) for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
@@ -404,12 +380,20 @@ def _nit_comment_error(envelope: ReviewVerdictEnvelope) -> str:
     return ""
 
 
-def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None") -> str:
+def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None", outcome: str) -> str:
     """After a recorded verdict: rebind the claim, clear a satisfied escalation, and prove the row reads back."""
     _rebind_claim_to_recorded_head(task, target)
     if rubric is not None and rubric.is_fully_passed_at(target.head_sha):
         clear_honesty_escalation_on_pass(rubric.ticket)
-    return _unpersisted_verdict_error(target)
+    error = _unpersisted_verdict_error(target)
+    if not error:
+        RoundMetric.objects.settle(
+            kind=RoundMetric.Kind.REVIEW,
+            ticket=gated_ticket_for_review_task(task) or task.ticket,
+            subject=target.head_sha,
+            outcome=outcome,
+        )
+    return error
 
 
 def _supersede_moved_head(target: ReviewTarget) -> None:

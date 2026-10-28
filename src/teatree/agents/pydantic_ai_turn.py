@@ -12,13 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from claude_agent_sdk import AssistantMessage, ToolResultBlock, ToolUseBlock
-from pydantic_ai.messages import (
-    FunctionToolCallEvent,
-    FunctionToolResultEvent,
-    RetryPromptPart,
-    ToolCallPart,
-    ToolReturnPart,
-)
+from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent, ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import RunUsage
 
 from teatree.llm.anthropic_limits import EgressBlockedError
@@ -59,12 +53,6 @@ def router_reported_cost(run_usage: object) -> float | None:
     return None
 
 
-def retry_text(part: RetryPromptPart) -> str:
-    """The refusal text of a ``RetryPromptPart`` (a gate deny), as a plain string."""
-    content = part.content
-    return content if isinstance(content, str) else str(content)
-
-
 @dataclass(slots=True)
 class ToolCallRecord:
     """One tool call's trajectory entry; output and duration stay ``None`` for a call that never returned."""
@@ -83,7 +71,9 @@ class ToolCallRecord:
             tool_call_id=part.tool_call_id,
             tool=part.tool_name,
             arg_keys=list(part.args_as_dict()),
-            args_bytes=len(part.args_as_json_str().encode()),
+            args_bytes=len(
+                (part.args if isinstance(part.args, str) and part.args else part.args_as_json_str()).encode()
+            ),
             started_at=time.monotonic(),
         )
 
@@ -91,9 +81,8 @@ class ToolCallRecord:
     def returned(self) -> bool:
         return self.output_bytes is not None
 
-    def finish(self, part: "ToolReturnPart | RetryPromptPart") -> None:
-        output = part.model_response_str() if isinstance(part, ToolReturnPart) else retry_text(part)
-        self.output_bytes = len(output.encode())
+    def finish(self, part: ToolReturnPart) -> None:
+        self.output_bytes = len(part.model_response_str().encode())
         self.duration_ms = int((time.monotonic() - self.started_at) * 1000)
 
     def as_record(self) -> ToolCallEntry:
@@ -175,7 +164,7 @@ class StreamedToolCapture:
     """Record streamed tool events, including work completed before a run fails."""
 
     def __init__(self, observer: "Callable[[AgentStreamEvent], None] | None" = None) -> None:
-        self._parts: list[ToolCallPart | ToolReturnPart | RetryPromptPart] = []
+        self._parts: list[ToolCallPart | ToolReturnPart] = []
         self._calls: list[ToolCallRecord] = []
         self._observer = observer
 
@@ -222,15 +211,14 @@ def _tool_call_message(part: ToolCallPart) -> AssistantMessage:
     )
 
 
-def _tool_result_message(part: "ToolReturnPart | RetryPromptPart") -> AssistantMessage:
-    """One tool result as the seam's tool-result message; a ``RetryPromptPart`` is a gate refusal."""
-    if isinstance(part, ToolReturnPart):
-        return AssistantMessage(
-            content=[ToolResultBlock(tool_use_id=part.tool_call_id, content=str(part.content))],
-            model="",
-        )
+def _tool_result_message(part: ToolReturnPart) -> AssistantMessage:
+    """One tool result as the seam's tool-result message."""
     return AssistantMessage(
-        content=[ToolResultBlock(tool_use_id=part.tool_call_id or "", content=retry_text(part), is_error=True)],
+        content=[
+            ToolResultBlock(
+                tool_use_id=part.tool_call_id, content=str(part.content), is_error=part.outcome != "success"
+            )
+        ],
         model="",
     )
 

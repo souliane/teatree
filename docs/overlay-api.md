@@ -79,11 +79,14 @@ Project metadata, CI integration, MR validation, and skill registration live on 
 
 | Method | Default | Purpose |
 |--------|---------|---------|
+| `work_item_return_lines()` | `()` | Add lines to this overlay's work-item answering brief |
 | `validate_pr(title, description)` | reject a title or a description **first line** not matching the effective `mr_title_regex` (Conventional Commits plus the release-notes types `improvement\|config\|techdebt` some overlays narrow to), a description missing a What/Why header (#1540, #1367), or a description missing any section declared in `get_required_description_sections()` (#312); the first-line check mirrors the GitLab `validate_mr_title_and_description` CI gate, which parses the literal first line and never falls back to the title | Validate PR title and description against project conventions; override to assemble a different grammar, but the default is a real gate enforced at `pr create` |
 | `build_pr_title(branch, subject, body, issue_url)` | the commit `subject` | Produce the PR title from structured ticket data so the ship path generates a compliant title instead of copying a raw subject |
 | `get_required_description_sections()` | `[]` | MR-description sections (beyond What/Why) the gate requires and the generator emits by default — e.g. `["Configuration"]` (#312) |
 | `get_description_section_defaults()` | `{}` | Default body text the generator writes under a missing required section — e.g. a `Configuration` no-config line (#312) |
 | `get_followup_repos()` | `[]` | Repos to check during follow-up sync |
+| `get_issue_repos(issue_url)` | `[]` | Optional repo hint for one issue; empty falls through to core's issue-repo detection |
+| `choose_filing_repo(*, title, body, candidates)` | `candidates[0]` | The repo a filed work item goes to: one of the owned repos in `candidates`, returned verbatim. Raise `teatree.core.answering.work_item_filing.WorkItemFilingError` naming the candidates when the text does not decide; a slug outside `candidates`, or any other exception, is stated in the owner's thread and files nothing |
 | `get_skill_metadata()` | `{}` | Skill path, remote patterns, trigger index for the overlay's companion skills |
 | `get_ci_project_path()` | `""` | CI project path for pipeline triggers and evidence posting |
 | `get_e2e_config()` | `{}` | E2E runner config: `runner` (`"project"` / `"external"`), plus `test_dir` / `settings_module` (project runner) or `project_path` / `ref` (external runner) |

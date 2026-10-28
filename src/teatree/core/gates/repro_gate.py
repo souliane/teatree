@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Literal
 from teatree.config.provenance import resolve_settings
 from teatree.config.resolution import resolved_overlay_name
 from teatree.core.gates.fix_dod_gate import is_fix
-from teatree.core.modelkit.gate_registry import register_gate
+from teatree.core.modelkit.gate_registry import register_gate, register_resolver
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.repro_evidence import ReproEvidence
 from teatree.core.models.repro_waiver import ReproWaiver
@@ -61,6 +61,14 @@ def repro_disabled_scope(ticket: "Ticket") -> str | None:
 
 def forced_repro_gate_enabled(ticket: "Ticket") -> bool:
     return repro_disabled_scope(ticket) is None
+
+
+def failing_run_required(ticket: "Ticket") -> bool:
+    try:
+        return forced_repro_gate_enabled(ticket)
+    except ForcedReproGateError:
+        logger.exception("forced-repro setting unreadable for ticket %s; the failing run stays required", ticket.pk)
+        return True
 
 
 def audit_repro_exemption(ticket: "Ticket", *, evidence: Literal["red", "pair"] = "pair") -> bool:
@@ -129,3 +137,4 @@ def check_red_repro(ticket: "Ticket") -> None:
 
 register_gate("forced_repro", check_forced_repro)
 register_gate("red_repro", check_red_repro)
+register_resolver("failing_run_required", failing_run_required)

@@ -49,14 +49,14 @@ class TestEveryCallerHandsItsUrlToTheDecision(TestCase):
             assert payload_author_untrusted_public({"url": _GITLAB_MR, "author": "colleague"}) is False
         assert asked == [_QUALIFIED]
 
-    def test_a_slack_broadcast_counts_a_colleague_on_a_private_repo_as_trusted(self) -> None:
-        scanner = slack_broadcasts.SlackBroadcastsScanner(
-            backend=Mock(), channels=(), fetch_channel_history=Mock(), classify_mrs=Mock()
-        )
+    def test_a_slack_broadcast_signal_asks_about_the_repo_under_its_host(self) -> None:
         state = slack_broadcasts.MrState(url=_GITLAB_MR, merged=False, approved=False, author_username="colleague")
+        row = Mock(channel="C123", slack_ts="1.0", pk=1)
 
         with self._private_only_under_its_host() as asked:
-            assert scanner._author_is_trusted(state) is True
+            signal = slack_broadcasts._signal_for_pending_mr(state, row, overlay="")
+        assert signal.payload["adversarial"] is False
+        assert signal.payload["requires_human_authorization"] is False
         assert asked == [_QUALIFIED]
 
     def test_issue_intake_asks_about_the_repo_under_its_host(self) -> None:

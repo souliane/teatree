@@ -32,6 +32,7 @@ from teatree.credential_config import (
     ReactiveLimit,
     TokenKind,
     reading_from,
+    record_api_key_exhausted,
     record_reactive_exhaustion_and_reselect,
     resolve_api_key_credential,
     resolve_eval_credential,
@@ -1153,3 +1154,29 @@ class TestReactiveExhaustionNeverInventsAWeeklyRefusal(TestCase):
         row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
         assert row.frees_up_at == self.own_5h_reset
         assert row.reset_7d != self.foreign_weekly_reset, "the signal's instant must never reach the row"
+
+
+class TestRecordApiKeyExhausted(TestCase):
+    _SPENT = "anthropic/spent/api-key"
+    _SPARE = "anthropic/spare/api-key"
+
+    def setUp(self) -> None:
+        self.now = timezone.now()
+        ConfigSetting.objects.set_value(_API_KEY_SETTING, [self._SPENT, self._SPARE], scope=GLOBAL_SCOPE)
+        AnthropicActivePick.objects.set_pick(TokenKind.API_KEY.value, GLOBAL_SCOPE, self._SPENT)
+
+    def test_the_row_is_exhausted_for_exactly_the_health_ttl_and_unpins_the_key(self) -> None:
+        record_api_key_exhausted(self._SPENT, now=self.now)
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
+        assert row.is_exhausted
+        assert row.valid_until == self.now + HEALTH_TTL
+        assert AnthropicActivePick.objects.pick_for(TokenKind.API_KEY.value, GLOBAL_SCOPE) is None
+
+    def test_the_spare_key_signs_next_and_the_spent_one_returns_after_the_ttl(self) -> None:
+        record_api_key_exhausted(self._SPENT, now=self.now)
+
+        with _pass_echoes_path():
+            assert resolve_api_key_credential().resolve() == self._SPARE
+            with patch("django.utils.timezone.now", return_value=self.now + HEALTH_TTL + dt.timedelta(seconds=1)):
+                assert resolve_api_key_credential().resolve() == self._SPENT

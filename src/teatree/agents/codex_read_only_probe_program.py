@@ -3,6 +3,7 @@
 import errno
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -15,6 +16,8 @@ SECRET_NAMES = frozenset(
 TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
 KEY_SUFFIXES = (".pem", ".key", ".p8", ".ppk")
 PRIVATE_KEY_MARKERS = (b"PRIVATE KEY-----", b"PuTTY-User-Key-File")
+# The one line worktree provisioning writes (CACHE_DIRNAME / CACHE_FILENAME, inlined: this program is stdlib-only).
+DOTENV_POINTER = re.compile(rb"dotenv[ \t]+\.\./\.t3-cache/(?!\.{1,2}/)[A-Za-z0-9_.@+-]+/\.t3-env\.cache")
 KEY_READ_BYTES = 64 * 1024
 
 
@@ -23,6 +26,7 @@ class ProbeRequest(TypedDict):
     device_root: str
     tmpfs: list[str]
     roots: list[str]
+    git_mounts: list[str]
     home: str
     tools: list[str]
 
@@ -174,14 +178,39 @@ def _readable(path: str) -> bool:
     return _head(path, 0) is not None
 
 
-def _secret_file(name: str, path: str) -> bool:
+def _dotenv_pointer(path: str) -> bool:
+    """Every non-blank line is the generated cache pointer, so the file names another file and holds no value."""
+    content = _head(path, KEY_READ_BYTES + 1)
+    if content is None or len(content) > KEY_READ_BYTES:
+        return False
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    return bool(lines) and all(DOTENV_POINTER.fullmatch(line) for line in lines)
+
+
+def _named_secret(name: str, path: str) -> bool:
+    return _readable(path) and not (name == ".envrc" and _dotenv_pointer(path))
+
+
+def _secret_file(name: str, path: str, git_mounts: set[str]) -> bool:
     if secret_name(name):
-        return _readable(path)
+        return _named_secret(name, path)
+    if name in {"config", "config.worktree"} and (
+        "/.git/" in path or any(_under(path, target) for target in git_mounts)
+    ):
+        content = _head(path, KEY_READ_BYTES + 1)
+        normalized = re.sub(rb"\\\r?\n\s*", b"", content) if content is not None else None
+        if content is not None and (
+            len(content) > KEY_READ_BYTES
+            or re.search(
+                rb"https?://[^\s/@]+@|^\s*(?:extraheader|password)\s*=", normalized or b"", re.IGNORECASE | re.MULTILINE
+            )
+        ):
+            return True
     head = _head(path, KEY_READ_BYTES) if key_name(name) else None
     return head is not None and any(marker in head for marker in PRIVATE_KEY_MARKERS)
 
 
-def _secrets(top: str, mounted: set[str]) -> list[str]:
+def _secrets(top: str, mounted: set[str], git_mounts: set[str]) -> list[str]:
     """Every readable, non-empty secret file under *top*, never crossing into another mount."""
     found: list[str] = []
     pending = [top]
@@ -191,7 +220,7 @@ def _secrets(top: str, mounted: set[str]) -> list[str]:
             entries = list(os.scandir(directory))
         except PermissionError:
             # Listing denied, yet a known name inside may still open.
-            found.extend(path for name in SECRET_NAMES if _readable(path := str(Path(directory, name))))
+            found.extend(path for name in SECRET_NAMES if _named_secret(name, path := str(Path(directory, name))))
             continue
         except OSError:
             continue
@@ -203,7 +232,7 @@ def _secrets(top: str, mounted: set[str]) -> list[str]:
             if is_dir:
                 if entry.path not in mounted:
                     pending.append(entry.path)
-            elif _secret_file(entry.name, entry.path):
+            elif _secret_file(entry.name, entry.path, git_mounts):
                 found.append(entry.path)
     return sorted(found)
 
@@ -292,6 +321,7 @@ def observe(request: ProbeRequest, proc: Path = Path("/proc")) -> Observation:
     unprobed = [*request["kernel_roots"], request["device_root"]]
     tmpfs = set(request["tmpfs"])
     targets = sorted({mount["target"] for mount in mounts})
+    git_mounts = set(request["git_mounts"]) & set(targets)
     probed = [
         target for target in targets if target not in tmpfs and not any(_under(target, root) for root in unprobed)
     ]
@@ -313,7 +343,7 @@ def observe(request: ProbeRequest, proc: Path = Path("/proc")) -> Observation:
         home=_home(request["home"]),
         uid=os.getuid(),
         scan={
-            target: ScanAnswer(owner=Path(target).stat().st_uid, secrets=_secrets(target, set(targets)))
+            target: ScanAnswer(owner=Path(target).stat().st_uid, secrets=_secrets(target, set(targets), git_mounts))
             for target in probed
             if Path(target).is_dir()
         },

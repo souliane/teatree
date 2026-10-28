@@ -25,7 +25,7 @@ from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.core.modelkit.diff_scope import ChangedFileSet
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveChecksRead, LiveHeadRead
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX, WRONG_HEAD_RETRY_PREFIX, FailureKind
 from teatree.core.models import (
     AutoReviewDispatch,
     CodexReviewMarker,
@@ -39,12 +39,18 @@ from teatree.core.models import (
 )
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.phase_landing import phase_landing_evidence
-from teatree.core.models.review_target import review_target_for_task, verdict_at
+from teatree.core.models.review_target import REVIEW_RETRY_HEAD_KEY, review_target_for_task, verdict_at
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
 from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
+from teatree.loop.transient_requeue import (
+    _budget_halt_reason,
+    _corrective_note,
+    _non_terminal_failed_tasks,
+    requeue_transient_failed,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1097,6 +1103,84 @@ class TestAHeadThatMovedPastBothTreesReArmsInsteadOfParking(TestCase):
         dispatch.refresh_from_db()
         assert dispatch.state == AutoReviewDispatch.State.SUPERSEDED
 
+    def test_a_wrong_checkout_retries_once_at_live_head_then_raises_a_card(self) -> None:
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        with _live_head(_HEAD):
+            first = record_result_envelope(task, _verdict_envelope(reviewed_sha=_MID_REVIEW_HEAD), phase="reviewing")
+        assert first.error.startswith(WRONG_HEAD_RETRY_PREFIX), first.error
+        task.refresh_from_db()
+        assert task.pk in {failed.pk for failed in _non_terminal_failed_tasks()}, (task.status, task.ticket.state)
+        assert _budget_halt_reason(task) is None
+        assert _corrective_note(task) is not None
+        with patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False):
+            reopened = requeue_transient_failed()
+        task.refresh_from_db()
+        assert reopened == 1, (
+            task.status,
+            task.execution_reason,
+            list(DeferredQuestion.objects.values_list("question", flat=True)),
+        )
+
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        dispatch.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.ticket.extra[REVIEW_RETRY_HEAD_KEY][str(task.pk)] == _HEAD
+        assert review_target_for_task(task).head_sha == _HEAD
+        assert dispatch.state == AutoReviewDispatch.State.DISPATCHED
+        assert not DeferredQuestion.objects.exists()
+
+        task.claim(claimed_by="headless-reviewer")
+        with _live_head(_HEAD):
+            second = record_result_envelope(task, _verdict_envelope(reviewed_sha=_MID_REVIEW_HEAD), phase="reviewing")
+        assert second.error
+        with patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False):
+            assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_an_unavailable_checkout_retries_at_the_live_head(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        with patch(
+            "teatree.agents.review_envelope_recorder.live_head_at",
+            return_value=LiveHeadRead(sha=_OTHER_HEAD, unreadable=False),
+        ):
+            attempt = record_result_envelope(
+                task,
+                {
+                    "summary": "The checkout resolved to another head.",
+                    "review_head_mismatch": {
+                        "observed_sha": _MID_REVIEW_HEAD,
+                        "reason": "The checkout command selected the previous worktree.",
+                    },
+                    "needs_user_input": False,
+                },
+                phase="reviewing",
+            )
+
+        assert attempt.error.startswith(f"{WRONG_HEAD_RETRY_PREFIX}{_OTHER_HEAD}")
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        with patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False):
+            assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert task.ticket.extra[REVIEW_RETRY_HEAD_KEY][str(task.pk)] == _OTHER_HEAD
+        assert f"--sha {_OTHER_HEAD}" in task.execution_reason
+        assert f"--sha {_HEAD}" not in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
+
+        task.refresh_from_db()
+        task.claim(claimed_by="headless-reviewer")
+        with _live_head(_OTHER_HEAD):
+            retried = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+        assert retried.error == ""
+        assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_OTHER_HEAD).exists()
+        assert not DeferredQuestion.objects.exists()
+
     def test_a_fresh_review_arms_at_the_new_head(self) -> None:
         task, _ = _reviewing_task_via_dispatch()
 
@@ -1112,6 +1196,32 @@ class TestAHeadThatMovedPastBothTreesReArmsInsteadOfParking(TestCase):
         )
         assert rearmed is not None
         assert rearmed.head_sha == _MOVED_HEAD
+
+    def test_the_fresh_review_is_the_only_retry_after_a_moved_head(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+        with _live_head(_MOVED_HEAD):
+            first = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+        assert first.error.startswith(HEAD_SUPERSEDED_PREFIX)
+
+        dispatch = AutoReviewDispatch.enqueue(
+            slug=_SLUG,
+            pr_id=_PR_ID,
+            head_sha=_MOVED_HEAD,
+            pr_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}",
+            overlay="teatree",
+        )
+        assert dispatch is not None
+        retried = dispatch.task
+        assert retried is not None
+        retried.claim(claimed_by="headless-reviewer")
+        with _live_head(_MOVED_HEAD):
+            second = record_result_envelope(retried, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+        assert second.error.startswith(WRONG_HEAD_RETRY_PREFIX)
+        with patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False):
+            assert requeue_transient_failed() == 0
+        retried.refresh_from_db()
+        assert retried.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
     def test_a_superseded_head_is_never_re_armed_even_once_its_deadline_lapses(self) -> None:
         # A DISPATCHED claim refuses re-arming too, but only until its deadline passes —

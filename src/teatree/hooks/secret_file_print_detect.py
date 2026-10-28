@@ -7,7 +7,7 @@ registry refuse the SAME set. A command is a secret print when it would route a
 credential/key/``.env`` file or a pass store to stdout:
 
 * cat/head/tail of a known secret-bearing path;
-* ``pass show …`` whose stdout is neither captured nor redirected;
+* ``pass show …`` or ``t3 … secrets get …`` whose stdout is neither captured nor redirected;
 * echo/printf of a pasted token literal (``glpat-``/``ghp_``/``xoxb-``/``sk-`` …).
 
 Allowed (must NOT false-positive): a variable capture (``VAR=$(…)``), a file
@@ -25,8 +25,9 @@ was never seen.
 """
 
 import re
+from pathlib import PurePath
 
-from teatree.hooks._shell_lexer import TokenKind, tokenize
+from teatree.hooks._shell_lexer import Token, TokenKind, raw_substitution_sees_live, tokenize
 
 _SECRET_PATHS_RE = re.compile(
     r"""(?x)
@@ -55,6 +56,8 @@ _TOKEN_LITERAL_RE = re.compile(r"""(?:^|\s)(?:glpat[-_]|ghp_|gho_|xoxb-|xoxp-|sk
 # Verbs that route their file operand(s) to stdout, and the pass-store reader.
 _PRINT_VERBS = frozenset({"cat", "head", "tail"})
 _ECHO_VERBS = frozenset({"echo", "printf"})
+_SECRET_SUBSTITUTION_RE = re.compile(r"\$\(\s*(?:\S*/)?t3\s+\S+\s+secrets\s+get\s+|\$\(\s*pass\s+show\s+")
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 
 # A downstream pipe stage PROVEN to destroy its stdin rather than re-emit it, so
 # the secret cannot reach the transcript through it. An unrecognised stage is
@@ -68,6 +71,9 @@ _CONSUMING_SINKS = frozenset(
 # A producer stage needs at least the verb plus one operand (the token literal
 # for echo/printf, ``show`` for pass) before it can emit a secret.
 _VERB_PLUS_OPERAND = 2
+_T3_COMMAND_WORDS = 4
+_T3_GET_WITH_NAME_WORDS = 5
+_WRAPPED_COMMAND_WORDS = 3
 
 # Statement separators — a ``|`` stays WITHIN one statement (it connects the
 # producer's stdout to the next stage); these END the statement.
@@ -79,22 +85,23 @@ _STDOUT_LEAK_DENY_REASON = (
     "BLOCKED: this command would print a secret-bearing file or credential token "
     "to the transcript. Reading a secret into the transcript is irrecoverable — "
     "rotation is the only remedy. Instead, extract the value into a shell variable "
-    "(`TOKEN=$(pass show …)`) and use it via env/header without printing it. "
+    '(`TOKEN=$(pass show …)` or `TOKEN="$(t3 <overlay> secrets get …)"`) '
+    "and use it via env/header without printing it. "
     "Do NOT implement 'mask-then-print' — a masking regex is one edge case away "
     "from leaking. The gate's job is to keep the value off stdout entirely."
 )
 
 
-def _pipelines(command: str) -> list[list[list[str]]]:
+def _pipelines(command: str) -> list[list[list[Token]]]:
     """Group *command* into statements → pipeline stages → decoded word lists.
 
     Statements split on ``;``/``&&``/``||``/``&``/newline; a ``|`` splits stages
     WITHIN one statement. Word VALUES are shell-decoded (quotes/escapes resolved)
     so a separator inside a quoted string never splits a statement.
     """
-    statements: list[list[list[str]]] = []
-    stages: list[list[str]] = []
-    words: list[str] = []
+    statements: list[list[list[Token]]] = []
+    stages: list[list[Token]] = []
+    words: list[Token] = []
     for tok in tokenize(command):
         if tok.kind is TokenKind.OP and tok.value in _STATEMENT_SEPARATORS:
             if words:
@@ -108,7 +115,7 @@ def _pipelines(command: str) -> list[list[list[str]]]:
                 stages.append(words)
                 words = []
         else:
-            words.append(tok.value)
+            words.append(tok)
     if words:
         stages.append(words)
     if stages:
@@ -116,28 +123,95 @@ def _pipelines(command: str) -> list[list[list[str]]]:
     return statements
 
 
-def _stage_redirects_stdout(words: list[str]) -> bool:
+def _stage_redirects_stdout(words: list[Token]) -> bool:
     """Whether a stage redirects its OWN stdout to a file (keeping it off the transcript).
 
     Only stdout redirects (``>``/``>>``/``1>``/``&>``) count — a ``2>`` stderr
     redirect leaves stdout on the transcript, so it does NOT capture the secret.
     """
-    return any(word.startswith(_STDOUT_REDIRECT_PREFIXES) for word in words)
+    return any(word.value.startswith(_STDOUT_REDIRECT_PREFIXES) for word in words)
 
 
-def _stage_reads_secret(words: list[str]) -> bool:
+def _stage_reads_secret(words: list[Token]) -> bool:
     """Whether the producer stage would emit a secret to its stdout."""
     if not words:
         return False
-    verb = words[0]
+    while words and _ENV_ASSIGNMENT_RE.fullmatch(words[0].value):
+        words = words[1:]
+    while words and words[0].value in {"then", "do", "{"}:
+        words = words[1:]
+    words = _unwrap_env(words)
+    if len(words) >= _WRAPPED_COMMAND_WORDS and [word.value for word in words[:2]] == ["uv", "run"]:
+        words = words[2:]
+    words = _unwrap_env(words)
+    if not words:
+        return False
+    verb = words[0].value
     if verb in _PRINT_VERBS:
-        return bool(_SECRET_PATHS_RE.search(" ".join(words)))
+        return bool(_SECRET_PATHS_RE.search(" ".join(word.value for word in words)))
     if verb in _ECHO_VERBS:
-        return len(words) >= _VERB_PLUS_OPERAND and bool(_TOKEN_LITERAL_RE.search(" ".join(words[1:])))
-    return verb == "pass" and len(words) >= _VERB_PLUS_OPERAND and words[1] == "show"
+        operands = " ".join(word.value for word in words[1:])
+        return len(words) >= _VERB_PLUS_OPERAND and bool(
+            _TOKEN_LITERAL_RE.search(operands)
+            or (
+                _SECRET_SUBSTITUTION_RE.search(operands)
+                and any(raw_substitution_sees_live(word.raw, ("$(",)) for word in words[1:])
+            )
+        )
+    if verb == "pass":
+        return len(words) >= _VERB_PLUS_OPERAND and words[1].value == "show"
+    return _t3_stage_reads_secret(words)
 
 
-def _statement_prints_secret(stages: list[list[str]]) -> bool:
+def _exec_env_variables(options: list[str]) -> list[str]:
+    variables = []
+    for index, option in enumerate(options):
+        if option == "--env" and index + 1 < len(options):
+            variables.append(options[index + 1].split("=", 1)[0])
+        elif option.startswith("--env="):
+            variables.append(option.removeprefix("--env=").split("=", 1)[0])
+    return variables
+
+
+def _unwrap_env(words: list[Token]) -> list[Token]:
+    if not words or words[0].value != "env":
+        return words
+    command = words[1:]
+    while command and (
+        command[0].value in {"-i", "--ignore-environment", "--"} or _ENV_ASSIGNMENT_RE.fullmatch(command[0].value)
+    ):
+        command = command[1:]
+    return command
+
+
+def _t3_stage_reads_secret(words: list[Token]) -> bool:
+    values = [word.value for word in words]
+    if PurePath(values[0]).name != "t3" or len(values) < _T3_COMMAND_WORDS or values[2] != "secrets":
+        return False
+    if values[3] == "get":
+        name_index = (
+            _T3_GET_WITH_NAME_WORDS
+            if len(values) >= _T3_GET_WITH_NAME_WORDS and values[4] == "--"
+            else _T3_COMMAND_WORDS
+        )
+        return len(values) > name_index and not values[name_index].startswith("-")
+    if values[3] == "exec" and "--" in values:
+        separator = values.index("--")
+        variables = _exec_env_variables(values[4:separator])
+        if not variables:
+            return False
+        command = values[separator + 1 :]
+        if command[:1] in (["env"], ["printenv"]):
+            return True
+        if len(command) >= _WRAPPED_COMMAND_WORDS and command[:2] in (["sh", "-c"], ["bash", "-c"]):
+            return any(
+                re.search(rf"(?:\$\{{{re.escape(variable)}\}}|\${re.escape(variable)}\b)", command[2])
+                for variable in variables
+            )
+    return False
+
+
+def _statement_prints_secret(stages: list[list[Token]]) -> bool:
     """Whether a statement's producer stage prints a secret that reaches the transcript."""
     producer = stages[0]
     if not _stage_reads_secret(producer) or _stage_redirects_stdout(producer):
@@ -149,7 +223,7 @@ def _statement_prints_secret(stages: list[list[str]]) -> bool:
         return False
     # Only a PROVEN consumer (``| wc``, ``| gpg``) destroys the secret; once one
     # runs, no later stage can resurrect it. Everything else re-emits.
-    return not any(bool(stage) and stage[0] in _CONSUMING_SINKS for stage in downstream)
+    return not any(bool(stage) and stage[0].value in _CONSUMING_SINKS for stage in downstream)
 
 
 def is_secret_print(command: str) -> bool:

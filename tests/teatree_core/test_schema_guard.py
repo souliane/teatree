@@ -34,7 +34,7 @@ tightly as possible (see :class:`BehindSelfDbReportingTest` and
 import io
 from contextlib import redirect_stdout
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from django.core.management import call_command
@@ -217,8 +217,8 @@ class BehindSelfDbReportingTest(TransactionTestCase):
     """
 
     def setUp(self) -> None:
-        _unapply_initial_migration()
         self.addCleanup(_reapply_initial_migration)
+        _unapply_initial_migration()
 
     def test_doctor_check_command_aggregates_pending_migrations(self) -> None:
         # The `t3 doctor check` aggregation wires the schema-guard surface
@@ -274,8 +274,8 @@ class BehindSelfDbSelfHealsTest(TransactionTestCase):
     """
 
     def setUp(self) -> None:
-        _unmigrate_core_to_zero()
         self.addCleanup(_migrate_core_forward)
+        _unmigrate_core_to_zero()
 
     def test_ticket_clear_command_proceeds_past_schema_gate(self) -> None:
         # A workstream-slug CLEAR probes the forge to reconcile its repo. This case is
@@ -362,3 +362,43 @@ class DoctorCheckCurrentSchemaTest(TransactionTestCase):
             result = doctor_check_self_db_migrations()
         assert result is False
         assert "FAIL" in buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("case_type", "method_name", "mutate_name", "repair_name"),
+    [
+        (
+            BehindSelfDbReportingTest,
+            "test_doctor_check_command_aggregates_pending_migrations",
+            "_unapply_initial_migration",
+            "_reapply_initial_migration",
+        ),
+        (
+            BehindSelfDbSelfHealsTest,
+            "test_ticket_merge_command_proceeds_past_schema_gate",
+            "_unmigrate_core_to_zero",
+            "_migrate_core_forward",
+        ),
+    ],
+)
+def test_interrupted_schema_setup_repairs_default_db(
+    case_type: type[TransactionTestCase],
+    method_name: str,
+    mutate_name: str,
+    repair_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def interrupt() -> None:
+        msg = "interrupted"
+        raise RuntimeError(msg)
+
+    repair = Mock()
+    monkeypatch.setattr(f"{__name__}.{mutate_name}", interrupt)
+    monkeypatch.setattr(f"{__name__}.{repair_name}", repair)
+    case = case_type(method_name)
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        case.setUp()
+    case.doCleanups()
+
+    repair.assert_called_once_with()

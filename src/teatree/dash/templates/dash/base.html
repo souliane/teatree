@@ -63,6 +63,8 @@
     document.addEventListener("DOMContentLoaded", function () {
       if (!window.Idiomorph) { return; }
       Idiomorph.defaults.callbacks.beforeAttributeUpdated = function (name, node) {
+        // A details element's open state belongs to the reader; a poll must never fold it back.
+        if (name === "open" && node instanceof HTMLDetailsElement) { return false; }
         var active = document.activeElement;
         var editable = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
         return !(name === "value" && node === active && editable);

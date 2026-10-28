@@ -30,8 +30,10 @@ from teatree.core.models import Session, Task
 from teatree.core.models.config_setting import ConfigSetting
 from tests.factories import planned_ticket
 from tests.teatree_agents._executor_fakes import FIXTURES, FakeExecutor, attested
+from tests.teatree_agents._route_fakes import write_codex_login
 
 _WRITE_PHASES = ("coding", "testing", "e2e", "debugging")
+_EXECUTION_PHASES = ("bughunt", "dogfood_smoke", "eval_local")
 _PLANNING = ClaudeAgentOptions(permission_mode="bypassPermissions", disallowed_tools=["Write", "Edit", "NotebookEdit"])
 
 
@@ -82,12 +84,44 @@ def test_write_phases_never_bind_the_executor(phase: str) -> None:
 
 
 @pytest.mark.usefixtures("worker")
-@pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
+@pytest.mark.parametrize(
+    "phase", ["planning", "reviewing", "critic_reviewing", "answering", "requesting_review", "shipping"]
+)
 def test_served_phases_bind_the_executor_without_the_teatree_mcp_server(phase: str) -> None:
     harness = codex_app_server_spec().factory(HarnessBuildContext(phase=phase))
 
     assert harness.read_only_phase == phase
     assert (harness.capabilities.read_only_venue, harness.capabilities.mcp) == (True, False)
+
+
+@pytest.mark.usefixtures("worker")
+@pytest.mark.parametrize("phase", _EXECUTION_PHASES)
+def test_execution_phases_run_on_the_worker_lane_not_the_executor(phase: str) -> None:
+    harness = codex_app_server_spec().factory(HarnessBuildContext(phase=phase))
+
+    assert harness.read_only_phase is None
+    assert harness.worker_execution_phase == phase
+    assert harness.capabilities.read_only_venue is False
+
+
+@pytest.mark.usefixtures("worker")
+@pytest.mark.parametrize("phase", _EXECUTION_PHASES)
+def test_codex_is_selected_for_an_execution_phase_in_the_worker(
+    phase: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("T3_CODEX_HOME", str(write_codex_login(tmp_path / "home")))
+
+    selection = select_harness(["codex_app_server", "claude_sdk"], HarnessBuildContext(phase=phase))
+
+    assert (selection.spec.name, selection.rejected) == ("codex_app_server", ())
+
+
+@pytest.mark.usefixtures("worker")
+def test_a_host_execution_phase_binds_neither_the_executor_nor_the_worker_denials() -> None:
+    with patch("teatree.agents.codex_app_server.container_is_the_sandbox", return_value=False):
+        harness = codex_app_server_spec().factory(HarnessBuildContext(phase="bughunt"))
+
+    assert (harness.read_only_phase, harness.worker_execution_phase) == (None, None)
 
 
 @pytest.mark.usefixtures("worker")

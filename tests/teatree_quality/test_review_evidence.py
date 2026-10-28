@@ -1,5 +1,6 @@
 """Review evidence stays bound to the exact head and fails loud when stale."""
 
+import os
 import subprocess
 from pathlib import Path
 from shutil import which
@@ -9,6 +10,7 @@ from teatree.quality.duplicate_definitions import DuplicateDefinition
 from teatree.quality.kill_matrix import KillMatrix, KillRow
 from teatree.quality.review_evidence import (
     ReviewEvidence,
+    collect_changed_test_nodes,
     imported_modules_for_tests,
     measure_review_evidence,
     read_review_evidence,
@@ -86,3 +88,11 @@ def test_test_only_change_uses_the_imported_source_module(tmp_path: Path) -> Non
     test_file.parent.mkdir()
     test_file.write_text("from teatree.core.widget import widget\n\ndef test_widget():\n    assert widget() == 1\n")
     assert imported_modules_for_tests(tmp_path, ("tests/test_widget.py",)) == ("src/teatree/core/widget.py",)
+
+
+def test_changed_test_collection_uses_suite_settings_despite_ambient_module() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    path = "tests/teatree_quality/test_review_evidence.py"
+    with patch.dict(os.environ, {"DJANGO_SETTINGS_MODULE": "teatree.settings"}):
+        nodes = collect_changed_test_nodes(repo, (path,))
+    assert f"{path}::test_receipt_is_read_only_for_its_measured_head" in nodes

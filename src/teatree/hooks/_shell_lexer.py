@@ -28,11 +28,12 @@ The returned :class:`Token` carries the decoded VALUE plus the SHAPE
 attached short options (``-d'{...}'``) correctly.
 """
 
-import string
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
+
+from teatree.hooks._shell_ansi_c import decode_ansi_c
 
 
 class TokenKind(Enum):
@@ -60,13 +61,22 @@ class Token:
     raw: str = ""
 
 
-def raw_substitution_sees_live(raw: str, openers: tuple[str, ...], report_from: int = 0) -> bool:
-    """Quote-aware walk: True iff any ``openers`` marker in ``raw`` is LIVE.
+@dataclass(frozen=True)
+class HeredocBody:
+    body: str
+    opener_line: str
+    quoted: bool
+    terminated: bool
+    end: int
+
+
+def live_substitution_starts(raw: str, openers: tuple[str, ...]) -> Iterator[int]:
+    """Quote-aware walk: yield the index of every LIVE ``openers`` marker in ``raw``.
 
     A command/process substitution (``$(...)``, ``<(...)``, ``>(...)``) or a
     backtick command substitution is expanded by bash only when it is unquoted
     or inside DOUBLE quotes; inside SINGLE quotes it is inert literal text bash
-    passes verbatim. Both pre-publish raw-span walkers share this state machine
+    passes verbatim. Every pre-publish raw-span walker shares this state machine
     so they classify a substitution identically. It tracks ``in_single`` and
     ``in_double`` over the verbatim source span:
 
@@ -82,32 +92,27 @@ def raw_substitution_sees_live(raw: str, openers: tuple[str, ...], report_from: 
         single-quoted region (unquoted OR double-quoted, both of which bash
         expands); INERT only inside a genuinely single-quoted span.
 
-    Returns True on the first live marker, else False. Markers are matched as
-    literal prefixes, so a single-character backtick opener composes with the
-    two-character ``$(`` / ``<(`` / ``>(`` family. ``report_from`` narrows which
-    markers are REPORTED, never which characters are walked -- a value-only
-    slice of ``raw`` would lose the quote state opened before it.
+    Markers are matched as literal prefixes, so a single-character backtick
+    opener composes with the two-character ``$(`` / ``<(`` / ``>(`` family.
     """
     in_single = False
     in_double = False
-    i = 0
-    n = len(raw)
-    while i < n:
-        ch = raw[i]
+    for i, ch in enumerate(raw):
         if ch == "'" and not in_double:
             in_single = not in_single
-            i += 1
-            continue
-        if ch == '"' and not in_single:
+        elif ch == '"' and not in_single:
             in_double = not in_double
-            i += 1
-            continue
-        if not in_single and i >= report_from:
-            for opener in openers:
-                if raw.startswith(opener, i):
-                    return True
-        i += 1
-    return False
+        elif not in_single and any(raw.startswith(opener, i) for opener in openers):
+            yield i
+
+
+def raw_substitution_sees_live(raw: str, openers: tuple[str, ...], report_from: int = 0) -> bool:
+    """True iff a LIVE ``openers`` marker opens at or after ``report_from``.
+
+    ``report_from`` narrows which markers are REPORTED, never which characters are walked -- a value-only
+    slice of ``raw`` would lose the quote state opened before it.
+    """
+    return any(start >= report_from for start in live_substitution_starts(raw, openers))
 
 
 # Metacharacters that act as command separators in bash. Two-char
@@ -127,106 +132,6 @@ _DOUBLE_QUOTE_ESCAPES: Final[frozenset[str]] = frozenset({'"', "\\", "`", "$", "
 # ``_gh_glab_hiding.py`` -- rather than as lexer-level operators), so heredoc
 # detection happens post-hoc on the flushed WORD value in ``_note_heredoc_word``.
 _HEREDOC_OPS: Final[tuple[str, str]] = ("<<-", "<<")
-
-
-# ANSI-C escape decoding table for ``$'...'`` per bash man-page.
-_ANSI_C_SIMPLE_ESCAPES: Final[dict[str, str]] = {
-    "a": "\a",
-    "b": "\b",
-    "e": "\x1b",
-    "E": "\x1b",
-    "f": "\f",
-    "n": "\n",
-    "r": "\r",
-    "t": "\t",
-    "v": "\v",
-    "\\": "\\",
-    "'": "'",
-    '"': '"',
-    "?": "?",
-}
-
-
-def _read_digits(literal: str, start: int, max_len: int, alphabet: str) -> str:
-    """Return the longest prefix of ``literal[start:]`` over ``alphabet``."""
-    end = start
-    n = len(literal)
-    limit = min(start + max_len, n)
-    while end < limit and literal[end] in alphabet:
-        end += 1
-    return literal[start:end]
-
-
-def _decode_ansi_c_hex(literal: str, start: int, max_len: int) -> tuple[str, int]:
-    r"""Decode ``\xHH`` / ``\uHHHH`` / ``\UHHHHHHHH`` at ``start``.
-
-    Returns the decoded character plus the index ONE PAST the last
-    consumed digit. If no hex digits follow, returns the marker letter
-    so the caller can emit it literally.
-    """
-    digits = _read_digits(literal, start, max_len, string.hexdigits)
-    if not digits:
-        # No digits — caller emits the marker letter (the char at
-        # ``start - 1``) literally.
-        return literal[start - 1], start
-    try:
-        return chr(int(digits, 16)), start + len(digits)
-    except ValueError:
-        return literal[start - 1], start + len(digits)
-
-
-def _decode_ansi_c_octal(literal: str, start: int) -> tuple[str, int]:
-    r"""Decode ``\nnn`` octal at ``start`` (caller positioned ON first digit)."""
-    digits = _read_digits(literal, start, 3, string.octdigits)
-    return chr(int(digits, 8) & 0xFF), start + len(digits)
-
-
-_ANSI_C_HEX_WIDTH: Final[dict[str, int]] = {"x": 2, "u": 4, "U": 8}
-
-
-def _decode_ansi_c_escape(literal: str, i: int) -> tuple[str, int]:
-    r"""Decode one escape sequence starting at ``literal[i] == '\'``.
-
-    Returns the decoded text plus the next-cursor index. The caller is
-    responsible for the loop; this helper handles ONE escape per call.
-    """
-    n = len(literal)
-    if i + 1 >= n:
-        return literal[i], i + 1
-    nxt = literal[i + 1]
-    if nxt in _ANSI_C_SIMPLE_ESCAPES:
-        return _ANSI_C_SIMPLE_ESCAPES[nxt], i + 2
-    hex_width = _ANSI_C_HEX_WIDTH.get(nxt)
-    if hex_width is not None:
-        return _decode_ansi_c_hex(literal, i + 2, hex_width)
-    if nxt in string.octdigits:
-        return _decode_ansi_c_octal(literal, i + 1)
-    if nxt == "c" and i + 2 < n:
-        return chr(ord(literal[i + 2].upper()) ^ 0x40), i + 3
-    # Unknown escape — bash echoes the backslash + next char.
-    return literal[i : i + 2], i + 2
-
-
-def _decode_ansi_c(literal: str) -> str:
-    r"""Decode a stripped ``$'...'`` body per the bash man-page.
-
-    The literal is the text BETWEEN the opening ``$'`` and closing
-    ``'`` — caller is responsible for slicing. We walk character by
-    character so an escaped single quote (``\'``) does not terminate
-    the string early; the closing quote is detected during tokenization
-    BEFORE this decoder runs.
-    """
-    out: list[str] = []
-    i = 0
-    n = len(literal)
-    while i < n:
-        if literal[i] != "\\":
-            out.append(literal[i])
-            i += 1
-            continue
-        decoded, i = _decode_ansi_c_escape(literal, i)
-        out.append(decoded)
-    return "".join(out).partition("\x00")[0]
 
 
 def _heredoc_delimiter_from_glued_token(value: str) -> tuple[str, bool] | None:
@@ -256,7 +161,8 @@ class _LexerState:
     in_token: bool
     i: int
     token_start: int = 0
-    pending_heredocs: list[tuple[str, bool]] = field(default_factory=list)
+    pending_heredocs: list[tuple[str, bool, bool]] = field(default_factory=list)
+    heredoc_bodies: list[HeredocBody] | None = None
     _await_heredoc_delim: bool = False
     _await_heredoc_strip_tabs: bool = False
 
@@ -288,11 +194,11 @@ class _LexerState:
         """
         if self._await_heredoc_delim:
             self._await_heredoc_delim = False
-            self.pending_heredocs.append((value, self._await_heredoc_strip_tabs))
+            self.pending_heredocs.append((value, self._await_heredoc_strip_tabs, raw != value))
             return
         glued = _heredoc_delimiter_from_glued_token(value) if raw.startswith("<<") else None
         if glued is not None:
-            self.pending_heredocs.append(glued)
+            self.pending_heredocs.append((*glued, raw != value))
             return
         if value in _HEREDOC_OPS and raw == value:
             self._await_heredoc_delim = True
@@ -332,8 +238,12 @@ def _consume_pending_heredocs(state: _LexerState) -> None:
     input rather than looping forever.
     """
     n = len(state.command)
-    for delimiter, strip_tabs in state.pending_heredocs:
+    opener_start = state.command.rfind("\n", 0, state.i - 1) + 1
+    opener_line = state.command[opener_start : state.i]
+    for delimiter, strip_tabs, quoted in state.pending_heredocs:
+        body_start = state.i
         while state.i <= n:
+            line_start = state.i
             line_end = state.command.find("\n", state.i)
             at_eof = line_end == -1
             end = n if at_eof else line_end
@@ -341,6 +251,16 @@ def _consume_pending_heredocs(state: _LexerState) -> None:
             candidate = line.lstrip("\t") if strip_tabs else line
             state.i = n if at_eof else end + 1
             if candidate == delimiter or at_eof:
+                if state.heredoc_bodies is not None:
+                    state.heredoc_bodies.append(
+                        HeredocBody(
+                            body=state.command[body_start : line_start if candidate == delimiter else end],
+                            opener_line=opener_line,
+                            quoted=quoted,
+                            terminated=candidate == delimiter,
+                            end=state.i,
+                        )
+                    )
                 break
     state.pending_heredocs.clear()
 
@@ -432,7 +352,7 @@ def _consume_ansi_c(state: _LexerState) -> None:
             break
         body_chars.append(state.command[j])
         j += 1
-    state.current.append(_decode_ansi_c("".join(body_chars)))
+    state.current.append(decode_ansi_c("".join(body_chars)))
     state.i = j + 1
 
 
@@ -584,7 +504,7 @@ _STRUCTURED_RULES: Final[dict[str, _Rule]] = {
 }
 
 
-def tokenize(command: str) -> list[Token]:
+def tokenize(command: str, *, heredoc_bodies: list[HeredocBody] | None = None) -> list[Token]:
     r"""Return the bash-equivalent token stream for ``command``.
 
     The result preserves operator tokens (``;`` / ``|`` / ``&`` /
@@ -595,7 +515,7 @@ def tokenize(command: str) -> list[Token]:
     they are eliminated when token-internal and treated as whitespace
     when between tokens.
     """
-    state = _LexerState(command=command, tokens=[], current=[], in_token=False, i=0)
+    state = _LexerState(command=command, tokens=[], current=[], in_token=False, i=0, heredoc_bodies=heredoc_bodies)
     n = len(command)
     while state.i < n:
         if _try_consume_structured(state):

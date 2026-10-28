@@ -10,8 +10,15 @@ validation primitives, so the maker / bad-SHA refusals mirror the CLEAR contract
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Rubric, RubricCriterion, RubricError, Session, Ticket
-from teatree.core.models.rubric import PHASE_CRITERIA
+from teatree.core.gates.rubric_gate import (
+    RubricNotSatisfiedError,
+    RubricNotVerifiedError,
+    check_rubric_satisfied,
+    check_rubric_verified,
+)
+from teatree.core.models import ConfigSetting, Rubric, RubricCriterion, RubricError, Session, Ticket
+from teatree.core.models.rubric import PHASE_CRITERIA, criterion_text_hash
+from teatree.core.models.rubric_waiver import waive_criterion
 from teatree.quality.falsifiable_criteria import falsifiability_violation
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -27,6 +34,19 @@ def _ticket() -> Ticket:
 
 
 class TestRubricPopulation(TestCase):
+    def test_add_after_a_deleted_ordinal_uses_the_maximum(self) -> None:
+        ticket = _ticket()
+        rubric = Rubric.populate(ticket, ["AC1", "AC2", "AC3"])
+        rubric.criteria.get(ordinal=0).delete()
+        Rubric.add_criteria(ticket, ["a new positive criterion"])
+        assert rubric.criteria.get(text="a new positive criterion").ordinal == 3
+
+    def test_text_hash_uses_stripped_text(self) -> None:
+        assert criterion_text_hash(" AC1 ") == "77ad7e0416dad8c0167db82d4292995a"
+
+    def test_text_hash_tells_apart_texts_whose_twelve_digit_prefixes_collide(self) -> None:
+        assert criterion_text_hash("AC e72c4eaddc6b") != criterion_text_hash("AC e600436a6312")
+
     def test_populate_creates_pending_criteria(self) -> None:
         rubric = Rubric.populate(_ticket(), ["AC1", "AC2", "AC3"])
         criteria = list(rubric.criteria.all())
@@ -281,6 +301,99 @@ class TestThePhaseRubricHasContentOnDayOne(TestCase):
         assert criterion.status == RubricCriterion.Status.FAIL
 
 
+class TestADeploymentCanSwitchOffTheFailingRunCriteria(TestCase):
+    """`forced_repro_gate_enabled` off withholds the two criteria that demand a failing run.
+
+    A deployment that records no executed repro cannot satisfy "a RED pin exists and was
+    observed failing" or "a test that fails without the change", so seeding them gives it a
+    rubric no verifier can pass. The switch only stops the ADD: a row already on the rubric is
+    never pruned, graded over or re-added.
+    """
+
+    def _switch_off(self, scope: str | None = None) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=False, **({"scope": scope} if scope else {}))
+
+    def _visit(self, ticket: Ticket, *phases: str) -> list[str]:
+        session = Session.objects.create(ticket=ticket)
+        for phase in phases:
+            session.visit_phase(phase)
+        rubric = Rubric.objects.active_for_ticket(ticket)
+        return [] if rubric is None else [criterion.text for criterion in rubric.criteria]
+
+    def test_switched_off_planning_coding_and_fix_visits_leave_only_the_planning_criterion(self) -> None:
+        self._switch_off()
+        assert self._visit(_ticket(), "planning", "coding", "fix") == [PHASE_CRITERIA["planning"]]
+
+    def test_switched_on_the_same_visits_seed_every_phase_text(self) -> None:
+        assert self._visit(_ticket(), "planning", "coding", "fix") == [
+            PHASE_CRITERIA["planning"],
+            PHASE_CRITERIA["coding"],
+            PHASE_CRITERIA["fix"],
+        ]
+
+    def test_switched_off_the_other_phases_still_seed_their_criterion(self) -> None:
+        self._switch_off()
+        assert self._visit(_ticket(), "design", "investigation") == [
+            PHASE_CRITERIA["design"],
+            PHASE_CRITERIA["investigation"],
+        ]
+
+    def test_a_ticket_whose_only_visit_is_coding_has_no_rubric_and_both_done_gates_refuse_it(self) -> None:
+        self._switch_off()
+        ticket = _ticket()
+        assert self._visit(ticket, "coding") == []
+        assert Rubric.objects.active_for_ticket(ticket) is None
+        with pytest.raises(RubricNotSatisfiedError, match="no rubric is recorded"):
+            check_rubric_satisfied(ticket, _SHA, transition="merge")
+        with pytest.raises(RubricNotVerifiedError, match="no rubric is recorded"):
+            check_rubric_verified(ticket)
+
+    def test_a_graded_coding_criterion_keeps_its_grade_across_a_switched_off_coding_visit(self) -> None:
+        ticket = _ticket()
+        self._visit(ticket, "coding")
+        criterion = Rubric.objects.active_for_ticket(ticket).criteria.get()
+        criterion.record_grade(
+            status=RubricCriterion.Status.PASS, grader_identity="cold-reviewer", reviewed_sha=_SHA, rationale=_CITATION
+        )
+        self._switch_off()
+        self._visit(ticket, "coding")
+        criterion.refresh_from_db()
+        assert (criterion.status, criterion.grader_identity) == (RubricCriterion.Status.PASS, "cold-reviewer")
+
+    def test_a_coding_row_an_operator_deleted_is_not_re_added_while_switched_off(self) -> None:
+        ticket = _ticket()
+        Rubric.populate(ticket, ["the endpoint returns 201 for a fresh idempotency key"])
+        self._visit(ticket, "coding")
+        Rubric.objects.active_for_ticket(ticket).criteria.get(text=PHASE_CRITERIA["coding"]).delete()
+        self._switch_off()
+        assert self._visit(ticket, "coding") == ["the endpoint returns 201 for a fresh idempotency key"]
+
+    def test_a_waived_coding_row_is_not_re_added_with_the_switch_on(self) -> None:
+        ticket = _ticket()
+        self._visit(ticket, "planning", "coding")
+        waive_criterion(
+            ticket, text_hash=criterion_text_hash(PHASE_CRITERIA["coding"]), waived_by="alice", reason="no change code"
+        )
+        assert self._visit(ticket, "coding") == [PHASE_CRITERIA["planning"]]
+
+    def test_a_corrupt_switch_keeps_the_failing_run_criteria_seeded_and_logs(self) -> None:
+        ConfigSetting.objects.set_value("forced_repro_gate_enabled", value=True, scope="acme")
+        ConfigSetting.objects.filter(key="forced_repro_gate_enabled", scope="acme").update(value="not-a-bool")
+        ticket = Ticket.objects.create(overlay="acme")
+        with self.assertLogs("teatree.core.gates.repro_gate", level="ERROR"):
+            assert self._visit(ticket, "coding") == [PHASE_CRITERIA["coding"]]
+
+    def test_the_switch_off_for_one_overlay_does_not_stop_seeding_on_another(self) -> None:
+        self._switch_off(scope="acme")
+        assert self._visit(Ticket.objects.create(overlay="acme"), "coding") == []
+        assert self._visit(_ticket(), "coding") == [PHASE_CRITERIA["coding"]]
+
+    def test_a_stored_null_rubric_waivers_does_not_stop_the_phase_criterion_being_added(self) -> None:
+        ticket = _ticket()
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"rubric_waivers": None})
+        assert self._visit(ticket, "planning") == [PHASE_CRITERIA["planning"]]
+
+
 class TestApplyGrades(TestCase):
     """The batch seam both the CLI and the reviewing recorder stamp grades through."""
 
@@ -344,6 +457,34 @@ class TestApplyGrades(TestCase):
             )
 
         assert rubric.criteria.get(ordinal=0).status == RubricCriterion.Status.PENDING
+
+    def test_stale_text_hash_refuses_the_whole_batch(self) -> None:
+        rubric = Rubric.populate(_ticket(), ["AC1", "AC2"])
+        old_hash = criterion_text_hash("old AC2")
+        stored_hash = rubric.criteria.get(ordinal=1).text_hash
+        grades = Rubric.normalize_grades(
+            [
+                {"ordinal": 0, "status": "pass", "rationale": _CITATION},
+                {"ordinal": 1, "status": "pass", "rationale": _CITATION, "text_hash": old_hash},
+            ]
+        )
+        with pytest.raises(RubricError) as exc:
+            rubric.apply_grades(grades, grader_identity="cold-reviewer", reviewed_sha=_SHA)
+        assert old_hash in str(exc.value)
+        assert stored_hash in str(exc.value)
+        assert [c.status for c in rubric.criteria.all()] == ["pending", "pending"]
+
+    def test_grade_hash_normalisation_keeps_optional_nonblank_hash(self) -> None:
+        grades = Rubric.normalize_grades(
+            [
+                {"ordinal": 0, "status": "fail", "text_hash": " ABCDEF123456 "},
+                {"ordinal": 1, "status": "fail", "text_hash": " "},
+                {"ordinal": 2, "status": "fail"},
+            ]
+        )
+        assert grades[0]["text_hash"] == "abcdef123456"
+        assert "text_hash" not in grades[1]
+        assert "text_hash" not in grades[2]
 
 
 class TestUngradedOrdinals(TestCase):

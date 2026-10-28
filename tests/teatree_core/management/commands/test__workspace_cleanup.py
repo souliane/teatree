@@ -201,6 +201,19 @@ class TestWorktreeCleanFailsClosed:
 
         assert _worktree_clean(str(repo)) is False
 
+    def test_ignored_user_file_keeps_the_checkout(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=repo)
+        _run_git("config", "user.email", "t@t", cwd=repo)
+        _run_git("config", "user.name", "t", cwd=repo)
+        (repo / ".gitignore").write_text("notes.local\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=repo)
+        _run_git("commit", "-q", "-m", "initial", cwd=repo)
+        (repo / "notes.local").write_text("retain\n", encoding="utf-8")
+
+        assert _worktree_clean(str(repo)) is False
+
 
 class TestPruneBranchesKeptWarning(TestCase):
     """The kept-branch warning names what the ladder could not prove.

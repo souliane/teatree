@@ -64,6 +64,16 @@ class TestHeadRefForForge:
     def test_unparsable_url_yields_no_ref(self) -> None:
         assert head_ref_for("not-a-url") == ""
 
+    @pytest.mark.parametrize(
+        ("url", "head_ref"),
+        [
+            ("https://git.example.com/o/r/merge_requests/5", "refs/pull/5/head"),
+            ("https://gitlab.example.com/o/r/pull/5", "refs/merge-requests/5/head"),
+        ],
+    )
+    def test_forge_specific_legacy_url_shapes(self, url: str, head_ref: str) -> None:
+        assert head_ref_for(url) == head_ref
+
 
 class TestReviewCheckoutSucceeds:
     @pytest.mark.parametrize("root_name", ["configured", "var-tmp"])

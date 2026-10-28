@@ -1,6 +1,6 @@
 """Tests for the teatree-op fill-in MCP tools (#3076 / #35).
 
-``question_list`` (read) mirrors the pending ``DeferredQuestion`` backlog;
+``question_list`` (read) mirrors the pending owner-question backlog;
 ``task_create`` (write) rides the ``tasks create`` command seam so the dispatch
 gates keep their semantics, and a bad ticket surfaces the command's own message
 as a structured error (never a ``SystemExit`` that kills the tool call);
@@ -18,6 +18,7 @@ from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
 from teatree.core.models import DeferredQuestion, Task
 from teatree.core.notify import NotifyOutcome, NotifyReason
 from teatree.mcp.server import build_server
+from tests._owner_channel import OWNER_DECISION
 from tests.factories import TicketFactory, record_test_plan
 from tests.teatree_mcp._call_tool_result import structured as _structured
 
@@ -28,9 +29,10 @@ def _call(tool: str, args: dict[str, Any]) -> Any:
 
 
 class TestQuestionList(TestCase):
-    def test_lists_pending_questions_only(self) -> None:
-        pending = DeferredQuestion.record("Proceed with the rollout?")
-        answered = DeferredQuestion.record("Already handled?")
+    def test_lists_pending_owner_questions_only(self) -> None:
+        pending = DeferredQuestion.record("Proceed with the rollout?", **OWNER_DECISION)
+        internal = DeferredQuestion.record("Repair halted?")
+        answered = DeferredQuestion.record("Already handled?", **OWNER_DECISION)
         answered.answered_at = answered.created_at
         answered.answer_text = "yes"
         answered.save(update_fields=["answered_at", "answer_text"])
@@ -39,6 +41,7 @@ class TestQuestionList(TestCase):
 
         ids = {row["id"] for row in result}
         assert pending.pk in ids
+        assert internal.pk not in ids
         assert answered.pk not in ids
         assert next(row for row in result if row["id"] == pending.pk)["question"] == "Proceed with the rollout?"
 

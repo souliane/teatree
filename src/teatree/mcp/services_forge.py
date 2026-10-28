@@ -10,7 +10,7 @@ stays intact.
 
 ``<forge>_issue_create``, ``<forge>_issue_note`` and ``<forge>_issue_close`` are
 entirely the #162 hygiene facade's (:mod:`teatree.core.issue_hygiene`) MCP face:
-create judges the open backlog before it files (two-phase, so the dedupe cannot
+create judges the closest open tickets before it files (two-phase, so the dedupe cannot
 be skipped), note routes a requirement into the DESCRIPTION where a lane reads
 it, and close puts its rationale in a dated description section before closing
 with no comment. The facade itself routes every outbound body through the
@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
+_ISSUE_SEARCH_LIMIT = 10
 
 
 def _forge_client(service: Service) -> CodeHostBackend:
@@ -183,32 +184,42 @@ def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> 
         labels: list[str] | None = None,
         dedupe: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """File an issue — but only after every open ticket on *repo* has been judged (#162 Rule 1).
+        """File an issue — but only after the closest open tickets on *repo* have been judged.
 
         Two phases, because a dedupe an agent can skip is a dedupe that does not
-        happen. Call it WITHOUT *dedupe* and nothing is written: the open backlog
-        comes back as ``candidates`` plus the ``snapshot`` it was read at. Judge each
+        happen. Call it WITHOUT *dedupe* and nothing is written: the closest open tickets
+        come back as ``candidates``, counts, and their ``snapshot``. Judge each
         one and call again with ``dedupe={"snapshot": [...], "decisions": [...]}`` —
         one ``fits`` folds the request into that ticket's description instead of
         filing, and every rejection's reason is kept in a private audit row. A ticket
-        filed in between makes the judgment set incomplete, so the outcome is ``stale_snapshot`` and you judge
+        filed in between that enters the closest set makes the outcome ``stale_snapshot`` and you judge
         again. The two travel as one argument because a judgment set without the
-        backlog it was made against cannot be checked for completeness. Title, body and labels are
-        leak-scrubbed (a customer codename bound for a public forge is REFUSED) and #117-audited.
+        candidate set it was made against cannot be checked for completeness. Keep title and body
+        identical across both calls or the closest set may change and return ``stale_snapshot``.
+        Title, body and labels are leak-scrubbed (a customer codename bound for a
+        public forge is REFUSED) and #117-audited.
         """
 
         def _prepare() -> dict[str, Any]:
-            from teatree.core.issue_hygiene import open_candidates  # noqa: PLC0415 — deferred: ORM-adjacent import
+            from teatree.core.issue_writes.issue_candidate_selection import (  # noqa: PLC0415 — deferred import
+                closest_open_candidates,
+            )
 
-            live = open_candidates(host=_forge_client(service), repo=repo)
+            candidates = closest_open_candidates(host=_forge_client(service), repo=repo, title=title, body=body)
+            closest = candidates.closest
             return {
                 "outcome": "judgment_required",
-                "candidates": list(starmap(_candidate_summary, sorted(live.items()))),
-                "snapshot": sorted(live),
+                "candidates": list(starmap(_candidate_summary, closest.items())),
+                "snapshot": list(closest),
+                "open_count": len(candidates.all_open),
+                "compared": len(closest),
                 "instructions": (
-                    "Nothing was written. Judge EVERY candidate, then call again with dedupe={'snapshot': "
+                    f"Nothing was written. {len(candidates.all_open) - len(closest)} open tickets were not compared. "
+                    "Keep title and body unchanged; judge every returned candidate, then "
+                    "call again with dedupe={'snapshot': "
                     "<this snapshot>, 'decisions': [{'url': ..., 'fits': bool, 'reason': '<why not>'}]}. "
-                    "One fits -> the request is appended to that ticket's description; none fits -> a new "
+                    "One returned candidate fits -> the request is appended to that ticket's description; "
+                    "none fits -> a new "
                     "ticket is filed with the supplied body; judgments are kept privately."
                 ),
             }
@@ -316,11 +327,28 @@ def _register_pr_reads(server: MCPServer, service: Service, prefix: str) -> None
 
 
 def _register_search_reads(server: MCPServer, service: Service, prefix: str) -> None:
-    async def issue_search(repo: str, query: str) -> list[dict[str, Any]]:
-        """Open issues in *repo* matching *query* (dup-check)."""
-        return await sync_to_async(
+    async def issue_search(repo: str, query: str) -> dict[str, Any]:
+        """Open issues in *repo* matching *query* (dup-check).
+
+        Up to 10 summaries with number, title, url, state, updated_at; truncated
+        is true when more match, so narrow the query.
+        """
+        matches = await sync_to_async(
             lambda: _forge_client(service).search_open_issues(repo=repo, query=query), thread_sensitive=True
         )()
+        return {
+            "issues": [
+                {
+                    "number": issue.get("number") or issue.get("iid"),
+                    "title": issue.get("title"),
+                    "url": issue.get("html_url") or issue.get("web_url"),
+                    "state": issue.get("state"),
+                    "updated_at": issue.get("updated_at"),
+                }
+                for issue in matches[:_ISSUE_SEARCH_LIMIT]
+            ],
+            "truncated": len(matches) > _ISSUE_SEARCH_LIMIT,
+        }
 
     async def issue_list_assigned(assignee: str) -> list[dict[str, Any]]:
         """Open issues assigned to *assignee*."""

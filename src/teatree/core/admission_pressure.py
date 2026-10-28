@@ -88,9 +88,8 @@ SHED_AT_DEFAULT = 0.9
 HALT_AT = 1.0
 
 #: The pre-#4508 brake evaluation order — quota brakes in their ``if`` order, then the
-#: machine ones. It survives as the tie-break among HALTing components so a refusal names
-#: the cause it always named: an exhausted fleet reports exhaustion, not the collapsed
-#: pace that exhaustion necessarily produces.
+#: machine ones. Quota and kernel causes keep this rank; machine causes share the load
+#: rank and use this order only when their normalised severity ties.
 BRAKE_PRECEDENCE = (
     "accounts-exhausted",
     "weekly-quota",
@@ -280,9 +279,9 @@ class AdmissionPressure:
         """The one cause a refusal names, so N observations of it report as ONE incident.
 
         Among components that have REACHED :data:`HALT_AT`, :data:`BRAKE_PRECEDENCE`
-        decides — the pre-#4508 brakes were an ordered ``if`` chain, so a spent fleet was
-        always reported as exhaustion even though its pace had also collapsed, and
-        picking the numeric maximum would silently rename it to the derived symptom.
+        ranks quota and kernel causes. Machine causes share one rank, with the worst
+        value winning and the old order breaking ties. An exhausted fleet still wins
+        over its collapsed pace, even when pace has a higher numeric value.
         Below HALT nothing was ever named, so there is no order to preserve and the
         worst dimension is simply the worst one.
         """
@@ -290,7 +289,14 @@ class AdmissionPressure:
             return None
         halted = [component for component in self.components if component.value >= HALT_AT]
         if halted:
-            return min(halted, key=lambda component: BRAKE_PRECEDENCE.index(component.name))
+            return min(
+                halted,
+                key=lambda component: (
+                    BRAKE_PRECEDENCE.index("load" if component.name in MACHINE_BRAKE_CAUSES else component.name),
+                    -component.value if component.name in MACHINE_BRAKE_CAUSES else 0,
+                    BRAKE_PRECEDENCE.index(component.name),
+                ),
+            )
         return max(self.components, key=lambda component: component.value)
 
     @property

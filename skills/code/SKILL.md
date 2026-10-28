@@ -116,7 +116,7 @@ The goal is to surface the missed step so the user can redirect early, not to ad
 
 ### 0d. Dream Gap-Batch Tickets — Claim Only What You Delivered (Non-Negotiable)
 
-A ticket carrying `extra['dream_gap_batch']` hosts dream gaps the backlog sweep folded into it ([#4776](https://github.com/souliane/teatree/issues/4776)); each gap's substance is folded into the issue body under `## Folded in: dream-gap <gap_key>`. Fix each gap independently, and record each one with `t3 dream gap-disposition <id> <gap_key> --citation "<evidence>"` (addressed) or `--reject "<why>"` — the host's rubric refuses merge until `t3 dream gap-coverage --ticket <id>` exits 0.
+A ticket carrying `extra['dream_gap_batch']` hosts dream gaps the backlog sweep folded into it ([#4776](https://github.com/souliane/teatree/issues/4776)); each gap's substance is folded into the issue body under `## Folded in: dream-gap <gap_key>`. Fix each gap independently, and record each one with `t3 dream gap-disposition <id> <gap_key> --citation "<evidence>"` (addressed), `--reject "<why>"` (rejected), or `--misfit "<why this host cannot address it>"` (returned to the umbrella) — the host's rubric refuses merge until `t3 dream gap-coverage --ticket <id>` exits 0.
 
 A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): `ticket.context` lists every gap the pass queued, each with its `gap_key` and, when its ledger row exists, its full `Rule:` / `Evidence:` / `Fix in:` lines — work from those, never the truncated title. A pass with 300 pending gaps mints ONE such ticket, not 300 — fix each gap in the manifest independently.
 
@@ -308,7 +308,7 @@ are in [`docs/module-health.md`](../../docs/module-health.md).
 - Run linting after each significant change.
 - Run type checking if the project uses it. Measure ty diagnostics through the hook's own entry (`uv run ty check`); the bare `.venv/bin/ty` lacks `VIRTUAL_ENV`, so PEP 723 script dependencies fail to resolve and inflate the count with phantom unresolved-import errors.
 - Run the relevant test suite frequently — don't batch test runs.
-- **The affected-tests lane is GREEN locally before any push (mandatory) — the lane, never the whole suite.** A narrow node run proves your new test; the affected lane proves you broke nothing else the diff can reach. The discipline is do-X-not-Y: do run the lane and confirm it passes in this same response *before* `pr create` / `git push`; do **not** run the whole suite locally, and do not push to let CI tell you whether you regressed something. A local whole-tree sweep pays for what CI's required sharded lane is about to run anyway — measured, that duplication is most of a 3.5h ticket ([#3994](https://github.com/souliane/teatree/issues/3994)).
+- **Inspect `t3 tool affected-tests` before any local lane.** If SCOPED, the affected-tests lane is GREEN before push; if FULL, run changed test files or pinned node ids locally and use CI for whole-tree proof. A narrow node run proves your new test; the scoped affected lane checks the diff's reachable tests. The discipline is do-X-not-Y: do run the lane and confirm it passes in this same response *before* `pr create` / `git push`; do **not** run the whole suite locally, and do not push to let CI tell you whether you regressed something. A local whole-tree sweep pays for what CI's required sharded lane is about to run anyway — measured, that duplication is most of a 3.5h ticket ([#3994](https://github.com/souliane/teatree/issues/3994)).
 
   ```bash
   bash dev/test-affected.sh             # teatree core: the diff-scoped lane
@@ -317,7 +317,7 @@ are in [`docs/module-health.md`](../../docs/module-health.md).
   t3 <overlay> test run                 # runs the repo's regression suite under its config
   ```
 
-  Scoping never means under-running: the lane is fail-safe **to FULL**. A migration, a `conftest.py` / `factories.py` / test-settings edit, an unclassifiable executable path, a missing merge-base, or an edit to the selection machinery itself all run the whole suite on their own. The `--full` flag is the exception a cross-cutting change declares, not the default every ticket pays. Pinned by `tests/teatree_quality/test_local_verification.py`.
+  The selector is fail-safe **to FULL**. A migration, a `conftest.py` / `factories.py` / test-settings edit, an unclassifiable executable path, a missing merge-base, or an edit to the selection machinery itself all report FULL; run changed test files or pinned node ids locally in that case. The `--full` flag is the exception a cross-cutting change declares, not the default every ticket pays. Pinned by `tests/teatree_quality/test_local_verification.py`.
 
 - **Run the language convention skill's review checklist** (if loaded) before declaring implementation complete.
 - **100% test coverage is part of the implementation (Non-Negotiable).** New code ships with tests in the same commit. Never lower coverage thresholds, add files to coverage omit lists, or exclude code from coverage measurement without **explicit user approval**. If you can't reach 100% coverage, the implementation scope is too large — break it into smaller pieces.

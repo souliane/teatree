@@ -10,7 +10,7 @@ message: >-
   a scanner error FIRST (parse the scanner's well-formed result), then deny
   the finding with the finding message and fail this security gate CLOSED on
   a scanner error with a distinct "scanner error, not a finding" message. See
-  the ai-sig-scan gate _ai_sig_finding discriminator and the sibling
+  the in-process ai_signature_scan.scan_text gate and the sibling
   _diff_coverage_finding.
 files:
   - "hooks/scripts/hook_router.py"

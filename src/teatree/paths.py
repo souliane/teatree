@@ -51,7 +51,7 @@ def control_db_dir(env: Mapping[str, str]) -> Path:
     return Path(override) if override else DEFAULT_CONTROL_DB_DIR
 
 
-def canonical_db_in(data_dir: Path, *, env: Mapping[str, str]) -> Path:
+def canonical_db_in(data_dir: Path, *, env: Mapping[str, str], home: Path | None = None) -> Path:
     """The control DB file for *data_dir* — the named volume for the REAL install only.
 
     A data dir that IS the machine's canonical one resolves into the control-DB
@@ -61,7 +61,8 @@ def canonical_db_in(data_dir: Path, *, env: Mapping[str, str]) -> Path:
     beside itself, because those are private copies with no second writer and no
     volume to reach.
     """
-    if data_dir == _TRUE_CANONICAL_DATA_DIR:
+    canonical_data_dir = _TRUE_CANONICAL_DATA_DIR if home is None else home / ".local" / "share" / "teatree"
+    if data_dir == canonical_data_dir:
         return control_db_dir(env) / DB_FILENAME
     return data_dir / DB_FILENAME
 

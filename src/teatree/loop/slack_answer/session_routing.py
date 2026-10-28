@@ -16,15 +16,24 @@ from teatree.agents.live_client import (
 from teatree.core.models import PendingChatInjection, SessionCommand, Task, ThreadBinding
 from teatree.core.models.task_handoff import is_operator_paused, release_operator_pause
 from teatree.core.models.thread_binding import slack_command_id
+from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading
-from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply, configured_owner_id
+from teatree.loop.question_binding import (
+    AmbiguousCards,
+    BoundAnswer,
+    CardThreadStop,
+    UnmatchedCardThread,
+    apply_bound_answer,
+    configured_owner_id,
+)
 from teatree.loop.slack_answer.control_verbs import control_verb
-from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_present_in_thread
+from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_match_in_thread
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
-    from teatree.loop.slack_answer.cycle import SlackAnswerReport, _Unit
+    from teatree.loop.slack_answer.coalescing import _Unit
+    from teatree.loop.slack_answer.cycle import SlackAnswerReport
 
 SLACK_STEER_WAIT_SECONDS = 10.0
 
@@ -173,25 +182,30 @@ def _command_reply(command: SessionCommand) -> str:
 
 
 def _post_live_reply(backend: "MessagingBackend", unit: "_Unit", reply: str) -> bool:
-    root = unit.lead.thread_ts
+    root = unit.lead.thread_ts or unit.slack_ts
     floor = unit.rows[-1].slack_ts
-    if bot_reply_present_in_thread(
+    matched_ts = bot_reply_match_in_thread(
         backend, channel=unit.channel, thread_root=root, after_ts=floor, expected_ts=ExpectedReply(None, reply)
-    ):
+    )
+    if matched_ts is not None:
+        record_ticket_thread_post(unit.channel, root, matched_ts)
         return True
     posted = backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=reply)
     posted_ts = posted.get("ts")
-    return bool(
-        posted.get("ok") is True
-        and isinstance(posted_ts, str)
-        and bot_reply_present_in_thread(
+    matched_ts = (
+        bot_reply_match_in_thread(
             backend,
             channel=unit.channel,
             thread_root=root,
             after_ts=floor,
             expected_ts=ExpectedReply(posted_ts, reply),
         )
+        if posted.get("ok") is True and isinstance(posted_ts, str)
+        else None
     )
+    if matched_ts is not None:
+        record_ticket_thread_post(unit.channel, root, matched_ts)
+    return matched_ts is not None
 
 
 def _post_confirmed(backend: "MessagingBackend", unit: "_Unit", reply: str, *, kind: str) -> bool:
@@ -236,6 +250,32 @@ def _choice_reply(
         f"Select a task for this ticket. Start your reply with {choices} to choose one.",
         kind=PendingChatInjection.AnswerKind.ACK,
     )
+
+
+_STOP_MESSAGES = {
+    CardThreadStop.TAPS_ONLY: "This card needs a button tap. Please choose an option on the card.",
+    CardThreadStop.CLOSED: "This card is no longer waiting for an answer. Please reply to a current card.",
+    CardThreadStop.NOT_WAITING: "Question #{question_id} is no longer waiting. Please reply to a current card.",
+    CardThreadStop.OPTIONS_ONLY: "This card accepts an option reply: {options}.",
+}
+
+
+def _card_result_reply(
+    backend: "MessagingBackend",
+    unit: "_Unit",
+    report: "SlackAnswerReport",
+    result: AmbiguousCards | UnmatchedCardThread | BoundAnswer | None,
+) -> bool:
+    if isinstance(result, AmbiguousCards):
+        choices = " or ".join(f"#{question_id}" for question_id in result.question_ids)
+        message = f"Questions are waiting in this thread. Start your reply with {choices} to choose one."
+    elif isinstance(result, UnmatchedCardThread):
+        message = _STOP_MESSAGES[result.reason].format(
+            question_id=result.question_id, options=", ".join(result.options)
+        )
+    else:
+        return False
+    return _post_bound_reply(backend, unit, report, message, kind=PendingChatInjection.AnswerKind.ACK)
 
 
 def _queue_pending_input(
@@ -379,9 +419,9 @@ def _live_receipt(
     unit: "_Unit",
     report: "SlackAnswerReport",
     binding: ThreadBinding,
-    reader: InboundReader,
+    route: tuple[InboundReader, BoundAnswer | None],
 ) -> bool:
-    bound_answer = bind_reply(unit.lead, reader=reader, owner_user_id=configured_owner_id(backend), text=unit.text)
+    reader, bound_answer = route
     if _replay_bound_command(backend, unit, report, binding, bound_answer):
         return True
     verb = control_verb(unit.text)
@@ -451,11 +491,7 @@ def _apply_live_session(
     return True
 
 
-def _reject_foreign_bound_unit(
-    backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport", binding: ThreadBinding | None
-) -> bool:
-    if binding is None:
-        return False
+def _reject_foreign_unit(backend: "MessagingBackend", unit: "_Unit", report: "SlackAnswerReport") -> bool:
     owner_id = configured_owner_id(backend)
     if owner_id and unit.lead.user_id == owner_id:
         return False

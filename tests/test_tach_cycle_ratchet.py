@@ -82,7 +82,8 @@ _TACH = _REPO / "tach.toml"
 # rather than left as headroom, so a future fan-in still needs its own review.
 # Bumped 22 -> 23: disk_consumers is a separate domain node because its
 # registered-worktree-root probe needs core ORM state; utils stays foundation.
-_CORE_FANIN_BASELINE = 23
+# Bumped 23 -> 24: loop.self_improve reads core's process-table and pid-namespace helpers for the memory snapshot.
+_CORE_FANIN_BASELINE = 24
 _MAX_DECLARED_TWO_CYCLES = 0
 
 

@@ -2,8 +2,8 @@
 
 The read-then-signal stage of a tick: fan the scanner jobs out across a
 thread pool, gather every signal, and record each scanner's recoverable
-error keyed by its label. No dispatch, no rendering, no DB mutation —
-those belong to later phases.
+error keyed by its label. The job persists scanner faults and healing; dispatch
+and rendering belong to later phases.
 """
 
 import logging
