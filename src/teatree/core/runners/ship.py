@@ -80,8 +80,7 @@ def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: 
     keywords when the overlay's auto-close setting is enabled. This reads the
     single ``extra['more_prs_coming']`` boolean and suppresses the close when
     it is set — the caller is what detects a declared partial PR or a still-open
-    umbrella issue and records the flag
-    (``feedback_partial_pr_never_closes_umbrella_issue``).
+    umbrella issue and records the flag; a partial PR never closes its umbrella issue.
 
     Returns ``True`` when the ``Closes/Fixes #N`` keywords must be kept so the
     platform auto-closes the issue on merge; ``False`` when they must be
