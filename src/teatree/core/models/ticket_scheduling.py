@@ -407,7 +407,7 @@ class TicketSchedulingModel(TicketFacet):
             if keep_for_push and not has_attempt:
                 continue
             if not has_attempt:
-                TaskAttempt.objects.create(
+                TaskAttempt.objects.create(  # no-usage: superseded before an agent turn
                     task=task,
                     ended_at=timezone.now(),
                     exit_code=1,
