@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from teatree.core.gates.merge_item_waiver import waived_merge_items
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.critic_verdict import CriticVerdict
@@ -140,6 +141,7 @@ def round_brief_lines(task: "Task") -> tuple[str, ...]:
                 or (f"{previous.head_sha}:{item.slug}:0" if item.is_fail() else "no findings")
             )
             for item in previous.item_verdicts()
+            if item.slug not in waived_merge_items(task.ticket)
         )
         if previous is not None
         else ("  - none recorded; inspect every merge-quality class on the first pass",)

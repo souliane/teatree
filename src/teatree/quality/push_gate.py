@@ -284,7 +284,7 @@ def run_brief_constraints(
             before[path] = ""
         else:
             try:
-                before[path] = git.run_strict(repo=str(repo_root), args=["show", f"{base}:{path}"])
+                before[path] = git.run_strict(repo=str(repo_root), args=["show", f"{base}:{entry.old_path or path}"])
             except (OSError, CommandFailedError):
                 continue
         current = (repo_root / path).resolve()

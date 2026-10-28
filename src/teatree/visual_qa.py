@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from teatree.browser.evidence import BrowserEvent, EvidenceRecorder
 from teatree.core.overlay import OverlayBase
+from teatree.types import VisualQAPageDetail, VisualQAPageError, VisualQASummary
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, TimeoutExpired, redact_secrets
 from teatree.visual_qa_server import ServedApp, ServerSpec, VisualQAUnavailableError
@@ -34,7 +35,6 @@ from teatree.visual_qa_server import served_app as _served_app
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext
 
-    from teatree.core.models.types import VisualQASummary
 
 # Default file patterns that warrant a browser sanity check.
 # Overlays can override via ``OverlayBase.review.visual_qa_targets()``.
@@ -134,12 +134,6 @@ class VisualQAReport:
 
     def summary(self) -> "VisualQASummary":
         """Return a JSON-serialisable snapshot for ``Ticket.extra``."""
-        from teatree.core.models.types import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
-            VisualQAPageDetail,
-            VisualQAPageError,
-            VisualQASummary,
-        )
-
         details: list[VisualQAPageDetail] = [
             {
                 "url": page.url,

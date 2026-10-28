@@ -61,6 +61,7 @@ class ChangeEntry:
 
     status: str
     path: str
+    old_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -193,7 +194,13 @@ def _parse_name_status(output: str, entries: set[ChangeEntry]) -> None:
             continue
         fields = line.split("\t")
         # Rename/copy carry ``<old>\t<new>``; the new path is the one on the tree.
-        entries.add(ChangeEntry(status=fields[0][:1], path=fields[-1]))
+        entries.add(
+            ChangeEntry(
+                status=fields[0][:1],
+                path=fields[-1],
+                old_path=fields[1] if fields[0][:1] in {"R", "C"} else None,
+            )
+        )
 
 
 def changed_paths(base_ref: str = "origin/main", *, cwd: Path | None = None) -> ChangedSet:

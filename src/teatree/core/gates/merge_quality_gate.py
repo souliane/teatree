@@ -17,9 +17,9 @@ The judge (async)
 
 The gate (deterministic)
     a pure row-check at merge time: a verdict covering the EXACT shipped head must
-    exist AND affirmatively PASS every merge rubric item (a FAIL, an uncited pass
-    downgraded to ``instrumentation_gap``, or an OMITTED item all block — the
-    anti-vacuity floor). Fail-closed, exactly like "CI must be green".
+    exist AND affirmatively PASS every unwaived merge rubric item (a FAIL, an uncited
+    pass downgraded to ``instrumentation_gap``, or an OMITTED item blocks unless the
+    owner waived that LLM item). Fail-closed, exactly like "CI must be green".
 
 Every ticket requires a verdict at the shipped head, including ordinary and
 directive tickets.
@@ -30,9 +30,11 @@ chokepoint BOTH autonomous merge paths cross, mirroring ``assert_review_verdict_
 
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from teatree.core.gates.merge_item_waiver import waived_merge_items
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.ticket_resolution import related_gated_tickets, resolve_gated_ticket
@@ -43,8 +45,18 @@ from teatree.core.models.directive import Directive
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.task import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.review.critic_continuity import merge_critic_continuity, review_evidence_contract
-from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
+from teatree.core.review.critic_continuity import (
+    merge_critic_continuity,
+    merge_verdict_history,
+    review_evidence_contract,
+)
+from teatree.core.review.critic_rubric import (
+    _MERGE_TRANSITION,
+    EXHAUSTIVE_TEST_VALUE_RULE,
+    item_for,
+    llm_items,
+    merge_item_questions,
+)
 from teatree.core.review.finding_standard import FINDING_STANDARD
 from teatree.core.review.nit_publish import critic_nits, has_nit_receipts, pr_url_for_nits, publish_nits, review_nits
 from teatree.core.worktree.target_branch import resolve_target_branch
@@ -129,7 +141,7 @@ def _test_strategy_section(adequacy: object) -> str:
     return ""
 
 
-def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
+def build_merge_quality_contract(ticket: "Ticket", head_sha: str, *, changed_tests: Sequence[str] = ()) -> str:
     """The dispatch contract for the headless merge-quality critic (the merge rubric injected).
 
     Names the merge LLM items from the registry (a forgotten item would never be
@@ -137,11 +149,24 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
     the critic to RETURN a ``critic_verdict`` envelope — the same corr-11 shape the
     ``mark_delivered`` critic returns, judged at the shared ``critic_reviewing`` phase.
     """
-    questions = "\n".join(f"  - {item.slug}: {item.adversarial_question}" for item in llm_items(_MERGE_TRANSITION))
     item_slugs = ", ".join(item.slug for item in llm_items(_MERGE_TRANSITION))
     strategy = ratified_test_strategy(ticket)
-    continuity = merge_critic_continuity(ticket, head_sha)
-    evidence = review_evidence_contract(ticket, head_sha)
+    changed_tests_context = (
+        "Tests changed since the last passing head (caller supplied; inspect each one):\n"
+        + "\n".join(f"- {node}" for node in changed_tests)
+        if changed_tests
+        else ""
+    )
+    context = "\n\n".join(
+        part
+        for part in (
+            merge_critic_continuity(ticket, head_sha),
+            merge_verdict_history(ticket),
+            review_evidence_contract(ticket, head_sha),
+            changed_tests_context,
+        )
+        if part
+    )
     return (
         f"You are the merge-quality CRITIC deciding whether the shipped change on ticket {ticket.pk} at head "
         f"{head_sha[:8] or '<unknown>'} is not merely green but WELL-ENGINEERED — clean and tested-enough WITHOUT "
@@ -152,17 +177,19 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
         f'"kind": "blocking"|"nit". A NIT alone cannot fail an item.\n\n'
         f"A redundant_with row needs a blocking test_value point citing its test node; a duplicate definition "
         f"needs a blocking cleanliness point citing its file:line. An ignored row is refused and re-armed.\n\n"
-        f"{continuity}\n\n{evidence}\n\nAnchor for `test_value` — {strategy}\n\n"
+        f"{context}\n\nAnchor for `test_value` — {strategy}\n\n"
         f"On a later head, each item's resolutions array must name every prior finding ID under that item, "
         f"state fixed or not_fixed, and cite the current artifact. "
         f"A not_fixed BLOCKING point keeps its item failed.\n\n"
         f"`test_value` is BOTH directions: a VACUOUS test (asserts nothing that could fail — a tautology, the "
         f"framework, a mock talking to a mock) FAILS, AND a BLOATED test set (redundant permutations beyond the "
         f"ratified strategy, same behavior/same failure mode in different dressing) FAILS; the coverage-that-matters "
-        f"from the strategy must be present with no undeclared redundant tests. `cleanliness` is the CLAUDE.md bar: "
+        f"from the strategy must be present with no undeclared redundant tests. {EXHAUSTIVE_TEST_VALUE_RULE} "
+        f"`cleanliness` is the CLAUDE.md bar: "
         f"full typing (no smuggled Any), composition over inheritance, Django conventions, self-documenting names, "
         f"no parallel mechanism where a substrate convention exists, docs/BLUEPRINT left consistent.\n\n"
-        f"Questions:\n{questions}\n\nRETURN your judgment in the result envelope (the phase has no shell — the "
+        f"Questions:\n{merge_item_questions()}\n\n"
+        f"RETURN your judgment in the result envelope (the phase has no shell — the "
         f'orchestrator records it): `"critic_verdict": {{"grader_identity": "<your-critic-id>", "items": '
         f'[{{"slug": "<one of {item_slugs}>", "status": "pass"|"fail"|"unverified", "verified": true|false, '
         f'"citation": "<test node id or file:line naming WHY — an uncited pass records as a FAIL>", '
@@ -182,21 +209,23 @@ def covering_verdict(ticket: "Ticket", head_sha: str) -> "CriticVerdict | None":
 def unmet_items(verdict: "CriticVerdict") -> list[str]:
     """Merge rubric slugs the *verdict* does not affirmatively PASS (the anti-vacuity floor).
 
-    A slug is met only by an OK item WITH a citation (``CriticItemVerdict.coerce``
-    downgrades an uncited pass to ``instrumentation_gap``, which ``is_fail``).
-    A FAIL, an uncited pass, OR an OMITTED item is unmet — a critic cannot wave a
-    merge through by staying silent on an item.
+    An unwaived slug is met only by an OK item WITH a citation
+    (``CriticItemVerdict.coerce`` downgrades an uncited pass to
+    ``instrumentation_gap``). A FAIL, an uncited pass, OR an OMITTED item is unmet
+    unless the owner waived it for the ticket.
     """
     passed = {item.slug for item in verdict.item_verdicts() if item.status == item.OK and item.verified}
+    passed |= waived_merge_items(verdict.ticket)
     return [item.slug for item in llm_items(_MERGE_TRANSITION) if item.slug not in passed]
 
 
 def _finding_specs(verdict: "CriticVerdict", head_sha: str) -> list[CriticFindingSpec]:
     specs: list[CriticFindingSpec] = []
+    waived = waived_merge_items(verdict.ticket)
     for failed in verdict.failed_items():
         item = item_for(failed.slug, _MERGE_TRANSITION)
-        if item is None:
-            continue  # a verdict slug outside the merge rubric is ignored, never a phantom finding
+        if item is None or item.slug in waived:
+            continue  # outside the merge rubric: never a phantom finding; waived: no FAIL for a met item
         status = (
             CriticFinding.Status.INSTRUMENTATION_GAP
             if failed.status == failed.INSTRUMENTATION_GAP
@@ -227,7 +256,7 @@ def record_merge_quality_findings(verdict: "CriticVerdict", *, ticket: "Ticket",
         CriticFinding.record(ticket=ticket, transition=_MERGE_TRANSITION, spec=spec)
 
 
-def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str) -> None:
+def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str, *, changed_tests: Sequence[str] = ()) -> None:
     """Arm the async merge-quality critic when no verdict covers the head (best-effort, idempotent)."""
     if covering_verdict(ticket, head_sha) is not None:
         return
@@ -236,20 +265,24 @@ def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str) -> None:
             ticket=ticket,
             transition=_MERGE_TRANSITION,
             head_sha=head_sha,
-            contract=build_merge_quality_contract(ticket, head_sha),
+            contract=build_merge_quality_contract(ticket, head_sha, changed_tests=changed_tests),
         )
     except Exception as exc:  # noqa: BLE001 — self-healing enqueue; a failure re-arms next attempt, never crashes the merge.
         logger.warning("merge-quality critic dispatch enqueue failed for ticket %s: %s", ticket.pk, exc)
 
 
 def check_merge_quality_verdict(
-    ticket: "Ticket", head_sha: str, *, related_tickets: "tuple[Ticket, ...] | None" = None
+    ticket: "Ticket",
+    head_sha: str,
+    *,
+    related_tickets: "tuple[Ticket, ...] | None" = None,
+    changed_tests: Sequence[str] = (),
 ) -> None:
     """Refuse the merge unless a clean merge-quality verdict covers *head_sha*.
 
     For every ticket, fail closed: no covering verdict → arm the async critic and refuse; a verdict
     with any unmet merge item → record the FAIL findings and refuse; every item
-    affirmatively passed → proceed.
+    passed or waived → proceed.
     """
     head = head_sha.strip().lower()
     _check_brief_constraints(ticket)
@@ -258,7 +291,7 @@ def check_merge_quality_verdict(
         (candidate, verdict) for candidate in candidates if (verdict := covering_verdict(candidate, head)) is not None
     ]
     if not verdicts:
-        _arm_merge_quality_critic(ticket, head)
+        _arm_merge_quality_critic(ticket, head, changed_tests=changed_tests)
         from teatree.config.resolution import worker_is_quiescing  # noqa: PLC0415 — deferred: reads live worker config
 
         if CriticDispatch.saturated().filter(ticket=ticket, transition=_MERGE_TRANSITION, head_sha=head).exists():
@@ -383,7 +416,7 @@ def _assert_nit_receipts(ticket: "Ticket", head_sha: str, verdict: "CriticVerdic
         raise MergeQualityVerdictError(message)
 
 
-def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str) -> None:
+def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str, changed_tests: Sequence[str] = ()) -> None:
     """The ``execute_bound_merge`` chokepoint entry — resolve the ticket then run the gate.
 
     Resolves the gated ticket from the PR ``(repo, iid)`` ledger (case-insensitive)
@@ -396,4 +429,9 @@ def assert_merge_quality_verdict(*, slug: str, pr_id: int, head_sha: str) -> Non
     ticket = resolve_gated_ticket(slug=slug, pr_id=pr_id)
     if ticket is None:
         return
-    check_merge_quality_verdict(ticket, head_sha, related_tickets=related_gated_tickets(slug=slug, pr_id=pr_id))
+    check_merge_quality_verdict(
+        ticket,
+        head_sha,
+        related_tickets=related_gated_tickets(slug=slug, pr_id=pr_id),
+        changed_tests=changed_tests,
+    )

@@ -12868,6 +12868,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              criteria (#2241).                               │
 │ rubric-waive                 Record an owner's waiver of one rubric          │
 │                              criterion.                                      │
+│ merge-item-waive             Request an owner's waiver of one LLM            │
+│                              merge-critic item.                              │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -13897,6 +13899,23 @@ Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
 │ --waived-by        TEXT  Owner identity recording the waiver.                │
 │ --reason           TEXT  Why this criterion is waived.                       │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket merge-item-waive`
+
+```
+Usage: t3 teatree ticket merge-item-waive [OPTIONS] TICKET_ID
+
+ Request an owner button answer for one LLM merge item.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --item          TEXT  The LLM merge item: test_value or cleanliness.         │
+│ --reason        TEXT  Why this item is waived.                               │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

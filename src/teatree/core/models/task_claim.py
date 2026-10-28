@@ -23,6 +23,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
+from teatree.core.modelkit.db_retry import wait_out_locked_writes
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
@@ -93,13 +94,19 @@ def drive_claim(task: "Task") -> Generator[None]:
     (:func:`~teatree.core.claim_liveness.owner_is_executing`) trusts a stale value
     only while ``owner_pid`` is independently provable alive, so a genuinely dead
     owner's row still reclaims normally.
+
+    The clear is a compare-and-set on the timestamp this drive wrote, so an older drive
+    exiting never wipes a newer drive's marker, and it waits out a locked database so a
+    finished drive is never left marked as executing.
     """
-    type(task).objects.filter(pk=task.pk).update(owner_driving_since=timezone.now())
+    started = timezone.now()
+    type(task).objects.filter(pk=task.pk).update(owner_driving_since=started)
     try:
         with driving(task.pk):
             yield
     finally:
-        type(task).objects.filter(pk=task.pk).update(owner_driving_since=None)
+        with wait_out_locked_writes():
+            type(task).objects.filter(pk=task.pk, owner_driving_since=started).update(owner_driving_since=None)
 
 
 def claim(
