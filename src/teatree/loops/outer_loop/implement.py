@@ -8,9 +8,6 @@ critic therefore supervises every experiment merge for free (the ``mark_delivere
 FSM condition); the outer loop gains ZERO new merge authority.
 """
 
-import logging
-
-from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.models import OuterLoopExperiment
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -24,7 +21,6 @@ OUTER_LOOP_UMBRELLA_URL = SYNTHETIC_LOOP_UMBRELLA_URL
 
 _EXPERIMENT_KEY = "outer_loop_experiment_id"
 _TARGET_KEY = "outer_loop_target"
-logger = logging.getLogger(__name__)
 
 
 def _experiment_issue_url(experiment: OuterLoopExperiment, *, umbrella_url: str) -> str:
@@ -43,9 +39,6 @@ def schedule_experiment_fix(
     (``None`` once the ticket has left NOT_STARTED or already carries a coding task).
     """
     issue_url = _experiment_issue_url(experiment, umbrella_url=umbrella_url)
-    if reason := open_pr_start_cap_hold_reason():
-        logger.warning("outer loop is claiming nothing new: %s", reason)
-        return None
     ticket, _ = Ticket.objects.get_or_create(
         issue_url=issue_url,
         defaults={

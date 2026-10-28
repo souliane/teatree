@@ -22,7 +22,6 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from teatree.core.admission.pr_start_cap import cap_hold_reason, new_pr_start_allowed_q
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.checkout_exit import forget_checkout_exit, prepared_checkout_exit
@@ -125,8 +124,7 @@ def claim(
     ``<claimable>`` is PENDING, or CLAIMED with an absent/expired lease (a
     dead owner's orphan — reclaimable). A CLAIMED task whose lease is still
     live is NOT claimable, so a healthy owner's claim is never stolen; a
-    terminal task is never re-claimed. A task that could open a new PR is also
-    held while the live PR cap is reached. On a lost claim the current row is
+    terminal task is never re-claimed. On a lost claim the current row is
     read back ONLY to raise the matching typed error — the claim *decision*
     is the atomic UPDATE's row count, never the read-back.
 
@@ -147,8 +145,7 @@ def claim(
     refuses a parked row and the drain never re-surfaces one.
 
     ``cleanup_unknown_overlay`` claims only a pending task on a ticket with no
-    dispatchable overlay; it still respects a future park, but bypasses the
-    new-PR cap so an invalid row can be failed while ordinary work is held.
+    dispatchable overlay; it still respects a future park.
     """
     from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
 
@@ -163,8 +160,6 @@ def claim(
     else:
         status_q |= Q(status=status.CLAIMED) & (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
     claimable = status_q & _claimable_now_q(now)
-    if not cleanup_unknown_overlay:
-        claimable &= new_pr_start_allowed_q()
     won = (
         type(task)
         .objects.filter(pk=task.pk)
@@ -190,13 +185,6 @@ def claim(
         deadline = _parked_until(task, now)
         if task.status == status.PENDING and deadline is not None:
             msg = f"Task parked until {deadline.isoformat()}"
-            raise InvalidTransitionError(msg)
-        if (
-            not cleanup_unknown_overlay
-            and type(task).objects.filter(pk=task.pk).filter(status_q).exists()
-            and (reason := cap_hold_reason(task.pk))
-        ):
-            msg = f"Task held: {reason}"
             raise InvalidTransitionError(msg)
         msg = "Task already claimed"
         raise InvalidTransitionError(msg)
