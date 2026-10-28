@@ -237,6 +237,11 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
         return 0.0
     reclaimed_gb = report.total_bytes / GIB
     plan.steps.append(f"  → docker reclaimed {report.total_human}")
+    plan.steps.extend(
+        f"  → {step.summary_line.strip()}"
+        for step in report.steps
+        if step.label.startswith("unused test image") and step.outcome is not None and step.outcome.reclaimed != "0B"
+    )
     plan.steps.extend(f"  → REFUSED {label}: {reason}" for label, reason in report.failures)
     return reclaimed_gb
 

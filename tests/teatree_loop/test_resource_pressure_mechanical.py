@@ -11,6 +11,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.docker.reclaim import PruneOutcome, ReclaimReport, ReclaimStep
 from teatree.loop import mechanical_resources
 from teatree.loop.mechanical_resources import free_resources
 
@@ -248,6 +249,18 @@ class DiskDockerReclaimTests(TestCase):
         marker = ResourcePressureMarker.load()
         assert "RECLAIM docker" in marker.last_plan
         assert marker.last_freed_at is not None
+
+    def test_removed_test_image_is_reported_when_bytes_are_unmeasured(self) -> None:
+        step = ReclaimStep(
+            argv=["docker", "image", "rm", "sha256:test"],
+            label="unused test image teatree-test",
+            outcome=PruneOutcome("image removed (shared layers unmeasured)", 0),
+        )
+        report = ReclaimReport(steps=(step,), planned=(step,))
+        with patch.object(mechanical_resources, "reclaim_disk", return_value=report):
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+
+        assert "unused test image teatree-test: reclaimed image removed" in ResourcePressureMarker.load().last_plan
 
     def test_docker_reclaim_failure_is_swallowed(self) -> None:
         """A docker prune failure never crashes the freeing pass."""
