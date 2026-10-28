@@ -210,6 +210,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "it is the only surviving record of; read-only (#4527)",
     ),
     Capability(
+        "teatree ticket partial-merge-report",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits merged tickets with an open issue and a declared remainder, plus unreadable rows; read-only",
+    ),
+    Capability(
         "teatree ticket settle-holds",
         json_output=True,
         exit_codes=("0", "1"),

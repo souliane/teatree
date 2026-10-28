@@ -31,7 +31,7 @@ def _session_phase_unresolved(visited: object, visits: object) -> bool:
     )
 
 
-def _pr_branch_unresolved(extra: object) -> bool:
+def _pr_branch_unresolved(extra: object, merged_urls: frozenset[str] = frozenset()) -> bool:
     if not isinstance(extra, dict):
         return bool(extra)
     urls = extra.get("pr_urls") or []
@@ -43,7 +43,7 @@ def _pr_branch_unresolved(extra: object) -> bool:
     return (
         not isinstance(index, dict)
         or any(not isinstance(url, str) for url in urls)
-        or any(url not in index.values() for url in urls)
+        or any(url not in index.values() and url not in merged_urls for url in urls)
     )
 
 
@@ -59,6 +59,9 @@ def check_blank_work_overlays() -> bool:
     tickets = apps.get_model("core", "Ticket").objects
     sessions = apps.get_model("core", "Session").objects
     worktrees = apps.get_model("core", "Worktree").objects
+    merged_urls = frozenset(
+        apps.get_model("core", "PullRequest").objects.filter(state="merged").values_list("url", flat=True)
+    )
     results = []
     for name, rows in (("Ticket", tickets), ("Session", sessions), ("Worktree", worktrees)):
         results.append(
@@ -80,7 +83,10 @@ def check_blank_work_overlays() -> bool:
                 "Replace malformed visited_phases with a list of names and phase_visits with a name-to-record object.",
             ),
             _emit(
-                sum(_pr_branch_unresolved(extra) for extra in tickets.values_list("extra", flat=True).iterator()),
+                sum(
+                    _pr_branch_unresolved(extra, merged_urls)
+                    for extra in tickets.values_list("extra", flat=True).iterator()
+                ),
                 "unresolved PR branch row(s)",
                 "Repair pr_urls and pr_url_by_branch so every PR URL has a source branch.",
             ),
