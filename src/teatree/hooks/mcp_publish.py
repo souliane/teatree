@@ -1,7 +1,7 @@
 """The text an MCP write tool publishes: Slack's explicit roster, and any Notion connector write.
 
-A Notion connector tool counts as a read only when its name carries a read verb, so a tool this
-module has never seen is a write and its text is scanned. The Slack roster is explicit, because a
+A Notion connector tool counts as a read only when its name carries a read verb and known read qualifiers,
+so a tool this module has never seen is a write and its text is scanned. The Slack roster is explicit, because a
 Slack MCP write is refused outright elsewhere and only its body fields need naming.
 """
 
@@ -22,6 +22,30 @@ _SLACK_MCP_WRITE_TOOLS: Final[dict[str, tuple[str, ...]]] = {
 
 _NOTION_READ_VERBS: Final[frozenset[str]] = frozenset(
     {"fetch", "get", "list", "query", "read", "retrieve", "search", "view"}
+)
+_NOTION_READ_NAME_WORDS: Final[frozenset[str]] = _NOTION_READ_VERBS | frozenset(
+    {
+        "a",
+        "api",
+        "block",
+        "blocks",
+        "children",
+        "comment",
+        "comments",
+        "database",
+        "databases",
+        "discussion",
+        "discussions",
+        "notion",
+        "page",
+        "pages",
+        "property",
+        "properties",
+        "team",
+        "teams",
+        "user",
+        "users",
+    }
 )
 _NOTION_FETCH_VERBS: Final[frozenset[str]] = frozenset({"fetch", "read", "retrieve", "view"})
 _NOTION_WRITE_VERBS: Final[frozenset[str]] = frozenset(
@@ -47,7 +71,10 @@ def is_notion_mcp_tool(tool_name: str) -> bool:
 
 def is_notion_mcp_write(tool_name: str) -> bool:
     words = _tool_words(tool_name)
-    return is_notion_mcp_tool(tool_name) and (bool(words & _NOTION_WRITE_VERBS) or not words & _NOTION_READ_VERBS)
+    read_name = bool(words & _NOTION_READ_VERBS) and (
+        words <= _NOTION_READ_NAME_WORDS or tool_name.rsplit("__", 1)[-1].lower() == "api-post-search"
+    )
+    return is_notion_mcp_tool(tool_name) and (bool(words & _NOTION_WRITE_VERBS) or not read_name)
 
 
 def is_notion_mcp_fetch(tool_name: str) -> bool:
@@ -100,7 +127,7 @@ def notion_write_text(tool_name: str, tool_input: Mapping[str, object]) -> str |
     while pending:
         key, item, in_content_updates = pending.pop()
         if isinstance(item, str):
-            if item and not (key in _NOTION_IDENTITY_KEYS and _NOTION_OBJECT_ID_RE.search(item)):
+            if item and not (key in _NOTION_IDENTITY_KEYS and _NOTION_OBJECT_ID_RE.fullmatch(item.strip())):
                 leaves.append(item)
         elif isinstance(item, Mapping):
             pending.extend(

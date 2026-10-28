@@ -776,7 +776,7 @@ def _arrange_notion_boundary_gate(ctx: GateContext) -> None:
 def _notion_boundary_deny(ctx: GateContext) -> dict:
     return {
         "session_id": "sess-liveness",
-        "tool_name": "mcp__claude_ai_Notion__notion-update-page",
+        "tool_name": "mcp__connector_Notion__notion-update-page",
         "tool_input": {"page_id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "command": "update_content"},
     }
 
@@ -784,7 +784,7 @@ def _notion_boundary_deny(ctx: GateContext) -> dict:
 def _notion_boundary_allow(ctx: GateContext) -> dict:
     return {
         "session_id": "sess-liveness",
-        "tool_name": "mcp__claude_ai_Notion__notion-fetch",
+        "tool_name": "mcp__connector_Notion__notion-fetch",
         "tool_input": {"id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"},
     }
 
@@ -1482,7 +1482,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         gate_id="notion-write-boundary",
         handler=router.handle_block_notion_write_boundary,
         event="PreToolUse",
-        matched="mcp__claude_ai_Notion__notion-update-page",
+        matched="mcp__connector_Notion__notion-update-page",
         deny_input=_notion_boundary_deny,
         allow_input=_notion_boundary_allow,
         arrange=_arrange_notion_boundary_gate,

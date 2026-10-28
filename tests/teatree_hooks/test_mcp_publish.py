@@ -14,7 +14,7 @@ from teatree.hooks.mcp_publish import (
 
 PAGE = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 
-SERVERS = ("claude_ai_Notion", "notion", "plugin_notion-workspace_notion", "Notion")
+SERVERS = ("connector_Notion", "notion", "plugin_notion-workspace_notion", "Notion")
 
 READ_TOOLS = (
     "notion-fetch",
@@ -66,7 +66,7 @@ class TestNotionToolClassification:
         "tool_name",
         [
             "mcp__slack__slack_send_message",
-            "mcp__claude_ai_Slack__slack_search_public",
+            "mcp__connector_Slack__slack_search_public",
             "mcp__glab__glab_mr_create",
             "Bash",
             "Write",
@@ -109,8 +109,19 @@ class TestNotionToolClassification:
         assert is_notion_mcp_write(name)
         assert not is_notion_mcp_fetch(name)
 
+    @pytest.mark.parametrize("tool", ["notion-get-then-restore", "notion-retrieve-and-publish", "notion-get-post"])
+    def test_a_compound_read_and_unlisted_write_is_a_write(self, tool: str) -> None:
+        name = f"mcp__notion__{tool}"
+        assert is_notion_mcp_write(name)
+        assert not is_notion_mcp_fetch(name)
+
 
 class TestNotionWriteText:
+    @pytest.mark.parametrize("key", ["id", "user_id", "parent_id"])
+    def test_an_identity_key_with_a_uuid_and_prose_is_scanned(self, key: str) -> None:
+        value = f"{PAGE} secret after the id"
+        assert notion_write_text("mcp__notion__notion-update-page", {key: value}) == value
+
     def test_an_id_property_is_prose_not_the_target_id(self) -> None:
         data = {"page_id": PAGE, "properties": {"id": "a quoted or secret value"}}
         assert notion_write_text("mcp__notion__notion-update-page", data) == "a quoted or secret value"

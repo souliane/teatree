@@ -49,8 +49,8 @@ _FAILED_RESPONSE_RE = re.compile(
     re.IGNORECASE,
 )
 _ESCAPE = (
-    "One-off escape: use a non-published tool-input field for `[gate-escape:notion_boundary: <reason>]`. "
-    "Never put it in page or comment text."
+    "One-off escape: put `[gate-escape:notion_boundary: <reason>]` in a non-published tool-input field. "
+    "If this tool has no such field, the escape is unavailable for this call. Never put it in page or comment text."
 )
 
 
@@ -69,13 +69,14 @@ def _state_path(owner: str, suffix: str) -> Path:
 
 def _canonical(reference: str) -> str | None:
     candidate = reference.strip().rstrip("/")
-    if dashed := _DASHED_UUID.search(candidate):
-        return dashed.group(0).lower()
-    matches = _HEX32.findall(candidate)
-    if not matches:
-        return None
-    raw = matches[-1].lower()
-    return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+    path = candidate.partition("?")[0].partition("#")[0]
+    for source in (path, candidate):
+        if dashed := _DASHED_UUID.search(source):
+            return dashed.group(0).lower()
+        if matches := _HEX32.findall(source):
+            raw = matches[-1].lower()
+            return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+    return None
 
 
 def _response_failed(response: object, text: list[str]) -> bool:
@@ -99,22 +100,29 @@ def _response_failed(response: object, text: list[str]) -> bool:
     return False
 
 
-def _write_targets(tool_input: object) -> list[tuple[str, str]]:
+def _write_targets(tool_input: object) -> tuple[list[tuple[str, str]], str | None]:
     targets: list[tuple[str, str]] = []
+    malformed_key: str | None = None
     pending = [tool_input]
     while pending:
         item = pending.pop()
         if isinstance(item, Mapping):
             for key, child in item.items():
-                if key in _PAGE_KEYS | _BLOCK_KEYS and isinstance(child, str):
-                    targets.append((child, "page" if key in _PAGE_KEYS else "block"))
-                elif key == "page_or_database_ids" and isinstance(child, list):
-                    targets.extend((reference, "page") for reference in child if isinstance(reference, str))
+                if key in _PAGE_KEYS | _BLOCK_KEYS:
+                    if isinstance(child, str):
+                        targets.append((child, "page" if key in _PAGE_KEYS else "block"))
+                    else:
+                        malformed_key = key
+                elif key == "page_or_database_ids":
+                    if isinstance(child, list) and all(isinstance(reference, str) for reference in child):
+                        targets.extend((reference, "page") for reference in child)
+                    else:
+                        malformed_key = key
                 elif key not in _BODY_KEYS:
                     pending.append(child)
         elif isinstance(item, list):
             pending.extend(item)
-    return targets
+    return targets, malformed_key
 
 
 def _stamp_fetch(owner: str, data: dict) -> None:
@@ -187,21 +195,24 @@ def _probe(page_id: str) -> "LivenessVerdict | None":
         _skipped(page_id, "no time left in the hook budget")
         return None
     previous = signal.signal(signal.SIGALRM, _probe_out_of_time)
-    signal.setitimer(signal.ITIMER_REAL, budget)
     try:
-        if not bootstrap_django_registry():
-            _skipped(page_id, "Django is unavailable in the hook interpreter")
-            return None
-        from teatree.backends.notion.credentials import build_notion_client  # noqa: PLC0415 — after src bootstrap
+        signal.setitimer(signal.ITIMER_REAL, budget)
+        try:
+            if not bootstrap_django_registry():
+                _skipped(page_id, "Django is unavailable in the hook interpreter")
+                return None
+            from teatree.backends.notion.credentials import build_notion_client  # noqa: PLC0415 — after src bootstrap
 
-        return build_notion_client().page_liveness(page_id)
+            return build_notion_client().page_liveness(page_id)
+        except Exception as exc:  # noqa: BLE001 — a probe that cannot run is named and never decides the verdict
+            _skipped(page_id, f"{type(exc).__name__}: {str(exc).partition(chr(10))[0]}")
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous or signal.SIG_DFL)
     except _ProbeOutOfTimeError:
-        _skipped(page_id, f"the probe ran past its {budget:.0f}s share of the hook's time")
-    except Exception as exc:  # noqa: BLE001 — a probe that cannot run is named and never decides the verdict
-        _skipped(page_id, f"{type(exc).__name__}: {str(exc).partition(chr(10))[0]}")
-    finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous or signal.SIG_DFL)
+        _skipped(page_id, f"the probe ran past its {budget:.0f}s share of the hook's time")
     return None
 
 
@@ -234,8 +245,8 @@ def handle_block_notion_write_boundary(data: dict) -> bool:
         if not is_notion_mcp_write(tool_name):
             return False
         tool_input = data.get("tool_input")
-        targets = _write_targets(tool_input)
-        reason = _boundary_refusal(owner, targets)
+        targets, malformed_key = _write_targets(tool_input)
+        reason = _boundary_refusal(owner, targets, malformed_key)
     if reason is None:
         return False
     from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
@@ -243,7 +254,12 @@ def handle_block_notion_write_boundary(data: dict) -> bool:
     return _fail_open_or_deny(data, reason, gate_id="notion_boundary")
 
 
-def _boundary_refusal(owner: str, targets: list[tuple[str, str]]) -> str | None:
+def _boundary_refusal(owner: str, targets: list[tuple[str, str]], malformed_key: str | None) -> str | None:
+    if malformed_key is not None:
+        return (
+            f"BLOCKED: this Notion write has malformed {malformed_key}, so the page boundary cannot be checked. "
+            f"Supply the field in its expected shape. {_ESCAPE}"
+        )
     resolved: list[tuple[str, str]] = []
     for reference, noun in targets:
         page_id = _canonical(reference)
@@ -282,5 +298,5 @@ def handle_track_notion_pages(data: dict) -> None:
         if is_notion_mcp_fetch(tool_name):
             _stamp_fetch(owner, data)
         elif is_notion_mcp_write(tool_name):
-            written = [reference for reference, _noun in _write_targets(data.get("tool_input"))]
+            written = [reference for reference, _noun in _write_targets(data.get("tool_input"))[0]]
             _drop_live(owner, [page_id for page_id in map(_canonical, written) if page_id])

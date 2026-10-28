@@ -86,13 +86,13 @@ def test_task_dispatch_reaches_both_router_events_without_taskcreate() -> None:
 
 
 NOTION_WRITES = (
-    "mcp__claude_ai_Notion__notion-update-page",
+    "mcp__connector_Notion__notion-update-page",
     "mcp__notion__notion-create-pages",
     "mcp__plugin_notion-workspace_notion__notion-create-comment",
     "mcp__Notion__API-patch-block-children",
 )
 NOTION_READS = (
-    "mcp__claude_ai_Notion__notion-fetch",
+    "mcp__connector_Notion__notion-fetch",
     "mcp__notion__notion-search",
     "mcp__Notion__API-retrieve-a-page",
 )

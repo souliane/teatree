@@ -297,18 +297,18 @@ def normalize_object_id(reference: str) -> str:
     one case where non-existence is provable without asking Notion.
     """
     candidate = reference.strip().rstrip("/")
-    dashed = _DASHED_UUID.search(candidate)
-    if dashed is not None:
-        return dashed.group(0).lower()
-    matches = _HEX32.findall(candidate)
-    if not matches:
-        msg = (
-            f"{reference!r} carries no Notion object id — expected a 32-character id, "
-            "a dashed UUID, or a notion.so URL ending in one"
-        )
-        raise NotionObjectNotFoundError(msg)
-    raw = matches[-1].lower()
-    return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+    path = candidate.partition("?")[0].partition("#")[0]
+    for source in (path, candidate):
+        if dashed := _DASHED_UUID.search(source):
+            return dashed.group(0).lower()
+        if matches := _HEX32.findall(source):
+            raw = matches[-1].lower()
+            return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+    msg = (
+        f"{reference!r} carries no Notion object id — expected a 32-character id, "
+        "a dashed UUID, or a notion.so URL ending in one"
+    )
+    raise NotionObjectNotFoundError(msg)
 
 
 class NotionErrorClassifier:

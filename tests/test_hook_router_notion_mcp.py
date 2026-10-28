@@ -23,18 +23,18 @@ from hooks.scripts.gate_escape import _audit_request
 from hooks.scripts.hook_router import handle_banned_terms_pretool, handle_quote_scanner_pretool
 from hooks.scripts.quote_verdict import QuoteVerdict
 from teatree.backends.notion import credentials
-from teatree.backends.notion.errors import NotionTokenMissingError
+from teatree.backends.notion.errors import NotionTokenMissingError, normalize_object_id
 from teatree.backends.notion.liveness import Liveness, LivenessVerdict
 
 HOOK_ROUTER = Path(router.__file__)
 SESSION = "sess-notion"
 PAGE = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 OTHER_PAGE = "99999999-8888-4777-8666-555555555555"
-FETCH = "mcp__claude_ai_Notion__notion-fetch"
-UPDATE = "mcp__claude_ai_Notion__notion-update-page"
-CREATE_PAGES = "mcp__claude_ai_Notion__notion-create-pages"
+FETCH = "mcp__connector_Notion__notion-fetch"
+UPDATE = "mcp__connector_Notion__notion-update-page"
+CREATE_PAGES = "mcp__connector_Notion__notion-create-pages"
 CREATE_COMMENT = "mcp__notion__notion-create-comment"
-SEARCH = "mcp__claude_ai_Notion__notion-search"
+SEARCH = "mcp__connector_Notion__notion-search"
 HIGH_QUOTE = "## User ask (verbatim, 2026-05-20)\nplease ship"
 AWS_KEY = "AKIA" + "A1B2C3D4E5F6G7H8"
 
@@ -105,6 +105,11 @@ class TestPublishScanners:
 
     def test_a_secret_under_a_property_named_id_is_refused(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = _write(properties={"id": AWS_KEY})
+        assert handle_banned_terms_pretool(data) is True
+        assert "secret" in _deny_reason(capsys)
+
+    def test_a_secret_after_a_uuid_in_an_id_field_is_refused(self, capsys: pytest.CaptureFixture[str]) -> None:
+        data = _write(properties={"id": f"{PAGE} {AWS_KEY}"})
         assert handle_banned_terms_pretool(data) is True
         assert "secret" in _deny_reason(capsys)
 
@@ -188,6 +193,18 @@ class TestRealRouterRoute:
 
 
 class TestFetchStamps:
+    @pytest.mark.parametrize(
+        "reference",
+        [
+            PAGE,
+            PAGE.replace("-", ""),
+            f"https://www.notion.so/space/{PAGE.replace('-', '')}?v={OTHER_PAGE.replace('-', '')}",
+            f"https://www.notion.so/?p={PAGE.replace('-', '')}",
+        ],
+    )
+    def test_cold_normalizer_matches_the_notion_api_and_selects_the_page(self, reference: str) -> None:
+        assert boundary._canonical(reference) == normalize_object_id(reference) == PAGE
+
     def _stamps(self, state: Path, session: str = SESSION) -> list[str]:
         path = state / f"{session}.notion-fetches"
         return path.read_text(encoding="utf-8").split() if path.is_file() else []
@@ -465,6 +482,25 @@ class TestWriteBoundary:
         boundary.handle_block_notion_write_boundary(_write())
         assert notion.probed == [PAGE, PAGE]
 
+    def test_a_timeout_during_probe_error_reporting_keeps_the_offline_fallback(
+        self, notion: FakeNotion, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        notion.failure = NotionTokenMissingError("no token")
+        boundary.handle_track_notion_pages(_fetched())
+        skipped = boundary._skipped
+        calls = 0
+
+        def interrupt_once(page_id: str, why: str) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise boundary._ProbeOutOfTimeError
+            skipped(page_id, why)
+
+        monkeypatch.setattr(boundary, "_skipped", interrupt_once)
+        assert boundary.handle_block_notion_write_boundary(_write()) is False
+        assert "liveness" in capsys.readouterr().err
+
     def test_a_missing_django_registry_is_named_and_the_fetch_boundary_still_applies(
         self, notion: FakeNotion, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -599,6 +635,24 @@ class TestWriteTargets:
         assert boundary.handle_block_notion_write_boundary(_write("not-a-page")) is True
         assert "not-a-page" in _deny_reason(capsys)
 
+    @pytest.mark.parametrize(
+        "tool_input",
+        [
+            {"page_id": [PAGE]},
+            {"block_id": [PAGE]},
+            {"page_or_database_ids": f'["{PAGE}"]'},
+            {"page_or_database_ids": [PAGE, 7]},
+        ],
+        ids=["page-list", "block-list", "stringified-array", "non-string-member"],
+    )
+    def test_a_malformed_target_shape_is_refused(
+        self, tool_input: dict, notion: FakeNotion, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        boundary.handle_track_notion_pages(_fetched())
+        data = {"session_id": SESSION, "tool_name": "mcp__notion__notion-move-pages", "tool_input": tool_input}
+        assert boundary.handle_block_notion_write_boundary(data) is True
+        assert "cannot be checked" in _deny_reason(capsys)
+
     def test_a_write_with_no_target_at_all_is_not_held(self, notion: FakeNotion) -> None:
         assert boundary.handle_block_notion_write_boundary(_write(None)) is False
 
@@ -609,9 +663,9 @@ class TestToolsTheBoundaryLeavesAlone:
         [
             "mcp__teatree__notion_replace",
             "mcp__plugin_t3_teatree__notion_comment",
-            "mcp__claude_ai_Notion__notion-fetch",
-            "mcp__claude_ai_Notion__notion-search",
-            "mcp__claude_ai_Notion__notion-get-comments",
+            "mcp__connector_Notion__notion-fetch",
+            "mcp__connector_Notion__notion-search",
+            "mcp__connector_Notion__notion-get-comments",
             "mcp__slack__slack_send_message",
             "Bash",
         ],
