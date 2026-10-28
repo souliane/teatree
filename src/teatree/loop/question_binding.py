@@ -57,8 +57,7 @@ from teatree.loop.owner_identity import configured_owner_id, is_the_owner
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
 
-# An explicit ``#<id> <your answer>`` needs at least one separator
-# is required so ``#12abc`` is not read as question 12 answered "abc".
+# Require a separator so ``#12abc`` cannot answer question 12 with "abc".
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
 OPTION_ACTION_PREFIX = "owner-question-option-"

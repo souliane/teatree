@@ -39,6 +39,6 @@ class QuestionBacklogNagScanner:
             ScanSignal(
                 kind="deferred_question.resurfaced",
                 summary=f"{bumped} unanswered question(s) bumped in their own threads",
-                payload={"pending": pending, "bumped": bumped},
+                payload={"mirrored_pending": pending, "bumped": bumped},
             ),
         ]

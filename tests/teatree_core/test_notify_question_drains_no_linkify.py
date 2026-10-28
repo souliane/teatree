@@ -1,4 +1,4 @@
-"""A card, a bump and the digest are sent as written: the link rewriter never touches an owner question (#4990)."""
+"""Cards and bumps are sent as written; the link rewriter never touches an owner question (#4990)."""
 
 import datetime as dt
 from contextlib import AbstractContextManager

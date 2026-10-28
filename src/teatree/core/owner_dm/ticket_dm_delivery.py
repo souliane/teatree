@@ -25,13 +25,9 @@ class TicketDmRequest:
     fallback_thread_ts: str = ""
 
 
-def _root_messages(backend: MessagingBackend, channel: str, root_ts: str) -> list[RawAPIDict]:
-    return backend.fetch_thread_replies(channel=channel, thread_ts=root_ts)
-
-
-def _root_is_deleted(backend: MessagingBackend, channel: str, root_ts: str) -> bool:
+def root_is_deleted(backend: MessagingBackend, channel: str, root_ts: str) -> bool:
     try:
-        messages = _root_messages(backend, channel, root_ts)
+        messages = backend.fetch_thread_replies(channel=channel, thread_ts=root_ts)
     except MessagingReadRefusedError as exc:
         return exc.error_code in _DELETED_ROOT_CODES
     except (OSError, RuntimeError, ValueError):
@@ -68,7 +64,7 @@ class _RootSend:
         if self.thread.channel and self.thread.channel != channel:
             msg = "ticket DM channel changed"
             raise RuntimeError(msg)
-        if self.thread.root_ts and _root_is_deleted(self.request.backend, channel, self.thread.root_ts):
+        if self.thread.root_ts and root_is_deleted(self.request.backend, channel, self.thread.root_ts):
             _retire(self.thread)
             self.thread.refresh_from_db()
         if self.thread.root_ts:
@@ -96,14 +92,6 @@ def deliver_ticket_dm(request: TicketDmRequest) -> tuple[str, str, str]:
             blocks=request.blocks,
             thread_ts=request.fallback_thread_ts,
         )
-    if not ticket.issue_url and not (ticket.extra.get("issue_title") or ticket.short_description):
-        return request.deliver(
-            request.backend,
-            user_id=request.user_id,
-            text=request.text,
-            blocks=request.blocks,
-            thread_ts=request.fallback_thread_ts,
-        )
     with ExitStack() as stack:
         send = _RootSend(request, ticket, stack)
         channel, posted_ts, failure = request.deliver(
@@ -118,7 +106,7 @@ def deliver_ticket_dm(request: TicketDmRequest) -> tuple[str, str, str]:
             if (
                 thread is not None
                 and thread.root_ts
-                and _root_is_deleted(request.backend, thread.channel, thread.root_ts)
+                and root_is_deleted(request.backend, thread.channel, thread.root_ts)
             ):
                 _retire(thread)
             return channel, posted_ts, failure

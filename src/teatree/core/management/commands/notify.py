@@ -51,13 +51,13 @@ from django_typer.management import TyperCommand, command, initialize
 
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend, MessagingReadRefusedError
 from teatree.core.modelkit.dm_channel_policy import signal_of
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
 from teatree.core.models import BotPing, TicketDmPost
 from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
-from teatree.core.notify_targets import resolve_user_channel, resolve_user_id
+from teatree.core.notify_targets import resolve_user_id
 from teatree.core.notify_types import NotifyReason
 from teatree.core.on_behalf_egress import NO_TOKEN_FOR_DESTINATION, OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.table_output import print_table
@@ -98,14 +98,34 @@ def _first_line(text: str) -> str:
     return line if len(line) <= _DIGEST_EXCERPT_CHARS else f"{line[: _DIGEST_EXCERPT_CHARS - 3]}..."
 
 
-def _census_history(backend: MessagingBackend, channel: str) -> tuple[list[RawAPIDict], dict[str, RawAPIDict]]:
+def _census_timestamp(value: object) -> float | None:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _census_history(
+    backend: MessagingBackend, channel: str, cutoff: dt.datetime
+) -> tuple[list[RawAPIDict], dict[str, RawAPIDict]]:
     roots = backend.fetch_channel_history_or_refuse(channel=channel, limit=_CENSUS_HISTORY_LIMIT)
     messages = {str(message["ts"]): message for message in roots if message.get("ts")}
     for root in roots:
-        if root.get("reply_count"):
-            for reply in backend.fetch_thread_replies(channel=channel, thread_ts=str(root["ts"])):
-                if reply.get("ts"):
-                    messages[str(reply["ts"])] = reply
+        root_ts = root.get("ts")
+        if not root_ts or not root.get("reply_count"):
+            continue
+        latest = _census_timestamp(root.get("latest_reply"))
+        if latest is not None and latest < cutoff.timestamp():
+            continue
+        try:
+            replies = backend.fetch_thread_replies(channel=channel, thread_ts=str(root_ts))
+        except MessagingReadRefusedError as exc:
+            if exc.error_code not in {"thread_not_found", "message_not_found"}:
+                raise
+            continue
+        for reply in replies:
+            if reply.get("ts"):
+                messages[str(reply["ts"])] = reply
     return roots, messages
 
 
@@ -336,11 +356,11 @@ class Command(TyperCommand):
         with _overlay_env(overlay):
             backend = self._resolve_backend(overlay)
             try:
-                channel = resolve_user_channel() or backend.open_dm(resolve_user_id())
+                channel = backend.open_dm(resolve_user_id())
                 if not channel:
                     self.stderr.write("owner DM channel is unavailable")
                     raise SystemExit(1)
-                roots, messages = _census_history(backend, channel)
+                roots, messages = _census_history(backend, channel, cutoff)
             except (OSError, RuntimeError, ValueError, KeyError) as exc:
                 self.stderr.write(f"owner DM census read failed: {exc}")
                 raise SystemExit(1) from exc
@@ -354,7 +374,8 @@ class Command(TyperCommand):
             stream=rendered,
         )
         self.stdout.write(rendered.getvalue())
-        if len(roots) == _CENSUS_HISTORY_LIMIT and min(float(str(root["ts"])) for root in roots) > cutoff.timestamp():
+        root_times = [stamp for root in roots if (stamp := _census_timestamp(root.get("ts"))) is not None]
+        if len(roots) == _CENSUS_HISTORY_LIMIT and root_times and min(root_times) > cutoff.timestamp():
             self.stdout.write("window truncated at oldest fetched message")
         return f"{sum(counts.values())} message(s) across {len(counts)} day/class row(s)."
 

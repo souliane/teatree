@@ -7,6 +7,7 @@ thread and the reply scanner binds the answer.
 """
 
 import dataclasses
+import datetime as dt
 from datetime import timedelta
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -19,8 +20,21 @@ from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption
-from teatree.core.models import BotPing, DeferredQuestion, Session, Task, ThreadBinding, Ticket, TicketDmPost
-from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
+from teatree.core.models import (
+    BotPing,
+    DeferredQuestion,
+    Session,
+    Task,
+    ThreadBinding,
+    Ticket,
+    TicketDmPost,
+    TicketDmThread,
+)
+from teatree.core.notify_question_drains import (
+    drain_deferred_questions,
+    drain_unmirrored_deferred_questions,
+    reask_escalated_questions,
+)
 from teatree.core.notify_types import DELIVERED
 from teatree.core.owner_question_message import render_blocks, render_text
 from teatree.slack_mrkdwn import WRAP_WIDTH
@@ -122,7 +136,49 @@ class TestTheFirstPostIsTheCardWithButtons(TestCase):
 
 
 class TestTicketQuestionThread(TestCase):
-    def test_failed_header_leaves_card_unmirrored_for_retry(self) -> None:
+    def test_untitled_ticket_still_records_its_first_card_as_root(self) -> None:
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        row = DeferredQuestion.record("Which route?", parked_task=task, card=OWNER_CARD)
+        backend = MagicMock()
+        backend.open_dm.return_value = "D-OWNER"
+        backend.post_message.return_value = {"ok": True, "ts": "1700000000.000001"}
+        backend.get_permalink.return_value = "https://slack.example/archives/D-OWNER/p123"
+
+        assert drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)[0] == 1
+
+        row.refresh_from_db()
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert thread.root_ts == row.slack_ts == "1700000000.000001"
+        assert TicketDmPost.objects.get(channel="D-OWNER", slack_ts=row.slack_ts).question_id == row.pk
+
+    def test_deleted_root_is_replaced_by_an_answerable_card(self) -> None:
+        ticket = Ticket.objects.create(short_description="Fix retry")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        row = DeferredQuestion.record("Which route?", parked_task=task, card=OWNER_CARD)
+        backend = MagicMock()
+        backend.open_dm.return_value = "D-OWNER"
+        posted_at = timezone.now() - dt.timedelta(hours=3)
+        old_ts = f"{posted_at.timestamp():.6f}"
+        new_ts = f"{timezone.now().timestamp():.6f}"
+        backend.post_message.side_effect = [{"ok": True, "ts": old_ts}, {"ok": True, "ts": new_ts}]
+        backend.get_permalink.return_value = "https://slack.example/archives/D-OWNER/p123"
+
+        assert drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)[0] == 1
+        backend.fetch_thread_replies.return_value = [{"ts": old_ts, "subtype": "tombstone"}]
+        assert reask_escalated_questions(user_id="U_ME", backend=backend)[0] == 1
+
+        row.refresh_from_db()
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert thread.root_ts == new_ts
+        assert row.slack_ts == new_ts
+        assert TicketDmPost.objects.get(channel="D-OWNER", slack_ts=new_ts).question_id == row.pk
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
+        assert "Which route?" in backend.post_message.call_args.kwargs["text"]
+        first_blocks = backend.post_message.call_args_list[0].kwargs["blocks"]
+        assert backend.post_message.call_args.kwargs["blocks"] == first_blocks
+
+    def test_failed_first_card_leaves_question_unmirrored_for_retry(self) -> None:
         ticket = Ticket.objects.create(short_description="Retry")
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
         row = DeferredQuestion.record("Which route?", parked_task=task, card=OWNER_CARD)
@@ -149,7 +205,7 @@ class TestTicketQuestionThread(TestCase):
             {"ok": True, "ts": "1700000000.000001"},
             {"ok": True, "ts": "1700000000.000002"},
         ]
-        backend.fetch_thread_replies.return_value = [{"ts": "1700000000.000001", "text": "ticket header"}]
+        backend.fetch_thread_replies.return_value = [{"ts": "1700000000.000001", "text": "root card"}]
         backend.get_permalink.return_value = "https://slack.example/archives/D-OWNER/p1700000000000002"
 
         delivered, _total = drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)

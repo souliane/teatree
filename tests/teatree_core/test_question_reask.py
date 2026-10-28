@@ -1,11 +1,9 @@
 """The per-question re-ask bump — posted where the answer can land.
 
-The backlog nag already recurred: a digest per 24h bucket naming ten of 147 rows.
-Every one of those names was a question asked in a place its answer could not
-reach — a reply under the digest carries the digest's thread ts, which joins no
-question, and above one pending row the sole-live-question rung refuses to guess.
+Each bump must land under its own card: a top-level summary cannot identify which
+question a reply answers, and the sole-live-question rung refuses to guess.
 
-The bump is the answerable half. It rides the row and the mirror thread the
+The bump rides the row and the mirror thread the
 question ALREADY has, under a key carrying the row's own step on a schedule of
 hours counted from its first post (1, 2, 4, 7, 12 …), and it writes no
 DeferredQuestion at all — which is the property most of these pin, because the

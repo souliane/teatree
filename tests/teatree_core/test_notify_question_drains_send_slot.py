@@ -462,7 +462,3 @@ class TestTheQuestionDrainsShareASendSlot(TestCase):
 
         assert self.backend.post_message.call_count == 1
         assert _sent_pings() == 6
-
-
-class TestTheHourlyCeilingHoldsAcrossProcesses:
-    """A tick worker and a manual resurface run in separate processes, so no in-process lock can pace them."""

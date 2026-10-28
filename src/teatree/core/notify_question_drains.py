@@ -41,10 +41,11 @@ from django.utils import timezone
 from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, bump_due, first_posted_at, owner_quiet_at, reask_key
-from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding, TicketDmPost
+from teatree.core.models import BotPing, DeferredQuestion, LoopLease, ThreadBinding, TicketDmPost, TicketDmThread
 from teatree.core.notify import NotifyKind, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyOutcome, NotifyReason
 from teatree.core.owner_dm.question_ticket import single_question_ticket_id
+from teatree.core.owner_dm.ticket_dm_delivery import root_is_deleted
 from teatree.core.owner_question_message import (
     bump_text,
     render_blocks,
@@ -56,11 +57,7 @@ from teatree.core.owner_question_message import (
 from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
 from teatree.loop.preset_resolution import owner_zone
 
-# How many deferred questions one tick may mirror. The backlog accumulates silently
-# while the owner is away, so an unbounded drain delivers it all in one burst the
-# moment they return — the owner reads that as spam and mutes the channel, which
-# costs the next genuine question too. Nothing is dropped: the remainder is re-read
-# on the next tick, so a question that already waited hours waits one more cadence.
+# Bound first-card bursts after the owner returns; later ticks read the remaining backlog.
 _MAX_MIRRORS_PER_TICK = 3
 
 #: Prefix of the ``BotPing`` idempotency key :func:`drain_deferred_questions` writes.
@@ -98,8 +95,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: How many questions one re-ask bucket bumps in their own Slack threads. The
-#: Five bumps are five threads the owner can reply into per scanner pass.
+#: Bound the number of distinct answerable threads bumped in one scanner pass.
 _REASK_BATCH = 5
 
 _MIRROR_KEY_PREFIX = "mirror-deferred-question:"
@@ -238,8 +234,15 @@ def _post(
     """Send a card or chase through its subject ticket when uniquely known."""
     mirrored = bool(row.slack_ts)
     ticket_id = single_question_ticket_id(row)
-    return notify_user_outcome(
-        bump_text(row, now=now) if mirrored else render_text(row),
+    old_root = (
+        TicketDmThread.objects.filter(ticket_id=ticket_id, channel=row.slack_channel, root_ts=row.slack_ts).exists()
+        if mirrored and ticket_id is not None
+        else False
+    )
+    target = (backend or resolve_owner_dm_backend()[0]) if old_root else None
+    deleted_root = bool(old_root and target and root_is_deleted(target, row.slack_channel, row.slack_ts))
+    outcome = notify_user_outcome(
+        bump_text(row, now=now) if mirrored and not deleted_root else render_text(row),
         kind=NotifyKind.QUESTION,
         idempotency_key=key,
         audience=NotifyAudience.OWNER_QUESTION,
@@ -247,13 +250,27 @@ def _post(
             backend=backend,
             user_id=user_id or None,
             thread_ts="" if ticket_id is not None else row.slack_ts,
-            fallback_thread_ts=row.slack_ts,
+            fallback_thread_ts="" if deleted_root else row.slack_ts,
             ticket_id=ticket_id,
             question_id=row.pk if ticket_id is not None else None,
             linkify=False,
-            blocks=None if mirrored else render_blocks(row),
+            blocks=None if mirrored and not deleted_root else render_blocks(row),
         ),
     )
+    if deleted_root and outcome.sent:
+        ping = BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).first()
+        if (
+            ping
+            and ping.posted_ts
+            and TicketDmPost.objects.filter(channel=ping.channel_ref, slack_ts=ping.posted_ts, question=row).exists()
+        ):
+            changed = DeferredQuestion.objects.filter(
+                pk=row.pk, slack_ts=row.slack_ts, answered_at__isnull=True, dismissed_at__isnull=True
+            ).update(slack_ts=ping.posted_ts, slack_channel=ping.channel_ref)
+            if changed:
+                row.slack_ts = ping.posted_ts
+                row.slack_channel = ping.channel_ref
+    return outcome
 
 
 def _stamp_mirror_from(row: DeferredQuestion, key: str) -> bool:

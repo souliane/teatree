@@ -1,6 +1,6 @@
 """No surface the owner reads says "deferred" or "Pending question" (#4990).
 
-The owner never sees the queue's internal name: not in a card, a bump, the digest, a click update, the
+The owner never sees the queue's internal name: not in a card, a bump, a click update, the
 ``questions`` command, its help, nor the dispatch loop's line on the loops page.
 """
 
