@@ -225,13 +225,13 @@ The stack is six services from one image (`deploy/Dockerfile`), selected by
 
 | Service | Role | Restart | Notes |
 | --- | --- | --- | --- |
-| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and both portable-plugin registrations are ready |
+| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and the plugin registration of every credentialed agent tool (both when none is) are ready |
 | `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; hard-fails without the strict skill readiness marker; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
-| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus read-only code; no forge or chat token in its environment |
+| `teatree-webhooks` | `webhook-listener` (gunicorn on `teatree.webhook_wsgi`) | `unless-stopped` | the signed forge receivers only (`/hooks/github/`, `/hooks/gitlab/`) on the box loopback `127.0.0.1:8001`; `DEBUG` off, no admin, no auto-login; mounts the control DB, pass store and GPG home read-write, plus its read-only entrypoint, the sibling script it sources and code; no forge or chat token in its environment |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
-| `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs planning and review phases; its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
+| `teatree-ro-executor` | `tini -- sleep infinity` | `unless-stopped` | where Codex runs the read-only phases (planning, review, critic, scoping, triage assessment, directive interpretation, answering, review-request, shipping readiness); its own `ro-executor` image stage and compose profile, built and recreated by `deploy.sh` alone; see [Security posture: the read-only executor](#security-posture-the-read-only-executor) |
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three mount the same state, so the admin and
@@ -270,9 +270,13 @@ database or a deployed install. All other database paths also select TRUNCATE.
 rollback mode for the control DB;
 `wal` asserts that WAL is eligible and fails at connection setup if it is not.
 Values are case-insensitive and may have surrounding whitespace; other values
-fail at connection setup. The file's mode can change only when a connection
-opens, and a TRUNCATE opener fails with `database is locked` while another
-process holds a WAL connection open.
+fail at connection setup. A writable connection reads the SQLite file header
+and runs the journal-mode setter only for a new file or a WAL-versus-rollback
+header mismatch for WAL. TRUNCATE is selected on every writable rollback
+connection because it is not persisted in the file header. A same-family
+connection can read committed rows while another process holds a read lock or a reserved write lock on it.
+A genuine mode conversion can still fail with `database is locked` while another
+process holds the file.
 
 An unshipped checkout has a `.git` entry and a root different from
 `TEATREE_CLONE_DIR`, or no deployed clone marker. Without an override it
@@ -284,11 +288,10 @@ directory can change an existing rollback file to WAL when the storage is
 eligible. A tree without `.git`, or a tree whose root equals `TEATREE_CLONE_DIR`,
 uses normal selection.
 
-On the first deploy, drain the worker and stop every database-using service
-before the new code opens the control DB. A mode change while an old process
-holds a connection can make new connections fail with `database is locked`.
-Start the new services only after the old processes have exited, then confirm
-the journal mode with `t3 doctor`.
+For a WAL-versus-rollback conversion, drain the worker, stop every database-using
+service including the watchdog, and verify that all old processes have exited.
+Convert with one process before starting the new admin and then the remaining
+services; confirm the header and connection behaviour with `t3 doctor`.
 
 To return to TRUNCATE or roll back to an image from before this change, set
 `T3_CONTROL_DB_JOURNAL_MODE=truncate` in `deploy/teatree.env`, stop every service
@@ -317,12 +320,34 @@ starting Compose; `deploy.sh` creates it when `teatree.env` provides the value.
 For direct `docker compose` or `deploy/t3` calls, export the value or put it in
 `deploy/.env` as well; Compose does not read `teatree.env` for interpolation.
 
-The staged sealed store keeps its master key in the `teatree_control_db`
-named volume alongside `db.sqlite3` (mode 0600); that volume must be backed up
-and restored as one unit. `T3_MASTER_KEY_SOURCE=file:<absolute-path>` selects
-a different key file during bootstrap. The current deployment still reads
-`pass` through the default store slot; `t3 teatree secrets import-pass` only
-inventories candidate entries and does not migrate or delete credentials.
+The sealed store's master key lives outside `teatree_control_db`: a read-only
+directory bind at the container user's `.config/teatree-master-key`, mounted into exactly the
+services that mount the password store, with
+`T3_MASTER_KEY_SOURCE` pointing to that directory's `master.key`, set per
+service. A whole-volume backup or export of `teatree_control_db` must not carry the key,
+or the rows travel with the key that opens them. Keep a separate copy of the key file:
+losing it loses every sealed row. Provision it once on the host, as the deploy user,
+before the first write (`deploy.sh`, `roll.sh` and `deploy/t3` create the empty directory):
+
+```bash
+(
+    umask 077
+    set -C
+    head -c 32 /dev/urandom | base64 > "$HOME/.config/teatree-master-key/master.key"
+)
+```
+
+In a container a key path inside the control-DB directory is refused when a write
+would create it, and `t3 doctor` reports it (WARN while nothing is stored, FAIL once
+rows or the key exist there). The directory is mounted read-only, so a missing key
+cannot be created from a service; provision it on the host. The default store still
+reads `pass`. `t3 teatree secrets import-pass` inventories candidate entries;
+`import-pass --apply` copies eligible entries into sealed rows without deleting them from `pass`.
+Set `T3_SECRET_STORE=sealed` after verifying the copied rows. Container shell readers then use the sealed
+control DB through `secret-read.sh`; host deploy commands leave sealed values for the container to read.
+An unreadable selected store stops boot; a missing entry, or no `pass` executable under the `pass` selector,
+leaves that credential unset. `t3 teatree secrets verify` lists absent entries and exits 0; it exits 1 when
+any referenced entry is unreadable.
 
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
 bind mounts, deliberately decoupled from the data dir: the container's
@@ -346,9 +371,10 @@ hydrate/run/persist lifecycle.
 
 `t3 setup --strict-agent-skills` removes any stale readiness marker before it
 starts and writes `~/.local/share/teatree/skills/ready` with mode `0600` only
-after the declared skills, inventory, Claude plugin, and Codex plugin all
-converge. The worker verifies that marker and the enabled Claude plugin before
-admitting work. This keeps an incomplete network-dependent setup observable and
+after the declared skills, inventory, and the plugin of every credentialed agent
+tool (the Claude and Codex plugins when neither tool has credentials) converge.
+The worker verifies that marker and the enabled Claude plugin before admitting
+work. This keeps an incomplete network-dependent setup observable and
 prevents a factory task from silently inheriting a partial agent environment.
 
 The Codex plugin is registered from a slim copy of what its manifest declares
@@ -498,8 +524,8 @@ wedged secret store each exit **69** (`EX_UNAVAILABLE`), where the CLI itself re
 for a refusal. The no-orphan pre-push hook (`scripts/hooks/ensure-pr-installed-t3.sh`)
 skips with a warning on 69, 75, 126, 127 and 137 and fails the push on anything else.
 Host hooks treat exit 69 as a launcher venue fault, not a validator verdict: the MR
-and AI-signature gates refuse with the cause, while the coverage gate allows and
-names the cause.
+gate refuses with the cause, while the coverage gate allows and names the cause.
+The AI-signature gate scans in the hook process and does not use the launcher.
 
 ### Worker sizing: derived from the host
 
@@ -1395,6 +1421,7 @@ role** from the image-baked, committed template `deploy/claude-settings.template
 deliberate model, permission mode, `autoMode` grants, `autoCompactEnabled`, a
 one-character skill description listing cap (`skillListingMaxDescChars: 1`), and a
 box-sized `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` instead of stock CLI defaults.
+Dynamic workflows are enabled with an advisory `small` size and a hard cap of two concurrent agents per workflow run; these template settings reach new sessions after an image rebuild and init re-run.
 The complete `~/.claude` tree is a factory-owned named volume. Host settings,
 credentials, plugins, skills, sessions, and memories are never mounted into the
 factory; only the generated settings and state created by factory runs live there.
@@ -1541,7 +1568,9 @@ mount instead, and the worker never takes the executor's word for it:
   `GIT_OPTIONAL_LOCKS`, `LANG` and `TZ`.
 - **Read-only mounts.** Of the deploy checkout only its `.git` (path identity), never the
   directory that holds `deploy/teatree.env`; plus the clone volume and the `t3-workspaces`
-  tree, all `read_only`, over a read-only root filesystem. The only writable paths are two
+  tree, all `read_only`, over a read-only root filesystem. When the worker's Codex source
+  clone exists, deploy adds only its `.git` through a volume subpath; a fresh install keeps
+  the original mounts. The only writable paths are two
   tmpfs mounts, `/run/t3-ro` (Codex homes) and `/run/t3-tmp` (`TMPDIR`), which are never
   persisted and are emptied at every app server start and stop. It mounts no control DB,
   data dir, credential store, agent home or docker socket.
@@ -1560,7 +1589,8 @@ mount instead, and the worker never takes the executor's word for it:
   `.env_*` other than templates, `.envrc`, `.netrc`, `.npmrc`, `.pypirc`,
   `.git-credentials`, `.pgpass`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`) or a private
   key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other than `*.pub`, found
-  by its content marker, so certificates and public keys pass). The secret it does hold is
+  by its content marker, so certificates and public keys pass). Git config with an embedded
+  HTTP credential or auth header is also refused. The secret it does hold is
   its own Codex login: the worker hydrates it from pass into a fresh `/run/t3-ro/codex-*` home per
   app server, persists a rotated token of the same account back to pass with a verifying
   re-read, and deletes the home only after that persist succeeded. Store it once with
@@ -1584,6 +1614,13 @@ waiting in its tmpfs, and after init, whose read-write clone mount creates the
 `t3-workspaces` mountpoint a fresh clone volume lacks. Either step failing does not stop
 the deploy: the worker and every other service still converge, and the deploy then fails
 with a message naming the executor. Until the executor deploys, served read-only phases on Codex are refused and try another route.
+The optional Codex source Git mount uses the worker's path in the executor, so
+worktree `.git` pointers resolve to the same Git directory. `deploy.sh` derives
+the volume subpath and mount target from the checkout's origin and passes them to
+compose; it passes the subpath to the worker for the read-only verdict's comparison.
+An empty value, which is what a worker recreated without it gets and what `deploy.sh` passes
+when origin yields no owner and repository, means no source clone and the original mounts;
+a malformed value refuses the executor with a reason naming the variable.
 A worker that had to be contained instead of drained leaves the running executor in
 place, because its tmpfs may still hold a rotated login that the next server start
 recovers. The next deploy replaces it.

@@ -127,7 +127,7 @@ class TestAnOldImageRunsItsOwnEntrypoint:
         assert self._boot(tmp_path, "garbage") == "baked-entrypoint"
 
     def test_an_image_meeting_the_contract_runs_the_checkout_entrypoint(self, tmp_path: Path) -> None:
-        assert self._boot(tmp_path, "2\n") == "checkout-entrypoint"
+        assert self._boot(tmp_path, "3\n") == "checkout-entrypoint"
 
     def test_the_dockerfile_bakes_the_contract_the_entrypoint_requires(self) -> None:
         required = re.search(r"^ENTRYPOINT_IMAGE_CONTRACT=(\d+)$", ENTRYPOINT.read_text(encoding="utf-8"), re.MULTILINE)

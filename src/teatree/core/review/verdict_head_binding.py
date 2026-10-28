@@ -36,6 +36,7 @@ class HeadBinding:
     head: str = ""
     error: str = ""
     superseded: bool = False
+    retry_head: str = ""
 
 
 def _abbreviates(claimed: str, head: str) -> bool:
@@ -89,12 +90,17 @@ def resolve_verdict_head(
     if _abbreviates(claimed, current.lower()):
         return HeadBinding(head=current)
     if not pinned or current.lower() != pinned.lower():
-        return HeadBinding(error=_moved_head_refusal(asserted, pinned=pinned, current=current, pr=pr), superseded=True)
+        return HeadBinding(
+            error=_moved_head_refusal(asserted, pinned=pinned, current=current, pr=pr),
+            superseded=True,
+            retry_head=current,
+        )
     return HeadBinding(
         error=(
             f"review verdict reviewed_sha {asserted!r} is not {expected} — a reviewer that judged a "
             f"different tree than the one it was dispatched for is itself a finding; the verdict is not recorded"
         ),
+        retry_head=current,
     )
 
 

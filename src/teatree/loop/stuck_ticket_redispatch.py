@@ -41,7 +41,6 @@ scheduling methods with the ``core`` repair-loop budget over a housekeeping swee
 """
 
 import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -63,6 +62,7 @@ from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanErro
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task
 from teatree.core.models.self_review import SelfReview
+from teatree.core.models.shipping_hold import is_shipping_held
 from teatree.core.models.task_repair_queries import (
     adjacent_work_attempts,
     ticket_phase_iterations,
@@ -74,6 +74,7 @@ from teatree.core.models.ticket_external_review import (
     schedule_external_review,
 )
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.owner_dm.question_ticket import STUCK_HALT_PK_RE
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, max_phase_iterations, requeue_verdict
 from teatree.loop.persistence_phase_task import create_phase_task
 from teatree.utils import git
@@ -89,7 +90,6 @@ DEFAULT_STUCK_IDLE_HOURS = 6
 #: Public because the question drain names the halt's subject ticket from it
 #: (:mod:`teatree.loop.question_subjects`).
 STUCK_HALT_MARKER = "stuck-redispatch-halt:{pk}"
-STUCK_HALT_PK_RE = re.compile(r"^stuck-redispatch-halt:(\d+)$")
 
 #: The non-terminal work-states an AUTHOR ticket re-dispatches from, mapped to the
 #: phase the state implies. NOT_STARTED / SCOPED await provisioning (excluded);
@@ -187,10 +187,10 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
     """
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
-        phase = _implied_phase(ticket)
-        if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
+        if is_shipping_held(ticket):
             continue
-        if normalize_phase(phase) == "coding" and _merge_safe_review_after_plan(ticket):
+        phase = _recoverable_phase(ticket)
+        if phase is None:
             continue
         failing = (
             _phase_is_failing(ticket, phase=phase)
@@ -200,6 +200,15 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
         if failing or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))
     return candidates
+
+
+def _recoverable_phase(ticket: Ticket) -> str | None:
+    phase = _implied_phase(ticket)
+    if phase is None or ticket.newest_task_was_cancelled() or ticket.newest_phase_task_was_cancelled(phase):
+        return None
+    if normalize_phase(phase) == "coding" and _merge_safe_review_after_plan(ticket):
+        return None
+    return phase
 
 
 def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
@@ -215,13 +224,28 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
     """
     author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(_STATE_PHASE))
     reviewer = Q(role=Ticket.Role.REVIEWER, state__in=tuple(Ticket.pre_ship_states()))
-    open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__state__in=_OPEN_PR_STATES)
+    open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__in=PullRequest.objects.live())
     return list(
         Ticket.objects.filter(author | reviewer)
         .exclude(tasks__status__in=Task.Status.active())
         .exclude(open_pr)
         .distinct()
     )
+
+
+def idle_started_author_tickets(*, now: datetime, threshold_hours: int) -> list[Ticket]:
+    """Author tickets idle past *threshold_hours* with no active task or live PR, whose newest task was not cancelled.
+
+    The read-only half of the frozen class, for callers that hold on an idle ticket instead of
+    re-dispatching it. A reviewer ticket is someone else's PR, so it never counts as started work.
+    """
+    return [
+        ticket
+        for ticket in _live_tickets_with_nothing_in_flight()
+        if ticket.role == Ticket.Role.AUTHOR
+        and _is_idle(ticket, now=now, threshold_hours=threshold_hours)
+        and _recoverable_phase(ticket) is not None
+    ]
 
 
 def _warn_unknown_states() -> None:
@@ -307,12 +331,6 @@ def _merge_safe_review_after_plan(ticket: Ticket) -> bool:
         result__review_verdict__verdict="merge_safe",
         result__review_verdict__reviewed_sha=head,
     ).exists()
-
-
-#: PR states that count as "open" (a merged PR does not keep a ticket alive).
-_OPEN_PR_STATES = frozenset(
-    {PullRequest.State.OPEN, PullRequest.State.REVIEW_REQUESTED, PullRequest.State.APPROVED},
-)
 
 
 def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:

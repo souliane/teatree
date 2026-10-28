@@ -19,6 +19,11 @@ __all__ = ["OverlayMetadata"]
 
 
 class OverlayMetadata:
+    DEFAULT_WORK_ITEM_RETURN_LINES: tuple[str, ...] = ()
+
+    def work_item_return_lines(self) -> tuple[str, ...]:
+        return self.DEFAULT_WORK_ITEM_RETURN_LINES
+
     def validate_pr(
         self, title: str, description: str, *, require_sections: bool = True, repo: str = ""
     ) -> ValidationResult:
@@ -79,6 +84,21 @@ class OverlayMetadata:
 
     def get_followup_repos(self) -> list[str]:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return []
+
+    def get_issue_repos(self, issue_url: str) -> list[str]:
+        """Optional repo hint for an issue; an empty answer leaves resolution to core."""
+        del self, issue_url
+        return []
+
+    @staticmethod
+    def choose_filing_repo(*, title: str, body: str, candidates: tuple[str, ...]) -> str:
+        """The repo a work item is filed in, one of *candidates* (the overlay's owned repos, never empty) (#5508).
+
+        Default is the first. An overlay overrides this to route by the item's text and returns one
+        candidate verbatim, or raises ``WorkItemFilingError`` naming the candidates when the text does not decide.
+        """
+        del title, body
+        return candidates[0]
 
     def get_skill_metadata(self) -> SkillMetadata:  # noqa: PLR6301 — overlay hook default; overridden per-overlay on the instance
         return {}

@@ -48,6 +48,7 @@ class TestPopulateModelRegistries:
         assert gate_registry.get_gate("review_context_satisfied") is not None
         assert gate_registry.get_resolver("infer_overlay_for_url") is not None
         assert gate_registry.get_resolver("resolve_overlay_name") is not None
+        assert gate_registry.get_resolver("running_checkout_overlay") is not None
         assert gate_registry.get_resolver("pr_open_state") is not None
         assert gate_registry.get("cost", "AttemptUsage") is not None
         assert gate_registry.get("cost", "CostBreakdown") is not None

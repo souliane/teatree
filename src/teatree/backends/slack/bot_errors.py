@@ -13,6 +13,7 @@ Two classes matter to the scanner dispatcher:
     and keep the rest of the scan running, so they are NOT in this set.
 """
 
+from teatree.core.backend_protocols import MessagingReadRefusedError
 from teatree.types import ScannerErrorClass
 
 GLOBAL_TOKEN_FAILURES: dict[str, ScannerErrorClass] = {
@@ -28,11 +29,12 @@ GLOBAL_TOKEN_FAILURES: dict[str, ScannerErrorClass] = {
 }
 
 
-class SlackReadRefusedError(RuntimeError):
+class SlackReadRefusedError(MessagingReadRefusedError):
     """Slack answered a read with ``ok:false`` — never "there is nothing there"."""
 
     def __init__(self, method: str, subject: str, error_code: str) -> None:
-        super().__init__(f"Slack refused {method} on {subject}: {error_code}. This is NOT an empty result.")
+        super().__init__(method, subject, error_code)
+        self.args = (f"Slack refused {method} on {subject}: {error_code}. This is NOT an empty result.",)
         self.method = method
         self.subject = subject
         self.error_code = error_code

@@ -32,6 +32,7 @@ from teatree.agents.credential_policy import (
     ALL_ACCOUNTS_EXHAUSTED_CAUSE,
     EXHAUSTION_CAUSES,
     resolve_credential_provider,
+    spend_metered_key,
 )
 from teatree.agents.harness_dispatch import another_lane_can_dispatch
 from teatree.config import AgentHarnessProvider, get_effective_settings
@@ -208,9 +209,10 @@ def park_or_rotate_on_limit(
     account is still healthy, REQUEUE the task to rotate onto it (no lane park) so the next
     dispatch runs on the fresh account; only when every account is exhausted does the whole
     lane park (auto-resume at the earliest reset). A single unrouted credential, a transient
-    rate limit, or an API-credit cause falls through to :func:`park_task_on_limit` unchanged.
-    ``None`` (→ caller records a terminal FAILED) when the cause has no time-based
-    recovery; a leak block also alerts the owner once, since nothing will ever retry it.
+    rate limit falls through to :func:`park_task_on_limit` unchanged. A metered credit refusal under
+    the composite provider marks the signing key spent and requeues, or parks behind the open
+    plan window when no key is left. ``None`` (→ caller records a terminal FAILED) when the cause
+    has no time-based recovery; a leak block also alerts the owner once, since nothing will ever retry it.
     ``signal.usage`` is the spend the triggering result billed — this handler
     only ever fires POST-turn (a limit was reported ON a result), so it is carried through
     to whichever :class:`TaskAttempt` records the park (#4164).
@@ -219,6 +221,12 @@ def park_or_rotate_on_limit(
         _alert_owner_of_leak_block(task, match)
         return None
     moment = now or timezone.now()
+    if match.cause is LimitCause.API_CREDIT:
+        retry_at = spend_metered_key(scope=task.ticket.overlay or "", lane=lane, signer=signal.account, moment=moment)
+        if retry_at is not None:
+            return record_park(
+                task, reason=f"{LIMIT_PARKED_PREFIX}{match.as_reason()}", not_before=retry_at, usage=signal.usage
+            )
     reset = effective_resets_at(match.cause, _reported_reset(match, signal), moment)
     if reset is None:
         return None
@@ -435,7 +443,9 @@ def maybe_park_for_active_window(task: Task, *, lane: str, now: datetime | None 
     return record_park(task, reason=reason, not_before=window.resets_at)
 
 
-def record_park(task: Task, *, reason: str, not_before: datetime, usage: "AttemptUsage | None" = None) -> TaskAttempt:
+def record_park(
+    task: Task, *, reason: str, not_before: datetime, usage: "AttemptUsage | None" = None, summary: str = ""
+) -> TaskAttempt:
     """Record the parked ``TaskAttempt`` and return the task to the queue (never fail it).
 
     The park sibling of ``headless._record_failure``: it creates the audit attempt with the
@@ -458,7 +468,7 @@ def record_park(task: Task, *, reason: str, not_before: datetime, usage: "Attemp
         ended_at=timezone.now(),
         exit_code=1,
         error=reason,
-        result=with_transport_records(None, usage),
+        result=with_transport_records({"summary": summary} if summary else None, usage),
         **usage_fields(usage),
     )
     if usage is not None:

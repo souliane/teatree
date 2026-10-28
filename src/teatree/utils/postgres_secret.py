@@ -8,7 +8,8 @@ Resolution order in :func:`resolve_postgres_password`:
 
 1. ``POSTGRES_PASSWORD_PASS_KEY`` env → ``pass show <key>``.
 2. ``T3_SECRET_RESOLVER`` env → run that command with the pass key as the
-    first argument; its stdout (first line, stripped) is the secret.
+    first argument; its stdout (first line, stripped) is the secret — for example
+    ``t3 teatree secrets get``.
 
 The literal secret never appears in log lines or exception messages
 emitted by this module — callers that need to verify resolution should
@@ -101,12 +102,16 @@ def ensure_postgres_pass_entry(ticket_id: object, password: str) -> str:
         msg = "password must be non-empty to be stored in pass"
         raise ValueError(msg)
     key = postgres_pass_key(ticket_id)
-    if not secrets.write_pass(key, password):
-        msg = (
-            "pass is not installed or pass insert failed — cannot store the "
-            "postgres password symbolically. Install pass or set "
-            "T3_SECRET_RESOLVER to keep secrets out of .t3-env.cache."
-        )
+    msg = (
+        "pass is not installed or pass insert failed — cannot store the "
+        "postgres password symbolically. Install pass or set "
+        "T3_SECRET_RESOLVER to keep secrets out of .t3-env.cache."
+    )
+    try:
+        stored = secrets.write_pass(key, password)
+    except secrets.SecretStoreError as exc:
+        raise PostgresPasswordUnavailableError(msg) from exc
+    if not stored:
         raise PostgresPasswordUnavailableError(msg)
     return key
 

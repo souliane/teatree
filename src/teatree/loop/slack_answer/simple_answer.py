@@ -25,10 +25,13 @@ NEEDS_WORK delegation path.
 """
 
 import os
+import re
 from typing import TYPE_CHECKING
 
 from teatree.agents.one_shot import OneShotSpec, run_one_shot
+from teatree.core.models import PullRequest, Task, Ticket
 from teatree.loop.inbound_classifier import strip_urls
+from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, ReadingSource
 from teatree.loop.self_improve.budget import precheck_budget
 from teatree.loop.statusline import statusline_for_slack
 
@@ -81,17 +84,53 @@ def _token_budget_remaining() -> int | None:
 def _stage_a(text: str) -> str | None:
     """Zero-token answer from teatree's on-disk statusline, or ``None``.
 
-    The user only ever wants to see what is in the statusline — not the
+    An unbound status query shows only what is in the statusline — not the
     dashboard table (#1121). When the statusline file is empty/missing,
     return ``None`` so the cycle falls through to Stage B or delegation.
     """
     lowered = strip_urls(text.lower())
-    if not any(tok in lowered for tok in _DASHBOARD_TOKENS):
+    if not _mentions_dashboard(lowered):
         return None
     rendered = statusline_for_slack().strip()
     if not rendered:
         return None
     return rendered
+
+
+def is_status_question(text: str) -> bool:
+    lowered = strip_urls(text.lower()).strip()
+    return bool(
+        _mentions_dashboard(lowered) and ("?" in lowered or lowered.startswith(("status", "progress", "update")))
+    )
+
+
+def _mentions_dashboard(text: str) -> bool:
+    return any(re.search(rf"(?<!\w){re.escape(token)}(?!\w)", text) for token in _DASHBOARD_TOKENS)
+
+
+def status_binding_reader(read: InboundReader, *, status_request: bool) -> InboundReader:
+    if not status_request:
+        return read
+    status_reading = InboundReading(
+        intent=InboundIntent.QUESTION, answerable=True, work_summary="", source=ReadingSource.HEURISTIC
+    )
+
+    def status_reader(_text: str) -> InboundReading:
+        return status_reading
+
+    return status_reader
+
+
+def ticket_status_answer(ticket: Ticket) -> str:
+    label = ticket.repo_namespaced_key or f"ticket-{ticket.pk}"
+    lines = [f"{label}: {ticket.state}"]
+    tasks = Task.objects.filter(ticket=ticket, status__in=Task.Status.active()).order_by("pk")
+    lines.extend(f"Task {task.pk}: {task.phase} ({task.status})" for task in tasks)
+    prs = PullRequest.objects.filter(ticket=ticket).exclude(
+        state__in=(PullRequest.State.MERGED, PullRequest.State.CLOSED)
+    )
+    lines.extend(f"<{pr.url}|{pr.repo}#{pr.iid}>: {pr.state}" for pr in prs.order_by("pk"))
+    return "\n".join(lines)
 
 
 def _compact_state_digest() -> str:

@@ -23,6 +23,7 @@ import time
 import traceback
 from collections.abc import Generator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # When run as a script (the live hook: ``python3 .../hooks/scripts/hook_router.py``)
 # the plugin root — the directory that CONTAINS ``hooks/`` — is not on ``sys.path``,
@@ -47,6 +48,7 @@ if __name__ == "__main__":
 from hooks.scripts import gate_escape as _gate_escape
 from hooks.scripts.active_repo_tracking import handle_track_active_repo
 from hooks.scripts.additional_context import emit_additional_context
+from hooks.scripts.ai_signature_guard import handle_block_ai_signature
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.brief_anchor_gate import handle_brief_anchor_lint
@@ -96,7 +98,6 @@ from hooks.scripts.forge_api_detect import (
 )
 from hooks.scripts.gate_decision import record_gate_decision as _record_gate_decision
 from hooks.scripts.gate_decision import write_pretooluse_deny as _write_pretooluse_deny
-from hooks.scripts.gate_result import GateSkipped, ValidatorTimedOut, announce_cannot_evaluate, run_validator
 from hooks.scripts.general_purpose_agent_gate import handle_block_general_purpose_agent
 from hooks.scripts.git_add_all_guard import handle_block_git_add_all
 from hooks.scripts.glab_stale_base_remote_guard import handle_block_glab_stale_base_remote
@@ -120,11 +121,16 @@ from hooks.scripts.merged_detection_probe_gate import handle_warn_merged_detecti
 from hooks.scripts.mr_cli_fields import extract_api_mr_fields, extract_cli_mr_fields
 from hooks.scripts.mr_validator import handle_validate_mr_metadata
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
-from hooks.scripts.orchestration_boundary_signals import HELP_OR_VERSION_RE as _HELP_OR_VERSION_RE
-from hooks.scripts.orchestration_boundary_signals import NEVER_HELP_EXEMPT_RE as _NEVER_HELP_EXEMPT_RE
-from hooks.scripts.orchestration_boundary_signals import ORCHESTRATOR_HEAVY_BASH_RE as _ORCHESTRATOR_HEAVY_BASH_RE
-from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
+from hooks.scripts.orchestration_boundary_signals import COMMAND_HEAD as _COMMAND_HEAD
+from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
+from hooks.scripts.orchestration_boundary_signals import RUNNER_PREFIX as _RUNNER_PREFIX
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
+from hooks.scripts.orchestration_boundary_signals import (
+    command_matches_non_pytest_heavy as _command_matches_non_pytest_heavy,
+)
+from hooks.scripts.orchestration_boundary_signals import heavy_command_is_help_only as _heavy_command_is_help_only
+from hooks.scripts.orchestration_boundary_signals import heavy_command_text as _heavy_command_text
+from hooks.scripts.orchestration_boundary_signals import pytest_command_is_targeted as _pytest_command_is_targeted
 from hooks.scripts.orchestrator_delegation_gate import handle_block_undelegated_investigation
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from hooks.scripts.out_of_band_merge_guard import handle_block_out_of_band_merge
@@ -160,6 +166,7 @@ from hooks.scripts.raw_review_post_guard import handle_block_raw_review_post
 from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
+from hooks.scripts.remote_factory_target import remote_factory_target_active
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.router_args import parse_args as _parse_args
 from hooks.scripts.router_args import read_input as _read_input
@@ -181,7 +188,6 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.t3_invocation import t3_argv, t3_never_started, venue_fault
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
@@ -195,6 +201,9 @@ from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.verbatim_paste_gate import handle_block_verbatim_operator_paste
 from hooks.scripts.visible_plan_gate import handle_enforce_visible_plan_before_tools
 from hooks.scripts.void_merge_guard import handle_block_void_merge
+
+if TYPE_CHECKING:
+    from hooks.scripts.gate_result import GateSkipped
 
 STATE_DIR = hook_state_dir()
 
@@ -439,21 +448,8 @@ def _teatree_engaged(session_id: str) -> bool:
 
 
 def _loop_auto_load_active(session_id: str) -> bool:
-    """Whether this session may take the attended loop slot and show the loop statusline (#256).
-
-    The gate the loop-slot bootstrap (:func:`handle_session_start_bootstrap`)
-    applies. Two conditions must BOTH hold:
-
-    - the session opted into teatree (:func:`_teatree_active` — a teatree
-        skill was loaded), AND
-    - the operator enabled autoload (:func:`_autoload_enabled`).
-
-    ``autoload`` is the ONE owner flag (``[teatree] autoload = true``, or the
-    ``T3_AUTOLOAD`` env): it both ENGAGES the session and elects it for the
-    loop slot. It defaults OFF so a colleague who merely clones the repo (and
-    even loads a teatree skill) never takes the slot or sees the loop statusline.
-    """
-    return _teatree_active(session_id) and _autoload_enabled()
+    """The attended slot needs engagement, autoload, and a local factory target."""
+    return _teatree_active(session_id) and _autoload_enabled() and not remote_factory_target_active()
 
 
 _read_lines = read_lines
@@ -1001,194 +997,6 @@ def _extract_mr_fields(data: dict) -> "tuple[str, str] | GateSkipped | None":
     return None
 
 
-# ── PreToolUse: block-ai-signature (#836 §17.6 gate 15) ─────────────
-
-_PR_CREATE_TOOLS = {
-    "mcp__glab__glab_mr_create",
-    "mcp__glab__glab_mr_update",
-    "mcp__github__create_pull_request",
-    "mcp__github__update_pull_request",
-}
-
-
-def _extract_bash_ai_sig_payload(command: str, cwd: Path | None = None) -> str | None:
-    """Return the scannable forge-post body for a Bash command, or ``None``.
-
-    Delegates the "is this a forge post?" decision and the body extraction to
-    the SAME canonical command parser the #1213 quote-scanner, #1415
-    banned-terms, and #1530 bare-reference gates use
-    (:mod:`teatree.hooks._command_parser`). This was previously a second,
-    hand-rolled parser (``_AI_SIG_PR_RE`` / ``_AI_SIG_COMMIT_RE`` /
-    ``_PR_BODY_FLAG_RE`` / ``_GIT_COMMIT_M_RE``, all now removed) that covered
-    only ``gh pr`` / ``glab mr`` and a QUOTED ``--body`` — it missed
-    ``gh issue create/comment``,
-    ``glab issue note``, ``glab mr note``, and the ``-b``/heredoc/``-d`` body
-    forms, so an AI-signature footer leaked on those surfaces (#11, the
-    souliane/skills#38 / #1840 / #1845 recurrence). Reusing the shared parser
-    closes the whole class at once: :func:`is_publish_command` recognises every
-    forge-post command shape (the contiguous-substring catalogue + the
-    token-aware ``api`` WRITE / ``git commit`` classifiers), and
-    :func:`extract_bash_payload` pulls the body out of every flag form
-    (``--body``/``--description``/``--message``/``-b``/``-m``, ``--body-file``/
-    ``--file``/``-F``, ``-d``/``--field`` JSON, heredocs).
-
-    ``fail_closed_body_file=False`` keeps this gate's fail-OPEN contract on an
-    unreadable / missing / binary body file (an absent body contributes
-    nothing rather than a hard-block sentinel) — a broken environment must
-    never block a forge post, matching the other t3-shelling hooks.
-
-    The body extraction itself lives in the public
-    :func:`teatree.hooks.ai_signature_gate.extract_forge_post_body` so the
-    private ``_command_parser`` import stays INSIDE the ``teatree`` package (the
-    hook router cannot import a private name from an external module), mirroring
-    how ``banned_terms_scanner.extract_publish_payload`` wraps the same parser.
-    """
-    from teatree.hooks.ai_signature_gate import extract_forge_post_body  # noqa: PLC0415 — deferred: cold-hook import
-
-    return extract_forge_post_body(command, cwd)
-
-
-def _extract_ai_sig_payload(data: dict) -> str | None:
-    """Return the PR-body / commit-message text to scan, else ``None``.
-
-    Covers the full forge-post command class via the shared canonical parser
-    (:func:`_extract_bash_ai_sig_payload`): ``gh pr create/edit/comment``,
-    ``gh issue create/comment``, ``glab mr create/update/note``,
-    ``glab issue create/note``, ``git commit`` (inline ``-m`` and file-based
-    ``-F``/``-C``/``--file`` / ``--body-file`` / ``--description``-file —
-    the #831 multi-line shape), the ``gh api``/``glab api`` WRITE to a forge
-    endpoint, and the MR/PR MCP create/update tools. ``None`` ⇒ not a forge
-    post / commit, or (for a file-based arg) a missing/binary file (fail open).
-    """
-    tool_name = data.get("tool_name", "")
-    tool_input = data.get("tool_input", {})
-
-    if tool_name == "Bash":
-        return _extract_bash_ai_sig_payload(tool_input.get("command", ""), _resolve_cwd_repo(data))
-
-    if tool_name in _PR_CREATE_TOOLS:
-        return tool_input.get("body", "") or tool_input.get("description", "")
-
-    return None
-
-
-def _ai_sig_scan_argv() -> list[str] | None:
-    return t3_argv("tool", "ai-sig-scan", "-")
-
-
-# A genuine finding is recognisable by the scanner's well-formed summary
-# header ``AI-signature scan: N banned trailer(s)`` (``teatree.hooks.
-# ai_signature_scan.summary``). The scanner exits 1 on a finding AND
-# nonzero on a crash (a missing/unreadable ``-F`` file → typer traceback →
-# exit 1, no summary on stdout), so ``returncode != 0`` alone CANNOT tell the
-# two apart — keying on the summary line does, mirroring the sibling
-# ``coverage_gate.diff_coverage_finding`` structured-stdout discriminator.
-_AI_SIG_FINDING_RE = re.compile(r"^AI-signature scan:\s+\d+\s+banned trailer", re.MULTILINE)
-
-
-def _ai_sig_finding(stdout: str) -> str | None:
-    """Return the finding summary iff *stdout* is a real banned-trailer finding.
-
-    ``None`` ⇒ not a genuine finding: either the clean summary (``AI-signature
-    scan: clean``) or a crash/error with no well-formed summary at all. The
-    caller maps the three outcomes to DENY-finding / ALLOW / fail-closed-error.
-    """
-    return stdout.strip() if _AI_SIG_FINDING_RE.search(stdout) else None
-
-
-def handle_block_ai_signature(data: dict) -> bool:
-    """Refuse a forge-post body / commit message carrying an AI-signature trailer.
-
-    Deterministic enforcement of the "No AI Signature on Posts Made on the
-    User's Behalf" rule (BLUEPRINT §17.6 gate 15, #836). The rule was prose
-    only in /t3:rules and unenforced at the PR-body layer — PR #831 leaked
-    the banned trailer, caught only by cold review. This makes it a code
-    gate at the same pre-merge layer as the draft-lock and structured-
-    question gates.
-
-    Body extraction now reuses the shared canonical command parser
-    (``teatree.hooks._command_parser``) so the gate fires for the WHOLE
-    forge-post command class — ``gh pr/issue create/edit/comment``,
-    ``glab mr/issue create/update/note``, ``git commit``, and every
-    ``--body``/``--body-file``/``-F``/``-b``/``-m`` flag form — closing the
-    ``gh issue`` / ``glab note`` / unquoted-body gap a hand-rolled regex
-    parser left open (#11). The handler bootstraps ``sys.path`` to import
-    ``teatree`` from the sibling ``src/`` dir (the hook runs in the user's
-    session shell with no guarantee ``teatree`` is importable, #1314) and
-    fails open on a broken environment (no ``t3`` / import error / timeout),
-    matching the other t3-shelling hooks — a gate that cannot run AT ALL must
-    not lock out every commit.
-
-    Three outcomes are kept DISTINCT (#1884), because this is a SECURITY gate
-    that prevents publishing AI signatures under the user's identity:
-    (a) scanner ran, found a trailer (well-formed ``AI-signature scan: N
-    banned trailer(s)`` summary) → DENY with the finding message;
-    (b) scanner ran, clean → ALLOW;
-    (c) scanner WAS invoked but exited nonzero with no well-formed finding
-    summary (a crash/error) → FAIL CLOSED with a clear "scanner error, not a
-    finding" message. The old gate mapped ANY nonzero exit to (a), so a crash
-    (exit 1, traceback, no summary) became a false DENY carrying the LYING
-    "banned trailer found" message. Unlike the sibling coverage gate (which
-    fails OPEN on a crash, correct for a coverage gate), a leak-prevention
-    gate must NOT fail open — an unscanned publish may carry a signature.
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_block_ai_signature(data)
-    except Exception:  # noqa: BLE001 — a crashing gate is worse than no scan; fail open.
-        return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
-def _run_block_ai_signature(data: dict) -> bool:
-    """Block-ai-signature inner body — assumes ``teatree`` is already importable."""
-    from teatree.hooks import ai_signature_gate  # noqa: PLC0415 — deferred: cold-hook import
-
-    payload = _extract_ai_sig_payload(data)
-    argv = _ai_sig_scan_argv()
-    if payload is None or argv is None:
-        return False
-
-    result = run_validator(argv, stdin_text=payload)
-    if isinstance(result, ValidatorTimedOut | GateSkipped):
-        return announce_cannot_evaluate("AI-signature", result)
-    if result is None:
-        return False
-
-    finding = _ai_sig_finding(result.stdout or "")
-    if finding is not None:
-        return emit_pretooluse_deny(ai_signature_gate.format_block_message(finding), gate_id="ai_signature")
-    # A clean exit is ALLOW; a scanner that never STARTED is the broken-environment case
-    # the docstring promises to fail OPEN on. Distinct from the fail-closed case below:
-    # a scanner that RAN and errored still blocks.
-    if result.returncode == 0 or t3_never_started(result):
-        return False
-    # Scanner ran but exited nonzero WITHOUT a well-formed finding summary —
-    # a crash/error (traceback, usage error), not a finding. This is a
-    # SECURITY gate (it prevents publishing AI signatures under the user's
-    # identity), so the safe posture is FAIL CLOSED with a clear
-    # "scanner error" message — block, but never report a finding that did
-    # not happen, and never silently let an unscanned publish through.
-    # (The sibling COVERAGE gate fails OPEN here, correctly for ITS
-    # purpose; a leak-prevention gate must not.) A launcher refusing the venue (exit 69)
-    # scanned nothing, so it blocks the same way under its own name.
-    fault = venue_fault(result.returncode, result.stderr)
-    detail = (result.stderr or result.stdout or "").strip()
-    message = (
-        ai_signature_gate.format_venue_fault_message(fault)
-        if fault
-        else ai_signature_gate.format_scanner_error_message(detail)
-    )
-    return emit_pretooluse_deny(message, gate_id="ai_signature")
-
-
 # ── PreToolUse: pre-publish quote-scanner gate (#1213) ──────────────
 
 
@@ -1569,22 +1377,45 @@ _ORCHESTRATION_TOOLS = {
     "SendMessage",
     "AskUserQuestion",
 }
-# ``_PYTEST_VERB_RE`` / ``_PYTEST_VERB_FINDER`` (the VERB-position pytest matcher,
-# anchored to a command head so a ``git commit -m '…pytest…'`` mention is not a
-# false-deny — #1178) now live in the shared ``orchestration_boundary_signals``
-# leaf, imported aliased above so this gate and the investigation nudge read one
-# source. A TARGETED pytest run is cheap and must stay ALLOWED in the foreground
-# main agent (#1825): only the whole suite ties the session up. The verb
-# match above tells us a ``pytest`` invocation is present; this decides
-# whether the args make it a single/targeted run. Targeted iff the
-# segment after the verb carries a ``-k``/``--deselect <expr>``, a ``::``
-# node-id, OR a specific ``*.py`` test file path. A bare ``pytest`` (no
-# selector), ``pytest -q``, and a DIRECTORY arg (``pytest tests/``) are
-# whole-suite and stay DENIED.
-_PYTEST_TARGETED_RE = re.compile(
-    r"(?:^|\s)(?:-k|--deselect)(?:[=\s]|$)"  # -k <expr> / --deselect <expr>
-    r"|::"  # a node-id (path::Class::test)
-    r"|(?:^|\s)\S*\.py(?:::|\s|$)"  # a specific .py file path
+# HEAVY / long-running Bash shapes the main agent should not run inline.
+# This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
+# the escape hatch is ``run_in_background: true`` (or, for a whole class
+# of work, dispatching a sub-agent), plus a per-call ``[gate-escape:orchestrator_bash: <reason>]``
+# marker. When in doubt the command is ALLOWED — only an explicit match
+# here, foreground, is gated. Patterns cover: Python/test runners, the
+# interactive Django shells (``manage.py shell``/``shell_plus``/``dbshell``
+# — the original 1h-hung RED-FLAG incident #1178), language/asset builds,
+# dev servers, browser E2E (``playwright test``, ``nx run …:e2e`` AND bare
+# ``nx e2e <target>``), container image AND compose builds (``docker
+# build`` / ``docker compose build``), package installs/sync, long sleeps,
+# full-tree recursive sweeps (the shapes that actually wedge a session).
+# ``manage.py migrate`` is gated elsewhere (the ``_BLOCKED_COMMANDS``
+# t3-CLI redirect); short ``t3 loop tick``/``ci``/``doctor`` are NOT slow
+# and are deliberately not listed. Fast, BOUNDED ops are never matched
+# (#3253): read-only git (``status``/``log``/``diff``/``show``/``fetch``),
+# a bounded ``git push`` (a small-branch push is seconds — the pre-push
+# hook only ever runs the fast early signal, never the full suite), and a
+# bare ``--help``/``--version`` query of any verb. A TARGETED ``pytest``
+# run is exempted in :func:`_deny_heavy_main_agent_bash` (the verb still
+# matches here; the whole-suite-vs-targeted split is applied at deny time).
+_ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
+    r"(?:" + _PYTEST_VERB_RE + r"|" + _COMMAND_HEAD + _RUNNER_PREFIX + r"(?:tox|webpack|make)(?![\w-])|"
+    r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
+    r"manage\.py\s+runserver|"
+    r"manage\.py\s+(?:shell|shell_plus|dbshell)\b|"
+    r"\bnx\s+(?:serve|run|e2e)\b|"
+    r"docker\s+compose\s+(?:up|build)|"
+    r"\bdocker\s+build\b|"
+    r"(?:npx\s+)?playwright\s+test|"
+    r"\bnpm\s+(?:run|install|ci)\b|"
+    r"\b(?:pipenv|pip)\s+install\b|"
+    r"\buv\s+sync\b|"
+    r"vite\s+build|"
+    r"\bcargo\s+(?:build|test)\b|"
+    r"\bsleep\s+\d{2,}|"
+    r"\bfind\s+\S+.*-exec\b|"
+    r"\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b"
+    r")",
 )
 
 
@@ -1687,63 +1518,6 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     )
 
 
-def _pytest_command_is_targeted(command: str) -> bool:
-    """True when EVERY ``pytest`` invocation in ``command`` is a targeted run (#1825).
-
-    A targeted run carries a ``-k``/``--deselect <expr>``, a ``::``
-    node-id, or a specific ``*.py`` test file path in the segment after
-    the verb (see :data:`_PYTEST_TARGETED_RE`). A bare/whole-suite
-    ``pytest`` or a directory arg (``pytest tests/``) is NOT targeted, so
-    a command containing one is whole-suite and stays gated. Each pytest
-    verb's argument span is bounded by the next shell separator so a
-    selector belonging to a LATER chained pytest cannot vouch for an
-    earlier whole-suite one.
-    """
-    matches = list(_PYTEST_VERB_FINDER.finditer(command))
-    if not matches:
-        return False
-    for i, m in enumerate(matches):
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(command)
-        segment = command[start:end]
-        boundary = re.search(r"[;&|\n(){}]", segment)
-        if boundary is not None:
-            segment = segment[: boundary.start()]
-        if not _PYTEST_TARGETED_RE.search(segment):
-            return False
-    return True
-
-
-def _command_matches_non_pytest_heavy(command: str) -> bool:
-    """True when ``command`` matches a heavy pattern OTHER than the ``pytest`` verb.
-
-    The targeted-pytest exemption (#1825) must only relax a command whose
-    sole heavy match is a targeted ``pytest`` — a ``pytest -k foo && npm
-    install`` still denies on the ``npm install`` arm. Stripping the
-    pytest verb tokens to bare placeholders before re-matching leaves any
-    other heavy arm intact.
-    """
-    stripped = _PYTEST_VERB_FINDER.sub(" __pytest__ ", command)
-    return bool(_ORCHESTRATOR_HEAVY_BASH_RE.search(stripped))
-
-
-def _heavy_command_is_help_only(command: str) -> bool:
-    """True when EVERY heavy denylist match in ``command`` is a --help/--version query.
-
-    A help/version invocation of a heavy verb prints usage and exits immediately
-    (fast, read-only). Scoped per shell segment; a segment matching
-    ``_NEVER_HELP_EXEMPT_RE`` (find-exec / recursive-ls / git-push) is never
-    exempted even with a help token. False when no heavy segment present.
-    """
-    saw_heavy = False
-    for segment in re.split(r"[;&|\n(){}]", command):
-        if _ORCHESTRATOR_HEAVY_BASH_RE.search(segment):
-            saw_heavy = True
-            if _NEVER_HELP_EXEMPT_RE.search(segment) or not _HELP_OR_VERSION_RE.search(segment):
-                return False
-    return saw_heavy
-
-
 def _deny_heavy_main_agent_bash(data: dict) -> bool:
     """Deny a main-agent foreground HEAVY/long-running ``Bash`` command.
 
@@ -1766,9 +1540,14 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     command = tool_input.get("command")
     if not isinstance(command, str):
         return False
-    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(command) or _heavy_command_is_help_only(command):
+    scanned = _heavy_command_text(command)
+    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(scanned) or _heavy_command_is_help_only(
+        scanned, _ORCHESTRATOR_HEAVY_BASH_RE
+    ):
         return False
-    if _pytest_command_is_targeted(command) and not _command_matches_non_pytest_heavy(command):
+    if _pytest_command_is_targeted(scanned) and not _command_matches_non_pytest_heavy(
+        scanned, _ORCHESTRATOR_HEAVY_BASH_RE
+    ):
         return False
     return _fail_open_or_deny(
         data,
@@ -2749,10 +2528,10 @@ def handle_session_start_bootstrap(data: dict) -> None:
     The read → decide → write stays one flock-guarded transaction so two
     fresh sessions in the same window cannot both claim (TOCTOU).
 
-    Gated on :func:`_loop_auto_load_active` (#256): a session only claims the
-    tick-owner record / emits the bootstrap directive when it both opted into
-    teatree AND the operator enabled session-start auto-load. Default OFF, so a
-    colleague cloning the repo never silently becomes the loop owner.
+    Gated on :func:`_loop_auto_load_active` (#256): only an opted-in session
+    with operator autoload and a local factory target claims the tick-owner
+    record / emits the bootstrap directive. Default OFF, so a colleague
+    cloning the repo never silently becomes the loop owner.
 
     Default-off engagement (#256): when ``[teatree] autoload`` is set the owner
     default flips the session ``teatree-active`` BEFORE the loop gate, so today's

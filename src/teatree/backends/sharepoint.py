@@ -77,7 +77,7 @@ class SharePointClient:
     library-relative path prefix every operation is resolved against;
     ``config_path`` points at the encrypted ``rclone.conf``; ``password_command``
     is the shell command rclone runs to obtain its decryption password
-    (``pass <entry>``) — set as ``RCLONE_PASSWORD_COMMAND`` for the subprocess,
+    (``t3 teatree secrets get <entry>`` or ``pass <entry>``) — set as ``RCLONE_PASSWORD_COMMAND`` for the subprocess,
     empty to inherit whatever the ambient environment already provides;
     ``site_url`` and ``library_path`` back the ``?id=`` deep-link derivation.
     """

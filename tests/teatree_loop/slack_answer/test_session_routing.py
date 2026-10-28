@@ -1,5 +1,6 @@
 """Bound Slack thread routing through the public answer cycle."""
 
+from dataclasses import replace
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
@@ -29,6 +30,8 @@ from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work
 from teatree.loop.slack_answer.session_routing import SLACK_STEER_WAIT_SECONDS
 from tests._owner_channel import owner_card
 from tests.teatree_loop.slack_answer.test_cycle import _BOT_UID, _USER_UID, RecordingBackend, _resolver
+
+_FREE_TEXT_CARD = replace(owner_card(), options=())
 
 
 class TestBoundTicketThread(TestCase):
@@ -152,7 +155,7 @@ class TestBoundTicketThread(TestCase):
             answering.ticket,
             {"existing_issue_url": "https://github.com/souliane/teatree/issues/7000"},
             host=Mock(),
-            repo="souliane/teatree",
+            repo_for=Mock(side_effect=AssertionError("existing issue must not choose a filing repo")),
         )
         assert filed is not None
         work_ticket = Ticket.objects.get(issue_url=filed.url)
@@ -851,6 +854,62 @@ class TestBoundTicketThread(TestCase):
         client.steer.assert_not_called()
         assert backend.replies == []
 
+    def test_nested_question_card_in_ticket_thread_answers_parked_task(self) -> None:
+        parked = self._bound_task()
+        question = DeferredQuestion.record(
+            "Which API?", slack_ts="100.2", slack_channel="C1", parked_task=parked, task_session=parked.session
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        backend.thread_replies["100.0"] = [{"ts": "100.0"}, {"ts": "100.2", "thread_ts": "100.0"}]
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": parked.pk, "ticket": parked.ticket_id, "state": "busy", "steerable": True}
+        ]
+        client.steer.return_value = {"outcome": "accepted_current_turn", "code": None, "accepted_at": "now"}
+
+        with (
+            patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client),
+            patch.object(routing_mod, "apply_stop_answer") as stop_answer,
+        ):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        question.refresh_from_db()
+        assert report.steered == 1
+        assert question.answer_text == "Use the new API"
+        client.steer.assert_called_once()
+        assert stop_answer.call_args.args[0].pk == question.pk
+
+    def test_two_pending_cards_in_a_bound_ticket_thread_get_the_choice_before_any_steer(self) -> None:
+        parked = self._bound_task()
+        cards = [
+            DeferredQuestion.record(
+                question,
+                slack_ts=ts,
+                slack_channel="C1",
+                parked_task=parked,
+                task_session=parked.session,
+                card=owner_card(),
+            )
+            for question, ts in (("Which API?", "100.2"), ("Which database?", "100.3"))
+        ]
+        row = self._message("Yes")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        backend.thread_replies["100.0"] = [{"ts": "100.0"}, {"ts": "100.2"}, {"ts": "100.3"}]
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": parked.pk, "ticket": parked.ticket_id, "state": "busy", "steerable": True}
+        ]
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        client.steer.assert_not_called()
+        assert all(card.is_pending for card in DeferredQuestion.objects.filter(pk__in=[c.pk for c in cards]))
+        assert any(all(f"#{card.pk}" in text for card in cards) for _, _, text in backend.replies)
+
     def test_question_card_answer_resolves_when_sibling_is_pending(self) -> None:
         parked = self._bound_task()
         Task.objects.create(ticket=parked.ticket, session=parked.session, phase="coding")
@@ -860,7 +919,7 @@ class TestBoundTicketThread(TestCase):
             slack_channel="C1",
             parked_task=parked,
             task_session=parked.session,
-            card=owner_card(),
+            card=_FREE_TEXT_CARD,
         )
         row = self._message("Use the new API")
         backend = RecordingBackend()
@@ -891,7 +950,7 @@ class TestBoundTicketThread(TestCase):
             slack_channel="C1",
             parked_task=parked,
             task_session=parked.session,
-            card=owner_card(),
+            card=_FREE_TEXT_CARD,
         )
         row = self._message("Use the new API")
         backend = RecordingBackend(read_after_post=False)
@@ -927,7 +986,7 @@ class TestBoundTicketThread(TestCase):
             slack_channel="C1",
             parked_task=parked,
             task_session=parked.session,
-            card=owner_card(),
+            card=_FREE_TEXT_CARD,
         )
         row = self._message("Use the new API")
         backend = RecordingBackend(post_reply_raises=True)
@@ -957,7 +1016,7 @@ class TestBoundTicketThread(TestCase):
     def test_question_resume_notice_replays_after_sender_crash(self) -> None:
         parked = self._bound_task()
         question = DeferredQuestion.record(
-            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=owner_card()
+            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=_FREE_TEXT_CARD
         )
         row = self._message("Use the new API")
         backend = RecordingBackend()
@@ -986,7 +1045,7 @@ class TestBoundTicketThread(TestCase):
         parked = self._bound_task()
         ThreadBinding.objects.filter(ticket=parked.ticket).delete()
         question = DeferredQuestion.record(
-            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=owner_card()
+            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=_FREE_TEXT_CARD
         )
         row = self._message("Use the new API")
         backend = RecordingBackend(post_reply_raises=True)
@@ -1072,10 +1131,63 @@ class TestBoundTicketThread(TestCase):
         assert row.loop_replied_at is not None
         assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
 
+    def test_a_choice_receipt_that_never_lands_leaves_the_message_retryable(self) -> None:
+        first = self._bound_task()
+        second = Task.objects.create(
+            ticket=first.ticket, session=first.session, phase=first.phase, status=Task.Status.PENDING
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [
+            {"task": first.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+            {"task": second.pk, "ticket": first.ticket_id, "state": "busy", "steerable": True},
+        ]
+
+        post = "teatree.loop.slack_answer.session_routing._post_live_reply"
+        for name, failure in (
+            ("unconfirmed", patch(post, return_value=False)),
+            ("raises", patch(post, side_effect=RuntimeError("slack 503"))),
+        ):
+            with (
+                self.subTest(name),
+                patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client),
+                failure,
+            ):
+                run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+            row.refresh_from_db()
+            assert row.loop_replied_at is None
+
+    def test_a_replayed_receipt_that_never_lands_leaves_the_message_retryable(self) -> None:
+        parked = self._bound_task()
+        SessionCommand.objects.create(
+            command_id=slack_command_id("", "C1", "101.0"),
+            ticket=parked.ticket,
+            task=parked,
+            text="Use the new API",
+            outcome="queued_followup",
+        )
+        row = self._message("Use the new API")
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+
+        post = "teatree.loop.slack_answer.session_routing._post_live_reply"
+        for name, failure in (
+            ("unconfirmed", patch(post, return_value=False)),
+            ("raises", patch(post, side_effect=RuntimeError("slack 503"))),
+        ):
+            with self.subTest(name), failure:
+                run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+            row.refresh_from_db()
+            assert row.loop_replied_at is None
+
     def test_question_answer_crash_before_receipt_reports_uncertainty(self) -> None:
         parked = self._bound_task()
         question = DeferredQuestion.record(
-            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=owner_card()
+            "Which API?", slack_ts="100.0", slack_channel="C1", parked_task=parked, card=_FREE_TEXT_CARD
         )
         row = self._message("Use the new API")
         backend = RecordingBackend()

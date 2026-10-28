@@ -57,7 +57,9 @@ Settings are defined in `overlay_settings.py` and overridden per-user in the DB 
 
 | Method | Default | Override for... |
 |---|---|---|
+| `work_item_return_lines()` | `()` | Extra work-item answering brief lines for this overlay |
 | `get_followup_repos()` | `[]` | Repos to sync PRs from |
+| `get_issue_repos(issue_url)` | `[]` | Repos needed for one issue; empty leaves core to detect ownership |
 | `get_skill_metadata()` | `{}` | Skill delegation and phase mapping |
 | `get_ci_project_path()` | `""` | CI project path for pipeline triggers |
 | `get_e2e_config()` | `{}` | E2E test runner configuration |

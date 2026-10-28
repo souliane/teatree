@@ -34,6 +34,15 @@ class TestPrRefValueObject:
         assert PrRef(slug="o/r", pr_id=1) != PrRef(slug="o/r", pr_id=2)
 
 
+class TestPrRefHeadRef:
+    @pytest.mark.parametrize(
+        ("host_kind", "expected"),
+        [("github", "refs/pull/7/head"), ("gitlab", "refs/merge-requests/7/head"), ("gitea", "")],
+    )
+    def test_each_forge_publishes_the_head_under_its_own_pseudo_ref(self, host_kind: str, expected: str) -> None:
+        assert PrRef(slug="o/r", pr_id=7, host_kind=host_kind).head_ref == expected
+
+
 class TestPrRefFromUrlReturnsCanonical:
     def test_github_pull_url_carries_pr_id(self) -> None:
         ref = pr_ref_from_url("https://github.com/souliane/teatree/pull/1680")

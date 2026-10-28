@@ -54,6 +54,8 @@ Use the active overlay's `validate_pr(title, description)` policy for title and 
    glab issue list --search '<keywords>'                 # CLI fallback (GitLab)
    ```
 
+   The MCP search returns at most ten linked open issues (number, title, url, state, updated_at) and `truncated`; narrow the query when true.
+
    If you find it, **use that reference** — it is the canonical one. Do not open a new issue that duplicates an existing one.
 
 2. **If no existing issue is found, the fallback depends on the repo class** (the same colleague-facing-vs-own distinction the [`../rules/SKILL.md`](../rules/SKILL.md) § "Three Orthogonal Repo Axes" tracks):
@@ -155,7 +157,7 @@ prek keeps every patch it writes rather than deleting it on restore, so
 
 - Start servers and verify functionality.
 - **E2E gate:** If the project requires E2E tests for the type of changes made (UI, forms, user flows), those tests must be written and passing BEFORE proceeding. E2E is part of implementation, not a post-push activity.
-- **Src-touching PR → run `bash dev/ci-parity-fast.sh` before push (teatree).** It is the necessary-and-sufficient local check: scoped prek, `makemigrations --check`, the diff-scoped affected-tests lane (`dev/test-affected.sh`), and the incremental push gate — **no whole-tree sweep**, because CI's required sharded `test (3.13)` lane is the authority on the 93% whole-tree branch floor and running its byte-equivalent duplicate locally buys nothing but wall-clock ([#3994](https://github.com/souliane/teatree/issues/3994)).
+- **Src-touching PR → inspect `t3 tool affected-tests` before push (teatree).** On SCOPED, run `bash dev/ci-parity-fast.sh`; on FULL, run its prek, migration and push-gate checks separately plus changed test files or pinned node ids. CI's required sharded `test (3.13)` lane owns whole-tree proof ([#3994](https://github.com/souliane/teatree/issues/3994)).
 - **`bash dev/ci-parity.sh` is the opt-in deep lane, not the pre-push mandate.** Reach for it to reproduce a red CI locally, or when a PR is coverage-sensitive (deleting tests, adding a low-coverage module) — it chains the exact blocking CI predicate (`makemigrations --check`, `t3 tool test-path-mirror`, `check_module_health.py --from-ref`, prek all-files, `dev/test-cov.sh`, `t3 ci coverage`). Neither script is ever a push hook — the 93% whole-tree coverage floor is a whole-tree property no diff-scoped push subset can prove. The push-stage `ci-critical-parity` hook only covers the fast scoped doctest / never-lockout / conformance classes.
 - **Wait for user feedback.** Do NOT proceed to push without user approval.
 
@@ -221,7 +223,7 @@ If you do produce a same-PR-worthy fix while shipping (a stale doc, a broken ref
 
 ### 4. Push
 
-- **Reconcile with the default branch first.** `git fetch origin <default> && git log <branch>..origin/<default> --oneline` — if any commits appear, merge them in (`git merge origin/<default>`) and re-run lint/tests before pushing. Opening a PR that is already BEHIND main forces the user (or you) to do a second round-trip to resolve conflicts; catch them now, while you have the context of your own change open.
+- **Reconcile with the default branch only when it conflicts.** `git fetch origin <default> && git merge-tree --write-tree HEAD origin/<default>` — a predicted conflict is resolved now, while you have the context of your own change open (`git merge origin/<default>`, then re-run lint/tests before pushing). A clean prediction needs no merge: the squash applies your diff onto the default branch, and a merge only moves the head and restarts CI.
 - Push with `t3 push` (§ 4a). Cancel stale pipelines first if the branch has an existing PR (see § Rules).
 
 ### 4a. `t3 push` is the push path from a container (Non-Negotiable)
@@ -437,7 +439,7 @@ When fixing review comments on an already-existing PR:
 
 0. **Verify branch alignment.** Confirm the worktree is on the PR's source branch (`git branch --show-current` vs PR metadata). If the worktree uses a different branch name, resolve the mismatch **before** editing: either checkout the PR branch or plan to cherry-pick onto it after committing. Discovering the mismatch mid-push wastes time on branch gymnastics.
 1. **Fix the issues** as requested.
-2. **Merge the default branch** if needed: `git merge origin/main`. **Never rebase** — the branch has already been reviewed.
+2. **Merge the default branch** only when `git merge-tree --write-tree HEAD origin/main` predicts a conflict: `git merge origin/main`. **Never rebase** — the branch has already been reviewed.
 3. **Run the full local gate set** (`t3 tool verify-gates` — commit-stage, push-stage and declared manual CI-job hooks) after merging — merges can expose new lint violations in your code even without conflicts.
 4. **Push without squashing or rebasing** (regular commits on top).
 5. **Reply to the review comments on the PR.**

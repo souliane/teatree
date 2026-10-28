@@ -33,6 +33,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -545,13 +546,14 @@ class TestSlugForCwdSshAliasNormalization:
         assert _repo_visibility.slug_for_cwd(repo) == ""
 
     def test_configured_ssh_alias_resolves_to_qualified_repo(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ssh_alias_resolver: Callable[[str, str], None]
     ) -> None:
         home = tmp_path / "home"
         ssh = home / ".ssh"
         ssh.mkdir(parents=True)
         (ssh / "config").write_text("Host gitlab-acmecorp\n  HostName gitlab.example.com\n")
         monkeypatch.setenv("HOME", str(home))
+        ssh_alias_resolver("gitlab-acmecorp", "gitlab.example.com")
         repo = _repo_with_remote(tmp_path / "r", "gitlab-acmecorp:someorg/public-repo.git")
         assert _repo_visibility.slug_for_cwd(repo) == "gitlab.example.com/someorg/public-repo"
 
@@ -563,7 +565,9 @@ class TestSlugForCwdSshAliasNormalization:
         repo = _repo_with_remote(tmp_path / "r", "https://github.com/souliane/teatree.git")
         assert _repo_visibility.slug_for_cwd(repo) == "github.com/souliane/teatree"
 
-    def test_useratalias_ssh_alias_resolves_real_host(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_useratalias_ssh_alias_resolves_real_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ssh_alias_resolver: Callable[[str, str], None]
+    ) -> None:
         # FM2 (#1415): a per-account SSH config Host ALIAS carried WITH a ``user@``
         # part (``git@gh-acct:owner/repo`` from a ``Host gh-acct`` block) was kept
         # verbatim as ``gh-acct/owner/repo`` -- the dotless ``gh-acct`` glued in as
@@ -574,6 +578,7 @@ class TestSlugForCwdSshAliasNormalization:
         (home / ".ssh").mkdir(parents=True)
         (home / ".ssh" / "config").write_text("Host gh-acct\n  HostName github.com\n")
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        ssh_alias_resolver("gh-acct", "github.com")
         repo = _repo_with_remote(tmp_path / "r", "git@gh-acct:owner-org/private-product.git")
         assert _repo_visibility.slug_for_cwd(repo) == "github.com/owner-org/private-product"
 
@@ -598,7 +603,7 @@ class TestSlugForCwdSshAliasNormalization:
         assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is False
 
     def test_useratalias_private_repo_downgrades_via_allowlist_end_to_end(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ssh_alias_resolver: Callable[[str, str], None]
     ) -> None:
         # FM2 end-to-end (#1415): a known-private own repo cloned through a dotless
         # ``user@alias`` SSH remote must DOWNGRADE via the offline allowlist with
@@ -610,12 +615,10 @@ class TestSlugForCwdSshAliasNormalization:
         (home / ".ssh").mkdir(parents=True)
         (home / ".ssh" / "config").write_text("Host gh-acct\n  HostName github.com\n")
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        ssh_alias_resolver("gh-acct", "github.com")
         repo = _repo_with_remote(tmp_path / "r", "git@gh-acct:owner-org/private-product.git")
         bin_dir = tmp_path / "bin"
         isolated_path = _git_only_bin(bin_dir)
-        real_ssh = shutil.which("ssh")
-        assert real_ssh is not None
-        (bin_dir / "ssh").symlink_to(real_ssh)
         monkeypatch.setenv("PATH", isolated_path)
         assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is True
 

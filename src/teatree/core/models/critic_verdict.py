@@ -303,6 +303,23 @@ class CriticVerdict(models.Model):
             CriticDispatch.mark_resolved(ticket=ticket, transition=transition, head_sha=normalized_head)
             return recorded
 
+    def carry_forward(self, *, head_sha: str) -> "CriticVerdict":
+        """Re-record this judgment at *head_sha*, keeping the grader and every point id.
+
+        Skips ``_require_previous_resolutions``: that guards NEW findings, and a carried verdict makes none.
+        """
+        normalized_head = head_sha.strip().lower()
+        with transaction.atomic():
+            carried = type(self).objects.create(
+                ticket=self.ticket,
+                transition=self.transition,
+                head_sha=normalized_head,
+                grader_identity=self.grader_identity,
+                items=self.items,
+            )
+            CriticDispatch.mark_resolved(ticket=self.ticket, transition=self.transition, head_sha=normalized_head)
+            return carried
+
     @classmethod
     def record_from_envelope(
         cls, *, ticket: "Ticket", transition: str, head_sha: str, envelope: dict

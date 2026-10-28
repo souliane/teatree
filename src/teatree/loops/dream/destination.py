@@ -32,6 +32,7 @@ teatree's OWN code" question the compliance recurrence-redirect still needs.
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -44,6 +45,7 @@ _CORE_DESTINATION_PREFIXES = ("skills/", "src/teatree", "teatree/", "scripts/", 
 
 #: A memory reference is ``.../memory/<slug>.md`` — parent dir + leaf, hence 2 parts.
 _MEMORY_REFERENCE_MIN_PARTS = 2
+_EVIDENCE_PATH = re.compile(r"(?<![\w/])(?:[\w.-]+/)+[\w.-]+\.(?:py|md|ya?ml|json)\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +89,27 @@ def points_at_core_fix(destination: str, *, root: Path | None = None) -> bool:
     (:func:`teatree.loops.dream.compliance._is_memory_only`).
     """
     return classify_destination(destination, root=root).in_core_tree
+
+
+def evidence_destination(hint: str, *evidence: str, root: Path | None = None) -> DestinationVerdict:
+    candidates = [hint, _normalize_hint(hint)]
+    candidates.extend(match.group() for item in evidence for match in _EVIDENCE_PATH.finditer(item))
+    first: DestinationVerdict | None = None
+    for candidate in dict.fromkeys(candidates):
+        verdict = classify_destination(candidate, root=root)
+        if first is None:
+            first = verdict
+        if verdict.groundable:
+            return verdict
+    return first or classify_destination("", root=root)
+
+
+def _normalize_hint(hint: str) -> str:
+    home = hint.strip().removeprefix("t3:")
+    for delimiter in (" - ", ",", ";", "("):
+        home = home.split(delimiter, 1)[0]
+    home = home.strip()
+    return f"src/{home}" if home.startswith("teatree/") else home
 
 
 def classify_destination(destination: str, *, root: Path | None = None) -> DestinationVerdict:
@@ -216,4 +239,4 @@ def _contained(path: Path, tree: Path) -> bool:
         return False
 
 
-__all__ = ["DestinationVerdict", "classify_destination", "points_at_core_fix"]
+__all__ = ["DestinationVerdict", "classify_destination", "evidence_destination", "points_at_core_fix"]

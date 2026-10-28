@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -13,13 +14,15 @@ import pytest
 
 from teatree.agents import codex_read_only_executor, codex_read_only_probe_program
 from teatree.agents.codex_read_only_probe_program import (
+    KEY_READ_BYTES,
     ProbeRequest,
     git_readable,
     observe,
     parse_mountinfo,
     write_result,
 )
-from teatree.agents.codex_read_only_verdict import WORKTREE_ROOT, evaluate
+from teatree.agents.codex_read_only_verdict import WORKTREE_ROOT, codex_source_git_subpath, evaluate
+from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from tests.teatree_agents._executor_fakes import EXAMPLE_ROOT, executor_fixture, probe_fixture, worker_fixture
 
 _STATUS = "Name:\tpython3\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n"
@@ -47,13 +50,15 @@ def _request(tmp_path: Path, roots: tuple[str, ...] = (), home: str = "") -> Pro
         device_root=str(tmp_path / "dev"),
         tmpfs=[str(tmp_path / "scratch")],
         roots=list(roots),
+        git_mounts=[],
         home=home,
         tools=["gh"],
     )
 
 
 @pytest.fixture
-def layout(tmp_path: Path) -> Path:
+def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("TEATREE_CODEX_SOURCE_GIT_SUBPATH", codex_source_git_subpath())
     for name in ("root", "ws", "scratch", "dev"):
         (tmp_path / name).mkdir()
     return tmp_path
@@ -157,6 +162,47 @@ def test_every_readable_env_or_credential_file_under_a_mount_is_reported(layout:
     }
 
 
+def test_git_config_with_embedded_http_credential_is_a_secret(layout: Path) -> None:
+    git = layout / "root" / ".git"
+    git.mkdir()
+    config = git / "config"
+    config.write_text('[remote "origin"]\n    url = https://token@example.test/org/repo.git\n', encoding="utf-8")
+    proc = _fake_proc(layout, [(str(layout / "root"), "ext4")])
+
+    observed = observe(_request(layout), proc)
+
+    assert str(config) in observed["scan"][str(layout / "root")]["secrets"]
+
+    config.write_text('[remote "origin"]\n    url = https://example.test/org/repo.git\n', encoding="utf-8")
+    assert str(config) not in observe(_request(layout), proc)["scan"][str(layout / "root")]["secrets"]
+
+    config.write_text("x" * (KEY_READ_BYTES + 1), encoding="utf-8")
+    assert str(config) in observe(_request(layout), proc)["scan"][str(layout / "root")]["secrets"]
+
+    config.write_text("[http]\n    extraheader = Authorization: Bearer placeholder\n", encoding="utf-8")
+    assert str(config) in observe(_request(layout), proc)["scan"][str(layout / "root")]["secrets"]
+
+    config.write_text(
+        '[remote "origin"]\n    url = https://token\\\n      @example.test/org/repo.git\n', encoding="utf-8"
+    )
+    assert str(config) in observe(_request(layout), proc)["scan"][str(layout / "root")]["secrets"]
+
+
+def test_git_config_on_a_neutral_named_declared_mount_is_a_secret(layout: Path) -> None:
+    git = layout / "root" / "source-metadata"
+    git.mkdir()
+    config = git / "config"
+    config.write_text("[http]\n    extraheader = Authorization: Bearer placeholder\n", encoding="utf-8")
+    request = _request(layout)
+    request["git_mounts"] = [str(git)]
+    proc = _fake_proc(layout, [(str(layout / "root"), "ext4"), (str(git), "ext4")])
+
+    assert str(config) in observe(request, proc)["scan"][str(git)]["secrets"]
+
+    config.write_text("[core]\n    repositoryformatversion = 0\n", encoding="utf-8")
+    assert str(config) not in observe(request, proc)["scan"][str(git)]["secrets"]
+
+
 def test_a_readable_private_key_is_found_by_its_content_under_any_key_name(layout: Path) -> None:
     root = layout / "root"
     _plant(root, "deploy/server.pem", "deploy/tls.key", "keys/id_deploy", text=_PRIVATE_KEY)
@@ -197,16 +243,167 @@ def test_a_secret_in_a_directory_that_cannot_be_listed_is_still_found(layout: Pa
     assert observed["scan"][str(layout / "root")]["secrets"] == [str(hidden / ".env")]
 
 
-def test_a_planted_placeholder_env_file_refuses_the_executor(layout: Path) -> None:
+def test_a_planted_placeholder_env_file_refuses_the_executor_and_names_the_fix(layout: Path) -> None:
     worktrees = layout / "ws"
     _plant(worktrees, "example/teatree/.env")
     observed = observe(_request(layout), _fake_proc(layout, [(str(worktrees), "ext4")]))
     answer = probe_fixture("pass")
     answer["scan"][WORKTREE_ROOT] = observed["scan"][str(worktrees)]
+    secret = f"{worktrees}/example/teatree/.env"
 
     assert evaluate(answer, executor_fixture("pass"), worker_fixture(), (EXAMPLE_ROOT,)) == (
-        f"it can read {worktrees}/example/teatree/.env, a secret file under {WORKTREE_ROOT}"
+        f"it can read {secret}, a secret file under {WORKTREE_ROOT}; "
+        f"fix: chmod o-rwx {shlex.quote(secret)} in the worker, or move it out of {WORKTREE_ROOT}"
     )
+
+
+def test_the_fix_quotes_a_path_with_a_space_and_never_says_to_delete(layout: Path) -> None:
+    worktrees = layout / "ws"
+    _plant(worktrees, "my project/.env")
+    observed = observe(_request(layout), _fake_proc(layout, [(str(worktrees), "ext4")]))
+    answer = probe_fixture("pass")
+    answer["scan"][WORKTREE_ROOT] = observed["scan"][str(worktrees)]
+
+    refusal = evaluate(answer, executor_fixture("pass"), worker_fixture(), (EXAMPLE_ROOT,))
+
+    assert refusal is not None
+    assert f"chmod o-rwx '{worktrees}/my project/.env' in the worker" in refusal
+    assert "delete" not in refusal
+
+
+_POINTER = f"dotenv ../{CACHE_DIRNAME}/app/{CACHE_FILENAME}\n"
+
+
+def _scanned_secrets(layout: Path) -> list[str]:
+    observed = observe(_request(layout), _fake_proc(layout, [(str(layout / "root"), "ext4")]))
+    return observed["scan"][str(layout / "root")]["secrets"]
+
+
+def _assert_refused_naming(layout: Path, *files: Path) -> None:
+    observed = observe(_request(layout), _fake_proc(layout, [(str(layout / "root"), "ext4")]))
+    answer = probe_fixture("pass")
+    answer["scan"][WORKTREE_ROOT] = observed["scan"][str(layout / "root")]
+
+    refusal = evaluate(answer, executor_fixture("pass"), worker_fixture(), (EXAMPLE_ROOT,))
+
+    assert observed["scan"][str(layout / "root")]["secrets"] == [str(file) for file in files]
+    assert refusal is not None
+    assert str(files[0]) in refusal
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        _POINTER,
+        f"\n{_POINTER}\n\n",
+        _POINTER.replace("\n", "\r\n"),
+        f"{_POINTER}dotenv ../{CACHE_DIRNAME}/other/{CACHE_FILENAME}\n",
+        f"  \t{_POINTER}",
+    ],
+    ids=["bare", "blank-lines", "crlf", "two-pointers", "indented"],
+)
+def test_a_bare_dotenv_pointer_envrc_does_not_refuse_the_executor(layout: Path, content: str) -> None:
+    worktrees = layout / "ws"
+    _plant(worktrees, "example/teatree/.envrc", text=content)
+    observed = observe(_request(layout), _fake_proc(layout, [(str(worktrees), "ext4")]))
+    answer = probe_fixture("pass")
+    answer["scan"][WORKTREE_ROOT] = observed["scan"][str(worktrees)]
+
+    assert observed["scan"][str(worktrees)]["secrets"] == []
+    assert evaluate(answer, executor_fixture("pass"), worker_fixture(), (EXAMPLE_ROOT,)) is None
+
+
+def test_a_bare_dotenv_pointer_envrc_in_a_directory_that_cannot_be_listed_is_not_a_secret(layout: Path) -> None:
+    pointer_dir, secret_dir = layout / "root" / "pointer", layout / "root" / "secret"
+    _plant(pointer_dir, ".envrc", text=_POINTER)
+    _plant(secret_dir, ".envrc")
+    pointer_dir.chmod(0o111)
+    secret_dir.chmod(0o111)
+    try:
+        secrets = _scanned_secrets(layout)
+    finally:
+        pointer_dir.chmod(0o755)
+        secret_dir.chmod(0o755)
+
+    assert secrets == [str(secret_dir / ".envrc")]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "EXAMPLE_TOKEN=placeholder\n",
+        "export EXAMPLE_TOKEN=placeholder\n",
+        f"{_POINTER}export EXAMPLE_TOKEN=placeholder\n",
+        f"export EXAMPLE_TOKEN=placeholder\n{_POINTER}",
+        "dotenv /srv/app/.t3-env.cache\n",
+        "dotenv ~/.t3-env.cache\n",
+        "dotenv $HOME/.t3-env.cache\n",
+        "dotenv ../app/.t3-env.cache; export EXAMPLE_TOKEN=placeholder\n",
+        "dotenv ../app/`id`\n",
+        "dotenv ../app/a ../app/b\n",
+        "dotenv ../app/a \\\n  ../app/b\n",
+        "dotenv_if_exists ../app/.t3-env.cache\n",
+        "# dotenv ../app/.t3-env.cache\n",
+        "dotenv\n",
+        "  \n",
+        _POINTER + "\n" * (KEY_READ_BYTES + 1) + "export EXAMPLE_TOKEN=placeholder\n",
+        "dotenv ..\n",
+        "dotenv ../../../../etc/x\n",
+        "dotenv prod.vars\n",
+        f"dotenv ../{CACHE_DIRNAME}/../x/{CACHE_FILENAME}\n",
+        f"dotenv ../{CACHE_DIRNAME}/../{CACHE_FILENAME}\n",
+        f"dotenv ../{CACHE_DIRNAME}/./{CACHE_FILENAME}\n",
+        f"dotenv ../{CACHE_DIRNAME}/app/sub/{CACHE_FILENAME}\n",
+        f"dotenv ./{CACHE_DIRNAME}/app/{CACHE_FILENAME}\n",
+        f"dotenv ../{CACHE_DIRNAME}/app/{CACHE_FILENAME}.bak\n",
+        f"dotenv ../{CACHE_DIRNAME}/app/other.cache\n",
+    ],
+    ids=[
+        "assignment",
+        "export",
+        "pointer-then-export",
+        "export-then-pointer",
+        "absolute-path",
+        "home-path",
+        "expanded-path",
+        "chained-command",
+        "command-substitution",
+        "two-arguments",
+        "continuation",
+        "other-directive",
+        "comment",
+        "no-path",
+        "whitespace-only",
+        "pointer-then-padding-then-export",
+        "parent-directory",
+        "etc-traversal",
+        "bare-file",
+        "cache-dir-traversal-segment",
+        "cache-dir-traversal-name",
+        "cache-dir-dot-segment",
+        "two-segments",
+        "not-the-cache-dir",
+        "cache-name-suffix",
+        "other-cache-name",
+    ],
+)
+def test_an_envrc_with_any_other_content_still_refuses_the_executor(layout: Path, content: str) -> None:
+    _plant(layout / "root", "app/.envrc", text=content)
+
+    _assert_refused_naming(layout, layout / "root" / "app" / ".envrc")
+
+
+def test_a_pointer_at_a_readable_file_that_holds_values_still_refuses_the_executor(layout: Path) -> None:
+    _plant(layout / "root", "app/.envrc", text="dotenv prod.vars\n")
+    _plant(layout / "root", "app/prod.vars", text="EXAMPLE_TOKEN=placeholder\n")
+
+    _assert_refused_naming(layout, layout / "root" / "app" / ".envrc")
+
+
+def test_a_pointer_in_any_other_secret_file_is_still_a_secret(layout: Path) -> None:
+    _plant(layout / "root", "app/.env", "app/.netrc", text=_POINTER)
+
+    _assert_refused_naming(layout, layout / "root" / "app" / ".env", layout / "root" / "app" / ".netrc")
 
 
 def test_requested_roots_and_the_live_home_are_reported(layout: Path) -> None:

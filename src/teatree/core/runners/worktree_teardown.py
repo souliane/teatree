@@ -49,7 +49,13 @@ class WorktreeTeardownRunner(RunnerBase):
             # opportunistic liveness guard (respect_liveness=False): the caller has
             # decided to tear it down. The #706 unpushed-commit guard (force
             # defaults False) still fires to protect real work.
-            cleanup_result = cleanup_worktree(worktree, force=self.force, strict_hygiene=False, respect_liveness=False)
+            cleanup_result = cleanup_worktree(
+                worktree,
+                force=self.force,
+                strict_hygiene=False,
+                respect_liveness=False,
+                discard_unshipped_work=self.force,
+            )
         except RuntimeError as exc:
             logger.warning("teardown refused for %s: %s", worktree.repo_path, exc)
             return RunnerResult(ok=False, detail=str(exc))

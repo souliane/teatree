@@ -36,7 +36,7 @@ from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUEST
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user_outcome
-from teatree.core.notify_types import NotifyOptions
+from teatree.core.notify_types import NotifyOptions, NotifyOutcome
 from teatree.mcp.review_write_tools import _review_post_comment, _review_post_comments
 from teatree.mcp.write_tool_run import run_command, run_emitting_command
 
@@ -231,16 +231,20 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
         raise ToolError(msg) from None
     if kind_value is NotifyKind.QUESTION:
         raise ToolError(OWNER_QUESTION_ROUTE)
-    outcome = await sync_to_async(
-        lambda: notify_user_outcome(
+
+    def deliver() -> NotifyOutcome:
+        from teatree.agents.invoking_ticket import resolve_invoking_ticket  # noqa: PLC0415 — deferred: MCP startup
+
+        ticket = resolve_invoking_ticket()
+        return notify_user_outcome(
             text,
             kind=kind_value,
             idempotency_key=idempotency_key,
             audience=NotifyAudience.OWNER_DELIVERY,
-            options=NotifyOptions(requested_push=True),
-        ),
-        thread_sensitive=True,
-    )()
+            options=NotifyOptions(requested_push=True, ticket_id=ticket.pk if ticket is not None else None),
+        )
+
+    outcome = await sync_to_async(deliver, thread_sensitive=True)()
     return {
         "ok": outcome.sent,
         "sent": outcome.sent,
@@ -340,7 +344,8 @@ async def _review_request_post(
     """Post a review request through the #1094 dedup + #960 on-behalf + review-state gates.
 
     Wraps ``t3 review-request post``: the anti-vacuity + reviewed-state gates run
-    first, then the live-channel dedup claim, then the #960 on-behalf approval
+    first (against the ticket that owns the merge request; none skips them), then the
+    live-channel dedup claim, then the #960 on-behalf approval
     (no recorded, unconsumed, exactly-scoped approval ⇒ ``refused`` with the
     ``t3 review approve-on-behalf`` remediation and the orphan claim rolled back),
     then the post. Returns ``action`` = post | draft | suppress | refused; ``refused`` names the missing

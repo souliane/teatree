@@ -400,7 +400,6 @@ class ProvisionStep:
 # ── Sync types (shared vocabulary between core and backends) ─────────
 
 LAST_SYNC_CACHE_KEY = "teatree_followup_last_sync"
-PENDING_REVIEWS_CACHE_KEY = "teatree_pending_reviews"
 
 type RawAPIDict = dict[str, object]
 type PREntryDict = dict[str, object]
@@ -438,7 +437,7 @@ class SharePointRemoteSpec:
     the concrete ``teatree.backends.sharepoint`` client can consume it without a
     layer crossing either way. ``password_command`` is the shell command rclone
     runs (via ``RCLONE_PASSWORD_COMMAND``) to unlock the encrypted ``rclone.conf``
-    — e.g. ``pass <entry>``; ``site_url`` + ``library_path`` back the ``?id=``
+    — e.g. ``t3 teatree secrets get <entry>`` or ``pass <entry>``; ``site_url`` + ``library_path`` back the ``?id=``
     deep-link.
     """
 

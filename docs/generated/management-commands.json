@@ -194,6 +194,10 @@
           "name": "compliance"
         },
         {
+          "help": "Report the daily dream funnel and whether a recurring question class has stopped",
+          "name": "funnel"
+        },
+        {
           "help": "Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap",
           "name": "gap-coverage"
         },
@@ -321,6 +325,20 @@
       "help": "Generate deterministic TeaTree skill delegation documentation.",
       "name": "generate_skill_docs",
       "subcommands": []
+    },
+    {
+      "help": "Create or remove a signed GitHub repository webhook.",
+      "name": "github_webhook",
+      "subcommands": [
+        {
+          "help": "",
+          "name": "connect"
+        },
+        {
+          "help": "",
+          "name": "disconnect"
+        }
+      ]
     },
     {
       "help": "Hand all current work from this session to another session.",
@@ -1074,8 +1092,28 @@
           "name": "ls"
         },
         {
-          "help": "Classify password-store names without copying their values",
+          "help": "Remove NAME from the sealed store",
+          "name": "rm"
+        },
+        {
+          "help": "Print ok|absent|unreadable per referenced entry, never a value; exit 1 if any is unreadable",
+          "name": "verify"
+        },
+        {
+          "help": "Print the first line of NAME from the active store; exit 1 absent, 2 unreadable, 3 on a terminal",
+          "name": "get"
+        },
+        {
+          "help": "Classify password-store names; with --apply copy them into sealed rows and print names and statuses only",
           "name": "import-pass"
+        },
+        {
+          "help": "Seal a value read from stdin (or a hidden prompt) under NAME in the sealed store",
+          "name": "set"
+        },
+        {
+          "help": "Run COMMAND with each --env VAR=<entry> value in the child's environment only",
+          "name": "exec"
         }
       ]
     },
@@ -1258,6 +1296,10 @@
           "name": "clear"
         },
         {
+          "help": "Check held no-diff reviews; --dry-run reads without writing",
+          "name": "settle-holds"
+        },
+        {
           "help": "Supersede the ticket's active tasks and queue one coding task carrying its held self-review's findings",
           "name": "rework-hold"
         },
@@ -1344,6 +1386,10 @@
         {
           "help": "Re-bind a plan to a new base \u2014 the plan-currency gate's never-lockout escape",
           "name": "plan-reaffirm"
+        },
+        {
+          "help": "Waive one rubric criterion by its text hash; an owner identity and a reason are required",
+          "name": "rubric-waive"
         },
         {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",

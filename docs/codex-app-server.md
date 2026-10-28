@@ -40,9 +40,11 @@ own default. An ordered per-skill route can instead pin an explicit Codex model.
 
 A verification phase uses Codex only when its read-only executor serves that phase and passes a live probe.
 Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` to `claude_sdk` for other
-harnesses. A Codex candidate is rejected on every unserved phase that bars write tools.
-`planning`, `reviewing`, and `critic_reviewing` pass only after the live probe on that selection
-(see [Read-only executor](#read-only-executor)). `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
+harnesses. A Codex candidate is rejected on every unserved phase that bars write tools,
+except `bughunt`, `dogfood_smoke`, and `eval_local`, which use the current worker's
+write approval policy. Other harnesses retain the original phase tool restrictions.
+`planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, `directive_interpreting`, `answering`, `requesting_review` and `shipping` pass only after the live probe on that selection
+(see [Read-only executor](#read-only-executor)). Serving `requesting_review` lifts its `claude_sdk` pin for a configured Codex harness. `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
 name Codex, and `config_setting set` refuses a value outside them. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
 read-only phase; a route keyed by the phase's own skill still does. A ticket whose `extra` carries
 `"claude_only": true` is never dispatched to a harness other than `claude_sdk`, on a skill route and on an
@@ -272,7 +274,8 @@ into the error text.
 
 ## Read-only executor
 
-`teatree-ro-executor` is a separate container where Codex runs `planning`, `reviewing`, and `critic_reviewing`.
+`teatree-ro-executor` is a separate container where Codex runs `planning`, `reviewing`, `critic_reviewing`, `scoping`,
+`triage_assessing`, `directive_interpreting`, `answering`, `requesting_review` and `shipping`.
 Codex's own read-only sandbox cannot start inside a container, so the
 read-only boundary is the executor's mounts, and the worker checks them live instead of trusting a flag.
 Codex cannot enforce Claude's shell-tool deny list. The worker accepts that mismatch only for a live-attested
@@ -284,10 +287,11 @@ credential before minting the task; an unreadable configured forge refuses the e
 stay inline across the system context and task message: whole skill blocks move to the task message when the
 system context would exceed 96 KiB. The worker keeps the review diff, comments and other facts under their
 separate caps.
+Tickets without a forge issue or pull request URL carry an empty issue body and comments.
 
 - **Image and mounts.** Its `ro-executor` stage starts from the pinned Ubuntu base with git, python3, tini,
   node and the pinned Codex package, and no `t3`, `gh`, `docker` or `pass`. Compose mounts only the deploy
-  checkout's `.git` (path identity, where the worktrees' gitdirs point), never the directory that holds
+  checkout's `.git` and, when that clone exists, the worker Codex source clone's `.git` (where worktrees' gitdirs point), never the directory that holds
   `deploy/teatree.env`, plus the clone volume and `t3-workspaces`, all read-only, over a read-only root,
   plus two tmpfs mounts: `/run/t3-ro` for Codex homes and `/run/t3-tmp` for `TMPDIR`. It runs as `nobody`
   (65534), which owns none of the trees it reads, so an owner-only file there stays unreadable, and its
@@ -304,11 +308,15 @@ separate caps.
   is also walked in full for env and credential files it can open and that are not empty (`.env`, `*.env`,
   `.env.*`, `.env-*` and `.env_*` other than `.example`, `.sample`, `.template` and `.dist` templates,
   `.envrc`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.pgpass`, `id_rsa`, `id_dsa`, `id_ecdsa`,
-  `id_ed25519`), and for a private key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other
+  `id_ed25519`; an `.envrc` whose only non-blank lines are the generated `dotenv ../.t3-cache/<name>/.t3-env.cache`
+  (one path segment that is not `.` or `..`) is the pointer the worktree setup step writes, holds no secret, and
+  does not count; a pointer at any other path does), and for a private key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other
   than `*.pub`) whose first 64 KiB carry a private-key marker; content is read only for key names, since
   source that embeds the marker is no key. The run is refused, named and with nothing started, on a mount that
   accepts a write or is not declared, a declared mount that is missing or that the write probe or the
-  secret scan skipped, any readable secret file, running as root or as the owner of a mounted tree, a
+  secret scan skipped, any readable secret file (the refusal names it and the one-line fix: `chmod o-rwx` the quoted path
+  in the worker, or move the file out of the root), running as root or as the owner of a mounted tree, a
+  Git config with an embedded HTTP credential or auth header,
   checkout whose Git metadata it cannot read, a tmpfs whose control write fails, capabilities or a missing
   `no_new_privs`, any
   environment key outside the allowlist in the probe's own environment or in `/proc/1/environ`, `t3`,
@@ -328,7 +336,7 @@ separate caps.
   write-barring phase into the unsandboxed translation. The worker's own session and shared server refuse
   attested options before anything starts, and an executor server refuses another container's.
 - **Transport and login.** The executor app server runs as `docker exec -i ... setsid -w sh -c 'exec codex
-  app-server'` (plain `setsid` would return at once and end the exec's stdio) with a `PATH`-only docker CLI
+  --disable plugins app-server'` (plain `setsid` would return at once and end the exec's stdio) with a `PATH`-only docker CLI
   environment. It uses its own login, the pass entry `teatree/codex/ro-executor-auth-json-b64`, under its
   own lease in `<data dir>/codex-ro-executor`, so a read-only run never waits on the worker's lease. Under
   the lease no other server runs, so a stdlib sweep program (`codex_read_only_sweep_program`) first ends
@@ -352,6 +360,7 @@ separate caps.
 - **Per thread.** Each new thread attests again with its own roots and the live home. A home that holds
   `rules/*.rules`, `config.toml` or `plugins/` retires the server; the one retry then reopens the thread on a
   fresh server.
+  `t3 codex auth check --executor --phase <phase>` checks the live home again after its OK turn and fails if it was planted.
 - **Brief.** The executor has no `t3`, forge or data dir, so the worker reads the issue body, its
   comments (system notes left out, oldest first, each with its author and time), the ticket context, the
   predecessor handoff and the planning intake survey and puts them in the task message under fixed caps (64 KiB for
@@ -363,7 +372,7 @@ separate caps.
   A remote reviewing task also gets the full PR file diff, its dispatched head, and the worker's live
   workflow-run status at that head. An author-role self-review gets the branch diff in the task message.
   The worker reads the
-  live head before and after the diff; an unreadable file, changed head, empty diff or diff over 128 KiB refuses
+  live head before and after the diff; an unreadable file, changed head, empty diff or diff over 256 KiB refuses
   the run before Codex can return a verdict.
   The executor has no Skill tool and mounts no skill folder, so its system context embeds every
   required skill with CLI and posting-only sections omitted, names the others as not available, and points at no
@@ -378,6 +387,18 @@ separate caps.
   `<teatree tool, absent here>`, and so does every bare `t3` command in the task message's rubric and plan seams.
   Quoted issue text, comments, handoffs, and diffs remain byte-for-byte intact as evidence; a system context that
   still names a `t3` command, or that is over the context budget, refuses the run rather than being cut.
+- **Draft and readiness phases.** `answering`, `requesting_review` and `shipping` return a draft or a verdict
+  and the worker alone acts on it through the gates it already owns; the executor posts, pushes and merges
+  nothing. `answering` gets the inbound event (actor, channel, thread, replied-to message and text) in the task
+  message and returns an `answer` that the existing answer recorder sends. `requesting_review` gets each open pull
+  request of the ticket (head, CI status, metadata check, title, description) and returns `review_request`; the
+  worker takes the pull request, head and ticket from its own rows, so `pr_url` only selects among the ticket's
+  own pull requests, and sends through the `review_request_post` command, which keeps the live dedup, the
+  recorded approval and the send-proxy. `shipping` gets the ticket state, the phases the shipping gate still
+  needs, any open self-review hold and each worktree's commits ahead and dirty state, and returns
+  `ship_readiness`; `ready` true runs `pr create` in the worker (every ship gate, then the queued
+  `execute_ship` that pushes and opens the pull request), anything else fails the task and ships nothing. A
+  run on the executor that returns neither field is refused. These phases do not fetch the target ref.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
   `t3 codex auth check --executor` runs one OK-turn through it. Both run only in `teatree-worker`, the one
   service granted the docker socket; anywhere else they refuse and name that route. The import needs an
@@ -390,7 +411,7 @@ separate caps.
   mode, and removes everything it created. `live` repeats those checks on the deployed executor from inside
   `teatree-worker` while holding the executor lease; its docstring has the exact invocation.
 - **Routing served phases to Codex.** Once the executor login checks green, a Codex candidate
-  may run `planning`, `reviewing`, or `critic_reviewing` after the live probe. Other write-barring
+  may run `planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, `directive_interpreting`, `answering`, `requesting_review` or `shipping` after the live probe. Other write-barring
   phases still reject that candidate. The configured skill route and its fallback order remain in force, except
   that a candidate after the first whose resolved lane is metered is rejected unless `agent_route_paid_fallback`
   is on (see [`docs/blueprint/configuration.md`](blueprint/configuration.md)).

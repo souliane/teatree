@@ -21,6 +21,7 @@ from teatree.core.models.ticket_phase_sessions import TicketPhaseSessionModel
 from teatree.core.models.ticket_scheduling import PLANNING_HANDOFF_KEY, TicketSchedulingModel
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_status import TicketStatusModel
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 from teatree.utils.url_slug import repo_namespaced_key as compute_repo_namespaced_key
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
     from teatree.core.managers import TaskQuerySet
     from teatree.core.models.merge_void import MergeVoid
     from teatree.core.models.task import Task
-    from teatree.core.models.transition import TicketTransition
+    from teatree.core.models.transition import TicketTransitionQuerySet
     from teatree.core.models.types import TicketExtra, TicketSiblingFields
     from teatree.core.models.worktree import Worktree
 
@@ -106,7 +107,7 @@ class Ticket(
         # exposes exactly this queryset's methods, which is what callers use.
         tasks: "TaskQuerySet"
         worktrees: "models.Manager[Worktree]"
-        transitions: "models.Manager[TicketTransition]"
+        transitions: "TicketTransitionQuerySet"
         merge_voids: "models.Manager[MergeVoid]"
 
     class State(models.TextChoices):
@@ -218,7 +219,8 @@ class Ticket(
     kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.FEATURE)
     extra = models.JSONField(default=dict, blank=True)
     context = models.TextField(blank=True, default="")
-    short_description = models.CharField(max_length=80, blank=True, default="")
+    SHORT_DESCRIPTION_MAX_LENGTH: ClassVar[int] = 80
+    short_description = models.CharField(max_length=SHORT_DESCRIPTION_MAX_LENGTH, blank=True, default="")
     # Set to True when the remote forge returns HTTP 404; the disposition scanner
     # then excludes this ticket from future fetches (#1875).
     remote_missing = models.BooleanField(default=False)
@@ -268,7 +270,7 @@ class Ticket(
         using: str | None = None,
         update_fields: "Iterable[str] | None" = None,
     ) -> None:
-        if not self.overlay and self.issue_url:
+        if not self.overlay and self.issue_url and not is_synthetic_loop_umbrella_url(self.issue_url):
             self.overlay = self._infer_overlay()
         if not self.repo_namespaced_key and self.issue_url:
             self.repo_namespaced_key = compute_repo_namespaced_key(self.issue_url)
@@ -302,7 +304,7 @@ class Ticket(
         """The card label a blank ``short_description`` takes from *title*."""
         if not title or self.short_description:
             return ""
-        return title[: self._meta.get_field("short_description").max_length or 80]
+        return title[: self.SHORT_DESCRIPTION_MAX_LENGTH]
 
     @transition(field="state", source=State.NOT_STARTED, target=State.SCOPED)
     def scope(
@@ -401,6 +403,9 @@ class Ticket(
         """Land the rework of a held self-review at CODED so it is re-tested and re-reviewed."""
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
+        extra = self._extra()
+        extra.pop("shipping_hold", None)
+        self.extra = extra
         self.schedule_testing(parent_task=parent_task)
 
     @transition(
@@ -410,6 +415,8 @@ class Ticket(
     )
     def reconcile_reviewed(self) -> None:
         """Phase-driven, state-complete FSM catch-up to SELF_REVIEWED (#694, #798, #799, #808)."""
+        if self.state != self.State.SELF_REVIEWED:
+            self.merge_extra(pop_keys=["shipping_hold"])
 
     @transition(
         field="state",
@@ -488,6 +495,7 @@ class Ticket(
         """Schedule push + PR creation."""
         self.refuse_unless_shippable()
         self._consume_pending_phase_tasks("shipping")
+        self.merge_extra(pop_keys=["shipping_hold"])
 
     @transition(field="state", source=State.PR_OPENED, target=State.REVIEW_REQUESTED)
     def request_review(self) -> None:
@@ -506,6 +514,7 @@ class Ticket(
     def reconcile_merged(self) -> None:
         """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343)."""
         get_gate("merge_evidence")(self)
+        self.merge_extra(pop_keys=["shipping_hold"])
 
     @transition(field="state", source=[State.MERGED, State.RETRO_RECORDED], target=State.RETRO_RECORDED)
     def retrospect(self) -> None:
@@ -522,6 +531,7 @@ class Ticket(
     @transition(field="state", source=[State.MERGED, State.DELIVERED], target=State.SELF_REVIEWED)
     def reopen_for_followup(self) -> None:
         """Reopen a terminally-shipped ticket to SELF_REVIEWED for a follow-up PR (#3327)."""
+        self.merge_extra(pop_keys=["shipping_hold"])
         stamp_reopened_over(self)
 
     @transition(field="state", source=[State.CODED, State.TESTED, State.SELF_REVIEWED], target=State.WORK_STARTED)
@@ -529,6 +539,7 @@ class Ticket(
         extra = self._extra()
         extra.pop("tests_passed", None)
         extra.pop(PLANNING_HANDOFF_KEY, None)
+        extra.pop("shipping_hold", None)
         self.extra = extra
         self._cancel_pending_tasks()
 

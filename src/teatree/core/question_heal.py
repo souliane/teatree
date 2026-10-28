@@ -46,7 +46,7 @@ def withdraw_healed(rows: Iterable[DeferredQuestion]) -> list[DeferredQuestion]:
 
 def live_owner_questions() -> list[DeferredQuestion]:
     """The pending owner-audience backlog, healed rows withdrawn."""
-    return withdraw_healed(DeferredQuestion.owner_pending())
+    return withdraw_healed(DeferredQuestion.outside_attest_hold())
 
 
 def withhold(row: DeferredQuestion, problems: Sequence[str]) -> bool:

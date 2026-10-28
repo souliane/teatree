@@ -142,6 +142,15 @@ class TestFetchPrMergeState:
             slug=_SLUG, pr_id=_IID
         )
         assert state.merge_commit_oid == "squashed"
+        assert state.raw_merge_commit_oid == ""
+
+    def test_both_merge_shas_remain_available_to_verify_recorded_evidence(self) -> None:
+        state = _rpc(
+            get={"state": "merged", "merge_commit_sha": "merged", "squash_commit_sha": "squashed"}
+        ).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
+        assert state.merge_commit_oid == "merged"
+        assert state.raw_merge_commit_oid == "merged"
+        assert state.squash_commit_oid == "squashed"
 
     def test_merged_fast_forward_uses_mr_head_sha(self) -> None:
         state = _rpc(
@@ -149,6 +158,7 @@ class TestFetchPrMergeState:
         ).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
         assert state.is_merged
         assert state.merge_commit_oid == _SHA
+        assert state.raw_merge_commit_oid == ""
 
     def test_open_mr_head_is_not_merge_evidence(self) -> None:
         state = _rpc(get={"state": "opened", "sha": _SHA}).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
@@ -203,6 +213,40 @@ class TestFetchPrMergeStateConflictAxis:
 
 
 class TestFetchPrAuthor:
+    def test_merge_state_carries_actor_and_time(self) -> None:
+        mr = {
+            "state": "merged",
+            "merge_commit_sha": _SHA,
+            "merge_user": {"username": "operator"},
+            "merged_at": "2026-10-25T12:00:00Z",
+        }
+        state = _rpc(get=mr).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
+        assert (state.merged_by, state.merged_at) == ("operator", "2026-10-25T12:00:00Z")
+
+    def test_merge_state_falls_back_to_merged_by(self) -> None:
+        state = _rpc(get={"state": "merged", "merged_by": {"username": "backup"}}).fetch_pr_merge_state(
+            slug=_SLUG, pr_id=_IID
+        )
+        assert (state.merged_by, state.merged_at) == ("backup", "")
+
+    def test_merge_state_falls_back_when_merge_user_has_no_username(self) -> None:
+        state = _rpc(
+            get={"state": "merged", "merge_user": {"id": 1}, "merged_by": {"username": "backup"}}
+        ).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
+        assert state.merged_by == "backup"
+
+    def test_merge_state_null_actor_and_time_are_empty(self) -> None:
+        state = _rpc(get={"state": "merged", "merge_user": None, "merged_at": None}).fetch_pr_merge_state(
+            slug=_SLUG, pr_id=_IID
+        )
+        assert (state.merged_by, state.merged_at) == ("", "")
+
+    def test_non_string_actor_is_not_recorded_as_a_login(self) -> None:
+        state = _rpc(get={"state": "merged", "merge_user": {"username": 42}}).fetch_pr_merge_state(
+            slug=_SLUG, pr_id=_IID
+        )
+        assert state.merged_by == ""
+
     def test_username(self) -> None:
         assert _rpc(get={"author": {"username": "souliane"}}).fetch_pr_author(slug=_SLUG, pr_id=_IID) == "souliane"
 

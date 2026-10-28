@@ -23,6 +23,7 @@ from teatree.core.models.dream_gap_ledger import (
     umbrella_ticket,
     undispositioned_gap_keys,
 )
+from teatree.core.models.dream_gap_types import DreamGapEntry
 from teatree.loops.dream.batch_promote import is_reconciled, settled_gap_keys
 from teatree.loops.dream.umbrella_ledger import is_promotion_anchor
 
@@ -58,7 +59,7 @@ class _Ownership:
         return sorted(key for key, pks in self.owners.items() if not pks)
 
 
-def _owned_by_host(ticket: Ticket) -> list[dict[str, str]]:
+def _owned_by_host(ticket: Ticket) -> list[DreamGapEntry]:
     entries = batch_entries(ticket)
     if not is_reconciled(ticket):
         return entries
