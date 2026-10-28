@@ -10,7 +10,9 @@ from django.utils import timezone
 
 from teatree.core.intake.fix_first import FixFirst
 from teatree.core.intake.landscape_gather import run_landscape
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import PullRequest, Task, Ticket
+from teatree.core.models.shipping_hold import is_shipping_held
 from teatree.core.models.transition import TicketTransition
 from teatree.loop.stuck_ticket_redispatch import idle_started_author_tickets
 from teatree.types import RawAPIDict
@@ -108,16 +110,35 @@ class TestFixFirstLandscape(TestCase):
         TaskFactory(ticket=active, status=Task.Status.PENDING)
         with_pr = _aged_ticket(state=Ticket.State.WORK_STARTED)
         PullRequestFactory(ticket=with_pr, state=PullRequest.State.REVIEW_REQUESTED)
+        held = _aged_ticket(state=Ticket.State.SELF_REVIEWED)
+        held.merge_extra(
+            set_keys={
+                "shipping_hold": {
+                    "reason": "awaiting review",
+                    "skipped": "no shippable diff",
+                    "held_at": timezone.now().isoformat(),
+                    "checked_at": "",
+                }
+            }
+        )
+        cancelled = _aged_ticket(state=Ticket.State.PLAN_RECORDED)
+        TaskFactory(ticket=cancelled, phase="coding", status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED)
 
         result = self._report([])
         listed = {item["ticket"] for item in result["stuck"]}
-        sweep = {ticket.pk for ticket in idle_started_author_tickets(now=timezone.now(), threshold_hours=6)}
+        sweep = {
+            ticket.pk
+            for ticket in idle_started_author_tickets(now=timezone.now(), threshold_hours=6)
+            if not is_shipping_held(ticket)
+        }
 
         assert listed == {tickets[state].pk for state in expected}
         assert listed == sweep
         assert recent.pk not in listed
         assert active.pk not in listed
         assert with_pr.pk not in listed
+        assert held.pk not in listed
+        assert cancelled.pk not in listed
         assert result["more_stuck"] == 0
 
     def test_unread_is_explicit_and_large_titles_stay_bounded(self) -> None:
