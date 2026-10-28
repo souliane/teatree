@@ -35,6 +35,8 @@ _ENV_PASS_PATHS = (
 def _values_at(key: str, value: object) -> Iterator[str]:
     if isinstance(value, dict):
         for child_key, child_value in value.items():
+            if key.endswith("pass_paths") and isinstance(child_value, str) and child_value:
+                yield child_value
             yield from _values_at(str(child_key), child_value)
     elif isinstance(value, list):
         for item in value:

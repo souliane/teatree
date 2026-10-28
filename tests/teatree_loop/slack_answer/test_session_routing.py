@@ -361,6 +361,34 @@ class TestBoundTicketThread(TestCase):
         client.steer.assert_not_called()
         assert "paused" in backend.replies[0][2]
 
+    def test_a_lone_pause_39_seconds_after_a_message_still_pauses(self) -> None:
+        task = self._bound_task()
+        first = self._message("Use the new API instead")
+        pause = PendingChatInjection.record(
+            channel="C1", slack_ts="102.0", text="pause", context=DmContext(user_id=_USER_UID, thread_ts="100.0")
+        )
+        assert pause is not None
+        pause.received_at = first.received_at + timedelta(seconds=39)
+        pause.save(update_fields=["received_at"])
+        backend = RecordingBackend()
+        for row in (first, pause):
+            backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        client = Mock(unreachable={})
+        client.sessions.return_value = [{"task": task.pk, "ticket": task.ticket_id, "state": "busy", "steerable": True}]
+        client.steer.return_value = {"outcome": "accepted_current_turn", "code": None, "accepted_at": "now"}
+        client.pause.return_value = {"outcome": "paused", "code": None, "accepted_at": "now"}
+
+        with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert report.steered == 2
+        client.steer.assert_called_once_with(
+            task.pk, "Use the new API instead", command_id=slack_command_id("", "C1", first.slack_ts), wait=10.0
+        )
+        client.pause.assert_called_once_with(
+            task.pk, "pause", command_id=slack_command_id("", "C1", pause.slack_ts), wait=10.0
+        )
+
     def test_selected_pause_controls_only_the_named_live_task(self) -> None:
         first = self._bound_task()
         second = Task.objects.create(ticket=first.ticket, session=first.session, phase=first.phase)

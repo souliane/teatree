@@ -15,6 +15,8 @@ from django.utils import timezone
 
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
+from teatree.core.admission.lanes import ANSWERING_LANE_WIDTH
+from teatree.core.admission_governor import MachineSignal, QuotaSignal
 from teatree.core.models import ConfigSetting, ModeOverride, PullRequest, Session, Task, Ticket
 from teatree.core.signals import _auto_enqueue_task
 from teatree.core.task_dispatch import admit_waiting_tasks
@@ -309,3 +311,65 @@ class TestAFrozenFactoryAdmitsNothing(_AdmissionCase):
         waiting = self._task("reviewing")
 
         assert admit_waiting_tasks(at="test") == [waiting.pk]
+
+
+class TestAnOwnerQuestionHasItsOwnBoundedLane(_AdmissionCase):
+    """The owner's Slack question is seated beside coding, never behind it and never in the review seats (#5655)."""
+
+    def _fill_the_coding_lane(self) -> None:
+        for _ in range(_CODING_CEILING):
+            self._task("coding", status=Task.Status.CLAIMED)
+
+    def test_an_answering_task_is_seated_and_enqueued_while_the_coding_lane_is_full(self) -> None:
+        self._fill_the_coding_lane()
+        assert not self._admitted(self._task("coding")), "control: the coding lane is really full"
+
+        question = self._task("answering")
+
+        assert self._admitted(question)
+        task_dispatch_mod.execute_task.using.assert_called_once_with(queue_name="cheap")
+
+    def test_a_loaded_machine_refuses_coding_but_still_seats_an_owner_question(self) -> None:
+        overloaded = MachineSignal(cores=8, load1=8 * 5.0 + 1, ram_available_gb=20.0)
+        with patch.object(gate_mod, "read_machine_signal", return_value=overloaded):
+            coding = self._task("coding")
+            question = self._task("answering")
+
+        assert not self._admitted(coding)
+        assert self._admitted(question)
+
+    def test_a_spent_token_budget_still_refuses_an_owner_question(self) -> None:
+        spent = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=True,
+            weekly_utilization=1.0,
+            short_utilization=1.0,
+            seconds_to_weekly_reset=100.0,
+        )
+        with patch.object(gate_mod, "read_quota_signal", return_value=spent):
+            question = self._task("answering")
+
+        assert not self._admitted(question)
+
+    def test_a_flood_of_answering_tasks_seats_only_the_answering_width(self) -> None:
+        flood = [self._task("answering") for _ in range(ANSWERING_LANE_WIDTH + 3)]
+
+        seated = [self._admitted(task) for task in flood]
+
+        assert seated == [True] * ANSWERING_LANE_WIDTH + [False] * 3
+
+    def test_a_flood_of_answering_tasks_leaves_coding_review_and_retiring_their_seats(self) -> None:
+        for _ in range(ANSWERING_LANE_WIDTH + 3):
+            self._task("answering")
+
+        coding = [self._task("coding") for _ in range(_CODING_CEILING)]
+        reviews = [self._task("reviewing") for _ in range(_REVIEW_WIDTH)]
+        shipping = self._task("shipping")
+
+        assert all(self._admitted(task) for task in (*coding, *reviews, shipping))
+
+    def test_full_review_and_retiring_seats_do_not_refuse_an_owner_question(self) -> None:
+        self._fill_the_review_lane()
+        self._task("shipping", status=Task.Status.CLAIMED)
+
+        assert self._admitted(self._task("answering"))

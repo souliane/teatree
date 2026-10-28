@@ -9,17 +9,14 @@ agent-voice status DMs ("PR merged", "task completed", "evidence at …")
 and pushed them through the user's personal ``xoxp-`` token to the
 user's own DM channel. Slack rendered those as user-to-self messages
 and does NOT raise a phone notification on a self-DM, so the user
-missed multiple coordination signals in a single session. The prose
-rule (``feedback_agent_to_user_dms_must_use_bot_token``) failed across
-six sub-agents the same day it was saved; this gate is the
-deterministic structural fix.
+missed multiple coordination signals in a single session. Agent-to-user
+DMs use the bot token so the user receives a notification.
 
 The mirror failure mode this also guards against. A user-voice review
 request ("please review !42", "I'd appreciate a look") posted under
 the bot token is the inverse mismatch — the message reads to
 colleagues as a bot announcement rather than the operator's personal
-request, breaking the per-overlay routing sibling rule
-``feedback_review_request_post_via_personal_token_only``.
+request. A review request is posted only through the user's personal token.
 
 The classifier is intentionally pure: text in, verdict out. The
 :class:`SlackBotBackend` wires it into ``post_message`` / ``post_reply``

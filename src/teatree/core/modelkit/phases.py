@@ -184,6 +184,7 @@ class PhaseCost(StrEnum):
 
     CHEAP = "cheap"
     EXPENSIVE = "expensive"
+    ANSWERING = "answering"
 
 
 #: Review and work-retiring phases have separate bounds outside the coding ceiling.
@@ -206,6 +207,9 @@ REVIEW_PHASES: frozenset[str] = frozenset(
 #: Opening or merging a PR frees the worktree and agent, so these must retain a seat under load.
 RETIRING_PHASES: frozenset[str] = frozenset({"shipping", "requesting_review"})
 CHEAP_PHASES: frozenset[str] = REVIEW_PHASES | RETIRING_PHASES
+#: An owner's Slack question is a short read-only run (median 12.5 turns, p90 27 s): its own bounded class, apart
+#: from the coding ceiling and from the review and retiring seats (#5051). Harness-owned, not operator-configurable.
+ANSWERING_PHASES: frozenset[str] = frozenset({"answering"})
 
 
 class CheapClass(StrEnum):
@@ -230,11 +234,15 @@ def phase_cost(phase: str) -> PhaseCost:
     """Classify *phase* for admission. Anything unrecognised is EXPENSIVE.
 
     Fail-safe by construction: only an explicitly registered member of
-    :data:`CHEAP_PHASES` is cheap, so a new or misspelled phase inherits the braked
-    class rather than the exemption. ``phase`` is normalized, so a row stored under a
-    short verb (``review``) classifies like its canonical gerund.
+    :data:`CHEAP_PHASES` or :data:`ANSWERING_PHASES` leaves the braked class, so a new or
+    misspelled phase inherits the coding bound rather than an exemption. ``phase`` is
+    normalized, so a row stored under a short verb (``review``) classifies like its
+    canonical gerund.
     """
-    return PhaseCost.CHEAP if normalize_phase(phase) in CHEAP_PHASES else PhaseCost.EXPENSIVE
+    canonical = normalize_phase(phase)
+    if canonical in ANSWERING_PHASES:
+        return PhaseCost.ANSWERING
+    return PhaseCost.CHEAP if canonical in CHEAP_PHASES else PhaseCost.EXPENSIVE
 
 
 def cheap_phase_spellings() -> frozenset[str]:

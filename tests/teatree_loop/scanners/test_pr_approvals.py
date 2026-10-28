@@ -46,6 +46,14 @@ class _FakeReactionPublisher:
     def __init__(self) -> None:
         self.approval_calls: list[object] = []
 
+    @staticmethod
+    def has_transition_target(_ticket: object) -> bool:
+        return True
+
+    @staticmethod
+    def has_approval_target(_pull_request: object) -> bool:
+        return True
+
     def add_reactions_for_transition(self, ticket: object, transition_name: str) -> int:
         return 0
 
@@ -106,12 +114,17 @@ class TestPrApprovalScannerOutboundGating(_PrApprovalScannerTestBase):
 
         # The posture forbids and no approval is recorded → the reaction is
         # skipped even though the PR does transition to APPROVED.
-        with patch.object(signals_mod, "get_reaction_publisher", lambda: publisher):
+        with (
+            patch.object(signals_mod, "get_reaction_publisher", lambda: publisher),
+            self.assertLogs("teatree.core.signals", level="INFO") as logs,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             PrApprovalScanner(overlay="teatree", host=_ApprovedHost()).scan()
 
         pr.refresh_from_db()
         assert pr.state == PullRequest.State.APPROVED
         assert publisher.approval_calls == []
+        assert any("gated:" in message for message in logs.output)
 
     def test_reaction_fires_when_gate_lifted(self) -> None:
         pr = self._review_requested_pr()
