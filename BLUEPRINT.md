@@ -90,6 +90,8 @@ Question replies and card taps bind to the same ticket addressee that received t
 
 A registered, active operator may start new work from an unbound Slack message. Unregistered senders are acknowledged without dispatch, and control verbs or priority directives from registered non-owners cannot create work or steer a live session.
 
+The review live-post authorization resolves a recorded PR to its work ticket, then verifies a fresh Slack approval against that requester's registered DM or a matching on-behalf approval by that requester. A known requester without an active login or Slack identity fails closed; a target with no recorded requester keeps the configured owner route.
+
 Forge issue sync, loop issue intake, unlinked GitLab MR sync, and Slack work dispatch record the first requester; a work ticket filed from a Slack conversation inherits that requester. A linked MR leaves requester attribution to the issue intake.
 
 **Ticket DM identity (#5361).** `TicketDmThread` owns one outbound Slack DM root per ticket, with a generation incremented only after a deleted root is proven. `TicketDmPost` records each confirmed header, note, card, chase, and answer reply in that generation; its channel and message timestamp pair is unique. `ThreadBinding` still maps inbound roots to tickets. A question card keeps its own mirror timestamp even when posted inside the ticket root, so button taps still address that card.

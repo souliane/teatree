@@ -38,11 +38,14 @@ past the OOP/LOC ceiling — mirrors
 """
 
 import re
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import typer
 
 from teatree.utils.django_bootstrap import ensure_django
+
+if TYPE_CHECKING:
+    from teatree.cli.review.operator_target import ReviewRequester
 
 
 class SlackMessage(TypedDict, total=False):
@@ -223,7 +226,7 @@ def _verify_slack_message(*, slack_ts: str, user_id: str, channel: str) -> tuple
     return text, ""
 
 
-def _verify_on_behalf_authorization(*, scope: str) -> tuple[str, str]:
+def _verify_on_behalf_authorization(*, scope: str, requester: "ReviewRequester") -> tuple[str, str]:
     """Resolve a recorded on-behalf approval for ``(scope, post_comment)``.
 
     Returns ``(approval_ref, "")`` when an unconsumed
@@ -256,10 +259,18 @@ def _verify_on_behalf_authorization(*, scope: str) -> tuple[str, str]:
             f"record one with `t3 review approve-on-behalf {scope} {_ON_BEHALF_POST_ACTION} "
             f"--approver <id>`, or pass --slack-ts <ts> with the user's DM"
         )
+    if requester.key and approval.approver_id not in {
+        requester.key,
+        requester.slack_user_id,
+        f"slack:{requester.slack_user_id}",
+    }:
+        return "", f"recorded approver {approval.approver_id!r} is not requester {requester.key!r}"
     return f"on-behalf-approval#{approval.pk}", ""
 
 
-def _resolve_authorization(*, mr_url: str, slack_ts: str, from_on_behalf: bool, user_id: str) -> tuple[str, str, str]:
+def _resolve_authorization(
+    *, mr_url: str, slack_ts: str, from_on_behalf: bool, requester: "ReviewRequester"
+) -> tuple[str, str, str]:
     """Resolve the authorization channel into ``(slack_ts_for_token, ref, error)``.
 
     Tries the on-behalf channel first when ``--from-on-behalf`` is set,
@@ -273,7 +284,7 @@ def _resolve_authorization(*, mr_url: str, slack_ts: str, from_on_behalf: bool, 
 
     scope = canonical_mr_scope(mr_url)
     if from_on_behalf:
-        ref, error = _verify_on_behalf_authorization(scope=scope)
+        ref, error = _verify_on_behalf_authorization(scope=scope, requester=requester)
         if not error:
             return ref, ref, ""
         if not slack_ts:
@@ -287,9 +298,9 @@ def _resolve_authorization(*, mr_url: str, slack_ts: str, from_on_behalf: bool, 
                 "or --from-on-behalf (a recorded `t3 review approve-on-behalf` token)"
             ),
         )
-    from teatree.core.notify import resolve_user_channel  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-    _approval_text, error = _verify_slack_message(slack_ts=slack_ts, user_id=user_id, channel=resolve_user_channel())
+    _approval_text, error = _verify_slack_message(
+        slack_ts=slack_ts, user_id=requester.slack_user_id, channel=requester.channel
+    )
     if error:
         return "", "", error
     return slack_ts, slack_ts, ""
@@ -347,14 +358,20 @@ def register(review_app: typer.Typer) -> None:
         """
         ensure_django()
 
+        from teatree.cli.review.operator_target import review_requester  # noqa: PLC0415 — deferred: ORM/app-registry
         from teatree.core.models.live_post_approval import (  # noqa: PLC0415 — deferred: ORM/app-registry
             LivePostApproval,
             LivePostApprovalError,
             canonical_mr_scope,
         )
-        from teatree.core.notify import resolve_user_id  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.core.notify import resolve_user_channel, resolve_user_id  # noqa: PLC0415 — deferred
 
-        user_id = resolve_user_id()
+        try:
+            requester = review_requester(mr_url, owner_id=resolve_user_id(), owner_channel=resolve_user_channel())
+        except ValueError as err:
+            typer.echo(f"Refused: {err}")
+            raise typer.Exit(code=1) from None
+        user_id = requester.slack_user_id
         if not user_id:
             typer.echo(
                 "Refused: no Slack user_id configured — "
@@ -366,7 +383,7 @@ def register(review_app: typer.Typer) -> None:
             mr_url=mr_url,
             slack_ts=slack_ts,
             from_on_behalf=from_on_behalf,
-            user_id=user_id,
+            requester=requester,
         )
         if error:
             typer.echo(f"Refused: {error}")
