@@ -1,12 +1,14 @@
 import asyncio
 import json
+import sqlite3
 import tempfile
 import time
+from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from django.db import DatabaseError
+from django.db import DatabaseError, connections
 from django.test import TransactionTestCase
 from django.utils import timezone
 
@@ -22,6 +24,28 @@ from tests.factories import planned_ticket
 
 
 class TestLiveOrchestrator(TransactionTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.db_directory = tempfile.TemporaryDirectory(prefix="t3-orchestrator-db-")
+        self.db_path = Path(self.db_directory.name) / "shared.sqlite3"
+        connection = connections["default"]
+        connection.ensure_connection()
+        self.original_db_name = connection.settings_dict["NAME"]
+        with closing(sqlite3.connect(self.db_path)) as target:
+            connection.connection.backup(target)
+        connection.settings_dict["NAME"] = str(self.db_path)
+        connection.close()
+
+    def tearDown(self) -> None:
+        connection = connections["default"]
+        connection.close()
+        connection.settings_dict["NAME"] = self.original_db_name
+        connection.ensure_connection()
+        with closing(sqlite3.connect(self.db_path)) as source:
+            source.backup(connection.connection)
+        self.db_directory.cleanup()
+        super().tearDown()
+
     def _ask(self, client: MailboxClient, address: str, nonce: str, kind: str) -> dict[str, object]:
         payload = json.dumps({"type": "ask", "nonce": nonce, "kind": kind})
         asyncio.run(client.send(address, payload, f"ask:{nonce}", timeout_seconds=0.1))
