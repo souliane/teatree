@@ -67,6 +67,12 @@ class TestStubExecutables:
         assert result.returncode == 0
         assert expected in result.stdout
 
+    def test_t3_stub_reports_the_running_worker_the_session_setup_prompt_promises(self) -> None:
+        with provision_cli_stubs(["t3"]) as bindir:
+            result = _run_stub(bindir, ["sh", "-c", "t3 worker status"])
+        assert result.returncode == 0
+        assert result.stdout.splitlines() == ["worker: RUNNING (pid 7)", "loop_runner_enabled: True (from default)"]
+
     @pytest.mark.parametrize(
         "argv",
         [
