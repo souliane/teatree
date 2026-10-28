@@ -415,6 +415,7 @@ class TestIntakeSurveyJson(TestCase):
         assert "https://github.com/owner/repo/issues/1" in intake_survey_json(task)
         assert '"ticket": 8' in intake_survey_json(task)
         assert any("Rule 6" in line and "defer or split" in line for line in lines)
+        assert any("list red or flaky gates" in line for line in lines)
 
 
 class TestEmbeddedIntakeSurveyJson(TestCase):

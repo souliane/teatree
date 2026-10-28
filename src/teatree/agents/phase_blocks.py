@@ -334,7 +334,8 @@ def intake_survey_lines(survey_json: str) -> tuple[str, ...]:
         "Plan AGAINST this: an open PR for the issue → finish+merge it, not fresh; a merged",
         "PR → surface for close; an in-flight worktree → build on it, never overwrite.",
         (
-            "fix_first lists open defects and stuck tickets; a FEATURE waits behind them (Rule 6): "
+            "fix_first lists open defects and stuck tickets; list red or flaky gates in the touched "
+            "area from live checks (or name unreadable checks). A FEATURE waits behind them (Rule 6): "
             "defer or split it, or record the owner's lift in the plan."
         ),
         survey_json,
