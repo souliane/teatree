@@ -6,7 +6,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.merge.head_carry_over import PatchLineage
-from teatree.core.models import BranchUpdateAttempt, HeadCarryOver, MergeClear, ReviewVerdict
+from teatree.core.models import BranchUpdateAttempt, HeadCarryOver, MergeClear, ReviewVerdict, Session, Task
 from teatree.loop.scanners.pr_sweep import CLEAR_PRESENT_UNUSABLE_REASON, PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
@@ -207,6 +207,65 @@ class TestACarriedClearanceMerges(_SweepCase):
 
 
 class TestAPatchIsUpdatedOnce(_SweepCase):
+    def test_a_claimed_repair_holds_the_sweep_update_until_it_finishes(self) -> None:
+        _reviewed_and_cleared_at_the_old_head()
+        pr = _pr(conclusion="FAILURE", behind_main=True)
+        ticket = own_pr(SLUG, PR_ID).ticket
+        task = Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="debugging",
+            status=Task.Status.CLAIMED,
+        )
+        api = _Api(prs=[pr])
+        scanner = _scanner(api, _Keystone(), _Lineage(_differing()))
+
+        held = scanner.scan()
+
+        assert api.update_calls == []
+        assert [signal.payload["decision"] for signal in held] == ["needs_branch_update"]
+
+        task.status = Task.Status.COMPLETED
+        task.save(update_fields=["status"])
+        resumed = scanner.scan()
+
+        assert api.update_calls == [(SLUG, PR_ID, LIVE)]
+        assert [signal.payload["decision"] for signal in resumed] == ["branch_updated"]
+
+    def test_a_claimed_coding_task_holds_the_sweep_update(self) -> None:
+        _reviewed_and_cleared_at_the_old_head()
+        pr = _pr(conclusion="FAILURE", behind_main=True)
+        ticket = own_pr(SLUG, PR_ID).ticket
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="coding",
+            status=Task.Status.CLAIMED,
+        )
+        api = _Api(prs=[pr])
+
+        signals = _scanner(api, _Keystone(), _Lineage(_differing())).scan()
+
+        assert api.update_calls == []
+        assert [signal.payload["decision"] for signal in signals] == ["needs_branch_update"]
+
+    def test_a_pending_repair_does_not_hold_the_sweep_update(self) -> None:
+        _reviewed_and_cleared_at_the_old_head()
+        pr = _pr(conclusion="FAILURE", behind_main=True)
+        ticket = own_pr(SLUG, PR_ID).ticket
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="debugging",
+            status=Task.Status.PENDING,
+        )
+        api = _Api(prs=[pr])
+
+        signals = _scanner(api, _Keystone(), _Lineage(_differing())).scan()
+
+        assert api.update_calls == [(SLUG, PR_ID, LIVE)]
+        assert [signal.payload["decision"] for signal in signals] == ["branch_updated"]
+
     def _updated_before(self, *, patch_after: PatchLineage) -> PrSweepScanner:
         _reviewed_and_cleared_at_the_old_head()
         BranchUpdateAttempt.claim(slug=SLUG, pr_id=PR_ID, head_sha=REVIEWED)
