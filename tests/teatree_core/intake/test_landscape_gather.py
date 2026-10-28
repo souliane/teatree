@@ -48,6 +48,9 @@ class _FakeHost:
         _ = assignee
         return self._issues
 
+    def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]:
+        return []
+
 
 class _RaisingHost:
     """A CONFIGURED code host whose forge read errors — the directive-#10 target.
@@ -84,6 +87,9 @@ class _RaisingHost:
         if self._fail_on == "issues":
             msg = "gh search/issues exited 1 (network)"
             raise RuntimeError(msg)
+        return []
+
+    def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]:
         return []
 
 
@@ -140,6 +146,13 @@ class TestRunLandscape(TestCase):
         actions = {r["issue_url"]: r["action"] for r in report["recommendations"]}
         assert actions["https://github.com/acme/app/issues/50"] == "merge"
         assert actions["https://github.com/acme/app/issues/99"] == "keep"
+        assert report["fix_first"] == {
+            "defects": [],
+            "more_defects": 0,
+            "stuck": [],
+            "more_stuck": 0,
+            "unread": [],
+        }
 
     def test_merged_pr_marks_referenced_issue_done_close(self) -> None:
         # The §1b resolved-but-open path: a MERGED PR names an open issue, so the

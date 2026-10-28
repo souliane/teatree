@@ -731,6 +731,7 @@ depends_on = [
   "teatree.overlay_init",
   "teatree.instance_id",
   "teatree.loop",
+  "teatree.loop.owner_identity",
   "teatree.utils",
   "teatree.self_update",
   "teatree.repo_mode",
@@ -900,7 +901,21 @@ depends_on = ["teatree.agents", "teatree.loop.inbound_classifier"]
 # mirroring teatree.loop.inbound_reading above.
 path = "teatree.loop.question_binding"
 layer = "domain"
-depends_on = ["teatree.core.models", "teatree.core.owner_question_message", "teatree.loop.inbound_reading"]
+depends_on = [
+  "teatree.core.models",
+  "teatree.core.owner_question_message",
+  "teatree.loop.inbound_reading",
+  "teatree.loop.owner_identity"
+]
+
+[[modules]]
+# Who the configured Slack owner is, and which senders and stored DM rows are theirs. Read by
+# the recorder and every consumer of stored rows (teatree.loop.scanners, teatree.loop.slack_answer,
+# teatree.loop.question_binding — all domain) and by the CLI drain, so it is declared at domain
+# rather than inheriting orchestration from its package, mirroring teatree.loop.question_binding.
+path = "teatree.loop.owner_identity"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.types"]
 
 [[modules]]
 # The shared paginated ``check-runs`` argv + page-parser (#4090 sibling). A pure leaf
@@ -1020,6 +1035,7 @@ layer = "domain"
 depends_on = [
   "teatree.loop.inbound_reading",
   "teatree.loop.question_binding",
+  "teatree.loop.owner_identity",
   "teatree.loop.main_check_runs",
   "teatree.types",
   "teatree.paths",
@@ -1165,6 +1181,7 @@ depends_on = [
   "teatree.loop.inbound_reading",
   "teatree.loop.inbound_classifier",
   "teatree.loop.question_binding",
+  "teatree.loop.owner_identity",
   "teatree.agents",
   "teatree.backends.slack",
   "teatree.core",

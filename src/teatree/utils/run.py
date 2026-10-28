@@ -70,13 +70,27 @@ __all__ = [
 ]
 
 
-_SECRET_HEADER_RE = re.compile(r"(?i)(authorization|x-[\w-]*token|x-[\w-]*key)\s*:\s*\S.*")
-_SECRET_QUERY_RE = re.compile(r"(?i)\b(token|access_token|api_key|password|secret)=[^&\s]+")
+# `x-` header names are bounded to 64 characters so the scan stays linear; a longer name is not required to redact.
+_SECRET_HEADER_RE = re.compile(r"(?i)(authorization|private-token|x-[\w-]{0,64}(?:token|key))\s*:\s*\S.*")
+# The lookbehinds anchor the start of a hyphen-joined name run; without them every hyphen restarts a quadratic rescan.
+_SECRET_QUERY_RE = re.compile(
+    r"(?i)(?<![a-z0-9])(?<![a-z0-9][_-])((?:[a-z0-9]+[_-])*(?:token|secret|key|password))=[^&\s]+"
+)
 # An env-var ASSIGNMENT whose name ends in a credential class — a `-e NAME=value`
 # forward, an env prefix on a command. Keyed on the suffix rather than a list of
 # variable names, which is a list someone forgets to extend: matching only `TOKEN`
 # published `T3_SECRET_KEY` and an `ANTHROPIC_API_KEY` into transcripts.
 _SECRET_ENV_ASSIGN_RE = re.compile(r"(?:\A|(?<=[=\s]))([A-Z][A-Z0-9_]*(?:KEY|SECRET|PASSWORD|TOKEN))=(\S+)")
+# A value after `Bearer` is a credential only from 8 token characters on, so "the bearer of this note" stays readable.
+_SECRET_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[a-z0-9._~+/-]{8,}=*")
+# A URL userinfo's password, or a lone userinfo only when token-like (12+ characters, or a digit, underscore or hyphen).
+_SECRET_URL_USERINFO_RE = re.compile(
+    r"(?<=://)(?:([^\s/@:?#]*:)[^\s/@?#]+|(?=[^\s/@:?#]*[\d_-]|[^\s/@:?#]{12})[^\s/@:?#]+)(?=@)"
+)
+# A quoted credential-named key (JSON, or a Python dict repr) and its quoted value; both quotes must match.
+_SECRET_QUOTED_PAIR_RE = re.compile(
+    r"""(?i)((["'])(?:[a-z0-9]+[_-])*(?:token|secret|key|password)\2\s*:\s*)\2(?:(?!\2)[^\\]|\\.)*\2"""
+)
 
 
 def redact_secrets(arg: str) -> str:
@@ -92,6 +106,9 @@ def redact_secrets(arg: str) -> str:
     """
     redacted = _SECRET_HEADER_RE.sub(lambda m: f"{m.group(1)}: <redacted>", arg)
     redacted = _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=<redacted>", redacted)
+    redacted = _SECRET_QUOTED_PAIR_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>{m.group(2)}", redacted)
+    redacted = _SECRET_BEARER_RE.sub(lambda m: f"{m.group(1)}<redacted>", redacted)
+    redacted = _SECRET_URL_USERINFO_RE.sub(lambda m: f"{m.group(1) or ''}<redacted>", redacted)
     return _SECRET_ENV_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=<redacted>", redacted)
 
 
