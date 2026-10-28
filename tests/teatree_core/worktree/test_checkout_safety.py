@@ -1,4 +1,5 @@
 import os
+import time
 from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime
@@ -312,6 +313,26 @@ class CheckoutSafetyTests(TestCase):
         foreign = self.checkout / "foreign.txt"
         foreign.write_text("unowned")
         os.utime(foreign, (0, 0))
+
+        self._assert_parked()
+
+    def test_a_foreign_file_next_to_the_writers_own_file_parks(self) -> None:
+        self._record_prior_writer()
+        (self.checkout / "unfinished.txt").write_text("the writer's own work")
+        self._prior_writer_ended_at(timezone.now())
+        time.sleep(0.05)
+        (self.checkout / "foreign.txt").write_text("unowned")
+
+        self._assert_parked()
+
+    def test_a_file_changed_after_the_writer_ended_inside_an_untracked_directory_parks(self) -> None:
+        self._record_prior_writer()
+        folder = self.checkout / "scratch"
+        folder.mkdir()
+        (folder / "notes.txt").write_text("the writer's own work")
+        self._prior_writer_ended_at(timezone.now())
+        time.sleep(0.05)
+        (folder / "notes.txt").write_text("changed by someone else")
 
         self._assert_parked()
 

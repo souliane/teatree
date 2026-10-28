@@ -4,7 +4,13 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket
-from tests._owner_channel import OWNER_KEPT_LOOKALIKES, assert_a_plain_card, owner_stop
+from tests._owner_channel import (
+    OWNER_KEPT_LOOKALIKES,
+    UNLISTED_WORDING,
+    assert_a_plain_card,
+    owner_stop,
+    stop_with_wording,
+)
 from tests.teatree_agents.test_attempt_recorder import _routed
 
 
@@ -16,17 +22,22 @@ class TestLookalikeStopsRecordACard(TestCase):
         task.claim(claimed_by="loop-slot")
         return task
 
+    def _assert_card_on_both_runs(self, kind: str, stop: dict[str, object]) -> None:
+        for usage in (_routed(), AttemptUsage()):
+            with self.subTest(kind=kind, routed=usage.route_candidate_index is not None):
+                task = self._claimed(phase="scoping")
+
+                attempt = record_result_envelope(task, stop | {"summary": "waiting"}, usage=usage)
+
+                assert attempt.error == ""
+                card = DeferredQuestion.objects.get(parked_task=task)
+                assert card.evidence["decision"] == kind
+                assert_a_plain_card(card)
+
     def test_every_lookalike_records_a_card_on_routed_and_unrouted_runs(self) -> None:
         for kind, question, facts in OWNER_KEPT_LOOKALIKES:
-            for usage in (_routed(), AttemptUsage()):
-                with self.subTest(kind=kind, question=question, routed=usage.route_candidate_index is not None):
-                    task = self._claimed(phase="scoping")
+            self._assert_card_on_both_runs(kind, owner_stop(question, kind, *facts))
 
-                    attempt = record_result_envelope(
-                        task, owner_stop(question, kind, *facts) | {"summary": "waiting"}, usage=usage
-                    )
-
-                    assert attempt.error == ""
-                    card = DeferredQuestion.objects.get(parked_task=task)
-                    assert card.evidence["decision"] == kind
-                    assert_a_plain_card(card)
+    def test_one_unlisted_wording_in_any_field_records_a_card_on_routed_and_unrouted_runs(self) -> None:
+        for kind, field, wording in UNLISTED_WORDING:
+            self._assert_card_on_both_runs(kind, stop_with_wording(kind, field, wording))

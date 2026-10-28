@@ -1,14 +1,14 @@
 """Owner stops that are not owner decisions: three explicit rows, every other stop stays a card (#5687).
 
-A row fires only when the stop's question is exactly the row's benign closed form (an anchored allow pattern),
-its decision kind and required facts match, and no word of the row's lexicon appears anywhere the owner reads
-the card. Any other wording records the card; the lexicon is defence in depth behind the allow pattern.
-Money and public words to a colleague never match.
+A row fires only when every text of the stop is one of its closed forms: the question is the row's benign ask,
+and each checked fact, the why, the blocker and each option label and description is a closed filler sentence
+(the credentials row also accepts the denied start its question is about). Text outside the closed forms, in
+any of them, means no row fits and the stop records the card. Money and public words to a colleague never match.
 """
 
 import enum
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
@@ -24,8 +24,16 @@ def _words(alternatives: str) -> re.Pattern[str]:
     return re.compile(rf"\b(?:{alternatives})\b", re.IGNORECASE)
 
 
+def _closed(forms: str) -> re.Pattern[str]:
+    return re.compile(rf"(?:{forms})[.?!]?", re.IGNORECASE)
+
+
 def _closed_ask(form: str) -> re.Pattern[str]:
-    return re.compile(rf"(?:may|can|could|should) (?:i|we) (?:please )?{form}\s*\??", re.IGNORECASE)
+    return _closed(rf"(?:may|can|could|should) (?:i|we) (?:please )?{form}")
+
+
+def _squashed(text: str) -> str:
+    return " ".join(text.split())
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,33 +41,27 @@ class OwnerStopMisfit:
     decision: OwnerDecision
     ask: re.Pattern[str]
     action: MisfitAction
-    exclusions: re.Pattern[str]
+    support: re.Pattern[str]
     facts: tuple[re.Pattern[str], ...] = ()
 
-    def fits(self, decision: OwnerDecision, question: str, shown: str) -> bool:
+    def fits(self, decision: OwnerDecision, question: str, texts: Sequence[str]) -> bool:
+        stop = " ".join((question, *texts))
         return (
             decision is self.decision
-            and self.ask.fullmatch(" ".join(question.split())) is not None
-            and all(fact.search(shown) for fact in self.facts)
-            and not self.exclusions.search(shown)
+            and self.ask.fullmatch(_squashed(question)) is not None
+            and all(self.support.fullmatch(_squashed(text)) for text in texts)
+            and all(fact.search(stop) for fact in self.facts)
         )
 
 
 _AGAIN = r"(?: (?:again|once more))?"
-_OWNER_KEPT = (
-    r"credentials?|permission\w*|privileg\w+|admin\w*|elevat\w+|bypass\w*|overrid\w+|allow-?list\w*|access\w*|sudo|root"
-    r"|secrets?|tokens?|passwords?|keys?|logins?|accounts?|grant\w*|widen\w*|expand\w*|scope\w*"
-    r"|money|pay\w*|paid|spen[dt]\w*|buy\w*|bill\w*|cost\w*|pric\w+|budget\w*|purchas\w+|subscri\w+"
-    r"|comments?|messages?|repl(?:y|ies)|colleagues?|reviewers?|public\w*|posts?"
+_FILLER = (
+    r"no standing answer covers it|only the owner can choose|the answer changes what the factory does next"
+    r"|yes|no|i go ahead|i leave it as it is"
 )
-_PUSH_TARGETS = (
-    r"protected|main|master|force\w*|upstream|origin|repository|repositories|repos?|forks?"
-    r"|release[sd]?|releasing|tags?|remote\w*"
-)
-_DESTRUCTION = (
-    r"destr\w+|wip\w+|los\w+|unsaved|unpushed|uncommitted|no remote|only cop(?:y|ies)|drop\w*|purg\w+"
-    r"|overwrit\w+|truncate[sd]?|truncating|databases?|volumes?|data|files?|works?"
-    r"|delete[sd]?|deleting|deletion|discard\w*|eras\w+|remov\w+"
+_DENIED_START = (
+    r"the (?:(?:shell|review|agent) )?(?:command|sub-?agent start|start) was (?:denied|rejected|blocked)"
+    r"(?: by the (?:current route|policy|venue))?"
 )
 _RETRY_TARGET = (
     r"(?:it|that|this|them|the (?:(?:denied|rejected|blocked) )?(?:command|sub-?agent|(?:agent|review) start))"
@@ -71,7 +73,7 @@ OWNER_STOP_MISFITS = (
         OwnerDecision.CREDENTIALS,
         _closed_ask(rf"(?:retry|rerun|re-run|run|start|launch|try)(?: {_RETRY_TARGET})?{_AGAIN}"),
         MisfitAction.ENVIRONMENT_FAILURE,
-        _words(_OWNER_KEPT),
+        _closed(rf"{_FILLER}|{_DENIED_START}"),
         (_words("denied|rejected|blocked"), _words(r"commands?|sub-?agents?|(?:agent|review) starts?")),
     ),
     OwnerStopMisfit(
@@ -81,7 +83,7 @@ OWNER_STOP_MISFITS = (
             r"(?: after the (?:push )?round limit)?"
         ),
         MisfitAction.REFUSE_AND_DECIDE,
-        _words(rf"{_OWNER_KEPT}|{_PUSH_TARGETS}"),
+        _closed(_FILLER),
     ),
     OwnerStopMisfit(
         OwnerDecision.IRREVERSIBLE,
@@ -90,7 +92,7 @@ OWNER_STOP_MISFITS = (
             r"(?:started|launched|spawned)(?: for this (?:check|run|task|test))?"
         ),
         MisfitAction.REFUSE_AND_DECIDE,
-        _words(rf"{_OWNER_KEPT}|{_DESTRUCTION}"),
+        _closed(_FILLER),
     ),
 )
 
@@ -101,6 +103,6 @@ def owner_stop_misfit(result: Mapping[str, object]) -> MisfitAction | None:
     if card is None or result.get("needs_user_input") is not True:
         return None
     question = str(result.get("user_input_reason", ""))
-    options = (f"{option.label} {option.description}" for option in card.options)
-    shown = " ".join((question, *card.checked, card.blocker, card.why, *options))
-    return next((row.action for row in OWNER_STOP_MISFITS if row.fits(card.decision, question, shown)), None)
+    options = (text for option in card.options for text in (option.label, option.description))
+    texts = tuple(filter(None, (*card.checked, card.blocker, card.why, *options)))
+    return next((row.action for row in OWNER_STOP_MISFITS if row.fits(card.decision, question, texts)), None)
