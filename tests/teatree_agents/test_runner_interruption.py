@@ -113,7 +113,7 @@ class TestAnInterruptedRunKeepsWhatItProduced(TestCase):
         assert "skill" not in attempt.result
         assert "evidence" not in attempt.result
 
-    def test_malformed_tail_after_complete_envelope_is_reported(self) -> None:
+    def test_malformed_tail_after_complete_envelope_keeps_the_complete_one(self) -> None:
         task = self._completed_reviewing_task()
         raw = json.dumps(_VERDICT_ENVELOPE) + '\n{"summary":"broken"'
 
@@ -121,7 +121,7 @@ class TestAnInterruptedRunKeepsWhatItProduced(TestCase):
             attempt = _outcome_failure(task, _interrupted(raw), phase="reviewing")
 
         assert attempt is not None
-        assert "review_verdict" not in attempt.result
+        assert attempt.result["review_verdict"] == _VERDICT_ENVELOPE["review_verdict"]
         assert any("malformed result envelope" in line for line in logs.output)
 
     def test_a_run_that_produced_nothing_records_the_interruption_alone(self) -> None:

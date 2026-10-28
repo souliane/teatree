@@ -15,7 +15,9 @@ fallback unchanged — pinned by ``test_headless``'s untouched scoping test.
 """
 
 import contextlib
+import tempfile
 from collections.abc import AsyncIterator, Generator
+from pathlib import Path
 from typing import Any, Self
 from unittest.mock import patch
 
@@ -25,15 +27,57 @@ from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
+import teatree.core.worktree.checkout_fence as checkout_fence_mod
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, is_no_envelope_refusal, is_recorder_refusal
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.runner import TaskUsage, run_agent
+from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
-from teatree.core.models import Session, Task, TaskAttempt
+from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.worktree.checkout_state import checkout_state
 from tests.factories import planned_ticket
+from tests.teatree_agents._sdk_fake import assistant_text, assistant_tool_use, fake_sdk, result_message
+from tests.teatree_core.models._shared import _init_repo_with_branch
 
 _PROSE = "I finished the work but forgot to emit the JSON result envelope."
+
+
+class TestMalformedEnvelopeSalvage(TestCase):
+    def test_landed_coding_and_debugging_work_is_salvaged(self) -> None:
+        for phase in ("coding", "debugging"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as root:
+                ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+                session = Session.objects.create(ticket=ticket, agent_id=phase)
+                task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+                repo_dir = Path(root) / "repo"
+                branch = f"feature-{ticket.pk}"
+                _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=1)
+                Worktree.objects.create(
+                    ticket=ticket,
+                    repo_path=str(repo_dir),
+                    branch=branch,
+                    extra={"worktree_path": str(repo_dir), "attested_state": checkout_state(repo_dir).digest},
+                )
+                stream = [
+                    assistant_tool_use("Edit"),
+                    assistant_text('{"summary":"landed","detail":"unfinished'),
+                    result_message(),
+                ]
+                with (
+                    fake_sdk(stream),
+                    patch.object(
+                        checkout_fence_mod,
+                        "read_process_table",
+                        return_value=ProcessTable(frozenset(), "/proc"),
+                    ),
+                ):
+                    attempt = run_agent(task, phase=phase, overlay_skill_metadata={})
+
+                task.refresh_from_db()
+                assert task.status == Task.Status.COMPLETED
+                assert attempt.error == ""
+                assert attempt.result["files_modified"] == [{"path": "f0.txt", "action": "modified"}]
 
 
 class _FakeSdkClient:

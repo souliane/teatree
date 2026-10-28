@@ -153,7 +153,7 @@ def _produced_result(outcome: "HarnessOutcome") -> AgentResultBlob:
         return parse_result(outcome.agent_text)
     except ResultEnvelopeError as exc:
         logger.warning("Interrupted run produced a malformed result envelope: %s", exc)
-        return {}
+        return exc.last_complete
 
 
 def _record_noop_over_completed_row(

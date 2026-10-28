@@ -58,6 +58,21 @@ def test_unclosed_pretty_envelope_does_not_return_line_started_inner_object() ->
         parse_result(raw)
 
 
+def test_unclosed_pretty_envelope_does_not_return_a_later_array_item() -> None:
+    raw = json.dumps(
+        {
+            "summary": "draft",
+            "skill_application": [
+                {"skill": "first", "evidence": "one"},
+                {"skill": "second", "evidence": "two"},
+            ],
+        },
+        indent=2,
+    )[:-1]
+    with pytest.raises(ResultEnvelopeError, match=r"^result is not valid JSON: "):
+        parse_result(raw)
+
+
 def test_unterminated_string_is_reported_as_malformed_envelope() -> None:
     raw = '{"summary":"draft","detail":"unfinished'
     with pytest.raises(ResultEnvelopeError, match=r"^result is not valid JSON: "):
@@ -78,6 +93,24 @@ def test_later_corrected_envelope_replaces_malformed_draft() -> None:
     bad = '{"summary":"draft"},"skill_application":[{"skill":"x","evidence":"y"}]}'
     good = '{"summary":"corrected","needs_user_input":false}'
     assert parse_result(bad + "\n" + good) == {"summary": "corrected", "needs_user_input": False}
+
+
+@pytest.mark.parametrize(
+    "draft",
+    [
+        '{"summary":"draft","skill_application":[{"skill":"x"},',
+        '{"summary":"first"\n{"summary":"second",',
+        '{"summary":"draft","detail":',
+    ],
+)
+def test_line_started_correction_recovers_after_any_broken_prefix(draft: str) -> None:
+    good = '{"summary":"corrected","needs_user_input":false}'
+    assert parse_result(draft + "\n" + good) == {"summary": "corrected", "needs_user_input": False}
+
+
+def test_same_line_correction_recovers_at_the_first_syntax_error() -> None:
+    raw = '{"summary":"draft",{"summary":"corrected","needs_user_input":false}'
+    assert parse_result(raw) == {"summary": "corrected", "needs_user_input": False}
 
 
 @pytest.mark.parametrize(

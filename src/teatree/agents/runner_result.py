@@ -13,6 +13,10 @@ _RESULT_KEYS = frozenset(cast("JSONSchema", RESULT_JSON_SCHEMA["properties"]))
 class ResultEnvelopeError(ValueError):
     """A result envelope could not be parsed as a JSON object."""
 
+    def __init__(self, message: str, *, last_complete: AgentResultBlob | None = None) -> None:
+        super().__init__(message)
+        self.last_complete = last_complete or {}
+
 
 def _starts_result_key(text: str, brace: int) -> bool:
     after_brace = text[brace + 1 :].lstrip()
@@ -26,12 +30,12 @@ def _has_broken_extension(text: str, end: int, decoded: object) -> bool:
     return tail.startswith("}") or re.match(r'^,\s*"(?:[^"\\]|\\.)*"\s*:', tail) is not None
 
 
-def _line_state(char: str, previous_nonspace: str, *, at_start: bool) -> tuple[bool, str]:
+def _line_state(char: str, *, at_start: bool) -> bool:
     if char == "\n":
-        return True, previous_nonspace
+        return True
     if char.isspace():
-        return at_start, previous_nonspace
-    return False, char
+        return at_start
+    return False
 
 
 def _quote_state(char: str, *, escaped: bool) -> tuple[bool, bool]:
@@ -42,24 +46,17 @@ def _quote_state(char: str, *, escaped: bool) -> tuple[bool, bool]:
     return char != '"', False
 
 
-def _span_end(text: str, start: int, *, root_object: bool) -> int:
+def _span_end(text: str, start: int, *, root_object: bool, resume_at: int | None = None) -> int:
     depth = 0
     quoted = False
     escaped = False
     line_start = text.rfind("\n", 0, start) + 1
     at_line_start = not text[line_start:start].strip()
-    previous_nonspace = text[:start].rstrip()[-1:]
     for index in range(start, len(text)):
         char = text[index]
-        if (
-            index > start
-            and char == "{"
-            and at_line_start
-            and previous_nonspace not in {"", ":"}
-            and not (depth > 0 and previous_nonspace == ",")
-        ):
+        if index > start and char == "{" and (at_line_start or index == resume_at) and _starts_result_key(text, index):
             return index
-        at_line_start, previous_nonspace = _line_state(char, previous_nonspace, at_start=at_line_start)
+        at_line_start = _line_state(char, at_start=at_line_start)
         if quoted:
             quoted, escaped = _quote_state(char, escaped=escaped)
             continue
@@ -87,7 +84,7 @@ def parse_result(agent_text: str) -> AgentResultBlob:
         except json.JSONDecodeError as exc:
             if _starts_result_key(text, brace):
                 broken = exc
-                index = _span_end(text, brace, root_object=True)
+                index = _span_end(text, brace, root_object=True, resume_at=exc.pos)
             else:
                 index = brace + 1
             continue
@@ -101,5 +98,5 @@ def parse_result(agent_text: str) -> AgentResultBlob:
     if broken is not None:
         detail = broken.msg.removesuffix(" at")
         message = f"{UNPARSEABLE_ENVELOPE_PREFIX}{detail} at char {broken.pos}"
-        raise ResultEnvelopeError(message) from broken
+        raise ResultEnvelopeError(message, last_complete=best) from broken
     return best
