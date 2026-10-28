@@ -338,13 +338,16 @@ def _probe_unanswered_evidence(*, now: dt.datetime | None = None) -> RoundtripFi
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: ORM import needs the registry
+    from teatree.loop.scanners.owner_dm_rows import owner_dm_rows  # noqa: PLC0415 — deferred: ORM import
 
     cutoff = (now or timezone.now()) - _UNANSWERED_STALENESS
-    stale = PendingChatInjection.objects.filter(
-        eyes_reacted_at__isnull=False,
-        loop_replied_at__isnull=True,
-        answered_at__isnull=True,
-        received_at__lt=cutoff,
+    stale = owner_dm_rows(
+        PendingChatInjection.objects.filter(
+            eyes_reacted_at__isnull=False,
+            loop_replied_at__isnull=True,
+            answered_at__isnull=True,
+            received_at__lt=cutoff,
+        )
     ).count()
     if stale == 0:
         return None

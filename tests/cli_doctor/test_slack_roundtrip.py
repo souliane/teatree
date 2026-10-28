@@ -26,6 +26,8 @@ from teatree.utils.singleton import WORKER_SINGLETON
 class _FakeSlackBackend:
     """A non-no-op messaging backend with a controllable ``auth.test`` seam."""
 
+    user_id = "U_OWNER"
+
     def __init__(self, auth_body: object = None, auth_raises: Exception | None = None) -> None:
         self._auth_body = auth_body if auth_body is not None else {"ok": True, "user_id": "BOT1"}
         self._auth_raises = auth_raises
@@ -61,6 +63,9 @@ class _HealthyBaseline(TestCase):
         )
         self.messaging = self._stack.enter_context(
             patch("teatree.core.backend_factory.messaging_from_overlay", return_value=self._backend)
+        )
+        self._stack.enter_context(
+            patch("teatree.loop.scanners.owner_dm_rows.messaging_from_overlay", return_value=self._backend)
         )
         # The ambient probe rides ``resolve_owner_dm_backend``, which reads the
         # notify module's own import-time bindings — pin its active-overlay tier
@@ -150,12 +155,29 @@ class TestUnansweredEvidence(_HealthyBaseline):
             channel="D1",
             slack_ts="1.1",
             text="please answer this",
+            user_id="U_OWNER",
             received_at=old,
             eyes_reacted_at=old,
         )
         outcome = run_slack_roundtrip_probes(env={"TEATREE_ROLE": "worker"})
         assert not outcome.ok
         assert "reacts-but-never-answers CONFIRMED" in _messages(outcome)
+
+    def test_legacy_foreign_row_does_not_raise_an_unanswered_alarm(self) -> None:
+        old = timezone.now() - dt.timedelta(minutes=30)
+        PendingChatInjection.objects.create(
+            overlay="acme",
+            channel="D1",
+            slack_ts="foreign.1",
+            text="please answer this",
+            user_id="U_FOREIGN",
+            received_at=old,
+            eyes_reacted_at=old,
+        )
+
+        outcome = run_slack_roundtrip_probes(env={"TEATREE_ROLE": "worker"})
+
+        assert outcome.ok
 
     def test_recently_reacted_message_does_not_false_alarm(self) -> None:
         now = timezone.now()

@@ -18,11 +18,10 @@ un-posted.
 
 The receipt runs after every colleague-visible on-behalf post.
 
-Depends only on :mod:`teatree.core.notify`, an already legal
-``teatree.core`` edge, so no new tach edge.
+Delivery (the configured receipt channel, else the owner DM) lives in
+:mod:`teatree.core.owner_dm.receipt_delivery`, reached at call time because the
+egress it posts through imports this module.
 """
-
-from teatree.core.modelkit.notify_policy import NotifyAudience
 
 
 def notify_user_on_behalf_post(
@@ -57,7 +56,7 @@ def notify_user_on_behalf_post(
     NOOP/FAILED ``BotPing`` row (the audit scanner re-DMs on drift), so
     a misconfigured Slack backend cannot break a legitimate publish.
     """
-    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.owner_dm.receipt_delivery import deliver_receipt  # noqa: PLC0415 — deferred: egress imports this
 
     if artifact_url.startswith("http"):
         short = artifact_url.rsplit("/", 1)[-1] or artifact_url
@@ -65,9 +64,4 @@ def notify_user_on_behalf_post(
     else:
         link_line = ""
     text = f"Posted under your identity to {destination}.\n{link_line}{summary}"
-    notify_user(
-        text,
-        kind=NotifyKind.INFO,
-        idempotency_key=f"on_behalf_post:{target}:{action}:{artifact_url}",
-        audience=NotifyAudience.COLLEAGUE_ACTION,
-    )
+    deliver_receipt(key=f"on_behalf_post:{target}:{action}:{artifact_url}", text=text, artifact_url=artifact_url)

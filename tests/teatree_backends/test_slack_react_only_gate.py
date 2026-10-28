@@ -5,8 +5,7 @@ Two structural invariants land here:
 1.  ``reactions.add`` failures raise :class:`SlackReactionError` — never
     silently return False — so callers cannot accidentally fall back to a
     ``chat.postMessage`` thread reply containing the emoji. The
-    ``missing_scope`` case is the primary trigger (BINDING memory
-    ``feedback_react_not_emoji_thread_comment``) but every Slack-side
+    ``missing_scope`` case is the primary trigger, but every Slack-side
     ``ok:false`` is loud.
 2.  ``SlackBotBackend.post_message`` / ``post_reply`` reject a body that
     is a single ``:emoji:`` token (``^:[a-z0-9_+\-]+:$``) with
@@ -80,7 +79,7 @@ class TestAddReactionRaisesOnSlackError:
         with pytest.raises(SlackReactionError) as exc_info:
             slack_reactions.add_reaction("xoxp", "C1", "1.0", "tada")
         assert exc_info.value.error_code == "missing_scope"
-        assert "feedback_react_not_emoji_thread_comment" in str(exc_info.value)
+        assert "Do NOT fall back to posting a `:emoji:` thread reply" in str(exc_info.value)
 
     def test_already_reacted_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
         post = lambda *_a, **_kw: _response(payload={"ok": False, "error": "already_reacted"})  # noqa: E731

@@ -8,6 +8,7 @@ Protocol surface and under the module-health cap — the same split shape as
 """
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -16,6 +17,9 @@ from urllib.parse import urlparse
 
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
@@ -139,6 +143,10 @@ def gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDic
     bare arrays per page via ``--slurp``) cannot be used here.
     ``--paginate`` + ``--slurp`` emits each page as a search-object element;
     this pulls the ``items`` list from each page and flattens them.
+
+    ``gh`` exits 0 with at most the first 1000 matches however many the query hit, so a
+    ``total_count`` past the items read warns. ``incomplete_results`` means the server
+    timed out mid-search and the items are a partial sample: that refuses.
     """
     result = _run_gh(
         "gh",
@@ -155,12 +163,26 @@ def gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDic
     if not isinstance(pages, list):
         return []
     items: list[RawAPIDict] = []
+    matched = 0
     for page in pages:
         if not isinstance(page, dict):
             continue
+        if page.get("incomplete_results"):
+            msg = f"GitHub search {endpoint} returned incomplete results (the server timed out)"
+            raise ValueError(msg)
+        matched = max(matched, int(page.get("total_count") or 0))
         page_items = cast("RawAPIDict", page).get("items")
         if isinstance(page_items, list):
             items.extend(cast("list[RawAPIDict]", page_items))
+    if matched > len(items):
+        warn_throttled(
+            logger,
+            f"github-search-capped:{endpoint}",
+            "GitHub search %s matched %d results but returns %d — the rest are missing from this list",
+            endpoint,
+            matched,
+            len(items),
+        )
     return items
 
 
