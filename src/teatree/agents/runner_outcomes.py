@@ -238,7 +238,11 @@ def record_success(
 ) -> TaskAttempt:
     """Record a successful SDK run via the shared recorder."""
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — avoids recorder cycle
-    from teatree.agents.runner_result import parse_result  # noqa: PLC0415 — keeps result parsing off module import path
+    from teatree.agents.runner_result import (  # noqa: PLC0415 — keeps result parsing off module import path
+        ResultEnvelopeError,
+        declares_owner_stop,
+        parse_result,
+    )
 
     provenance = provenance or DispatchProvenance()
     usage = _attempt_usage(
@@ -253,7 +257,12 @@ def record_success(
             model_fell_back=outcome.model_fell_back,
         ),
     )
-    parsed = parse_result(outcome.agent_text)
+    parse_error: ResultEnvelopeError | None = None
+    try:
+        parsed = parse_result(outcome.agent_text)
+    except ResultEnvelopeError as exc:
+        parsed = {}
+        parse_error = exc
     if provenance.skill_assurance is not None:
         prior_loads = (
             task.attempts.skill_loads_in_session(outcome.result_message.session_id)
@@ -275,8 +284,15 @@ def record_success(
     )
     if not parsed:
         prose: AgentResultBlob = {"summary": outcome.agent_text[:_PROSE_SUMMARY_CHARS]}
-        if not ProseSummaryPolicy.allowed(phase or task.phase):
+        if (
+            parse_error
+            and ProseSummaryPolicy.accepted(phase or task.phase)
+            and not declares_owner_stop(outcome.agent_text)
+        ):
+            logger.warning("Task %s produced a malformed result envelope: %s", task.pk, parse_error)
+            parse_error = None
+        if not parse_error and not ProseSummaryPolicy.allowed(phase or task.phase):
             logger.warning("Task %s produced no result envelope; refusing to record success", task.pk)
             return _record_failure(task, exit_code=0, error=NO_ENVELOPE_ERROR, result=prose, usage=usage)
         result = prose
-    return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=bool(parsed))
+    return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=parse_error or bool(parsed))

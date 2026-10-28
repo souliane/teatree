@@ -2,9 +2,10 @@
 
 Backs the read-only ``t3 loops list``. Reads :class:`teatree.core.models.Loop`
 rows and prints each loop's name, effective admitted state, cadence (interval or
-daily schedule), last run, next-due, the loop's code-declared ``[reach … determinism]``
-tags (#3959), and a ``colleague-facing`` marker for a row that reaches a colleague on
-the owner's behalf. ``--tag`` narrows the listing to the loops carrying every named tag.
+daily schedule), last run, next-due, its measured idle tick cost (#4999), the loop's
+code-declared ``[reach … determinism]`` tags (#3959), and a ``colleague-facing`` marker for a row
+that reaches a colleague on the owner's behalf. ``--tag`` narrows the listing to the loops
+carrying every named tag, and ``--by-cost`` ranks them by the share of one core their idle ticks take.
 
 The state column is the TICK's verdict — hold, then the manual override, then the active
 preset — never one plane read alone, and a ``LoopState`` hold renders ``paused`` rather
@@ -141,13 +142,36 @@ def _withholding_note(loop: Loop, now: dt.datetime) -> str:
     return f"  (attempted {_human_duration((now - attempted).total_seconds())} ago)"
 
 
+def _cost_cell(loop: Loop) -> str:
+    """``idle 6.3s/tick = 2.1% core``; empty until the worker has measured a tick of the loop."""
+    if loop.idle_cpu_seconds is None:
+        return ""
+    cell = f"  idle {loop.idle_cpu_seconds:.1f}s/tick"
+    return cell if loop.idle_core_share is None else f"{cell} = {loop.idle_core_share:.1%} core"
+
+
+def _cost_rank(row: "_LoopRow") -> float:
+    share = row.loop.idle_core_share
+    return -1.0 if share is None else share
+
+
+def _idle_total(rows: list["_LoopRow"]) -> str:
+    """The idle share of one core every running loop takes together; empty when none is measured."""
+    shares = [
+        row.loop.idle_core_share
+        for row in rows
+        if row.loop.idle_core_share is not None and _effective_state(row.verdict, row.status) == "enabled"
+    ]
+    return f"idle total: {sum(shares):.1%} of one core" if shares else ""
+
+
 def _line(row: "_LoopRow", now: dt.datetime) -> str:
     loop = row.loop
     state = _effective_state(row.verdict, row.status)
     last = _human_duration(loop.seconds_since_run(now))
     nxt = _next_label(row.verdict, loop, row.status, now)
     line = f"  {loop.name:<22} {state:<8} {loop.cadence_label:<13} last {last:<10} next {nxt}"
-    line += _withholding_note(loop, now)
+    line += _withholding_note(loop, now) + _cost_cell(loop)
     if row.mini_loop is not None and row.mini_loop.tags:
         line += f"  [{' '.join(row.mini_loop.tags)}]"
     if loop.colleague_facing:
@@ -190,6 +214,9 @@ def _payload(row: "_LoopRow", now: dt.datetime) -> dict[str, Any]:
         "effective_admitted": verdict.admitted,
         "effective_layer": verdict.layer,
         "starved": row.starved,
+        "idle_cpu_seconds": loop.idle_cpu_seconds,
+        "busy_cpu_seconds": loop.busy_cpu_seconds,
+        "idle_core_share": loop.idle_core_share,
     }
 
 
@@ -204,6 +231,9 @@ class Command(TyperCommand):
             list[str] | None,
             typer.Option("--tag", help=f"Keep only loops carrying this tag ({_TAG_CHOICES}); repeatable, ANDed."),
         ] = None,
+        by_cost: Annotated[
+            bool, typer.Option("--by-cost", help="Rank by the share of one core the idle ticks take, heaviest first.")
+        ] = False,
     ) -> None:
         now = timezone.now()
         registered = _loops_by_name()
@@ -227,6 +257,8 @@ class Command(TyperCommand):
             )
             for loop in loops
         ]
+        if by_cost:
+            rows.sort(key=_cost_rank, reverse=True)
         payload = [_payload(row, now) for row in rows]
         human_lines = ["loops:"]
         for row in rows:
@@ -234,6 +266,8 @@ class Command(TyperCommand):
             description_line = _description_line(row.loop)
             if description_line is not None:
                 human_lines.append(description_line)
+        if idle_total := _idle_total(rows):
+            human_lines.append(idle_total)
         emit(
             {"loops": payload},
             json_output=json_output,

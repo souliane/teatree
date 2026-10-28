@@ -152,8 +152,8 @@ def run_branch_currency_gate(
     against the post-merge tree — not a stale base whose target-branch
     fixes are missing. On zero-conflict the new HEAD is recorded as
     ``ship_invoking_branch``'s post-merge sha so the cold reviewer
-    attests the SHA the loop will actually push. On conflict the gate
-    refuses cleanly (``git merge --abort`` already restored the tree).
+    attests the SHA the loop will actually push. A wrong checkout refuses
+    before the fetch; a conflicting merge aborts and refuses.
     Fetch failures (offline, auth) are inconclusive — same posture as
     :mod:`teatree.core.gates.clone_guard`.
     """

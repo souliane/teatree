@@ -3,7 +3,8 @@
 from django.test import TestCase
 
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import Ticket
+from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models.task_repair_queries import ticket_phase_iterations, ticket_phase_observations
 
 _REVIEWED_HEAD = "1f4b9c2ad0e7f61c83b25d90ac174e5f60a1b2c3"
 _NEW_HEAD = "f89874729bb0a41ce6d5713a2c0e9f38b7a1d4e5"
@@ -24,13 +25,35 @@ def _reviewed_ticket() -> Ticket:
 
 
 class TestRearmReviewAt(TestCase):
+    def test_new_head_starts_a_new_review_budget_window(self) -> None:
+        ticket = _reviewed_ticket()
+        old = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing", status=Task.Status.FAILED
+        )
+        TaskAttempt.objects.create(task=old, exit_code=1, error="old head failed")
+        assert len(ticket_phase_iterations(ticket.pk, "reviewing")) == 1
+
+        ticket.rearm_review_at(_NEW_HEAD)
+
+        assert ticket_phase_iterations(ticket.pk, "reviewing") == []
+        assert ticket_phase_observations(ticket.pk, "reviewing") == []
+        current = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing", status=Task.Status.FAILED
+        )
+        TaskAttempt.objects.create(task=current, exit_code=1, error="new head failed")
+        assert len(ticket_phase_iterations(ticket.pk, "reviewing")) == 1
+
     def test_a_new_head_drops_the_review_the_old_head_earned(self) -> None:
         ticket = _reviewed_ticket()
 
         ticket.rearm_review_at(_NEW_HEAD)
 
         ticket.refresh_from_db()
-        assert ticket.extra == {"reviewed_sha": _NEW_HEAD, "codex_variant": "codex:review"}
+        assert ticket.extra == {
+            "reviewed_sha": _NEW_HEAD,
+            "codex_variant": "codex:review",
+            "review_window_after_attempt": 0,
+        }
 
     def test_the_reviewed_head_keeps_its_review(self) -> None:
         ticket = _reviewed_ticket()

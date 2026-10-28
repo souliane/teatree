@@ -1,5 +1,6 @@
 """Shared owner-channel test helpers: ask the owner a genuine decision, answer it through the real Slack seam."""
 
+import copy
 import dataclasses
 import json
 from typing import TypedDict
@@ -37,6 +38,77 @@ def owner_stop(reason: str, kind: str = "credentials", *checked: str) -> dict[st
             "options": OWNER_CARD.option_dicts(),
         },
     }
+
+
+def stop_with_wording(kind: str, field: str, wording: str) -> dict[str, object]:
+    """The benign stop of *kind* with *wording* added in exactly one field the owner reads or an operator stores."""
+    question, facts = BENIGN_STOPS[kind]
+    stop = owner_stop(question, kind, *facts)
+    card = copy.deepcopy(stop["user_input_card"])
+    assert isinstance(card, dict)
+    if field == "fact":
+        stop["user_input_checked"] = [*(facts or OWNER_CARD.checked), wording]
+    elif field in {"why", "blocker"}:
+        card[field] = wording
+    else:
+        card["options"][1][field] = wording
+    return stop | {"user_input_card": card}
+
+
+LOOKALIKE_DENIAL = "The sub-agent start was denied by the current route."
+
+#: Stops that borrow a benign row's words but ask a decision only the owner makes, or word it in a way no row knows.
+OWNER_KEPT_LOOKALIKES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("credentials", "May I use an admin credential for it?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I bypass the permission gate so the command runs?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I elevate the privileges so the command runs?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I use a personal credential for it?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I add the command to the allowlist?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I borrow the deploy identity so the command runs?", (LOOKALIKE_DENIAL,)),
+    ("irreversible", "May I terminate the job I started, even though it would destroy the only copy?", ()),
+    ("irreversible", "May I stop the server I started, since stopping wipes the database volume?", ()),
+    ("irreversible", "May I kill the process I started, which holds unsaved work that exists on no remote?", ()),
+    ("irreversible", "May I stop the job I started, given that it loses the only copy?", ()),
+    ("irreversible", "May I stop the server I started and clear its history?", ()),
+    ("public_post", "May I force-push the finished branch over the protected main branch?", ()),
+    ("public_post", "May I push the finished branch to the public upstream repository?", ()),
+    ("public_post", "May I push the finished branch to the mirror?", ()),
+    ("money_or_plan", "May I start the sub-agent again?", (LOOKALIKE_DENIAL,)),
+    ("public_post", "May I start the sub-agent again?", (LOOKALIKE_DENIAL,)),
+    ("irreversible", "May I start the sub-agent again?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I push the finished branch once more?", ()),
+    ("money_or_plan", "May I stop the dev server I started for this check?", ()),
+)
+
+#: The question and facts of a stop that a misfit row fires on when the rest of the card is the default one.
+BENIGN_STOPS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "credentials": ("May I start the sub-agent again?", (LOOKALIKE_DENIAL,)),
+    "public_post": ("May I push the finished branch once more?", ()),
+    "irreversible": ("May I stop the dev server I started for this check?", ()),
+}
+
+#: (kind, field, wording): ONE unlisted wording in ONE field of an otherwise benign stop must reach the owner as a card.
+UNLISTED_WORDING: tuple[tuple[str, str, str], ...] = (
+    ("credentials", "fact", "Only the owner can authorize it."),
+    ("credentials", "fact", "It needs write rights on the shared repository."),
+    ("credentials", "fact", "It needs the SSO session approved by you."),
+    ("credentials", "why", "Enable the bot for the organisation first."),
+    ("credentials", "blocker", "Only the owner can authorize it."),
+    ("credentials", "label", "Whitelist the host"),
+    ("credentials", "label", "Permit it"),
+    ("credentials", "description", "I permit it."),
+    ("irreversible", "fact", "Its in-memory results exist only in that process."),
+    ("irreversible", "fact", "Stopping ends the only run that produced them."),
+    ("irreversible", "why", "Its in-memory results exist only in that process."),
+    ("irreversible", "blocker", "Stopping ends the only run that produced them."),
+    ("irreversible", "label", "Stop it anyway"),
+    ("irreversible", "description", "Its in-memory results are gone."),
+    ("public_post", "fact", "It publishes the commits to everyone."),
+    ("public_post", "why", "It publishes the commits to everyone."),
+    ("public_post", "blocker", "It publishes the commits to everyone."),
+    ("public_post", "label", "Publish them"),
+    ("public_post", "description", "It publishes the commits to everyone."),
+)
 
 
 class OwnerDecisionFields(TypedDict):
