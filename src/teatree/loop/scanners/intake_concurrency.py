@@ -96,7 +96,14 @@ class IntakeConcurrencyScanner:
         # drift (#4125). What the scalar adds to this decision is the TOKEN dimension.
         pressure = pressure_for(
             quota=read_quota_signal(),
-            machine=MachineSignal(cores=cores, load1=load1, ram_available_gb=None, load_cores=machine.load_scope_cores),
+            machine=MachineSignal(
+                cores=cores,
+                load1=load1,
+                ram_available_gb=None,
+                load_cores=machine.load_scope_cores,
+                load_brake_per_core=machine.load_brake_per_core,
+                load_resume_per_core=machine.load_resume_per_core,
+            ),
         )
         adapted = adapt_concurrency(
             available_gb=available_gb,

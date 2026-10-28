@@ -46,7 +46,7 @@ def _config(monkeypatch: pytest.MonkeyPatch, cfg: SpeakConfig) -> None:
 
 class TestCurrentPresence:
     def test_unconfigured_backend_is_unknown_no_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _config(monkeypatch, SpeakConfig(local=LocalPlayback.ALL))
+        _config(monkeypatch, SpeakConfig(local=LocalPlayback.DM))
         built: list[str] = []
         presence.register_presence_backend(
             "msteams", lambda ref: built.append(ref) or _StubBackend(presence.Presence.IN_MEETING)
@@ -56,7 +56,7 @@ class TestCurrentPresence:
 
     def test_in_meeting_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _config(
-            monkeypatch, SpeakConfig(local=LocalPlayback.ALL, presence_backend="msteams", presence_token_ref="ms/tok")
+            monkeypatch, SpeakConfig(local=LocalPlayback.DM, presence_backend="msteams", presence_token_ref="ms/tok")
         )
         stub = _StubBackend(presence.Presence.IN_MEETING)
         presence.register_presence_backend("msteams", lambda ref: stub)

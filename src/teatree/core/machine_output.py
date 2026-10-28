@@ -20,17 +20,18 @@ pin survives the ``call_command(..., stdout=...)`` path too, and call a child co
 through :func:`call_command_streamed` so the wrapper survives from the CALLER's side.
 """
 
-import contextlib
 import dataclasses
 import datetime
 import enum
 import json
 from collections.abc import Callable
-from typing import IO, Any, TextIO, cast
+from typing import IO, TextIO, cast
 
 from django.core.management import call_command, get_commands, load_command_class
 from django.core.management.base import BaseCommand
 from django_typer.management import OutputWrapper, TyperCommand
+
+from teatree.utils.machine_json import last_json_object
 
 
 def _install_stream_wrappers(command: BaseCommand, **streams: IO[str] | None) -> None:
@@ -89,17 +90,6 @@ class MachineOutputCommand(TyperCommand):
             stderr=cast("IO[str] | None", options.pop("stderr", None)),
         )
         return super().execute(*args, **options)
-
-
-def last_json_object(text: str) -> dict[str, Any] | None:
-    """The last line of *text* that parses as a JSON object — a command's verdict after its prose."""
-    for raw in reversed(text.strip().splitlines()):
-        line = raw.strip()
-        if not (line.startswith("{") and line.endswith("}")):
-            continue
-        with contextlib.suppress(json.JSONDecodeError):
-            return cast("dict[str, Any]", json.loads(line))
-    return None
 
 
 def _json_default(obj: object) -> object:

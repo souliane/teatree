@@ -91,7 +91,7 @@ def _wait_for(marker: Path, timeout: float = 3.0) -> None:
 
 
 class TestNotifyPostSpeaks:
-    def test_self_dm_post_reads_text_aloud_under_speak_all(
+    def test_self_dm_post_reads_text_aloud_under_speak_dm(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         bin_dir = tmp_path / "bin"

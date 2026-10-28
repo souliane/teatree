@@ -271,7 +271,7 @@ def test_finding_row_names_the_from_import_workaround():
 
 class TestBlocksUncoveredDiff:
     def test_blocks_gh_pr_ready_when_diff_coverage_fails(self, shipping_repo, monkeypatch, capsys):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         with t3_reports(_finding_json(), returncode=1) as measurement:
             assert handle_block_uncovered_diff(data) is True
@@ -283,7 +283,7 @@ class TestBlocksUncoveredDiff:
         assert "--json" in measurement.argv
 
     def test_blocks_non_draft_pr_create_on_unreferenced_symbol(self, shipping_repo, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": f"gh pr create --head {SHIP_BRANCH} --title t --body b"},
@@ -298,7 +298,7 @@ class TestBlocksUncoveredDiff:
         # it names the imports-only reading and the `from <module> import
         # <symbol>` workaround, since a flagged symbol may already be
         # covered via `import mod` + `mod.sym()`.
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         with t3_reports(_finding_json(), returncode=1):
             assert handle_block_uncovered_diff(data) is True
@@ -329,7 +329,7 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
         return {"tool_name": "Bash", "tool_input": {"command": self.CREATE}, "cwd": str(repo)}
 
     def test_deny_names_the_open_pr_and_calls_it_flagged_not_refused(self, shipping_repo, monkeypatch, capsys):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         with t3_reports(
             _finding_json(uncovered=[], symbols=["governance_trailer"]), returncode=1, open_pr=self.OPEN_PR
         ):
@@ -339,7 +339,7 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
         assert "FLAGGED, not refused" in reason
 
     def test_probe_asks_about_the_branch_the_command_ships(self, shipping_repo, monkeypatch, capsys):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         with t3_reports(_finding_json(), returncode=1, open_pr=self.OPEN_PR) as measurement:
             self._deny_reason(self._create_call(shipping_repo), capsys)
         assert measurement.open_pr_argv[:3] == ["/usr/local/bin/t3", "tool", "open-pr"]
@@ -347,7 +347,7 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
         assert measurement.open_pr_argv[measurement.open_pr_argv.index("--repo") + 1] == str(shipping_repo)
 
     def test_no_note_when_the_branch_has_no_open_pr(self, shipping_repo, monkeypatch, capsys):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         with t3_reports(_finding_json(), returncode=1, open_pr=NO_OPEN_PR):
             reason = self._deny_reason(self._create_call(shipping_repo), capsys)
         assert "ALREADY EXISTS" not in reason
@@ -355,7 +355,7 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
     def test_no_note_when_the_probe_cannot_answer(self, shipping_repo, monkeypatch, capsys):
         # UNKNOWN is "could not ask" (missing CLI, auth failure), never "no PR" —
         # so it adds nothing rather than asserting an artifact it did not see.
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         unknown = json.dumps({"outcome": "unknown", "url": ""})
         with t3_reports(_finding_json(), returncode=1, open_pr=unknown):
             reason = self._deny_reason(self._create_call(shipping_repo), capsys)
@@ -366,7 +366,7 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
         # `t3 update`: `tool open-pr` is then an unknown command — an error on
         # stderr, nothing on stdout. The note is an enrichment, never a
         # dependency, so that install keeps getting exactly the deny it had.
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         with t3_reports(_finding_json(), returncode=1, open_pr=""):
             reason = self._deny_reason(self._create_call(shipping_repo), capsys)
         assert "ALREADY EXISTS" not in reason
@@ -374,7 +374,7 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
     def test_undraft_deny_carries_no_artifact_note(self, shipping_repo, monkeypatch, capsys):
         # `gh pr ready` guards the UN-DRAFT, which genuinely did not happen; its PR
         # obviously exists, so naming it would be noise, not reconciliation.
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         with t3_reports(_finding_json(), returncode=1, open_pr=self.OPEN_PR) as measurement:
             reason = self._deny_reason(data, capsys)
@@ -384,7 +384,7 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
     def test_clean_measurement_never_probes_for_an_artifact(self, shipping_repo, monkeypatch):
         # The note rides a deny that is already terminal; an allowed create must not
         # pay a forge round trip.
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         with t3_reports(CLEAN_REPORT, open_pr=self.OPEN_PR) as measurement:
             assert handle_block_uncovered_diff(self._create_call(shipping_repo)) is False
         assert measurement.open_pr_argv == []
@@ -404,7 +404,7 @@ class TestOneCeilingSharedByMeasurementAndProbe:
 
     @pytest.fixture(autouse=True)
     def _t3_on_path(self, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
 
     def _deny(self, repo: Path, capsys) -> str:
         data = {"tool_name": "Bash", "tool_input": {"command": self.CREATE}, "cwd": str(repo)}
@@ -477,7 +477,7 @@ class TestFailsOpenOnBrokenSubprocess:
     def test_fail_open_on_module_not_found_crash(self, shipping_repo, monkeypatch):
         # The exact #122 shape: coverage missing → traceback on stderr,
         # empty stdout, exit 1. The current (buggy) gate denied here.
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": f"gh pr create --head {SHIP_BRANCH} --title t --body b"},
@@ -488,7 +488,7 @@ class TestFailsOpenOnBrokenSubprocess:
         assert measurement.ran  # anti-vacuity: it FAILED OPEN, it did not skip before measuring
 
     def test_fail_open_on_nonzero_with_unparseable_stdout(self, shipping_repo, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         with t3_reports("some non-json error text", returncode=2) as measurement:
             assert handle_block_uncovered_diff(data) is False
@@ -496,7 +496,7 @@ class TestFailsOpenOnBrokenSubprocess:
 
     def test_a_launcher_that_cannot_run_here_fails_open_naming_the_cause(self, shipping_repo, monkeypatch, capsys):
         """Exit 69 is ``deploy/t3`` refusing the venue: nothing was measured, and the note says why."""
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         why = "compose project 'teatree' runs no teatree-worker or teatree-admin container"
         with (
@@ -512,7 +512,7 @@ class TestFailsOpenOnBrokenSubprocess:
         assert why in err
 
     def test_fail_open_on_malformed_json(self, shipping_repo, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         with t3_reports('{"passes": fal', returncode=1) as measurement:
             assert handle_block_uncovered_diff(data) is False
@@ -521,7 +521,7 @@ class TestFailsOpenOnBrokenSubprocess:
 
 class TestAllowsCleanCases:
     def test_allows_gh_pr_ready_when_diff_coverage_clean(self, shipping_repo, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         with t3_reports(CLEAN_REPORT) as measurement:
             assert handle_block_uncovered_diff(data) is False
@@ -534,7 +534,7 @@ class TestAllowsCleanCases:
         assert handle_block_uncovered_diff(data) is False
 
     def test_noop_for_draft_pr_create(self, shipping_repo, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh pr create --draft --title t --body b"},
@@ -545,12 +545,12 @@ class TestAllowsCleanCases:
         assert not measurement.ran
 
     def test_fail_open_when_t3_not_on_path(self, shipping_repo, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", _no_t3)
+        monkeypatch.setattr("shutil.which", _no_t3)
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         assert handle_block_uncovered_diff(data) is False
 
     def test_fail_open_when_t3_times_out(self, shipping_repo, monkeypatch):
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         with t3_reports("", raises=subprocess.TimeoutExpired("t3", 30)) as measurement:
             assert handle_block_uncovered_diff(data) is False
@@ -576,7 +576,7 @@ class TestMeasuresTheGatedCommandsWorktree:
     def test_measures_the_cd_target_worktree_not_the_session_cwd(self, tmp_path, monkeypatch):
         x = self._worktree(tmp_path, "worktree-x")  # the PR's worktree (cd target)
         y = self._worktree(tmp_path, "worktree-y")  # the session cwd (a DIFFERENT worktree)
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": f"cd {x} && gh pr create --title t --body b"},
@@ -592,7 +592,7 @@ class TestMeasuresTheGatedCommandsWorktree:
 
     def test_falls_back_to_session_cwd_when_command_has_no_leading_cd(self, tmp_path, monkeypatch):
         y = self._worktree(tmp_path, "session-cwd")
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh pr create --title t --body b"},
@@ -627,7 +627,7 @@ class TestScopesToThePublishedRepo:
             "session-clone",
             "git@gitlab.com:my-org/session-repo.git",  # privacy-scan:allow
         )
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "glab mr create -R other-org/other-repo --title t --description d"},
@@ -645,7 +645,7 @@ class TestScopesToThePublishedRepo:
             "session-clone",
             "git@gitlab.com:my-org/my-repo.git",  # privacy-scan:allow
         )
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "glab mr create -R my-org/my-repo --title t --description d"},
@@ -657,7 +657,7 @@ class TestScopesToThePublishedRepo:
     def test_flagless_create_in_the_repo_that_ships_the_branch_enforces(self, shipping_repo, monkeypatch):
         # No explicit target, and the measured repo genuinely ships the branch:
         # the gate measures it and still DENIES an under-covered diff.
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": f"glab mr create -s {SHIP_BRANCH} --title t --description d"},
@@ -686,7 +686,7 @@ class TestPublishTargetComesFromTheShipNotTheCwd:
         monkeypatch.setenv("HOME", str(tmp_path))
         shipped = build_repo(tmp_path, "shipped-repo", "git@gitlab.com:my-org/shipped.git")  # privacy-scan:allow
         session = build_repo(tmp_path, "session-repo", "git@gitlab.com:my-org/session.git")  # privacy-scan:allow
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {
@@ -704,7 +704,7 @@ class TestPublishTargetComesFromTheShipNotTheCwd:
         # The measured repo has no such branch, so its diff is a different
         # repo's work — skip rather than deny on foreign symbols.
         session = build_repo(tmp_path, "session-repo", "git@gitlab.com:my-org/session.git")  # privacy-scan:allow
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "glab mr create -s fix/lives-in-another-repo --title t --description d"},
@@ -716,7 +716,7 @@ class TestPublishTargetComesFromTheShipNotTheCwd:
 
     def test_skip_reason_is_reported_not_silent(self, tmp_path, monkeypatch, capsys):
         session = build_repo(tmp_path, "session-repo", "git@gitlab.com:my-org/session.git")  # privacy-scan:allow
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "glab mr create -s fix/lives-in-another-repo --title t --description d"},
@@ -733,7 +733,7 @@ class TestPublishTargetComesFromTheShipNotTheCwd:
         # on the session cwd and walking UP finds the SESSION repo — a
         # confident wrong answer. Refuse to guess.
         session = build_repo(tmp_path, "session-repo", "git@gitlab.com:my-org/session.git")  # privacy-scan:allow
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "cd $WORKTREE && gh pr create --title t --body b"},
@@ -752,7 +752,7 @@ class TestPublishTargetComesFromTheShipNotTheCwd:
         git = ["git", "-C", str(repo)]
         subprocess.run([*git, "remote", "add", "fork", "git@github.com:me/app.git"], check=True)
         subprocess.run([*git, "config", f"branch.{SHIP_BRANCH}.pushRemote", "fork"], check=True)
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": f"gh pr create --head {SHIP_BRANCH} --title t --body b"},
@@ -764,7 +764,7 @@ class TestPublishTargetComesFromTheShipNotTheCwd:
     def test_detached_head_with_no_named_branch_is_skipped(self, tmp_path, monkeypatch):
         repo = build_repo(tmp_path, "detached", "git@gitlab.com:my-org/detached.git")  # privacy-scan:allow
         subprocess.run(["git", "-C", str(repo), "checkout", "-q", "--detach"], check=True)  # noqa: S607 — real git under tmp_path
-        monkeypatch.setattr(router.shutil, "which", _t3_on_path)
+        monkeypatch.setattr("shutil.which", _t3_on_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh pr create --title t --body b"},

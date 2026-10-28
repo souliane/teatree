@@ -656,7 +656,7 @@ class TestValidateMrMetadataMcpArm:
     """
 
     def _pin_validator(self, monkeypatch: pytest.MonkeyPatch, returncode: int, stderr: str = "") -> None:
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/t3")
         result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: result)
 

@@ -9,6 +9,11 @@ from teatree.core.backend_protocols import BackendResolutionError
 from teatree.utils import git
 
 
+@pytest.fixture(autouse=True)
+def _route_httpx_stubs_through_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gitlab_http, "client_for_url", lambda _url: gitlab_http.httpx)
+
+
 def test_gitlab_api_resolves_remote_project(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(git, "remote_url", lambda **kwargs: "git@gitlab.com:acme/platform.git")
 
