@@ -42,7 +42,7 @@ ROSTER_WRITE_TOOLS = (
     "API-delete-a-block",
     "API-create-a-comment",
 )
-UNSEEN_WRITE_TOOLS = ("notion-append-block", "notionAppendBlock")
+UNSEEN_WRITE_TOOLS = ("notion-workspace-map", "notionWorkspaceMap")
 
 
 class TestNotionToolClassification:

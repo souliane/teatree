@@ -44,15 +44,11 @@ That 404 and :class:`NotionObjectNotFoundError` stay separate on purpose:
 inferred from a 404 whose real cause is unknowable.
 """
 
-import re
 from collections.abc import Callable
 
 import httpx
 
-# Anchored on non-hex boundaries so a slug whose tail happens to be hex
-# ("…-Deface-<id>") cannot shift the window and yield a plausible wrong id.
-_HEX32 = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])")
-_DASHED_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+from teatree.hooks.notion_ids import canonical_notion_id
 
 _UNAUTHORIZED = 401
 _FORBIDDEN = 403
@@ -296,14 +292,8 @@ def normalize_object_id(reference: str) -> str:
     :class:`NotionObjectNotFoundError` when the string carries no id, which is the
     one case where non-existence is provable without asking Notion.
     """
-    candidate = reference.strip().rstrip("/")
-    path = candidate.partition("?")[0].partition("#")[0]
-    for source in (path, candidate):
-        if dashed := _DASHED_UUID.search(source):
-            return dashed.group(0).lower()
-        if matches := _HEX32.findall(source):
-            raw = matches[-1].lower()
-            return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+    if object_id := canonical_notion_id(reference):
+        return object_id
     msg = (
         f"{reference!r} carries no Notion object id — expected a 32-character id, "
         "a dashed UUID, or a notion.so URL ending in one"

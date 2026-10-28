@@ -9,6 +9,8 @@ import re
 from collections.abc import Mapping
 from typing import Final
 
+from teatree.hooks.notion_ids import is_notion_object_id
+
 # An explicit roster: a substring "send" heuristic missed schedule/canvas tools.
 _SLACK_MCP_WRITE_TOOLS: Final[dict[str, tuple[str, ...]]] = {
     "slack_send_message": ("text", "message"),
@@ -55,9 +57,6 @@ _NOTION_IDENTITY_KEYS: Final[frozenset[str]] = frozenset(
     {"id", "page_id", "block_id", "database_id", "data_source_id", "parent_id", "discussion_id", "user_id"}
 )
 _NAME_WORD_RE: Final = re.compile(r"[A-Z]?[a-z]+")
-_NOTION_OBJECT_ID_RE: Final = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])"
-)
 
 
 def _tool_words(tool_name: str) -> frozenset[str]:
@@ -85,7 +84,7 @@ def is_notion_mcp_fetch(tool_name: str) -> bool:
     )
 
 
-def text_leaves(value: object, *, skip_keys: frozenset[str] = frozenset()) -> list[str]:
+def text_leaves(value: object) -> list[str]:
     """Every non-empty string inside *value*, in reading order, without recursing."""
     leaves: list[str] = []
     pending = [value]
@@ -95,7 +94,7 @@ def text_leaves(value: object, *, skip_keys: frozenset[str] = frozenset()) -> li
             if item:
                 leaves.append(item)
         elif isinstance(item, Mapping):
-            pending.extend(child for key, child in reversed(list(item.items())) if key not in skip_keys)
+            pending.extend(reversed(list(item.values())))
         elif isinstance(item, list):
             pending.extend(reversed(item))
     return leaves
@@ -127,7 +126,7 @@ def notion_write_text(tool_name: str, tool_input: Mapping[str, object]) -> str |
     while pending:
         key, item, in_content_updates = pending.pop()
         if isinstance(item, str):
-            if item and not (key in _NOTION_IDENTITY_KEYS and _NOTION_OBJECT_ID_RE.fullmatch(item.strip())):
+            if item and not (key in _NOTION_IDENTITY_KEYS and is_notion_object_id(item)):
                 leaves.append(item)
         elif isinstance(item, Mapping):
             pending.extend(

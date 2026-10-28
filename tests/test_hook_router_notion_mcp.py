@@ -200,6 +200,7 @@ class TestFetchStamps:
             PAGE.replace("-", ""),
             f"https://www.notion.so/space/{PAGE.replace('-', '')}?v={OTHER_PAGE.replace('-', '')}",
             f"https://www.notion.so/?p={PAGE.replace('-', '')}",
+            f"https://www.notion.so/space/{OTHER_PAGE}?v={OTHER_PAGE}&p={PAGE}&pm=s",
         ],
     )
     def test_cold_normalizer_matches_the_notion_api_and_selects_the_page(self, reference: str) -> None:
@@ -369,6 +370,29 @@ class TestWriteBoundary:
         assert isinstance(request, dict)
         assert request["reason"].startswith("audited ")
 
+    def test_deep_nested_escape_is_available_to_every_audited_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("hooks.scripts.gate_escape._head", lambda _cwd: "head")
+        request = _audit_request(
+            {
+                "session_id": SESSION,
+                "cwd": "/tmp",
+                "tool_name": UPDATE,
+                "tool_input": {
+                    "children": [
+                        {
+                            "paragraph": {
+                                "rich_text": [{"text": {"content": "[gate-escape:main_clone: audited deep field]"}}]
+                            }
+                        }
+                    ]
+                },
+            },
+            "main_clone",
+            None,
+        )
+        assert isinstance(request, dict)
+        assert request["reason"] == "audited deep field"
+
     def test_an_unread_page_is_refused_with_the_page_id_and_the_fetch_guidance(
         self, notion: FakeNotion, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -377,6 +401,7 @@ class TestWriteBoundary:
         assert PAGE in reason
         assert "fetch" in reason
         assert "notion_boundary" in reason
+        assert "published text is sent with the write" in reason
 
     def test_a_page_fetched_in_this_session_is_allowed(self, notion: FakeNotion) -> None:
         boundary.handle_track_notion_pages(_fetched())

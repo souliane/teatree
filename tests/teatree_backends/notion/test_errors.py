@@ -20,6 +20,8 @@ from teatree.backends.notion.errors import (
 from tests.teatree_backends.notion._fake_notion import UNSEEN_OBJECT_FRAGMENTS, FakeNotion
 
 _PAGE = "11111111-1111-1111-1111-111111111111"
+_DATABASE = "22222222-2222-2222-2222-222222222222"
+_VIEW = "33333333-3333-3333-3333-333333333333"
 
 
 class TestNormalizeObjectId:
@@ -35,6 +37,10 @@ class TestNormalizeObjectId:
                 _PAGE,
             ),
             ("https://www.notion.so/?p=11111111111111111111111111111111", _PAGE),
+            (
+                f"https://www.notion.so/space/{_DATABASE}?v={_VIEW}&p={_PAGE}&pm=s",
+                _PAGE,
+            ),
         ],
     )
     def test_extracts_the_dashed_id(self, reference: str, expected: str) -> None:

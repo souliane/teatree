@@ -41,16 +41,14 @@ _LIVE_CACHE_ENTRIES = 50
 _PAGE_KEYS = frozenset({"page_id"})
 _BLOCK_KEYS = frozenset({"block_id"})
 _REQUEST_KEYS = frozenset({"id", "page_id", "block_id", "url"})
-_DASHED_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-_HEX32 = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])")
 _BODY_KEYS = frozenset({"children", "content", "properties", "rich_text", "paragraph", "link_to_page", "blocks"})
 _FAILED_RESPONSE_RE = re.compile(
     r'^\s*(?:error\b|\{\s*"object"\s*:\s*"error"|object_not_found\b|restricted_resource\b|validation_error\b)',
     re.IGNORECASE,
 )
 _ESCAPE = (
-    "One-off escape: put `[gate-escape:notion_boundary: <reason>]` in a non-published tool-input field. "
-    "If this tool has no such field, the escape is unavailable for this call. Never put it in page or comment text."
+    "One-off escape: put `[gate-escape:notion_boundary: <reason>]` in tool input. "
+    "Prefer a non-published field; a token in published text is sent with the write."
 )
 
 
@@ -68,15 +66,10 @@ def _state_path(owner: str, suffix: str) -> Path:
 
 
 def _canonical(reference: str) -> str | None:
-    candidate = reference.strip().rstrip("/")
-    path = candidate.partition("?")[0].partition("#")[0]
-    for source in (path, candidate):
-        if dashed := _DASHED_UUID.search(source):
-            return dashed.group(0).lower()
-        if matches := _HEX32.findall(source):
-            raw = matches[-1].lower()
-            return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
-    return None
+    with teatree_src_on_path():
+        from teatree.hooks.notion_ids import canonical_notion_id  # noqa: PLC0415 — after src bootstrap
+
+        return canonical_notion_id(reference)
 
 
 def _response_failed(response: object, text: list[str]) -> bool:
