@@ -66,6 +66,8 @@ class RouteFailureRecord:
                 if message is not None and message.api_error_status == HTTPStatus.TOO_MANY_REQUESTS
                 else None
             )
+        if match.cause is LimitCause.LEAK_BLOCKED:
+            return None
         reset = match.stated_reset
         epoch = self.outcome.rate_limit_info.resets_at if self.outcome.rate_limit_info is not None else None
         if epoch is not None:
@@ -176,7 +178,9 @@ def fallback_reason_for_outcome(outcome: HarnessOutcome, *, metered_transport: b
         return None
     matched = limit_match(outcome.result_message, outcome.rate_limit_info, metered_transport=metered_transport)
     if matched is not None:
-        if lane == TaskAttempt.Lane.SUBSCRIPTION and matched.cause in SUBSCRIPTION_LIMIT_CAUSES:
+        if matched.cause is LimitCause.LEAK_BLOCKED or (
+            lane == TaskAttempt.Lane.SUBSCRIPTION and matched.cause in SUBSCRIPTION_LIMIT_CAUSES
+        ):
             return None
         return matched.as_reason()
     message = outcome.result_message

@@ -377,6 +377,19 @@ class TestSkillRouteRuntimeFallback(TestCase):
         assert final.selected_harness == "claude_like"
         assert hold.retry_at >= timezone.now() + timedelta(minutes=59)
 
+    def test_guardrail_block_stays_terminal_on_a_skill_route(self) -> None:
+        blocked = result_message(subtype="error_during_execution", is_error=True, result="guardrail_blocked")
+        self._register("codex_like", scripted_session([blocked]))
+        self._register("claude_like", FakeHarnessSession)
+
+        final = self._run(self._config("codex_like", "claude_like"))
+
+        final.task.refresh_from_db()
+        assert final.task.status == Task.Status.FAILED
+        assert final.error.startswith("leak_blocked: ")
+        assert self.built == ["codex_like"]
+        assert not AgentRouteAvailability.objects.exists()
+
     def test_retryable_failure_after_side_effects_requeues_without_switching(self) -> None:
         self._register("codex_like", _PostSideEffectFailureSession)
         self._register("claude_like", FakeHarnessSession)

@@ -641,7 +641,8 @@ subscription limit rotates the signing account or parks the task to its reset wi
 
 Automatic runtime fallback is deliberately narrow: authentication, quota/rate
 limit, model access, transport, and provider-5xx failures may try the next
-candidate. Protocol/schema errors, unsupported policy, and programmer failures
+candidate. Content guardrail blocks are terminal. Protocol/schema errors,
+unsupported policy, and programmer failures
 do not. If a tool or other external side effect has already started, TeaTree
 records the failed candidate and requeues the task instead of replaying it on the
 next model. Every attempt records the selected harness/provider/model, candidate
