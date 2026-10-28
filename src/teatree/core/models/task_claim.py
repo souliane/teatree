@@ -29,8 +29,7 @@ from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.checkout_exit import forget_checkout_exit, prepared_checkout_exit
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
-from teatree.core.models.review_target import review_target_for_task, verdict_at
-from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.review_target import review_completion_refusal
 from teatree.generation import current_generation
 
 if TYPE_CHECKING:
@@ -323,29 +322,8 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
     :func:`renew_lease` already names as the harm.
     """
     _refuse_lost_lease(task)
-    if normalize_phase(task.phase) in VERDICT_REVIEW_PHASES:
-        if not task.attempts.exists():
-            msg = "review task cannot complete without a recorded attempt"
-            raise InvalidTransitionError(msg)
-        target = review_target_for_task(task)
-        recorded = verdict_at(target) is not None if target is not None else False
-        returned_verdict = any(
-            isinstance(result, dict)
-            and isinstance(result.get("review_verdict"), dict)
-            and str(result["review_verdict"].get("verdict", "")).strip().lower() in {"merge_safe", "hold", "unverified"}
-            for result in task.attempts.filter(error="").values_list("result", flat=True)
-        )
-        if target is not None and target.bind_live_head and returned_verdict:
-            recorded = ReviewVerdict.objects.filter(
-                ticket=task.ticket, slug__iexact=target.slug, pr_id=target.pr_id
-            ).exists()
-        self_review = target is None and task.ticket.role == task.ticket.Role.AUTHOR and returned_verdict
-        escalated = (
-            task.attempts.filter(error="", result__needs_user_input=True).exclude(result__user_input_reason="").exists()
-        )
-        if not recorded and not self_review and not escalated and not task.review_skipped():
-            msg = "review task cannot complete without a recorded review outcome"
-            raise InvalidTransitionError(msg)
+    if normalize_phase(task.phase) in VERDICT_REVIEW_PHASES and (refusal := review_completion_refusal(task)):
+        raise InvalidTransitionError(refusal)
     from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
         release_task_occupancy,
         task_occupancy_release_deferred,
