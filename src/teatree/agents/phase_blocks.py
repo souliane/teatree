@@ -13,15 +13,15 @@ import json
 import logging
 from collections.abc import Callable
 
-from teatree.agents.coding_prompt import _coding_phase_directive
+from teatree.agents.coding_prompt import _TEST_SELECTION_LINES, _coding_phase_directive, _testing_phase_lines
 from teatree.agents.dispatch_preflight import (
-    branch_currency_brief_lines,
     declared_seams_brief_lines,
     head_state_brief_lines,
     review_diff_brief_lines,
     round_brief_lines,
     rubric_brief_lines,
 )
+from teatree.agents.read_only_draft_blocks import REQUESTING_REVIEW_LINES, SHIPPING_LINES
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.gates.fix_dod_gate import is_fix
@@ -379,6 +379,11 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
     """The ``PHASE: reviewing`` block and its review evidence instructions."""
     plan = plan_for_task(task)
     reviewer_head_unverified = task.ticket.role == task.ticket.Role.REVIEWER and plan is None
+    probe_kinds = (
+        "revert-to-RED and mutation"
+        if failing_run_required(gated_ticket_for_review_task(task) or task.ticket)
+        else "mutation"
+    )
     unverified_line = (
         "No verified live head is available for this PR. Do not review a stamped SHA or local diff; "
         "return review_venue_limit naming the live head read failure."
@@ -407,6 +412,13 @@ def _reviewing_phase_lines(task: Task, *, read_only_venue: bool = False) -> tupl
             " a `hold` owes none."
         ),
         ("For multi-repo tickets, review the combined diff and list all repos in `integration_review.repos`."),
+        *(() if read_only_venue else _TEST_SELECTION_LINES),
+        *(() if read_only_venue else (f"Run {probe_kinds} probes by pinned node id with -n0.",)),
+        (
+            "Use the supplied check-runs at the reviewed head for whole-tree evidence."
+            if read_only_venue
+            else "Read check-runs at the reviewed head for whole-tree evidence."
+        ),
         *(() if read_only_venue else ("2. Run /t3:next to wrap up.",)),
         *_VERIFICATION_BRIEF_LINES,
         *(() if read_only_venue else _green_proof_binding_lines(task)),
@@ -452,7 +464,7 @@ def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
     )
 
 
-def _answering_phase_lines(task: Task) -> tuple[str, ...]:
+def _answering_phase_lines(task: Task, *, read_only_venue: bool = False) -> tuple[str, ...]:
     """The ``PHASE: answering`` block — draft, then RETURN the answer envelope.
 
     The shell-denied answerer cannot post the reply itself; it hands the draft
@@ -473,6 +485,10 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
         if question:
             lines.append(f"The user's message: {question}")
     lines.extend(_ANSWER_RETURN_LINES)
+    if read_only_venue:
+        lines.append(
+            "The inbound event is under INBOUND EVENT in the task message; you reach no thread or forge from here."
+        )
     if owes_work_item(task.ticket):
         lines.extend(_WORK_ITEM_RETURN_LINES)
         if task.ticket.overlay:
@@ -481,17 +497,6 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
             except Exception:
                 logger.exception("Answering work-item overlay hook failed for ticket %s", task.ticket_id)
     return tuple(lines)
-
-
-def _testing_phase_lines(task: Task) -> tuple[str, ...]:
-    """The ``PHASE: testing`` block — the dispatch-time branch-currency verdict (#2663).
-
-    ``t3 tool verify-gates`` judges the worktree against ITSELF, so a branch can
-    pass every local gate and still not merge. The verdict is read at prompt-build
-    time (the same read-git-at-build-time pattern as :func:`head_state_brief_lines`)
-    so the tester starts from a fetched answer rather than a clean-looking tree.
-    """
-    return ("", "PHASE: testing — branch-currency preflight", *branch_currency_brief_lines(task))
 
 
 def _shipping_phase_lines() -> tuple[str, ...]:
@@ -503,20 +508,16 @@ def _shipping_phase_lines() -> tuple[str, ...]:
         "",
         "PHASE: shipping — auto-review gate",
         "Before creating the PR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
-        "If the result shows `reviewing` in the `missing` list:",
-        "1. Spawn a sub-agent to review the diff. Use this exact dispatch prompt so the",
-        "   reviewer loads the overlay review conventions (do NOT abbreviate the skill block):",
+        "If `missing` includes `reviewing`:",
+        "1. Spawn a reviewer sub-agent with this exact prompt, including its skill block:",
         reviewer_dispatch,
-        (
-            "2. After the sub-agent completes, mark reviewing as visited:"
-            " `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."
-        ),
+        ("2. When it completes, mark reviewing visited: `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."),
         "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-        "If the result shows `retro` in the `missing` list:",
+        "If `missing` includes `retro`:",
         "1. Run `/t3:retro` to capture lessons from this session and commit any skill fixes.",
         "2. Mark retro as visited: `t3 <overlay> lifecycle visit-phase <ticket_id> retro`.",
         "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-        "Do NOT create a new session for the review — use a sub-agent within this session.",
+        "Review in this session's sub-agent, not a new session.",
     )
 
 
@@ -594,4 +595,7 @@ _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
 _READ_ONLY_PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
     "planning": lambda _task: _PLAN_RETURN_LINES,
     "reviewing": lambda task: _reviewing_phase_lines(task, read_only_venue=True),
+    "answering": lambda task: _answering_phase_lines(task, read_only_venue=True),
+    "requesting_review": lambda _task: REQUESTING_REVIEW_LINES,
+    "shipping": lambda _task: SHIPPING_LINES,
 }
