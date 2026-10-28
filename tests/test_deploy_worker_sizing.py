@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from teatree.utils.ram_probe import DockerWorkerSizing, available_cpu_count, host_total_ram_mib
+from tests._deploy_space import install_build_space_stub
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = REPO_ROOT / "deploy"
@@ -71,6 +72,7 @@ class TestDeployShRunDerivesWorkerCaps:
         (repo / "deploy").mkdir(parents=True)
         (repo / "src" / "teatree" / "utils").mkdir(parents=True)
         shutil.copy(DEPLOY_SH, repo / "deploy" / "deploy.sh")
+        shutil.copy(DEPLOY / "disk-preflight.sh", repo / "deploy" / "disk-preflight.sh")
         # deploy.sh delegates the fast-forward to this sibling; staging deploy.sh
         # alone makes the run die at `No such file or directory` before it reaches
         # the compose invocation under test.
@@ -94,6 +96,7 @@ class TestDeployShRunDerivesWorkerCaps:
         daemon_cpus = max(1, available_cpu_count() // 2)
         bindir = tmp_path / "bin"
         bindir.mkdir()
+        install_build_space_stub(bindir)
         _write_exec(
             bindir / "docker",
             "#!/usr/bin/env bash\n"

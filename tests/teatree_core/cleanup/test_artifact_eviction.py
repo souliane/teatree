@@ -18,6 +18,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from datetime import timedelta
 from fnmatch import fnmatchcase
 from pathlib import Path
 from threading import Event, Thread
@@ -41,8 +42,8 @@ from teatree.core.cleanup.artifact_removal import EVICTED_PREFIX
 from teatree.core.cleanup.artifact_sizing import MAX_EVICTIONS_PER_PASS
 from teatree.core.cleanup.checkout_registry import _NEVER_A_CHECKOUT, CheckoutRegistry
 from teatree.core.cleanup.reclaim_pressure import effective_idle_days
-from teatree.core.models import Ticket, Worktree
-from tests._git_repo import make_git_repo, run_git
+from teatree.core.models import Session, Task, Ticket, TicketTransition, Worktree
+from tests._git_repo import make_git_repo, plant_review_evidence_receipt, run_git
 from tests._hook_env import HOOK_ENV_NAME
 from tests._process_table_venue import blinded_process_table, holding, this_process_in
 
@@ -137,6 +138,118 @@ class _EvictionFixture(TestCase):
 class TestPressureEscalation(_EvictionFixture):
     """Age stops gating as the disk fills; liveness never does (#4644)."""
 
+    def test_a_claimed_task_keeps_an_idle_venv(self) -> None:
+        checkout = make_git_repo(self.workspace / "busy-ticket")
+        artifact = _artifact_in(checkout)
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5615")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="busy",
+            extra={"worktree_path": str(checkout)},
+        )
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        session.ended_at = timezone.now()
+        session.save(update_fields=["ended_at"])
+        Task.objects.create(ticket=ticket, session=session, status=Task.Status.CLAIMED)
+
+        plan = self._plan(idle_days=None)
+
+        assert artifact not in {candidate.artifact for candidate in plan.candidates}
+        assert any("active/claimed task" in reason for reason in plan.kept)
+
+    def test_a_recent_write_inside_a_ticket_venv_keeps_it_under_pressure(self) -> None:
+        checkout = make_git_repo(self.workspace / "recent-ticket")
+        artifact = _artifact_in(checkout)
+        (artifact / "lib" / "big.so").write_bytes(b"new")
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5616")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="recent",
+            extra={"worktree_path": str(checkout)},
+        )
+
+        plan = self._plan(idle_days=None)
+
+        assert artifact not in {candidate.artifact for candidate in plan.candidates}
+        assert any("written in the last 2 hours" in reason for reason in plan.kept)
+
+    def test_an_idle_ticket_venv_is_still_removed(self) -> None:
+        checkout = make_git_repo(self.workspace / "idle-ticket")
+        artifact = _artifact_in(checkout)
+        _age(artifact / "lib" / "big.so", artifact / "lib", artifact, checkout)
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5617")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="idle",
+            extra={"worktree_path": str(checkout)},
+        )
+
+        plan = self._plan(idle_days=None)
+        outcome = evict_artifacts(plan)
+
+        assert not artifact.exists()
+        assert outcome.freed_bytes > 0
+
+    def _idle_registered_venv(self, name: str, *, last_activity_hours_ago: float) -> Path:
+        checkout = make_git_repo(self.workspace / name)
+        artifact = _artifact_in(checkout)
+        _age(artifact / "lib" / "big.so", artifact / "lib", artifact, checkout)
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url=f"https://example.com/issues/{name}")
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="org/repo", branch=name, extra={"worktree_path": str(checkout)}
+        )
+        edge = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="work_started")
+        stamp = timezone.now() - timedelta(hours=last_activity_hours_ago)
+        TicketTransition.objects.filter(pk=edge.pk).update(created_at=stamp)
+        return artifact
+
+    def test_a_ticket_active_within_two_hours_keeps_its_idle_venv(self) -> None:
+        artifact = self._idle_registered_venv("active-hour-ago", last_activity_hours_ago=1.9)
+
+        plan = self._plan(idle_days=None)
+        evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert any("ticket was active in the last 2 hours" in reason for reason in plan.kept)
+
+    def test_a_ticket_quiet_for_over_two_hours_no_longer_keeps_its_idle_venv(self) -> None:
+        artifact = self._idle_registered_venv("quiet-three-hours", last_activity_hours_ago=2.1)
+
+        evict_artifacts(self._plan(idle_days=None))
+
+        assert not artifact.exists()
+
+    def test_a_reaper_pinned_checkout_keeps_its_idle_venv(self) -> None:
+        checkout = make_git_repo(self.workspace / "pinned-ticket")
+        artifact = _artifact_in(checkout)
+        _age(artifact / "lib" / "big.so", artifact / "lib", artifact, checkout)
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5618")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="pinned",
+            extra={"worktree_path": str(checkout), "reaper_pinned": True},
+        )
+
+        plan = self._plan(idle_days=None)
+        outcome = evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert outcome.freed_bytes == 0
+        assert any("reaper_pinned" in reason for reason in plan.kept)
+
     def test_a_fresh_artifact_is_evicted_below_the_critical_floor(self) -> None:
         checkout = make_git_repo(self.workspace / "fresh")
         artifact = _artifact_in(checkout, dormant=False)
@@ -196,6 +309,100 @@ class TestPressureEscalation(_EvictionFixture):
 
         assert not artifact.exists()
         assert not any("too recently" in line for line in plan.kept)
+
+
+class TestEvidenceCheckouts(_EvictionFixture):
+    """A checkout holding a review-evidence receipt, or marked evidence/rescue/backup, keeps its artifacts (#5615)."""
+
+    def _idle_checkout(self, checkout: Path) -> Path:
+        artifact = _artifact_in(checkout)
+        _age(artifact / "lib" / "big.so", artifact / "lib", artifact, checkout)
+        self._some_process_exists()
+        return artifact
+
+    def _register(self, checkout: Path, *, branch: str) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url=f"https://example.com/issues/{branch}")
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="org/repo", branch=branch, extra={"worktree_path": str(checkout)}
+        )
+
+    def test_a_receipt_keeps_an_idle_venv_that_has_no_ticket_row(self) -> None:
+        checkout = make_git_repo(self.workspace / "unregistered")
+        artifact = self._idle_checkout(checkout)
+        plant_review_evidence_receipt(checkout)
+
+        plan = self._plan(idle_days=None)
+        outcome = evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert outcome.freed_bytes == 0
+        assert any("review-evidence receipt" in reason for reason in plan.kept)
+
+    def test_a_receipt_keeps_an_idle_venv_whose_ticket_row_has_an_ordinary_branch(self) -> None:
+        checkout = make_git_repo(self.workspace / "registered")
+        artifact = self._idle_checkout(checkout)
+        self._register(checkout, branch="feature-ordinary")
+        plant_review_evidence_receipt(checkout)
+
+        plan = self._plan(idle_days=None)
+        evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert any("review-evidence receipt" in reason for reason in plan.kept)
+
+    def test_a_receipt_git_keeps_outside_a_linked_worktree_still_keeps_its_venv(self) -> None:
+        main = make_git_repo(self.workspace / "main-clone")
+        linked = self.workspace / "linked"
+        run_git(main, "worktree", "add", "-q", "-b", "feature-linked", str(linked))
+        artifact = self._idle_checkout(linked)
+        receipt = plant_review_evidence_receipt(linked)
+
+        plan = self._plan(idle_days=None)
+        evict_artifacts(plan)
+
+        assert linked not in receipt.parents
+        assert artifact.exists()
+
+    def test_a_receipt_keeps_every_artifact_name_not_only_the_venv(self) -> None:
+        checkout = make_git_repo(self.workspace / "node-evidence")
+        artifact = _artifact_in(checkout, name="node_modules")
+        self._some_process_exists()
+        plant_review_evidence_receipt(checkout)
+
+        evict_artifacts(self._plan(idle_days=None))
+
+        assert artifact.exists()
+
+    def test_a_receipt_written_after_planning_stops_the_deletion(self) -> None:
+        checkout = make_git_repo(self.workspace / "reviewed-mid-batch")
+        artifact = self._idle_checkout(checkout)
+        plan = self._plan(idle_days=None)
+        plant_review_evidence_receipt(checkout)
+
+        outcome = evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert any("review-evidence receipt" in skipped for skipped in outcome.skipped)
+
+    def test_an_evidence_branch_keeps_the_venv_without_any_receipt_or_ticket_row(self) -> None:
+        checkout = make_git_repo(self.workspace / "rescue-branch")
+        run_git(checkout, "checkout", "-q", "-b", "rescue/old-work")
+        artifact = self._idle_checkout(checkout)
+
+        plan = self._plan(idle_days=None)
+        evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert any("rescue/old-work" in reason for reason in plan.kept)
+
+    def test_an_idle_checkout_with_no_receipt_and_an_ordinary_branch_is_still_evicted(self) -> None:
+        checkout = make_git_repo(self.workspace / "ordinary")
+        artifact = self._idle_checkout(checkout)
+
+        outcome = evict_artifacts(self._plan(idle_days=None))
+
+        assert not artifact.exists()
+        assert outcome.freed_bytes > 0
 
 
 class TestEviction(_EvictionFixture):
@@ -1296,6 +1503,17 @@ class TestTheVenueBoundsThePopulation(TestCase):
         assert [candidate.artifact for candidate in plan.candidates] == [ours]
         assert theirs not in {candidate.artifact for candidate in plan.candidates}
         assert any(f"#{row.pk}" in note and "skipped" in note for note in plan.excluded)
+
+    def test_codex_workspace_venv_is_in_the_eviction_plan(self) -> None:
+        self.venue.mkdir()
+        codex_home = self.outside / "codex-home"
+        artifact = _artifact_in(make_git_repo(codex_home / "workspace" / "owner" / "project"))
+
+        with patch.dict(os.environ, {"T3_CODEX_HOME": str(codex_home)}):
+            plan = plan_artifact_eviction(self.venue, idle_days=1)
+
+        assert not plan.refusal, plan.refusal
+        assert artifact in {candidate.artifact for candidate in plan.candidates}
 
 
 class TestThePassBudget(_EvictionFixture):

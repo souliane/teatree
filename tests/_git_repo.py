@@ -94,3 +94,12 @@ def make_git_repo(
     if initial_commit and not bare:
         run_git(path, "commit", "-q", "--allow-empty", "-m", "initial")
     return path
+
+
+def plant_review_evidence_receipt(checkout: Path) -> Path:
+    """Write a review-evidence receipt where git resolves it — outside the checkout for a linked worktree."""
+    raw = Path(run_git(checkout, "rev-parse", "--git-path", "t3/review-evidence.json"))
+    receipt = raw if raw.is_absolute() else checkout / raw
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text("{}", encoding="utf-8")
+    return receipt

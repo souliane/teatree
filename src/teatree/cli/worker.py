@@ -90,6 +90,17 @@ def run_command() -> None:
     _run_worker()
 
 
+@worker_app.command("reclaim")
+def reclaim_command(
+    budget_seconds: int = typer.Option(90, "--budget-seconds", min=1, max=240),
+) -> None:
+    """Run a bounded disk reclaim in the worker venue before a deploy build."""
+    from teatree.cli.worker_reclaim import run_reclaim  # noqa: PLC0415 — deferred: no DB at CLI import
+
+    for line in run_reclaim(budget_seconds=budget_seconds):
+        typer.echo(line)
+
+
 def _flock_holder_pid() -> int | None:
     from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
         WORKER_SINGLETON,
