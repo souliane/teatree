@@ -48,6 +48,7 @@ class ResourcePressureMarker(models.Model):
     consecutive_critical = models.IntegerField(default=0)
     last_warn_dm_at = models.DateTimeField(null=True, blank=True)
     last_plan = models.TextField(blank=True, default="")
+    disk_reclaim_cursor = models.PositiveSmallIntegerField(default=0)
     # Separate from last_plan for the same reason last_artifact_sweep_at is separate
     # from last_freed_at: two passes run on this one mini-loop, and a single shared
     # field means whichever wrote last is the only account that survives — the other

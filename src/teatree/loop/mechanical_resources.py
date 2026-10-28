@@ -39,7 +39,9 @@ claude-CLI process ancestry are never reclaim candidates.
 
 import logging
 import shutil
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
@@ -53,11 +55,17 @@ from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+
 # Paths that must NEVER be auto-removed regardless of the allow-list, because
 # they hold irreplaceable state. ``~/.claude/projects`` is session memory.
 _PROTECTED_DISK_PATHS: tuple[str, ...] = ("~/.claude/projects",)
 
 _STALE_STATUSLINE_DAYS = 2
+DISK_PASS_BUDGET_SECONDS = 90.0
+_STATUSLINE_STEP = 2
+_DOCKER_STEP = 3
 
 # The well-known statusline scratch dir. A module constant so it is patchable
 # in tests without monkeypatching ``pathlib.Path`` itself.
@@ -83,10 +91,16 @@ def free_resources(payload: ActionPayload) -> None:
 
     marker = ResourcePressureMarker.load()
     persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
-    _execute_plan(plan, payload)
     if resource == "disk":
+        complete = _execute_disk(plan, payload, marker)
+    else:
+        _execute_ram()
+        complete = True
+    if resource == "disk" and complete:
         plan.steps.extend(reclaim_yield_steps(marker, reclaimed_gb=plan.reclaimed_gb, payload=payload))
     persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
+    if not complete:
+        return
     marker.last_freed_at = timezone.now()
     marker.save(update_fields=["last_freed_at", "last_plan"])
     logger.info("free_resources(%s) reclaimed ~%.2f GB", resource, plan.reclaimed_gb)
@@ -143,13 +157,37 @@ def _resolve_disk_allowlist(payload: ActionPayload) -> list[str]:
     return resolved
 
 
-def _execute_disk(plan: FreePlan, payload: ActionPayload) -> None:
-    for path in _resolve_disk_allowlist(payload):
-        plan.reclaimed_gb += _purge_dir(path)
-    _run_uv_cache_prune()
-    _clean_stale_statusline()
-    plan.reclaimed_gb += _reclaim_docker_disk(plan)
-    _reap_done_worktrees(plan)
+def _execute_disk(plan: FreePlan, payload: ActionPayload, marker: "ResourcePressureMarker") -> bool:
+    steps = ("allowlisted caches", "uv cache", "statusline scratch", "docker", "done worktrees")
+    cursor = marker.disk_reclaim_cursor % len(steps)
+    deadline = time.monotonic() + DISK_PASS_BUDGET_SECONDS
+    for index in range(cursor, len(steps)):
+        if time.monotonic() >= deadline:
+            plan.steps.append(
+                f"DEFER {steps[index]} and {len(steps) - index - 1} later step(s) — pass budget exhausted"
+            )
+            return False
+        try:
+            if index == 0:
+                for path in _resolve_disk_allowlist(payload):
+                    plan.reclaimed_gb += _purge_dir(path)
+            elif index == 1:
+                _run_uv_cache_prune()
+            elif index == _STATUSLINE_STEP:
+                _clean_stale_statusline()
+            elif index == _DOCKER_STEP:
+                plan.reclaimed_gb += _reclaim_docker_disk(plan)
+            else:
+                _reap_done_worktrees(plan)
+        except Exception as exc:
+            plan.steps.append(f"FAILED {steps[index]}: {exc}")
+            persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
+            raise
+        plan.steps.append(f"DONE {steps[index]}")
+        marker.disk_reclaim_cursor = index + 1 if index + 1 < len(steps) else 0
+        marker.last_plan = plan.render()
+        marker.save(update_fields=["disk_reclaim_cursor", "last_plan"])
+    return True
 
 
 def _reap_done_worktrees(plan: FreePlan) -> None:
@@ -296,13 +334,6 @@ def _docker(*args: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-
-def _execute_plan(plan: FreePlan, payload: ActionPayload) -> None:
-    if plan.resource == "disk":
-        _execute_disk(plan, payload)
-    else:
-        _execute_ram()
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, timeout: float = 60) -> str | None:

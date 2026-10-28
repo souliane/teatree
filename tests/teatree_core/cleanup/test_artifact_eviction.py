@@ -41,7 +41,7 @@ from teatree.core.cleanup.artifact_removal import EVICTED_PREFIX
 from teatree.core.cleanup.artifact_sizing import MAX_EVICTIONS_PER_PASS
 from teatree.core.cleanup.checkout_registry import _NEVER_A_CHECKOUT, CheckoutRegistry
 from teatree.core.cleanup.reclaim_pressure import effective_idle_days
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Session, Task, Ticket, Worktree
 from tests._git_repo import make_git_repo, run_git
 from tests._hook_env import HOOK_ENV_NAME
 from tests._process_table_venue import blinded_process_table, holding, this_process_in
@@ -136,6 +136,67 @@ class _EvictionFixture(TestCase):
 
 class TestPressureEscalation(_EvictionFixture):
     """Age stops gating as the disk fills; liveness never does (#4644)."""
+
+    def test_a_claimed_task_keeps_an_idle_venv(self) -> None:
+        checkout = make_git_repo(self.workspace / "busy-ticket")
+        artifact = _artifact_in(checkout)
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5615")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="busy",
+            extra={"worktree_path": str(checkout)},
+        )
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        session.ended_at = timezone.now()
+        session.save(update_fields=["ended_at"])
+        Task.objects.create(ticket=ticket, session=session, status=Task.Status.CLAIMED)
+
+        plan = self._plan(idle_days=None)
+
+        assert artifact not in {candidate.artifact for candidate in plan.candidates}
+        assert any("active task" in reason for reason in plan.kept)
+
+    def test_a_recent_write_inside_a_ticket_venv_keeps_it_under_pressure(self) -> None:
+        checkout = make_git_repo(self.workspace / "recent-ticket")
+        artifact = _artifact_in(checkout)
+        (artifact / "lib" / "big.so").write_bytes(b"new")
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5616")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="recent",
+            extra={"worktree_path": str(checkout)},
+        )
+
+        plan = self._plan(idle_days=None)
+
+        assert artifact not in {candidate.artifact for candidate in plan.candidates}
+        assert any("written in the last 2 hours" in reason for reason in plan.kept)
+
+    def test_an_idle_ticket_venv_is_still_removed(self) -> None:
+        checkout = make_git_repo(self.workspace / "idle-ticket")
+        artifact = _artifact_in(checkout)
+        _age(artifact / "lib" / "big.so", artifact / "lib", artifact, checkout)
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5617")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="idle",
+            extra={"worktree_path": str(checkout)},
+        )
+
+        plan = self._plan(idle_days=None)
+        outcome = evict_artifacts(plan)
+
+        assert not artifact.exists()
+        assert outcome.freed_bytes > 0
 
     def test_a_fresh_artifact_is_evicted_below_the_critical_floor(self) -> None:
         checkout = make_git_repo(self.workspace / "fresh")

@@ -2,6 +2,8 @@
 
 import os
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -348,6 +350,42 @@ class DoneWorktreeSweepTests(TestCase):
         mock_reap.assert_called_once()
         assert mock_reap.call_args.kwargs == {"dry_run": False}
         assert "done-worktree sweep handled 1 worktree row(s)" in ResourcePressureMarker.load().last_plan
+
+
+class BoundedDiskPassTests(TestCase):
+    def test_budget_defers_remaining_steps_and_next_tick_resumes(self) -> None:
+        cache = Path(tempfile.mkdtemp(prefix="bounded-disk-"))
+        self.addCleanup(_rmtree_safe, str(cache))
+        now = [0.0]
+
+        def slow_purge(_path: str) -> float:
+            now[0] = 100.0
+            return 0.25
+
+        with (
+            patch.object(time, "monotonic", side_effect=lambda: now[0]),
+            patch.object(mechanical_resources, "_purge_dir", side_effect=slow_purge),
+            patch.object(mechanical_resources, "_run_uv_cache_prune") as uv_prune,
+            patch.object(mechanical_resources, "_clean_stale_statusline"),
+            patch.object(mechanical_resources, "_reclaim_docker_disk", return_value=0.0) as docker_reclaim,
+            patch.object(mechanical_resources, "_reap_done_worktrees"),
+        ):
+            payload = {"resource": "disk", "disk_cache_allowlist": [str(cache)]}
+            free_resources(payload)
+            first = ResourcePressureMarker.load()
+            assert first.last_freed_at is None
+            assert "DEFER" in first.last_plan
+            uv_prune.assert_not_called()
+            docker_reclaim.assert_not_called()
+
+            now[0] = 0.0
+            free_resources(payload)
+
+        second = ResourcePressureMarker.load()
+        assert second.last_freed_at is not None
+        assert second.disk_reclaim_cursor == 0
+        uv_prune.assert_called_once()
+        docker_reclaim.assert_called_once()
 
 
 class ReclaimStallTests(TestCase):

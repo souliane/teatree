@@ -8,10 +8,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "$SCRIPT_DIR/disk-preflight.sh"
 CORE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 SHA="${1:-}"
 REVISION_LABEL=org.opencontainers.image.revision
-MIN_BUILD_FREE_KIB=$((10 * 1024 * 1024))
 # Generation images and bases kept by build time, beyond the ones a container or the promoted tag holds.
 KEPT_GENERATIONS=3
 
@@ -60,39 +60,13 @@ candidates=("${candidates[@]/#.\/}")
 base_inputs="$(git -C "$PROJECT_ROOT" ls-tree -r "$SHA" -- "${candidates[@]}")"
 BASE="$REPOSITORY:base-$(printf '%s\n%s\n%s\n' "$base_inputs" "$BUILD_UID" "$CORE_SUBDIR" | git hash-object --stdin | cut -c1-16)"
 
-as_gib() { awk -v kib="$1" 'BEGIN { printf "%.1f GiB", kib / 1048576 }'; }
-
-# The least free space across `/` and docker's root: the build cache has been seen on `/` with the root elsewhere.
-# Kept in KiB exactly as `df -Pk` prints it: awk arithmetic on it renders as 2.1e+09 under mawk.
-least_free_kib() {
-    local root path avail least=""
-    root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
-    for path in / ${root:+"$root"}; do
-        avail="$({ df -Pk "$path" 2>/dev/null || true; } | awk 'NR == 2 { print $4 }')"
-        case "$avail" in '' | *[!0-9]*) continue ;; esac
-        if [ -z "$least" ] || [ "$avail" -lt "$least" ]; then
-            least="$avail"
-        fi
-    done
-    printf '%s' "$least"
-}
-
 ensure_build_space() {
-    local free
-    free="$(least_free_kib)"
-    if [ -z "$free" ]; then
-        echo "build-generation: WARNING could not read free disk space; building without the pre-build disk check." >&2
-        return 0
+    if read_build_space && [ "$BUILD_FREE_KIB" -lt "$BUILD_NEED_KIB" ]; then
+        echo "build-generation: $(build_space_gib "$BUILD_FREE_KIB") free; pruning build cache and dangling images ..."
+        docker builder prune -f >/dev/null || true
+        docker image prune -f >/dev/null || true
     fi
-    [ "$free" -ge "$MIN_BUILD_FREE_KIB" ] && return 0
-    echo "build-generation: $(as_gib "$free") free, under the $(as_gib "$MIN_BUILD_FREE_KIB") a build needs - pruning the build cache and dangling images ..."
-    docker builder prune -f >/dev/null || true
-    docker image prune -f >/dev/null || true
-    free="$(least_free_kib)"
-    if [ -n "$free" ] && [ "$free" -lt "$MIN_BUILD_FREE_KIB" ]; then
-        echo "build-generation: NOT BUILDING - $(as_gib "$free") free after pruning, under the $(as_gib "$MIN_BUILD_FREE_KIB") a build needs. Free space by hand, then re-run. The running stack is untouched." >&2
-        exit 1
-    fi
+    require_build_space build-generation
 }
 
 ensure_build_space

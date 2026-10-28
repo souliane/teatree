@@ -330,6 +330,23 @@ export_transcript_source() {
 }
 export_transcript_source
 
+. "$SCRIPT_DIR/disk-preflight.sh"
+reclaim_before_build() {
+    if ! compose exec -T teatree-worker t3 worker reclaim --budget-seconds 90; then
+        echo "deploy: worker reclaim unavailable; pruning Docker build cache and dangling images." >&2
+        docker builder prune -f >/dev/null || true
+        docker image prune -f >/dev/null || true
+    fi
+}
+
+if read_build_space && [ "$BUILD_FREE_KIB" -lt 1048576 ] && [ -w /dev/shm ]; then
+    DEPLOY_LOG="/dev/shm/teatree-deploy-$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
+    exec > >(tee -a "$DEPLOY_LOG") 2>&1
+    echo "deploy: low-space log: $DEPLOY_LOG"
+fi
+reclaim_before_build
+require_build_space deploy
+
 # Fetch now, fast-forward later: this checkout is bind-mounted into every running
 # container, so moving it before the drain hands the old processes new modules. The image
 # is built from a clean export of the fetched commit, and `fast_forward_live_tree` moves

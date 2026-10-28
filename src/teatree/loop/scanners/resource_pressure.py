@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING
 from django.utils import timezone
 
 from teatree.config import worktree_root
+from teatree.core.cleanup.reclaim_pressure import effective_disk_floor_gb
 from teatree.loop.scanners.base import ScanSignal
 from teatree.utils.ram_probe import linux_mem_available_kb
 from teatree.utils.ram_scope import cgroup_headroom_mib, cgroup_memory_probe_inert
@@ -444,7 +445,7 @@ class ResourcePressureScanner:
 
     def _classify(self, *, reading: ResourceReading, marker: "ResourcePressureMarker") -> list[ScanSignal]:
         inert = _inert_signals(reading)
-        disk_crit = reading.disk_ladder_gb < self.disk_crit_free_gb
+        disk_crit = reading.disk_ladder_gb < effective_disk_floor_gb(self.disk_crit_free_gb)
         ram_crit = reading.ram_ladder_gb < self.ram_crit_avail_gb
         _track_consecutive_critical(marker=marker, ram_crit=ram_crit)
         if disk_crit or ram_crit:
@@ -513,7 +514,7 @@ class ResourcePressureScanner:
 
     def _cleanup_needed_signal(self, *, resource: str, reading: ResourceReading, marker: object) -> ScanSignal:
         free_gb = reading.disk_ladder_gb if resource == "disk" else reading.ram_ladder_gb
-        crit_gb = self.disk_crit_free_gb if resource == "disk" else self.ram_crit_avail_gb
+        crit_gb = effective_disk_floor_gb(self.disk_crit_free_gb) if resource == "disk" else self.ram_crit_avail_gb
         return ScanSignal(
             kind="resource.cleanup_needed",
             summary=f"{resource} CRITICAL: {free_gb:.1f} GB (< {crit_gb:.1f} GB) — freeing",
@@ -526,7 +527,7 @@ class ResourcePressureScanner:
                 # so it needs the shape of the ladder it was dispatched from, not just
                 # the reading.
                 "disk_warn_free_gb": self.disk_warn_free_gb,
-                "disk_crit_free_gb": self.disk_crit_free_gb,
+                "disk_crit_free_gb": effective_disk_floor_gb(self.disk_crit_free_gb),
                 "scratch_retention_days": self.scratch_retention_days,
                 "scratch_sweep_root": self.scratch_sweep_root,
                 "consecutive_critical": getattr(marker, "consecutive_critical", 0) or 0,

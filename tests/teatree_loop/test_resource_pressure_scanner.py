@@ -487,6 +487,12 @@ class ClassificationTests(_ScannerHarness):
         signals = self._scan_with(disk_gb=100.0, ram_gb=10.0)
         assert signals == []
 
+    def test_build_headroom_triggers_reclaim_before_the_ordinary_user_cliff(self) -> None:
+        signals = self._scan_with(disk_gb=16.0, ram_gb=10.0)
+        disk = next(s for s in signals if s.payload.get("resource") == "disk")
+        assert disk.kind == "resource.cleanup_needed"
+        assert disk.payload["disk_crit_free_gb"] == pytest.approx(17.0)
+
     def test_apfs_trap_low_free_classifies_critical_not_normal(self) -> None:
         """7 G free on a 460 G APFS container is CRITICAL — proves absolute, not percent."""
         signals = self._scan_with(disk_gb=7.0, ram_gb=10.0)
@@ -500,7 +506,7 @@ class ClassificationTests(_ScannerHarness):
         signals = self._scan_with(disk_gb=7.0, ram_gb=10.0)
         disk_sig = next(s for s in signals if s.payload.get("resource") == "disk")
         assert disk_sig.payload["disk_warn_free_gb"] == pytest.approx(25.0)
-        assert disk_sig.payload["disk_crit_free_gb"] == pytest.approx(10.0)
+        assert disk_sig.payload["disk_crit_free_gb"] == pytest.approx(17.0)
 
     def test_disk_warn_band_is_advisory_only(self) -> None:
         signals = self._scan_with(disk_gb=18.0, ram_gb=10.0)
@@ -642,12 +648,12 @@ class ThresholdBoundaryTests(_ScannerHarness):
     """Free exactly AT the crit threshold is NOT critical; one step below IS."""
 
     def test_disk_exactly_at_crit_is_not_critical(self) -> None:
-        signals = self._scan_with(disk_gb=10.0, ram_gb=100.0)
-        # 10.0 == disk_crit_free_gb → not below → WARN band (10 < 25), not cleanup.
+        signals = self._scan_with(disk_gb=17.0, ram_gb=100.0)
+        # The computed 17 GiB floor is the boundary when the configured floor is 10 GiB.
         assert all(s.kind != "resource.cleanup_needed" for s in signals)
 
     def test_disk_just_below_crit_is_critical(self) -> None:
-        signals = self._scan_with(disk_gb=9.99, ram_gb=100.0)
+        signals = self._scan_with(disk_gb=16.99, ram_gb=100.0)
         assert any(s.kind == "resource.cleanup_needed" for s in signals)
 
     def test_disk_exactly_at_warn_is_not_warn(self) -> None:

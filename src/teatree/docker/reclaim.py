@@ -44,7 +44,7 @@ from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
-_PRUNE_TIMEOUT = 300
+_PRUNE_TIMEOUT = 25
 
 # docker image/volume prune print "Total reclaimed space: <size>"; builder prune
 # prints "Total:\t<size>". Both summary shapes are parsed to one size string.
