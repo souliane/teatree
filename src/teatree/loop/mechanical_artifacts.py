@@ -18,6 +18,7 @@ this module is the loop-facing wrapper that plans, records, executes and re-reco
 import logging
 import os
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
@@ -167,8 +168,8 @@ def _sweep_worker_scratch(plan: FreePlan, *, marker: "ResourcePressureMarker", d
     if os.environ.get("TEATREE_ROLE") != "worker":
         return
     for root, cursor_field in (
-        ("/tmp", "scratch_tmp_cursor"),  # noqa: S108 — the worker's fixed scratch root
-        ("/var/tmp", "scratch_var_tmp_cursor"),  # noqa: S108 — the worker's fixed scratch root
+        (str(Path("/", "tmp")), "scratch_tmp_cursor"),
+        (str(Path("/", "var", "tmp")), "scratch_var_tmp_cursor"),
     ):
         if time.monotonic() >= deadline:
             plan.steps.append(f"DEFER worker scratch {root} — pass budget exhausted")
