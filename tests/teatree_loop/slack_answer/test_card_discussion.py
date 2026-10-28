@@ -1,5 +1,7 @@
 """A free-text card reply reaches the responsible agent on the direct mailbox."""
 
+# test-path: cross-cutting
+
 import asyncio
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
