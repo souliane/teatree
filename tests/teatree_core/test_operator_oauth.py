@@ -41,6 +41,32 @@ class OperatorOAuthTestCase(TestCase):
             assert "/login/oauth/github/start/" in body
             assert "/login/oauth/gitlab/start/" in body
 
+    def test_start_without_a_configured_app_reports_configuration_action(self) -> None:
+        ConfigSetting.objects.filter(key="operator_oauth_apps").delete()
+
+        response = self.client.get("/login/oauth/github/start/")
+
+        assert response.status_code == 503
+        assert b"operator_oauth_apps" in response.content
+
+    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_oauth.httpx.post")
+    def test_token_exchange_without_refresh_grant_reports_relogin_action(self, post: Mock, secret: Mock) -> None:
+        post.return_value = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://github.com/login/oauth/access_token"),
+            json={"error": "access_denied"},
+        )
+        start = self.client.get("/login/oauth/github/start/")
+        state = parse_qs(urlsplit(start.headers["Location"]).query)["state"][0]
+
+        response = self.client.get("/login/oauth/github/callback/", {"code": "denied", "state": state})
+
+        assert response.status_code == 502
+        assert b"t3 login github" in response.content
+        assert not OperatorGrant.objects.exists()
+        secret.assert_called_once_with("github/oauth-app")
+
     @patch("teatree.core.operator_oauth.master_key_source")
     @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
     @patch("teatree.core.operator_oauth.httpx.get")

@@ -68,7 +68,10 @@ def _scope(forge: str) -> str:
 def start_login(request: "HttpRequest", forge: str) -> HttpResponse:
     if forge not in {"github", "gitlab"}:
         return HttpResponseBadRequest("unsupported forge")
-    app = _app(forge)
+    try:
+        app = _app(forge)
+    except (OperatorOAuthUnavailableError, ValueError):
+        return HttpResponse("operator OAuth app is unavailable; configure operator_oauth_apps", status=503)
     state = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -171,10 +174,13 @@ def finish_login(request: "HttpRequest", forge: str) -> HttpResponse:
     if not code:
         return HttpResponseBadRequest("operator OAuth code missing")
     try:
-        app = _app(forge)
-        tokens = _token_response(
-            forge, app, grant_type="authorization_code", credential=code, verifier=str(pending["verifier"])
-        )
+        try:
+            app = _app(forge)
+            tokens = _token_response(
+                forge, app, grant_type="authorization_code", credential=code, verifier=str(pending["verifier"])
+            )
+        except OperatorOAuthUnavailableError:
+            return HttpResponse(f"operator OAuth login failed; run `t3 login {forge}`", status=502)
         external_id, handle = _forge_identity(forge, app, tokens.access_token)
         with transaction.atomic():
             identity = OperatorIdentity.objects.filter(platform=forge, external_id=external_id).first()
