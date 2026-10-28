@@ -48,7 +48,7 @@ radius = 400
 # The delegate row is long enough that the window now OPENS inside its own `where the hook
 # reads it` cell, so merge-detect's row is entirely outside and is not named here.
 "hooks/CLAUDE.md" = [
-  "1fab7e0d64ed4811",
+  "02a640bb2cd892c2",
   "ad097129b0bd77a6",
   "8c60bb3059c07312",
   "4cb202f4e2805c65"
