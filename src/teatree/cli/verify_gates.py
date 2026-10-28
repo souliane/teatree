@@ -73,7 +73,7 @@ _MIN_DISK_MIB = 4096
 _MIN_MEMORY_MIB = 2048
 _BYTES_PER_MIB = 1024 * 1024
 _STAGE_DEADLINE_SECONDS = 600
-_PUSH_GATE_MAX_WAIT_SECONDS = 1500
+_PUSH_GATE_LOCK_WAIT_SECONDS = 1500
 _MAX_LOAD_DEADLINE_FACTOR = 3.0
 _MAX_SCOPED_FILES = 500
 # prek's own precedence when one directory holds several (measured on prek 0.4.10 and 0.5.3).
@@ -264,11 +264,17 @@ def _declared_manual_hooks(config: Path) -> tuple[str, ...]:
     return tuple(hook for hook in CI_JOB_MANUAL_HOOKS if hook in declared)
 
 
+def _stage_deadline_seconds(*, push_stage: bool, load_factor: float = 1.0) -> int:
+    work = math.ceil(_STAGE_DEADLINE_SECONDS * load_factor)
+    return work + (_PUSH_GATE_LOCK_WAIT_SECONDS if push_stage else 0)
+
+
 def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[tuple[str, list[str]]]:
-    deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
+    deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_stage_deadline_seconds(push_stage=False)}s"]
+    push_deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_stage_deadline_seconds(push_stage=True)}s"]
     stages = [
         ("commit", [*deadline, "prek", "run", *scope_args]),
-        ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
+        ("pre-push (CI-parity gates)", [*push_deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
     ]
     config = _prek_config(repo, toplevel)
     # A config nobody could read is not one declaring no hooks: keep every id so the run cannot go green on it.
@@ -291,12 +297,11 @@ def _run_stages(stages: list[tuple[str, list[str]]], repo: Path, env: dict[str, 
     for label, cmd in stages:
         load1, cores = machine_load.read_load_and_cores()
         load_factor = min(_MAX_LOAD_DEADLINE_FACTOR, max(1.0, load1 / max(cores, 1)))
-        work_deadline = math.ceil(_STAGE_DEADLINE_SECONDS * load_factor)
         is_push_stage = label.startswith("pre-push")
-        deadline = work_deadline + (_PUSH_GATE_MAX_WAIT_SECONDS if is_push_stage else 0)
+        deadline = _stage_deadline_seconds(push_stage=is_push_stage, load_factor=load_factor)
         measured_cmd = [*cmd[:3], f"{deadline}s", *cmd[4:]]
         stage_env = (
-            {**env, "T3_PUSH_GATE_LOCK_WAIT_SECONDS": str(_PUSH_GATE_MAX_WAIT_SECONDS)} if is_push_stage else env
+            {**env, "T3_PUSH_GATE_LOCK_WAIT_SECONDS": str(_PUSH_GATE_LOCK_WAIT_SECONDS)} if is_push_stage else env
         )
         typer.echo(f"== verify-gates: {label} ==", err=True)
         typer.echo(f"verify-gates: load {load1:.1f}/{cores}; deadline {deadline}s", err=True)
@@ -370,8 +375,9 @@ def verify_gates(
 ) -> None:
     """Run the FULL CI-equivalent local gate set (commit, push and manual CI-job stages).
 
-    Runs each prek stage under a load-aware deadline (600 seconds at idle, plus
-    the lock wait for pre-push) and exits non-zero if ANY
+    Runs each prek stage under a load-aware deadline (600 seconds of work at
+    idle, up to three times that under load; pre-push also allows the shared
+    push-gate lock's 1500-second wait). Exits non-zero if ANY
     stage fails. The push-stage run is
     what catches the gates CI fails on but a bare ``prek run --all-files``
     cannot see (comment-density, doc-update, ensure-pr, the public-repo leak

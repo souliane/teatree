@@ -40,6 +40,7 @@ from teatree.cli.verify_gates import (
     _prek_config,
     _resource_refusal,
     _snapshot_control_db,
+    _stage_commands,
     _stage_env,
 )
 from teatree.core.models import PlanArtifact, Ticket, Worktree
@@ -422,6 +423,11 @@ class TestVerifyGatesRunsBothStages:
         push = [c for c in calls if "--hook-stage" in c]
         assert push, "verify-gates must invoke the push stage"
         assert push[0][-2:] == ["--hook-stage", "pre-push"]
+
+    def test_pre_push_deadline_includes_shared_lock_wait(self, tmp_path: Path) -> None:
+        stages = _stage_commands(["--all-files"], tmp_path, tmp_path)
+        push = next(command for label, command in stages if label.startswith("pre-push"))
+        assert push[:4] == ["timeout", "--signal=TERM", "--kill-after=15s", "2100s"]
 
     def test_invokes_the_manual_stage_hooks_ci_gates_on(self, worktree: Path) -> None:
         """CI's test-path-mirror job runs a ``stages: [manual]`` hook no commit/push run fires."""

@@ -4296,8 +4296,9 @@ Usage: t3 tool verify-gates [OPTIONS]
  Run the FULL CI-equivalent local gate set (commit, push and manual CI-job
  stages).
 
- Runs each prek stage under a load-aware deadline (600 seconds at idle, plus
- the lock wait for pre-push) and exits non-zero if ANY
+ Runs each prek stage under a load-aware deadline (600 seconds of work at
+ idle, up to three times that under load; pre-push also allows the shared
+ push-gate lock's 1500-second wait). Exits non-zero if ANY
  stage fails. The push-stage run is
  what catches the gates CI fails on but a bare ``prek run --all-files``
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
