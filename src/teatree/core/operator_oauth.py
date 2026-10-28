@@ -228,8 +228,9 @@ def revoke_operator_grant(user: "AbstractBaseUser", forge: str) -> None:
     grant = OperatorGrant.objects.filter(user=user, forge=forge).first()
     if grant is None:
         raise OperatorOAuthUnavailableError(forge)
+    access = operator_access_token(user, forge)
+    grant.refresh_from_db()
     tokens = grant.reveal(master_key_source().load())
-    access = tokens.access_token
     secret = _secret(app, forge)
     if forge == "gitlab":
         for token in (access, tokens.refresh_token):

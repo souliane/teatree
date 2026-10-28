@@ -175,6 +175,40 @@ class OperatorOAuthTestCase(TestCase):
     @patch("teatree.core.operator_oauth.master_key_source")
     @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
     @patch("teatree.core.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_oauth.httpx.request")
+    @patch("teatree.core.operator_oauth.httpx.post")
+    def test_github_logout_refreshes_expired_access_before_revoking(
+        self, post: Mock, request: Mock, get: Mock, secret: Mock, source: Mock
+    ) -> None:
+        source.return_value.load.return_value = self.key
+        user = get_user_model().objects.create_superuser("alice", email="", password="unused")
+        OperatorGrant.objects.store(
+            user=user,
+            forge="github",
+            tokens=self._tokens("expired-access", "refresh", timezone.now() - timedelta(minutes=1)),
+            key=self.key,
+        )
+        post.return_value = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://github.com/login/oauth/access_token"),
+            json={"access_token": "fresh-access", "refresh_token": "fresh-refresh", "expires_in": 3600},
+        )
+        request.return_value = httpx.Response(
+            204, request=httpx.Request("DELETE", "https://api.github.com/applications/github-client/grant")
+        )
+        get.return_value = httpx.Response(401, request=httpx.Request("GET", "https://api.github.com/user"))
+
+        revoke_operator_grant(user, "github")
+
+        assert post.call_args.kwargs["data"]["refresh_token"] == "refresh"
+        assert request.call_args.kwargs["json"] == {"access_token": "fresh-access"}
+        assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer fresh-access"
+        assert not OperatorGrant.objects.filter(user=user, forge="github").exists()
+        secret.assert_called_with("github/oauth-app")
+
+    @patch("teatree.core.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_oauth.httpx.get")
     @patch("teatree.core.operator_oauth.httpx.post")
     def test_logout_keeps_grant_when_forge_still_accepts_it(
         self, post: Mock, get: Mock, secret: Mock, source: Mock
