@@ -21,7 +21,7 @@ from teatree.agents.dispatch_preflight import (
     round_brief_lines,
     rubric_brief_lines,
 )
-from teatree.agents.read_only_draft_blocks import REQUESTING_REVIEW_LINES, SHIPPING_LINES
+from teatree.agents.read_only_draft_blocks import BACKLOG_SWEEP_LINES, REQUESTING_REVIEW_LINES, SHIPPING_LINES
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.gates.fix_dod_gate import is_fix
@@ -598,6 +598,7 @@ _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
 
 #: The read-only executor gets its survey in the task message, in full, so its planning block carries none.
 _READ_ONLY_PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
+    "backlog_sweep": lambda _task: BACKLOG_SWEEP_LINES,
     "planning": lambda _task: _PLAN_RETURN_LINES,
     "reviewing": lambda task: _reviewing_phase_lines(task, read_only_venue=True),
     "answering": lambda task: _answering_phase_lines(task, read_only_venue=True),

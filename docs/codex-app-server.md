@@ -43,7 +43,7 @@ Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` 
 harnesses. A Codex candidate is rejected on every unserved phase that bars write tools,
 except `bughunt`, `dogfood_smoke`, and `eval_local`, which use the current worker's
 write approval policy. Other harnesses retain the original phase tool restrictions.
-`planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, `directive_interpreting`, `answering`, `requesting_review` and `shipping` pass only after the live probe on that selection
+`planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, `directive_interpreting`, `answering`, `backlog_sweep`, `requesting_review` and `shipping` pass only after the live probe on that selection
 (see [Read-only executor](#read-only-executor)). Serving `requesting_review` lifts its `claude_sdk` pin for a configured Codex harness. `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
 name Codex, and `config_setting set` refuses a value outside them. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
 read-only phase; a route keyed by the phase's own skill still does. A ticket whose `extra` carries
@@ -275,7 +275,7 @@ into the error text.
 ## Read-only executor
 
 `teatree-ro-executor` is a separate container where Codex runs `planning`, `reviewing`, `critic_reviewing`, `scoping`,
-`triage_assessing`, `directive_interpreting`, `answering`, `requesting_review` and `shipping`.
+`triage_assessing`, `directive_interpreting`, `answering`, `backlog_sweep`, `requesting_review` and `shipping`.
 Codex's own read-only sandbox cannot start inside a container, so the
 read-only boundary is the executor's mounts, and the worker checks them live instead of trusting a flag.
 Codex cannot enforce Claude's shell-tool deny list. The worker accepts that mismatch only for a live-attested
@@ -361,7 +361,7 @@ Tickets without a forge issue or pull request URL carry an empty issue body and 
   `rules/*.rules`, `config.toml` or `plugins/` retires the server; the one retry then reopens the thread on a
   fresh server.
   `t3 codex auth check --executor --phase <phase>` checks the live home again after its OK turn and fails if it was planted.
-- **Brief.** The executor has no `t3`, forge or data dir, so the worker reads the issue body, its
+- **Brief.** For ordinary issue briefs, the executor has no `t3`, forge or data dir, so the worker reads the issue body, its
   comments (system notes left out, oldest first, each with its author and time), the ticket context, the
   predecessor handoff and the planning intake survey and puts them in the task message under fixed caps (64 KiB for
   the body and for the comments, 32 KiB for each of the others), never truncated. It also fetches the
@@ -387,7 +387,7 @@ Tickets without a forge issue or pull request URL carry an empty issue body and 
   `<teatree tool, absent here>`, and so does every bare `t3` command in the task message's rubric and plan seams.
   Quoted issue text, comments, handoffs, and diffs remain byte-for-byte intact as evidence; a system context that
   still names a `t3` command, or that is over the context budget, refuses the run rather than being cut.
-- **Draft and readiness phases.** `answering`, `requesting_review` and `shipping` return a draft or a verdict
+- **Draft and readiness phases.** `answering`, `backlog_sweep`, `requesting_review` and `shipping` return a draft or a verdict
   and the worker alone acts on it through the gates it already owns; the executor posts, pushes and merges
   nothing. `answering` gets the inbound event (actor, channel, thread, replied-to message and text) in the task
   message and returns an `answer` that the existing answer recorder sends. `requesting_review` gets each open pull
@@ -398,7 +398,14 @@ Tickets without a forge issue or pull request URL carry an empty issue body and 
   needs, any open self-review hold and each worktree's commits ahead and dirty state, and returns
   `ship_readiness`; `ready` true runs `pr create` in the worker (every ship gate, then the queued
   `execute_ship` that pushes and opens the pull request), anything else fails the task and ships nothing. A
-  run on the executor that returns neither field is refused. These phases do not fetch the target ref.
+  run on the executor that omits its required field is refused. `backlog_sweep` receives a bounded index of
+  every open issue in the overlay's owned repositories and a rotating 20-issue excerpt window (80-byte titles,
+  1,500-byte bodies). It is admitted
+  only with the scanner's ask gate. Its `sweep_proposals` return is validated before any write; the worker
+  opens and finishes the measured run, attaches offered dream gaps through `ticket attach-gaps`, and stores
+  ticket-fold suggestions for owner review. The executor edits and closes no issue. An unreadable or oversized
+  index refuses this venue and leaves the Claude sweep path available. The sweep fetches its target ref;
+  the other three draft phases do not.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
   `t3 codex auth check --executor` runs one OK-turn through it. Both run only in `teatree-worker`, the one
   service granted the docker socket; anywhere else they refuse and name that route. The import needs an
@@ -411,7 +418,7 @@ Tickets without a forge issue or pull request URL carry an empty issue body and 
   mode, and removes everything it created. `live` repeats those checks on the deployed executor from inside
   `teatree-worker` while holding the executor lease; its docstring has the exact invocation.
 - **Routing served phases to Codex.** Once the executor login checks green, a Codex candidate
-  may run `planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, `directive_interpreting`, `answering`, `requesting_review` or `shipping` after the live probe. Other write-barring
+  may run `planning`, `reviewing`, `critic_reviewing`, `scoping`, `triage_assessing`, `directive_interpreting`, `answering`, `backlog_sweep`, `requesting_review` or `shipping` after the live probe. Other write-barring
   phases still reject that candidate. The configured skill route and its fallback order remain in force, except
   that a candidate after the first whose resolved lane is metered is rejected unless `agent_route_paid_fallback`
   is on (see [`docs/blueprint/configuration.md`](blueprint/configuration.md)).

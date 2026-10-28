@@ -20,6 +20,17 @@ from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
 _READ_ONLY_SKILL_SECTIONS = {
+    "sweeping-tickets": frozenset(
+        {
+            "## Non-Negotiables",
+            "## Command Reference",
+            "## Workflow",
+            "## Scheduling via the loop",
+            "## Dream gaps ride the same sweep",
+            "## Rules",
+            "## Related skills",
+        }
+    ),
     "review": frozenset(
         {
             "### Quality Gate Verification (Verify-Fix-Repeat)",
@@ -198,7 +209,9 @@ def read_only_venue_skill_contents(skills: list[str], embedded: set[str]) -> str
     reach = "Only the skill text below reaches this venue: no skill file it cites is mounted here."
     if absent:
         reach = f"{reach} Not available here: {', '.join(absent)}."
-    return "\n\n".join((reach, *sections))
+    rules = [section for section in sections if section.startswith(("--- RULES.md ---", "--- SKILL: rules ---"))]
+    remaining = [section for section in sections if section not in rules]
+    return "\n\n".join((reach, *rules, *remaining))
 
 
 _SUBAGENT_PREAMBLE_HEADER = (

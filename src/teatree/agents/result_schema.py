@@ -14,8 +14,10 @@ from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
 from teatree.agents.result_schema_draft import (
     REVIEW_REQUEST_SCHEMA_PROPERTY,
     SHIP_READINESS_SCHEMA_PROPERTY,
+    SWEEP_PROPOSALS_SCHEMA_PROPERTY,
     ReviewRequestDraft,
     ShipReadiness,
+    SweepProposals,
 )
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
 from teatree.agents.result_schema_review import (
@@ -188,6 +190,7 @@ class AgentResult(OwnerStop, total=False):
     ticket_sweep: TicketSweepEvidence
     review_request: ReviewRequestDraft
     ship_readiness: ShipReadiness
+    sweep_proposals: SweepProposals
     next_steps: list[str]
     commands_executed: list[str]
     skill_application: list[SkillApplication]
@@ -417,6 +420,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
         "review_request": REVIEW_REQUEST_SCHEMA_PROPERTY,
         "ship_readiness": SHIP_READINESS_SCHEMA_PROPERTY,
+        "sweep_proposals": SWEEP_PROPOSALS_SCHEMA_PROPERTY,
         **OWNER_STOP_SCHEMA_PROPERTIES,
         "next_steps": {
             "type": "array",

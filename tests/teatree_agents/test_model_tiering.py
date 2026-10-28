@@ -557,7 +557,7 @@ class TestResolvePhaseHarness:
         assert resolve_phase_harness("codex_app_server", "requesting_review") == "codex_app_server"
         assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, "requesting_review") == AgentHarness.CLAUDE_SDK
 
-    @pytest.mark.parametrize("phase", ["answering", "shipping"])
+    @pytest.mark.parametrize("phase", ["answering", "backlog_sweep", "shipping"])
     def test_codex_runs_the_draft_phases_it_is_configured_for(self, phase: str) -> None:
         assert resolve_phase_harness("codex_app_server", phase) == "codex_app_server"
         assert resolve_phase_harness(AgentHarness.CLAUDE_SDK, phase) == AgentHarness.CLAUDE_SDK

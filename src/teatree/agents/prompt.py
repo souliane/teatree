@@ -207,18 +207,32 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     lines = _task_header_lines(task, extra)
     lines.extend(_format_pr_context(extra))
-    triage = normalize_phase(task.phase) == "triage_assessing"
+    phase = normalize_phase(task.phase)
+    triage = phase == "triage_assessing"
+    sweep = phase == "backlog_sweep"
     lines.extend(
         (
             "",
-            "Listed issues, each under its URL (read from the forge for you):"
-            if triage
-            else "Issue body (read from the forge for you):",
+            (
+                "OPEN ISSUE INDEX (read by the worker):"
+                if sweep
+                else "Listed issues, each under its URL (read from the forge for you):"
+                if triage
+                else "Issue body (read from the forge for you):"
+            ),
             facts.issue_body or "(empty)",
         )
     )
     if facts.issue_comments:
-        lines.extend(("", "Issue comments, oldest first (read from the forge for you):", facts.issue_comments))
+        lines.extend(
+            (
+                "",
+                "ISSUE WINDOW (read by the worker):"
+                if sweep
+                else "Issue comments, oldest first (read from the forge for you):",
+                facts.issue_comments,
+            )
+        )
     if facts.ticket_context:
         lines.extend(("", "Ticket context (durable knowledge store, in full):", facts.ticket_context))
     if facts.handoff:

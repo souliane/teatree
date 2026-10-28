@@ -62,6 +62,7 @@ _PHASE_TO_SKILL: dict[str, str] = {
     "e2e_reviewing": "e2e-review",
     "scanning_news": "scanning-news",
     "triage_assessing": "triaging-issues",
+    "backlog_sweep": "sweeping-tickets",
 }
 
 _PYTHON_FILE_HINTS = ("pyproject.toml", "setup.py", "requirements.txt")

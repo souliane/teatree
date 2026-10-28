@@ -15,19 +15,23 @@ from teatree.agents.phase_blocks import intake_survey_json
 from teatree.agents.read_only_draft_facts import DRAFT_FACTS_CAP_BYTES, DraftFactsUnavailableError, draft_phase_facts
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.intake.landscape_persist import ensure_planning_landscape
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import SWEEP_ASK_GATE_MARKER, normalize_phase
+from teatree.core.models import TicketSweepRun
 from teatree.core.models.task_attempt import READ_ONLY_BRIEF_REFUSED_PREFIX
 from teatree.core.overlay_loader import get_overlay_for_ticket
+from teatree.core.overlay_repos import owned_repo_slugs
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.live_head import dispatch_review_target, live_head_at
 from teatree.core.review.review_delta import BRIEF_PATCH_CHARS
 from teatree.core.review.review_plan import plan_for_task
+from teatree.core.self_forge_identities import issue_author_is_self, issue_author_login, self_identity_set
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils.git_sync import fetch_branch
-from teatree.utils.url_slug import pr_ref_from_url, slug_from_issue_or_pr_url
+from teatree.utils.url_slug import pr_ref_from_url, repo_namespaced_key_from_path, slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
     from teatree.core.models import Task, Ticket
+    from teatree.core.overlay import OverlayBase
 
 ISSUE_BODY_CAP_BYTES: Final = 64 * 1024
 ISSUE_COMMENTS_CAP_BYTES: Final = 64 * 1024
@@ -66,9 +70,9 @@ class ReadOnlyFacts:
 
     @classmethod
     def gather(cls, task: "Task", handoff: Path | None) -> "ReadOnlyFacts":
-        """Read everything the brief inlines in the worker, or refuse: nothing is truncated on this venue."""
+        """Read the brief in the worker; sweep excerpts are explicit and remaining over-budget facts refuse."""
         phase = normalize_phase(task.phase)
-        issue_body, issue_comments = _issue_facts(task, phase)
+        issue_body, issue_comments = _sweep_issue_facts(task) if phase == "backlog_sweep" else _issue_facts(task, phase)
         review_head, review_diff, review_checks = _review_diff(task)
         planning = phase == "planning"
         survey = intake_survey_json(task) if planning else ""
@@ -110,7 +114,7 @@ class ReadOnlyFacts:
             if (size := len(text.encode())) > cap:
                 reason = f"read-only brief over budget: {name} {size} bytes > {cap}"
                 raise _refused(reason)
-        if normalize_phase(task.phase) not in DRAFT_PHASES:
+        if normalize_phase(task.phase) not in DRAFT_PHASES or normalize_phase(task.phase) == "backlog_sweep":
             _fetch_target(task)
         return facts
 
@@ -230,6 +234,100 @@ def _issue_at(ticket: "Ticket", issue_url: str) -> tuple[str, str]:
         reason = f"the issue comments could not be read ({type(exc).__name__})"
         raise _refused(reason) from exc
     return body, "\n\n".join(block for comment in comments if (block := _comment_block(comment)))
+
+
+def _sweep_issue_facts(task: "Task") -> tuple[str, str]:
+    rows, window_rows = _sweep_rows_and_window(task)
+    index = "\n".join(f"- {url} | {'self' if own else 'ext'} | {title}" for url, title, _, own in rows)
+    window = "\n\n".join(
+        f"ISSUE {url} ({'self' if own else 'ext'})\nTITLE: {title}\nBODY EXCERPT:\n{body}"
+        for url, title, body, own in window_rows
+    )
+    if len(index.encode()) > ISSUE_BODY_CAP_BYTES or len(window.encode()) > ISSUE_COMMENTS_CAP_BYTES:
+        reason = "read-only brief over budget: backlog issue index or window"
+        raise _refused(reason)
+    return index, window
+
+
+def sweep_window_evidence(task: "Task") -> tuple[list[str], list[str], int]:
+    rows, window = _sweep_rows_and_window(task)
+    return (
+        [url for url, _, _, _ in rows],
+        [url for url, _, _, _ in window],
+        sum(not own for _, _, _, own in window),
+    )
+
+
+def _sweep_rows_and_window(
+    task: "Task",
+) -> tuple[list[tuple[str, str, str, bool]], list[tuple[str, str, str, bool]]]:
+    if SWEEP_ASK_GATE_MARKER not in task.execution_reason:
+        reason = "a backlog sweep needs the ASK-GATE marker"
+        raise _refused(reason)
+    overlay = get_overlay_for_ticket(task.ticket)
+    repos = owned_repo_slugs(overlay)
+    if not repos:
+        reason = "the overlay has no owned issue repositories"
+        raise _refused(reason)
+    try:
+        rows = _list_sweep_issues(overlay, repos)
+    except Exception as exc:
+        reason = f"the open issue listing could not be read ({type(exc).__name__})"
+        raise _refused(reason) from exc
+    rows.sort(
+        key=lambda row: (slug_from_issue_or_pr_url(urlparse(row[0]).path), int(row[0].rstrip("/").rsplit("/", 1)[1]))
+    )
+    finished = TicketSweepRun.objects.filter(
+        source="loop", overlay=task.ticket.overlay, finished_at__isnull=False
+    ).count()
+    pages = max(1, (len(rows) + 19) // 20)
+    start = (finished % pages) * 20
+    return rows, rows[start : start + 20]
+
+
+def _list_sweep_issues(overlay: "OverlayBase", repos: tuple[str, ...]) -> list[tuple[str, str, str, bool]]:
+    rows: list[tuple[str, str, str, bool]] = []
+    for repo in repos:
+        host = get_backend_provider().get_code_host_for_repo(overlay, repo)
+        if host is None or not isinstance(metadata := host.get_repo(repo=repo), dict) or metadata.get("error"):
+            message = "unreadable issue repository"
+            raise ValueError(message)
+        if not isinstance(issues := host.list_repo_open_issues(repo=repo), list):
+            message = "unreadable issue listing"
+            raise TypeError(message)
+        identities: set[str] | None = None
+        for issue in issues:
+            url, title, body = _sweep_issue_row(issue, repo)
+            if identities is None:
+                identities = self_identity_set(url, host=host)
+            rows.append((url, title, body, issue_author_is_self(issue_author_login(issue), identities)))
+    return rows
+
+
+def _sweep_issue_row(issue: object, repo: str) -> tuple[str, str, str]:
+    if not isinstance(issue, dict):
+        message = "invalid issue row"
+        raise TypeError(message)
+    url = issue.get("web_url") or issue.get("html_url")
+    title = issue.get("title")
+    body = issue.get("body", issue.get("description", ""))
+    if (
+        not isinstance(url, str)
+        or not isinstance(title, str)
+        or not isinstance(body, str)
+        or slug_from_issue_or_pr_url(urlparse(url).path) != repo
+        or not repo_namespaced_key_from_path(urlparse(url).path)
+    ):
+        message = "invalid issue identity or content"
+        raise ValueError(message)
+    return url, _sweep_excerpt(" ".join(title.split()), 80), _sweep_excerpt(body, 1500)
+
+
+def _sweep_excerpt(value: str, limit: int) -> str:
+    encoded = value.encode()
+    if len(encoded) <= limit:
+        return value
+    return encoded[: limit - 3].decode(errors="ignore") + "..."
 
 
 def _comment_block(comment: object) -> str:

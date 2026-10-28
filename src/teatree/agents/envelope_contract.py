@@ -99,6 +99,7 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
         }
     },
     "ship_readiness": {"ship_readiness": {"ready": True, "reasons": []}},
+    "sweep_proposals": {"sweep_proposals": {"examined": [], "folds": [], "gaps": []}},
     # The id `ticket sweep-begin` printed — the count is read from the run's own
     # recorded URLs, so the example deliberately shows no changed_count to restate.
     "ticket_sweep": {"ticket_sweep": {"run_id": "<the id `t3 <overlay> ticket sweep-begin` printed>"}},

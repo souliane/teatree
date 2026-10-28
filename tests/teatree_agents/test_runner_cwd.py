@@ -1,7 +1,9 @@
 """A dispatched agent starts in the ticket's materialised worktree, read from ``extra['worktree_path']`` (#5151)."""
 
+import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -53,3 +55,10 @@ class TestTaskCwdComesFromTheWorktreePath(TestCase):
         self._worktree(repo_path="org/repo", extra={"worktree_path": str(Path(self.checkout) / "gone")})
 
         assert _resolve_task_cwd(self.task) is None
+
+    def test_backlog_sweep_without_a_worktree_uses_the_main_clone(self) -> None:
+        self.task.phase = "backlog_sweep"
+        with tempfile.TemporaryDirectory() as clone:
+            (Path(clone) / ".git").mkdir()
+            with patch.dict(os.environ, {"T3_REPO": clone}):
+                assert _resolve_task_cwd(self.task) == clone

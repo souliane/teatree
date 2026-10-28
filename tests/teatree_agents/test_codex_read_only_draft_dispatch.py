@@ -17,7 +17,16 @@ from teatree.agents import codex_app_server_options, codex_read_only_server
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
-from teatree.core.models import DeferredQuestion, IncomingEvent, PullRequest, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import (
+    DeferredQuestion,
+    IncomingEvent,
+    PullRequest,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+    TicketSweepRun,
+)
 from teatree.types import SkillMetadata
 from teatree.utils import run, secrets
 from tests._owner_channel import assert_a_plain_card
@@ -46,9 +55,23 @@ class TestDraftPhasesOnTheReadOnlyExecutor(TestCase):
             get_issue=lambda url: {"body": ""},
             list_issue_comments=lambda *, issue_url: [],
             fetch_pr_message=lambda *, slug, pr_id: SimpleNamespace(title="feat(x): add y", body="## What\nAdds y."),
+            list_repo_open_issues=lambda *, repo: [
+                {
+                    "html_url": f"https://github.com/{repo}/issues/{number}",
+                    "title": "Related work",
+                    "body": "A small change in the same module.",
+                    "user": {"login": login},
+                }
+                for number, login in ((1, "owner"), (2, "another-author"))
+            ],
+            current_user=lambda: "owner",
+            get_repo=lambda *, repo: {"name": repo},
         )
         overlay = SimpleNamespace(metadata=SimpleNamespace(validate_pr=lambda title, body, *, repo: {"errors": []}))
-        provider = SimpleNamespace(get_code_host_for_url=lambda overlay, url: host)
+        provider = SimpleNamespace(
+            get_code_host_for_url=lambda overlay, url: host,
+            get_code_host_for_repo=lambda overlay, repo: host,
+        )
         with (
             patch.dict("os.environ", {**self.env, "T3_CODEX_HOME": str(self.fake.root / "worker-codex-home")}),
             patch.object(secrets, "run_bounded_group", run.run_bounded_group),
@@ -59,6 +82,13 @@ class TestDraftPhasesOnTheReadOnlyExecutor(TestCase):
             patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=[skill]),
             patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=provider),
             patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value=overlay),
+            patch("teatree.agents.read_only_venue_brief.owned_repo_slugs", return_value=("example-org/example-repo",)),
+            patch("teatree.agents.read_only_venue_brief._fetch_target"),
+            patch("teatree.agents.sweep_proposals_recorder.get_overlay_for_ticket", return_value=overlay),
+            patch(
+                "teatree.agents.sweep_proposals_recorder.owned_repo_slugs", return_value=("example-org/example-repo",)
+            ),
+            patch("teatree.agents.sweep_proposals_recorder.get_backend_provider", return_value=provider),
             patch("teatree.agents.read_only_draft_facts.get_backend_provider", return_value=provider),
             patch("teatree.agents.read_only_draft_facts.get_overlay_for_ticket", return_value=overlay),
             patch(
@@ -164,3 +194,34 @@ class TestDraftPhasesOnTheReadOnlyExecutor(TestCase):
         assert (attempt.exit_code, attempt.selected_harness) == (0, "codex_app_server")
         assert "SHIP STATE, read by the worker" in self._turn_text()
         assert [call.args[:3] for call in ship.call_args_list] == [("pr", "create", str(ticket.pk))]
+
+    def test_backlog_sweep_returns_proposals_and_the_worker_finishes_the_run(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="backlog-sweep://t3-teatree", role=Ticket.Role.AUTHOR, overlay="t3-teatree"
+        )
+        task = self._task("backlog_sweep", ticket)
+        task.execution_reason = "ASK-GATE: return proposals"
+        task.save(update_fields=["execution_reason"])
+        self.fake.reply = json.dumps(
+            {
+                "summary": "swept",
+                "sweep_proposals": {
+                    "examined": [
+                        "https://github.com/example-org/example-repo/issues/1",
+                        "https://github.com/example-org/example-repo/issues/2",
+                    ],
+                    "folds": [],
+                    "gaps": [],
+                },
+            }
+        )
+        self.fake.install()
+
+        attempt = self._run(task, "sweeping-tickets")
+
+        assert attempt.error == "", attempt.error
+        assert attempt.selected_harness == "codex_app_server"
+        run = TicketSweepRun.objects.get()
+        assert run.finished_at is not None
+        assert run.external_skipped_count == 1
+        assert "OPEN ISSUE INDEX" in self._turn_text()

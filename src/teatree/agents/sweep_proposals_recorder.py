@@ -1,0 +1,214 @@
+"""Validate a read-only sweep's proposals and let the worker record only gated actions."""
+
+import io
+import json
+from collections.abc import Mapping
+from typing import Never
+from urllib.parse import urlparse
+
+from teatree.agents.read_only_venue_brief import sweep_window_evidence
+from teatree.core.backend_registry import get_backend_provider
+from teatree.core.machine_output import call_command_streamed
+from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.phases import SWEEP_ASK_GATE_MARKER, normalize_phase
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
+from teatree.core.models import DeferredQuestion, Task, Ticket, TicketSweepRun
+from teatree.core.models.dream_gap_ledger import batch_entries
+from teatree.core.overlay import OverlayBase
+from teatree.core.overlay_loader import get_overlay_for_ticket
+from teatree.core.overlay_repos import owned_repo_slugs
+from teatree.core.self_forge_identities import require_self_authored_issue
+from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
+from teatree.utils.url_slug import repo_namespaced_key_from_path, slug_from_issue_or_pr_url
+
+REFUSAL_PREFIX = "sweep_proposals_refused: "
+
+
+class SweepProposalError(ValueError):
+    pass
+
+
+def _invalid(reason: str) -> Never:
+    raise SweepProposalError(reason)
+
+
+def record_returned_sweep_proposals(
+    task: Task, result: Mapping[str, object], *, phase: str, selected_harness: str
+) -> str:
+    if (
+        normalize_phase(phase or task.phase) != "backlog_sweep"
+        or selected_harness != "codex_app_server"
+        or result.get("needs_user_input")
+        or "sweep_proposals" not in result
+    ):
+        return ""
+    if SWEEP_ASK_GATE_MARKER not in task.execution_reason:
+        return f"{REFUSAL_PREFIX}the sweep lacks the ASK-GATE marker"
+    try:
+        validated = _validate(task, result["sweep_proposals"])
+    except SweepProposalError as exc:
+        return f"{REFUSAL_PREFIX}{exc}"
+    examined, external_count, folds, gaps = validated
+    extra = task.ticket.extra if isinstance(task.ticket.extra, dict) else {}
+    recorded = extra.get("sweep_fold_proposals")
+    if isinstance(recorded, dict) and str(task.pk) in recorded:
+        return ""
+    run = TicketSweepRun.objects.begin(source="loop", overlay=task.ticket.overlay)
+    error = ""
+    try:
+        _apply(task, run.run_id, folds, gaps)
+    except SweepProposalError as exc:
+        error = f"{REFUSAL_PREFIX}{exc}"
+    finally:
+        TicketSweepRun.objects.finish(
+            run_id=run.run_id, examined_count=len(examined), external_skipped_count=external_count
+        )
+    return error
+
+
+def _apply(task: Task, run_id: str, folds: list[dict[str, str]], gaps: list[tuple[int, list[str]]]) -> None:
+    try:
+        for host_id, keys in gaps:
+            host_ticket = Ticket.objects.get(pk=host_id)
+            host_ticket.refresh_from_db(fields=["extra"])
+            attached = {entry.get("gap_key") for entry in batch_entries(host_ticket)}
+            remaining = [key for key in keys if key not in attached]
+            if not remaining:
+                continue
+            call_command_streamed(
+                "ticket",
+                "attach-gaps",
+                str(host_id),
+                "--manifest",
+                json.dumps(remaining),
+                "--sweep-run-id",
+                run_id,
+                stream=io.StringIO(),
+            )
+        task.ticket.merge_extra(
+            merge_into_dicts={"sweep_fold_proposals": {str(task.pk): {"folds": folds, "run_id": run_id}}}
+        )
+        if folds:
+            DeferredQuestion.record(
+                "Would you like to review the suggested ticket folds?",
+                parked_task=task,
+                dedupe_marker=f"backlog-sweep-folds-{task.pk}",
+                card=QuestionCard(
+                    decision=OwnerDecision.PRODUCT_SCOPE,
+                    checked=(f"{len(folds)} fold proposal(s) were checked against the live tracker.",),
+                    blocker="Only the owner decides whether these ticket folds should proceed.",
+                    why="The suggestions are recorded for review; no ticket was folded or retired.",
+                    options=(
+                        CardOption("Review now", "Show the suggestions for individual approval.", recommended=True),
+                        CardOption("Later", "Keep the suggestions for a later review."),
+                    ),
+                ),
+            )
+    except (Exception, SystemExit) as exc:
+        message = f"the worker action failed ({type(exc).__name__}: {exc})"
+        raise SweepProposalError(message) from exc
+
+
+def _validate(task: Task, raw: object) -> tuple[list[str], int, list[dict[str, str]], list[tuple[int, list[str]]]]:
+    if not isinstance(raw, Mapping):
+        _invalid("expected an object")
+    examined_raw, folds_raw, gaps_raw = (raw.get(key) for key in ("examined", "folds", "gaps"))
+    if not isinstance(examined_raw, list) or not isinstance(folds_raw, list) or not isinstance(gaps_raw, list):
+        _invalid("examined, folds and gaps must be arrays")
+    try:
+        overlay = get_overlay_for_ticket(task.ticket)
+    except Exception as exc:
+        message = f"the overlay could not be read ({type(exc).__name__})"
+        raise SweepProposalError(message) from exc
+    repos = set(owned_repo_slugs(overlay))
+    if not repos:
+        _invalid("the overlay has no owned issue repositories")
+    examined = _validated_examined(examined_raw, repos)
+    try:
+        index_urls, expected, external_count = sweep_window_evidence(task)
+    except Exception as exc:
+        message = f"the examined window could not be re-read ({type(exc).__name__})"
+        raise SweepProposalError(message) from exc
+    if examined != expected:
+        _invalid("examined does not match the dispatched issue window")
+    folds = [_validate_fold(item, examined, index_urls, repos, overlay) for item in folds_raw]
+    gaps = [_validate_gap(item, task, repos, overlay) for item in gaps_raw]
+    return examined, external_count, folds, gaps
+
+
+def _validated_examined(raw: list[object], repos: set[str]) -> list[str]:
+    if any(not _owned_issue_url(url, repos) for url in raw):
+        _invalid("examined contains an invalid or unowned issue URL")
+    return [str(url) for url in raw]
+
+
+def _validate_fold(
+    raw: object, examined: list[str], index_urls: list[str], repos: set[str], overlay: OverlayBase
+) -> dict[str, str]:
+    if not isinstance(raw, Mapping):
+        _invalid("a fold is not an object")
+    member, host, citation = (raw.get(key) for key in ("member_url", "host_url", "citation"))
+    if not _owned_issue_url(member, repos) or not _owned_issue_url(host, repos):
+        _invalid("a fold has an invalid member or host")
+    if member == host or member not in examined or host not in index_urls:
+        _invalid("a fold target is not a distinct indexed issue")
+    if not isinstance(citation, str) or not citation.strip():
+        _invalid("a fold has no citation")
+    for url in (member, host):
+        _verify_open_self_issue(overlay, url)
+    return {"member_url": member, "host_url": host, "citation": citation.strip()}
+
+
+def _validate_gap(raw: object, task: Task, repos: set[str], overlay: OverlayBase) -> tuple[int, list[str]]:
+    if not isinstance(raw, Mapping):
+        _invalid("a gap assignment is not an object")
+    host_id, keys = raw.get("host_ticket_id"), raw.get("gap_keys")
+    if not isinstance(host_id, int) or isinstance(host_id, bool):
+        _invalid("a gap assignment has no valid host")
+    if not isinstance(keys, list) or not keys or any(not isinstance(key, str) or not key.strip() for key in keys):
+        _invalid("a gap assignment has no valid keys")
+    if not set(keys) <= _offered_gap_keys(task.execution_reason):
+        _invalid("a gap assignment names a key not offered in this sweep")
+    host_ticket = Ticket.objects.filter(pk=host_id).first()
+    if (
+        host_ticket is None
+        or host_ticket.overlay != task.ticket.overlay
+        or not _owned_issue_url(host_ticket.issue_url, repos)
+    ):
+        _invalid("a gap host is not an owned ticket")
+    _verify_open_self_issue(overlay, host_ticket.issue_url)
+    return host_id, keys
+
+
+def _offered_gap_keys(reason: str) -> set[str]:
+    _, marker, manifest = reason.partition(f"{DREAM_BATCH_MANIFEST_HEADER}\n")
+    if not marker:
+        return set()
+    return {line[2:].partition(":")[0].strip() for line in manifest.splitlines() if line.startswith("- ")}
+
+
+def _verify_open_self_issue(overlay: OverlayBase, url: str) -> None:
+    try:
+        code_host = get_backend_provider().get_code_host_for_url(overlay, url)
+        if code_host is None:
+            _invalid("a proposal target has no code host")
+        issue = require_self_authored_issue(host=code_host, issue_url=url)
+    except Exception as exc:
+        message = f"a proposal target could not be verified ({exc})"
+        raise SweepProposalError(message) from exc
+    if issue.get("state") not in {"open", "opened"}:
+        _invalid("a proposal target is not open")
+
+
+def _owned_issue_url(raw: object, repos: set[str]) -> bool:
+    if not isinstance(raw, str):
+        return False
+    parsed = urlparse(raw)
+    return (
+        parsed.scheme == "https"
+        and bool(parsed.hostname)
+        and not parsed.query
+        and not parsed.fragment
+        and slug_from_issue_or_pr_url(parsed.path) in repos
+        and bool(repo_namespaced_key_from_path(parsed.path))
+    )

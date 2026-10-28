@@ -32,6 +32,7 @@ _PHASES = (
     ("answering", False, "--- SKILL: answerer ---"),
     ("requesting_review", False, "--- SKILL: review-request ---"),
     ("shipping", False, "--- SKILL: ship ---"),
+    ("backlog_sweep", False, "--- SKILL: sweeping-tickets ---"),
 )
 
 

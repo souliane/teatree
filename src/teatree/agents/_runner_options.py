@@ -348,9 +348,9 @@ def _resolve_task_cwd(task: Task) -> str | None:
 #: main clone instead of an unset cwd. ``architectural_review`` reads the whole
 #: teatree tree and cold-worktrees off it; the main-clone guard keeps its git
 #: read-only + ``worktree add`` while blocking any mutation of the shared clone.
-#: The triage assessor and the directive interpreter read that tree and write nothing.
+#: The triage assessor, directive interpreter and backlog sweep read that tree and write nothing.
 _MAIN_CLONE_DISPATCH_PHASES: frozenset[str] = frozenset(
-    {ARCHITECTURAL_REVIEW_PHASE, "triage_assessing", "directive_interpreting"}
+    {ARCHITECTURAL_REVIEW_PHASE, "triage_assessing", "directive_interpreting", "backlog_sweep"}
 )
 
 
