@@ -2,18 +2,26 @@
 
 import datetime as dt
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.models import PullRequest, SelfImproveFiring, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases import render_phase
-from teatree.loop.phases.render import _identity_aliases_for_request, rerender_statusline
+from teatree.loop.phases.render import (
+    _SELF_IMPROVE_WIDTH,
+    _identity_aliases_for_request,
+    _SelfImproveSummary,
+    rerender_statusline,
+)
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.resource_pressure import ResourceReading
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
@@ -165,6 +173,205 @@ def test_render_phase_idle_omits_scanner_error_line(tmp_path: Path) -> None:
 
 
 class TestSelfImproveStatuslineVisibility(TestCase):
+    def test_all_unreported_fields_render_one_unknown_count(self) -> None:
+        record_firing(
+            DetectorReport(
+                detector="private/run",
+                dedup_key="unreported",
+                state_hash="active",
+                severity="warn",
+                max_rung=ActionRung.STATUSLINE,
+                summary="private detail",
+                payload={"kind": "private/run", "cause": "private/path", "count": True},
+            ),
+            action=ActionRung.STATUSLINE,
+        )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == ["self-improve: unknown 1"]
+
+    def test_oldest_age_uses_first_firing_across_mixed_ages(self) -> None:
+        now = dt.datetime.now(tz=dt.UTC)
+        for key, age_days in (("older", 5), ("younger", 2)):
+            firing = record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=key,
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload={"kind": "task_failed", "cause": "timeout", "count": 1},
+                ),
+                action=ActionRung.STATUSLINE,
+                now=now - dt.timedelta(days=age_days, hours=1),
+            )
+            SelfImproveFiring.objects.filter(pk=firing.pk).update(
+                last_fired_at=now if key == "older" else now - dt.timedelta(days=1)
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == ["self-improve: task_failed 2 (timeout 2) | oldest 5d"]
+
+    def test_many_missing_payloads_become_one_counted_line_with_reason(self) -> None:
+        now = dt.datetime.now(tz=dt.UTC)
+        for index in range(17):
+            payload = {}
+            if index == 0:
+                payload = {"kind": "private/run", "cause": "private/path", "count": True}
+            elif index == 1:
+                payload = {"kind": "unknown", "cause": "unknown", "count": 1}
+            record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=f"missing-{index}",
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload=payload,
+                ),
+                action=ActionRung.STATUSLINE,
+                now=now - dt.timedelta(days=2),
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == ["self-improve: lifecycle_incident 17 (cause unreported 17) | oldest 2d"]
+            assert "private detail" not in sl.read_text()
+
+    def test_groups_kinds_and_causes_then_folds_extra_kinds(self) -> None:
+        for kind, cause, count in [
+            ("task_failed", "harness_crash", 3),
+            ("task_failed", "timeout", 2),
+            ("task_failed", "worker_exit", 1),
+            ("task_failed", "credential_missing", 1),
+            ("task_failed", "plan_missing", 1),
+            ("pressure_incident", "load", 4),
+            ("inbound_unanswered", "no_reply", 2),
+            ("dispatch_gap", "stalled", 1),
+        ]:
+            record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=f"{kind}:{cause}",
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload={"kind": kind, "cause": cause, "count": count},
+                ),
+                action=ActionRung.STATUSLINE,
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            report = TickReport(started_at=_NOW)
+            render_phase(report, TickRequest(), jobs=[_job("my_prs")], statusline_path=sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == [
+                (
+                    "self-improve: task_failed 8 (harness_crash 3, timeout 2, credential_missing 1, "
+                    "plan_missing 1, worker_exit 1) | pressure_incident 4 (load 4) | "
+                    "inbound_unanswered 2 (no_reply 2) | +1 more kind"
+                )
+            ]
+
+    def test_six_firings_keep_all_causes_when_the_line_fits(self) -> None:
+        for kind, cause, count in [
+            ("task_failed", "harness_crash", 3),
+            ("task_failed", "timeout", 2),
+            ("task_failed", "worker_exit", 1),
+            ("task_failed", "credential_missing", 1),
+            ("task_failed", "plan_missing", 1),
+            ("pressure_incident", "load", 4),
+        ]:
+            record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=f"{kind}:{cause}",
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload={"kind": kind, "cause": cause, "count": count},
+                ),
+                action=ActionRung.STATUSLINE,
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            lines = [line for line in sl.read_text().splitlines() if line.startswith("self-improve:")]
+            assert lines == [
+                (
+                    "self-improve: task_failed 8 (harness_crash 3, timeout 2, credential_missing 1, "
+                    "plan_missing 1, worker_exit 1) | pressure_incident 4 (load 4)"
+                )
+            ]
+
+    def test_one_kind_folds_causes_to_fit_width(self) -> None:
+        causes = {f"reason_{index:02d}_{'x' * 24}": 1 for index in range(8)}
+        line = _SelfImproveSummary({"task_failed": Counter(causes)}, 3).render()
+
+        assert line.startswith("self-improve: task_failed 8 (")
+        assert "more causes" in line
+        assert "…" not in line
+        assert line.endswith(" | oldest 3d")
+        assert len(line) <= _SELF_IMPROVE_WIDTH
+
+    def test_one_oversized_kind_truncates_with_ellipsis_and_keeps_age(self) -> None:
+        line = _SelfImproveSummary({"d" * 128: Counter({"c" * 64: 1})}, 40).render()
+
+        assert len(line) == _SELF_IMPROVE_WIDTH
+        assert "… | oldest 40d" in line
+        assert line.endswith(" | oldest 40d")
+
+    def test_long_line_folds_kinds_before_hook_can_truncate_oldest(self) -> None:
+        now = dt.datetime.now(tz=dt.UTC) - dt.timedelta(days=3)
+        for index in range(5):
+            record_firing(
+                DetectorReport(
+                    detector="lifecycle_incident",
+                    dedup_key=f"wide-{index}",
+                    state_hash="active",
+                    severity="warn",
+                    max_rung=ActionRung.STATUSLINE,
+                    summary="private detail",
+                    payload={
+                        "kind": f"incident_category_{index}_with_a_long_name",
+                        "cause": "a_reason_with_a_long_name",
+                        "count": 5 - index,
+                    },
+                ),
+                action=ActionRung.STATUSLINE,
+                now=now,
+            )
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            line = next(line for line in sl.read_text().splitlines() if line.startswith("self-improve:"))
+            assert len(line) <= 200
+            assert "more kinds" in line
+            assert line.endswith(" | oldest 3d")
+
+    def test_width_matches_statusline_hook_fallback(self) -> None:
+        hook = Path(__file__).resolve().parents[3] / "hooks/scripts/statusline.sh"
+        assert f"_cap_cols={_SELF_IMPROVE_WIDTH}\nfi" in hook.read_text()
+
+    def test_unreadable_ledger_keeps_statusline_rendering(self) -> None:
+        with (
+            patch.object(SelfImproveFiring.objects, "filter", side_effect=OperationalError("unavailable")),
+            TemporaryDirectory() as directory,
+        ):
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            assert sl.exists()
+            assert "self-improve:" not in sl.read_text()
+
     def test_idle_render_shows_only_active_statusline_firings(self) -> None:
         active = DetectorReport(
             detector="lifecycle_incident",
@@ -192,7 +399,7 @@ class TestSelfImproveStatuslineVisibility(TestCase):
             report = TickReport(started_at=_NOW)
             render_phase(report, TickRequest(), jobs=[], statusline_path=sl, colorize=False)
             rendered = sl.read_text(encoding="utf-8")
-            assert "self-improve: task_failed (harness_crash; 1)" in rendered
+            assert "self-improve: task_failed 1 (harness_crash 1)" in rendered
             assert "inbound_unanswered" not in rendered
             assert "private" not in rendered
 
@@ -218,7 +425,7 @@ class TestSelfImproveStatuslineVisibility(TestCase):
             record_firing(report, action=ActionRung.STATUSLINE)
             sl = root / "statusline.txt"
             rerender_statusline(sl, colorize=False)
-            assert "self-improve: pressure_incident (load; 3)" in sl.read_text()
+            assert "self-improve: pressure_incident 3 (load 3)" in sl.read_text()
 
     def test_self_improve_rerender_preserves_active_finding(self) -> None:
         report = DetectorReport(
@@ -234,7 +441,7 @@ class TestSelfImproveStatuslineVisibility(TestCase):
         with TemporaryDirectory() as directory:
             sl = Path(directory) / "statusline.txt"
             rerender_statusline(sl, colorize=False)
-            assert "self-improve: inbound_unanswered (message_without_substantive_reply; 1)" in sl.read_text()
+            assert "self-improve: inbound_unanswered 1 (message_without_substantive_reply 1)" in sl.read_text()
 
 
 def test_rerender_statusline_rewrites_a_stale_file(tmp_path: Path) -> None:
