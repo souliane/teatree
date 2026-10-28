@@ -10,12 +10,13 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.phase_tools import phase_writes_checkout
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import PullRequest, Task, Worktree
-from teatree.core.models.checkout_custody import Custody, Tenure
-from teatree.core.models.checkout_proof import (
+from teatree.core.models.checkout_custody import (
     AutoAttestation,
     CheckoutProcessEvidence,
+    Custody,
     DeferredExitAttestation,
     ReleasedPrHeadAttestation,
+    Tenure,
 )
 from teatree.core.models.types import WorktreeExtra
 from teatree.core.models.worktree_occupancy import _task_pk_from_holder, task_holder_id
@@ -35,7 +36,7 @@ def _failed_cancelled(task: Task | None) -> bool:
     return task is not None and task.status == Task.Status.FAILED and task.failure_kind == FailureKind.CANCELLED
 
 
-def _interrupted_writer(task: Task, custody: Custody) -> Task | None:
+def interrupted_writer(task: Task, custody: Custody) -> Task | None:
     if not custody.tenures:
         return None
     current = custody.tenures[-1]
@@ -112,7 +113,7 @@ def reattest_on_proof(task: Task, worktree: Worktree, state: CheckoutState, tabl
         or table.holds(Path(worktree.worktree_path))
     ):
         return False
-    prior = _interrupted_writer(task, custody)
+    prior = interrupted_writer(task, custody)
     branch_proof = _expected_branches(task, worktree, state) if prior is not None else None
     if prior is None or branch_proof is None or not checkout_state_unchanged(task, worktree, state):
         return False

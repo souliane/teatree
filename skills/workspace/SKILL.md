@@ -99,12 +99,11 @@ is still working there; a refused factory task parks without spending its
 repair budget and leaves the work intact. When this venue cannot read a usable
 process table, owner attestation admits one dispatch after two matching state
 reads. The next dispatch needs a fresh owner attestation.
-An attended session may attest under the owner's standing instruction after the read-only proof and terminal route in `skills/interactive/SKILL.md`.
 An interrupted factory run is re-attested at the next writer's fence only when
 the recorded custody chain, a clear host process table, and every ticket checkout
 on its recorded branch or the forge-reported head branch of an open pull request
 owned by the ticket prove it safe. An unreadable forge answer refuses; the audit
-records any qualifying pull request. Hand work needs the owner's `worktree attest` or the attended-session route in `skills/interactive/SKILL.md`.
+records any qualifying pull request. Hand work can use the direct `worktree attest` command after inspection; a factory refusal never requires that command.
 For a headless run recorded in a nested PID namespace, unreadable host-root namespace
 processes may be set aside and named in the audit; legacy and namespace-less tenures stay strict.
 Every admitted headless exit reaches checkout settlement; if these gaps block direct
@@ -121,7 +120,7 @@ The proof reads the GitHub API with the overlay's routed token, checks the diges
 and records the custody and forge evidence. GitLab MRs do not enter this recovery arm.
 The pull request read needs a `gh` that returns `headRepository.nameWithOwner`
 (the worker's 2.102.1 does; the host's 2.63.2 omits it, so the proof parks there).
-An unreadable or mismatched proof parks the task for the existing owner path.
+An unreadable or mismatched proof parks the task for an internal retry.
 On completion, ordinary failure, lease-expiry reap, and attested park, checkout
 settlement waits two 60-second beats for descendants and marked children, sends
 SIGTERM to survivors, waits one beat, sends SIGKILL to survivors, then checks
@@ -132,18 +131,12 @@ cancel waits two beats and signals nothing; an owner stop follows the narrower
 descendant-writer rule.
 A heartbeat that reclaims a free row opens a namespace-less tenure, so later recovery stays strict.
 
-An attended agent first re-checks a parked checkout read-only and attests a clean one itself under the standing instruction in `skills/interactive/SKILL.md`; it reports the action afterwards and skips unsafe checkouts without asking. A refusal that cannot be attested asks the owner in Slack. The card links the ticket,
-names the waiting step and what it will do, links any open pull request in the
-checkout's repo that it may hold up while open or says none was open when asked;
-design-review and wrap-up cards link it without claiming those steps hold it up,
-gives the commit and uncommitted-file counts and whether nothing was found running,
-and says what Accept and Decline each do. One pending card covers every waiting step on the same checkout state; a
-step change alone does not replace it. Changed checkout evidence or pull-request
-wording retires the old card and closes its posted buttons. Accepting rechecks
-the checkout and releases its parked tasks; declining blocks that state for every
-waiting step. A later direct owner attestation of that state releases the decline
-at the writer fence. The terminal command remains available for an owner with host access.
-Only the owner's Slack button tap can approve or decline the action card.
+Unsafe checkout state stays parked for an internal retry. The factory preserves
+unpushed commits before claiming a safe checkout and records its proof in
+`auto_attestation`. A foreign edit, live process, merge, rebase, detached HEAD,
+index lock, or unreadable proof keeps the checkout intact; the checkout refusal
+creates no owner question or notification. A checkout parked for over an hour
+appears as a standing `stalled_checkout` health signal.
 
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete

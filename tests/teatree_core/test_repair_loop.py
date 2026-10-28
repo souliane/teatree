@@ -12,6 +12,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.core.factory.halted_retries import halted_retry_signals
 from teatree.core.modelkit.task_failure_taxonomy import (
     CANCELLED_PREFIX,
     LEASE_EXPIRED_PREFIX,
@@ -30,6 +31,7 @@ from teatree.core.repair_loop import (
     requeue_verdict,
     terminal_reason_fingerprint,
 )
+from teatree.loop.transient_requeue import requeue_transient_failed
 
 
 def _failed_attempt(task: Task, *, error: str) -> TaskAttempt:
@@ -314,32 +316,27 @@ class TestCheckRequeueAllowed(TestCase):
 
         task.check_requeue_allowed()
 
-    def test_stall_escalates_via_deferred_question(self) -> None:
+    def test_stall_raises_without_a_question(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/1")
         task = self._phase_task(ticket)
         _failed_attempt(task, error="the identical failure")
         _failed_attempt(task, error="the identical failure")
         with pytest.raises(IterationStalled):
             task.check_requeue_allowed()
-        pending = DeferredQuestion.pending()
-        assert pending.count() == 1
-        assert "stall" in pending.first().question.lower()
+        assert not DeferredQuestion.objects.exists()
 
-    def test_stall_escalation_is_internal_audience_not_dmed(self) -> None:
-        # Phase 2: a repair-loop stall is the box's own health, not an owner
-        # question — it is recorded INTERNAL so the poster never DMs it.
+    def test_stall_leaves_the_task_unchanged(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/9")
         task = self._phase_task(ticket)
         _failed_attempt(task, error="the identical failure")
         _failed_attempt(task, error="the identical failure")
         with pytest.raises(IterationStalled):
             task.check_requeue_allowed()
-        row = DeferredQuestion.pending().get()
-        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert not DeferredQuestion.objects.exists()
 
-    def test_two_consecutive_stalls_record_a_single_deferred_question(self) -> None:
-        # F2 dedupe: re-stalling on the same ticket-phase escalates once, not once
-        # per tick — the escalate-once dedupe_marker collapses both to one row.
+    def test_repeated_stall_verdicts_remain_question_free(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/7")
         task = self._phase_task(ticket)
         _failed_attempt(task, error="the identical failure")
@@ -347,7 +344,7 @@ class TestCheckRequeueAllowed(TestCase):
         for _ in range(2):
             with pytest.raises(IterationStalled):
                 task.check_requeue_allowed()
-        assert DeferredQuestion.pending().count() == 1
+        assert not DeferredQuestion.objects.exists()
 
     def test_non_consecutive_identical_does_not_stall(self) -> None:
         ticket = Ticket.objects.create()
@@ -454,7 +451,7 @@ class TestReclaimEnforcesRepairLoop(TestCase):
         task.refresh_from_db()
         # NOT returned to PENDING — the stall refused the re-queue.
         assert task.status != Task.Status.PENDING
-        assert DeferredQuestion.pending().count() == 1
+        assert not DeferredQuestion.objects.exists()
         # No NEW attempt was created by the refused re-queue.
         assert task.attempts.count() == 2
 
@@ -521,8 +518,10 @@ class TestReofferBudget(TestCase):
         task.refresh_from_db()
         assert task.status != Task.Status.PENDING
         assert not task.attempts.exists()
-        question = DeferredQuestion.pending().get()
-        assert "Re-offer budget" in question.question
+        assert not DeferredQuestion.objects.exists()
+        assert Task.objects.reap_stale_claims() == 1
+        assert requeue_transient_failed() == 0
+        assert halted_retry_signals().signals
 
     def test_the_last_re_offer_within_budget_still_happens(self) -> None:
         task = self._orphaned_phase_task(Ticket.objects.create(), reclaim_count=MAX_REOFFERS - 1)
@@ -540,7 +539,7 @@ class TestReofferBudget(TestCase):
         Task.objects.reclaim_orphaned_claims()
         Task.objects.reclaim_orphaned_claims()
 
-        assert DeferredQuestion.pending().count() == 1
+        assert not DeferredQuestion.objects.exists()
 
 
 class TestKindStall:

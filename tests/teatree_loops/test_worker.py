@@ -38,6 +38,7 @@ from teatree.agents.runner_heartbeat import HeartbeatRuntime, drain_reason_closi
 from teatree.agents.runner_interruption import _record_stuck_outcome
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core import agent_admission, managers_task_claim
+from teatree.core.admission.lanes import ANSWERING_LANE_WIDTH
 from teatree.core.admission_governor import (
     AdmissionCeiling,
     AdmissionDecision,
@@ -257,14 +258,16 @@ def _widths(expensive: int, review: int) -> LaneWidths:
 
 @pytest.mark.parametrize(("expensive", "review"), [(1, 1), (3, 2), (15, 2)])
 def test_each_lane_seat_gets_one_executor_on_its_queue(expensive: int, review: int) -> None:
-    assert agent_executor_queues(_widths(expensive, review)) == ("default",) * expensive + ("cheap",) * (review + 1)
+    assert agent_executor_queues(_widths(expensive, review)) == ("default",) * expensive + ("cheap",) * (
+        review + 1 + ANSWERING_LANE_WIDTH
+    )
 
 
 def test_unread_lane_widths_keep_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 1)
-    assert agent_executor_queues(None) == ("default",) * DEFAULT_QUEUE_FLOOR + ("cheap",) * 2
+    assert agent_executor_queues(None) == ("default",) * DEFAULT_QUEUE_FLOOR + ("cheap",) * (2 + ANSWERING_LANE_WIDTH)
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 4)
-    assert agent_executor_queues(None) == ("default",) * 4 + ("cheap",) * 2
+    assert agent_executor_queues(None) == ("default",) * 4 + ("cheap",) * (2 + ANSWERING_LANE_WIDTH)
 
 
 def test_a_lane_width_read_failure_keeps_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,7 +282,11 @@ def test_the_lane_widths_never_size_the_loops_control_plane() -> None:
         script=[True], sleep=lambda _s: None, loops_executors=3, read_agent_queues=lambda: one_seat
     )
     worker.run()
-    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap", "cheap"]
+    assert [executor.queue for executor in built] == [
+        *["loops"] * 3,
+        "default",
+        *["cheap"] * (2 + ANSWERING_LANE_WIDTH),
+    ]
 
 
 def test_a_brake_keeps_the_whole_loops_pool() -> None:
@@ -302,7 +309,7 @@ def test_a_machine_brake_keeps_one_executor_per_cheap_seat() -> None:
         read_agent_queues=lambda: lanes,
     )
     worker.run()
-    assert [executor.queue for executor in built] == ["loops", "cheap", "cheap", "cheap"]
+    assert [executor.queue for executor in built] == ["loops", *["cheap"] * (3 + ANSWERING_LANE_WIDTH)]
 
 
 def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
@@ -325,7 +332,11 @@ def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
     )
     worker.run()
 
-    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap", "cheap"]
+    assert [executor.queue for executor in built] == [
+        *["loops"] * 3,
+        "default",
+        *["cheap"] * (2 + ANSWERING_LANE_WIDTH),
+    ]
     assert set(started) == {"timer/control", "coding", "reviewing"}
 
 
@@ -1136,14 +1147,21 @@ class TestEverySeatTheVerdictAdmitsHasAnExecutor(TestCase):
 
         assert len(reviews) == 2
         assert len(retiring) == 1
-        assert self._executors()["cheap"] == len(reviews) + len(retiring) == 3
+        assert len(reviews) + len(retiring) == 3
+        assert self._executors()["cheap"] == 3 + ANSWERING_LANE_WIDTH
+
+    def test_every_admitted_answering_seat_gets_a_cheap_executor(self) -> None:
+        answering = self._admit("answering")
+
+        assert len(answering) == ANSWERING_LANE_WIDTH
+        assert self._executors()["cheap"] == 3 + len(answering)
 
     def test_a_wider_review_lane_keeps_a_retiring_executor(self) -> None:
         ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
         seated = self._admit("reviewing")
 
         assert len(seated) == 3
-        assert self._executors()["cheap"] == len(seated) + 1 == 4
+        assert self._executors()["cheap"] == len(seated) + 1 + ANSWERING_LANE_WIDTH
 
     def test_review_seats_and_executors_sit_beside_a_full_coding_lane(self) -> None:
         coding = self._admit("coding")
@@ -1151,7 +1169,7 @@ class TestEverySeatTheVerdictAdmitsHasAnExecutor(TestCase):
         executors = self._executors()
 
         assert (len(coding), len(reviews)) == (4, 2)
-        assert (executors["default"], executors["cheap"]) == (4, 3)
+        assert (executors["default"], executors["cheap"]) == (4, 3 + ANSWERING_LANE_WIDTH)
 
     def test_a_seat_never_lapses_into_a_second_booking(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)

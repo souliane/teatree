@@ -12,24 +12,21 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from teatree.core.modelkit.notify_policy import CHECKOUT_ATTEST_HOLD
 from teatree.core.modelkit.reask_cadence import owner_quiet_at
 from teatree.core.modelkit.task_failure_taxonomy import STALE_ERROR_AFTER
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, TaskAttempt, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.question_heal import withhold
-from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
-from teatree.core.worktree.checkout_state import CheckoutState
 from teatree.dash.selectors import STALE_ERROR_AFTER as BOARD_STALE_ERROR_AFTER
 from teatree.loop.preset_resolution import owner_zone
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
-from teatree.loop.self_improve.detectors.lifecycle_incident import _POST_WAIT, LifecycleIncidentDetector
 from teatree.loop.self_improve.detectors.lifecycle_incident import STALE_ERROR_AFTER as DETECTOR_STALE_ERROR_AFTER
+from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.self_improve.schedule import DeliveryRoutes, Tier, TierResult, detectors_for_tier, run_tier
 from tests._owner_channel import OWNER_DECISION
-from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory, WorktreeFactory
+from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
 
 
 class LifecycleIncidentTests(TestCase):
@@ -369,27 +366,6 @@ class LifecycleIncidentTests(TestCase):
                         for report in LifecycleIncidentDetector(now=lambda check_at=now: check_at).detect()
                     }
                     assert ("outbound_unposted" in kinds) is expected
-
-    def test_attest_hold_ends_before_unposted_incident_wait(self) -> None:
-        assert CHECKOUT_ATTEST_HOLD < _POST_WAIT
-
-    def test_unposted_attest_incident_waits_until_after_ten_minutes(self) -> None:
-        task = TaskFactory()
-        worktree = WorktreeFactory(ticket=task.ticket)
-        card = ask_owner_to_attest(
-            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
-        )
-        assert card is not None
-        now = timezone.now()
-        detector = LifecycleIncidentDetector(now=lambda: now)
-
-        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=now - timedelta(minutes=9))
-        early = {report.payload["kind"] for report in detector.detect()}
-        DeferredQuestion.objects.filter(pk=card.pk).update(created_at=now - timedelta(minutes=11))
-        late = {report.payload["kind"] for report in detector.detect()}
-
-        assert "outbound_unposted" not in early
-        assert "outbound_unposted" in late
 
     def test_quiet_hours_keep_a_posted_unanswered_question_visible(self) -> None:
         check_at = timezone.now().astimezone(owner_zone()).replace(hour=3, minute=0, second=0, microsecond=0)

@@ -21,8 +21,6 @@ This skill delegates the generic branch-finalization doctrine to:
 
 Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
-From "code is done" to "PR is merged."
-
 ### Dispatching a t3:shipper sub-agent (Non-Negotiable)
 
 When the orchestrator dispatches a `t3:shipper` sub-agent, the brief MUST carry the **exact MR/PR title** and a **description skeleton** — never leave the subject for the sub-agent to improvise. The title format is gated (the active overlay's `validate_pr` rejects a non-conforming first line at push), so an improvised subject is the real cause of off-target titles and failed pre-push validation: the sub-agent guesses a subject, it fails the gate, and the run burns a retry. Compose the title in the orchestrator from the ticket data and hand it over verbatim.
@@ -54,9 +52,9 @@ Use the active overlay's `validate_pr(title, description)` policy for title and 
    glab issue list --search '<keywords>'                 # CLI fallback (GitLab)
    ```
 
-   The MCP search returns at most ten linked open issues (number, title, url, state, updated_at) and `truncated`; narrow the query when true.
+   MCP returns up to ten linked open issues and `truncated`; narrow the query when set.
 
-   If you find it, **use that reference** — it is the canonical one. Do not open a new issue that duplicates an existing one.
+   Use the found issue; do not file a duplicate.
 
 2. **If no existing issue is found, the fallback depends on the repo class** (the same colleague-facing-vs-own distinction the [`../rules/SKILL.md`](../rules/SKILL.md) § "Three Orthogonal Repo Axes" tracks):
 
@@ -157,7 +155,7 @@ prek keeps every patch it writes rather than deleting it on restore, so
 
 - Start servers and verify functionality.
 - **E2E gate:** If the project requires E2E tests for the type of changes made (UI, forms, user flows), those tests must be written and passing BEFORE proceeding. E2E is part of implementation, not a post-push activity.
-- **Src-touching PR → run `bash dev/ci-parity-fast.sh` before push (teatree).** It is the necessary-and-sufficient local check: scoped prek, `makemigrations --check`, the diff-scoped affected-tests lane (`dev/test-affected.sh`), and the incremental push gate — **no whole-tree sweep**, because CI's required sharded `test (3.13)` lane is the authority on the 93% whole-tree branch floor and running its byte-equivalent duplicate locally buys nothing but wall-clock ([#3994](https://github.com/souliane/teatree/issues/3994)).
+- **Src-touching PR → inspect `t3 tool affected-tests` before push (teatree).** On SCOPED, run `bash dev/ci-parity-fast.sh`; on FULL, run its prek, migration and push-gate checks separately plus changed test files or pinned node ids. CI's required sharded `test (3.13)` lane owns whole-tree proof ([#3994](https://github.com/souliane/teatree/issues/3994)).
 - **`bash dev/ci-parity.sh` is the opt-in deep lane, not the pre-push mandate.** Reach for it to reproduce a red CI locally, or when a PR is coverage-sensitive (deleting tests, adding a low-coverage module) — it chains the exact blocking CI predicate (`makemigrations --check`, `t3 tool test-path-mirror`, `check_module_health.py --from-ref`, prek all-files, `dev/test-cov.sh`, `t3 ci coverage`). Neither script is ever a push hook — the 93% whole-tree coverage floor is a whole-tree property no diff-scoped push subset can prove. The push-stage `ci-critical-parity` hook only covers the fast scoped doctest / never-lockout / conformance classes.
 - **Wait for user feedback.** Do NOT proceed to push without user approval.
 
