@@ -314,6 +314,7 @@ def _dispatch_or_report(
                 coalesced_ts=coalesced,
                 text=unit.text,
                 thread_root=unit.lead.thread_ts,
+                sender_id=unit.lead.user_id,
             ),
         )
     reaction = backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)

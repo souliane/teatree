@@ -104,6 +104,26 @@ class TestANewRequestBecomesAnAdmissibleIssue:
         assert work.is_admissible(), "the filed row is still not something intake could discover"
         assert work.short_description == "Detect the open-PR bottleneck"
 
+    def test_work_ticket_inherits_the_conversation_requester(self) -> None:
+        conversation = _conversation_ticket()
+        conversation.record_requester("slack:U-operator")
+        filed = file_work_item(
+            conversation,
+            {"title": "Detect the bottleneck", "body": "Alert when PRs stall."},
+            host=RecordingHost(),
+            repo_for=_in_repo,
+        )
+        assert filed is not None
+        assert Ticket.objects.get(issue_url=filed.url).requested_by == "slack:U-operator"
+
+    def test_existing_work_ticket_keeps_its_first_requester(self) -> None:
+        conversation = _conversation_ticket()
+        conversation.record_requester("slack:U-operator")
+        url = "https://github.com/souliane/teatree/issues/7012"
+        Ticket.objects.create(issue_url=url, requested_by="github:alice")
+        file_work_item(conversation, {"existing_issue_url": url}, host=RecordingHost(), repo_for=_in_repo)
+        assert Ticket.objects.get(issue_url=url).requested_by == "github:alice"
+
     @pytest.mark.parametrize("forge", ["github", "gitlab"])
     def test_issue_write_uses_the_hosts_forge(self, monkeypatch: pytest.MonkeyPatch, forge: str) -> None:
         routed_forges: list[str] = []

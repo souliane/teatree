@@ -158,6 +158,14 @@ class TestWorkImplyingMessageDispatchesExactlyOneTask:
             "the lane carries no dedupe key, so the next report of the same problem mints a rival"
         )
 
+    def test_the_dispatched_ticket_records_the_sender(self) -> None:
+        _row("fix the interest-rate rounding", ts="1.0")
+        run_slack_answer_cycle(
+            messaging_resolver=_resolver(RecordingBackend()),
+            reader=_reader(_work("fix the interest-rate rounding")),
+        )
+        assert Task.objects.get().ticket.requested_by == "slack:U-owner"
+
     def test_the_dispatch_is_signalled_as_in_flight_not_done(self) -> None:
         """A dispatched lane is IN FLIGHT — never the completion emoji."""
         _row("the interest-rate rounding is still wrong on the offer PDF", ts="1.0")

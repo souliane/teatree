@@ -232,6 +232,8 @@ def _attach(ticket: Ticket, url: str, *, title: str = "") -> FiledWorkItem:
             "short_description": (title or ticket.short_description)[:_DESCRIPTION_LIMIT],
         },
     )
+    if ticket.requested_by:
+        work_ticket.record_requester(ticket.requested_by)
     _record_work_url(ticket, url)
     ThreadBinding.objects.filter(ticket=ticket).update(ticket=work_ticket)
     return FiledWorkItem(url=url)

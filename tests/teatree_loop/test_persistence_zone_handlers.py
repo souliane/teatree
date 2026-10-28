@@ -493,11 +493,11 @@ class TestRedCardZoneRevived(TestCase):
 class TestAutoStartOrchestratorSchedulesPlanning(TestCase):
     """An auto-started issue is routed to planning (#4578); no coding task is minted on it."""
 
-    def _signal(self, *, url: str = "https://x/issue/900") -> ScanSignal:
+    def _signal(self, *, url: str = "https://x/issue/900", author: str = "") -> ScanSignal:
         return ScanSignal(
             kind="issue_intake.admitted",
             summary=f"Admitted for auto-implement: {url}",
-            payload={"url": url, "auto_start": True, "overlay": "acme"},
+            payload={"url": url, "auto_start": True, "overlay": "acme", "author": author},
         )
 
     def test_auto_start_ticket_gets_a_planning_task(self) -> None:
@@ -508,6 +508,21 @@ class TestAutoStartOrchestratorSchedulesPlanning(TestCase):
         assert task.phase == "planning"
         assert task.ticket.role == Ticket.Role.AUTHOR
         assert not Task.objects.filter(ticket=task.ticket, phase="coding").exists()
+
+    def test_gitlab_author_is_recorded_on_new_ticket(self) -> None:
+        url = "https://gitlab.com/acme/app/-/issues/901"
+        created = persist_agent_actions(_agent_actions(self._signal(url=url, author="ALIce")))
+        assert created[0].ticket.requested_by == "gitlab:alice"
+
+    def test_existing_ticket_gets_missing_github_author_without_overwriting(self) -> None:
+        url = "https://github.com/acme/app/issues/902"
+        ticket = Ticket.objects.create(issue_url=url, overlay="acme")
+        persist_agent_actions(_agent_actions(self._signal(url=url, author="ALIce")))
+        ticket.refresh_from_db()
+        assert ticket.requested_by == "github:alice"
+        persist_agent_actions(_agent_actions(self._signal(url=url, author="Bob")))
+        ticket.refresh_from_db()
+        assert ticket.requested_by == "github:alice"
 
 
 class TestE2eFixZoneRevived(TestCase):
