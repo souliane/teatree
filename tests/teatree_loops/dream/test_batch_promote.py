@@ -212,8 +212,9 @@ class PromoteBatchTestCase(TestCase):
         umbrella = _umbrella()
         tickets_before = Ticket.objects.count()
         batch = bp.PromotionBatch()
-        for i in range(300):
-            batch.consider(gap=_gap(f"gap-{i}"))
+        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value=None):
+            for i in range(300):
+                batch.consider(gap=_gap(f"gap-{i}"))
 
         outcome = bp.promote_batch(umbrella_url=UMBRELLA, batch=batch)
 
