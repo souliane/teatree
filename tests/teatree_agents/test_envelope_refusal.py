@@ -10,6 +10,7 @@ would pass every positive assertion.
 
 from django.test import SimpleTestCase
 
+import teatree.agents.envelope_refusal as refusal
 from teatree.agents.attempt_recorder import validate_result_keys
 from teatree.agents.envelope_refusal import (
     MALFORMED_FIX_RECORD_PREFIX,
@@ -24,6 +25,7 @@ from teatree.agents.envelope_refusal import (
     is_rubric_grades_refusal,
     required_keys_phrase,
 )
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from tests._owner_channel import owner_stop
 
 #: A real recorder-side refusal, as ``result_schema.check_evidence`` phrases it.
@@ -126,3 +128,12 @@ class TestCorrectiveInstruction(SimpleTestCase):
     def test_it_never_names_a_key_the_phase_does_not_require(self) -> None:
         assert "files_modified" not in corrective_instruction("debugging")
         assert "files_modified" in corrective_instruction("coding")
+
+
+class TestUnparseableEnvelopeRefusal(SimpleTestCase):
+    def test_shared_prefix_is_classified_and_correctable(self) -> None:
+        error = refusal.UNPARSEABLE_ENVELOPE_PREFIX + "extra data"
+        assert refusal.is_unparseable_envelope_refusal(error)
+        assert is_recorder_refusal(error)
+        assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
+        assert not refusal.is_unparseable_envelope_refusal(_REAL_DEFECT)

@@ -102,6 +102,28 @@ class TestAnInterruptedRunKeepsWhatItProduced(TestCase):
         recorded = TaskAttempt.objects.filter(task=task).values_list("result", flat=True)
         assert any("review_verdict" in result for result in recorded)
 
+    def test_malformed_envelope_does_not_persist_a_nested_fragment(self) -> None:
+        task = self._completed_reviewing_task()
+        raw = '{"summary":"reviewed"},"skill_application":[{"skill":"x","evidence":"y"}]}'
+
+        attempt = _outcome_failure(task, _interrupted(raw), phase="reviewing")
+
+        assert attempt is not None
+        assert attempt.result["summary"] == f"{NOOP_OVER_COMPLETED_MARKER}{_ROW_COMPLETED}"
+        assert "skill" not in attempt.result
+        assert "evidence" not in attempt.result
+
+    def test_malformed_tail_after_complete_envelope_keeps_the_complete_one(self) -> None:
+        task = self._completed_reviewing_task()
+        raw = json.dumps(_VERDICT_ENVELOPE) + '\n{"summary":"broken"'
+
+        with self.assertLogs("teatree.agents.runner_interruption", level="WARNING") as logs:
+            attempt = _outcome_failure(task, _interrupted(raw), phase="reviewing")
+
+        assert attempt is not None
+        assert attempt.result["review_verdict"] == _VERDICT_ENVELOPE["review_verdict"]
+        assert any("malformed result envelope" in line for line in logs.output)
+
     def test_a_run_that_produced_nothing_records_the_interruption_alone(self) -> None:
         task = self._completed_reviewing_task()
 

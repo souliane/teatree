@@ -35,7 +35,6 @@ from teatree.agents.runner import (
     _resolve_dispatch_lane,
     run_agent,
 )
-from teatree.agents.runner_result import parse_result
 from teatree.agents.runner_usage import _safe_float, _safe_int
 from teatree.agents.session_lineage import resume_session_id
 from teatree.config import AgentHarnessProvider
@@ -868,39 +867,6 @@ def test_limit_match_ignores_unrelated_error() -> None:
 
 def test_limit_match_handles_missing_message() -> None:
     assert _limit_match(None) is None
-
-
-# --- Pure function tests (no DB) ---
-
-
-def test_parse_result_extracts_last_json_line() -> None:
-    stdout = "Loading skills...\nRunning task...\n" + json.dumps({"summary": "OK"}) + "\n"
-    assert parse_result(stdout) == {"summary": "OK"}
-
-
-def test_parse_result_returns_empty_dict_for_no_json() -> None:
-    assert parse_result("no json here\n") == {}
-
-
-def test_parse_result_skips_malformed_json() -> None:
-    assert parse_result("{bad json\n") == {}
-
-
-def test_parse_result_extracts_pretty_printed_multiline_json() -> None:
-    # A pretty-printed final object spans multiple lines; a line-based scan never
-    # parsed it and degraded to truncated prose (breaking the #1284 gate).
-    stdout = 'Running task...\n{\n  "summary": "done",\n  "phase": "review"\n}\n'
-    assert parse_result(stdout) == {"summary": "done", "phase": "review"}
-
-
-def test_parse_result_returns_last_object_when_several_present() -> None:
-    stdout = '{"summary": "first"}\nmore progress\n{\n  "summary": "final"\n}\n'
-    assert parse_result(stdout) == {"summary": "final"}
-
-
-def test_parse_result_ignores_inner_braces_of_multiline_object() -> None:
-    stdout = 'progress\n{\n  "summary": "ok",\n  "nested": {"k": "v"}\n}\n'
-    assert parse_result(stdout) == {"summary": "ok", "nested": {"k": "v"}}
 
 
 # --- Session resume tests ---

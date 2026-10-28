@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0025_ticketdmthread_ticketdmpost"),
+        ("core", "0029_loop_tick_cost"),
     ]
 
     operations = [

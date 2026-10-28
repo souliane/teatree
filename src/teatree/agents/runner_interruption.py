@@ -147,9 +147,16 @@ def _record_checkpoint(task: Task, *, checkpoint: str, usage: "AttemptUsage | No
 
 def _produced_result(outcome: "HarnessOutcome") -> AgentResultBlob:
     """The envelope the interrupted run had already emitted, or ``{}`` if it emitted none (#4464)."""
-    from teatree.agents.runner_result import parse_result  # noqa: PLC0415 — deferred: call-time import
+    from teatree.agents.runner_result import (  # noqa: PLC0415 — deferred: call-time import
+        ResultEnvelopeError,
+        parse_result,
+    )
 
-    return parse_result(outcome.agent_text)
+    try:
+        return parse_result(outcome.agent_text)
+    except ResultEnvelopeError as exc:
+        logger.warning("Interrupted run produced a malformed result envelope: %s", exc)
+        return exc.last_complete
 
 
 def _record_noop_over_completed_row(
