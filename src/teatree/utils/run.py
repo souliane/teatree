@@ -85,7 +85,7 @@ _SECRET_ENV_ASSIGN_RE = re.compile(r"(?:\A|(?<=[=\s]))([A-Z][A-Z0-9_]*(?:KEY|SEC
 _SECRET_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[a-z0-9._~+/-]{8,}=*")
 # A URL userinfo's password, or a lone userinfo only when token-like (12+ characters, or a digit, underscore or hyphen).
 _SECRET_URL_USERINFO_RE = re.compile(
-    r"(?<=://)(?:([^\s/@:?#]+:)[^\s/@?#]+|(?=[^\s/@:?#]*[\d_-]|[^\s/@:?#]{12})[^\s/@:?#]+)(?=@)"
+    r"(?<=://)(?:([^\s/@:?#]*:)[^\s/@?#]+|(?=[^\s/@:?#]*[\d_-]|[^\s/@:?#]{12})[^\s/@:?#]+)(?=@)"
 )
 # A quoted credential-named key (JSON, or a Python dict repr) and its quoted value; both quotes must match.
 _SECRET_QUOTED_PAIR_RE = re.compile(

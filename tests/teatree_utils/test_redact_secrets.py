@@ -114,6 +114,8 @@ class TestBearerUserinfoAndQuotedCredentialsAreRedacted:
         [
             ("retry with bearer abc123XYZ now", "retry with bearer <redacted> now"),
             ("https://user:abc123XYZ@host.test:8443/path", "https://user:<redacted>@host.test:8443/path"),
+            ("redis://:abc123XYZ@cache.test:6379/0", "redis://:<redacted>@cache.test:6379/0"),
+            ("http://:abc123XYZ@host.test/x", "http://:<redacted>@host.test/x"),
             ("scheme://abc123XYZ@host.test", "scheme://<redacted>@host.test"),
             ("scheme://abc_xyz@host.test", "scheme://<redacted>@host.test"),
             ("scheme://abc-xyz@host.test", "scheme://<redacted>@host.test"),
