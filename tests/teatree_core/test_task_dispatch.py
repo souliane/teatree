@@ -240,7 +240,7 @@ class TestTheDrainServesStartedPullRequests(_AdmissionCase):
         assert not self._admitted(pr_less)
 
 
-class TestTheOpenPullRequestStartCap(_AdmissionCase):
+class TestManyLivePullRequestsDoNotHoldAStart(_AdmissionCase):
     def setUp(self) -> None:
         super().setUp()
         post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
@@ -254,44 +254,14 @@ class TestTheOpenPullRequestStartCap(_AdmissionCase):
             )
         return tickets
 
-    def test_three_open_prs_hold_new_shipping_and_first_push_but_serve_started_work(self) -> None:
-        started_ticket = self._open_prs(3)[0]
-        shipping = self._task("shipping")
-        first_push = self._task("coding", ticket=Ticket.objects.create())
-        started = self._task("coding", ticket=started_ticket)
+    def test_four_author_starts_without_a_pull_request_are_claimed_with_twenty_live_pull_requests(self) -> None:
+        self._open_prs(20)
+        starters = [self._task("coding", ticket=Ticket.objects.create()) for _ in range(4)]
 
-        assert drain_queue_body()["enqueued"] == [started.pk]
-        assert not self._admitted(shipping)
-        assert not self._admitted(first_push)
-
-    def test_two_open_prs_allow_a_new_shipping_task(self) -> None:
-        self._open_prs(2)
-        shipping = self._task("shipping")
-
-        assert drain_queue_body()["enqueued"] == [shipping.pk]
-
-    def test_three_open_prs_allow_review_and_critic(self) -> None:
-        self._open_prs(3)
-        review = self._task("reviewing")
-        critic = self._task("critic_reviewing", ticket=Ticket.objects.create(role=Ticket.Role.REVIEWER))
-
-        assert drain_queue_body()["enqueued"] == [review.pk, critic.pk]
-
-    def test_three_open_prs_allow_expedited_shipping(self) -> None:
-        self._open_prs(3)
-        expedited = self._task("shipping", ticket=Ticket.objects.create(expedited=True))
-
-        assert drain_queue_body()["enqueued"] == [expedited.pk]
-
-    def test_held_starter_denial_names_the_pull_request_cap(self) -> None:
-        self._open_prs(3)
-        held = self._task("shipping")
-
-        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
-            assert drain_queue_body()["enqueued"] == []
-
-        assert any("3 or more pull requests are open" in message for message in logs.output)
-        assert not self._admitted(held)
+        assert drain_queue_body()["enqueued"] == [task.pk for task in starters]
+        assert all(self._admitted(task) for task in starters)
+        assert [Task.objects.claim_next_pending(claimed_by="worker") for _ in starters] == starters
+        assert all(Task.objects.get(pk=task.pk).status == Task.Status.CLAIMED for task in starters)
 
 
 class TestAFrozenFactoryAdmitsNothing(_AdmissionCase):

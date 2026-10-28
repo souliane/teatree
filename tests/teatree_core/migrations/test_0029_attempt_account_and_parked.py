@@ -14,7 +14,7 @@ class TestRestampParkedAttempts(TestCase):
         parked = TaskAttempt.objects.create(task=task, exit_code=1, error="limit_parked: reset")
         failed = TaskAttempt.objects.create(task=task, exit_code=1, error="harness_crash: failed")
         TaskAttempt.objects.filter(pk=parked.pk).update(outcome=TaskAttempt.Outcome.CRASH)
-        restamp = import_module("teatree.core.migrations.0027_attempt_account_and_parked").restamp_parked_attempts
+        restamp = import_module("teatree.core.migrations.0029_attempt_account_and_parked").restamp_parked_attempts
 
         restamp(apps, None)
         parked.refresh_from_db()

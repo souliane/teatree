@@ -135,14 +135,14 @@ class TestJudgesHostLoadAgainstHostCores(TestCase):
             patch(f"{_MODULE}.available_cpu_count", return_value=8),
             patch(
                 f"{_MODULE}.read_machine_signal",
-                return_value=MachineSignal(cores=8, load1=30.0, ram_available_gb=None, load_cores=load_cores),
+                return_value=MachineSignal(cores=8, load1=12.0, ram_available_gb=None, load_cores=load_cores),
             ),
             patch(f"{_MODULE}.read_quota_signal", return_value=_quota()),
         ):
             return list(_scanner(static_ceiling=3).scan())
 
     def test_a_host_load_is_not_divided_by_the_containers_cpu_quota(self) -> None:
-        # Load 30 on a 16-core host is under 2/core; over the container's 8 CPUs it read as 3.75.
+        # Host-scoped load leaves intake capacity that a smaller container would shed.
         host_scoped = self._adapt(load_cores=16)
         host_adapted = ResourcePressureMarker.load().adaptive_intake_concurrency
         ResourcePressureMarker.objects.all().delete()
@@ -169,6 +169,29 @@ class TestSuppliesTheWholeBoxReading(TestCase):
 
         assert saturated is not None
         assert saturated < (ResourcePressureMarker.load().adaptive_intake_concurrency or 0)
+
+    def test_intake_uses_the_configured_load_watermark(self) -> None:
+        with (
+            _pinned_box(available_mib=_idle_mib(60.0), load1=12.0),
+            patch(
+                f"{_MODULE}.read_machine_signal",
+                return_value=MachineSignal(
+                    cores=8,
+                    load1=12.0,
+                    ram_available_gb=None,
+                    load_brake_per_core=4.0,
+                    load_resume_per_core=2.0,
+                ),
+            ),
+        ):
+            _scanner(static_ceiling=3).scan()
+        configured = ResourcePressureMarker.load().adaptive_intake_concurrency
+
+        ResourcePressureMarker.objects.all().delete()
+        _scan(_scanner(static_ceiling=3), available_mib=_idle_mib(60.0), load1=12.0)
+
+        assert configured is not None
+        assert configured > (ResourcePressureMarker.load().adaptive_intake_concurrency or 0)
 
 
 class TestIntakeSeesTheTokenRunwayNotOnlyTheBox(TestCase):

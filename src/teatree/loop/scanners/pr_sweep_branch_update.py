@@ -26,7 +26,8 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from teatree.core.models import HeadCarryOver
+from teatree.core.merge.ticket_resolution import resolve_gated_ticket
+from teatree.core.models import HeadCarryOver, Task
 from teatree.loop.scanners.pr_sweep_decision import pr_authored_by_self
 from teatree.loop.scanners.pr_sweep_ports import PrApiClient
 from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
@@ -97,6 +98,8 @@ def remedy_stale_base(pr: PrSummary, *, ctx: RemedyContext, budget: TickBudget) 
     """Merge-update *pr* when every bound allows it; otherwise flag the remedy."""
     if budget.remaining <= 0 or not pr_authored_by_self(author=pr.author, self_identities=ctx.self_identities):
         return _flag_needs_update(pr, flag=ctx.flag)
+    if _claimed_task_owns_branch(pr):
+        return _flag_needs_update(pr, flag=ctx.flag)
     if _patch_already_updated(pr) or not _claim_head(pr, overlay=ctx.overlay):
         return _flag_needs_update(pr, flag=ctx.flag)
     if not _apply_update(pr, api=ctx.api):
@@ -110,6 +113,22 @@ def remedy_stale_base(pr: PrSummary, *, ctx: RemedyContext, budget: TickBudget) 
         reason=_APPLIED_REASON,
         url=pr.url,
     )
+
+
+def _claimed_task_owns_branch(pr: PrSummary) -> bool:
+    try:
+        ticket = resolve_gated_ticket(slug=pr.slug, pr_id=pr.number)
+        return (
+            ticket is not None
+            and Task.objects.filter(
+                ticket=ticket,
+                status=Task.Status.CLAIMED,
+                phase__in=("coding", "debugging"),
+            ).exists()
+        )
+    except Exception:
+        logger.exception("pr_sweep could not check claimed work for %s#%d", pr.slug, pr.number)
+        return True
 
 
 def _patch_already_updated(pr: PrSummary) -> bool:

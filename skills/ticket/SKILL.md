@@ -181,6 +181,8 @@ git -C <worktree> status --porcelain                                            
 git -C <worktree> log <branch> --not --remotes --oneline                                  # unpushed commits
 ```
 
+The survey also carries a bounded `fix_first` listing of open defects and idle author tickets; before a feature plan, use it to defer or split the feature or record the owner's per-item lift under Rule 6.
+
 The survey **fails open**: an inconclusive git probe or a forge that cannot be listed is reported as a warning, never silently dropped — a missed in-flight branch is worse than a noisy warning. The deterministic gather + classification lives in `teatree.core.intake.landscape` (`survey_landscape`); the planner receives the resulting `LandscapeSurvey` (open PRs, in-flight worktrees, per-issue recommendations) as input and **must not re-derive it**.
 
 **Baked into the intake FSM step (#2541).** For the autonomous flow the survey is not a manual CLI step — the intake FSM worker (`execute_provision`, after the worktrees materialise and before the planner is scheduled) gathers it and persists a durable `LandscapeArtifact` row tied to the ticket. The planner then consumes that persisted survey (a headless planner sees it inline in its `INTAKE LANDSCAPE SURVEY` system-context block; any planner reads `LandscapeArtifact.latest_for(ticket)`), so the survey is *produced by intake and consumed by the planner via the FSM* rather than re-derived. Persistence is best-effort — a forge outage during provision never blocks provisioning or planning; the planner then falls back to the `t3 <overlay> workspace landscape` fetch above. `t3 info artifacts <ticket>` surfaces the latest persisted survey alongside the ticket's other artifacts.
@@ -225,6 +227,10 @@ Already recorded a bundled one? Restate the rubric with `t3 <overlay> ticket rub
 <ticket-id> --criteria-json '<json>'` — a replace that resets every grade, so re-grade after.
 An owner can waive one criterion with `t3 <overlay> ticket rubric-waive <ticket-id>
 --text-hash <hash> --waived-by <owner> --reason <why>`; later plans will not add it back.
+After repeated merge-critic rounds an owner can likewise accept one LLM merge item with
+`t3 <overlay> ticket merge-item-waive <ticket-id> --item test_value|cleanliness
+--reason <why>`; the command records a question, and the owner's button answer records the waiver.
+It covers that ticket across heads and no other gate can be waived.
 
 **Grading happens at the end, by someone other than the maker — automatically.** The cold
 reviewer is the producer: it returns `rubric_grades` in the same envelope as its verdict, and

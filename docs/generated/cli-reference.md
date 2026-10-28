@@ -25,7 +25,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 addressable upper bounds.                                    │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
-│ speak           Refuse to speak — local audio cannot reach the user.         │
 │ push            Push a branch using the forge credential the loop already    │
 │                 holds.                                                       │
 │ fast-push       Stage, commit, push, and create-or-update the PR in one      │
@@ -255,24 +254,6 @@ Usage: t3 tokens [OPTIONS]
 │ --scope         TEXT  Routing scope to select for; defaults to the active    │
 │                       overlay (T3_OVERLAY_NAME).                             │
 │ --help                Show this message and exit.                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 speak`
-
-```
-Usage: t3 speak [OPTIONS] TEXT
-
- Refuse to speak — local audio cannot reach the user.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │
-│                      [required]                                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay Slack   │
-│                        creds).                                               │
-│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1627,6 +1608,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           touched; exit --skip-code when none.               │
 │ ci-trigger                Dispatch ``eval-ci-heal.yml`` for a PR branch and  │
 │                           print the head SHA it keys on.                     │
+│ baseline-status           Report whether a recent full-suite green proof     │
+│                           over the current catalog is on record.             │
 │ ci-status                 Resolve one eval-ci-heal run's verdict (and, on    │
 │                           failure, its triaged reds).                        │
 │ green-proof               Assert the merged eval-heal JSON proves a          │
@@ -2012,6 +1995,29 @@ Usage: t3 eval ci-trigger [OPTIONS]
 │    --repo              TEXT  owner/repo the eval-ci-heal workflow lives in.  │
 │                              [default: souliane/teatree]                     │
 │    --help                    Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval baseline-status`
+
+```
+Usage: t3 eval baseline-status [OPTIONS]
+
+ Report whether a recent full-suite green proof over the current catalog is on
+ record.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ref                 TEXT                  Branch whose eval-ci-heal        │
+│                                             full-suite runs count as the     │
+│                                             baseline.                        │
+│                                             [default: main]                  │
+│ --max-age-days        INTEGER RANGE [x>=1]  Oldest full-suite proof still    │
+│                                             called current.                  │
+│                                             [default: 7]                     │
+│ --repo                TEXT                  owner/repo the eval-ci-heal      │
+│                                             workflow lives in.               │
+│                                             [default: souliane/teatree]      │
+│ --help                                      Show this message and exit.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4271,7 +4277,9 @@ Usage: t3 tool verify-gates [OPTIONS]
  Run the FULL CI-equivalent local gate set (commit, push and manual CI-job
  stages).
 
- Runs each prek stage under a 600-second deadline and exits non-zero if ANY
+ Runs each prek stage under a load-aware deadline (600 seconds of work at
+ idle, up to three times that under load; pre-push also allows the shared
+ push-gate lock's 1500-second wait). Exits non-zero if ANY
  stage fails. The push-stage run is
  what catches the gates CI fails on but a bare ``prek run --all-files``
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
@@ -6761,6 +6769,10 @@ Usage: t3 slack check [OPTIONS]
  is unambiguous, and preferred over an ``EMPTY`` stdout sentinel: stdout
  is already the message channel, and a sentinel would need filtering by
  every future consumer.
+
+ A direct message from anyone but the overlay's configured owner is dropped
+ silently:
+ never printed, never acknowledged.
 
  A singleton guard serialises the drain: the 30s cron can double-fire and
  two concurrent drains would ack the same mentions twice, so a second drain
@@ -12856,6 +12868,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              criteria (#2241).                               │
 │ rubric-waive                 Record an owner's waiver of one rubric          │
 │                              criterion.                                      │
+│ merge-item-waive             Request an owner's waiver of one LLM            │
+│                              merge-critic item.                              │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -13880,6 +13894,23 @@ Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
 │ --waived-by        TEXT  Owner identity recording the waiver.                │
 │ --reason           TEXT  Why this criterion is waived.                       │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket merge-item-waive`
+
+```
+Usage: t3 teatree ticket merge-item-waive [OPTIONS] TICKET_ID
+
+ Request an owner button answer for one LLM merge item.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --item          TEXT  The LLM merge item: test_value or cleanliness.         │
+│ --reason        TEXT  Why this item is waived.                               │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

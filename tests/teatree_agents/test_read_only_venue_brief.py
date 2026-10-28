@@ -383,6 +383,25 @@ class TestTheReadOnlyVenueBrief(TestCase):
         assert str(handoff.parent) not in prepared.options.add_dirs
         assert str(handoff) not in self._system_context(prepared)
 
+    def test_planning_brief_inlines_fix_first_in_read_only_venue(self) -> None:
+        task = self._task()
+        LandscapeArtifact.record(
+            ticket=task.ticket,
+            survey={
+                "fix_first": {
+                    "defects": [{"issue": "https://github.com/example-org/example-repo/issues/8"}],
+                    "stuck": [{"ticket": 9}],
+                }
+            },
+            recorded_by="t3:intake",
+        )
+
+        prompt = self._prepare(task).prompt
+
+        assert "https://github.com/example-org/example-repo/issues/8" in prompt
+        assert '"ticket": 9' in prompt
+        assert "Rule 6" in prompt
+
     def test_issue_comments_are_inlined_oldest_first_without_system_notes(self) -> None:
         prompt = self._prepare(self._task(), host=_Host(comments=_COMMENTS)).prompt
 
@@ -404,7 +423,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
             patch("teatree.agents.read_only_venue_brief.get_backend_provider", return_value=_provider(host)),
             patch("teatree.agents.read_only_venue_brief.get_overlay_for_ticket", return_value="example-overlay"),
             patch("teatree.backends.forge_merge_rpc.run_allowed_to_fail", return_value=pr_response) as pr_call,
-            patch("teatree.backends.github.api.run_checked", return_value=comments_response) as api_call,
+            patch("teatree.backends.github.api._run_pooled_api", return_value=comments_response) as api_call,
         ):
             body, comments = _issue(ticket)
 
@@ -938,7 +957,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
 class TestWorkerBriefsAreTheBaseBytes(TestCase):
     """Captured worker briefs; a deliberate prompt change re-captures the fixture."""
 
-    def test_planning_coding_and_reviewing_worker_briefs_match_the_base_byte_for_byte(self) -> None:
+    def test_worker_briefs_preserve_base_with_fix_first_addition(self) -> None:
         golden = json.loads(_WORKER_BRIEFS_AT_BASE.read_text(encoding="utf-8"))
         ticket = Ticket.objects.create(issue_url=_ISSUE_URL, context="decision: keep the bar")
         LandscapeArtifact.record(ticket=ticket, survey={"open_prs": [], "worktrees": []}, recorded_by="t3:intake")
@@ -968,5 +987,14 @@ class TestWorkerBriefsAreTheBaseBytes(TestCase):
             with self.subTest(phase=phase):
                 system_prompt = prepared.options.system_prompt
                 assert isinstance(system_prompt, dict)
-                assert normalized(str(system_prompt.get("append"))) == golden[phase]["context"]
+                context = normalized(str(system_prompt.get("append")))
+                if phase == "planning":
+                    fix_first_line = (
+                        "fix_first lists open defects and stuck tickets; list red or flaky gates in the touched "
+                        "area from live checks (or name unreadable checks). A FEATURE waits behind them (Rule 6): "
+                        "defer or split it, or record the owner's lift in the plan.\n"
+                    )
+                    assert context.count(fix_first_line) == 1
+                    context = context.replace(fix_first_line, "")
+                assert context == golden[phase]["context"]
                 assert normalized(prepared.prompt) == golden[phase]["prompt"]

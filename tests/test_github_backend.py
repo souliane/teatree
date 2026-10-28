@@ -2,10 +2,12 @@
 
 import json
 import logging
+import os
 import subprocess
 from contextlib import AbstractContextManager
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 import teatree.backends.github.api as github_api_mod
@@ -21,6 +23,8 @@ from teatree.backends.github.api import gh_api_get as _gh_api_get
 from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
 from teatree.backends.github.api import gh_api_search_paginated as _gh_api_search_paginated
 from teatree.backends.github.projects import _gh_graphql
+from teatree.utils.forge_http import CONNECT_TIMEOUT_SECONDS
+from teatree.utils.throttled_log import reset_throttle
 
 
 def _reviewthreads_stdout(*, unresolved: int = 0, resolved: int = 0) -> str:
@@ -251,13 +255,65 @@ class TestGhApiSearchPaginated:
             mock_run.return_value = MagicMock(stdout=json.dumps(pages))
             assert _gh_api_search_paginated("search/issues?q=is:pr") == [{"number": 5}]
 
+    def test_warns_when_the_search_matched_more_than_it_returned(self, caplog: pytest.LogCaptureFixture) -> None:
+        reset_throttle()
+        pages = [{"total_count": 3146, "incomplete_results": False, "items": [{"number": 1}]}]
+        with (
+            patch.object(github_api_mod, "_run_gh", return_value=MagicMock(stdout=json.dumps(pages))),
+            caplog.at_level(logging.WARNING, logger="teatree.backends.github.api"),
+        ):
+            result = _gh_api_search_paginated("search/issues?q=is:pr")
+        assert result == [{"number": 1}]
+        assert any("3146" in record.message for record in caplog.records)
+
+    def test_a_complete_search_does_not_warn(self, caplog: pytest.LogCaptureFixture) -> None:
+        reset_throttle()
+        pages = [{"total_count": 1, "incomplete_results": False, "items": [{"number": 1}]}]
+        with (
+            patch.object(github_api_mod, "_run_gh", return_value=MagicMock(stdout=json.dumps(pages))),
+            caplog.at_level(logging.WARNING, logger="teatree.backends.github.api"),
+        ):
+            _gh_api_search_paginated("search/issues?q=is:pr")
+        assert not caplog.records
+
+    def test_refuses_a_search_the_server_gave_up_on(self) -> None:
+        pages = [{"total_count": 2, "incomplete_results": True, "items": [{"number": 1}]}]
+        with (
+            patch.object(github_api_mod, "_run_gh", return_value=MagicMock(stdout=json.dumps(pages))),
+            pytest.raises(ValueError, match="incomplete"),
+        ):
+            _gh_api_search_paginated("search/issues?q=is:pr")
+
+
+def _pooled_reply(payload: str = "{}") -> AbstractContextManager[MagicMock]:
+    response = httpx.Response(200, text=payload, request=httpx.Request("GET", "https://api.github.com/x"))
+    return patch.object(httpx.Client, "request", return_value=response)
+
+
+def _no_gh_subprocess() -> AbstractContextManager[MagicMock]:
+    return patch.object(utils_run_mod.subprocess, "run", side_effect=AssertionError("a gh subprocess was spawned"))
+
+
+def _assert_token_only_in_the_authorization_header(
+    request: MagicMock, token: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    kwargs = request.call_args.kwargs
+    assert kwargs["headers"]["Authorization"] == f"Bearer {token}"
+    elsewhere = [
+        *map(str, request.call_args.args),
+        *(str(value) for key, value in kwargs.items() if key != "headers"),
+        *(f"{key}={value}" for key, value in kwargs["headers"].items() if key != "Authorization"),
+    ]
+    assert not any(token in text for text in elsewhere)
+    assert token not in caplog.text
+    assert token not in os.environ.values()
+
 
 class TestRunGhTimeout:
     def test_threads_timeout_into_subprocess(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+        with _pooled_reply() as request, _no_gh_subprocess():
             _run_gh("gh", "api", "x", token="routed-token", timeout=12.5)
-        assert mock_run.call_args.kwargs["timeout"] == pytest.approx(12.5)
+        assert request.call_args.kwargs["timeout"] == httpx.Timeout(12.5, connect=CONNECT_TIMEOUT_SECONDS)
 
     def test_default_leaves_the_subprocess_unbounded(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
@@ -268,26 +324,24 @@ class TestRunGhTimeout:
 
 class TestGhApiPost:
     def test_sends_payload_via_stdin(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, '{"id": 1}', "")
+        with _pooled_reply('{"id": 1}') as request, _no_gh_subprocess():
             result = _gh_api_post("/test", {"body": "hello"}, token="routed-token")
         assert result == {"id": 1}
-        call_kwargs = mock_run.call_args[1]
-        assert json.loads(call_kwargs["input"]) == {"body": "hello"}
+        assert request.call_args.args[0] == "POST"
+        assert json.loads(request.call_args.kwargs["content"]) == {"body": "hello"}
 
-    def test_passes_token_via_env_not_argv(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
-            _gh_api_post("/test", {}, token="tok")
-        args = mock_run.call_args[0][0]
-        assert not any("Authorization" in arg for arg in args)
-        assert mock_run.call_args.kwargs["env"]["GH_TOKEN"] == "tok"
+    def test_passes_token_via_env_not_argv(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        with _pooled_reply() as request, _no_gh_subprocess():
+            _gh_api_post("/test", {}, token="tok-post-secret")
+        _assert_token_only_in_the_authorization_header(request, "tok-post-secret", caplog)
 
     def test_bounds_timeout(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
+        with _pooled_reply() as request, _no_gh_subprocess():
             _gh_api_post("/test", {}, token="tok")
-        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
+        assert request.call_args.kwargs["timeout"] == httpx.Timeout(
+            _FORGE_READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS
+        )
 
     def test_no_token_refuses_ambient_auth(self) -> None:
         with (
@@ -301,39 +355,32 @@ class TestGhApiPost:
 
 class TestGhApiPatch:
     def test_sends_patch_request(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, '{"updated": true}', "")
+        with _pooled_reply('{"updated": true}') as request, _no_gh_subprocess():
             result = _gh_api_patch("/test/1", {"title": "new"}, token="routed-token")
         assert result == {"updated": True}
-        args = mock_run.call_args[0][0]
-        assert "--method" in args
-        assert "PATCH" in args
+        assert request.call_args.args[0] == "PATCH"
+        assert json.loads(request.call_args.kwargs["content"]) == {"title": "new"}
 
-    def test_passes_token_via_env_not_argv(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
-            _gh_api_patch("/test", {}, token="tok")
-        args = mock_run.call_args[0][0]
-        assert not any("Authorization" in arg for arg in args)
-        assert mock_run.call_args.kwargs["env"]["GH_TOKEN"] == "tok"
+    def test_passes_token_via_env_not_argv(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        with _pooled_reply() as request, _no_gh_subprocess():
+            _gh_api_patch("/test", {}, token="tok-patch-secret")
+        _assert_token_only_in_the_authorization_header(request, "tok-patch-secret", caplog)
 
 
 class TestGhGraphql:
     def test_executes_query(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, '{"data": {}}', "")
+        with _pooled_reply('{"data": {}}') as request, _no_gh_subprocess():
             result = _gh_graphql("{ viewer { login } }", token="routed-token")
         assert result == {"data": {}}
-        args = mock_run.call_args[0][0]
-        assert "graphql" in args
+        assert request.call_args.args[1].endswith("/graphql")
+        assert request.call_args.kwargs["json"] == {"query": "{ viewer { login } }"}
 
-    def test_passes_token_via_env_not_argv(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
-            _gh_graphql("{ test }", token="tok")
-        args = mock_run.call_args[0][0]
-        assert not any("Authorization" in arg for arg in args)
-        assert mock_run.call_args.kwargs["env"]["GH_TOKEN"] == "tok"
+    def test_passes_token_via_env_not_argv(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        with _pooled_reply() as request, _no_gh_subprocess():
+            _gh_graphql("{ test }", token="tok-graphql-secret")
+        _assert_token_only_in_the_authorization_header(request, "tok-graphql-secret", caplog)
 
 
 class TestFetchProjectItems:
@@ -1455,32 +1502,6 @@ class TestListMyPrsEnrichment:
         assert "status_check_rollup" not in prs[0]
 
 
-class TestListMyMergedPrsCap:
-    """F8.8 — an uncut merged-PR search warns about the 1000-result cap."""
-
-    def test_warns_without_cutoff(self, caplog) -> None:
-        from teatree.utils.throttled_log import reset_throttle  # noqa: PLC0415
-
-        reset_throttle()
-        with (
-            patch.object(github_mod, "_gh_api_search_paginated", return_value=[]),
-            caplog.at_level(logging.WARNING, logger="teatree.backends.github.client"),
-        ):
-            GitHubCodeHost().list_my_merged_prs(author="alice")
-        assert any("caps at 1000" in r.message for r in caplog.records)
-
-    def test_no_warning_with_cutoff(self, caplog) -> None:
-        from teatree.utils.throttled_log import reset_throttle  # noqa: PLC0415
-
-        reset_throttle()
-        with (
-            patch.object(github_mod, "_gh_api_search_paginated", return_value=[]),
-            caplog.at_level(logging.WARNING, logger="teatree.backends.github.client"),
-        ):
-            GitHubCodeHost().list_my_merged_prs(author="alice", updated_after="2026-01-01T00:00:00Z")
-        assert not any("caps at 1000" in r.message for r in caplog.records)
-
-
 class TestDirectRunGhTimeouts:
     """F8.4 — direct _run_gh calls on the host bound their subprocess."""
 
@@ -1496,8 +1517,3 @@ class TestDirectRunGhTimeouts:
         with patch.object(github_mod, "_run_gh", return_value=_completed("")) as mock_run:
             GitHubCodeHost().delete_issue_comment(issue_url="https://github.com/o/r/issues/3", comment_id=5)
         assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
-
-
-def test_logging_import_present() -> None:
-    # `logging` is imported at module top for the caplog-based tests above.
-    assert logging.getLogger("teatree.backends.github.client") is not None

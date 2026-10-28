@@ -4,10 +4,12 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+import teatree.backends.github.api as github_api_mod
 from teatree.backends.github.client import GitHubCodeHost
 from teatree.config import UserSettings
 from teatree.core import forge_pr_probe
@@ -657,8 +659,6 @@ case "$1 $2" in
         echo '{_RACE_WINNER_URL}' >&2; exit 1 ;;
     "pr list") echo '[{{"url": "{_RACE_WINNER_URL}"}}]' ;;
     "pr view") printf '## Why\\n- The drain opened it first.\\n' ;;
-    "api user") echo '{{"login": "souliane"}}' ;;
-    "api repos/"*) echo '{{"state": "open", "merged": false}}' ;;
     *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
 """
@@ -679,7 +679,15 @@ class TestAPrAnotherOpenerCreatedFirstIsAdopted(_RealGitOrphanBranch):
             ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: GitHubCodeHost(token="t")
         )
 
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+        def api_response(method: str, url: str, **_kwargs: object) -> httpx.Response:
+            payload = {"login": "souliane"} if url.endswith("/user") else {"state": "open", "merged": False}
+            return httpx.Response(200, json=payload, request=httpx.Request(method, url))
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(github_api_mod, "client_for_url") as client_for_url,
+        ):
+            client_for_url.return_value.request.side_effect = api_response
             result = create_or_defer_pr(str(clone), "1534-fix-the-real-work")
 
         assert result == {"branch": "1534-fix-the-real-work", "url": _RACE_WINNER_URL}

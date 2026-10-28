@@ -410,9 +410,6 @@ class TestBuildSystemContext(TestCase):
         assert "the phase evidence gate refuses a run with no `plan_text`" in ctx
 
     def test_scanning_news_brief_instructs_returning_the_article_suggestions_envelope(self) -> None:
-        # #3584: PHASE_REQUIRED_EVIDENCE["scanning_news"] refuses a run whose envelope
-        # omits `article_suggestions`, so the shell-denied scanner's brief MUST tell it
-        # to RETURN the candidates rather than try to enqueue them itself.
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase="scanning_news")
@@ -421,6 +418,10 @@ class TestBuildSystemContext(TestCase):
         assert "PHASE: scanning_news" in ctx
         assert "article_suggestions" in ctx
         assert "rationale" in ctx
+        assert "backlog_checked" in ctx
+        assert "base_red" in ctx
+        assert "duplicate_of" in ctx
+        assert "server to settle" in ctx
 
     def test_shipping_phase_embeds_reviewer_dispatch_skill_block(self) -> None:
         ticket = Ticket.objects.create()

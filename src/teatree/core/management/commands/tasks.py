@@ -14,7 +14,7 @@ from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.intake.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
-from teatree.core.management.commands._task_cancel_auth import direct_owner_action
+from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
     render_reconcile_checklist,

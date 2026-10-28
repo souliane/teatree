@@ -4,6 +4,7 @@ import datetime as dt
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -19,12 +20,14 @@ from teatree.core.telemetry.admission import (
     recent_lifecycle_observations,
     record_factory_issue,
 )
+from teatree.loop.scanners import owner_dm_rows
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import DetectorReport
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.self_improve.detectors.telemetry_action_gap import TelemetryActionGapDetector
 from teatree.loop.self_improve.schedule import Tier, run_tier
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
+from tests._owner_channel import OWNER_SLACK_ID
 from tests.factories import TaskAttemptFactory, TaskFactory
 from tests.teatree_loop.slack_answer.test_cycle import RecordingBackend
 
@@ -65,11 +68,14 @@ class FactoryIssueTelemetryTests(TestCase):
                 ),
                 self.captureOnCommitCallbacks(execute=True),
             ):
+                backend = RecordingBackend(post_reply_raises=True)
                 inbound = PendingChatInjection.record(
-                    channel="C1", slack_ts="100.9", text="what's the status?", context=DmContext(user_id="UUSER")
+                    channel="C1",
+                    slack_ts="100.9",
+                    text="what's the status?",
+                    context=DmContext(user_id=backend.user_id),
                 )
                 assert inbound is not None
-                backend = RecordingBackend(post_reply_raises=True)
                 run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend)
 
             rows = recent_lifecycle_observations(directory=Path(directory), now=timezone.now())
@@ -88,11 +94,14 @@ class FactoryIssueTelemetryTests(TestCase):
                 ),
                 self.captureOnCommitCallbacks(execute=True),
             ):
+                backend = RecordingBackend()
                 inbound = PendingChatInjection.record(
-                    channel="C1", slack_ts="101.0", text="what's the status?", context=DmContext(user_id="UUSER")
+                    channel="C1",
+                    slack_ts="101.0",
+                    text="what's the status?",
+                    context=DmContext(user_id=backend.user_id),
                 )
                 assert inbound is not None
-                backend = RecordingBackend()
                 run_slack_answer_cycle(messaging_resolver=lambda _overlay: backend)
 
             rows = recent_lifecycle_observations(directory=Path(directory), now=timezone.now())
@@ -144,13 +153,23 @@ class FactoryIssueTelemetryTests(TestCase):
 
     def test_real_detector_emits_safe_issue_span_and_deduplicated_firing(self) -> None:
         now = timezone.now()
-        row = PendingChatInjection.record(channel="D1", slack_ts="100.1", text="Why was my secret task ignored?")
+        row = PendingChatInjection.record(
+            channel="D1",
+            slack_ts="100.1",
+            text="Why was my secret task ignored?",
+            context=DmContext(user_id=OWNER_SLACK_ID),
+        )
         assert row is not None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=now - dt.timedelta(hours=2))
         with TemporaryDirectory() as directory:
             provider = TracerProvider()
             provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=Path(directory))))
-            with patch("teatree.core.telemetry.admission._provider", return_value=provider):
+            with (
+                patch("teatree.core.telemetry.admission._provider", return_value=provider),
+                patch.object(
+                    owner_dm_rows, "messaging_from_overlay", return_value=SimpleNamespace(user_id=OWNER_SLACK_ID)
+                ),
+            ):
                 run_tier(Tier.CHEAP, budget=BudgetVerdict.allow(), detectors=[LifecycleIncidentDetector()])
                 run_tier(Tier.CHEAP, budget=BudgetVerdict.allow(), detectors=[LifecycleIncidentDetector()])
 

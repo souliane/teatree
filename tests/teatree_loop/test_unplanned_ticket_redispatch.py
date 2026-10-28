@@ -118,7 +118,7 @@ class TestWhatTheSweepMustNotTouch(TestCase):
         """Per-overlay placeholders (``scanning-news://`` …) sit at NOT_STARTED by design.
 
         This is why the sweep keys on a ``plan_missing`` failure rather than on the state:
-        widening ``stuck_ticket_redispatch._STATE_PHASE`` to the early states would hand
+        widening ``core.intake.fix_first.AUTHOR_STATE_PHASE`` to the early states would hand
         each of these a planning task it has no plan to produce.
         """
         placeholder = Ticket.objects.create(

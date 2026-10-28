@@ -3,8 +3,7 @@
 The speak schema — the ``local`` playback enum + the ``slack`` bool + the
 presence backend/token refs — is a cohesive concern with a single dependency
 (:mod:`teatree.types`), so it lives in its own module under the ``teatree.config``
-package (PR-29's "no stray top-level ``config_*`` modules"). The hook-side mirror
-lives in ``hook_router._speak_settings``; a parity test pins the two in agreement.
+package (PR-29's "no stray top-level ``config_*`` modules").
 """
 
 from typing import Any, cast

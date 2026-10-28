@@ -175,10 +175,10 @@ def test_gitlab_code_host_upload_file_no_project() -> None:
 
 def test_gitlab_api_put_json(monkeypatch: pytest.MonkeyPatch) -> None:
 
-    def fake_put(url: str, *, headers: dict, json: dict, timeout: float) -> httpx.Response:
+    def fake_put(_client: httpx.Client, url: str, *, headers: dict, json: dict, timeout: float) -> httpx.Response:
         return httpx.Response(200, json={"id": 1}, request=httpx.Request("PUT", url))
 
-    monkeypatch.setattr(httpx, "put", fake_put)
+    monkeypatch.setattr(httpx.Client, "put", fake_put)
 
     api = GitLabAPI(token="test", base_url="https://gl.test/api/v4")
     result = api.put_json("projects/1/notes/2", {"body": "x"})
@@ -204,14 +204,14 @@ def test_gitlab_api_upload_file(monkeypatch: pytest.MonkeyPatch, tmp_path: pytes
     img = tmp_path / "test.png"
     img.write_bytes(b"PNG")
 
-    def fake_post(url: str, *, headers: dict, files: dict, timeout: float) -> httpx.Response:
+    def fake_post(_client: httpx.Client, url: str, *, headers: dict, files: dict, timeout: float) -> httpx.Response:
         return httpx.Response(
             200,
             json={"markdown": "![test](/uploads/x/test.png)"},
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
 
     api = GitLabAPI(token="test", base_url="https://gl.test/api/v4")
     result = api.upload_file(42, str(img))

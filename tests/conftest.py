@@ -25,6 +25,7 @@ from teatree.agents.codex_shared_app_server import reset_shared_codex_app_server
 from teatree.agents.live_mailbox import reset_shared_brokers
 from teatree.agents.live_registry import reset_shared_registries
 from teatree.agents.skill_routing import clear_route_availability_cache
+from teatree.backends.forge_pool import close_forge_clients
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
 from teatree.config.override_read_health import note_healthy_read
 from teatree.core.admission import machine_load
@@ -162,6 +163,10 @@ def readable_ship_tree() -> Iterator[None]:
         patch("teatree.utils.git.branch_diff", return_value=""),
         patch("teatree.visual_qa.changed_files", return_value=[]),
         patch("teatree.core.management.commands._clear_preflight.resolve_clear_changed_files", return_value=[]),
+        patch(
+            "teatree.core.management.commands._ship.gates.require_current_branch",
+            return_value={"auto_merged": False, "post_merge_sha": None, "error": None, "hint": None},
+        ),
     ):
         yield
 
@@ -283,6 +288,7 @@ def pinned_clock() -> Iterator[dt.datetime]:
 
 @pytest.fixture(autouse=True)
 def _clear_backend_caches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+    close_forge_clients()
     reset_backend_caches()
     reset_overlay_cache()
     reset_sealed_key_health_cache()
@@ -290,6 +296,7 @@ def _clear_backend_caches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> It
     monkeypatch.setenv("T3_MASTER_KEY_SOURCE", f"file:{tmp_path / 'master.key'}")
     with use_store(MemoryStore()):
         yield
+    close_forge_clients()
     reset_backend_caches()
     reset_overlay_cache()
     reset_sealed_key_health_cache()

@@ -39,8 +39,6 @@ Every turn response must be short enough to speak aloud without losing the liste
 - A section-headed summary where every item is restated twice (once as a heading, once as prose).
 - A tick report that says "everything is fine" in 8 lines when silence would be correct.
 
-**TTS cap:** If `t3 speak` is active (`[teatree.speak] local = "all"`), the per-turn text passed to `clean_for_speech` is capped at 600 characters. Write turns that fit without truncation by default — the cap is a hard backstop, not a target. A turn that requires aggressive truncation before it fits TTS was too verbose to start.
-
 ## Clickable References
 
 Every PR, ticket, issue, or note reference — in markdown files, platform comments, **and** agent responses — must be a clickable markdown link.

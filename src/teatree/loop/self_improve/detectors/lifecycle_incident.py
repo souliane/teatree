@@ -1,12 +1,10 @@
 """Find failed work and unanswered messages from the factory's durable ledgers."""
 
-import json
 import math
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from operator import itemgetter
 from pathlib import Path
 from typing import ClassVar
 
@@ -15,7 +13,7 @@ from django.utils import timezone
 
 from teatree.core.modelkit import reask_cadence
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, STALE_ERROR_AFTER, FailureKind, is_causeless
+from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, STALE_ERROR_AFTER, FailureKind
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.models.loop_schedule import owner_zone
@@ -24,15 +22,16 @@ from teatree.core.models.task_phase_disposition import PHASE_WEDGE_MARKER_RE
 from teatree.core.telemetry.admission import checked_lifecycle_observations
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.owner_dm_rows import owner_dm_rows
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
+from teatree.loop.self_improve.detectors.lifecycle_incident_evidence import AttemptBurstEvidence
 
 _MESSAGE_WAIT = timedelta(hours=1)
 _POST_WAIT = timedelta(minutes=10)
 _CLAIM_WAIT = timedelta(minutes=10)
 _RECURRING_FAILURE = 3
 _PHASE_WEDGE_PREFIX = "fsm-wedge:"
-_WITNESSES = 2
 _OWNER_ALERT_WAIT = timedelta(minutes=30)
 _REPAIR_WAIT = timedelta(hours=2)
 # Shared with the repair-burn factory signal (factory_signal_queries.compute_s5) so the
@@ -164,39 +163,18 @@ class LifecycleIncidentDetector:
                 rung=ActionRung.TICKET,
                 action="Inspect recent failed attempts, including tasks that were reopened or retried.",
             )
-            evidence = self._attempt_evidence(recent, cause, ids)
+            evidence = AttemptBurstEvidence.recurring_fingerprint(recent, cause, ids)
             if evidence:
                 report.payload["suggested_action"] += f" Fingerprint {evidence[0]}. Evidence: {evidence[1]}"
+            else:
+                digest = AttemptBurstEvidence.distinct_failures(recent, cause, ids, errors)
+                if digest:
+                    report.payload["suggested_action"] += f" Distinct failures: {digest}"
             cursor = cutoffs.get(report.dedup_key)
             if cursor is not None:
                 report.payload["attempt_after_epoch"] = cursor
             reports.append(report)
         return reports
-
-    @staticmethod
-    def _attempt_evidence(rows: list[dict], cause: str, task_ids: set[int]) -> tuple[str, str] | None:
-        if is_causeless(cause):
-            return None
-        groups: dict[str, dict[int, dict]] = defaultdict(dict)
-        for row in sorted(rows, key=itemgetter("epoch", "entity_id")):
-            fingerprint = row.get("error_fingerprint")
-            if (
-                fingerprint
-                and row.get("trace_id")
-                and row.get("span_id")
-                and row["cause"] == cause
-                and row["task_id"] in task_ids
-            ):
-                groups[fingerprint][row["entity_id"]] = row
-        recurring = [(fingerprint, attempts) for fingerprint, attempts in groups.items() if len(attempts) >= _WITNESSES]
-        if not recurring:
-            return None
-        fingerprint, attempts = min(recurring, key=lambda item: (-len(item[1]), item[0]))
-        witnesses = list(attempts.values())[-_WITNESSES:]
-        citation = "\n".join(
-            f"otel:{row['span_id']}\n{json.dumps(row, sort_keys=True, separators=(',', ':'))}" for row in witnesses
-        )
-        return fingerprint, citation
 
     def _attempt_evidence_cutoffs(self, attempts: list[dict]) -> dict[str, float]:
         keys = {self._key("attempt_failure_burst", row["cause"]) for row in attempts}
@@ -407,7 +385,7 @@ class LifecycleIncidentDetector:
         )
         if self.overlay_name:
             rows = rows.filter(overlay=self.overlay_name)
-        rows = rows.filter(
+        rows = owner_dm_rows(rows).filter(
             Q(loop_replied_at__isnull=True)
             | Q(answer_kind__in=_SUBSTANTIVE_REPLIES)
             | Q(text__regex=PendingChatInjection.question_text_regex)

@@ -27,14 +27,24 @@ class TestRenderDigest:
             title="An agent eval harness",
             url="https://example.com/eval",
             rationale="mirrors src/teatree/eval/backends.py",
+            decision="Filed",
+            issue_url="https://github.com/souliane/teatree/issues/1",
         ),
-        DigestItem(title="Loop scheduling", url="https://example.com/loop", rationale="relevant to the tick cadence"),
+        DigestItem(
+            title="Loop scheduling",
+            url="https://example.com/loop",
+            rationale="relevant to the tick cadence",
+            decision="Dropped",
+        ),
     )
 
     def test_every_item_is_a_clickable_slack_link(self) -> None:
         rendered = render_digest(self.items, scanned_on="2026-07-23")
         assert "<https://example.com/eval|An agent eval harness>" in rendered
         assert "<https://example.com/loop|Loop scheduling>" in rendered
+        assert "<https://github.com/souliane/teatree/issues/1|issue>" in rendered
+        assert "Filed" in rendered
+        assert "Dropped" in rendered
 
     def test_no_markdown_link_syntax_survives_into_slack(self) -> None:
         assert "](" not in render_digest(self.items, scanned_on="2026-07-23")
@@ -46,6 +56,8 @@ class TestRenderDigest:
         rendered = render_digest(self.items, scanned_on="2026-07-23")
         assert "2026-07-23" in rendered
         assert "2" in rendered.splitlines()[0]
+        assert "decision(s) recorded" in rendered
+        assert "approve" not in rendered.lower()
 
     def test_an_empty_scan_renders_no_digest(self) -> None:
         assert render_digest((), scanned_on="2026-07-23") == ""

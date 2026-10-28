@@ -8,17 +8,19 @@ is not re-claimed, an expired-lease orphan is reclaimable, and a heartbeat renew
 only while this worker still owns the claim generation.
 """
 
+from contextlib import ExitStack
 from datetime import timedelta
 from unittest import mock
 
 import pytest
-from django.db import OperationalError
-from django.test import TestCase
+from django.db import OperationalError, connection
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 import teatree.utils.singleton as singleton_mod
 from teatree.core.claim_liveness import reset_driving_registry
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.modelkit import db_retry
+from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 from teatree.core.models.task_claim import (
     claim,
@@ -29,6 +31,7 @@ from teatree.core.models.task_claim import (
     fail_claimed,
     renew_lease,
 )
+from tests._file_backed_db import file_backed_default_database, hold_write_lock
 
 
 class TestClaim(TestCase):
@@ -45,6 +48,32 @@ class TestClaim(TestCase):
         assert task.claimed_by == "worker"
         assert task.claimed_by_session == "sess"
         assert task.lease_expires_at is not None
+
+    def test_claims_a_start_task_with_twenty_live_pull_requests(self) -> None:
+        for index in range(20):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 3000}",
+            )
+        task = self._pending_task()
+
+        claim(task, claimed_by="worker")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
+    def test_claim_next_pending_returns_each_start_with_twenty_live_pull_requests(self) -> None:
+        for index in range(20):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 3300}",
+            )
+        starters = [self._pending_task() for _ in range(4)]
+
+        claimed = [Task.objects.claim_next_pending(claimed_by="worker") for _ in starters]
+
+        assert claimed == starters
+        assert all(Task.objects.get(pk=task.pk).status == Task.Status.CLAIMED for task in starters)
 
     def test_live_claim_is_not_stolen(self) -> None:
         task = self._pending_task()
@@ -107,6 +136,38 @@ class TestDriveClaim(TestCase):
             raise boom
         task.refresh_from_db()
         assert task.owner_driving_since is None
+
+    def test_an_older_drive_exiting_leaves_the_newer_drives_marker(self) -> None:
+        task = self._claimed_task()
+        first = timezone.now()
+        second = first + timedelta(minutes=1)
+        with ExitStack() as both, ExitStack() as older:
+            with mock.patch("teatree.core.models.task_claim.timezone.now", return_value=first):
+                older.enter_context(drive_claim(task))
+            with mock.patch("teatree.core.models.task_claim.timezone.now", return_value=second):
+                both.enter_context(drive_claim(task))
+            older.close()
+            task.refresh_from_db()
+            assert task.owner_driving_since == second
+
+
+class TestDriveClaimWaitsOutALockedClear(TransactionTestCase):
+    def test_the_marker_is_cleared_after_the_lock_that_blocked_the_clear_lets_go(self) -> None:
+        database = self.enterContext(file_backed_default_database())
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id="a"))
+        claim(task, claimed_by="worker", lease_seconds=300)
+        connection.ensure_connection()
+        connection.connection.execute("PRAGMA busy_timeout = 50")
+        self.enterContext(mock.patch.multiple(db_retry, _FIRST_DELAY=0.02, _MAX_DELAY=0.05, _WAIT_BUDGET=3.0))
+
+        with drive_claim(task):
+            holder = hold_write_lock(database, seconds=0.4)
+        holder.join()
+
+        task.refresh_from_db()
+        assert task.owner_driving_since is None
+        reset_driving_registry()
 
 
 class TestRenewLease(TestCase):

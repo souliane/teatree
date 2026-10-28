@@ -16,7 +16,7 @@ def restamp_parked_attempts(apps: Apps, _schema_editor: object) -> None:
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0026_retire_checkout_questions"),
+        ("core", "0028_settle_news_suggestions"),
     ]
 
     operations = [

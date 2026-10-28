@@ -378,13 +378,13 @@ def test_get_job_trace_returns_text_on_success(monkeypatch: pytest.MonkeyPatch) 
     client, _mock = _make_client(project=_project())
     service = GitLabCIService(client=client)
 
-    def fake_get(url: str, *, headers: dict[str, str], timeout: float) -> MagicMock:
+    def fake_get(_client: _httpx.Client, url: str, *, headers: dict[str, str], timeout: float) -> MagicMock:
         resp = MagicMock()
         resp.is_success = True
         resp.text = "Job output trace here"
         return resp
 
-    monkeypatch.setattr(_httpx, "get", fake_get)
+    monkeypatch.setattr(_httpx.Client, "get", fake_get)
 
     result = service._get_job_trace(42, 1)
 
@@ -398,13 +398,13 @@ def test_get_job_trace_reports_the_status_on_failure(monkeypatch: pytest.MonkeyP
     client, _mock = _make_client(project=_project())
     service = GitLabCIService(client=client)
 
-    def fake_get(url: str, *, headers: dict[str, str], timeout: float) -> MagicMock:
+    def fake_get(_client: _httpx.Client, url: str, *, headers: dict[str, str], timeout: float) -> MagicMock:
         resp = MagicMock()
         resp.is_success = False
         resp.status_code = 403
         return resp
 
-    monkeypatch.setattr(_httpx, "get", fake_get)
+    monkeypatch.setattr(_httpx.Client, "get", fake_get)
 
     result = service._get_job_trace(42, 1)
 
@@ -444,7 +444,7 @@ def test_fetch_pipeline_errors_paginates_jobs_beyond_first_page() -> None:
 
     api = GitLabAPI(token="tok", base_url="https://gitlab.example.com/api/v4")
     with (
-        patch("httpx.get", side_effect=_http_side_effect),
+        patch("httpx.Client.get", side_effect=_http_side_effect),
         patch.object(api, "resolve_project", return_value=_project()),
     ):
         service = GitLabCIService(client=api)

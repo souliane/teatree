@@ -12,7 +12,7 @@ lets a recovery mechanism see it. Once routed the ticket is WORK_STARTED, so the
 ``stuck_ticket_redispatch`` sweep owns it from there — including its repair budget and
 its loud escalation — and this module needs neither.
 
-The candidate set is deliberately narrow. ``stuck_ticket_redispatch._STATE_PHASE``
+The candidate set is deliberately narrow. ``core.intake.fix_first.AUTHOR_STATE_PHASE``
 excludes the early states, and widening IT would be the cheaper-looking fix: it would
 also hand a planning task to each per-overlay cadence placeholder ticket
 (``scanning-news://``, ``eval-local://``, …), which sits at NOT_STARTED by design and has

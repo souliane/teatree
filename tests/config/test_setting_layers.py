@@ -24,15 +24,15 @@ class TestApplyStructuredSettings:
 
     def test_speak_merges_each_layer_onto_the_one_below(self) -> None:
         base = UserSettings()
-        layers = ({"speak": {"local": "all"}}, {"speak": {"slack": True}}, {})
+        layers = ({"speak": {"local": "dm"}}, {"speak": {"slack": True}}, {})
         speak = apply_structured_settings(base, layers, base.speak).speak
         # The higher layer sets only `slack`, so the lower layer's `local` survives.
-        assert speak.local == "all"
+        assert speak.local == "dm"
         assert speak.slack is True
 
     def test_speak_highest_layer_wins_on_a_shared_key(self) -> None:
         base = UserSettings()
-        layers = ({"speak": {"local": "all"}}, {}, {"speak": {"local": "off"}})
+        layers = ({"speak": {"local": "dm"}}, {}, {"speak": {"local": "off"}})
         assert apply_structured_settings(base, layers, base.speak).speak.local == "off"
 
     def test_mr_reminder_takes_the_highest_layer_with_no_merge(self) -> None:

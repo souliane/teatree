@@ -7,6 +7,8 @@ ticket) can. The gate is unconditional; the
 gate's ``get_effective_settings``.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from teatree.core.gates.integration_review_gate import IntegrationReviewError, check_integration_review, distinct_repos
@@ -34,9 +36,33 @@ def _integration_evidence(ticket: Ticket, repos: list[str]) -> ReviewEvidence:
 
 
 class TestPureHelpers:
+    def test_empty_repos_need_no_overlay_lookup(self, db) -> None:
+        ticket = _ticket(db, [])
+        with patch("teatree.core.overlay_loader.get_overlay_for_ticket", side_effect=RuntimeError("unavailable")):
+            assert distinct_repos(ticket) == []
+
     def test_distinct_repos_dedups_and_strips(self, db) -> None:
         t = _ticket(db, ["org/a", " org/a ", "org/b", ""])
         assert distinct_repos(t) == ["org/a", "org/b"]
+
+    @pytest.mark.parametrize(
+        ("repos", "expected"),
+        [
+            (["teatree", "souliane/teatree"], ["teatree"]),
+            (["souliane/teatree", "teatree"], ["souliane/teatree"]),
+            ([" teatree ", "", "souliane/teatree", "  "], ["teatree"]),
+            (["teatree", "other/teatree"], ["teatree", "other/teatree"]),
+            (["unknown", "acme/unknown"], ["unknown", "acme/unknown"]),
+        ],
+    )
+    def test_declared_project_identity_preserves_first_spelling(
+        self, db, repos: list[str], expected: list[str]
+    ) -> None:
+        assert distinct_repos(_ticket(db, repos)) == expected
+
+    def test_unresolved_overlay_keeps_raw_repo_identity(self, db) -> None:
+        ticket = Ticket.objects.create(overlay="unregistered", repos=["teatree", "souliane/teatree"])
+        assert distinct_repos(ticket) == ["teatree", "souliane/teatree"]
 
 
 class TestGateFunction:
@@ -77,6 +103,23 @@ class TestGateFunction:
 
 
 class TestFsmWiring:
+    def test_two_spellings_of_one_project_deliver_without_integration_review(self, db) -> None:
+        t = _ticket(db, ["teatree", "souliane/teatree"])
+        waive_rubric(t)
+        MergeAuditFactory(clear__ticket=t)
+        t.mark_delivered()
+        t.save()
+        t.refresh_from_db()
+        assert t.state == Ticket.State.DELIVERED
+
+    def test_same_basename_in_different_namespace_still_requires_review(self, db) -> None:
+        t = _ticket(db, ["teatree", "other/teatree"])
+        waive_rubric(t)
+        with pytest.raises(IntegrationReviewError):
+            t.mark_delivered()
+        t.refresh_from_db()
+        assert t.state == Ticket.State.RETRO_RECORDED
+
     def test_two_repo_ticket_cannot_deliver_without_review(self, db) -> None:
         t = _ticket(db, ["org/a", "org/b"])
         waive_rubric(t)
