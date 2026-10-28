@@ -182,13 +182,17 @@ def _execute_disk(plan: FreePlan, payload: ActionPayload, marker: "ResourcePress
             elif index == _STATUSLINE_STEP:
                 _clean_stale_statusline()
             elif index == _DOCKER_STEP:
-                plan.reclaimed_gb += _reclaim_docker_disk(plan)
+                plan.reclaimed_gb += _reclaim_docker_disk(plan, budget_seconds=max(deadline - time.monotonic(), 0.0))
             else:
                 _reap_done_worktrees(plan)
         except Exception as exc:
             plan.steps.append(f"FAILED {steps[index]}: {exc}")
             persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
             raise
+        if plan.unfinished:
+            plan.steps.append(f"DEFER {steps[index]} — {plan.unfinished}; the next pass retries it")
+            plan.unfinished = ""
+            return False
         plan.steps.append(f"DONE {steps[index]}")
         marker.disk_reclaim_cursor = index + 1 if index + 1 < len(steps) else 0
         marker.last_plan = plan.render()
@@ -216,7 +220,7 @@ def _reap_done_worktrees(plan: FreePlan) -> None:
     plan.steps.append(f"  → done-worktree sweep handled {len(reaped)} worktree row(s)")
 
 
-def _reclaim_docker_disk(plan: FreePlan) -> float:
+def _reclaim_docker_disk(plan: FreePlan, *, budget_seconds: float | None = None) -> float:
     """Run the safe Docker disk reclaim; return GB reclaimed (best-effort).
 
     Delegates to :func:`teatree.docker.reclaim.reclaim_disk` — the fixed-argv
@@ -228,7 +232,7 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
     logging a 0B reclaim the next reader takes for "nothing to reclaim" (#4585).
     """
     try:
-        report = reclaim_disk(include_unused_test_images=True)
+        report = reclaim_disk(include_unused_test_images=True, budget_seconds=budget_seconds)
     except Exception:
         logger.exception("free_resources: docker disk reclaim failed — swallowed")
         return 0.0
@@ -243,6 +247,8 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
         if step.label.startswith("unused test image") and step.outcome is not None and step.outcome.reclaimed != "0B"
     )
     plan.steps.extend(f"  → REFUSED {label}: {reason}" for label, reason in report.failures)
+    if report.incomplete:
+        plan.unfinished = "a docker prune timed out or never started inside the pass budget"
     return reclaimed_gb
 
 

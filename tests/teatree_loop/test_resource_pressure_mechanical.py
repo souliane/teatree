@@ -260,7 +260,8 @@ class DiskDockerReclaimTests(TestCase):
         with patch.object(mechanical_resources, "reclaim_disk") as mock_reclaim:
             mock_reclaim.return_value = _fake_reclaim_report()
             free_resources({"resource": "disk", "disk_cache_allowlist": []})
-        mock_reclaim.assert_called_once_with(include_unused_test_images=True)
+        assert mock_reclaim.call_args.kwargs["include_unused_test_images"] is True
+        mock_reclaim.assert_called_once()
 
     def test_reclaimed_docker_bytes_counted_in_plan(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
@@ -421,6 +422,59 @@ class BoundedDiskPassTests(TestCase):
         assert second.disk_reclaim_cursor == 0
         uv_prune.assert_called_once()
         docker_reclaim.assert_called_once()
+
+
+class DockerStepThatDidNotFinishTests(TestCase):
+    """A prune that timed out, or was never started, is retried by the next pass — never recorded as done."""
+
+    def setUp(self) -> None:
+        self.uv_prune = _patch_uv_cache_prune(self)
+        self.addCleanup(patch.object(mechanical_resources, "_reap_done_worktrees").start().stop)
+        marker = ResourcePressureMarker.load()
+        marker.disk_reclaim_cursor = mechanical_resources._DOCKER_STEP
+        marker.save(update_fields=["disk_reclaim_cursor"])
+
+    def _unfinished_report(self) -> ReclaimReport:
+        step = ReclaimStep(
+            argv=["docker", "builder", "prune", "-af"],
+            label="build cache",
+            outcome=PruneOutcome("0B", 0, failure="timed out after 90s", incomplete=True),
+        )
+        return ReclaimReport(steps=(step,), planned=(step,))
+
+    def _pass(self, report: ReclaimReport) -> ResourcePressureMarker:
+        with patch.object(mechanical_resources, "reclaim_disk", return_value=report) as reclaim:
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+        self.reclaim = reclaim
+        return ResourcePressureMarker.load()
+
+    def test_the_cursor_stays_on_the_docker_step(self) -> None:
+        marker = self._pass(self._unfinished_report())
+
+        assert marker.disk_reclaim_cursor == mechanical_resources._DOCKER_STEP
+
+    def test_the_plan_says_deferred_and_never_done(self) -> None:
+        marker = self._pass(self._unfinished_report())
+
+        assert "DEFER docker" in marker.last_plan
+        assert "DONE docker" not in marker.last_plan
+
+    def test_the_pass_does_not_stamp_a_completed_freeing_pass(self) -> None:
+        marker = self._pass(self._unfinished_report())
+
+        assert marker.last_freed_at is None
+
+    def test_the_ladder_passes_the_remaining_pass_budget_down(self) -> None:
+        self._pass(self._unfinished_report())
+
+        budget = self.reclaim.call_args.kwargs["budget_seconds"]
+        assert 0 < budget <= mechanical_resources.DISK_PASS_BUDGET_SECONDS
+
+    def test_a_finished_report_still_advances_to_the_next_step(self) -> None:
+        marker = self._pass(_fake_reclaim_report())
+
+        assert marker.disk_reclaim_cursor == 0
+        assert "DONE docker" in marker.last_plan
 
 
 class ReclaimStallTests(TestCase):

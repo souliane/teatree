@@ -40,6 +40,7 @@ command would have run.
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -48,7 +49,7 @@ from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
-_PRUNE_TIMEOUT = 25
+_PRUNE_TIMEOUT = 300
 _TEST_IMAGE_LABEL = "io.teatree.reclaimable-test-image"
 _TEST_IMAGE_TAGS = ("teatree-test", "teatree-lint-local")
 _TEST_IMAGE_IDLE = timedelta(hours=4)
@@ -74,6 +75,8 @@ class PruneOutcome:
     reclaimed: str
     bytes_reclaimed: int
     failure: str | None = None
+    #: The prune timed out or was never started, so the work is unfinished and the caller must retry it.
+    incomplete: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +116,10 @@ class ReclaimReport:
         it can never be misread as a reclaim that succeeded.
         """
         return self.unreachable_venue is not None and not self.dry_run
+
+    @property
+    def incomplete(self) -> bool:
+        return any(step.outcome is not None and step.outcome.incomplete for step in self.steps)
 
     @property
     def total_bytes(self) -> int:
@@ -211,21 +218,25 @@ def _extract_reclaimed(stdout: str) -> str:
     return match.group(1).replace(" ", "") if match else "0B"
 
 
-def _run_prune(argv: list[str]) -> PruneOutcome:
+def _run_prune(argv: list[str], timeout: float = _PRUNE_TIMEOUT) -> PruneOutcome:
     """Run one prune command; return its reclaimed size, or the reason it did not run.
 
     Never raises: a step that fails must not forfeit the reclaim the remaining
     steps can still do. An ABSENT docker binary is tolerated silently; a docker
-    that answers and refuses records a ``failure`` the caller surfaces.
+    that answers and refuses records a ``failure`` the caller surfaces. A prune that
+    outlives *timeout* is ``incomplete``: it did not finish, and saying so is what keeps
+    a caller from recording it as done.
     """
     try:
-        result = run_allowed_to_fail(argv, expected_codes=None, timeout=_PRUNE_TIMEOUT)
+        result = run_allowed_to_fail(argv, expected_codes=None, timeout=timeout)
     except (FileNotFoundError, PermissionError) as exc:
         logger.debug("docker unavailable, skipping %s: %s", argv[:3], exc)
         return PruneOutcome(reclaimed="0B", bytes_reclaimed=0)
     except TimeoutExpired:
         logger.warning("docker prune timed out: %s", argv[:3])
-        return PruneOutcome(reclaimed="0B", bytes_reclaimed=0, failure=f"timed out after {_PRUNE_TIMEOUT}s")
+        return PruneOutcome(
+            reclaimed="0B", bytes_reclaimed=0, failure=f"timed out after {timeout:.0f}s", incomplete=True
+        )
     if result.returncode != 0:
         reason = result.stderr.strip()[:300] or f"exit status {result.returncode}"
         logger.warning("docker %s failed: %s", argv[:3], reason)
@@ -274,11 +285,24 @@ def _test_image_step(tag: str) -> ReclaimStep:
         return ReclaimStep(argv, label, PruneOutcome("0B", 0, failure=str(exc)))
 
 
-def reclaim_disk(*, dry_run: bool = False, include_unused_test_images: bool = False) -> ReclaimReport:
+def _prune_within(argv: list[str], deadline: float | None) -> PruneOutcome:
+    if deadline is None:
+        return _run_prune(argv)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return PruneOutcome("0B", 0, failure="not started: the pass budget was spent", incomplete=True)
+    return _run_prune(argv, min(_PRUNE_TIMEOUT, remaining))
+
+
+def reclaim_disk(
+    *, dry_run: bool = False, include_unused_test_images: bool = False, budget_seconds: float | None = None
+) -> ReclaimReport:
     """Reclaim disk via the three safe Docker prunes; report per-step + total.
 
     ``dry_run`` plans the reclaim set without running anything destructive — the
-    ``planned`` steps carry the exact argv that would run.
+    ``planned`` steps carry the exact argv that would run. ``budget_seconds`` bounds the
+    three prunes together: each gets the smaller of its own ceiling and what is left, and a
+    prune the spent budget never lets start is reported ``incomplete``, not run with no time.
     """
     planned = tuple(ReclaimStep(argv=list(argv), label=label) for argv, label in _SAFE_STEPS)
     if include_unused_test_images:
@@ -288,8 +312,9 @@ def reclaim_disk(*, dry_run: bool = False, include_unused_test_images: bool = Fa
     venue = docker_venue()
     if dry_run or not venue.reachable:
         return ReclaimReport(steps=(), planned=planned, dry_run=dry_run, venue=venue)
+    deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
     steps = tuple(
-        ReclaimStep(argv=step.argv, label=step.label, outcome=_run_prune(step.argv))
+        ReclaimStep(argv=step.argv, label=step.label, outcome=_prune_within(step.argv, deadline))
         for step in planned[: len(_SAFE_STEPS)]
     )
     if include_unused_test_images:

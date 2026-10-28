@@ -10,6 +10,7 @@ red.
 """
 
 from subprocess import CompletedProcess
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,7 +32,7 @@ class _FakePrune:
         self.calls: list[list[str]] = []
         self._reclaimed = reclaimed
 
-    def __call__(self, argv: list[str]) -> reclaim.PruneOutcome:
+    def __call__(self, argv: list[str], timeout: float = 0) -> reclaim.PruneOutcome:
         self.calls.append(list(argv))
         return reclaim.PruneOutcome(reclaimed=self._reclaimed, bytes_reclaimed=0)
 
@@ -199,7 +200,7 @@ def test_dry_run_runs_nothing_destructive(monkeypatch):
 def test_report_totals_each_step_and_the_sum(monkeypatch):
     sizes = iter(["1.0GB", "200MB", "512MB"])
 
-    def fake_run(argv: list[str]) -> reclaim.PruneOutcome:
+    def fake_run(argv: list[str], timeout: float = 0) -> reclaim.PruneOutcome:
         raw = next(sizes)
         return reclaim.PruneOutcome(reclaimed=raw, bytes_reclaimed=reclaim._parse_size(raw))
 
@@ -292,6 +293,78 @@ def test_run_prune_reports_a_timeout_rather_than_swallowing_it(monkeypatch):
     assert "timed out" in outcome.failure
 
 
+class _Clock:
+    """A fake ``time.monotonic`` the fake prune advances, so budget arithmetic is exact."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _recording_prunes(monkeypatch, clock, *, seconds_each: float = 0.0, timeout_at: int | None = None):
+    """Replace the subprocess boundary; record each prune's ``timeout`` and spend *seconds_each* on the clock."""
+    timeouts: list[float] = []
+
+    def fake_run(cmd, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        clock.now += seconds_each
+        if timeout_at is not None and len(timeouts) == timeout_at:
+            raise TimeoutExpired(cmd, kwargs["timeout"])
+        return CompletedProcess(args=cmd, returncode=0, stdout="Total reclaimed space: 0B\n", stderr="")
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", fake_run)
+    monkeypatch.setattr(reclaim, "time", SimpleNamespace(monotonic=clock))
+    return timeouts
+
+
+def test_an_unbudgeted_reclaim_keeps_the_manual_command_ceiling(monkeypatch):
+    timeouts = _recording_prunes(monkeypatch, _Clock())
+
+    reclaim.reclaim_disk()
+
+    assert timeouts == [300, 300, 300]
+
+
+def test_each_prune_gets_the_smaller_of_the_ceiling_and_the_pass_budget_left(monkeypatch):
+    clock = _Clock()
+    timeouts = _recording_prunes(monkeypatch, clock, seconds_each=30)
+
+    reclaim.reclaim_disk(budget_seconds=90)
+
+    assert timeouts == [90, 60, 30]
+
+
+def test_a_prune_that_cannot_start_inside_the_budget_is_deferred_not_run_with_no_time(monkeypatch):
+    clock = _Clock()
+    timeouts = _recording_prunes(monkeypatch, clock, seconds_each=100)
+
+    report = reclaim.reclaim_disk(budget_seconds=90)
+
+    assert timeouts == [90]
+    assert report.incomplete
+    assert [step.outcome.incomplete for step in report.steps] == [False, True, True]
+    assert all("budget" in step.outcome.failure for step in report.steps[1:])
+
+
+def test_a_timed_out_prune_makes_the_whole_report_incomplete(monkeypatch):
+    timeouts = _recording_prunes(monkeypatch, _Clock(), timeout_at=1)
+
+    report = reclaim.reclaim_disk(budget_seconds=90)
+
+    assert len(timeouts) == 3
+    assert report.incomplete
+    assert report.steps[0].outcome.incomplete
+    assert "timed out after 90s" in report.steps[0].outcome.failure
+
+
+def test_a_report_whose_prunes_all_finished_is_complete(monkeypatch):
+    _recording_prunes(monkeypatch, _Clock(), seconds_each=5)
+
+    assert not reclaim.reclaim_disk(budget_seconds=90).incomplete
+
+
 def test_run_prune_falls_back_to_exit_status_when_stderr_is_empty(monkeypatch):
     def silent_failure(cmd, **_):
         return CompletedProcess(args=cmd, returncode=2, stdout="", stderr="   ")
@@ -322,7 +395,7 @@ def test_reclaim_disk_end_to_end_with_real_run_prune_seam(monkeypatch):
 
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_reclaim_report_total_human_is_always_a_string(dry_run, monkeypatch):
-    monkeypatch.setattr(reclaim, "_run_prune", lambda argv: reclaim.PruneOutcome("0B", 0))
+    monkeypatch.setattr(reclaim, "_run_prune", lambda argv, timeout=0: reclaim.PruneOutcome("0B", 0))
     report = reclaim.reclaim_disk(dry_run=dry_run)
     assert isinstance(report.total_human, str)
 
