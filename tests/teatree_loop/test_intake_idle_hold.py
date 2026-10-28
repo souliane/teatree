@@ -13,6 +13,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
+from teatree.core.factory.stuck_ticket_halt import record_ticket_halt
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import (
     ImplementedIssueMarker,
@@ -24,7 +25,6 @@ from teatree.core.models import (
     UnclaimedIntakeCandidate,
 )
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.stuck_ticket_halt import record_ticket_halt
 from teatree.loop.intake_idle_hold import idle_hold_reason
 from teatree.loop.scanner_factories import _issue_intake_scanner_for
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner

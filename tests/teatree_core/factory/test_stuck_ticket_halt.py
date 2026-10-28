@@ -1,7 +1,7 @@
 from django.test import TestCase
 
+from teatree.core.factory.stuck_ticket_halt import record_ticket_halt, ticket_halt_is_current
 from teatree.core.models import Session, Task, Ticket
-from teatree.core.stuck_ticket_halt import record_ticket_halt, ticket_halt_is_current
 
 
 class TestStuckTicketHalt(TestCase):

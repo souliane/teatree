@@ -7,8 +7,8 @@ the tickets waiting on a pending question — the one reason an idle ticket is o
 
 from datetime import datetime
 
+from teatree.core.factory.stuck_ticket_halt import ticket_halt_is_current
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.stuck_ticket_halt import ticket_halt_is_current
 from teatree.loop.question_subjects import SubjectIndex
 from teatree.loop.stuck_ticket_redispatch import idle_started_author_tickets
 

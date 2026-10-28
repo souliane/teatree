@@ -47,6 +47,7 @@ from datetime import datetime
 from django.db.models import Count, Q
 from django.utils import timezone
 
+from teatree.core.factory.stuck_ticket_halt import record_ticket_halt, ticket_halt_is_current
 from teatree.core.intake.fix_first import AUTHOR_STATE_PHASE, stuck_idle_hours, ticket_last_activity
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
@@ -74,7 +75,6 @@ from teatree.core.models.ticket_external_review import (
 )
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, max_phase_iterations, requeue_verdict
-from teatree.core.stuck_ticket_halt import record_ticket_halt, ticket_halt_is_current
 from teatree.loop.persistence_phase_task import create_phase_task
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError

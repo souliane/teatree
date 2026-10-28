@@ -5,11 +5,11 @@ import hashlib
 from django.db.models import Max
 
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
+from teatree.core.factory.stuck_ticket_halt import ticket_halt_is_current
 from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
 from teatree.core.models import Task, Ticket
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.ref_render import render_ref
-from teatree.core.stuck_ticket_halt import ticket_halt_is_current
 
 
 def halted_retry_signals() -> SignalCollection:
