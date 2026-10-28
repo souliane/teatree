@@ -140,6 +140,34 @@ def allowed_keys() -> tuple[str, ...]:
     return tuple(str(key) for key in properties) if isinstance(properties, Mapping) else ()
 
 
+def required_keys_phrase(phase: str) -> str:
+    """The phase's required envelope keys, rendered for an instruction line."""
+    required = required_evidence_for_phase(phase)
+    if not required:
+        return "`summary`"
+    phrase = "`summary` and " + " or ".join(f"`{field}`" for field in required)
+    conditional = conditional_evidence_for_phase(phase)
+    if conditional:
+        also = " and ".join(f"`{field}`" for field in conditional)
+        phrase += f" (plus {also} when the request implies work)"
+    return phrase
+
+
+def corrective_instruction(phase: str) -> str:
+    return (
+        f"your last run omitted the required trailing JSON result envelope "
+        f"({required_keys_phrase(phase)}) — emit it as the last thing you write, "
+        "plain JSON, nothing after it."
+    )
+
+
+def refused_envelope_instruction(refusal: str) -> str:
+    return (
+        f"your last run's result envelope was refused ({refusal}) — re-emit the complete envelope "
+        "with exactly those keys corrected, as the last thing you write, plain JSON, nothing after it."
+    )
+
+
 def _taught_keys(*, read_only_venue: bool) -> tuple[str, ...]:
     """The keys a brief lists: a worker brief omits the draft keys only the read-only executor returns."""
     draft_keys = set(EXECUTOR_DRAFT_FIELDS.values())

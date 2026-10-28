@@ -13,6 +13,7 @@ from teatree.agents.attempt_recorder import (
     record_result_envelope,
     validate_result_keys,
 )
+from teatree.agents.envelope_refusal import UNPARSEABLE_ENVELOPE_PREFIX
 from teatree.agents.result_schema_owner_stop import owner_stop_limits_lines
 from teatree.core.issue_hygiene import CreateOutcome
 from teatree.core.modelkit.owner_decision import OwnerDecision
@@ -69,9 +70,11 @@ class TestParseResultEnvelope(TestCase):
         with pytest.raises(ResultEnvelopeError):
             parse_result_envelope("[1, 2]")
 
-    def test_rejects_invalid_json(self) -> None:
-        with pytest.raises(ResultEnvelopeError):
+    def test_rejects_invalid_json_with_the_shared_unparseable_prefix(self) -> None:
+        with pytest.raises(ResultEnvelopeError) as raised:
             parse_result_envelope("not json")
+
+        assert str(raised.value).startswith(UNPARSEABLE_ENVELOPE_PREFIX)
 
 
 DENIED_COMMAND = "The command was denied with a 403 and the sub-agent start failed."

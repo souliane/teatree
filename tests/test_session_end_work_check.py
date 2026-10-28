@@ -24,7 +24,6 @@ import pytest
 import hooks.scripts.hook_router as router
 import hooks.scripts.session_end_work_check as work_check
 from hooks.scripts import stranded_work_report
-from tests._session_end_harness import PROJECT as _PROJECT
 from tests._session_end_harness import context as _context
 from tests._session_end_harness import git as _git
 from tests._session_end_harness import repo_with_commit as _repo_with_commit
@@ -41,40 +40,44 @@ def _sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 class TestArmedUnconditionally:
     """The check must not be gated on which skills the session happened to load."""
 
-    def test_orphan_reported_with_no_lifecycle_skill_loaded(self) -> None:
+    def test_orphan_reported_with_no_lifecycle_skill_loaded(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
         orphans = [{"repo": "/ws/backend", "branch": "feat-1", "status": "pushed_orphan", "ahead_count": 3}]
         with patch.object(work_check, "fetch_orphans", return_value=orphans):
-            ctx = _context({"session_id": "s-no-skills"})
+            ctx = _context({"session_id": "s-no-skills", "cwd": str(repo)})
 
         assert "feat-1" in ctx
         assert "/ws/backend" in ctx
         assert "ensure-pr" in ctx
 
-    def test_an_orphan_whose_remote_could_not_be_read_is_not_told_to_push(self) -> None:
+    def test_an_orphan_whose_remote_could_not_be_read_is_not_told_to_push(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
         orphans = [{"repo": "/ws/backend", "branch": "feat-3", "status": "remote_unknown", "ahead_count": 2}]
         with patch.object(work_check, "fetch_orphans", return_value=orphans):
-            ctx = _context({"session_id": "s-unreadable"})
+            ctx = _context({"session_id": "s-unreadable", "cwd": str(repo)})
 
         assert "could not be read" in ctx
         assert "t3 teatree pr ensure-pr --repo /ws/backend --branch feat-3" in ctx
         assert "push -u origin feat-3" not in ctx
 
-    def test_orphan_reported_when_only_non_lifecycle_skills_loaded(self) -> None:
+    def test_orphan_reported_when_only_non_lifecycle_skills_loaded(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
         (router.STATE_DIR / "s-other.skills").write_text("ac-python\n", encoding="utf-8")
         orphans = [{"repo": "/ws/backend", "branch": "feat-2", "status": "pushed_orphan", "ahead_count": 1}]
         with patch.object(work_check, "fetch_orphans", return_value=orphans):
-            ctx = _context({"session_id": "s-other"})
+            ctx = _context({"session_id": "s-other", "cwd": str(repo)})
 
         assert "feat-2" in ctx
 
-    def test_the_printed_ensure_pr_command_names_the_repo(self) -> None:
+    def test_the_printed_ensure_pr_command_names_the_repo(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
         # Run by hand through the containerized ``t3``, a bare ``.`` is the image WORKDIR.
         orphans = [
             {"repo": "/ws/backend", "branch": "feat-3", "status": "pushed_orphan", "ahead_count": 1},
             {"repo": "/ws/frontend", "branch": "feat-4", "status": "unpushed_orphan", "ahead_count": 2},
         ]
         with patch.object(work_check, "fetch_orphans", return_value=orphans):
-            ctx = _context({"session_id": "s-repo-flag"})
+            ctx = _context({"session_id": "s-repo-flag", "cwd": str(repo)})
 
         assert "pr ensure-pr --repo /ws/backend --branch feat-3" in ctx
         assert "pr ensure-pr --repo /ws/frontend --branch feat-4" in ctx
@@ -85,12 +88,13 @@ class TestArmedUnconditionally:
     def test_silent_without_a_session_id(self) -> None:
         assert _run({"session_id": ""}) == (None, "", "")
 
-    def test_long_orphan_list_is_previewed(self) -> None:
+    def test_long_orphan_list_is_previewed(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
         many = [
             {"repo": f"/ws/r{i}", "branch": f"br-{i}", "status": "pushed_orphan", "ahead_count": 1} for i in range(8)
         ]
         with patch.object(work_check, "fetch_orphans", return_value=many):
-            ctx = _context({"session_id": "s-many"})
+            ctx = _context({"session_id": "s-many", "cwd": str(repo)})
 
         assert ctx.count("[orphan_branch]") == work_check.PREVIEW_LIMIT
 
@@ -104,24 +108,27 @@ class TestNothingIsPrintedAtSessionEnd:
     _PR: ClassVar[list[dict]] = [{"number": 7, "title": "Ship the widget"}]
 
     def test_the_router_ends_the_session_silently_and_leaves_the_report(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        repo = _repo_with_commit(tmp_path)
         monkeypatch.setattr("sys.argv", ["hook_router.py", "--event", "SessionEnd"])
-        monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"session_id": "s-close", "cwd": _PROJECT})))
+        monkeypatch.setattr("sys.stdin", StringIO(json.dumps({"session_id": "s-close", "cwd": str(repo)})))
 
         with patch.object(work_check, "fetch_orphans", return_value=self._ORPHAN):
             router.main()
 
         assert capsys.readouterr() == ("", "")
-        assert "feat-9" in stranded_work_report.claim(_PROJECT).text
+        assert "feat-9" in stranded_work_report.claim(str(repo)).text
 
-    def test_an_end_that_finds_nothing_stranded_drops_the_older_report(self) -> None:
-        with patch.object(work_check, "fetch_orphans", return_value=self._ORPHAN):
-            _run({"session_id": "s-first", "cwd": _PROJECT})
+    def test_an_end_that_finds_nothing_stranded_drops_the_older_report(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
+        with patch.object(work_check, "unpushed_commit_count", return_value=0):
+            with patch.object(work_check, "fetch_orphans", return_value=self._ORPHAN):
+                _run({"session_id": "s-first", "cwd": str(repo)})
 
-        _run({"session_id": "s-clean", "cwd": _PROJECT})
+            _run({"session_id": "s-clean", "cwd": str(repo)})
 
-        assert stranded_work_report.claim(_PROJECT).text == ""
+        assert stranded_work_report.claim(str(repo)).text == ""
 
     @pytest.mark.parametrize(
         ("later_orphans", "put_back"),
@@ -129,17 +136,18 @@ class TestNothingIsPrintedAtSessionEnd:
         ids=["found-nothing", "could-not-look"],
     )
     def test_a_report_a_start_holds_is_put_back_only_if_no_later_end_cleared_it(
-        self, later_orphans: list[dict] | None, *, put_back: bool
+        self, tmp_path: Path, later_orphans: list[dict] | None, *, put_back: bool
     ) -> None:
+        repo = _repo_with_commit(tmp_path)
         with patch.object(work_check, "fetch_orphans", return_value=self._ORPHAN):
-            _run({"session_id": "s-first", "cwd": _PROJECT})
-        taken = stranded_work_report.claim(_PROJECT)
+            _run({"session_id": "s-first", "cwd": str(repo)})
+        taken = stranded_work_report.claim(str(repo))
 
         with patch.object(work_check, "fetch_orphans", return_value=later_orphans):
-            _run({"session_id": "s-later", "cwd": _PROJECT})
+            _run({"session_id": "s-later", "cwd": str(repo)})
         taken.put_back()
 
-        assert ("feat-9" in stranded_work_report.claim(_PROJECT).text) is put_back
+        assert ("feat-9" in stranded_work_report.claim(str(repo)).text) is put_back
 
     def test_an_end_that_could_not_answer_carries_the_findings_of_a_report_a_start_holds(self, tmp_path: Path) -> None:
         # The start holds the report while the end looks, and can only put it back once the end has left its own.
@@ -159,14 +167,15 @@ class TestNothingIsPrintedAtSessionEnd:
         assert "feat-9" in report
         assert "#7 Ship the widget" in report
 
-    def test_an_end_whose_probe_could_not_answer_keeps_the_older_report(self) -> None:
+    def test_an_end_whose_probe_could_not_answer_keeps_the_older_report(self, tmp_path: Path) -> None:
+        repo = _repo_with_commit(tmp_path)
         with patch.object(work_check, "fetch_orphans", return_value=self._ORPHAN):
-            _run({"session_id": "s-first", "cwd": _PROJECT})
+            _run({"session_id": "s-first", "cwd": str(repo)})
 
         with patch.object(work_check, "fetch_orphans", return_value=None):
-            _run({"session_id": "s-unanswered", "cwd": _PROJECT})
+            _run({"session_id": "s-unanswered", "cwd": str(repo)})
 
-        assert "feat-9" in stranded_work_report.claim(_PROJECT).text
+        assert "feat-9" in stranded_work_report.claim(str(repo)).text
 
     def test_an_end_whose_git_probe_timed_out_keeps_the_older_report(self, tmp_path: Path) -> None:
         repo = _repo_with_commit(tmp_path)

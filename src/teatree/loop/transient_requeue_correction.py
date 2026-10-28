@@ -1,14 +1,14 @@
 """Bounded corrective instructions for failed phase attempts."""
 
+from teatree.agents.envelope_contract import corrective_instruction, refused_envelope_instruction
 from teatree.agents.envelope_refusal import (
-    corrective_instruction,
     is_comment_check_refusal,
     is_no_envelope_refusal,
     is_owner_stop_refusal,
     is_recorder_refusal,
     is_review_shape_refusal,
     is_rubric_grades_refusal,
-    refused_envelope_instruction,
+    is_unparseable_envelope_refusal,
 )
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import VENUE_LIMIT_PREFIX, WRONG_HEAD_RETRY_PREFIX
@@ -30,8 +30,8 @@ def corrective_note(task: Task, error: str) -> str | None:
     ``codex_*``) — which the old gate left paging a human on the first prose-only run.
     A RECORDER-side refusal on any phase but ``reviewing`` earns one correction too: the
     evidence instruction on the set, a note quoting the refusal elsewhere. A ``reviewing``
-    run earns it only for misnamed, misplaced, or malformed envelope keys, and a withheld
-    verdict is still a judgement to surface. The reopened row resumes its conversation.
+    run earns it for invalid JSON or misnamed, misplaced, or malformed envelope keys;
+    a withheld verdict is still a judgement to surface. The reopened row resumes its conversation.
     ``None`` for a genuine defect or a spent retry.
     """
     if CORRECTIVE_MARKER in task.execution_reason:
@@ -61,6 +61,13 @@ def corrective_note(task: Task, error: str) -> str | None:
 
 
 def _specific_refusal_note(phase: str, error: str) -> str | None:
+    if is_unparseable_envelope_refusal(error):
+        if phase in CORRECTIVE_PHASES:
+            return corrective_instruction(phase)
+        return (
+            f"Your result envelope was refused ({error}). Re-emit the complete result envelope "
+            "as one valid JSON object, nothing after it."
+        )
     if is_owner_stop_refusal(error):
         return (
             f"Your owner question was refused ({error}). Unless only the owner can make this decision, decide it "
