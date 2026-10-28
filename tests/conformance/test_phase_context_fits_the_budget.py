@@ -34,6 +34,7 @@ _SKILLS_DIR = _REPO_ROOT / "skills"
 
 #: Room left for what a real dispatch adds on top (PR context, parent summary, survey).
 _HEADROOM_BYTES = 4096
+_MIN_SPARE_BYTES = 2048
 
 #: Stands in for the checkout's skills dir, so a long worktree path and CI's `/app` get one verdict.
 _CANONICAL_SKILLS_DIR = "/opt/teatree/skills"
@@ -84,8 +85,11 @@ class TestEveryPhaseFitsTheBudget(TestCase):
             for phase in sorted(KNOWN_PHASES):
                 context = _rendered_context(_dispatch_task(phase))
                 size = _measured_bytes(context, _SKILLS_DIR)
-                if "…truncated" in context or size > ceiling:
-                    over.append(f"{phase}: {size} B (ceiling {ceiling} B, truncated={'…truncated' in context})")
+                if "…truncated" in context or size > ceiling - _MIN_SPARE_BYTES:
+                    over.append(
+                        f"{phase}: {size} B (headroom ceiling {ceiling - _MIN_SPARE_BYTES} B, "
+                        f"truncated={'…truncated' in context})"
+                    )
         assert not over, "phase contexts over the append budget:\n" + "\n".join(over)
 
     def test_the_review_run_fits_with_its_full_generic_companion_embedded(self) -> None:

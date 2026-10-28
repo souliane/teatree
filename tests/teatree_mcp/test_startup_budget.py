@@ -20,16 +20,15 @@ from typing import NamedTuple
 
 import pytest
 
-# Agent-harness SDKs that must never load merely to SERVE the MCP tool surface.
+# Agent SDKs and rich Markdown parsing must stay out of MCP startup.
 # `openai` arrives via `pydantic_ai.models.openai` and cost ~18s of every `t3`
 # invocation when `AgentsConfig.ready()` imported the harness eagerly.
-FORBIDDEN_STARTUP_MODULES = ("openai", "pydantic_ai", "litellm", "anthropic")
+FORBIDDEN_STARTUP_MODULES = ("openai", "pydantic_ai", "litellm", "anthropic", "claude_agent_sdk", "markdown_it")
 
 # Ceiling on the whole import graph, so a NEW heavy dependency cannot slip in
-# under a different name than the four above. Measured at 2146 after the
-# deferral; the headroom absorbs ordinary growth without hiding a regression.
-# Nine spare modules allow small import changes before the graph needs review.
+# under a different name than those above. The headroom absorbs ordinary growth.
 MAX_STARTUP_MODULES = 2410
+MIN_STARTUP_HEADROOM_MODULES = 25
 
 _PROBE = """
 import json, sys
@@ -101,10 +100,10 @@ class TestMcpServeStartupBudget:
     def test_startup_import_graph_stays_under_the_ceiling(self) -> None:
         graph = _startup_import_graph()
 
-        assert graph.module_count <= MAX_STARTUP_MODULES, (
+        assert graph.module_count <= MAX_STARTUP_MODULES - MIN_STARTUP_HEADROOM_MODULES, (
             f"`t3 mcp serve` imported {graph.module_count} modules, over the "
-            f"{MAX_STARTUP_MODULES} ceiling — a new heavy dependency reached CLI "
-            "startup. Defer it to its first call site."
+            f"{MAX_STARTUP_MODULES - MIN_STARTUP_HEADROOM_MODULES} headroom ceiling — "
+            "a new heavy dependency reached CLI startup. Defer it to its first call site."
         )
 
 
