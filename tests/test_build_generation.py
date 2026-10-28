@@ -116,8 +116,7 @@ def _checkout(tmp_path: Path, *, vendored: bool) -> _Checkout:
     core = root / "vendor" / "teatree" if vendored else root
     (core / "deploy").mkdir(parents=True)
     shutil.copy2(SCRIPT, core / "deploy" / "build-generation.sh")
-    if (SCRIPT.parent / "disk-preflight.sh").exists():
-        shutil.copy2(SCRIPT.parent / "disk-preflight.sh", core / "deploy" / "disk-preflight.sh")
+    shutil.copy2(SCRIPT.parent / "disk-preflight.sh", core / "deploy" / "disk-preflight.sh")
     (core / "deploy" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
     (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
     (core / "deploy" / "locked-version.sh").write_text("echo 1\n", encoding="utf-8")
