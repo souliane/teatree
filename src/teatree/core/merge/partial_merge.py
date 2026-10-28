@@ -21,7 +21,6 @@ from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.models import MergeClear, PullRequest, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_ledger import stamp_reopened_over
-from teatree.utils.close_keywords import CLOSING_REFERENCE_RE
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import repo_namespaced_key
 
@@ -31,6 +30,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ISSUE_REF = r"(?P<ref>(?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)"
+# Same grammar as ``teatree.core.runners.ship.CLOSE_KEYWORD_RE``; a test pins the two together.
+CLOSING_PATTERN = re.compile(rf"\b(?P<kw>close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::\s*|\s+){_ISSUE_REF}", re.IGNORECASE)
 _PARTIAL = re.compile(rf"\b(?:part\s+of|relates?\s+to|related\s+to)(?::\s*|\s+){_ISSUE_REF}", re.IGNORECASE)
 
 # The remainder markers — every phrase that declares work left over, in one place.
@@ -40,7 +41,7 @@ _REMAINDER_LINE = re.compile(
 )
 _STAYS_ON = re.compile(rf"\b(?:stays?|remains?)\s+on\s+{_ISSUE_REF}", re.IGNORECASE)
 _DECLARES_OPEN = re.compile(
-    r"\b(?:does\s*n[o']t|will\s*n[o']t|won't)\s+close\s+(?:(?:the|this)\s+)?(?:issue|ticket)\b"
+    r"\b(?:does\s*n[o']t|will\s*n[o']t|won't)\s+close\b"
     r"|\b(?:issue|ticket)\s+(?:remains|stays)\s+open\b"
     r"|\b(?:keeps?|leaves?)\s+(?:the\s+)?(?:issue|ticket)\s+open\b",
     re.IGNORECASE,
@@ -71,7 +72,8 @@ def _capped(item: str) -> str:
 
 
 def _says_nothing_left(item: str) -> bool:
-    return _plain(item).rstrip(".;:! ") in _NOTHING_LEFT
+    words = re.sub(r"[^\w/ ]+", " ", _plain(item)).split()
+    return not words or words[0] in _NOTHING_LEFT
 
 
 def _names_ticket(ref: str, ticket: Ticket) -> bool:
@@ -97,7 +99,7 @@ def _status_table_items(lines: list[str]) -> "Iterator[str]":
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
         if status_column < 0:
             status_column = next((i for i, cell in enumerate(cells) if _plain(cell) == "status"), -1)
-        elif status_column < len(cells) and _plain(cells[status_column]) in _STATUS_UNMET:
+        elif status_column < len(cells) and _plain(cells[status_column]).startswith(_STATUS_UNMET):
             yield cells[0]
 
 
@@ -134,22 +136,11 @@ class MergedPrReading:
 
     @classmethod
     def parse(cls, body: str, ticket: Ticket) -> "MergedPrReading":
-        lines = []
-        fence = ""
-        for line in body.splitlines():
-            stripped = line.lstrip()
-            if fence:
-                if stripped.startswith(fence):
-                    fence = ""
-            elif stripped.startswith(("```", "~~~")):
-                fence = stripped[:3]
-            else:
-                lines.append(line)
-        visible_body = "\n".join(lines)
-        if _links_ticket(CLOSING_REFERENCE_RE, visible_body, ticket):
+        if _links_ticket(CLOSING_PATTERN, body, ticket):
             return cls(PrLink.CLOSING)
-        if not _links_ticket(_PARTIAL, visible_body, ticket):
+        if not _links_ticket(_PARTIAL, body, ticket):
             return cls()
+        lines = body.splitlines()
         declared = (*_status_table_items(lines), *_marker_line_items(lines, ticket))
         return cls(PrLink.PARTIAL, tuple(dict.fromkeys(_capped(item) for item in declared)))
 
@@ -208,6 +199,9 @@ def hold_for_remainder(ticket: Ticket, reading: MergedPrReading, *, merged_pr: s
     )
     holdable = ticket.state in _REOPEN_FROM | _REWORK_FROM | Ticket.EARLY_STATES
     if not holdable or ticket.role != Ticket.Role.AUTHOR:
+        return False
+    if ticket.tasks.filter(phase="planning", execution_reason__endswith=listing).exists():
+        logger.info("partial merge: ticket %s already planned this remainder; not reopening again", ticket.pk)
         return False
     try:
         with transaction.atomic():

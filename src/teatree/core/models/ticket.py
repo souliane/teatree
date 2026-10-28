@@ -503,6 +503,7 @@ class Ticket(
 
     @transition(field="state", source=[State.REVIEW_REQUESTED, State.MERGED], target=State.MERGED)
     def mark_merged(self) -> None:
+        """Schedule worktree teardown."""
         get_gate("merge_evidence")(self)
 
     @transition(
@@ -511,8 +512,8 @@ class Ticket(
         target=State.MERGED,
     )
     def reconcile_merged(self) -> None:
+        """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343)."""
         get_gate("merge_evidence")(self)
-        self._cancel_pending_tasks()
         self.merge_extra(pop_keys=["shipping_hold"])
 
     @transition(field="state", source=[State.MERGED, State.RETRO_RECORDED], target=State.RETRO_RECORDED)
