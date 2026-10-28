@@ -491,6 +491,10 @@ class TaskQuerySet(models.QuerySet):
         """
         return self.filter(_lane_occupancy_q(timezone.now(), lane=PhaseCost.EXPENSIVE)).count()
 
+    def answering_lane_occupancy(self) -> int:
+        """Occupancy of the owner-answering class, including recent pending seats."""
+        return self.filter(_lane_occupancy_q(timezone.now(), lane=PhaseCost.ANSWERING)).count()
+
     def cheap_lane_seats_released(self) -> int:
         """Cheap rows the seat window took back while they were still unclaimed.
 
@@ -517,6 +521,7 @@ class TaskQuerySet(models.QuerySet):
         cheap_class: CheapClass | None,
         lane_ceiling: int | None = None,
         class_ceiling: int | None = None,
+        lane: PhaseCost | None = None,
     ) -> bool:
         """Take *task_pk*'s seat — ``True`` when this call got it.
 
@@ -524,8 +529,9 @@ class TaskQuerySet(models.QuerySet):
         (#4125): a probe is stale the moment it returns, so two processes reaching a chokepoint
         in one window each saw room and each admitted. Re-checking occupancy in the ``WHERE``
         makes the loser match no row and be refused. ``lane_ceiling`` bounds the row's lane —
-        the whole cheap lane for a cheap row — and ``class_ceiling`` its cheap class; ``None``
-        lifts that bound.
+        the whole cheap lane for a cheap row, the answering class for an answering row — and
+        ``class_ceiling`` its cheap class; ``None`` lifts that bound. ``lane`` names the row's
+        lane when it is not derivable from ``cheap_class``.
 
         A row still holding a live seat is refused too: a second booking is a duplicate dispatch.
         The same write refuses a new PR starter while the live PR cap is full.
@@ -537,7 +543,7 @@ class TaskQuerySet(models.QuerySet):
         now = timezone.now()
         seat = self.filter(_unseated_q(now), new_pr_start_allowed_q(), pk=task_pk)
         if lane_ceiling is not None:
-            lane = PhaseCost.CHEAP if cheap_class is not None else PhaseCost.EXPENSIVE
+            lane = lane or (PhaseCost.CHEAP if cheap_class is not None else PhaseCost.EXPENSIVE)
             seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, lane=lane))
         if cheap_class is not None and class_ceiling is not None:
             seat = seat.filter(_lane_under_ceiling(now, class_ceiling, lane=cheap_class))

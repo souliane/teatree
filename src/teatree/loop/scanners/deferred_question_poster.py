@@ -2,8 +2,7 @@
 
 The tick-level outbound poster for the headless ask-loop. A headless
 ``needs_user_input`` STOP parks a ``DeferredQuestion`` with no ``slack_ts``
-(the SDK lane has no human at the harness), and ``task_repair._escalate_stall``
-records the same shape — nobody posts either today. This scanner runs in the
+(the SDK lane has no human at the harness) — nobody posts it today. This scanner runs in the
 global dispatch set (once per tick in the orchestrator loop, which has a
 working backend) and posts each un-mirrored row via
 :func:`teatree.core.notify_question_drains.drain_unmirrored_deferred_questions`,

@@ -158,3 +158,40 @@ class TestCoalescedAnswerBehaviour:
 
         assert len(backend.replies) == 1
         assert backend.replies[0][1] == "1.0"  # FIRST message's ts
+
+
+class TestAControlWordIsNeverCoalesced:
+    """A message that is only pause or resume acts on its own (#5655)."""
+
+    @pytest.mark.parametrize("word", ["pause", "Resume", "pause it please.", "#12 pause"])
+    def test_a_lone_control_word_after_a_message_is_its_own_unit(self, word: str) -> None:
+        _seed("1.0", "keep the old adapter", user="U1", channel="C1", secs_after_base=0)
+        _seed("2.0", word, user="U1", channel="C1", secs_after_base=39)
+
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
+
+        assert [unit.text for unit in units] == ["keep the old adapter", word]
+
+    def test_a_message_right_after_a_control_word_does_not_continue_it(self) -> None:
+        _seed("1.0", "pause", user="U1", channel="C1", secs_after_base=0)
+        _seed("2.0", "also use the new adapter", user="U1", channel="C1", secs_after_base=5)
+
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
+
+        assert [unit.text for unit in units] == ["pause", "also use the new adapter"]
+
+    def test_control_without_a_control_word_the_same_gap_still_coalesces(self) -> None:
+        _seed("1.0", "keep the old adapter", user="U1", channel="C1", secs_after_base=0)
+        _seed("2.0", "and the old tests", user="U1", channel="C1", secs_after_base=39)
+
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
+
+        assert [unit.text for unit in units] == ["keep the old adapter\nand the old tests"]
+
+    def test_a_longer_sentence_that_starts_with_pause_is_not_a_control_word(self) -> None:
+        _seed("1.0", "keep the old adapter", user="U1", channel="C1", secs_after_base=0)
+        _seed("2.0", "pause the migration until I review", user="U1", channel="C1", secs_after_base=39)
+
+        units = _coalesce(list(PendingChatInjection.loop_unreplied()))
+
+        assert len(units) == 1

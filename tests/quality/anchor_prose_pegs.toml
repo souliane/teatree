@@ -15,22 +15,6 @@
 # tests/conformance/test_task_created_is_a_task_list_event.py, which derives the surface
 # from the router's registration. Full rationale + rejected alternatives: _anchor_prose.py.
 
-["An attended session may attest under"]
-radius = 180
-"skills/workspace/SKILL.md" = ["4960e66693e73b4f"]
-"docs/blueprint/worktree-occupancy.md" = ["0a1588e7e8872b15"]
-
-["An attended session may attest under".coverage]
-"skills/workspace/SKILL.md" = 396
-"docs/blueprint/worktree-occupancy.md" = 396
-
-["For a checkout card,"]
-radius = 1300
-"skills/interactive/SKILL.md" = ["9a18af6b4f18292c"]
-
-["For a checkout card,".coverage]
-"skills/interactive/SKILL.md" = 2620
-
 ["Only an attended session may answer"]
 radius = 180
 "BLUEPRINT.md" = ["af1d47e0b793b3f8"]
@@ -126,3 +110,10 @@ radius = 180
 
 ["This hold requires the owner's per-PR authorization".coverage]
 "BLUEPRINT.md" = 411
+
+["Unsafe checkout state stays parked for an internal retry"]
+radius = 450
+"skills/workspace/SKILL.md" = ["51f6a6c721f0df00"]
+
+["Unsafe checkout state stays parked for an internal retry".coverage]
+"skills/workspace/SKILL.md" = 956

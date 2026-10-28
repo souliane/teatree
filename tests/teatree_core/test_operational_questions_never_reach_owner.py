@@ -36,7 +36,7 @@ from teatree.core.models.loop import Loop
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.question_heal import record_withheld
-from teatree.core.repair_loop import MAX_REOFFERS, IterationStalled, MaxIterationsExceeded, max_phase_iterations
+from teatree.core.repair_loop import max_phase_iterations
 from teatree.core.review.pr_inventory import OpenPrRow
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import execute_provision
@@ -50,7 +50,6 @@ from teatree.loop.scanners.memory_skim import MemorySkimScanner
 from teatree.loop.scanners.mr_triage_scan import MrTriageScanner
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.stuck_ticket_redispatch import redispatch_stuck_tickets
-from teatree.loop.transient_requeue import requeue_transient_failed
 from teatree.loops import timer_chains
 from teatree.loops.directive_loop.revert import ask_revert as ask_directive_revert
 from teatree.loops.outer_loop.keep import ask_keep
@@ -61,7 +60,7 @@ from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 from tests._owner_channel import owner_card
 from tests.conformance._src_tree import REPO_ROOT
 from tests.conformance.test_owner_decision_allowlist import _calls
-from tests.factories import PullRequestFactory, TicketFactory, WorktreeFactory, planned_ticket
+from tests.factories import PullRequestFactory, TicketFactory, WorktreeFactory
 from tests.teatree_agents.test_runner_own_pr_review_head import _BRANCH, _PR_URL, _SLUG, _Forge, _PrRepo
 from tests.teatree_agents.test_runner_review_verdict import _LIVE_RED, _contradiction_envelope, _exhaust_dispatch
 from tests.teatree_core._self_review_helpers import author_ticket, completed_self_review, head
@@ -199,32 +198,6 @@ def _wedge_a_finished_phase() -> None:
     record_stuck_transition_question(None, phase="retro", ticket=Ticket.objects.create(), refusal="no transition")
 
 
-def _spend_the_reoffer_budget() -> None:
-    expired = timezone.now() - dt.timedelta(minutes=10)
-    _task(
-        "coding",
-        ticket=Ticket.objects.create(issue_url="https://example.com/issues/3"),
-        status=Task.Status.CLAIMED,
-        claimed_by="worker",
-        claimed_at=expired,
-        lease_expires_at=expired,
-        reclaim_count=MAX_REOFFERS,
-    )
-    Task.objects.reclaim_orphaned_claims()
-
-
-def _stall_a_repair_loop() -> None:
-    with contextlib.suppress(IterationStalled):
-        _failed_phase_task("the identical failure", "the identical failure", issue=1).check_requeue_allowed()
-
-
-def _spend_the_repair_cap() -> None:
-    with contextlib.suppress(MaxIterationsExceeded):
-        _failed_phase_task(
-            *(f"failed {'x' * n}" for n in range(max_phase_iterations())), issue=2
-        ).check_requeue_allowed()
-
-
 def _fail_a_provision() -> None:
     _provision(result=RunnerResult(ok=False, detail="git clone failed"), ticket_text=[])
 
@@ -261,14 +234,6 @@ def _halt_a_stuck_ticket() -> None:
         attempt = TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error=f"run {'x' * n}")
         TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - dt.timedelta(hours=48))
     redispatch_stuck_tickets()
-
-
-def _halt_a_failed_task() -> None:
-    error = "AssertionError: widget count was 3, expected 4"
-    task = _task("reviewing", ticket=planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED))
-    task.fail(reason=error, by_holder=False)
-    TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error=error)
-    requeue_transient_failed()
 
 
 def _proposed_experiment() -> OuterLoopExperiment:
@@ -368,9 +333,6 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
     ("src/teatree/core/models/task_phase_disposition.py", "record_stuck_transition_question"): (
         _wedge_a_finished_phase
     ),
-    ("src/teatree/core/models/task_repair.py", "_escalate_cap"): _spend_the_repair_cap,
-    ("src/teatree/core/models/task_repair.py", "_escalate_reoffers"): _spend_the_reoffer_budget,
-    ("src/teatree/core/models/task_repair.py", "_escalate_stall"): _stall_a_repair_loop,
     ("src/teatree/core/provision/failure_question.py", "record_provision_failure_question"): _fail_a_provision,
     ("src/teatree/core/question_heal.py", "record_withheld"): _withhold_an_answer_draft,
     ("src/teatree/core/tasks.py", "_record_attachment_hold_question"): _hold_an_unfetched_attachment,
@@ -378,7 +340,6 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
     ("src/teatree/loop/persistence_reviewer.py", "_escalate_unrecordable_review"): _refuse_an_unrecordable_review,
     ("src/teatree/loop/scanners/memory_skim.py", "scan"): _skim_promotable_memories,
     ("src/teatree/loop/stuck_ticket_redispatch.py", "_escalate_once"): _halt_a_stuck_ticket,
-    ("src/teatree/loop/transient_requeue.py", "_escalate_once"): _halt_a_failed_task,
     ("src/teatree/loops/directive_loop/revert.py", "ask_revert"): lambda: ask_directive_revert(
         _directive_revert_pending()
     ),

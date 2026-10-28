@@ -22,12 +22,11 @@ from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import DatabaseError, models, transaction
-from django.db.models import Max, Q
+from django.db.models import Max
 from django.utils import timezone
 
 from teatree import answer_handback
-from teatree.core.modelkit.notify_policy import CHECKOUT_ATTEST_HOLD
-from teatree.core.modelkit.owner_action import OwnerActionKind, action_marker, is_owner_action_marker
+from teatree.core.modelkit.owner_action import action_marker, is_owner_action_marker
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.question_actions import DeferredQuestionAuditQuerySet, DeferredQuestionQuerySet, held_question
 from teatree.core.models.question_subject import finished_subject_reason
@@ -257,17 +256,7 @@ class DeferredQuestion(models.Model):
     @classmethod
     def unmirrored_pending(cls) -> models.QuerySet["DeferredQuestion"]:
         """Owner questions ready for their first Slack mirror, oldest first."""
-        return cls.outside_attest_hold().filter(slack_ts="")
-
-    @classmethod
-    def outside_attest_hold(cls) -> models.QuerySet["DeferredQuestion"]:
-        """Owner questions visible to drains after the checkout card's hold."""
-        return cls.owner_pending().filter(
-            Q(slack_ts__gt="")
-            | Q(evidence__action__kind__isnull=True)
-            | ~Q(evidence__action__kind=OwnerActionKind.ATTEST)
-            | Q(created_at__lte=timezone.now() - CHECKOUT_ATTEST_HOLD)
-        )
+        return cls.owner_pending().filter(slack_ts="")
 
     @classmethod
     def supersedable(

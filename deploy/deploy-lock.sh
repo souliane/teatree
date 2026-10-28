@@ -6,7 +6,7 @@
 # "<pid> <heartbeat> <deadline>". The first write truncates, so no longer record a killed
 # holder left behind survives it.
 write_deploy_record() {
-    printf '%s %s %s\n' "$1" "$(date -u +%s)" "$2" >"$DEPLOY_LOCK"
+    printf '%s %s %s\n' "$1" "$3" "$2" >"$DEPLOY_LOCK"
 }
 
 # A beat rewrites the record in place: `>` empties the file before printf refills it, and a
