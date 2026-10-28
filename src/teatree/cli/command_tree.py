@@ -24,7 +24,6 @@ from collections.abc import Generator, Iterator
 
 import click
 import typer
-import typer.rich_utils
 from typer.main import get_command
 
 from teatree.cli.overlay import OVERLAY_PROXY_COMMANDS
@@ -103,19 +102,21 @@ def _pinned_render_environment() -> Generator[None]:
     makes the help boxes wrap deterministically; the originals are restored on
     exit so this never leaks into the surrounding process.
     """
-    saved_max_width = typer.rich_utils.MAX_WIDTH
-    saved_force_terminal = typer.rich_utils.FORCE_TERMINAL
+    rich_utils = importlib.import_module("typer.rich_utils")
+
+    saved_max_width = rich_utils.MAX_WIDTH
+    saved_force_terminal = rich_utils.FORCE_TERMINAL
     saved_columns = os.environ.get("COLUMNS")
     saved_lines = os.environ.get("LINES")
-    typer.rich_utils.MAX_WIDTH = _RENDER_WIDTH
-    typer.rich_utils.FORCE_TERMINAL = False
+    rich_utils.MAX_WIDTH = _RENDER_WIDTH
+    rich_utils.FORCE_TERMINAL = False
     os.environ["COLUMNS"] = str(_RENDER_WIDTH)
     os.environ.pop("LINES", None)
     try:
         yield
     finally:
-        typer.rich_utils.MAX_WIDTH = saved_max_width
-        typer.rich_utils.FORCE_TERMINAL = saved_force_terminal
+        rich_utils.MAX_WIDTH = saved_max_width
+        rich_utils.FORCE_TERMINAL = saved_force_terminal
         for key, value in (("COLUMNS", saved_columns), ("LINES", saved_lines)):
             if value is None:
                 os.environ.pop(key, None)

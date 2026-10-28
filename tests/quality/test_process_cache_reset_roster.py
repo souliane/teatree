@@ -136,6 +136,7 @@ def discover_process_caches() -> dict[str, str]:
 #: Caches the conftest roster resets around every test, mapped to the reset
 #: function conftest invokes (the name that must literally appear in conftest.py).
 RESET_BY_CONFTEST: dict[str, str] = {
+    "teatree.backends.forge_pool:forge_connections": "close_forge_clients",
     "teatree.agents.skill_routing:_MEMORY": "clear_route_availability_cache",
     "teatree.agents.skill_routing:_PERSISTENT_CHECKED": "clear_route_availability_cache",
     "teatree.agents.live_mailbox:_shared_brokers": "reset_shared_brokers",

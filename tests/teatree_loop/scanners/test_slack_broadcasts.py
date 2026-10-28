@@ -21,6 +21,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from teatree.backends.gitlab import http_client as gitlab_http
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.slack_broadcast_mr_classifier import ForgeMrStateClassifier
@@ -49,6 +50,7 @@ class TestClassifierTransientVsVerdict:
 
     @pytest.fixture(autouse=True)
     def _routed_tokens(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gitlab_http, "client_for_url", lambda _url: httpx)
         monkeypatch.setenv("T3_GITLAB_HTTP_MAX_RETRIES", "0")
         monkeypatch.setattr(
             "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",

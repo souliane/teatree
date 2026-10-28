@@ -133,6 +133,17 @@ class TestComponentNormalization:
         at = admission_pressure(quota=_quota(), machine=_machine(load1=watermark))
         assert _named(at, "load") == pytest.approx(1.0)
 
+    def test_shipped_load_brake_is_two_per_core(self) -> None:
+        assert pytest.approx(2.0) == BRAKE_LOAD_PER_CORE
+        assert pytest.approx(1.5) == RESUME_LOAD_PER_CORE
+
+    def test_machine_load_factors_control_halt_and_resume(self) -> None:
+        machine = _machine(load1=24.0, load_brake_per_core=4.0, load_resume_per_core=2.0)
+        free = admission_pressure(quota=_quota(), machine=machine)
+        held = admission_pressure(quota=_quota(), machine=machine, load_brake=MachineBrake(braked=True))
+        assert _named(free, "load") == pytest.approx(0.75)
+        assert _named(held, "load") >= 1.0
+
     def test_load_watermark_rides_the_hysteresis(self) -> None:
         """A braked governor is held to the LOWER watermark, so the same load reads higher."""
         braked = admission_pressure(
@@ -330,7 +341,7 @@ class TestBands:
         # A near-spent window whose reset is imminent: pace is fine (the little that is
         # left lasts the little that remains), so the SPEND itself is the worst dimension.
         spent = _quota(weekly_utilization=0.98, seconds_to_weekly_reset=_WEEK * 0.02)
-        pressure = admission_pressure(quota=spent, machine=_machine(load1=39.0))
+        pressure = admission_pressure(quota=spent, machine=_machine(load1=15.0))
         assert pressure.dominant is not None
         assert pressure.dominant.name == "weekly-quota"
         assert "weekly window" in pressure.reason
@@ -356,8 +367,8 @@ class TestShedAtResolution:
             (0.9, 0.9),
             (0.75, 0.75),
             (1.0, 1.0),
-            (0.0, DEGRADE_AT),
-            (-3.0, DEGRADE_AT),
+            (0.0, 0.5),
+            (-3.0, 0.5),
             (5.0, HALT_AT),
             (math.nan, SHED_AT_DEFAULT),
         ],
@@ -369,6 +380,10 @@ class TestShedAtResolution:
         """The rollback lever: at 1.0 no value can land in SHED."""
         for value in (0.9, 0.95, 0.999):
             assert PressureBand.for_value(value, shed_at=1.0) is PressureBand.DEGRADED
+
+    def test_operator_can_shed_before_the_degrade_band(self) -> None:
+        assert resolve_shed_at(0.5) == pytest.approx(0.5)
+        assert PressureBand.for_value(0.6, shed_at=0.5) is PressureBand.SHED
 
 
 class TestTheRefusalNamesAnImpossibleCeiling:
