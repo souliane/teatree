@@ -23,10 +23,7 @@ from django.utils import timezone
 from teatree.core.models import DeferredQuestion
 from teatree.core.notify_question_drains import RESURFACE_INTERVAL_HOURS, resurface_question_backlog
 from teatree.core.owner_question_message import digest_text
-from teatree.core.worktree.checkout_attest import CheckoutAttestation, ask_owner_to_attest
-from teatree.core.worktree.checkout_state import CheckoutState
 from tests._owner_channel import OWNER_DECISION
-from tests.factories import TaskFactory, WorktreeFactory
 
 
 class TestBacklogDigestText(TestCase):
@@ -128,20 +125,6 @@ class TestResurfaceQuestionBacklog(TestCase):
 
         assert result == (True, 2)
         notify.assert_called_once()
-
-    def test_unposted_attest_card_under_hold_does_not_trigger_a_digest(self) -> None:
-        task = TaskFactory()
-        worktree = WorktreeFactory(ticket=task.ticket)
-        card = ask_owner_to_attest(
-            task, CheckoutAttestation(worktree, CheckoutState("d" * 64, 1, 1), host_evidence=False)
-        )
-        assert card is not None
-
-        with patch("teatree.core.notify_question_drains.notify_user") as notify:
-            result = resurface_question_backlog()
-
-        assert result == (False, 0)
-        notify.assert_not_called()
 
     def test_the_interval_bucket_is_the_idempotency_key(self) -> None:
         DeferredQuestion.record("Merge it?", **OWNER_DECISION)

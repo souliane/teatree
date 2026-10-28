@@ -25,6 +25,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_drain import drain_pending_questions
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.loop.transient_requeue import HALT_STAMP, escalation_marker, requeue_transient_failed
+from tests.teatree_loop.legacy_halt_question import halts_record_legacy_questions
 
 
 def _failed_task(*, phase: str = "coding", state: str = Ticket.State.WORK_STARTED) -> Task:
@@ -56,6 +57,9 @@ def _escalated_halt_task() -> Task:
 
 
 class TestRepairHaltReconcile(TestCase):
+    def setUp(self) -> None:
+        self.enterContext(halts_record_legacy_questions())
+
     def test_merged_subject_drains_the_halt_question(self) -> None:
         task = _escalated_halt_task()
         Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.MERGED)
@@ -185,6 +189,9 @@ class TestRepairHaltReconcile(TestCase):
 
 class TestEscalationIsAllOrNothing(TestCase):
     """The halt stamp and the question the owner sees land together, or neither does."""
+
+    def setUp(self) -> None:
+        self.enterContext(halts_record_legacy_questions())
 
     def test_a_failed_question_write_leaves_the_task_unstamped_for_the_next_pass(self) -> None:
         # The stamp drops the row out of EVERY future scan, and the question is the only

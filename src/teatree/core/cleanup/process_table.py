@@ -216,9 +216,13 @@ def host_proc_root() -> tuple[Path | None, str]:
     return None, f"no readable process table at {_OWN_PROC_ROOT}"
 
 
-def read_process_table(*, exclude_ancestors: bool = False) -> ProcessTable:
-    """Read the host-covering process table, or report why there is none."""
-    root, refusal = host_proc_root()
+def read_process_table(*, exclude_ancestors: bool = False, venue_only: bool = False) -> ProcessTable:
+    """Read the host table, or this venue's table when explicitly requested."""
+    if venue_only:
+        root = venue_proc_root()
+        refusal = "this venue's process table is unavailable"
+    else:
+        root, refusal = host_proc_root()
     if root is None:
         return ProcessTable(frozenset(), "", (refusal,))
     own_pid = _own_pid_in(root)
