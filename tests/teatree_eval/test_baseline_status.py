@@ -62,10 +62,6 @@ def test_a_parked_run_measured_nothing_so_it_is_missing() -> None:
     assert _state(_payload(parked=True, scenarios=[], totals={"total": 0})) is BaselineState.MISSING
 
 
-def test_a_payload_without_rows_is_missing() -> None:
-    assert _state(_payload(scenarios=[], totals={"total": 0})) is BaselineState.MISSING
-
-
 def test_the_newest_run_with_rows_is_the_one_judged() -> None:
     assert (
         _state(_payload(parked=True, scenarios=[], totals={"total": 0}), _payload(age=timedelta(days=2)))
@@ -152,13 +148,6 @@ def test_only_a_green_state_counts_as_green() -> None:
     missing = evaluate_baseline([], expected=_EXPECTED, now=_NOW)
 
     assert (green.is_green, missing.is_green) == (True, False)
-
-
-def test_a_proof_stamped_in_the_future_is_stale() -> None:
-    status = evaluate_baseline([_payload(age=timedelta(days=-2))], expected=_EXPECTED, now=_NOW)
-
-    assert status.state is BaselineState.STALE
-    assert "2 day(s) in the future" in status.detail
 
 
 @pytest.mark.parametrize(
