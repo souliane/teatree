@@ -212,8 +212,9 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "teatree ticket settle-holds",
         json_output=True,
-        exit_codes=("0",),
-        note="--dry-run reports held reviews without changing them; --json emits every decision",
+        exit_codes=("0", "1"),
+        note="--dry-run reports held reviews without changing them; --json emits every decision; "
+        "1 when the pass failed partway or was deferred (the rows already settled are still emitted)",
     ),
     Capability(
         "teatree review apply-reviewer-policy",
