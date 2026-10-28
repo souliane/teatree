@@ -100,6 +100,7 @@ class TestRunPrBudgetGate(TestCase):
             assert run_pr_budget_gate(ticket, worktree) is None
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestPrCreatePrBudgetWiring(TestCase):
     """End-to-end proof the gate is live in ``_run_ship_gates`` under ``pr create``."""
 
