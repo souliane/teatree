@@ -15,8 +15,11 @@ schedules the planner.
 """
 
 import logging
+from importlib import import_module
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
+
+from django.utils import timezone
 
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
@@ -27,6 +30,9 @@ from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from teatree.core.intake.fix_first import FixFirst
 
 
 class LandscapeForgeReadError(RuntimeError):
@@ -86,6 +92,7 @@ class LandscapeReport(TypedDict):
     open_prs: list[OpenPrReport]
     recommendations: list[RecommendationReport]
     warnings: list[str]
+    fix_first: "FixFirst"
 
 
 def _worktrees_of_clone(clone: Path) -> list[Path]:
@@ -153,7 +160,7 @@ def _open_issues_in_scope(host: CodeHostBackend, repo_slugs: list[str]) -> tuple
     return issues, warnings
 
 
-def _to_report(survey: LandscapeSurvey) -> LandscapeReport:
+def _to_report(survey: LandscapeSurvey, *, fix_first: "FixFirst") -> LandscapeReport:
     """Flatten a :class:`LandscapeSurvey` into the JSON-serialisable command shape."""
     return LandscapeReport(
         worktrees=[
@@ -181,6 +188,7 @@ def _to_report(survey: LandscapeSurvey) -> LandscapeReport:
             for rec in survey.recommendations
         ],
         warnings=list(survey.warnings),
+        fix_first=fix_first,
     )
 
 
@@ -200,6 +208,7 @@ def run_landscape(workspace: Path, *, overlay_name: str | None = None) -> Landsc
     caller catches the error so provisioning stays non-blocking; the operator's
     ``t3 <overlay> workspace landscape`` command surfaces it.
     """
+    fix_first_listing = import_module("teatree.core.intake.fix_first").fix_first_listing
     worktree_paths = _workspace_worktree_paths(workspace)
     host = code_host_from_overlay(overlay_name)
     if host is None:
@@ -209,7 +218,7 @@ def run_landscape(workspace: Path, *, overlay_name: str | None = None) -> Landsc
             worktree_paths=worktree_paths,
             open_issues=[],
         )
-        report = _to_report(local)
+        report = _to_report(local, fix_first=fix_first_listing(None, [], now=timezone.now()))
         report["warnings"].append("no code host configured; surveyed local git landscape only")
         return report
 
@@ -239,7 +248,7 @@ def run_landscape(workspace: Path, *, overlay_name: str | None = None) -> Landsc
             "forge read failed during intake landscape survey; refusing a degraded-empty survey: "
             + "; ".join(forge_read_errors)
         )
-    return _to_report(survey)
+    return _to_report(survey, fix_first=fix_first_listing(host, repo_slugs, now=timezone.now()))
 
 
 class _NullCodeHost:

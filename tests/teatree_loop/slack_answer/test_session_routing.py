@@ -1346,13 +1346,14 @@ class TestBoundTicketThread(TestCase):
             )
 
         client.steer.assert_not_called()
-        assert report.acked == 1
+        assert report.processed == 0
         assert Task.objects.count() == 1
         assert not SessionCommand.objects.exists()
         task.ticket.refresh_from_db()
         assert task.ticket.extra == extra_before
         row.refresh_from_db()
-        assert row.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert row.answer_kind == ""
+        assert row.loop_replied_at is None
 
     def test_other_author_cannot_steer_the_task(self) -> None:
         task = self._bound_task()
@@ -1393,14 +1394,11 @@ class TestBoundTicketThread(TestCase):
         with patch("teatree.loop.slack_answer.session_routing.LiveClient", return_value=client):
             report = run_slack_answer_cycle(
                 messaging_resolver=_resolver(RecordingBackend(user_id="")),
-                reader=lambda _text: InboundReading(
-                    intent=InboundIntent.INSTRUCTION,
-                    answerable=False,
-                    work_summary="delete the branch",
-                    source=ReadingSource.MODEL,
-                ),
+                reader=Mock(side_effect=AssertionError("unset owner reached reader")),
             )
 
-        assert report.acked == 1
+        assert report.processed == 0
         client.steer.assert_not_called()
         assert not SessionCommand.objects.exists()
+        row.refresh_from_db()
+        assert row.loop_replied_at is None
