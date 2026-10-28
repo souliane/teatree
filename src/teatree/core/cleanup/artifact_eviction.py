@@ -120,6 +120,7 @@ from teatree.core.cleanup.artifact_removal import (
     remove_anchored_artifact,
 )
 from teatree.core.cleanup.artifact_sizing import ArtifactCandidate, budget_spent, largest_first, path_identity
+from teatree.core.cleanup.checkout_evidence import evidence_checkout_reason
 from teatree.core.cleanup.checkout_registry import one_spelling_each
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.cleanup.venue_population import venue_population
@@ -438,11 +439,12 @@ def _authorisation_reason(artifact: Path, *, checkout: Path, guards: _Guards, de
     """The half of the verdict that AUTHORISES a delete, so the half re-run before each one.
 
     Rebuildability and dormancy are properties of the artifact that a deletion elsewhere
-    cannot change; these three are properties of the world, and the world moves during a
-    batch.
+    cannot change; these four are properties of the world, and the world moves during a
+    batch — a reviewer can write a receipt into the checkout while a pass is deleting.
     """
     return (
-        _shared_target_reason(artifact, protection=guards.protection)
+        evidence_checkout_reason(checkout)
+        or _shared_target_reason(artifact, protection=guards.protection)
         or _in_use_reason(artifact, checkout=checkout, table=guards.table)
         or _ticket_activity_reason(artifact, checkout, deadline=deadline)
     )

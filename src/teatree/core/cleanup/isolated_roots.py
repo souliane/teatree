@@ -57,6 +57,7 @@ from pathlib import Path
 
 from teatree import paths
 from teatree.core.cleanup import checkout_registry, owner_stamps
+from teatree.core.cleanup.checkout_evidence import evidence_checkout_reason
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.preview import preview_line
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
@@ -156,11 +157,9 @@ def _idle_database_owner_reason(env_dir: Path, row: Worktree) -> str:
         return "owner stamp or checkout cannot be verified"
     if reason := worktree_protects_against_reap(row):
         return reason
-    if is_clean_ignored(row.branch, overlay=row.overlay) or any(
-        protected in row.branch.lower() for protected in ("evidence", "rescue", "backup")
-    ):
+    if is_clean_ignored(row.branch, overlay=row.overlay):
         return "its checkout is protected evidence or backup"
-    return ""
+    return evidence_checkout_reason(checkout, recorded_branch=row.branch)
 
 
 def _idle_database_file_reason(env_dir: Path, table: ProcessTable, *, deadline: float | None) -> str:

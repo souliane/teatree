@@ -42,7 +42,7 @@ from teatree.core.cleanup.artifact_sizing import MAX_EVICTIONS_PER_PASS
 from teatree.core.cleanup.checkout_registry import _NEVER_A_CHECKOUT, CheckoutRegistry
 from teatree.core.cleanup.reclaim_pressure import effective_idle_days
 from teatree.core.models import Session, Task, Ticket, Worktree
-from tests._git_repo import make_git_repo, run_git
+from tests._git_repo import make_git_repo, plant_review_evidence_receipt, run_git
 from tests._hook_env import HOOK_ENV_NAME
 from tests._process_table_venue import blinded_process_table, holding, this_process_in
 
@@ -278,6 +278,100 @@ class TestPressureEscalation(_EvictionFixture):
 
         assert not artifact.exists()
         assert not any("too recently" in line for line in plan.kept)
+
+
+class TestEvidenceCheckouts(_EvictionFixture):
+    """A checkout holding a review-evidence receipt, or marked evidence/rescue/backup, keeps its artifacts (#5615)."""
+
+    def _idle_checkout(self, checkout: Path) -> Path:
+        artifact = _artifact_in(checkout)
+        _age(artifact / "lib" / "big.so", artifact / "lib", artifact, checkout)
+        self._some_process_exists()
+        return artifact
+
+    def _register(self, checkout: Path, *, branch: str) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url=f"https://example.com/issues/{branch}")
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="org/repo", branch=branch, extra={"worktree_path": str(checkout)}
+        )
+
+    def test_a_receipt_keeps_an_idle_venv_that_has_no_ticket_row(self) -> None:
+        checkout = make_git_repo(self.workspace / "unregistered")
+        artifact = self._idle_checkout(checkout)
+        plant_review_evidence_receipt(checkout)
+
+        plan = self._plan(idle_days=None)
+        outcome = evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert outcome.freed_bytes == 0
+        assert any("review-evidence receipt" in reason for reason in plan.kept)
+
+    def test_a_receipt_keeps_an_idle_venv_whose_ticket_row_has_an_ordinary_branch(self) -> None:
+        checkout = make_git_repo(self.workspace / "registered")
+        artifact = self._idle_checkout(checkout)
+        self._register(checkout, branch="feature-ordinary")
+        plant_review_evidence_receipt(checkout)
+
+        plan = self._plan(idle_days=None)
+        evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert any("review-evidence receipt" in reason for reason in plan.kept)
+
+    def test_a_receipt_git_keeps_outside_a_linked_worktree_still_keeps_its_venv(self) -> None:
+        main = make_git_repo(self.workspace / "main-clone")
+        linked = self.workspace / "linked"
+        run_git(main, "worktree", "add", "-q", "-b", "feature-linked", str(linked))
+        artifact = self._idle_checkout(linked)
+        receipt = plant_review_evidence_receipt(linked)
+
+        plan = self._plan(idle_days=None)
+        evict_artifacts(plan)
+
+        assert linked not in receipt.parents
+        assert artifact.exists()
+
+    def test_a_receipt_keeps_every_artifact_name_not_only_the_venv(self) -> None:
+        checkout = make_git_repo(self.workspace / "node-evidence")
+        artifact = _artifact_in(checkout, name="node_modules")
+        self._some_process_exists()
+        plant_review_evidence_receipt(checkout)
+
+        evict_artifacts(self._plan(idle_days=None))
+
+        assert artifact.exists()
+
+    def test_a_receipt_written_after_planning_stops_the_deletion(self) -> None:
+        checkout = make_git_repo(self.workspace / "reviewed-mid-batch")
+        artifact = self._idle_checkout(checkout)
+        plan = self._plan(idle_days=None)
+        plant_review_evidence_receipt(checkout)
+
+        outcome = evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert any("review-evidence receipt" in skipped for skipped in outcome.skipped)
+
+    def test_an_evidence_branch_keeps_the_venv_without_any_receipt_or_ticket_row(self) -> None:
+        checkout = make_git_repo(self.workspace / "rescue-branch")
+        run_git(checkout, "checkout", "-q", "-b", "rescue/old-work")
+        artifact = self._idle_checkout(checkout)
+
+        plan = self._plan(idle_days=None)
+        evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert any("rescue/old-work" in reason for reason in plan.kept)
+
+    def test_an_idle_checkout_with_no_receipt_and_an_ordinary_branch_is_still_evicted(self) -> None:
+        checkout = make_git_repo(self.workspace / "ordinary")
+        artifact = self._idle_checkout(checkout)
+
+        outcome = evict_artifacts(self._plan(idle_days=None))
+
+        assert not artifact.exists()
+        assert outcome.freed_bytes > 0
 
 
 class TestEviction(_EvictionFixture):

@@ -23,7 +23,7 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.utils.run import CommandFailedError
-from tests._git_repo import make_git_repo, run_git
+from tests._git_repo import make_git_repo, plant_review_evidence_receipt, run_git
 
 _REAP = "teatree.core.cleanup.isolated_roots"
 _REGISTRY = "teatree.core.cleanup.checkout_registry"
@@ -38,16 +38,17 @@ class TestIdleDatabaseCopies(TestCase):
         self.enterContext(patch.dict(os.environ, {"T3_CODEX_HOME": str(self.codex_home)}))
         self.enterContext(patch(f"{_REAP}.read_process_table", return_value=ProcessTable(frozenset(), "test")))
 
-    def _copy(self, name: str, *, codex: bool = False) -> tuple[Path, Ticket]:
+    def _copy(self, name: str, *, codex: bool = False, registered: bool = True) -> tuple[Path, Ticket]:
         checkout = make_git_repo(self.workspace / name)
         ticket = Ticket.objects.create(overlay="test", issue_url=f"https://example.com/issues/{name}")
-        Worktree.objects.create(
-            ticket=ticket,
-            overlay="test",
-            repo_path="org/repo",
-            branch=name,
-            extra={"worktree_path": str(checkout)},
-        )
+        if registered:
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="org/repo",
+                branch=name,
+                extra={"worktree_path": str(checkout)},
+            )
         root = self.codex_home / ".local/share/teatree-worktrees" if codex else self.root
         root.mkdir(parents=True, exist_ok=True)
         env_dir = _make_env_dir(root, paths.isolated_slug(checkout))
@@ -104,6 +105,41 @@ class TestIdleDatabaseCopies(TestCase):
         assert any("active/claimed task" in line for line in result)
         assert any("protected evidence" in line for line in result)
         assert any("git" in line for line in result)
+
+    def test_a_review_receipt_keeps_the_database_of_a_registered_checkout_on_an_ordinary_branch(self) -> None:
+        env_dir, _ = self._copy("ordinary")
+        plant_review_evidence_receipt(self.workspace / "ordinary")
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (env_dir / "db.sqlite3").exists()
+        assert any("review-evidence receipt" in line for line in result)
+
+    def test_a_review_receipt_keeps_the_database_of_a_checkout_with_no_ticket_row(self) -> None:
+        env_dir, _ = self._copy("unregistered", registered=False)
+        plant_review_evidence_receipt(self.workspace / "unregistered")
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (env_dir / "db.sqlite3").exists()
+        assert not any("RECLAIMED" in line for line in result)
+
+    def test_an_evidence_branch_the_row_does_not_name_keeps_the_database(self) -> None:
+        env_dir, _ = self._copy("stale-row")
+        run_git(self.workspace / "stale-row", "checkout", "-q", "-b", "backup/before-rewrite")
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (env_dir / "db.sqlite3").exists()
+        assert any("backup/before-rewrite" in line for line in result)
+
+    def test_an_idle_copy_with_no_receipt_and_an_ordinary_branch_is_still_reclaimed(self) -> None:
+        env_dir, _ = self._copy("plain")
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert not (env_dir / "db.sqlite3").exists()
+        assert sum("RECLAIMED" in line for line in result) == 1
 
     def test_reaper_pinned_checkout_keeps_its_idle_database(self) -> None:
         env_dir, _ = self._copy("pinned")
