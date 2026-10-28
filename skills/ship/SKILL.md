@@ -52,7 +52,7 @@ Use the active overlay's `validate_pr(title, description)` policy for title and 
    glab issue list --search '<keywords>'                 # CLI fallback (GitLab)
    ```
 
-   MCP returns up to ten linked open issues and `truncated`; narrow the query when set.
+   MCP search returns ten linked open issues max; narrow if `truncated`.
 
    Use the found issue; do not file a duplicate.
 
