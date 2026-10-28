@@ -82,7 +82,7 @@ class TestAddReaction:
         Pre-#1281 the helper returned ``False`` on every non-``already_reacted``
         error — that let callers silently substitute a
         ``chat.postMessage(text=":emoji:")`` thread reply, which the BINDING
-        memory ``feedback_react_not_emoji_thread_comment`` forbids. Raising
+        rule against bare emoji thread replies forbids. Raising
         loudly at the helper boundary forecloses the silent swallow.
         """
         from teatree.backends.slack.react_errors import SlackReactionError  # noqa: PLC0415
@@ -280,6 +280,23 @@ class TestAddReactionsForTransition:
             extra={"prs": {f"pr-{i}": {"review_permalink": p} for i, p in enumerate(permalinks)}},
             overlay=overlay,
             role=role,
+        )
+
+    def test_target_peek_uses_the_same_permalink_parser_as_publish(self) -> None:
+        publisher = slack_reactions.SlackReactionPublisher()
+        assert not publisher.has_transition_target(self._ticket([]))
+        assert not publisher.has_transition_target(self._ticket(["https://example.invalid/message"]))
+        assert publisher.has_transition_target(
+            self._ticket(["https://example.invalid/message", "https://team.slack.com/archives/C9/p1700000000000100"])
+        )
+        assert not publisher.has_transition_target(SimpleNamespace(extra={"prs": ["unexpected"]}))
+
+    def test_approval_target_peek_uses_the_same_permalink_parser_as_publish(self) -> None:
+        publisher = slack_reactions.SlackReactionPublisher()
+        assert not publisher.has_approval_target(SimpleNamespace(slack_url=""))
+        assert not publisher.has_approval_target(SimpleNamespace(slack_url="https://example.invalid/message"))
+        assert publisher.has_approval_target(
+            SimpleNamespace(slack_url="https://team.slack.com/archives/C9/p1700000000000100")
         )
 
     def test_posts_one_reaction_per_permalink(self, monkeypatch: pytest.MonkeyPatch) -> None:

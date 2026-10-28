@@ -27,7 +27,7 @@ FORBIDDEN_STARTUP_MODULES = ("openai", "pydantic_ai", "litellm", "anthropic", "c
 
 # Ceiling on the whole import graph, so a NEW heavy dependency cannot slip in
 # under a different name than those above. The headroom absorbs ordinary growth.
-MAX_STARTUP_MODULES = 2410
+MAX_STARTUP_MODULES = 2413
 MIN_STARTUP_HEADROOM_MODULES = 25
 
 _PROBE = """

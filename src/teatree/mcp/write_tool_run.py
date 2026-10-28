@@ -25,7 +25,7 @@ def run_command(command: str, *args: object, **kwargs: object) -> object:
     — a ``BaseException``. MCPServer only converts ``Exception`` to a structured
     ``ToolError``, so an unguarded exit would crash the whole tool call instead of
     returning the documented refusal. Capture the command's stderr and re-raise as
-    a ``ToolError``, the only exception whose text reaches the caller.
+    a ``ToolError`` so the full refusal text reaches the caller.
     """
     err = io.StringIO()
     try:

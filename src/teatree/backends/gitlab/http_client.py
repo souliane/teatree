@@ -27,13 +27,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
+from urllib.parse import unquote
 
 import httpx
 
 from teatree.backends.http_retry import BoundedRetryTransport, SleepFn, env_float
+from teatree.config import cold_reader
 from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.gates.forge_write_guard import vet_gitlab_write
 from teatree.core.overlays.overlay_credentials import overlay_pass_key
 from teatree.llm.credentials import Credential, CredentialError, CredentialSpec
+from teatree.utils import secrets
 from teatree.utils.forge_http import client_for_url
 
 logger = logging.getLogger(__name__)
@@ -56,6 +60,39 @@ _UPLOAD_TIMEOUT_SECONDS = 30.0
 # Statuses at or above which a write is a failure the caller may drop on the floor;
 # the transport logs it so a failed MR update / note post never vanishes silently.
 _HTTP_ERROR_FLOOR = 400
+
+
+def _normalise_project(value: str) -> str:
+    return unquote(value).casefold()
+
+
+def _project_from_endpoint(endpoint: str) -> str:
+    prefix, separator, rest = endpoint.lstrip("/").partition("/")
+    if prefix != "projects" or not separator:
+        return ""
+    return _normalise_project(rest.partition("/")[0].partition("?")[0])
+
+
+def _configured_read_token(project: str) -> str | None:
+    setting = cold_reader.read_setting_confirmed("gitlab_read_token_pass_paths")
+    if not setting.readable or (setting.value is not None and not isinstance(setting.value, dict)):
+        raise ValueError
+    if setting.value is None:
+        return None
+    matching = [
+        value for key, value in setting.value.items() if isinstance(key, str) and _normalise_project(key) == project
+    ]
+    if len(matching) > 1:
+        logger.warning("GitLab read-token mapping has duplicate project %s after normalization", project)
+    entry = matching[0] if matching else None
+    if entry is None:
+        return None
+    if not isinstance(entry, str) or not entry:
+        raise ValueError
+    token = secrets.read_pass(entry)
+    if not token:
+        raise ValueError
+    return token
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +157,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         self.token = token or _resolve_token()
         self.base_url = base_url.rstrip("/")
         self._response_cache: dict[str, tuple[float, object]] = {}
+        self._read_token_cache: dict[str, str] = {}
         self._timeout = env_float("T3_GITLAB_HTTP_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS)
         self._configure_retry(
             env_prefix="T3_GITLAB_HTTP", max_retries=max_retries, backoff_base=backoff_base, sleep=sleep
@@ -145,6 +183,24 @@ class GitLabHTTPClient(BoundedRetryTransport):
 
     def _headers(self) -> dict[str, str]:
         return {"PRIVATE-TOKEN": self.token}
+
+    def _read_token_for(self, endpoint: str) -> str:
+        project = _project_from_endpoint(endpoint)
+        if not project:
+            return self.token
+        if project not in self._read_token_cache:
+            try:
+                self._read_token_cache[project] = _configured_read_token(project) or ""
+            except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                    raise
+                self._read_token_cache[project] = ""
+                logger.warning(
+                    "GitLab read-token lookup failed for project %s (%s); using client token",
+                    project,
+                    type(exc).__name__,
+                )
+        return self._read_token_cache[project] or self.token
 
     def _require_token(self) -> None:
         """Raise :class:`BackendResolutionError` when no GitLab credential resolved.
@@ -181,11 +237,14 @@ class GitLabHTTPClient(BoundedRetryTransport):
         request_timeout = timeout if timeout is not None else self._timeout
 
         def attempt() -> httpx.Response:
-            return client_for_url(url).get(url, headers=self._headers(), timeout=request_timeout)
+            return client_for_url(url).get(
+                url, headers={"PRIVATE-TOKEN": self._read_token_for(endpoint)}, timeout=request_timeout
+            )
 
         return self._run(attempt, idempotent=True)
 
     def _post(self, endpoint: str, *, json: object, idempotent: bool = False) -> httpx.Response:
+        json = vet_gitlab_write("POST", endpoint, json, self.get_json)
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
@@ -194,6 +253,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         return self._run(attempt, idempotent=idempotent)
 
     def _put(self, endpoint: str, *, json: object, idempotent: bool = True) -> httpx.Response:
+        json = vet_gitlab_write("PUT", endpoint, json, self.get_json)
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
@@ -205,6 +265,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         return self._run(attempt, idempotent=idempotent)
 
     def _delete(self, endpoint: str) -> httpx.Response:
+        vet_gitlab_write("DELETE", endpoint, None, self.get_json)
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
@@ -336,6 +397,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
 
     def upload_file(self, project_id: int, filepath: str) -> RawMR | None:
         self._require_token()
+        vet_gitlab_write("POST", f"projects/{project_id}/uploads", None, self.get_json)
         with Path(filepath).open("rb") as f:
             url = self._url(f"projects/{project_id}/uploads")
             response = client_for_url(url).post(
@@ -367,6 +429,8 @@ class GitLabHTTPClient(BoundedRetryTransport):
 
     def graphql(self, query: str, variables: RawMR | None = None) -> RawMR | None:
         self._require_token()
+        if query.lstrip().casefold().startswith("mutation"):
+            variables = cast("RawMR", vet_gitlab_write("POST", "graphql", variables or {}, self.get_json))
         graphql_url = self.base_url.replace("/api/v4", "/api/graphql")
 
         def attempt() -> httpx.Response:

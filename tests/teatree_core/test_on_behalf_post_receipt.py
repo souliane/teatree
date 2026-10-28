@@ -28,6 +28,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
+from teatree.core.gates.forge_write_guard import ForgeWriteGuard
 from teatree.core.models import BotPing
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 
@@ -73,6 +74,52 @@ def _post_message_text(call_args: Any) -> str:
 
 
 class TestAfterReceiptDm(TestCase):
+    def test_configured_channel_posts_once_without_dm(self) -> None:
+        backend = _stub_backend()
+        with (
+            patch.object(ForgeWriteGuard, "configured", return_value=ForgeWriteGuard(receipt_channel="C-LOG")),
+            patch("teatree.core.notify.resolve_owner_dm_backend", return_value=(backend, None)),
+            patch("teatree.core.notify.notify_user") as dm,
+            patch(
+                "teatree.core.on_behalf_egress.OnBehalfSlackEgress.post",
+                return_value={"ok": True, "ts": "1700000000.0001"},
+            ) as post,
+        ):
+            for _ in range(2):
+                notify_user_on_behalf_post(
+                    target="org/repo!7",
+                    action="post_comment",
+                    destination="review",
+                    artifact_url="https://gitlab.example/x",
+                    summary="done",
+                )
+        assert post.call_count == 1
+        assert post.call_args.kwargs["channel"] == "C-LOG"
+        assert post.call_args.kwargs["receipt"] is False
+        dm.assert_not_called()
+        assert BotPing.objects.get(idempotency_key=_GITLAB_X_KEY).status == BotPing.Status.SENT
+
+    def test_channel_failure_falls_back_to_dm(self) -> None:
+        backend = _stub_backend()
+        with (
+            patch.object(ForgeWriteGuard, "configured", return_value=ForgeWriteGuard(receipt_channel="C-LOG")),
+            patch("teatree.core.notify.resolve_owner_dm_backend", return_value=(backend, None)),
+            patch("teatree.core.notify.notify_user") as dm,
+            patch(
+                "teatree.core.on_behalf_egress.OnBehalfSlackEgress.post",
+                side_effect=RuntimeError("channel unavailable"),
+            ),
+        ):
+            notify_user_on_behalf_post(
+                target="org/repo!7",
+                action="post_comment",
+                destination="review",
+                artifact_url="https://gitlab.example/x",
+                summary="done",
+            )
+        dm.assert_called_once()
+        assert dm.call_args.kwargs["idempotency_key"] == _GITLAB_X_KEY
+
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

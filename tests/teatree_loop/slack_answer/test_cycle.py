@@ -61,13 +61,13 @@ class RecordingBackend:
     read failure for the conservative-retry path).
     """
 
+    user_id: str = _USER_UID
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
     message_meta: dict[str, RawAPIDict] = field(default_factory=dict)
     thread_replies: dict[str, list[RawAPIDict]] = field(default_factory=dict)
     read_after_post: bool = True
     post_reply_raises: bool = False
-    user_id: str = _USER_UID
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -228,9 +228,9 @@ class TestTicketThreadStatus:
         assert report.answered_simple == 0
 
 
-def _row(text: str, ts: str = "1.0", overlay: str = "") -> PendingChatInjection:
+def _row(text: str, ts: str = "1.0", overlay: str = "", channel: str = "C1") -> PendingChatInjection:
     row = PendingChatInjection.record(
-        channel="C1", slack_ts=ts, text=text, overlay=overlay, context=DmContext(user_id=_USER_UID)
+        channel=channel, slack_ts=ts, text=text, overlay=overlay, context=DmContext(user_id=_USER_UID)
     )
     assert row is not None
     return row
@@ -476,8 +476,8 @@ class TestLinkOnlyDmDoesNotMisfireStatusline:
 
 class TestRowIsolation:
     def test_one_bad_row_does_not_block_others(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        bad = _row("thanks", ts="1.0")
-        good = _row("ok", ts="2.0")
+        bad = _row("thanks", ts="1.0", channel="C1")
+        good = _row("ok", ts="2.0", channel="C2")
         PendingChatInjection.objects.filter(pk=good.pk).update(received_at=bad.received_at + timedelta(minutes=2))
         backend = RecordingBackend()
 
