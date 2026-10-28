@@ -683,6 +683,7 @@ class LifecycleIncidentTests(TestCase):
 
         assert "a" * 64 not in context
         assert "otel:" not in context
+        assert "Distinct failures:" not in context
 
     def test_single_failed_task_repairs_first_and_keeps_one_ticket(self) -> None:
         task = TaskFactory()
