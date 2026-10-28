@@ -39,6 +39,7 @@ from teatree.core.models import (
 )
 from teatree.core.self_forge_identities import ExternalIssueRefusedError
 from teatree.core.send_proxy import OutboundBlockedError
+from teatree.loop.transient_requeue import requeue_transient_failed
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 from tests._owner_channel import assert_a_plain_card, owner_stop
 from tests.teatree_core.models._shared import _init_repo_with_branch
@@ -71,6 +72,14 @@ class TestParseResultEnvelope(TestCase):
     def test_rejects_invalid_json(self) -> None:
         with pytest.raises(ResultEnvelopeError):
             parse_result_envelope("not json")
+
+
+DENIED_COMMAND = "The command was denied with a 403 and the sub-agent start failed."
+DENIED_START = "The sub-agent start was denied by the current route."
+
+
+def _routed() -> AttemptUsage:
+    return AttemptUsage(route_candidate_index=0, route_source_skill="debug", selected_harness="codex_app_server")
 
 
 class TestValidateResultKeys(TestCase):
@@ -123,32 +132,39 @@ class TestValidateResultKeys(TestCase):
         assert all(line in error for line in owner_stop_limits_lines())
         assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
 
-    def test_standing_factory_actions_cannot_be_owner_stops(self) -> None:
-        for question in (
-            "May I continue after the round limit?",
-            "May I push the finished branch once more after the push round limit?",
-            "May I retry the blocked read-only verification through the existing approval router?",
-        ):
-            with self.subTest(question=question):
-                error = validate_result_keys(owner_stop(question) | {"summary": "waiting"})
-                assert error.startswith(OWNER_STOP_REFUSAL_PREFIX)
-                assert "standing" in error
-        existing = owner_stop(
-            "Can you provide bot access for live proof?", "credentials", "The existing approved credential is in use."
-        )
-        assert validate_result_keys(existing | {"summary": "waiting"}).startswith(OWNER_STOP_REFUSAL_PREFIX)
-
-    def test_true_owner_limits_keep_their_card(self) -> None:
+    def test_pushing_the_own_branch_or_stopping_the_own_process_is_refused_to_decide(self) -> None:
         for kind, question in (
-            ("money_or_plan", "May I spend money on this service?"),
-            ("irreversible", "May I delete work that exists on no remote?"),
-            ("credentials", "May I widen the credential's use to a new service?"),
-            ("public_post", "May I send these words to a colleague in your name?"),
-            ("money_or_plan", "May I pay to extend the round limit?"),
-            ("credentials", "May I widen credential use for read-only verification through the approval router?"),
+            ("public_post", "May I push the finished branch once more after the push round limit?"),
+            ("irreversible", "May I stop the dev server I started for this check?"),
         ):
             with self.subTest(kind=kind):
-                assert validate_result_keys(owner_stop(question, kind) | {"summary": "waiting"}) == ""
+                error = validate_result_keys(owner_stop(question, kind) | {"summary": "waiting"})
+                assert error.startswith(OWNER_STOP_REFUSAL_PREFIX)
+                assert "standing factory rule already decides" in error
+
+    def test_a_stop_no_row_proves_a_misfit_keeps_its_card(self) -> None:
+        for kind, question, facts in (
+            ("money_or_plan", "May I buy more credits after the round limit?", ()),
+            ("money_or_plan", "May I spend money on this service?", ()),
+            ("money_or_plan", "May I pay to extend the round limit?", ()),
+            ("credentials", "May I continue after the round limit?", ()),
+            ("credentials", "May I retry the blocked read-only verification through the approval router?", ()),
+            (
+                "credentials",
+                "Can you provide bot access with write scope?",
+                ("The existing approved credential is read-only.",),
+            ),
+            ("credentials", "May I grant the agent an admin token after the round limit?", ()),
+            ("credentials", "May I widen the credential's use to a new service?", ()),
+            ("irreversible", "May I delete work that exists on no remote?", ()),
+            ("irreversible", "May I stop the server I started and delete its unpushed data?", ()),
+            ("public_post", "May I send these words to a colleague in your name?", ()),
+            ("public_post", "May I comment on a colleague's pull request?", ()),
+            ("public_post", "May I push the finished branch and reply to the reviewer?", ()),
+            ("public_post", "May I push to a colleague's branch?", ()),
+        ):
+            with self.subTest(kind=kind, question=question):
+                assert validate_result_keys(owner_stop(question, kind, *facts) | {"summary": "waiting"}) == ""
 
 
 class TestRecordResultEnvelope(TestCase):
@@ -215,24 +231,77 @@ class TestRecordResultEnvelope(TestCase):
         assert task.attempts.failed_route_candidates("debug") == {0: attempt.pk}
         assert DeferredQuestion.objects.count() == 0
 
-    def test_routed_access_denial_fails_this_candidate_without_an_owner_question(self) -> None:
+    def test_routed_credentials_denied_command_fails_this_candidate_without_an_owner_question(self) -> None:
         task = self._claimed(phase="debugging")
-        envelope = owner_stop(
-            "Can you provide bot access for live proof?", "credentials", "The current route denied access."
-        )
+        envelope = owner_stop("Can you provide bot access for live proof?", "credentials", DENIED_START)
+
         attempt = record_result_envelope(
-            task,
-            envelope | {"summary": "Current route denied access."},
-            usage=AttemptUsage(
-                route_candidate_index=0, route_source_skill="debug", selected_harness="codex_app_server"
-            ),
+            task, envelope | {"summary": "Current route denied the start."}, usage=_routed()
         )
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert attempt.failure_kind == FailureKind.RESULT_ERROR
+        assert attempt.error == "result_error: routed agent access denied"
         assert task.attempts.failed_route_candidates("debug") == {0: attempt.pk}
         assert DeferredQuestion.objects.count() == 0
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_unrouted_credentials_denied_command_still_raises_the_card(self) -> None:
+        task = self._claimed(phase="scoping")
+        envelope = owner_stop("Can you provide bot access for live proof?", "credentials", DENIED_START)
+
+        attempt = record_result_envelope(task, envelope | {"summary": "waiting"}, usage=AttemptUsage())
+
+        assert attempt.error == ""
+        assert assert_a_plain_card(DeferredQuestion.objects.get(parked_task=task))
+
+    def test_routed_credentials_stop_without_a_denial_word_keeps_its_card(self) -> None:
+        task = self._claimed(phase="scoping")
+        fact = "The sub-agent start returned a 403 after a timeout."
+        envelope = owner_stop("Can you provide bot access for live proof?", "credentials", fact)
+
+        attempt = record_result_envelope(task, envelope | {"summary": "waiting"}, usage=_routed())
+
+        assert attempt.error == ""
+        assert assert_a_plain_card(DeferredQuestion.objects.get(parked_task=task))
+
+    def test_owner_kept_stops_record_a_card_on_routed_and_unrouted_runs(self) -> None:
+        for kind, question, fact in (
+            ("money_or_plan", "May I spend money on this service?", DENIED_COMMAND),
+            ("irreversible", "May I delete work that exists on no remote?", DENIED_COMMAND),
+            ("public_post", "May I send these words to a colleague in your name?", DENIED_COMMAND),
+            ("credentials", "May I use an API token for the new service?", DENIED_COMMAND),
+            ("credentials", "May I widen the credential's use to a new service?", "The request failed with a 403."),
+        ):
+            for usage in (_routed(), AttemptUsage()):
+                with self.subTest(kind=kind, question=question, routed=usage.route_candidate_index is not None):
+                    task = self._claimed(phase="scoping")
+
+                    attempt = record_result_envelope(
+                        task, owner_stop(question, kind, fact) | {"summary": "waiting"}, usage=usage
+                    )
+
+                    assert attempt.error == ""
+                    card = DeferredQuestion.objects.get(parked_task=task)
+                    assert card.evidence["decision"] == kind
+                    assert_a_plain_card(card)
+
+    def test_refused_own_branch_push_fails_the_attempt_and_is_reopened_once(self) -> None:
+        task = self._claimed(phase="debugging")
+        question = "May I push the finished branch once more after the push round limit?"
+
+        attempt = record_result_envelope(task, owner_stop(question, "public_post") | {"summary": "waiting"})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.failure_kind == FailureKind.RESULT_SCHEMA_INVALID
+        assert attempt.error.startswith(OWNER_STOP_REFUSAL_PREFIX)
+        assert "standing factory rule already decides" in attempt.error
+        assert DeferredQuestion.objects.count() == 0
+        assert requeue_transient_failed() == 1
 
     def test_quoted_push_gate_marker_does_not_fail_a_task(self) -> None:
         task = self._claimed(phase="testing")
