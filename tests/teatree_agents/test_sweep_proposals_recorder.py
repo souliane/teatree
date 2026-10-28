@@ -1,5 +1,6 @@
 """The worker owns every write following a read-only sweep proposal."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -7,8 +8,10 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
 from teatree.agents.sweep_proposals_recorder import record_returned_sweep_proposals
+from teatree.core.modelkit.question_card import internal_shorthand
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket, TicketSweepRun
 from teatree.core.models.task_handoff import resume_on_answer
+from teatree.core.owner_question_message import render_blocks
 
 
 class TestSweepProposalRecording(TestCase):
@@ -111,6 +114,38 @@ class TestSweepProposalRecording(TestCase):
         assert Task.objects.filter(parent_task=self.task).count() == 0
         assert TicketSweepRun.objects.get().examined_count == 2
 
+    def test_real_citations_are_kept_in_record_and_safe_in_owner_card(self) -> None:
+        member = "https://github.com/example-org/example-repo/issues/1"
+        host = "https://github.com/example-org/example-repo/issues/2"
+        citations = [
+            "Shipped in merged PR #123",
+            "Covered by tests/foo.py and src/foo.py via snake_case --flag <!channel>",
+            "same module " * 30 + "PR #124",
+        ]
+        proposals = {
+            "examined": [member],
+            "folds": [{"member_url": member, "host_url": host, "citation": citation} for citation in citations],
+            "gaps": [],
+        }
+        with patch(
+            "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+        ):
+            attempt = self._record(proposals, index_urls=[member, host])
+
+        self.ticket.refresh_from_db()
+        assert attempt.error == "", attempt.error
+        assert [
+            fold["citation"] for fold in self.ticket.extra["sweep_fold_proposals"][str(self.task.pk)]["folds"]
+        ] == citations
+        quotes = [question.evidence["quoted"] for question in DeferredQuestion.objects.order_by("pk")]
+        assert len(quotes) == 3
+        assert all(not internal_shorthand(quote) for quote in quotes)
+        assert all("<!channel>" not in quote for quote in quotes)
+        assert quotes[2].endswith("...")
+        assert all(
+            "<!channel>" not in json.dumps(render_blocks(question)) for question in DeferredQuestion.objects.all()
+        )
+
     def test_recording_does_not_reread_a_changed_issue_listing(self) -> None:
         self.ticket.merge_extra(
             set_keys={
@@ -134,6 +169,13 @@ class TestSweepProposalRecording(TestCase):
 
         assert attempt.error == "", attempt.error
         assert TicketSweepRun.objects.get().examined_count == 2
+
+    def test_examined_window_accepts_the_forge_url_casing(self) -> None:
+        url = "https://github.com/Example-Org/Example-Repo/issues/1"
+
+        attempt = self._record({"examined": [url], "folds": [], "gaps": []})
+
+        assert attempt.error == "", attempt.error
 
     def test_completed_task_skips_validation_on_retry(self) -> None:
         proposals = {"examined": [], "folds": [], "gaps": []}
@@ -170,6 +212,35 @@ class TestSweepProposalRecording(TestCase):
         self.ticket.refresh_from_db()
         assert "question unavailable" in attempt.error
         assert str(self.task.pk) not in self.ticket.extra.get("sweep_fold_proposals", {})
+        assert TicketSweepRun.objects.incomplete().count() == 1
+        assert TicketSweepRun.objects.recent().count() == 0
+
+    def test_fold_question_failure_precedes_gap_forge_write(self) -> None:
+        member = "https://github.com/example-org/example-repo/issues/1"
+        host = Ticket.objects.create(
+            overlay="example", issue_url="https://github.com/example-org/example-repo/issues/2"
+        )
+        self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        proposals = {
+            "examined": [member],
+            "folds": [{"member_url": member, "host_url": host.issue_url, "citation": "same module"}],
+            "gaps": [{"host_url": host.issue_url, "gap_keys": ["gap-a"]}],
+        }
+        with (
+            patch(
+                "teatree.agents.sweep_proposals_recorder.require_self_authored_issue", return_value={"state": "open"}
+            ),
+            patch(
+                "teatree.agents.sweep_proposals_recorder.DeferredQuestion.record",
+                side_effect=RuntimeError("unavailable"),
+            ),
+            patch("teatree.agents.sweep_proposals_recorder.call_command_streamed") as attach,
+        ):
+            attempt = self._record(proposals, index_urls=[member, host.issue_url])
+
+        assert "unavailable" in attempt.error
+        attach.assert_not_called()
+        assert TicketSweepRun.objects.incomplete().count() == 1
 
     def test_attach_gap_refusal_includes_command_reason(self) -> None:
         self.task.execution_reason += "\nDream promotion batch (#4776)\n- gap-a: offered work"
@@ -191,6 +262,8 @@ class TestSweepProposalRecording(TestCase):
             attempt = self._record(proposals, index_urls=[host.issue_url])
 
         assert "host changed" in attempt.error
+        assert TicketSweepRun.objects.incomplete().count() == 1
+        assert TicketSweepRun.objects.recent().count() == 0
 
     def test_fold_host_may_come_from_the_index_outside_the_body_window(self) -> None:
         member = "https://github.com/example-org/example-repo/issues/1"

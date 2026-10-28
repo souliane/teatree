@@ -301,7 +301,10 @@ def _sweep_rows_and_window(
         reason = f"the open issue listing could not be read ({type(exc).__name__})"
         raise _refused(reason) from exc
     rows.sort(
-        key=lambda row: (slug_from_issue_or_pr_url(urlparse(row[0]).path), int(row[0].rstrip("/").rsplit("/", 1)[1]))
+        key=lambda row: (
+            slug_from_issue_or_pr_url(urlparse(row[0]).path).casefold(),
+            int(urlparse(row[0]).path.rstrip("/").rsplit("/", 1)[1]),
+        )
     )
     finished = TicketSweepRun.objects.filter(
         source="loop", overlay=task.ticket.overlay, finished_at__isnull=False
@@ -339,13 +342,21 @@ def _sweep_issue_row(issue: object, repo: str) -> tuple[str, str, str]:
     body = issue.get("body", issue.get("description", ""))
     if body is None:
         body = ""
-    if (
-        not isinstance(url, str)
-        or not isinstance(title, str)
-        or not isinstance(body, str)
-        or slug_from_issue_or_pr_url(urlparse(url).path) != repo
-        or not repo_namespaced_key_from_path(urlparse(url).path)
-    ):
+    if not isinstance(url, str) or not isinstance(title, str) or not isinstance(body, str):
+        message = "invalid issue identity or content"
+        raise TypeError(message)
+    parsed = urlparse(url)
+    valid_url = all(
+        (
+            parsed.scheme == "https",
+            bool(parsed.hostname),
+            not parsed.query,
+            not parsed.fragment,
+            slug_from_issue_or_pr_url(parsed.path).casefold() == repo.casefold(),
+            bool(repo_namespaced_key_from_path(parsed.path)),
+        )
+    )
+    if not valid_url:
         message = "invalid issue identity or content"
         raise ValueError(message)
     return url, _sweep_excerpt(" ".join(title.split()), 80), _sweep_excerpt(body, 1500)

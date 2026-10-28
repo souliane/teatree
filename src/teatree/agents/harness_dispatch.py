@@ -28,6 +28,7 @@ from teatree.agents.model_tiering import (
 )
 from teatree.agents.sdk_tool_map import phase_bars_write_tools
 from teatree.agents.session_lineage import honesty_subject
+from teatree.agents.skill_bundle import configured_lifecycle_skill
 from teatree.agents.skill_routing import UNAVAILABLE_TTL, resolve_skill_route
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import EFFORT_SCALE, AgentRouteCandidate, resolve_agent_config
@@ -39,7 +40,6 @@ from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.overlay_loader import OverlayConfigResolver
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.index import build_skill_index, harness_skills_dirs
-from teatree.skill_support.loading import SkillLoadingPolicy
 
 if TYPE_CHECKING:
     from teatree.agents.harness import Harness
@@ -302,11 +302,7 @@ def _skill_route_selection(
     phase_candidates: list[str],
 ) -> SkillRouteSelection | None:
     config = resolve_agent_config()
-    primary_skill = (
-        get_effective_settings().backlog_sweep_skill
-        if context.phase == "backlog_sweep"
-        else SkillLoadingPolicy.lifecycle_for_phase(context.phase or "")
-    )
+    primary_skill = configured_lifecycle_skill(context.phase or "")
     route = resolve_skill_route(
         config.skill_models,
         skills,

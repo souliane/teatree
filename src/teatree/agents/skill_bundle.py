@@ -15,11 +15,18 @@ __all__ = [
     "active_overlay_pr_review_companion",
     "active_overlay_review_skills",
     "active_overlay_stage_skills",
+    "configured_lifecycle_skill",
     "resolve_skill_bundle",
     "stage_skills_for_dispatch",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def configured_lifecycle_skill(phase: str) -> str:
+    if phase == "backlog_sweep":
+        return get_effective_settings().backlog_sweep_skill
+    return SkillLoadingPolicy.lifecycle_for_phase(phase)
 
 
 class ArchitecturalReviewSkillMissingError(RuntimeError):
@@ -222,9 +229,7 @@ def resolve_skill_bundle(
     """
     if stage_skills is None:
         stage_skills = active_overlay_stage_skills(phase)
-    lifecycle_skill_override = ""
-    if phase == "backlog_sweep":
-        lifecycle_skill_override = get_effective_settings().backlog_sweep_skill
+    lifecycle_skill_override = configured_lifecycle_skill(phase) if phase == "backlog_sweep" else ""
     policy = SkillLoadingPolicy()
     result = policy.select_for_runtime_phase(
         cwd=_dispatch_cwd(detection_root),

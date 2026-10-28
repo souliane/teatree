@@ -95,3 +95,16 @@ class TestSweepFacts(TestCase):
 
         with pytest.raises(ReadOnlyBriefRefusedError, match="could not be read"):
             self._facts()
+
+    def test_issue_slug_casing_does_not_refuse_its_owned_repo(self) -> None:
+        self.issues[0]["html_url"] = "https://github.com/Example-Org/Example-Repo/issues/1"
+
+        index, _ = self._facts()
+
+        assert self.issues[0]["html_url"] in index
+
+    def test_issue_url_with_query_refuses_as_invalid_identity(self) -> None:
+        self.issues[0]["html_url"] += "?page=1"
+
+        with pytest.raises(ReadOnlyBriefRefusedError, match="could not be read"):
+            self._facts()

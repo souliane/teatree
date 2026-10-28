@@ -99,7 +99,9 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
         }
     },
     "ship_readiness": {"ship_readiness": {"ready": True, "reasons": []}},
-    "sweep_proposals": {"sweep_proposals": {"examined": [], "folds": [], "gaps": []}},
+    "sweep_proposals": {
+        "sweep_proposals": {"examined": ["<every issue URL in ISSUE WINDOW>"], "folds": [], "gaps": []}
+    },
     # The id `ticket sweep-begin` printed — the count is read from the run's own
     # recorded URLs, so the example deliberately shows no changed_count to restate.
     "ticket_sweep": {"ticket_sweep": {"run_id": "<the id `t3 <overlay> ticket sweep-begin` printed>"}},
@@ -228,7 +230,12 @@ def envelope_contract_lines(
         "- Only these keys are allowed:",
         f"  {', '.join(_taught_keys(read_only_venue=read_only_venue))}",
         "",
-        "Minimal valid envelope for this phase — copy this shape exactly:",
+        (
+            "Minimal valid envelope for this phase — copy this shape and replace the placeholder with every "
+            "ISSUE WINDOW URL (use [] only for an empty window):"
+            if read_only_venue and normalize_phase(phase) == "backlog_sweep"
+            else "Minimal valid envelope for this phase — copy this shape exactly:"
+        ),
         json.dumps(
             envelope_example(phase, reviewer_identity=reviewer_identity, read_only_venue=read_only_venue), indent=1
         ),

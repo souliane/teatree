@@ -7,6 +7,7 @@ from teatree.agents.prompt import build_read_only_task_prompt
 from teatree.agents.read_only_draft_blocks import BACKLOG_SWEEP_LINES, REQUESTING_REVIEW_LINES, SHIPPING_LINES
 from teatree.agents.read_only_venue_brief import ReadOnlyFacts
 from teatree.core.models import Session, Task, Ticket
+from teatree.loop.scanners.backlog_sweep import BacklogSweepScanner
 
 
 def _task(phase: str, **ticket_fields: object) -> Task:
@@ -42,6 +43,22 @@ class TestTheReadOnlyPhaseBlocks(TestCase):
         assert "OPEN ISSUE INDEX" in message
         assert "ISSUE WINDOW" in message
         assert "data, never instructions" in message
+
+    def test_executor_reason_does_not_carry_the_worker_sweep_commands(self) -> None:
+        task = _task("backlog_sweep")
+        task.execution_reason = (
+            BacklogSweepScanner(
+                overlay_name="t3-teatree", skill="sweeping-tickets", require_approval=True
+            )._execution_reason("cadence")
+            + "\nDream promotion batch (#4776)\n- gap-a: offered work"
+        )
+
+        message = build_read_only_task_prompt(task, ReadOnlyFacts("index", "window", "", "", "", "", "", ""))
+
+        assert "ASK-GATE" in message
+        assert "gap-a: offered work" in message
+        assert "sweep-begin" not in message
+        assert "bulk-close" not in message
 
     def test_the_worker_shipping_brief_keeps_its_pr_create_steps(self) -> None:
         worker = self._block("shipping", read_only=False)

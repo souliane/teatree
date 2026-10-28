@@ -2,7 +2,9 @@
 
 import io
 import json
+import re
 from collections.abc import Mapping
+from html import escape
 from typing import Never
 from urllib.parse import urlparse
 
@@ -11,7 +13,7 @@ from teatree.core.backend_registry import get_backend_provider
 from teatree.core.machine_output import call_command_streamed
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import SWEEP_ASK_GATE_MARKER, normalize_phase
-from teatree.core.modelkit.question_card import CardOption, QuestionCard
+from teatree.core.modelkit.question_card import CardOption, QuestionCard, internal_shorthand
 from teatree.core.models import DeferredQuestion, Task, Ticket, TicketSweepRun
 from teatree.core.models.dream_gap_ledger import batch_entries
 from teatree.core.overlay import OverlayBase
@@ -56,20 +58,56 @@ def record_returned_sweep_proposals(
         return f"{REFUSAL_PREFIX}{exc}"
     examined, external_count, folds, gaps = validated
     run = TicketSweepRun.objects.begin(source="loop", overlay=task.ticket.overlay)
-    error = ""
     try:
         _apply(task, run.run_id, folds, gaps)
     except SweepProposalError as exc:
-        error = f"{REFUSAL_PREFIX}{exc}"
-    finally:
-        TicketSweepRun.objects.finish(
-            run_id=run.run_id, examined_count=len(examined), external_skipped_count=external_count
-        )
-    return error
+        return f"{REFUSAL_PREFIX}{exc}"
+    TicketSweepRun.objects.finish(
+        run_id=run.run_id, examined_count=len(examined), external_skipped_count=external_count
+    )
+    return ""
+
+
+def _owner_citation(raw: str) -> str:
+    citation = " ".join(raw.split())
+    for token in internal_shorthand(citation):
+        if re.fullmatch(r"(?:PR|pull request|MR|merge request)\s+[#!]?\d+", token, re.IGNORECASE):
+            replacement = "pull request"
+        elif token.startswith("tests/"):
+            replacement = "test file"
+        elif token.startswith("src/") or token.endswith((".py", ".md", ".toml")):
+            replacement = "source file"
+        elif token.startswith("--"):
+            replacement = "command option"
+        else:
+            replacement = "code reference"
+        citation = citation.replace(token, replacement)
+    safe = escape(citation, quote=False)
+    if len(safe) > QUESTION_CITATION_CHARS:
+        safe = f"{safe[: QUESTION_CITATION_CHARS - 3].rsplit(' ', 1)[0].rstrip()}..."
+    return safe
 
 
 def _apply(task: Task, run_id: str, folds: list[dict[str, str]], gaps: list[tuple[int, list[str]]]) -> None:
     try:
+        for position, fold in enumerate(folds):
+            citation = _owner_citation(fold["citation"])
+            DeferredQuestion.record(
+                "Should this proposed ticket fold be approved?",
+                task_session=task.session,
+                dedupe_marker=f"backlog-sweep-fold-{task.pk}-{position}",
+                card=QuestionCard(
+                    decision=OwnerDecision.PRODUCT_SCOPE,
+                    checked=("Both issues were open and self-authored when the proposal was recorded.",),
+                    blocker="Only the owner decides whether this ticket fold should proceed.",
+                    why="Your decision is recorded; this sweep changes neither issue.",
+                    quoted=f"Fold <{fold['member_url']}|member issue> into <{fold['host_url']}|host issue>: {citation}",
+                    options=(
+                        CardOption("Approve", "Record approval of this proposal.", recommended=True),
+                        CardOption("Decline", "Record that this proposal is declined."),
+                    ),
+                ),
+            )
         for host_id, keys in gaps:
             host_ticket = Ticket.objects.get(pk=host_id)
             host_ticket.refresh_from_db(fields=["extra"])
@@ -91,26 +129,6 @@ def _apply(task: Task, run_id: str, folds: list[dict[str, str]], gaps: list[tupl
                 )
             except (Exception, SystemExit) as exc:
                 raise SweepProposalError(output.getvalue().strip() or str(exc)) from exc
-        for position, fold in enumerate(folds):
-            citation = " ".join(fold["citation"].split())
-            if len(citation) > QUESTION_CITATION_CHARS:
-                citation = f"{citation[: QUESTION_CITATION_CHARS - 3].rstrip()}..."
-            DeferredQuestion.record(
-                "Should this proposed ticket fold be approved?",
-                task_session=task.session,
-                dedupe_marker=f"backlog-sweep-fold-{task.pk}-{position}",
-                card=QuestionCard(
-                    decision=OwnerDecision.PRODUCT_SCOPE,
-                    checked=("Both issues were open and self-authored when the proposal was recorded.",),
-                    blocker="Only the owner decides whether this ticket fold should proceed.",
-                    why="Your decision is recorded; this sweep changes neither issue.",
-                    quoted=f"Fold <{fold['member_url']}|member issue> into <{fold['host_url']}|host issue>: {citation}",
-                    options=(
-                        CardOption("Approve", "Record approval of this proposal.", recommended=True),
-                        CardOption("Decline", "Record that this proposal is declined."),
-                    ),
-                ),
-            )
         task.ticket.merge_extra(
             merge_into_dicts={"sweep_fold_proposals": {str(task.pk): {"folds": folds, "run_id": run_id}}}
         )
@@ -132,7 +150,7 @@ def _validate(task: Task, raw: object) -> tuple[list[str], int, list[dict[str, s
     except Exception as exc:
         message = f"the overlay could not be read ({type(exc).__name__})"
         raise SweepProposalError(message) from exc
-    repos = set(owned_repo_slugs(overlay))
+    repos = {slug.casefold() for slug in owned_repo_slugs(overlay)}
     if not repos:
         _invalid("the overlay has no owned issue repositories")
     examined = _validated_examined(examined_raw, repos)
@@ -219,6 +237,6 @@ def _owned_issue_url(raw: object, repos: set[str]) -> bool:
         and bool(parsed.hostname)
         and not parsed.query
         and not parsed.fragment
-        and slug_from_issue_or_pr_url(parsed.path) in repos
+        and slug_from_issue_or_pr_url(parsed.path).casefold() in repos
         and bool(repo_namespaced_key_from_path(parsed.path))
     )

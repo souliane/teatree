@@ -98,7 +98,7 @@ def _parent_result_summary(task: Task) -> str:
     return "\n".join(parts)
 
 
-def _task_header_lines(task: Task, extra: dict) -> list[str]:
+def _task_header_lines(task: Task, extra: dict, *, read_only_venue: bool = False) -> list[str]:
     """Return the ticket/issue/title/labels/phase/reason header lines."""
     ticket: Ticket = task.ticket
     lines = [f"Work on ticket {ticket.ticket_number}."]
@@ -111,6 +111,9 @@ def _task_header_lines(task: Task, extra: dict) -> list[str]:
     if task.phase:
         lines.append(f"Current phase: {task.phase}")
     if reason := dispatch_reason(task):
+        if read_only_venue and normalize_phase(task.phase) == "backlog_sweep":
+            _, separator, tail = reason.partition("\n")
+            reason = f"ASK-GATE: return sweep proposals for worker validation{separator}{tail}"
         lines.append(f"Reason: {reason}")
     return lines
 
@@ -205,7 +208,7 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
     ticket: Ticket = task.ticket
     review_plan = plan_for_task(task) if normalize_phase(task.phase) == "reviewing" else None
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    lines = _task_header_lines(task, extra)
+    lines = _task_header_lines(task, extra, read_only_venue=True)
     lines.extend(_format_pr_context(extra))
     phase = normalize_phase(task.phase)
     triage = phase == "triage_assessing"
