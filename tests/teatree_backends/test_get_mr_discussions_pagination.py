@@ -61,7 +61,7 @@ class TestGetMrDiscussionsPagination:
         page1 = [_resolved_thread()] * 100
         page2 = [_unresolved_thread()]
 
-        with patch("httpx.get") as mock_get:
+        with patch("httpx.Client.get") as mock_get:
             # First call → page 1 with x-next-page=2; second call → page 2 (no next page).
             resp1 = MagicMock()
             resp1.raise_for_status.return_value = None
@@ -85,7 +85,7 @@ class TestGetMrDiscussionsPagination:
         """When there is only one page the result matches the single response."""
         page1 = [_resolved_thread(), _unresolved_thread()]
 
-        with patch("httpx.get") as mock_get:
+        with patch("httpx.Client.get") as mock_get:
             resp1 = MagicMock()
             resp1.raise_for_status.return_value = None
             resp1.json.return_value = page1
@@ -106,7 +106,7 @@ class TestGetMrDiscussionsPagination:
 
 
 def _approvals_http_side_effect(page1: list[dict], page2: list[dict]):
-    """httpx.get side-effect for a real GitLabAPI behind GitLabCodeHost.
+    """httpx.Client.get side-effect for a real GitLabAPI behind GitLabCodeHost.
 
     The MR is approved (``approvals_left == 0``) and carries 100 resolved
     threads on page 1 plus one unresolved-resolvable thread on page 2. On
@@ -139,7 +139,7 @@ class TestSubstrateMergeBlockedOnPageTwoThread:
     """A page-2 blocking thread must yield ``merge_blocked``, never ``merge_needed``.
 
     This is the SUBSTRATE regression. The full path is exercised end to end:
-    a real ``GitLabAPI`` paginating discussions over ``httpx.get`` →
+    a real ``GitLabAPI`` paginating discussions over ``httpx.Client.get`` →
     ``GitLabCodeHost.get_mr_approvals`` → ``_count_unresolved_resolvable_threads``
     → ``_signal_for`` with a permissive overlay guard.
 
@@ -153,7 +153,7 @@ class TestSubstrateMergeBlockedOnPageTwoThread:
         page1 = [_resolved_thread()] * 100
         page2 = [_unresolved_thread()]
 
-        with patch("httpx.get") as mock_get:
+        with patch("httpx.Client.get") as mock_get:
             mock_get.side_effect = _approvals_http_side_effect(page1, page2)
             api = GitLabAPI(token="tok", base_url="https://gitlab.example.com/api/v4")
             host = GitLabCodeHost(client=api)

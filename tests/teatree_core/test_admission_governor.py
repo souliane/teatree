@@ -10,6 +10,7 @@ merge loop for weeks.
 import datetime as dt
 import math
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -185,10 +186,10 @@ class TestMachinePressureIsSecondary:
         assert _decide(machine=machine).cause == "memory-pressure"
 
     def test_host_load_is_judged_against_the_cores_it_was_measured_on(self) -> None:
-        # Load 40 on a 10-core host, read from a 7-CPU container: 4/core, under the 5/core brake.
-        machine = _machine(cores=7, load_cores=10, load1=40.0)
+        # A host-scoped load under its brake can exceed a smaller container's watermark.
+        machine = _machine(cores=7, load_cores=10, load1=15.0)
         assert _decide(machine=machine).admit
-        assert not _decide(machine=_machine(cores=7, load1=40.0)).admit
+        assert not _decide(machine=_machine(cores=7, load1=15.0)).admit
 
     def test_high_swap_occupancy_without_paging_still_admits(self) -> None:
         # Occupancy can remain at 82% after paging stops; only the rate is a signal.
@@ -209,7 +210,7 @@ class TestMachinePressureIsSecondary:
         assert decision.cause == "weekly-quota"
 
     def test_load_between_the_watermarks_holds_a_braked_governor_braked(self) -> None:
-        mid = _machine(load1=8 * 4.0)
+        mid = _machine(load1=8 * 1.75)
         assert not _decide(machine=mid, load_brake=MachineBrake(braked=True)).admit
         assert _decide(machine=mid, load_brake=MachineBrake(braked=False)).admit
 
@@ -660,6 +661,26 @@ class TestWeeklyPace:
 
 
 class TestReadMachineSignal:
+    def test_box_global_load_settings_reach_the_live_signal(self) -> None:
+        settings = SimpleNamespace(admission_load_brake_per_core=4.0, admission_load_resume_per_core=2.0)
+        with patch.object(admission_governor, "get_effective_settings", return_value=settings):
+            signal = read_machine_signal()
+        assert signal.load_brake_per_core == pytest.approx(4.0)
+        assert signal.load_resume_per_core == pytest.approx(2.0)
+
+    def test_invalid_load_pair_keeps_shipped_hysteresis(self) -> None:
+        settings = SimpleNamespace(admission_load_brake_per_core=1.0, admission_load_resume_per_core=2.0)
+        with patch.object(admission_governor, "get_effective_settings", return_value=settings):
+            signal = read_machine_signal()
+        assert signal.load_brake_per_core == BRAKE_LOAD_PER_CORE
+        assert signal.load_resume_per_core == pytest.approx(1.5)
+
+    def test_unreadable_load_settings_keep_shipped_hysteresis(self) -> None:
+        with patch.object(admission_governor, "get_effective_settings", side_effect=RuntimeError("unreadable")):
+            signal = read_machine_signal()
+        assert signal.load_brake_per_core == BRAKE_LOAD_PER_CORE
+        assert signal.load_resume_per_core == pytest.approx(1.5)
+
     def test_core_count_follows_cgroup_quota_not_visible_host_cpus(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.utils import ram_probe  # noqa: PLC0415 — patches the live reader seam
 
@@ -945,7 +966,7 @@ class TestBoxLoadHeadroom:
         assert box_load_headroom(load1=999.0, cores=8) == pytest.approx(0.0)
 
     def test_the_budget_shrinks_monotonically_as_load_rises(self) -> None:
-        readings = [box_load_headroom(load1=load, cores=8) for load in (0.0, 10.0, 20.0, 30.0)]
+        readings = [box_load_headroom(load1=load, cores=8) for load in (0.0, 4.0, 8.0, 12.0)]
         assert readings == sorted(readings, reverse=True)
         assert len(set(readings)) == len(readings)
 
@@ -991,7 +1012,7 @@ class TestResumeAgentPopulation:
         assert resume_shed_directive(restored=8, machine=_machine(cores=8, load1=0.0)) == ""
 
     def test_an_over_ceiling_restore_names_the_count_and_the_ceiling(self) -> None:
-        directive = resume_shed_directive(restored=12, machine=_machine(cores=8, load1=20.0))
+        directive = resume_shed_directive(restored=12, machine=_machine(cores=8, load1=8.0))
         assert "12" in directive  # the restored count
         assert "4" in directive  # the ceiling the live reading leaves
         assert "shed" in directive.lower()

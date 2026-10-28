@@ -44,6 +44,7 @@ from teatree.eval.models import EvalSpec
 from teatree.eval.presets import Preset, PresetError, resolve_preset, resolve_preset_model
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.surface import is_advisory
+from teatree.llm.anthropic_limits import CreditExhaustedError
 
 #: The column name ``--presets`` recognises for "no preset" — each scenario's
 #: own tier/phase, the same resolution ``t3 eval run`` uses with no ``--preset``
@@ -445,6 +446,11 @@ def collect_matrix_rows(
                 raise MatrixUsageLimitError(
                     rows, failed_within_cell=isinstance(exc, UsageLimitAfterFailureError) and not is_advisory(spec)
                 ) from exc
+            except CreditExhaustedError as exc:
+                limit = MatrixUsageLimitError(rows, failed_within_cell=False)
+                if not limit.failed_before_limit(specs):
+                    raise
+                raise limit from exc
     return rows
 
 

@@ -45,7 +45,6 @@ from typing import TYPE_CHECKING, TypedDict
 
 from teatree.core.admission.dispatch_lane import configured_dispatch_lane
 from teatree.core.admission.lanes import LaneBound, LaneOccupancy, LaneWidths
-from teatree.core.admission.pr_start_cap import cap_hold_reason
 from teatree.core.admission.write_ceiling import review_lane_width
 from teatree.core.admission_governor import (
     MachineBrake,
@@ -180,8 +179,6 @@ class AgentAdmission:
             class_ceiling=lane.ceiling if cheap_class is not None else None,
             lane=cost,
         ):
-            if reason := cap_hold_reason(task_pk):
-                return reason
             if total_lane.ceiling is None:
                 return "already dispatched this window"
             return f"no {cheap_class or cost}-phase seat: already dispatched this window, or a racer took the last one"

@@ -84,6 +84,7 @@ from teatree.agents.spawn_payload import AgentSpawnError
 from teatree.agents.usage_window import park_on_timed_rejections
 from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.cleanup.process_table import nested_pid_namespace
+from teatree.core.modelkit.db_retry import wait_out_locked_writes
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
@@ -304,6 +305,7 @@ def _ready_run_or_failure(
     return credential, prepared
 
 
+@wait_out_locked_writes()
 def run_agent(
     task: Task,
     *,

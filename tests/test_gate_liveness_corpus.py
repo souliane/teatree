@@ -107,9 +107,7 @@ class GateContext:
         ``subprocess.run`` returns a fixed :class:`CompletedProcess`.
         """
         real_which = shutil.which
-        self.monkeypatch.setattr(
-            router.shutil, "which", lambda name: "/usr/local/bin/t3" if name == "t3" else real_which(name)
-        )
+        self.monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/t3" if name == "t3" else real_which(name))
         result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
         real_run = subprocess.run
 

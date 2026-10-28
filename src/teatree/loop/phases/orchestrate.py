@@ -44,7 +44,6 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 
 from teatree.config import Wip, get_effective_settings
-from teatree.core.admission.pr_start_cap import new_pr_start_allowed_q
 from teatree.core.modelkit.phases import normalize_phase, subagent_for_phase
 from teatree.loop.phases.conflict_area import area_key, spread_by_area
 from teatree.loop.queue_drain import ADMISSION_ORDER, admission_claim_order, admission_priority_annotations
@@ -192,7 +191,7 @@ def _admit_lane(
             return
         candidates = (
             Task.objects.filter(status=Task.Status.PENDING)
-            .filter(lane, new_pr_start_allowed_q())
+            .filter(lane)
             .annotate(**admission_priority_annotations())
             .select_related("ticket")
             .order_by(*ADMISSION_ORDER)[: cap * _SPREAD_OVERSAMPLE]

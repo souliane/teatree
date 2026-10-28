@@ -121,11 +121,11 @@ def park_if_live_successor(task: Task) -> bool:
     """Park *task* when a live successor holds its ``(ticket, phase)``; ``True`` if parked."""
     if not _has_live_successor(task):
         return False
-    _park_live_successor(task)
+    park_live_successor(task)
     return True
 
 
-def _park_live_successor(task: Task) -> None:
+def park_live_successor(task: Task) -> None:
     """Park a FAILED task whose ``(ticket, phase)`` a live successor now holds. Idempotent.
 
     Stamps :data:`LIVE_SUCCESSOR_STAMP` so the row drops out of the sweep's FAILED scan

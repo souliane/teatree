@@ -97,9 +97,6 @@ class PendingChatInjectionQuerySet(models.QuerySet):
     def recorded_since(self, since: dt.datetime, *, overlay: str = "") -> "PendingChatInjectionQuerySet":
         return self.filter(overlay=overlay, received_at__gte=since)
 
-    def prunable(self, cutoff: dt.datetime) -> "PendingChatInjectionQuerySet":
-        return self.filter(loop_replied_at__isnull=False, received_at__lt=cutoff)
-
     def sent_by_owners(self, owner_ids: Mapping[str, str]) -> "PendingChatInjectionQuerySet":
         """Only the rows each overlay's owner sent; an overlay with no owner id contributes none."""
         authorized = [models.Q(overlay=overlay, user_id=owner) for overlay, owner in owner_ids.items() if owner]

@@ -15,7 +15,9 @@ and an already-current no-op. Each asserts the
 mock-call counts.
 """
 
+import socket
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,7 @@ from teatree.core.worktree.branch_currency import (
     BranchStaleness,
     MergeConflict,
     branch_behind_target,
+    fetch_target_head,
     require_current_branch,
     sha_conflicts_with_target,
 )
@@ -329,3 +332,34 @@ class TestFetchFailureSurface:
         # Inconclusive — no error block, no merge.
         assert result["auto_merged"] is False
         assert result["error"] is None
+
+
+class TestFetchTargetHead:
+    def test_returns_the_live_remote_head(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _advance_remote(tmp_path, bare, filename="b.txt", content="later\n")
+
+        assert fetch_target_head(str(clone), "origin/main") == _git(bare, "rev-parse", "main")
+
+    def test_a_failing_fetch_means_could_not_tell(self, tmp_path: Path) -> None:
+        clone = _clone(tmp_path, _make_remote(tmp_path))
+        _git(clone, "remote", "set-url", "origin", str(tmp_path / "no-such-remote.git"))
+
+        assert fetch_target_head(str(clone), "origin/main") == ""
+
+    def test_a_remote_that_never_answers_means_could_not_tell_after_the_deadline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clone = _clone(tmp_path, _make_remote(tmp_path))
+        monkeypatch.setattr(branch_currency_module, "PLAN_CURRENCY_FETCH_TIMEOUT_SECONDS", 0.5)
+        with socket.socket() as silent_remote:
+            silent_remote.bind(("127.0.0.1", 0))
+            silent_remote.listen(1)
+            _git(clone, "remote", "set-url", "origin", f"http://127.0.0.1:{silent_remote.getsockname()[1]}/repo.git")
+
+            started = time.monotonic()
+            head = fetch_target_head(str(clone), "origin/main")
+
+        assert head == ""
+        assert time.monotonic() - started < 10
