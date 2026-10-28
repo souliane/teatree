@@ -178,6 +178,21 @@ class TestColleagueGate(TestCase):
             idempotency_key__startswith=f"on_behalf_post:{_TARGET}:review_nag_post",
         ).exists()
 
+    def test_receipt_post_does_not_start_another_receipt(self) -> None:
+        OnBehalfApproval.record(target=_TARGET, action="receipt", approver_id=_APPROVER)
+        fake = _RouteAwareFake()
+        with patch("teatree.core.on_behalf_egress.notify_user_on_behalf_post") as notify:
+            OnBehalfSlackEgress(fake).post(
+                channel=_COLLEAGUE,
+                text="receipt",
+                target=_TARGET,
+                action="receipt",
+                context=OnBehalfContext(own_mr=True, target=_TARGET),
+                receipt=False,
+            )
+        assert fake.post_routed_calls == [(_COLLEAGUE, "receipt", "")]
+        notify.assert_not_called()
+
     def test_approval_consumed_single_use(self) -> None:
         OnBehalfApproval.record(target=_TARGET, action="merge_reaction", approver_id=_APPROVER)
         fake = _RouteAwareFake()

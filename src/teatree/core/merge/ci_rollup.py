@@ -23,6 +23,7 @@ from teatree.core.backend_protocols import (
 )
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.evidence.forge_content import PrContentSnapshot
+from teatree.core.merge.bound_token import bound_token_for
 from teatree.core.merge.ci_rollup_dedupe import _dedupe_newest_per_name
 from teatree.core.merge.gitlab_pipeline import _gitlab_pipeline_verdict
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveHeadRead
@@ -54,10 +55,11 @@ def _code_host_for(host_kind: str, slug: str) -> "CodeHostBackend":
     silently shelling out).
     """
     provider = get_backend_provider()
+    bound = bound_token_for(slug)
+    resolution = resolve_slug_token(slug, forge=host_kind, credential=f"{host_kind}_token")
+    token = bound or (resolution.token if resolution.state is ForgeTokenState.TOKEN else "")
     if host_kind == "gitlab":
-        return provider.build_gitlab_host(token="", base_url="")
-    resolution = resolve_slug_token(slug, forge="github", credential="github_token")
-    token = resolution.token if resolution.state is ForgeTokenState.TOKEN else ""
+        return provider.build_gitlab_host(token=token, base_url="")
     return provider.build_github_host(token=token)
 
 
