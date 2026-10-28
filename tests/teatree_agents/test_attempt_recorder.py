@@ -515,9 +515,11 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         assert {row.overlay for row in rows} == {"acme"}
         assert {row.status for row in rows} == {PendingArticleSuggestion.Status.PENDING}
 
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
     @patch("teatree.core.models.pending_article_suggestion.check_url")
-    def test_recorded_batch_is_one_internal_question(self, check_url: object) -> None:
-        # An undecided question is internal: the batch names no owner decision, so it is never DMed.
+    def test_new_candidate_records_pending_row_and_one_digest_without_question(
+        self, check_url: MagicMock, notify: MagicMock
+    ) -> None:
         check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
         task = self._claimed()
         record_result_envelope(
@@ -527,21 +529,23 @@ class TestScanningNewsEnvelopeChannel(TestCase):
                 "article_suggestions": [{"title": "Agent evals", "url": "https://ex.com/a", "rationale": "why"}],
             },
         )
-        question = DeferredQuestion.objects.get()
-        assert question.is_pending
-        assert question.audience == DeferredQuestion.Audience.INTERNAL
-        assert question.parked_task_id is None
-        assert "https://ex.com/a" in question.question
+        row = PendingArticleSuggestion.objects.get()
+        assert row.status == PendingArticleSuggestion.Status.PENDING
+        assert row.url == "https://ex.com/a"
+        assert DeferredQuestion.objects.count() == 0
+        notify.assert_called_once()
+        assert notify.call_args.kwargs["idempotency_key"] == f"news-digest-{task.pk}"
 
+    @patch("teatree.agents.reactive_envelope_recorders.notify_user")
     @patch("teatree.core.models.pending_article_suggestion.check_url")
-    def test_no_new_candidates_posts_no_dm(self, check_url: object) -> None:
-        # A re-scan that records zero NEW rows (all deduped) must not re-nag.
+    def test_later_scan_of_same_url_records_no_new_row_or_digest(self, check_url: MagicMock, notify: MagicMock) -> None:
         check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
         blob = {"summary": "1", "article_suggestions": [{"title": "A", "url": "https://ex.com/a", "rationale": "w"}]}
         record_result_envelope(self._claimed(), blob)
-        DeferredQuestion.objects.all().delete()
-        record_result_envelope(self._claimed(), blob)  # same URL → deduped, zero new rows
+        record_result_envelope(self._claimed(), blob)
+        assert PendingArticleSuggestion.objects.count() == 1
         assert DeferredQuestion.objects.count() == 0
+        notify.assert_called_once()
 
     def test_summary_only_scanning_news_is_refused(self) -> None:
         task = self._claimed()
@@ -592,6 +596,7 @@ class TestTriageAssessingEnvelopeChannel(TestCase):
         # Exactly ONE DeferredQuestion DMs the batch, parked to the task.
         question = DeferredQuestion.objects.get()
         assert question.parked_task_id == task.pk
+        assert question.dedupe_marker == f"triage-batch-{task.pk}"
         assert question.is_pending
         assert question.evidence["decision"] == "product_scope"
         text = assert_a_plain_card(question, "needs-triage", "triage-batch")
