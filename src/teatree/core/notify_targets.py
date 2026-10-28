@@ -17,8 +17,6 @@ from html import escape
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from teatree.config import load_config
-from teatree.core.models.operator_identity import OperatorIdentity, canonical_operator_key
-from teatree.core.owner_dm.question_ticket import single_question_ticket_id
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -39,6 +37,11 @@ class Addressee:
 
 
 def addressee_for(ticket: "Ticket", *, owner_id: str | None = None) -> Addressee:
+    from teatree.core.models.operator_identity import (  # noqa: PLC0415 — CLI imports this module before Django setup
+        OperatorIdentity,
+        canonical_operator_key,
+    )
+
     owner = resolve_user_id() if owner_id is None else owner_id
     if not ticket.requested_by:
         return Addressee(owner)
@@ -68,7 +71,9 @@ def resolve_ticket_addressee(ticket_id: int | None, *, owner_id: str) -> Address
 
 
 def question_addressee(question: "DeferredQuestion", *, owner_id: str) -> Addressee:
-    return resolve_ticket_addressee(single_question_ticket_id(question), owner_id=owner_id)
+    from teatree.core.owner_dm import question_ticket  # noqa: PLC0415 — models unavailable during CLI bootstrap
+
+    return resolve_ticket_addressee(question_ticket.single_question_ticket_id(question), owner_id=owner_id)
 
 
 def label_fallback(text: str, blocks: list[RawAPIDict] | None, requester: str) -> tuple[str, list[RawAPIDict] | None]:
@@ -81,10 +86,12 @@ def label_fallback(text: str, blocks: list[RawAPIDict] | None, requester: str) -
 
 
 def registered_operator_slack_ids() -> frozenset[str]:
+    from teatree.core.models import operator_identity  # noqa: PLC0415 — models unavailable during CLI bootstrap
+
     return frozenset(
-        OperatorIdentity.objects.filter(platform="slack", user__is_active=True, user__is_superuser=True).values_list(
-            "handle", flat=True
-        )
+        operator_identity.OperatorIdentity.objects.filter(
+            platform="slack", user__is_active=True, user__is_superuser=True
+        ).values_list("handle", flat=True)
     )
 
 
