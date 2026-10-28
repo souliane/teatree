@@ -14,6 +14,7 @@ from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.checkout_custody import ABANDONED_EXIT, RELEASED_EXIT, Custody, Tenure
+from teatree.core.worktree import checkout_safety
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, claim_task_checkout_or_park, verify_task_checkout
 from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof, released_hand_off
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
@@ -91,7 +92,10 @@ class CheckoutRecoveryTests(_RecoveryCase):
         table = table_with_unreadable_pid(self.path.parent, nspid="NSpid:\t21\n")
         assert table.eviction_refuse_reason() == gap
 
-        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table):
+        with (
+            patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=table),
+            patch.object(checkout_safety, "read_process_table", return_value=self.clear),
+        ):
             assert claim_task_checkout_or_park(self.next_task) is None
 
         self.worktree.refresh_from_db()

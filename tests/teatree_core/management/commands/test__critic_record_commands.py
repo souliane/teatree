@@ -7,6 +7,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.gates import privacy_gate
 from teatree.core.models import CriticVerdict, PullRequest, Ticket
 from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.review.nit_lane import NitPoint, NitReceipt
@@ -95,6 +96,9 @@ class TestCriticRecordCommand(TestCase):
             path = Path(directory) / "verdict.json"
             path.write_text(json.dumps(envelope))
             with (
+                patch.object(privacy_gate, "overlay_privacy_rules", return_value=([], [])),
+                patch.object(privacy_gate, "_db_banned_terms", return_value=()),
+                patch.object(privacy_gate, "_registered_overlay_rules_union", return_value=([], [])),
                 patch("teatree.core.review.nit_publish.get_overlay_for_ticket", return_value=object()),
                 patch("teatree.core.review.nit_publish.get_backend_provider") as provider,
                 patch(

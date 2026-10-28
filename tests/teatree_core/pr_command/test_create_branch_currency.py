@@ -85,6 +85,39 @@ class TestPrCreateBranchCurrency(TestCase):
     def _inject_tmp(self, tmp_path: Path) -> None:
         self.tmp_path = tmp_path
 
+    def test_refuses_when_recorded_checkout_is_on_another_branch(self) -> None:
+        clone, _bare, branch_name = _make_stale_feature_worktree(self.tmp_path)
+        _git(clone, "checkout", "-b", "other")
+        (clone / "d.txt").write_text("other\n")
+        _git(clone, "add", "d.txt")
+        _git(clone, "commit", "-m", "other")
+        before = _git(clone, "rev-parse", "HEAD")
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        session.visit_phase("retro")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=str(clone),
+            branch=branch_name,
+            extra={"worktree_path": str(clone)},
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
+
+        ticket.refresh_from_db()
+        assert result.get("allowed") is False
+        assert "is on 'other', not recorded branch" in str(result.get("error", ""))
+        assert _git(clone, "rev-parse", "HEAD") == before
+        assert "branch_currency_post_merge_sha" not in (ticket.extra or {})
+
     def test_auto_merges_stale_base_before_visual_qa(self) -> None:
         clone, _bare, branch_name = _make_stale_feature_worktree(self.tmp_path)
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
