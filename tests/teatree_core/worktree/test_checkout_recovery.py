@@ -13,8 +13,9 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.models.checkout_custody import ABANDONED_EXIT, RELEASED_EXIT, Custody, Tenure
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, claim_task_checkout_or_park, verify_task_checkout
-from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
+from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof, released_hand_off
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.occupancy import acquire, release, task_holder_id
 from teatree.mcp.serializers import serialize_worktree
@@ -405,3 +406,88 @@ class DeferredExitRecoveryTests(_RecoveryCase):
     def test_unpersisted_attestation_refuses(self) -> None:
         with patch.object(Worktree, "merge_extra", return_value=None):
             self.assert_parked(self.container_table)
+
+
+class ReleasedHandOffTests(TestCase):
+    """Every condition of a same-ticket hand-off is pinned: dropping any one lets foreign work through."""
+
+    def setUp(self) -> None:
+        self.ticket = TicketFactory()
+        self.prior = TaskFactory(ticket=self.ticket, phase="coding")
+        self.claimant = TaskFactory(ticket=self.ticket, phase="testing")
+        Task.objects.filter(pk=self.claimant.pk).update(claimed_by_session="claimant-session")
+        self.claimant.refresh_from_db()
+
+    def _released(self, task: Task) -> Tenure:
+        return Tenure(
+            task_holder_id(task), "prior", "2026-10-27T12:00:00+00:00", RELEASED_EXIT, "2026-10-27T12:30:00+00:00"
+        )
+
+    def _open(self, task: Task) -> Tenure:
+        return Tenure(task_holder_id(task), task.claimed_by_session, "2026-10-27T13:00:00+00:00")
+
+    def _hand_off(self, *tenures: Tenure) -> bool:
+        return released_hand_off(self.claimant, Custody("anchor", tenures))
+
+    def test_a_released_same_ticket_writer_handing_to_the_open_claimant_is_a_hand_off(self) -> None:
+        assert self._hand_off(self._released(self.prior), self._open(self.claimant))
+
+    def test_no_tenure_at_all_is_not_a_hand_off(self) -> None:
+        assert not self._hand_off()
+
+    def test_the_claimant_alone_is_not_a_hand_off(self) -> None:
+        assert not self._hand_off(self._open(self.claimant))
+
+    def test_the_claimants_tenure_must_still_be_open(self) -> None:
+        assert not self._hand_off(self._released(self.prior), self._released(self.claimant))
+
+    def test_the_open_tenure_must_be_the_claimants(self) -> None:
+        stranger = TaskFactory(ticket=self.ticket, phase="testing")
+
+        assert not self._hand_off(self._released(self.prior), self._open(stranger))
+
+    def test_the_latest_earlier_tenure_must_be_released_not_abandoned(self) -> None:
+        abandoned = Tenure(
+            task_holder_id(self.prior),
+            "prior",
+            "2026-10-27T12:00:00+00:00",
+            ABANDONED_EXIT,
+            "2026-10-27T12:30:00+00:00",
+        )
+
+        assert not self._hand_off(abandoned, self._open(self.claimant))
+
+    def test_every_earlier_tenure_must_have_ended(self) -> None:
+        still_open = TaskFactory(ticket=self.ticket, phase="coding")
+
+        assert not self._hand_off(self._open(still_open), self._released(self.prior), self._open(self.claimant))
+
+    def test_a_ticket_that_already_has_a_pull_request_is_not_a_hand_off(self) -> None:
+        PullRequestFactory(ticket=self.ticket)
+
+        assert not self._hand_off(self._released(self.prior), self._open(self.claimant))
+
+    def test_a_holder_of_another_ticket_is_not_a_hand_off(self) -> None:
+        foreign = TaskFactory(ticket=TicketFactory(), phase="coding")
+
+        assert not self._hand_off(self._released(foreign), self._released(self.prior), self._open(self.claimant))
+
+    def test_a_holder_that_is_not_a_task_is_not_a_hand_off(self) -> None:
+        hand = Tenure("hand:someone", "prior", "2026-10-27T12:00:00+00:00", RELEASED_EXIT, "2026-10-27T12:30:00+00:00")
+
+        assert not self._hand_off(hand, self._released(self.prior), self._open(self.claimant))
+
+    def test_a_cancelled_prior_holder_is_not_a_hand_off(self) -> None:
+        Task.objects.filter(pk=self.prior.pk).update(status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED)
+
+        assert not self._hand_off(self._released(self.prior), self._open(self.claimant))
+
+    def test_earlier_holders_that_never_wrote_the_checkout_are_not_a_hand_off(self) -> None:
+        Task.objects.filter(pk=self.prior.pk).update(phase="reviewing")
+
+        assert not self._hand_off(self._released(self.prior), self._open(self.claimant))
+
+    def test_one_writer_among_read_only_holders_is_enough(self) -> None:
+        reviewer = TaskFactory(ticket=self.ticket, phase="reviewing")
+
+        assert self._hand_off(self._released(self.prior), self._released(reviewer), self._open(self.claimant))

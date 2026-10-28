@@ -249,6 +249,37 @@ class TestAPatchIsUpdatedOnce(_SweepCase):
         assert api.update_calls == []
         assert [signal.payload["decision"] for signal in signals] == ["needs_branch_update"]
 
+    def test_an_unreadable_custody_lookup_holds_the_sweep_update(self) -> None:
+        _reviewed_and_cleared_at_the_old_head()
+        pr = _pr(conclusion="FAILURE", behind_main=True)
+        api = _Api(prs=[pr])
+
+        with patch(
+            "teatree.loop.scanners.pr_sweep_branch_update.resolve_gated_ticket",
+            side_effect=RuntimeError("ticket store unreadable"),
+        ):
+            signals = _scanner(api, _Keystone(), _Lineage(_differing())).scan()
+
+        assert api.update_calls == []
+        assert [signal.payload["decision"] for signal in signals] == ["needs_branch_update"]
+
+    def test_a_claimed_task_in_a_phase_that_never_writes_the_branch_does_not_hold_the_update(self) -> None:
+        _reviewed_and_cleared_at_the_old_head()
+        pr = _pr(conclusion="FAILURE", behind_main=True)
+        ticket = own_pr(SLUG, PR_ID).ticket
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            phase="reviewing",
+            status=Task.Status.CLAIMED,
+        )
+        api = _Api(prs=[pr])
+
+        signals = _scanner(api, _Keystone(), _Lineage(_differing())).scan()
+
+        assert api.update_calls == [(SLUG, PR_ID, LIVE)]
+        assert [signal.payload["decision"] for signal in signals] == ["branch_updated"]
+
     def test_a_pending_repair_does_not_hold_the_sweep_update(self) -> None:
         _reviewed_and_cleared_at_the_old_head()
         pr = _pr(conclusion="FAILURE", behind_main=True)
