@@ -29,7 +29,7 @@ from django.db.migrations.loader import MigrationLoader
 from django.db.migrations.migration import Migration
 from django.test import override_settings
 
-from tests.teatree_core._migration_graph import CORE_MIGRATIONS_DIR
+from tests.teatree_core._migration_graph import CORE_MIGRATIONS_DIR, core_head_migration
 
 _CORE_MAX_MIGRATION_TXT = CORE_MIGRATIONS_DIR / "max_migration.txt"
 
@@ -156,6 +156,16 @@ def test_dlm_installed_and_live_core_graph_is_clean() -> None:
         "live core max_migration.txt must be a single line"
     )
     assert _dlm_error_ids() == [], "the live migration graph must be dlm-clean"
+
+
+def test_review_and_checkout_migrations_share_the_live_head() -> None:
+    loader = MigrationLoader(connection=None)
+    applied = set(loader.graph.forwards_plan(("core", core_head_migration())))
+
+    assert {
+        ("core", "0026_merge_review_verdict_ticket_dm"),
+        ("core", "0026_retire_checkout_questions"),
+    } <= applied
 
 
 def test_live_core_graph_is_linear_by_dependency() -> None:
