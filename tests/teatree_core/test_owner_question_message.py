@@ -25,7 +25,7 @@ from tests._owner_channel import legacy_owner_row
 _SAMPLE_QUESTION = "Can you mention the bot once (type @ and its name) in any Slack channel?"
 _SAMPLE_WHY = "This tells me whether it is set up for channels or only for our direct messages."
 _SAMPLE_CARD = QuestionCard(
-    decision=OwnerDecision.PRODUCT_SCOPE,
+    decision=OwnerDecision.ARCHITECTURE,
     checked=("The bot answers direct messages.",),
     blocker="Only the owner can say which setup is wanted.",
     why=_SAMPLE_WHY,
@@ -126,7 +126,7 @@ def _draft_row() -> DeferredQuestion:
 
 def _largest_row() -> DeferredQuestion:
     card = QuestionCard(
-        decision=OwnerDecision.PRODUCT_SCOPE,
+        decision=OwnerDecision.ARCHITECTURE,
         checked=("Four plans were drawn up.",),
         blocker="Only the owner picks the rollout.",
         why="Each plan trades speed against the risk of a bad release.",

@@ -234,7 +234,7 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         assert guard.acquire(blocking=False)
         guard.release()
 
-    def test_an_hour_of_ticks_over_a_resumed_41_question_backlog_sends_six_pings(self) -> None:
+    def test_an_hour_of_ticks_posts_all_first_cards_from_a_41_question_backlog(self) -> None:
         for index in range(20):
             _backlog(f"Unposted {index}?")
         for index in range(21):
@@ -243,15 +243,15 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         for _ in range(12):
             self._tick()
 
-        assert _sent_pings() == 6
+        assert _sent_pings() == 20
 
-    def test_the_held_questions_are_posted_once_the_hour_rolls_over(self) -> None:
+    def test_first_cards_are_posted_before_the_hour_rolls_over(self) -> None:
         for index in range(8):
             _backlog(f"Unposted {index}?")
 
         for _ in range(3):
             self._tick()
-        assert DeferredQuestion.unmirrored_pending().count() == 2
+        assert DeferredQuestion.unmirrored_pending().count() == 0
 
         _age_the_ledger(minutes=60)
         self._tick()
@@ -269,7 +269,7 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
 
         new_question.refresh_from_db()
         assert new_question.slack_ts
-        assert _sent_pings() == 6
+        assert _sent_pings() == 7
 
     def test_a_manual_resurface_in_a_spent_hour_posts_nothing_and_keeps_the_backlog(self) -> None:
         _seed_sent_question_pings(6)
@@ -288,7 +288,7 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
 
         self._nag()
 
-        assert _sent_pings() == 3
+        assert _sent_pings() == 6
 
     def test_a_failed_send_keeps_the_slot_free_and_the_question_is_posted_on_the_next_pass(self) -> None:
         _seed_sent_question_pings(5)
@@ -504,7 +504,7 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         )
         return holder
 
-    def test_an_expired_holder_whose_pid_now_names_a_live_process_frees_the_slot_for_one_send(self) -> None:
+    def test_an_expired_holder_whose_pid_now_names_a_live_process_frees_the_slot_for_first_cards(self) -> None:
         _seed_sent_question_pings(5)
         _backlog("Which DB host?")
         _backlog("Which queue?")
@@ -514,8 +514,8 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         with patch("teatree.utils.singleton.pid_alive", lambda pid: pid in {own_pid, _FOREIGN_PID}):
             self._poster()
 
-        assert self.backend.post_message.call_count == 1
-        assert _sent_pings() == 6
+        assert self.backend.post_message.call_count == 2
+        assert _sent_pings() == 7
 
     def _an_unfinalized_send(self, *, claimed_ago: dt.timedelta) -> None:
         BotPing.objects.create(
@@ -557,7 +557,7 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
 class TestTheHourlyCeilingHoldsAcrossProcesses:
     """A tick worker and a manual resurface run in separate processes, so no in-process lock can pace them."""
 
-    def test_two_processes_racing_for_the_last_slot_send_one_ping(self, schema_guard_alias: SchemaGuardAlias) -> None:
+    def test_two_processes_racing_do_not_throttle_first_cards(self, schema_guard_alias: SchemaGuardAlias) -> None:
         alias = schema_guard_alias.register_current()
         db_file = Path(str(connections.databases[alias]["NAME"]))
         teardown_sqlite_alias(alias)
@@ -588,4 +588,6 @@ class TestTheHourlyCeilingHoldsAcrossProcesses:
         ):
             run_racing_threads(run_one_process, len(drains))
 
-        assert _sent_pings() == 6
+        DeferredQuestionPosterScanner(backend=backend, user_id="U_ME").scan()
+        assert DeferredQuestion.unmirrored_pending().count() == 0
+        assert _sent_pings() == 7

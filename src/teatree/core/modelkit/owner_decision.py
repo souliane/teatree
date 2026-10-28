@@ -14,14 +14,14 @@ class OwnerDecision(enum.StrEnum):
     ARCHITECTURE = "architecture"
 
 
-OWNER_KEPT_DECISIONS = frozenset(
-    {
-        OwnerDecision.CREDENTIALS,
-        OwnerDecision.MONEY_OR_PLAN,
-        OwnerDecision.PUBLIC_POST,
-        OwnerDecision.IRREVERSIBLE,
-    }
+OWNER_RAISABLE_DECISIONS = (
+    OwnerDecision.CREDENTIALS,
+    OwnerDecision.MONEY_OR_PLAN,
+    OwnerDecision.PUBLIC_POST,
+    OwnerDecision.IRREVERSIBLE,
+    OwnerDecision.ARCHITECTURE,
 )
+OWNER_KEPT_DECISIONS = frozenset(OWNER_RAISABLE_DECISIONS[:-1])
 HELD_PR_MARKER_PREFIX = "owner-wait:held-pr:"
 
 
@@ -33,10 +33,10 @@ OWNER_QUESTION_ROUTE = (
     "Ask the owner only via `t3 <overlay> questions record '<one question ending in ?>' --decision <kind> "
     "--checked '<fact>' --why '<one sentence on why you ask>' --blocker '<what stops you>' "
     '--options \'[{"label": "<answer>", "description": "<what happens next>", "recommended": true}, ...]\'`, '
-    f"<kind> being one of {', '.join(OwnerDecision)} (an access or permission grant is credentials), "
+    f"<kind> being one of {', '.join(OWNER_RAISABLE_DECISIONS)} (an access or permission grant is credentials), "
     "listing every fact you checked first and 2 to 4 options with the recommended one first, or none; "
     "at most 120 words in all; plain English everywhere, quotes included (no ids, snake_case names, paths or "
-    "commands); decide everything else yourself."
+    "commands); include `--proposed-text '<exact wording>'` for a rules-file change; decide everything else yourself."
 )
 
 OWNER_ANSWER_ROUTE = (
@@ -58,6 +58,7 @@ __all__ = [
     "OWNER_ANSWER_ROUTE",
     "OWNER_KEPT_DECISIONS",
     "OWNER_QUESTION_ROUTE",
+    "OWNER_RAISABLE_DECISIONS",
     "OwnerDecision",
     "owner_decision",
     "owner_kept_decision",

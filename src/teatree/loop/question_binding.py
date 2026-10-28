@@ -142,16 +142,12 @@ def _bind_found(
     reply: PendingChatInjection, *, question: DeferredQuestion, body: str, reader: InboundReader, key: str
 ) -> BoundAnswer | UnmatchedCardThread | None:
     if is_action_question(question):
-        _log_reply(reply, f"ignored: {CardThreadStop.TAPS_ONLY}")
-        return UnmatchedCardThread(CardThreadStop.TAPS_ONLY) if reply.thread_ts else None
+        _log_reply(reply, "action-card discussion requested")
+        return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, question.pk) if reply.thread_ts else None
     answer = resolve_answer(body, question, reader=reader)
     if answer is None:
-        if (
-            reply.thread_ts
-            and question.audience == DeferredQuestion.Audience.OWNER_QUESTION
-            and _recorded_options(question)
-        ):
-            _log_reply(reply, f"rejected: {CardThreadStop.OPTIONS_ONLY}")
+        if reply.thread_ts and question.audience == DeferredQuestion.Audience.OWNER_QUESTION:
+            _log_reply(reply, "card discussion requested")
             options = tuple(str(option.get("label", "")) for option in _recorded_options(question) or [])
             return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, question.pk, options)
         _log_reply(reply, f"ignored: {_READS_AS_QUESTION}")
@@ -282,7 +278,15 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
     is deliberate — mistaking a question for an answer destroys the question,
     while mistaking an answer for a question costs one extra round trip.
     """
-    if not text.strip() or is_action_question(question):
+    if (
+        not text.strip()
+        or is_action_question(question)
+        or (
+            question.audience == DeferredQuestion.Audience.OWNER_QUESTION
+            and not _recorded_options(question)
+            and text.strip().casefold() not in {"yes", "no", "approve", "decline"}
+        )
+    ):
         return None
     match = _DIGIT_RE.match(text)
     if match is None:
@@ -406,20 +410,32 @@ def _thread_cards(
             DeferredQuestion.objects.filter(pk=latest.question_id).first() if latest and latest.question_id else None
         )
         return (question, "ticket-newest") if question is not None and question.is_pending else (None, "")
+    return _ordinary_thread_cards(reply, backend=backend, body=body, reader=reader)
+
+
+def _ordinary_thread_cards(
+    reply: PendingChatInjection, *, backend: "MessagingBackend", body: str, reader: InboundReader
+) -> tuple[DeferredQuestion | None, str] | AmbiguousCards | UnmatchedCardThread:
     matched, key = cards_in_thread(
         channel=reply.channel, thread_ts=reply.thread_ts, before_ts=reply.slack_ts, backend=backend
     )
-    pending = [card for card in matched if card.is_pending and not is_action_question(card)]
-    if len(pending) > 1:
+    all_pending = [card for card in matched if card.is_pending]
+    pending = [card for card in all_pending if not is_action_question(card)]
+    if len(all_pending) > 1:
+        if not pending:
+            return AmbiguousCards(tuple(card.pk for card in all_pending))
         if resolve_answer(body, pending[0], reader=reader) is None:
             return None, _READS_AS_QUESTION
-        return AmbiguousCards(tuple(card.pk for card in pending))
+        if len(pending) > 1:
+            return AmbiguousCards(tuple(card.pk for card in pending))
     if pending:
         return pending[0], key
-    if matched:
-        taps_only = any(card.is_pending for card in matched)
-        return UnmatchedCardThread(CardThreadStop.TAPS_ONLY if taps_only else CardThreadStop.CLOSED)
-    return None, ""
+    if len(all_pending) == 1:
+        return UnmatchedCardThread(CardThreadStop.OPTIONS_ONLY, all_pending[0].pk)
+    taps_only = any(card.is_pending for card in matched)
+    return (
+        UnmatchedCardThread(CardThreadStop.TAPS_ONLY if taps_only else CardThreadStop.CLOSED) if matched else (None, "")
+    )
 
 
 def _recorded_options(question: DeferredQuestion) -> list[dict] | None:

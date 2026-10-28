@@ -60,13 +60,13 @@ class TestLiveOrchestrator(TransactionTestCase):
         message = "orchestrator did not reply"
         raise AssertionError(message)
 
-    def test_scope_replies_are_ticket_bound_and_nonce_bound(self) -> None:
+    def test_design_replies_are_ticket_bound_and_nonce_bound(self) -> None:
         ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         DeferredQuestion.objects.create(
             question="Which scope?",
             audience=DeferredQuestion.Audience.OWNER_QUESTION,
-            evidence=owner_card(OwnerDecision.PRODUCT_SCOPE).to_evidence(),
+            evidence=owner_card(OwnerDecision.ARCHITECTURE).to_evidence(),
             answered_at=timezone.now(),
             answer_text="The smaller scope.",
             resolved_via=DeferredQuestion.ResolvedVia.SLACK,
@@ -84,10 +84,10 @@ class TestLiveOrchestrator(TransactionTestCase):
             assert len([p for p in broker.identities() if p["harness"] == "orchestrator"]) == 1
             start_orchestrator_peer(broker)
             assert len([p for p in broker.identities() if p["harness"] == "orchestrator"]) == 1
-            first = self._ask(MailboxClient(asker.socket_path, asker.token), address, "nonce-one", "product_scope")
-            second = self._ask(MailboxClient(asker.socket_path, asker.token), address, "nonce-two", "product_scope")
+            first = self._ask(MailboxClient(asker.socket_path, asker.token), address, "nonce-one", "architecture")
+            second = self._ask(MailboxClient(asker.socket_path, asker.token), address, "nonce-two", "architecture")
             foreign = self._ask(
-                MailboxClient(stranger.socket_path, stranger.token), address, "nonce-three", "product_scope"
+                MailboxClient(stranger.socket_path, stranger.token), address, "nonce-three", "architecture"
             )
             assert first["answer_to"] == "nonce-one"
             assert second["answer_to"] == "nonce-two"
@@ -101,6 +101,15 @@ class TestLiveOrchestrator(TransactionTestCase):
 
     def test_hard_limit_and_malformed_ask_do_not_create_cards(self) -> None:
         ticket = planned_ticket()
+        DeferredQuestion.objects.create(
+            question="Which old scope?",
+            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            evidence=owner_card(OwnerDecision.PRODUCT_SCOPE).to_evidence(),
+            answered_at=timezone.now(),
+            answer_text="The old scope.",
+            resolved_via=DeferredQuestion.ResolvedVia.SLACK,
+            task_session=Session.objects.create(ticket=ticket),
+        )
         before = DeferredQuestion.objects.count()
         with (
             tempfile.TemporaryDirectory(prefix="t3-o-", dir="/tmp") as directory,
@@ -117,8 +126,11 @@ class TestLiveOrchestrator(TransactionTestCase):
             assert reply["answer_to"] == "nonce-valid"
             assert reply["verdict"] == "owner_only"
             assert reply["decisions"] == []
+            legacy = self._ask(client, address, "nonce-legacy", "product_scope")
+            assert legacy["verdict"] == "unsupported"
+            assert legacy["decisions"] == []
             with patch.object(live_orchestrator, "_recorded_decisions", side_effect=DatabaseError("offline")):
-                unavailable = self._ask(client, address, "nonce-unavailable", "product_scope")
+                unavailable = self._ask(client, address, "nonce-unavailable", "architecture")
             assert unavailable["verdict"] == "unavailable"
             assert unavailable["decisions"] == []
             broker.unregister(address)
@@ -167,14 +179,14 @@ class TestLiveOrchestrator(TransactionTestCase):
             asker = broker.register(room=str(ticket.pk), harness="claude_sdk", label="asker")
             client = MailboxClient(asker.socket_path, asker.token)
             first = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator")
-            self._ask(client, first, "one", "product_scope")
-            self._ask(client, first, "two", "product_scope")
+            self._ask(client, first, "one", "architecture")
+            self._ask(client, first, "two", "architecture")
             for _ in range(50):
                 second = next(p["address"] for p in broker.identities() if p["harness"] == "orchestrator")
                 if second != first:
                     break
                 time.sleep(0.01)
             assert first != second
-            assert self._ask(client, second, "three", "product_scope")["answer_to"] == "three"
+            assert self._ask(client, second, "three", "architecture")["answer_to"] == "three"
             broker.unregister(second)
             peer.join(timeout=3)

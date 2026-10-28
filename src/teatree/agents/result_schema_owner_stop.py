@@ -3,7 +3,7 @@
 from typing import TypedDict
 
 from teatree.core.modelkit import question_card
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS
 from teatree.core.modelkit.question_card import OptionDict
 from teatree.core.modelkit.task_failure_taxonomy import OWNER_STOP_REFUSAL_PREFIX
 
@@ -14,6 +14,7 @@ OWNER_STOP_SHAPE = (
     "Stop for the owner with `user_input_reason` (ONE question ending in `?`), `user_input_kind`, `user_input_checked` "
     'and `user_input_card` {"why": "<one sentence>", "blocker": "<what stops you>", "options": '
     '[{"label", "description", "recommended": true}]}.'
+    " For a rules-file change, include exact wording as `user_input_card.proposed_text`."
 )
 
 
@@ -41,6 +42,7 @@ class OwnerCard(TypedDict, total=False):
     why: str
     blocker: str
     options: list[OptionDict]
+    proposed_text: str
 
 
 class OwnerStop(TypedDict, total=False):
@@ -55,7 +57,7 @@ class OwnerStop(TypedDict, total=False):
 OWNER_STOP_SCHEMA_PROPERTIES: JSONSchema = {
     "needs_user_input": {"type": "boolean"},
     "user_input_reason": {"type": "string"},
-    "user_input_kind": {"type": "string", "enum": [decision.value for decision in OwnerDecision]},
+    "user_input_kind": {"type": "string", "enum": [decision.value for decision in OWNER_RAISABLE_DECISIONS]},
     "user_input_checked": {"type": "array", "items": {"type": "string"}},
     "user_input_card": {
         "type": "object",
@@ -63,6 +65,7 @@ OWNER_STOP_SCHEMA_PROPERTIES: JSONSchema = {
             "why": {"type": "string"},
             "blocker": {"type": "string"},
             "options": {"type": "array", "items": {"type": "object"}},
+            "proposed_text": {"type": "string"},
         },
     },
 }

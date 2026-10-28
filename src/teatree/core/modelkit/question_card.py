@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
 from teatree.core.modelkit.owner_action import ActionRequest, read_action
-from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_decision import OWNER_RAISABLE_DECISIONS, OwnerDecision, owner_decision
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ _REF_LINE = re.compile(r"^ref: question \d+$", re.MULTILINE)
 _WORD = re.compile(r"[^\W_]+")
 _ABBREVIATION = re.compile(r"\b(?:e\.g|i\.e|etc|vs)\.", re.IGNORECASE)
 _SENTENCE_BREAK = re.compile(r"[.!?][\"')\]]*\s+\S")
+_RULES_FILE = re.compile(r"\b(?:rules?[- ]file|rules?[- ]skill|rules\.md|skills/rules)\b", re.IGNORECASE)
 
 _LABELLED_LINK = re.compile(r"<https?://[^\s|>]+\|([^>]*)>")
 _URL = re.compile(r"<https?://[^\s>]+>|https?://\S+")
@@ -339,6 +340,12 @@ class QuestionCard:
     def problems(self, question: str) -> list[str]:
         """Every reason this card may not be sent as an owner question, all at once."""
         problems = shown_problems(self.view(question))
+        if self.decision not in OWNER_RAISABLE_DECISIONS:
+            problems.append(
+                f"{self.decision} cannot be raised to the owner; choose from {', '.join(OWNER_RAISABLE_DECISIONS)}"
+            )
+        if (_RULES_FILE.search(question) or _RULES_FILE.search(self.subject)) and not self.quoted.strip():
+            problems.append("the proposed text of a rules-file change is required on the card")
         problems += _sentence_problems("the question", question, limit=MAX_QUESTION_CHARS, ends_with="?")
         problems += _sentence_problems("the why sentence", self.why, limit=MAX_SENTENCE_CHARS)
         if not 1 <= len(self.checked) <= MAX_CHECKED_FACTS:
@@ -421,6 +428,7 @@ class QuestionCard:
             checked=tuple(map(str, checked)) if isinstance(checked, list) else (),
             blocker=str(fields.get("blocker", "")),
             why=str(fields.get("why", "")),
+            quoted=str(fields.get("proposed_text", "")),
             options=tuple(option for item in options if (option := CardOption.from_raw(item)))
             if isinstance(options, list)
             else (),

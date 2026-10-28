@@ -722,6 +722,10 @@
           "name": "dm"
         },
         {
+          "help": "",
+          "name": "reply"
+        },
+        {
           "help": "Read the status signals the classifier kept off the DM channel (#4524)",
           "name": "digest"
         },
@@ -866,6 +870,14 @@
       "help": "``t3 teatree questions`` group root.",
       "name": "questions",
       "subcommands": [
+        {
+          "help": "Reuse an exact owner answer for the same architecture question from an attended session",
+          "name": "coordinate"
+        },
+        {
+          "help": "Count the owner cards that have a Slack mirror, grouped by creation day and kind",
+          "name": "measure"
+        },
         {
           "help": "Record a question by hand \u2014 the agent-facing capture surface",
           "name": "record"

@@ -62,6 +62,17 @@ class TestNotifyTicketRouting(TestCase):
         assert result["sent"]
         assert notify.call_args.kwargs["options"].ticket_id == ticket.pk
 
+    def test_mcp_reply_preserves_the_card_thread(self) -> None:
+        with patch("teatree.mcp.write_tools.notify_user_outcome", return_value=DELIVERED) as notify:
+            result = async_to_sync(write_tools._notify_user)(
+                "The rule says to decide settled questions.",
+                idempotency_key="card-discussion:335.2:reply",
+                thread_ts="335.1",
+            )
+
+        assert result["sent"]
+        assert notify.call_args.kwargs["options"].thread_ts == "335.1"
+
 
 class TestConfigSettingSetGateRefusal(TestCase):
     def test_plain_setting_is_written_with_registry_validation(self) -> None:

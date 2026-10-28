@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from teatree.agents import skill_injection
+from teatree.skill_support import loading
+from teatree.skill_support.index import build_skill_index
 from teatree.skill_support.loading import _PHASE_TO_SKILL, SkillLoadingPolicy
 from tests.quality._anchor_prose import covered_bytes, load_ledger, window_digests
 
@@ -18,6 +20,24 @@ def _answer_policy() -> str:
 def test_attended_answer_scope_names_headless_mailbox_and_owner_limit() -> None:
     assert "A headless orchestrator may answer its own agents' scope and architecture questions" in _answer_policy()
     assert "it does not dismiss live owner cards" in _answer_policy()
+
+
+def test_layer_rule_is_once_in_rules_and_standing_answers_cover_recurring_cases() -> None:
+    stub = (ROOT / "skills/rules/SKILL.md").read_text(encoding="utf-8")
+    reference = (ROOT / "skills/rules/references/asking-questions.md").read_text(encoding="utf-8")
+    assert stub.count("Decide from the standing answers and verified facts first") == 1
+    assert "headless agent asks its orchestrator through the direct mailbox" in stub
+    for case in (
+        "Working folder",
+        "Held pull request",
+        "Round ceiling",
+        "Repair halt",
+        "Stuck ticket",
+        "Unrecordable review",
+        "News batch",
+        "Agent-asked implementation details",
+    ):
+        assert reference.count(f"**{case}:**") == 1
 
 
 def test_attended_answer_uses_interactive_resolver() -> None:
@@ -99,3 +119,14 @@ def test_runtime_phases_do_not_load_the_attended_skill(tmp_path: Path) -> None:
         assert bundle.lifecycle_skill
         assert bundle.skills
         assert "interactive" not in bundle.skills
+
+
+def test_every_runtime_phase_loads_the_shared_layer_rule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(loading, "harness_skills_dirs", lambda: [ROOT / "skills"])
+    policy = SkillLoadingPolicy()
+    index = build_skill_index([ROOT / "skills"])
+    for phase in _PHASE_TO_SKILL:
+        bundle = policy.select_for_runtime_phase(
+            cwd=tmp_path, phase=phase, overlay_skill_metadata={}, skill_index=index
+        )
+        assert "rules" in bundle.skills, phase

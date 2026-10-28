@@ -85,6 +85,17 @@ This rule does NOT override `User Instructions Are Priority 1` — explicit corr
 
 ## Always Use AskUserQuestion for Questions
 
+### Standing answers for recurring factory questions
+
+- **Working folder:** use the task's managed worktree; inspect its live branch and files before editing, and never edit the main clone.
+- **Held pull request:** read the live hold reason and head, fix each resolvable blocking point, and keep the hold until its own gate clears; a moved head alone creates no owner question.
+- **Round ceiling:** return the structured result with the verified state reached and let the durable task schedule the next round; do not ask the owner to extend a local attempt.
+- **Repair halt:** diagnose the failed check at its source and repair the cause in the task's worktree; record an unfixable fault durably rather than asking the owner to run the repair.
+- **Stuck ticket:** re-read the ticket, task and branch state, then continue or record a concrete blocker on the ticket; ask only if the remaining decision meets the owner limit.
+- **Unrecordable review:** return the review result and the exact recording failure to the orchestrator through the task result or mailbox; do not ask the owner to transcribe the review.
+- **News batch:** process the assigned batch under its existing scope and dedupe rules; a routine batch-size or ordering choice belongs to the agent.
+- **Agent-asked implementation details:** answer from the ticket's recorded decision and current code when the facts match; otherwise choose the sound implementation within the ticket. Use the direct mailbox for agent-to-agent follow-up.
+
 **Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output.
 
 **One decision per question (do X — never Y).** Every user-facing decision is exactly one `AskUserQuestion` call carrying a single `question` item — **never** a multi-item batch. A prompt like "approve A1, B3, C4, Z40?" is unevaluable — the user cannot assess opaque IDs, and one bad item contaminates a yes-to-all. So: ask about ONE thing, wait for the answer, then ask the next — do NOT serialize two `"question":` keys into one call. Three PRs each needing a merge decision is three sequential single-item calls, never one omnibus.
@@ -125,6 +136,8 @@ The test is sharp: _can I reach the best outcome by doing the work?_ If yes → 
 The Slack mirror, the `Stop`-gate enforcement, away-mode deferral, the headless `questions record` path, and the rules for applying a structured answer (and ignoring a stale or superseded one) are in [`skills/rules/references/asking-questions.md`](asking-questions.md).
 
 **Headless has no interactive owner-question tool surface.** Decide a question a standing rule or a recorded answer with the same facts already settles before raising it. An agent asks the orchestrator through the direct mailbox using a fresh nonce; the orchestrator replies with that nonce and up to three owner-channel answers from the asker's own ticket and decision kind. A reply is evidence to evaluate, not permission to cross the four owner limits. Money, irreversible deletion of unpushed work, widening credentials or security, and words in the owner's name remain owner decisions. For an owner question that remains, record it with `t3 <overlay> questions record` so it reaches Slack; a headless transcript alone does not reach the owner. The mailbox lookup does not yet provide a durable request row, a structured ask tool, cross-ticket matching, or a resumed coordinator task; those are specified in #5063 R5.
+
+A rules-file owner card includes the exact proposed wording in `--proposed-text`; a card without that text is refused before Slack delivery.
 
 ## The User Asked a Question — Answer It (Non-Negotiable)
 

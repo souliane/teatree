@@ -12,6 +12,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core import notify as notify_module
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import DeferredQuestion
 from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.core.notify_question_drains import (
@@ -21,7 +22,7 @@ from teatree.core.notify_question_drains import (
     resurface_question_backlog,
 )
 from teatree.core.owner_question_message import render_blocks, render_text
-from tests._owner_channel import legacy_owner_row
+from tests._owner_channel import legacy_owner_row, owner_card
 
 _CHANNEL = "D0DEMOOWNER"
 _JARGON = "Is the acme_only scope profile what you want for the widget bot?"
@@ -135,7 +136,7 @@ class TestAJargonRowIsNeverSent(TestCase):
         backend = _backend()
         backend.update_message.side_effect = RuntimeError("slack is down")
         _mirrored_jargon_row()
-        clean = legacy_owner_row("Should the acme widget go to production?")
+        clean = DeferredQuestion.record("Should the acme widget go to production?", card=owner_card())
 
         _run(drain_unmirrored_deferred_questions, backend)
 
@@ -152,6 +153,29 @@ class TestAJargonRowIsNeverSent(TestCase):
         row.refresh_from_db()
         assert row.audience == DeferredQuestion.Audience.INTERNAL
 
+    def test_plain_cardless_owner_row_is_withheld(self) -> None:
+        row = DeferredQuestion.objects.create(
+            question="Should the widget go to production?", audience=DeferredQuestion.Audience.OWNER_QUESTION
+        )
+        backend = _backend()
+
+        _run(drain_unmirrored_deferred_questions, backend)
+
+        backend.post_message.assert_not_called()
+        row.refresh_from_db()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_legacy_scope_kind_is_withheld_even_when_plain(self) -> None:
+        row = legacy_owner_row("Should the widget go to production?", decision=OwnerDecision.PRODUCT_SCOPE)
+        backend = _backend()
+
+        _run(drain_unmirrored_deferred_questions, backend)
+
+        backend.post_message.assert_not_called()
+        row.refresh_from_db()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert "product_scope" in row.audits.get(action="withheld").note
+
     def test_a_row_that_says_deferred_in_any_case_is_withheld(self) -> None:
         row, backend = legacy_owner_row("Was the widget DEFERRED while you were away?"), _backend()
 
@@ -162,11 +186,9 @@ class TestAJargonRowIsNeverSent(TestCase):
         assert row.audience == DeferredQuestion.Audience.INTERNAL
 
 
-class TestACleanLegacyRowIsSentThroughTheSameRenderer(TestCase):
+class TestACompleteCardIsSentThroughTheSameRenderer(TestCase):
     def test_a_clean_row_is_posted_with_one_button_per_option_and_the_ref_line(self) -> None:
-        row = legacy_owner_row(
-            "Should the acme widget go to production?", options_json='[{"label": "Yes"}, {"label": "No"}]'
-        )
+        row = DeferredQuestion.record("Should the acme widget go to production?", card=owner_card())
         backend = _backend()
 
         _run(drain_unmirrored_deferred_questions, backend)
@@ -188,7 +210,7 @@ class TestACleanLegacyRowIsSentThroughTheSameRenderer(TestCase):
             assert old not in kwargs["text"]
 
     def test_a_clean_row_is_never_withheld(self) -> None:
-        row = legacy_owner_row("Should the acme widget go to production?")
+        row = DeferredQuestion.record("Should the acme widget go to production?", card=owner_card())
 
         _run(drain_unmirrored_deferred_questions, _backend())
 

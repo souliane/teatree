@@ -17,6 +17,7 @@ from teatree.core.models.deferred_question import DeferredQuestion, DeferredQues
 from teatree.core.models.question_withheld import WITHHELD_ACTION
 from teatree.core.models.task_phase_disposition import phase_wedges_healed
 from teatree.core.provision.failure_question import provision_failures_healed
+from teatree.core.question_coordinator import coordinate_pending
 
 if TYPE_CHECKING:
     from teatree.core.models.session import Session
@@ -41,7 +42,7 @@ def withdraw_healed(rows: Iterable[DeferredQuestion]) -> list[DeferredQuestion]:
             if (reason := healed.get(row.pk)) is not None:
                 row.mark_stale(reason, resolver_id=name)
         live = [row for row in live if row.pk not in healed]
-    return live
+    return coordinate_pending(live)
 
 
 def live_owner_questions() -> list[DeferredQuestion]:

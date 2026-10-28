@@ -43,6 +43,7 @@ from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_pat
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.question_heal import live_owner_questions
 from teatree.core.ref_render import render_ref
 from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict
@@ -209,6 +210,7 @@ class Command(MachineOutputCommand):
         now = timezone.now()
 
         _validate_since(since)
+        live_owner_questions()
 
         flags = _ShowFlags(since=since, json_output=json_output, no_advance=no_advance, notify=notify)
         if this_overlay:

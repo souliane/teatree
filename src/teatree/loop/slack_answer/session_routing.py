@@ -270,6 +270,8 @@ def _card_result_reply(
         choices = " or ".join(f"#{question_id}" for question_id in result.question_ids)
         message = f"Questions are waiting in this thread. Start your reply with {choices} to choose one."
     elif isinstance(result, UnmatchedCardThread):
+        if result.reason is CardThreadStop.OPTIONS_ONLY:
+            return False
         message = _STOP_MESSAGES[result.reason].format(
             question_id=result.question_id, options=", ".join(result.options)
         )

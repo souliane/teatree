@@ -166,3 +166,27 @@ def schedule_resume(task: Task, *, answer: str, question: str = "") -> Task:
         parent_task=task,
         session_continuation=continuation,
     )
+
+
+def schedule_card_discussion(task: Task, *, event_id: str, message: str) -> Task:
+    """Queue a continuation to answer one owner message without treating it as a card decision."""
+    marker = f"Owner card discussion {event_id}: "
+    with transaction.atomic():
+        existing = task.child_tasks.filter(execution_reason__startswith=marker).first()
+        if existing is not None:
+            return existing
+        refuse_unplanned_mint(task.ticket, phase=task.phase)
+        last = task.attempts.order_by("-pk").first()
+        agent_session_id = last.agent_session_id if last else ""
+        session = Session.objects.create(ticket=task.ticket, agent_id=agent_session_id or "headless-resume")
+        continuation = Task.SessionContinuation.PARENT
+        if last is not None and last.cannot_continue_its_conversation():
+            continuation = Task.SessionContinuation.FRESH
+        return Task.objects.create(
+            ticket=task.ticket,
+            session=session,
+            phase=task.phase,
+            execution_reason=f"{marker}{message}",
+            parent_task=task,
+            session_continuation=continuation,
+        )

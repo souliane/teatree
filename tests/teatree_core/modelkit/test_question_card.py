@@ -106,7 +106,7 @@ Or reply in this thread.
 ref: question 42"""
 
 SAMPLE_CARD = QuestionCard(
-    decision=OwnerDecision.PRODUCT_SCOPE,
+    decision=OwnerDecision.ARCHITECTURE,
     checked=("The bot answers direct messages.",),
     blocker="Only the owner can say which setup is wanted.",
     why=SAMPLE_WHY,
@@ -409,10 +409,28 @@ class TestWithQuote:
 
 
 class TestFromEnvelope:
+    def test_rules_file_stop_keeps_the_exact_proposed_text(self) -> None:
+        result = {
+            "user_input_kind": "architecture",
+            "user_input_checked": ["The current rule is narrower."],
+            "user_input_card": {
+                "why": "The rule needs an owner choice.",
+                "blocker": "Only the owner can decide the wording.",
+                "options": [],
+                "proposed_text": "Answer settled questions before asking the owner.",
+            },
+        }
+
+        card = QuestionCard.from_envelope(result)
+
+        assert card is not None
+        assert card.quoted == "Answer settled questions before asking the owner."
+        assert card.problems("Should I change the rules file?") == []
+
     def test_builds_the_card_from_the_stop_keys(self) -> None:
         card = QuestionCard.from_envelope(
             {
-                "user_input_kind": "product_scope",
+                "user_input_kind": "architecture",
                 "user_input_checked": ["The bot answers direct messages."],
                 "user_input_card": {
                     "why": SAMPLE_WHY,
@@ -434,10 +452,10 @@ class TestFromEnvelope:
     @pytest.mark.parametrize(
         "result",
         [
-            {"user_input_kind": "product_scope", "user_input_checked": ["x"]},
-            {"user_input_kind": "product_scope", "user_input_checked": ["x"], "user_input_card": "text"},
-            {"user_input_kind": "product_scope", "user_input_checked": "x", "user_input_card": {"why": "w"}},
-            {"user_input_kind": "product_scope", "user_input_checked": ["x"], "user_input_card": {"options": "no"}},
+            {"user_input_kind": "architecture", "user_input_checked": ["x"]},
+            {"user_input_kind": "architecture", "user_input_checked": ["x"], "user_input_card": "text"},
+            {"user_input_kind": "architecture", "user_input_checked": "x", "user_input_card": {"why": "w"}},
+            {"user_input_kind": "architecture", "user_input_checked": ["x"], "user_input_card": {"options": "no"}},
         ],
     )
     def test_a_mistyped_key_leaves_a_gap_the_card_names(self, result: dict[str, object]) -> None:

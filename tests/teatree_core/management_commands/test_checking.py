@@ -278,6 +278,22 @@ class TestCheckingShow:
         assert "questions dismiss" not in item["detail"]
         assert "Slack" in item["detail"]
 
+    def test_walk_resolves_exact_architecture_repeat_and_lists_owner_limit_once(self, checkpoint_file: Path) -> None:
+        question = "Should we adopt the new dependency?"
+        basis = DeferredQuestion.record(question, card=owner_card())
+        assert basis.apply_answer("Yes.", resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        repeated = DeferredQuestion.record(question, card=owner_card())
+        reserved = DeferredQuestion.record("May I publish this?", card=owner_card(OwnerDecision.PUBLIC_POST))
+
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--json", "--no-advance"))
+
+        repeated.refresh_from_db()
+        assert repeated.answer_text == "Yes."
+        assert str(basis.pk) in repeated.audits.get(action="coordinated").note
+        assert payload["needs_you"]["total"] == 1
+        assert [item["row_id"] for item in payload["needs_you"]["items"]] == [reserved.pk]
+        assert DeferredQuestion.objects.get(pk=reserved.pk).is_pending
+
     def test_overlay_scoping_excludes_other_overlay(
         self, checkpoint_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

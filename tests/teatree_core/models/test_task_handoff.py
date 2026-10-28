@@ -172,7 +172,7 @@ class TestRecordDeferredQuestionAudience(TestCase):
         task = self._headless_task_with_reason(
             "Should I block the review on the missing migration, or accept it and file a follow-up?",
             phase="reviewing",
-            kind="product_scope",
+            kind="architecture",
             checked=("the ticket names neither option",),
         )
         row = record_deferred_question(task)

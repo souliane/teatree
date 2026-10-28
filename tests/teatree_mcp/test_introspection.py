@@ -40,7 +40,7 @@ class TestQuestionList(TestCase):
 
         assert len(first) == 50
         assert [row["id"] for row in later] == [row.pk for row in rows[50:]]
-        assert later[0]["decision"] == "product_scope"
+        assert later[0]["decision"] == "architecture"
         assert later[0]["owner_only"] is False
 
 

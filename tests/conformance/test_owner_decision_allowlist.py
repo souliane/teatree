@@ -16,7 +16,6 @@ _DECLARED_BY_THE_CALLER = "<declared by the caller>"
 _OWNER_RECORD_SITES: frozenset[tuple[str, str]] = frozenset(
     {
         ("src/teatree/agents/reactive_envelope_recorders.py", "_maybe_record_answer_draft"),
-        ("src/teatree/agents/reactive_envelope_recorders.py", "_maybe_record_triage_recommendations"),
         ("src/teatree/core/gates/directive_interpret_gate.py", "_record_clarifications"),
         ("src/teatree/core/gates/gate_escape_request.py", "request_owner_escape"),
         ("src/teatree/core/gates/merge_item_waiver.py", "request_merge_item_waiver"),
@@ -39,18 +38,17 @@ _OWNER_RECORD_SITES: frozenset[tuple[str, str]] = frozenset(
 _CARD_KINDS: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("src/teatree/agents/reactive_envelope_recorders.py", "<module>", "PUBLIC_POST"),
-        ("src/teatree/agents/reactive_envelope_recorders.py", "_maybe_record_triage_recommendations", "PRODUCT_SCOPE"),
-        ("src/teatree/core/gates/directive_interpret_gate.py", "<module>", "PRODUCT_SCOPE"),
+        ("src/teatree/core/gates/directive_interpret_gate.py", "<module>", "ARCHITECTURE"),
         ("src/teatree/core/gates/gate_escape_request.py", "request_owner_escape", "CREDENTIALS"),
-        ("src/teatree/core/gates/merge_item_waiver.py", "request_merge_item_waiver", "PRODUCT_SCOPE"),
+        ("src/teatree/core/gates/merge_item_waiver.py", "request_merge_item_waiver", "ARCHITECTURE"),
         ("src/teatree/core/management/commands/questions.py", "record", _DECLARED_BY_THE_CALLER),
-        ("src/teatree/core/management/commands/recipe.py", "<module>", "PRODUCT_SCOPE"),
+        ("src/teatree/core/management/commands/recipe.py", "<module>", "ARCHITECTURE"),
         ("src/teatree/core/merge/void_request.py", "request_void", "IRREVERSIBLE"),
         ("src/teatree/core/review/owner_waits.py", "_post_card", "PUBLIC_POST"),
         ("src/teatree/core/worktree/survivor_notice.py", "page_surviving_checkout", "IRREVERSIBLE"),
         ("src/teatree/loop/scanners/board_reconcile_issue_close.py", "_escalate_unshipped_work_once", "IRREVERSIBLE"),
         ("src/teatree/loop/scanners/inert_gate_questions.py", "<module>", "ARCHITECTURE"),
-        ("src/teatree/loop/scanners/override_lift.py", "_proposal_for", "PRODUCT_SCOPE"),
+        ("src/teatree/loop/scanners/override_lift.py", "_proposal_for", "ARCHITECTURE"),
         ("src/teatree/loop/scanners/review_request_send.py", "_ask", "PUBLIC_POST"),
         ("src/teatree/loop/scanners/stale_control_db_questions.py", "_card", "IRREVERSIBLE"),
         ("src/teatree/loops/directive_loop/ratify.py", "_ratify_card", "ARCHITECTURE"),
@@ -134,6 +132,7 @@ def test_only_the_pinned_call_sites_record_an_owner_card() -> None:
 def test_only_the_pinned_places_build_a_card_and_name_its_kind() -> None:
     built = {(path, function, _kind(call)) for path, function, call in _calls("QuestionCard")}
     assert built == _CARD_KINDS
+    assert not {site for site in built if site[2] == "PRODUCT_SCOPE"}
 
 
 def test_only_the_review_request_sender_asks_the_owner_about_a_merge_request() -> None:

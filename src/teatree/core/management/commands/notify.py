@@ -89,6 +89,7 @@ class _DmRequest:
     kind: str
     overlay: str
     requested_push: bool
+    thread_ts: str = ""
 
 
 def _first_line(text: str) -> str:
@@ -228,6 +229,20 @@ class Command(TyperCommand):
         """
         return self._deliver(_DmRequest(body, idempotency_key, user_id, kind, overlay, requested_push=True))
 
+    @command()
+    def reply(
+        self,
+        body: Annotated[str, typer.Argument(help="Slack mrkdwn reply body.")],
+        idempotency_key: Annotated[str, typer.Option("--idempotency-key", help="Required dedupe key.")],
+        thread_ts: Annotated[str, typer.Option("--thread-ts", help="Owner DM thread to reply into.")],
+        user_id: Annotated[str, typer.Option("--user-id", help="Slack user id to DM.")] = "",
+    ) -> str:
+        return self._deliver(
+            _DmRequest(
+                body, idempotency_key, user_id, NotifyKind.ANSWER.value, "", requested_push=True, thread_ts=thread_ts
+            )
+        )
+
     def _deliver(self, request: "_DmRequest") -> str:
         """The shared bot→user egress body for ``send`` and ``dm``."""
         if not request.idempotency_key.strip():
@@ -260,6 +275,7 @@ class Command(TyperCommand):
                     user_id=request.user_id or None,
                     requested_push=request.requested_push,
                     ticket_id=ticket.pk if ticket is not None else None,
+                    thread_ts=request.thread_ts,
                 ),
             )
 

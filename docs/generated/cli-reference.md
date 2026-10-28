@@ -14848,14 +14848,15 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 │                              carrying it is returned unchanged.              │
 │ --decision             TEXT  Only for a decision the owner alone makes:      │
 │                              credentials, money_or_plan, public_post,        │
-│                              irreversible, product_scope, architecture.      │
-│                              Absent: internal.                               │
+│                              irreversible, architecture. Absent: internal.   │
 │ --checked              TEXT  A fact you checked before asking; repeat per    │
 │                              fact. Required with --decision.                 │
 │ --why                  TEXT  One sentence the owner reads: why you ask.      │
 │                              Required with --decision.                       │
 │ --blocker              TEXT  What stops you deciding; kept for operators,    │
 │                              never shown to the owner.                       │
+│ --proposed-text        TEXT  Exact proposed wording for a rules-file change; │
+│                              shown on the card.                              │
 │ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

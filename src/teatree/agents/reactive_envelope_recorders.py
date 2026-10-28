@@ -211,10 +211,7 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
     One ``PENDING`` :class:`PendingTriageRecommendation` per assessed issue, idempotent
     by issue URL (a re-assessment never duplicates) and fail-closed on an unknown
     verdict — the shell-denied assessor hands the batch back and the server persists
-    it. After at least one row is recorded, ONE
-    :class:`DeferredQuestion` DMs the user the batch summary (correlated to the task
-    via ``parked_task``, deduped per task so a resume never re-asks). **Nothing acts
-    autonomously**: the interactive ``t3:triaging-issues`` skill approves/acts. A
+    it. The interactive ``t3:triaging-issues`` skill approves/acts. A
     non-triage_assessing phase or a result with no ``triage_recommendations`` list is
     a no-op.
     """
@@ -224,7 +221,6 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
     if not isinstance(recommendations, list):
         return
     overlay = task.ticket.overlay
-    recorded = 0
     for raw_item in recommendations:
         issue_url = recommendation_issue_url(raw_item)
         if not issue_url:
@@ -232,7 +228,7 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
         item = cast("TriageRecommendation", raw_item)
         raw_labels = item.get("suggested_labels")
         labels = [s for s in raw_labels if isinstance(s, str)] if isinstance(raw_labels, list) else []
-        row = PendingTriageRecommendation.record_candidate(
+        PendingTriageRecommendation.record_candidate(
             issue_url=issue_url,
             verdict=str(item.get("verdict") or ""),
             title=str(item.get("title") or ""),
@@ -242,25 +238,6 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
             rationale=str(item.get("rationale") or ""),
             overlay=overlay,
         )
-        if row is not None:
-            recorded += 1
-    if recorded == 0:
-        return
-    DeferredQuestion.record(
-        "Do you want to review the new triage suggestions now?",
-        parked_task=task,
-        dedupe_marker=f"triage-batch-{task.pk}",
-        card=QuestionCard(
-            decision=OwnerDecision.PRODUCT_SCOPE,
-            checked=(f"{recorded} suggestion(s) are recorded as pending.",),
-            blocker="Only the owner approves or rejects a triage suggestion.",
-            why=f"{recorded} open issue(s) were assessed, and nothing changes until you approve each suggestion.",
-            options=(
-                CardOption("Review now", "I keep them ready for your next session.", recommended=True),
-                CardOption("Later", "I ask you again later."),
-            ),
-        ),
-    )
 
 
 def _maybe_file_work_item(task: Task, result: AgentResultBlob, *, phase: str) -> "WorkItemOutcome | None":

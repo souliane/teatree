@@ -14,7 +14,7 @@ from tests.factories import planned_ticket
 def _dismiss(*ids: int, owner: bool = False, dispatched: bool = False, resolver: str = "") -> tuple[int, str]:
     stderr = StringIO()
     with (
-        patch("teatree.core.management.commands._task_cancel_auth.sys.stdin.isatty", return_value=owner),
+        patch("teatree.core.management.commands.owner_action_auth.sys.stdin.isatty", return_value=owner),
         patch.dict("os.environ", {"T3_DISPATCHED_AGENT": "1"} if dispatched else {}, clear=True),
     ):
         try:
@@ -59,7 +59,7 @@ class TestOwnerDismissal(TestCase):
 
     def test_mixed_batch_dismisses_allowed_cards_and_names_refused_ids(self) -> None:
         kept = self._card(OwnerDecision.CREDENTIALS)
-        allowed = self._card(OwnerDecision.PRODUCT_SCOPE)
+        allowed = self._card(OwnerDecision.ARCHITECTURE)
         code, error = _dismiss(kept.pk, allowed.pk)
         assert code == 0
         assert str(kept.pk) in error
@@ -90,20 +90,13 @@ class TestOwnerDismissal(TestCase):
             == 3
         )
 
-    def test_finished_subject_and_attest_route_remain_dismissible(self) -> None:
+    def test_finished_subject_remains_dismissible(self) -> None:
         ticket = planned_ticket()
         finished = self._card(OwnerDecision.CREDENTIALS)
         finished.task_session = Session.objects.create(ticket=ticket)
         finished.save(update_fields=["task_session"])
         Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
-        attest = self._card(OwnerDecision.IRREVERSIBLE)
-        attest.evidence["action"] = {"kind": "attest", "target": "checkout", "binding": "head"}
-        attest.save(update_fields=["evidence"])
-
         code, _error = _dismiss(finished.pk, dispatched=True)
 
         assert code == 0
-        code, _error = _dismiss(attest.pk)
-
-        assert code == 0
-        assert DeferredQuestion.objects.filter(pk__in=[finished.pk, attest.pk], dismissed_at__isnull=False).count() == 2
+        assert DeferredQuestion.objects.filter(pk=finished.pk, dismissed_at__isnull=False).exists()

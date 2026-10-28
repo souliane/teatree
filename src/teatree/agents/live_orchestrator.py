@@ -13,7 +13,12 @@ from django.db.models import Q
 from teatree.agents import live_mailbox
 from teatree.agents.live_delivery import MAX_SENT_KEYS, MailboxIdentity
 from teatree.agents.live_mailbox_client import MailboxClient, MailboxError
-from teatree.core.modelkit.owner_decision import HELD_PR_MARKER_PREFIX, OWNER_KEPT_DECISIONS, OwnerDecision
+from teatree.core.modelkit.owner_decision import (
+    HELD_PR_MARKER_PREFIX,
+    OWNER_KEPT_DECISIONS,
+    OWNER_RAISABLE_DECISIONS,
+    OwnerDecision,
+)
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.utils.thread_db import close_thread_db_connections
 
@@ -64,6 +69,8 @@ def _answer(text: str, ticket: str) -> OrchestratorAnswer:
             kind = OwnerDecision(request.get("kind"))
     if not isinstance(request, dict) or request.get("type") != "ask" or nonce is None or kind is None:
         return {"type": "answer", "answer_to": nonce, "verdict": "malformed", "decisions": []}
+    if kind not in OWNER_RAISABLE_DECISIONS:
+        return {"type": "answer", "answer_to": nonce, "verdict": "unsupported", "decisions": []}
     if kind in OWNER_KEPT_DECISIONS:
         return {"type": "answer", "answer_to": nonce, "verdict": "owner_only", "decisions": []}
     try:
