@@ -72,7 +72,9 @@ class _RootSend:
             return self.thread.root_ts
         self.stack.enter_context(transaction.atomic())
         TicketDmThread.objects.filter(ticket=self.ticket).update(generation=F("generation"))
-        self.thread = TicketDmThread.objects.select_for_update().get(ticket=self.ticket)
+        self.thread = TicketDmThread.objects.select_for_update().get(  # select-for-update: caller-atomic
+            ticket=self.ticket
+        )
         if self.thread.channel and self.thread.channel != channel:
             msg = "ticket DM channel changed"
             raise RuntimeError(msg)
