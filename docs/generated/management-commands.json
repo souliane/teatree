@@ -1182,11 +1182,6 @@
       "subcommands": []
     },
     {
-      "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
-      "name": "speak",
-      "subcommands": []
-    },
-    {
       "help": "Register, clear, or list standing verified-green goals (PR-25).",
       "name": "standing_goal",
       "subcommands": [
@@ -1401,6 +1396,10 @@
           "name": "rubric-waive"
         },
         {
+          "help": "Request an owner button answer for one LLM merge item",
+          "name": "merge-item-waive"
+        },
+        {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",
           "name": "rubric-set"
         },
@@ -1539,7 +1538,7 @@
           "name": "stamp-identity"
         },
         {
-          "help": "List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none",
+          "help": "List branch verdicts; orphans have unmerged work but no PR; ``[]`` means no branch",
           "name": "list-orphans"
         },
         {

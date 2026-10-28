@@ -28,7 +28,12 @@ from teatree.cli.eval.escalate import (
     escalate_failures,
     render_escalation_markdown,
 )
-from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, RunGuards, finalize_single_run
+from teatree.cli.eval.run_modes import (
+    DEFAULT_COST_REGRESSION_TOLERANCE,
+    RunGuards,
+    finalize_single_run,
+    park_credit_exhaustion,
+)
 from teatree.eval.api_errors import UsageLimitReachedError
 from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import (
@@ -46,7 +51,6 @@ from teatree.eval.parallel import UsageLimitLatch, is_usage_limit_skip, run_spec
 from teatree.eval.report import JudgeGrader, ScenarioResult, evaluate, render_json, render_text
 from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 from teatree.eval.summary_json import SummaryCacheData, write_summary_json
-from teatree.llm.anthropic_limits import CreditExhaustedError
 
 __all__ = ["EscalationConfig", "SingleTrialGates", "make_escalation_runner", "run_single_trial"]
 
@@ -217,11 +221,8 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
         ),
         transcript_dir,
     )
-    try:
+    with park_credit_exhaustion():
         runs = run_specs(runner, specs, parallel=parallel)
-    except CreditExhaustedError as exc:
-        typer.echo(f"ABORTED: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
     results = _grade_runs(specs, runs, grader)
     _emit_single_results(results, cached, output_format)
     reports.write_single_trial(results, cached=cached, content_keys=content_keys, backend=backend)

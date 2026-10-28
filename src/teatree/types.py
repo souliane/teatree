@@ -28,8 +28,6 @@ class LocalPlayback(enum.StrEnum):
 
     *   :attr:`OFF` (default) — nothing plays locally.
     *   :attr:`DM` — the bot→user DM texts play locally.
-    *   :attr:`ALL` — DM texts AND the Stop-hook reading of in-client turn
-        ends play locally.
 
     Independent of :attr:`SpeakConfig.slack`: Slack never auto-plays, so
     local playback is never suppressed by the Slack attach.
@@ -37,11 +35,12 @@ class LocalPlayback(enum.StrEnum):
 
     OFF = "off"
     DM = "dm"
-    ALL = "all"
 
     @classmethod
     def parse(cls, value: object) -> "LocalPlayback":
         normalised = value.strip().lower() if isinstance(value, str) else value
+        if normalised == "all":  # stored rows may still say "all"; it resolves to the DM mode
+            return cls.DM
         try:
             return cls(normalised)
         except ValueError as exc:
@@ -59,9 +58,7 @@ class SpeakConfig:
 
     *   ``local`` — :class:`LocalPlayback`: what plays through this machine's
         speakers (macOS ``say``). :attr:`~LocalPlayback.OFF` nothing,
-        :attr:`~LocalPlayback.DM` the bot→user DM texts,
-        :attr:`~LocalPlayback.ALL` DM texts plus the in-client turn ends.
-        Inert off macOS.
+        :attr:`~LocalPlayback.DM` the bot→user DM texts. Inert off macOS.
     *   ``slack`` — attach a spoken audio rendition to every Slack text DM the
         user receives, in the SAME message (one DM = text + inline audio
         player). Requires the Slack token's ``files:write`` scope. Applies to
@@ -91,10 +88,7 @@ class SpeakConfig:
         return self.local is not LocalPlayback.OFF or self.slack
 
     def speaks_dms(self) -> bool:
-        return self.local in {LocalPlayback.DM, LocalPlayback.ALL}
-
-    def speaks_in_client_turns(self) -> bool:
-        return self.local is LocalPlayback.ALL
+        return self.local is LocalPlayback.DM
 
     def to_dict(self) -> dict[str, bool | str]:
         table: dict[str, bool | str] = {"local": self.local.value, "slack": self.slack}
@@ -549,3 +543,28 @@ class SyncBackend(ABC):
 
     @abstractmethod
     def sync(self, overlay: object) -> SyncResult: ...
+
+
+class VisualQAPageError(TypedDict):
+    kind: str
+    message: str
+
+
+class VisualQAPageDetail(TypedDict):
+    url: str
+    errors: list[VisualQAPageError]
+
+
+class VisualQASummary(TypedDict, total=False):
+    repo_path: str
+    head_sha: str
+    targets: list[str]
+    skipped_reason: str
+    not_run_reason: str
+    base_url: str
+    pages_checked: int
+    errors: int
+    details: list[VisualQAPageDetail]
+    unchecked_reasons: dict[str, str]
+    report_markdown: str
+    bypass: dict[str, str]

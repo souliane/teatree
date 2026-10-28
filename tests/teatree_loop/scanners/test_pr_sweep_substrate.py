@@ -23,7 +23,7 @@ import pytest
 
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
-from teatree.core.models import ConfigSetting, MergeClear, ReviewVerdict, Ticket
+from teatree.core.models import ConfigSetting, DeferredQuestion, MergeClear, ReviewVerdict, Ticket
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_substrate import solo_overlay_substrate_authorized
@@ -277,6 +277,12 @@ class TestSweepHonoursStandingSubstrateAuthorization:
         _record_cold_review()
         with _teatree_owns_slug(), _no_optin_config():
             assert _sweep_merges() is False
+
+    def test_held_substrate_pr_raises_no_owner_question(self) -> None:
+        _record_cold_review()
+        with _teatree_owns_slug(), _no_optin_config():
+            assert _sweep_merges() is False
+        assert DeferredQuestion.objects.count() == 0
 
     def test_self_signoff_below_full_autonomy_still_holds(self) -> None:
         _record_cold_review()

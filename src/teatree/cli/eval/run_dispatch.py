@@ -17,7 +17,7 @@ from claude_agent_sdk.types import EffortLevel
 
 from teatree.cli.eval.escalate import EscalationConfig
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
-from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, with_model
+from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, park_credit_exhaustion, with_model
 from teatree.cli.eval.single_trial import SingleTrialGates, VerdictReuse, run_single_trial
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import DEFAULT_JUDGE_BUDGET, EvalSpec
@@ -89,6 +89,17 @@ class ResolvedRun:
 
 
 def dispatch_resolved_run(
+    specs: list[EvalSpec],
+    run: ResolvedRun,
+    *,
+    grader: JudgeGrader | None,
+    escalation: EscalationConfig | None,
+) -> None:
+    with park_credit_exhaustion():
+        _dispatch_resolved_run(specs, run, grader=grader, escalation=escalation)
+
+
+def _dispatch_resolved_run(
     specs: list[EvalSpec],
     run: ResolvedRun,
     *,

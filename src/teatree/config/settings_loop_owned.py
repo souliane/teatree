@@ -225,21 +225,13 @@ class _IssueImplementerLoopSettings:
 
 @dataclass
 class _NewsLoopSettings:
-    """The news scan — how often it runs and whether it may file."""
+    """The news scan cadence."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "news")
 
     scanning_news_cadence_hours: int = setting(
         24, spec=SettingSpec(help="hours between news scans", parse=_parse_strict_int, box_global=True)
     )
-    # #1391 Default ON: the skill records a ``PendingArticleSuggestion`` per candidate and
-    # files an issue only on approval, because backlog pollution from unconfirmed
-    # auto-filing is the failure mode this gate forecloses.
-    ask_before_creating_news_tickets: bool = setting(
-        default=True,
-        spec=SettingSpec(help="ask the operator before the news scanner files a ticket", parse=_parse_strict_bool),
-    )
-
     # T4-PR-3 — the measurement horizon after an experiment merges, the experiments
     # admitted per rolling 7-day window, and the convergence brake: after this many
     # consecutive non-KEPT decisions the loop parks itself rather than propose a fourth.

@@ -31,6 +31,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from teatree.backends.forge_pool import client_for_url
 from teatree.backends.http_retry import BoundedRetryTransport, SleepFn, env_float
 from teatree.config import cold_reader
 from teatree.core.backend_protocols import BackendResolutionError
@@ -236,7 +237,9 @@ class GitLabHTTPClient(BoundedRetryTransport):
         request_timeout = timeout if timeout is not None else self._timeout
 
         def attempt() -> httpx.Response:
-            return httpx.get(url, headers={"PRIVATE-TOKEN": self._read_token_for(endpoint)}, timeout=request_timeout)
+            return client_for_url(url).get(
+                url, headers={"PRIVATE-TOKEN": self._read_token_for(endpoint)}, timeout=request_timeout
+            )
 
         return self._run(attempt, idempotent=True)
 
@@ -245,7 +248,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
-            return httpx.post(url, headers=self._headers(), json=json, timeout=self._timeout)
+            return client_for_url(url).post(url, headers=self._headers(), json=json, timeout=self._timeout)
 
         return self._run(attempt, idempotent=idempotent)
 
@@ -254,7 +257,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
-            return httpx.put(url, headers=self._headers(), json=json, timeout=self._timeout)
+            return client_for_url(url).put(url, headers=self._headers(), json=json, timeout=self._timeout)
 
         # PUT is idempotent by HTTP semantics — safe to replay on a response-phase
         # failure — but a caller that reconciles a possibly-landed write ITSELF (the
@@ -266,7 +269,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
-            return httpx.delete(url, headers=self._headers(), timeout=self._timeout)
+            return client_for_url(url).delete(url, headers=self._headers(), timeout=self._timeout)
 
         return self._run(attempt, idempotent=True)
 
@@ -396,8 +399,9 @@ class GitLabHTTPClient(BoundedRetryTransport):
         self._require_token()
         vet_gitlab_write("POST", f"projects/{project_id}/uploads", None, self.get_json)
         with Path(filepath).open("rb") as f:
-            response = httpx.post(
-                self._url(f"projects/{project_id}/uploads"),
+            url = self._url(f"projects/{project_id}/uploads")
+            response = client_for_url(url).upload(
+                url,
                 headers=self._headers(),
                 files={"file": (Path(filepath).name, f)},
                 timeout=_UPLOAD_TIMEOUT_SECONDS,
@@ -430,7 +434,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         graphql_url = self.base_url.replace("/api/v4", "/api/graphql")
 
         def attempt() -> httpx.Response:
-            return httpx.post(
+            return client_for_url(graphql_url).post(
                 graphql_url,
                 headers=self._headers(),
                 json={"query": query, "variables": variables or {}},

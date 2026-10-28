@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import PartialReviewPublishError, PrReview
 from teatree.core.modelkit.forge_readability import head_sha_unreadable
+from teatree.core.modelkit.task_failure_taxonomy import COMMENT_CHECK_PREFIX
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.review.comment_checks import review_refusal
 from teatree.core.review.review_candidate import is_self_authored
@@ -84,7 +85,7 @@ def publish_verdict_findings(
     review = review_for(verdict)
     refusal = review_refusal(review, file_diffs=_diff_reader(host, verdict, target=target))
     if refusal:
-        return PublishOutcome(blocked_reason=f"comment check — {refusal}")
+        return PublishOutcome(blocked_reason=f"{COMMENT_CHECK_PREFIX}{refusal}")
     outcome = _submit_gated(host, verdict, review=review, host_kind=ref.host_kind)
     if outcome.published:
         _confirm_landed(host, verdict, target=target)

@@ -17,14 +17,13 @@ import contextlib
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 import time
 import traceback
 from collections.abc import Generator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 # When run as a script (the live hook: ``python3 .../hooks/scripts/hook_router.py``)
 # the plugin root — the directory that CONTAINS ``hooks/`` — is not on ``sys.path``,
@@ -191,7 +190,6 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.t3_invocation import spawn_t3_detached, t3_argv, t3_available
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
@@ -3007,73 +3005,6 @@ def classify_session_edit(file_path: str) -> str | None:
     return None
 
 
-# ── Stop: speak-on-stop arm (local == all, #2060) ───────────────────────────
-
-
-def _speak_settings() -> tuple[str, bool]:
-    """Read the global ``speak`` DB row → ``(local, slack)`` (#2060, DB-home).
-
-    The hook-side mirror of :func:`teatree.config.speak.resolve_speak`. ``speak`` is
-    DB-home (#1775): the Stop hook cannot cheaply boot the Django config, so it reads
-    the same ``ConfigSetting`` store via the Django-free :mod:`teatree.config.cold_reader`
-    — a stored JSON dict ``{"local": ..., "slack": ...}``, else the defaults
-    (``"off", False``). ``local`` is the :class:`~teatree.types.LocalPlayback` value
-    (``off``/``dm``/``all``). Best-effort: a missing DB / row / malformed value yields
-    the defaults so the Stop arm stays silent unless the user opted in. A
-    ``[teatree.speak]`` TOML value is ignored on read.
-    """
-    from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
-
-    from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django Stop path
-
-    raw = cold_reader.read_setting("speak")
-    if isinstance(raw, dict):
-        subtable = cast("dict[str, Any]", raw)
-        local = subtable.get("local")
-        return (
-            local.strip().lower() if isinstance(local, str) else "off",
-            bool(subtable.get("slack", False)),
-        )
-    return "off", False
-
-
-def handle_speak_all_on_stop(data: dict) -> None:
-    """Speak the in-client turn on the speakers when ``local == all`` (#2060).
-
-    The Stop-hook arm fires its detached ``t3 speak`` IFF ``local == all`` —
-    in-client turns are never Slack messages, so the ``slack`` attach is
-    irrelevant and there is no double-play to suppress. The toml pre-check
-    keeps the fast hook from spawning Django on every Stop. Returns ``None``
-    unconditionally (a side-effect handler, never a decision) and is
-    crash-proof.
-    """
-    try:
-        local, _slack = _speak_settings()
-        if local != "all":
-            return
-        if shutil.which("say") is None or not t3_available():
-            return
-        turn = _last_assistant_turn(data.get("transcript_path", ""))
-        if turn is None:
-            return
-        text = turn[0].strip()
-        if not text:
-            return
-        argv = t3_argv("speak", text)
-        if argv is None:
-            return
-        overlay = os.environ.get("T3_OVERLAY_NAME", "")
-        if overlay:
-            argv.extend(["--overlay", overlay])
-        spawn_t3_detached(argv)
-    except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
-        print(  # noqa: T201 — hook stderr is the module's logging channel
-            f"[hook_router] speak-on-stop skipped (unexpected error: {exc})",
-            file=sys.stderr,
-        )
-    return
-
-
 # ── Closure-verb re-verify advisory (#1448) ─────────────────────────────────
 #
 # The orchestrator has claimed a closure ("merged #N", "closed !N", "confirmed
@@ -3290,7 +3221,6 @@ _HANDLERS: dict[str, list] = {
         handle_standing_goal_stop,
         handle_closure_reverify_stop,
         handle_consideration_gate,
-        handle_speak_all_on_stop,
         handle_stop_snapshot_slot,
         # After every gate that can refuse the stop.
         handle_hand_back_answers,

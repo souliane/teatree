@@ -24,7 +24,7 @@ from django.utils import timezone
 from teatree.agents.action_verification import action_verification_error
 from teatree.agents.coding_result_salvage import salvage_coding_result
 from teatree.agents.envelope_aliases import normalize_envelope_aliases
-from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, UNPARSEABLE_ENVELOPE_PREFIX
 from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import blocked_before_edits_error, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
@@ -42,12 +42,15 @@ from teatree.agents.review_envelope_recorder import (
     settle_review_venue_limit,
 )
 from teatree.agents.review_request_recorder import record_returned_review_request
+from teatree.agents.runner_result import ResultEnvelopeError
 from teatree.agents.ship_readiness_recorder import record_returned_ship_readiness
 from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.db_retry import wait_out_locked_writes
+from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_stop_misfits import MisfitAction, owner_stop_misfit
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, PUSH_OWNERSHIP_VENUE_FAULT
@@ -117,10 +120,6 @@ class AttemptUsage:
     trajectory: "list[ToolCallEntry]" = dataclasses.field(default_factory=list)
 
 
-class ResultEnvelopeError(ValueError):
-    """The supplied result envelope is not a JSON object."""
-
-
 def parse_result_envelope(raw: str) -> AgentResultBlob:
     """Parse a JSON result object, raising :class:`ResultEnvelopeError` otherwise.
 
@@ -134,7 +133,7 @@ def parse_result_envelope(raw: str) -> AgentResultBlob:
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, ValueError) as exc:
-        msg = f"result is not valid JSON: {exc}"
+        msg = f"{UNPARSEABLE_ENVELOPE_PREFIX}{exc}"
         raise ResultEnvelopeError(msg) from exc
     if not isinstance(parsed, dict):
         msg = "result must be a JSON object"
@@ -162,16 +161,19 @@ def validate_result_keys(result: AgentResultBlob) -> str:
         )
     if problems := card.problems(str(result.get("user_input_reason", ""))):
         return owner_stop_refusal("; ".join(problems))
+    if owner_stop_misfit(result) is MisfitAction.REFUSE_AND_DECIDE:
+        return owner_stop_refusal("the standing factory rule already decides this action")
     return ""
 
 
+@wait_out_locked_writes()
 def record_result_envelope(
     task: Task,
     result: AgentResultBlob,
     *,
     phase: str = "",
     usage: AttemptUsage | None = None,
-    envelope_parsed: bool = True,
+    envelope_parsed: bool | ResultEnvelopeError = True,
 ) -> TaskAttempt:
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
@@ -197,16 +199,10 @@ def record_result_envelope(
     lands FAILED with the diagnostic signature, never COMPLETED — the ticket FSM
     must not advance over work an outage interrupted.
 
-    *envelope_parsed* is how the RUNNER tells this recorder whether the blob it
-    hands over was actually parsed out of the agent's output. It is ``False``
-    only for the manufactured ``{"summary": <prose>}`` of a run that emitted no
-    JSON at all: the evidence gate then refuses "you omitted `tests_run`", which
-    reads as an envelope with a missing key and is not what happened. On an
-    evidence phase that refusal is therefore re-diagnosed as
-    :data:`~teatree.agents.envelope_refusal.NO_ENVELOPE_ERROR`. The salvage still
-    runs first, so a coder that landed real work is still rescued; the in-session
-    ``record-attempt`` path parsed its own envelope and keeps the per-field
-    diagnosis by default. On success the attempt is
+    *envelope_parsed* is ``True`` for a parsed blob, ``False`` for prose with no
+    JSON, or a :class:`ResultEnvelopeError` for malformed JSON. The latter two
+    keep their distinct diagnostics after the evidence gate and coding salvage.
+    On success the attempt is
     COMPLETED and ``task.complete`` fires, auto-advancing the ticket FSM (a
     ``needs_user_input`` result completes the task too — ``_advance_ticket`` then
     schedules the interactive follow-up rather than firing the phase
@@ -367,7 +363,7 @@ def _check_before_recording(
     *,
     phase: str,
     usage: AttemptUsage,
-    envelope_parsed: bool,
+    envelope_parsed: bool | ResultEnvelopeError,
 ) -> _PreRecordCheck:
     """Run the ordered refusal chain that precedes any recording side effect.
 
@@ -379,6 +375,11 @@ def _check_before_recording(
         validate_result_keys(result)
         or review_head_mismatch_refusal(task, result, phase=phase)
         or review_venue_limit_refusal(task, result, phase=phase)
+        or (
+            "result_error: routed agent access denied"
+            if usage.route_candidate_index is not None and owner_stop_misfit(result) is MisfitAction.ENVIRONMENT_FAILURE
+            else ""
+        )
     ):
         return _PreRecordCheck(error, result)
 
@@ -396,8 +397,10 @@ def _check_before_recording(
     if action_error:
         return _PreRecordCheck(action_error, result)
 
+    parse_error = str(envelope_parsed) if isinstance(envelope_parsed, ResultEnvelopeError) else ""
     evidence_error = (
-        (
+        parse_error
+        or (
             ""
             if is_executor_draft_run(phase or task.phase, usage.selected_harness)
             else check_evidence(result, phase or task.phase)
@@ -411,9 +414,17 @@ def _check_before_recording(
             return _PreRecordCheck(evidence_error if envelope_parsed else NO_ENVELOPE_ERROR, result)
         result = salvaged
 
+    owner_kept_stop = (
+        result.get("needs_user_input") is True and owner_decision(result.get("user_input_kind")) in OWNER_KEPT_DECISIONS
+    )
     routed = usage.route_candidate_index is not None or usage.selected_harness not in {"", "claude_sdk"}
-    blocked = blocked_before_edits_error(task, result, phase=phase, routed=routed)
-    return _PreRecordCheck(blocked or landing_verification_error(task, phase=phase), result)
+    landing_error = (
+        ""
+        if owner_kept_stop
+        else blocked_before_edits_error(task, result, phase=phase, routed=routed)
+        or landing_verification_error(task, phase=phase)
+    )
+    return _PreRecordCheck(landing_error, result)
 
 
 def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) -> str:

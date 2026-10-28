@@ -1,13 +1,6 @@
-"""Tests for the news-scan ask-gate candidate queue (#1391).
+"""Durable news candidates preserve URL verification and scan dedupe."""
 
-``PendingArticleSuggestion`` is the durable ask-gate that replaces the
-scanning-news skill's old auto-``gh issue create`` behaviour. The skill
-records one PENDING row per candidate article; an issue is filed only
-when the user approves. With no approval the row stays PENDING and
-nothing is created — default is no-op. Re-scanning the same source URL
-must not enqueue a duplicate candidate.
-"""
-
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
@@ -31,7 +24,7 @@ def _network_error(url: str) -> UrlCheckResult:
 
 class PendingArticleSuggestionTests(TestCase):
     def test_record_candidate_creates_pending_row(self) -> None:
-        """A candidate is enqueued as PENDING — not auto-filed."""
+        """A candidate is initially PENDING until the recorder settles it."""
         row = PendingArticleSuggestion.record_candidate(
             url=_URL,
             title="An agent eval harness",
@@ -45,7 +38,7 @@ class PendingArticleSuggestionTests(TestCase):
         assert row.url == _URL
         assert row.title == "An agent eval harness"
         assert row.overlay == "t3-teatree"
-        # No issue is filed at record time — default is no-op.
+        # The scanner recorder, not this constructor, decides whether to file.
         assert row.issue_url == ""
         assert row.decided_at is None
 
@@ -115,7 +108,7 @@ class PendingArticleSuggestionTests(TestCase):
         assert result.status == PendingArticleSuggestion.Status.PENDING
 
     def test_approve_marks_row_and_records_issue_url(self) -> None:
-        """Approval is the only path that authorizes filing — stamps the issue URL."""
+        """Legacy approval still stamps the issue URL."""
         row = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
         assert row is not None
         before = timezone.now()
@@ -139,6 +132,17 @@ class PendingArticleSuggestionTests(TestCase):
         assert row.status == PendingArticleSuggestion.Status.REJECTED
         assert row.issue_url == ""
         assert row.decided_at is not None
+
+    def test_settle_filed_refuses_a_missing_issue_url(self) -> None:
+        row = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
+        assert row is not None
+
+        with pytest.raises(ValueError, match="needs an issue URL"):
+            row.settle_filed(issue_url="", reason="created_new")
+
+        row.refresh_from_db()
+        assert row.status == PendingArticleSuggestion.Status.PENDING
+        assert row.decided_at is None
 
     def test_hash_url_is_stable_and_whitespace_insensitive(self) -> None:
         """The dedup hash ignores surrounding whitespace on the URL."""

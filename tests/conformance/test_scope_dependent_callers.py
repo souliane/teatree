@@ -58,7 +58,6 @@ READERS_EXERCISED_ONLY_BARE: frozenset[str] = frozenset(
         "build_report",
         "manual_override_map",
         "discover_active_overlay",
-        "discover_overlays",
         "effective_verdicts",
         "resolve_active_mode",
         "timer_chain_loop_names",

@@ -15,6 +15,13 @@
 # tests/conformance/test_task_created_is_a_task_list_event.py, which derives the surface
 # from the router's registration. Full rationale + rejected alternatives: _anchor_prose.py.
 
+["Factory retries may re-attest interrupted writer files"]
+radius = 200
+"skills/interactive/SKILL.md" = ["ad14288911a30b86"]
+
+["Factory retries may re-attest interrupted writer files".coverage]
+"skills/interactive/SKILL.md" = 454
+
 ["Only an attended session may answer"]
 radius = 180
 "BLUEPRINT.md" = ["af1d47e0b793b3f8"]
@@ -38,7 +45,7 @@ radius = 400
 # sets preventContinuation the task-creation consumer never reads.
 # 3: "task tools bypass PreToolUse" is the task-LIST family, not the dispatch tool.
 "docs/claude-code-internals.md" = ["9abffb84c4d06aef", "0f305c8269101808", "d024d706d59515b2"]
-# 1: the default-allow policy's closing rule, then the router's registered event list.
+# 1: the branch-scoped SessionEnd probe, then the router's registered event list.
 # 2: the Agent|Task matcher's off-ramps, and do not conflate the dispatch tool with the task-LIST tools.
 # 3: a deny DELETES the already-persisted todo row, and the event has ONE producer.
 # 4: the envelope is inert (only blockingError is read); a visible gate writes systemMessage at
@@ -48,7 +55,7 @@ radius = 400
 # The delegate row is long enough that the window now OPENS inside its own `where the hook
 # reads it` cell, so merge-detect's row is entirely outside and is not named here.
 "hooks/CLAUDE.md" = [
-  "e1fa4d124be33e99",
+  "02a640bb2cd892c2",
   "b686ebb5f6ebd36e",
   "8c60bb3059c07312",
   "4cb202f4e2805c65"

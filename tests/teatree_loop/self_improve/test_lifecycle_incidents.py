@@ -524,7 +524,7 @@ class LifecycleIncidentTests(TestCase):
         assert reports[0].requested_rung == ActionRung.TICKET
 
     def _attempt_burst_reports(
-        self, errors: list[str], cause: str
+        self, errors: list[str], cause: str, *, distinct_fingerprints: bool = False
     ) -> tuple[list[DetectorReport], list[int], list[int]]:
         now = timezone.now()
         TaskAttemptFactory.create_batch(len(errors) + 1, task=TaskFactory())
@@ -541,7 +541,7 @@ class LifecycleIncidentTests(TestCase):
                 "ticket_id": task.ticket_id,
                 "task_id": task.pk,
                 "cause": cause,
-                "error_fingerprint": "a" * 64,
+                "error_fingerprint": f"{index:064x}" if distinct_fingerprints else "a" * 64,
                 "trace_id": f"{index:032x}",
                 "span_id": f"{index:016x}",
             }
@@ -570,6 +570,40 @@ class LifecycleIncidentTests(TestCase):
         assert bursts[0].payload["count"] == 3
         assert bursts[0].payload["ids"] == task_ids
 
+    def test_distinct_attempt_burst_names_each_failure(self) -> None:
+        errors = [
+            "malformed rubric_grades: verdict merge_safe with FAIL",
+            "unexpected keys: review_verdict fields returned flat",
+            "owner stop card refused: checked fact carries shorthand",
+        ]
+        reports, task_ids, attempt_ids = self._attempt_burst_reports(
+            errors, "result_schema_invalid", distinct_fingerprints=True
+        )
+
+        burst = next(report for report in reports if report.payload["kind"] == "attempt_failure_burst")
+        action = burst.payload["suggested_action"]
+        for task_id, attempt_id, error in zip(task_ids, attempt_ids, errors, strict=True):
+            assert f"attempt {attempt_id}" in action
+            assert f"task {task_id}" in action
+            assert error in action
+        assert "Fingerprint " not in action
+        assert burst.payload["recovery_semantics"] == "manual_ticket_review"
+        assert burst.requested_rung == ActionRung.TICKET
+
+    def test_distinct_attempt_burst_bounds_error_digest(self) -> None:
+        errors = ["x" * 5000 + "\nsecond line"] + [f"error {index}" for index in range(2, 7)]
+        reports, _, attempt_ids = self._attempt_burst_reports(
+            errors, "result_schema_invalid", distinct_fingerprints=True
+        )
+
+        burst = next(report for report in reports if report.payload["kind"] == "attempt_failure_burst")
+        action = burst.payload["suggested_action"]
+        assert "x" * 100 in action
+        assert "x" * 101 not in action
+        assert "second line" not in action
+        assert all(f"attempt {attempt_id}" in action for attempt_id in attempt_ids[:5])
+        assert f"attempt {attempt_ids[5]}" not in action
+
     def test_provider_budget_and_quoted_window_marker_still_create_failure_bursts(self) -> None:
         cases = (
             ("provider_budget: wallet depleted", "credential_exhausted"),
@@ -593,6 +627,8 @@ class LifecycleIncidentTests(TestCase):
         assert bursts[0].payload["count"] == 3
         assert bursts[0].payload["ids"] == task_ids[2:]
         evidence = bursts[0].payload["suggested_action"]
+        assert f"Fingerprint {'a' * 64}. Evidence: otel:" in evidence
+        assert "Distinct failures:" not in evidence
         assert all(f'"entity_id":{attempt_id}' not in evidence for attempt_id in attempt_ids[:2])
         assert all(f'"entity_id":{attempt_id}' in evidence for attempt_id in attempt_ids[3:])
 
@@ -647,6 +683,7 @@ class LifecycleIncidentTests(TestCase):
 
         assert "a" * 64 not in context
         assert "otel:" not in context
+        assert "Distinct failures:" not in context
 
     def test_single_failed_task_repairs_first_and_keeps_one_ticket(self) -> None:
         task = TaskFactory()
