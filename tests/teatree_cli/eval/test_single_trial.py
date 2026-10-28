@@ -24,6 +24,7 @@ from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from teatree.cli.eval.app_helpers import RunReportPaths
+from teatree.cli.eval.run_modes import park_credit_exhaustion
 from teatree.cli.eval.single_trial import EscalationConfig, SingleTrialGates, make_escalation_runner, run_single_trial
 from teatree.eval.anthropic_api_runner import AnthropicApiKeyMissingError, AnthropicApiRunner
 from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
@@ -560,6 +561,11 @@ def _raise_usage_limit(_name: str) -> EvalRun:
     raise UsageLimitReachedError(_USAGE_LIMIT_MESSAGE)
 
 
+def _raise_credit_exhausted(_name: str) -> EvalRun:
+    message = "credits exhausted"
+    raise CreditExhaustedError(message)
+
+
 class TestEscalationNeverSpendsIntoTheLimit:
     def test_a_judge_limit_during_escalation_is_a_clean_red(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _run_with(monkeypatch, _failing_run)
@@ -587,7 +593,9 @@ class TestEscalationNeverSpendsIntoTheLimit:
         assert calls == 2
         assert escalation.calls == 1
 
-    @pytest.mark.parametrize("refusal", [_refused_run, _raise_usage_limit], ids=["skipped", "raised"])
+    @pytest.mark.parametrize(
+        "refusal", [_refused_run, _raise_usage_limit, _raise_credit_exhausted], ids=["skipped", "raised", "credit"]
+    )
     def test_the_first_refused_escalation_trial_stops_the_rest(self, monkeypatch: pytest.MonkeyPatch, refusal) -> None:
         _run_with(monkeypatch, _failing_run)
         escalation = _CountingEscalation(refusal)
@@ -596,6 +604,18 @@ class TestEscalationNeverSpendsIntoTheLimit:
             _call([_spec("alpha")], transcript_html=None, summary_md=None, escalation=_ESCALATE, lane=_METERED_LANE)
         assert exc.value.code == 1
         assert escalation.calls == 1
+
+    def test_a_dead_key_during_escalation_after_a_real_failure_stays_red_not_parked(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _run_with(monkeypatch, _failing_run)
+        escalation = _CountingEscalation(_raise_credit_exhausted)
+        monkeypatch.setattr("teatree.cli.eval.single_trial.make_escalation_runner", lambda **_k: escalation)
+        with pytest.raises(SystemExit) as exc, park_credit_exhaustion():
+            _call([_spec("alpha")], transcript_html=None, summary_md=None, escalation=_ESCALATE, lane=_METERED_LANE)
+        assert exc.value.code == 1
+        assert escalation.calls == 1
+        assert "ABORTED" not in capsys.readouterr().err
 
     def test_a_limit_in_trial_one_runs_zero_escalation_trials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         outcome = {"alpha": _failing_run, "beta": _refused_run}
