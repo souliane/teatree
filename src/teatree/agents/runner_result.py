@@ -1,14 +1,29 @@
 """Parse the final structured result from a headless agent's text output."""
 
 import json
+import re
 from typing import cast
 
 from teatree.agents.envelope_refusal import UNPARSEABLE_ENVELOPE_PREFIX
-from teatree.agents.result_schema import AgentResultBlob
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema
+
+_RESULT_KEYS = frozenset(cast("JSONSchema", RESULT_JSON_SCHEMA["properties"]))
 
 
 class ResultEnvelopeError(ValueError):
     """A result envelope could not be parsed as a JSON object."""
+
+
+def _starts_result_key(text: str, brace: int) -> bool:
+    after_brace = text[brace + 1 :].lstrip()
+    return any(after_brace.startswith(f'"{key}"') for key in _RESULT_KEYS)
+
+
+def _has_broken_extension(text: str, end: int, decoded: object) -> bool:
+    if not isinstance(decoded, dict) or not set(decoded).intersection(_RESULT_KEYS):
+        return False
+    tail = text[end:].lstrip()
+    return tail.startswith("}") or re.match(r'^,\s*"(?:[^"\\]|\\.)*"\s*:', tail) is not None
 
 
 def _line_state(char: str, previous_nonspace: str, *, at_start: bool) -> tuple[bool, str]:
@@ -70,13 +85,13 @@ def parse_result(agent_text: str) -> AgentResultBlob:
         try:
             decoded, end = decoder.raw_decode(text, brace)
         except json.JSONDecodeError as exc:
-            if text[brace + 1 :].lstrip().startswith('"'):
+            if _starts_result_key(text, brace):
                 broken = exc
                 index = _span_end(text, brace, root_object=True)
             else:
                 index = brace + 1
             continue
-        if text[end:].lstrip()[:1] in {",", "}"}:
+        if _has_broken_extension(text, end, decoded):
             broken = json.JSONDecodeError("Extra data", text, end)
             index = _span_end(text, end, root_object=False)
             continue

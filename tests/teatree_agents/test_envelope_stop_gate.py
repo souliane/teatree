@@ -237,6 +237,14 @@ class TestMalformedEnvelopeStopGate(_GateTest):
         assert verdict == {}
         assert gate.refused == 0
 
+    def test_prose_json_fragment_after_envelope_allows_the_turn_end(self) -> None:
+        gate = EnvelopeStopGate("debugging")
+
+        verdict = _run(gate, _stop_input(self.transcript('{"summary":"done"}', 'x = {"a", "b"}')))
+
+        assert verdict == {}
+        assert gate.refused == 0
+
     def test_malformed_refusal_has_excerpt_and_sentence_boundary(self) -> None:
         gate = EnvelopeStopGate("debugging")
         raw = '{"summary":"draft","detail":"unfinished'

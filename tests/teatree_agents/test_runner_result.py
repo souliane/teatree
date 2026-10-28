@@ -100,6 +100,17 @@ def test_malformed_tail_after_complete_envelope_is_refused() -> None:
 
 
 @pytest.mark.parametrize(
+    "raw",
+    [
+        '{"summary":"done"}\nx = {"a", "b"}',
+        '{"summary":"done"}, thanks',
+    ],
+)
+def test_prose_json_fragments_do_not_poison_complete_envelope(raw: str) -> None:
+    assert parse_result(raw) == {"summary": "done"}
+
+
+@pytest.mark.parametrize(
     ("raw", "expected"),
     [
         ('prose {x}\n{"summary":"done"}', {"summary": "done"}),
