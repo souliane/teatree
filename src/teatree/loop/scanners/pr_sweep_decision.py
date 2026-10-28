@@ -175,7 +175,8 @@ def head_review_state(*, slug: str, pr_id: int, head_sha: str) -> HeadReview:
 
     The extra precondition on the autonomous, no-CLEAR solo-overlay merge, plus the
     record that merge names as its authorisation. Any standing hold at this head
-    refuses authorization. Push a fix and get the new head reviewed to resolve it.
+    refuses authorization. A new reviewed head, or an independent same-head disposition of every
+    held point, lifts it.
 
     Both held shapes refuse and both escalate to the owner; :attr:`HeadReview.hold_reason`
     names them apart because they are different events to the reader. A ``merge_safe``
