@@ -202,3 +202,4 @@ RETIRED agent_compaction_keep_recent
 self_improve_owner_wait_minutes
 admission_load_brake_per_core
 admission_load_resume_per_core
+forge_pool_max_connections

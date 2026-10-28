@@ -31,6 +31,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from teatree.backends.forge_pool import client_for_url
 from teatree.backends.http_retry import BoundedRetryTransport, SleepFn, env_float
 from teatree.config import cold_reader
 from teatree.core.backend_protocols import BackendResolutionError
@@ -38,7 +39,6 @@ from teatree.core.gates.forge_write_guard import vet_gitlab_write
 from teatree.core.overlays.overlay_credentials import overlay_pass_key
 from teatree.llm.credentials import Credential, CredentialError, CredentialSpec
 from teatree.utils import secrets
-from teatree.utils.forge_http import client_for_url
 
 logger = logging.getLogger(__name__)
 
@@ -400,7 +400,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         vet_gitlab_write("POST", f"projects/{project_id}/uploads", None, self.get_json)
         with Path(filepath).open("rb") as f:
             url = self._url(f"projects/{project_id}/uploads")
-            response = client_for_url(url).post(
+            response = client_for_url(url).upload(
                 url,
                 headers=self._headers(),
                 files={"file": (Path(filepath).name, f)},

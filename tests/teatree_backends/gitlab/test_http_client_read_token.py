@@ -5,10 +5,16 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
+from teatree.backends.forge_pool import forge_connections
 from teatree.backends.gitlab.http_client import GitLabHTTPClient
 from teatree.config import cold_reader
 from teatree.config.cold_reader import SettingRead
 from teatree.utils import secrets
+
+
+@pytest.fixture(autouse=True)
+def _pool_sized_before_the_reader_is_faked() -> None:
+    forge_connections()
 
 
 def _response(method: str = "GET") -> httpx.Response:

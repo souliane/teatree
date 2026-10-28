@@ -668,7 +668,7 @@ Every external API concern is a `@runtime_checkable Protocol` in `teatree.core.b
 | `CIService` — pipeline cancel/trigger/quality-check | `GitLabCIService` |
 | `MessagingBackend` — mentions/DMs/post/reply/update (in place, always with blocks)/react | `SlackBotBackend`, `NoopMessagingBackend` |
 
-Forge API transport shares one process-wide HTTPX client per complete origin (scheme, host and port), with at most eight live and eight idle connections. GitLab REST, GraphQL, upload and trace reads and GitHub `gh api` REST/GraphQL calls use the same per-host pool; credentials remain on individual requests. Non-API `gh` commands retain their CLI path.
+Forge API transport shares one process-wide HTTPX client per complete origin (scheme, host and port), capped at `forge_pool_max_connections` live and idle connections (default 4, range 1 to 16, box-global). A GET or HEAD is replayed once when a reused keep-alive connection went stale, a connect failure is retried once after a jittered pause, and a once-a-minute log line reports requests against reused connections. GitLab REST, GraphQL, upload and trace reads and GitHub `gh api` REST/GraphQL calls use the same per-host pool; credentials remain on individual requests. Non-API `gh` commands retain their CLI path.
 
 Multi-field request parameters are grouped into frozen `slots=True` dataclasses (`PullRequestSpec`). `repo + pr_iid` is the natural unit on both code hosts — protocol methods never accept free-form PR URLs.
 

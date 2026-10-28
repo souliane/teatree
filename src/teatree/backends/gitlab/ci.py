@@ -5,9 +5,9 @@ import re
 from typing import cast
 from urllib.parse import urlencode
 
+from teatree.backends.forge_pool import client_for_url
 from teatree.backends.gitlab.api import GitLabAPI
 from teatree.core.backend_protocols import PipelineRead
-from teatree.utils.forge_http import client_for_url
 
 #: GitLab's JUnit case statuses that failed the job: an ``error`` is a test that raised outside its assertions.
 _FAILED_CASE_STATUSES = frozenset({"failed", "error"})

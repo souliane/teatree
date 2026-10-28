@@ -13,6 +13,9 @@ ADMISSION_LOAD_BRAKE_PER_CORE: Final = 2.0
 ADMISSION_LOAD_RESUME_PER_CORE: Final = 1.5
 ADMISSION_LOAD_FACTOR_MIN: Final = 0.5
 ADMISSION_LOAD_FACTOR_MAX: Final = 6.0
+FORGE_POOL_MAX_CONNECTIONS: Final = 4
+FORGE_POOL_MAX_CONNECTIONS_MIN: Final = 1
+FORGE_POOL_MAX_CONNECTIONS_MAX: Final = 16
 
 
 @dataclass
@@ -64,6 +67,12 @@ class _ProvisioningSettings:
         spec=SettingSpec(
             help=("pressure at which expensive agents are refused while review and ship keep draining"),
             parse=_parse_strict_float,
+        ),
+    )
+    forge_pool_max_connections: int = setting(
+        FORGE_POOL_MAX_CONNECTIONS,
+        spec=SettingSpec(
+            help="connections each process keeps open per forge host", parse=_parse_strict_int, box_global=True
         ),
     )
     admission_load_brake_per_core: float = setting(

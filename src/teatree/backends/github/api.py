@@ -18,8 +18,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from teatree.backends.forge_pool import client_for_url
 from teatree.types import RawAPIDict
-from teatree.utils.forge_http import client_for_url
 from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
 from teatree.utils.throttled_log import warn_throttled
 
@@ -106,8 +106,7 @@ def _request_api(
             options.method,
             url,
             headers=headers,
-            content=body,
-            json=options.fields or None,
+            payload=body if body is not None else options.fields or None,
             timeout=timeout or _FORGE_READ_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
