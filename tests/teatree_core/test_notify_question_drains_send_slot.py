@@ -1,4 +1,4 @@
-"""The question drains share one hourly ceiling on owner DMs: a resumed backlog is paced, never dropped."""
+"""Question drains serialize sends across threads and processes."""
 
 import contextlib
 import datetime as dt
@@ -6,11 +6,9 @@ import itertools
 import os
 import threading
 from collections.abc import Callable, Generator
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from django.db import connections
 from django.db.models import F
 from django.test import TestCase
 from django.utils import timezone
@@ -20,11 +18,8 @@ from teatree.core import notify_question_drains as drains_module
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease
 from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
-from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
-from teatree.utils.thread_db import close_thread_db_connections
 from tests._owner_channel import OWNER_DECISION
-from tests.db_alias import register_control_db_alias, run_racing_threads, teardown_sqlite_alias, wal_control_db
-from tests.teatree_core.conftest import SchemaGuardAlias
+from tests.db_alias import wal_control_db
 from tests.teatree_core.test_claim_liveness import _OTHER_NS, _READER_NS, pinned_reader_namespace
 
 pytestmark = pytest.mark.usefixtures(wal_control_db.__name__)
@@ -33,16 +28,6 @@ _CHANNEL = "D-USER"
 _QUESTION_PING_SLOT = "work:owner-question-ping"
 _FOREIGN_PID = 4_000_000
 _DEAD_PID = 4_100_000
-
-
-class _NoInProcessGuard:
-    """Separate processes share no in-process lock."""
-
-    def acquire(self, *, blocking: bool = True, timeout: float = -1) -> bool:
-        return True
-
-    def release(self) -> None:
-        return None
 
 
 @contextlib.contextmanager
@@ -73,20 +58,6 @@ def _backlog(question: str, *, slack_ts: str = "", age_days: int = 3) -> Deferre
     return row
 
 
-def _backend_holding_each_send_open(*, senders: int) -> MagicMock:
-    backend = _backend()
-    stamps = itertools.count(1_900_000_000)
-    in_flight = threading.Barrier(senders, timeout=1)
-
-    def post_message(*_args: object, **_kwargs: object) -> dict[str, object]:
-        with contextlib.suppress(threading.BrokenBarrierError):
-            in_flight.wait()
-        return {"ok": True, "ts": f"{next(stamps)}.000000"}
-
-    backend.post_message.side_effect = post_message
-    return backend
-
-
 def _seed_sent_question_pings(count: int) -> None:
     for index in range(count):
         BotPing.objects.create(
@@ -96,10 +67,6 @@ def _seed_sent_question_pings(count: int) -> None:
             audience="owner_question",
             text="Still waiting on this one",
         )
-
-
-def _age_the_ledger(*, minutes: int) -> None:
-    BotPing.objects.update(posted_at=F("posted_at") - dt.timedelta(minutes=minutes))
 
 
 def _sent_pings() -> int:
@@ -144,7 +111,7 @@ class _ReleaseSiblingOnAcquire:
         self.guard.release()
 
 
-class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
+class TestTheQuestionDrainsShareASendSlot(TestCase):
     def setUp(self) -> None:
         self.backend = _backend()
         messaging = patch.object(notify_module, "messaging_from_overlay", return_value=self.backend)
@@ -154,19 +121,10 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
     def _poster(self) -> None:
         DeferredQuestionPosterScanner(backend=self.backend, user_id="U_ME").scan()
 
-    def _nag(self) -> None:
-        QuestionBacklogNagScanner(backend=self.backend, user_id="U_ME").scan()
-
-    def _tick(self) -> None:
-        self._poster()
-        self._nag()
-        _age_the_ledger(minutes=5)
-
     def test_a_sibling_finishing_mid_send_lets_each_drain_post(self) -> None:
         for name, drain, slack_ts, expected in (
             ("poster", drain_unmirrored_deferred_questions, "", (1, 1)),
             ("manual resurface", drain_deferred_questions, "", (1, 1)),
-            ("digest", drains_module.resurface_question_backlog, "100.0", (True, 1)),
             ("reask", drains_module.reask_escalated_questions, "100.0", (1, 1)),
         ):
             with self.subTest(drain=name):
@@ -193,7 +151,6 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         for name, drain, slack_ts, expected in (
             ("poster", drain_unmirrored_deferred_questions, "", (0, 1)),
             ("manual resurface", drain_deferred_questions, "", (0, 1)),
-            ("digest", drains_module.resurface_question_backlog, "100.0", (False, 1)),
             ("reask", drains_module.reask_escalated_questions, "100.0", (0, 1)),
         ):
             with self.subTest(drain=name):
@@ -234,61 +191,14 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         assert guard.acquire(blocking=False)
         guard.release()
 
-    def test_an_hour_of_ticks_over_a_resumed_41_question_backlog_sends_six_pings(self) -> None:
-        for index in range(20):
+    def test_forty_one_unposted_questions_all_send_across_passes_in_one_hour(self) -> None:
+        for index in range(41):
             _backlog(f"Unposted {index}?")
-        for index in range(21):
-            _backlog(f"Posted {index}?", slack_ts=f"{100 + index}.0")
-
-        for _ in range(12):
-            self._tick()
-
-        assert _sent_pings() == 6
-
-    def test_the_held_questions_are_posted_once_the_hour_rolls_over(self) -> None:
-        for index in range(8):
-            _backlog(f"Unposted {index}?")
-
-        for _ in range(3):
-            self._tick()
-        assert DeferredQuestion.unmirrored_pending().count() == 2
-
-        _age_the_ledger(minutes=60)
-        self._tick()
+        for _ in range(14):
+            self._poster()
 
         assert DeferredQuestion.unmirrored_pending().count() == 0
-
-    def test_a_new_question_is_posted_ahead_of_re_asks_in_a_nearly_spent_hour(self) -> None:
-        for index in range(10):
-            _backlog(f"Posted {index}?", slack_ts=f"{100 + index}.0")
-        _seed_sent_question_pings(4)
-        new_question = _backlog("Which merge target for the hotfix?", age_days=0)
-
-        self._nag()
-        self._poster()
-
-        new_question.refresh_from_db()
-        assert new_question.slack_ts
-        assert _sent_pings() == 6
-
-    def test_a_manual_resurface_in_a_spent_hour_posts_nothing_and_keeps_the_backlog(self) -> None:
-        _seed_sent_question_pings(6)
-        _backlog("Which DB host?")
-        _backlog("Which region?")
-
-        assert drain_deferred_questions(user_id="U_ME", backend=self.backend) == (0, 2)
-        self.backend.post_message.assert_not_called()
-        assert DeferredQuestion.unmirrored_pending().count() == 2
-
-    def test_never_posted_questions_the_poster_cannot_deliver_do_not_mute_the_nag(self) -> None:
-        for index in range(14):
-            _backlog(f"Unposted {index}?")
-        for index in range(5):
-            _backlog(f"Posted {index}?", slack_ts=f"{100 + index}.0")
-
-        self._nag()
-
-        assert _sent_pings() == 3
+        assert self.backend.post_message.call_count == 41
 
     def test_a_failed_send_keeps_the_slot_free_and_the_question_is_posted_on_the_next_pass(self) -> None:
         _seed_sent_question_pings(5)
@@ -514,8 +424,8 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
         with patch("teatree.utils.singleton.pid_alive", lambda pid: pid in {own_pid, _FOREIGN_PID}):
             self._poster()
 
-        assert self.backend.post_message.call_count == 1
-        assert _sent_pings() == 6
+        assert self.backend.post_message.call_count == 2
+        assert _sent_pings() == 7
 
     def _an_unfinalized_send(self, *, claimed_ago: dt.timedelta) -> None:
         BotPing.objects.create(
@@ -556,36 +466,3 @@ class TestTheQuestionDrainsShareAnHourlyCeiling(TestCase):
 
 class TestTheHourlyCeilingHoldsAcrossProcesses:
     """A tick worker and a manual resurface run in separate processes, so no in-process lock can pace them."""
-
-    def test_two_processes_racing_for_the_last_slot_send_one_ping(self, schema_guard_alias: SchemaGuardAlias) -> None:
-        alias = schema_guard_alias.register_current()
-        db_file = Path(str(connections.databases[alias]["NAME"]))
-        teardown_sqlite_alias(alias)
-        register_control_db_alias(alias, db_file)
-        _seed_sent_question_pings(5)
-        _backlog("Which DB host?")
-        _backlog("Which region?")
-        backend = _backend_holding_each_send_open(senders=2)
-        drains = (drain_unmirrored_deferred_questions, drain_deferred_questions)
-        start = threading.Barrier(len(drains), timeout=10)
-
-        real_pid = os.getpid()
-        pids: dict[int, int] = {}
-
-        def run_one_process(index: int) -> tuple[int, int]:
-            pids[threading.get_ident()] = _FOREIGN_PID + index
-            try:
-                start.wait()
-                return drains[index](user_id="U_ME", backend=backend)
-            finally:
-                close_thread_db_connections()
-
-        with (
-            patch.object(notify_module, "messaging_from_overlay", return_value=backend),
-            patch.object(drains_module, "_QUESTION_PING_THREAD_GUARD", _NoInProcessGuard(), create=True),
-            patch("os.getpid", lambda: pids.get(threading.get_ident(), real_pid)),
-            patch("teatree.utils.singleton.pid_alive", lambda _pid: True),
-        ):
-            run_racing_threads(run_one_process, len(drains))
-
-        assert _sent_pings() == 6

@@ -722,6 +722,10 @@
           "name": "dm"
         },
         {
+          "help": "Count bot messages in the owner DM by UTC day and ledger class",
+          "name": "census"
+        },
+        {
           "help": "Read the status signals the classifier kept off the DM channel (#4524)",
           "name": "digest"
         },

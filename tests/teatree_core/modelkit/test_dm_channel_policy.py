@@ -36,6 +36,13 @@ def test_an_unregistered_signal_defaults_to_pull(key: str) -> None:
     assert classify(audience=NotifyAudience.OWNER_ESCALATION, idempotency_key=key) is DmChannel.PULL
 
 
+def test_self_improve_still_open_is_pulled() -> None:
+    assert (
+        classify(audience=NotifyAudience.OWNER_ESCALATION, idempotency_key="self-improve:still-open:1:2")
+        is DmChannel.PULL
+    )
+
+
 @pytest.mark.parametrize(
     "key",
     ["mirror-deferred-question:abc", "resurface-deferred-question:abc", "a-brand-new-alarm:whatever", ""],
@@ -64,7 +71,6 @@ def test_internal_is_pull() -> None:
         "self-improve:ram-probe-inert:incident:state:initial",
         "self-improve:disk-probe-inert:incident:state:initial",
         "self-improve:outbound-unposted:incident:state:initial",
-        "self-improve:still-open:123:456",
     ],
 )
 def test_a_registered_outage_page_pushes(key: str) -> None:
@@ -95,7 +101,6 @@ def test_push_signals_membership_is_pinned_exactly() -> None:
                 "self-improve:ram-probe-inert",
                 "self-improve:disk-probe-inert",
                 "self-improve:outbound-unposted",
-                "self-improve:still-open",
                 "unaudited-merge",
                 "shipping-hold",
             }

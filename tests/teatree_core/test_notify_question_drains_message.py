@@ -156,11 +156,11 @@ class TestTicketQuestionThread(TestCase):
 
         row.refresh_from_db()
         assert delivered == 1
-        assert row.slack_ts == "1700000000.000002"
-        assert backend.post_message.call_args.kwargs["thread_ts"] == "1700000000.000001"
+        assert row.slack_ts == "1700000000.000001"
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
         assert TicketDmPost.objects.get(question=row).slack_ts == row.slack_ts
         assert ThreadBinding.objects.filter(ticket=ticket, thread_ts="1700000000.000001").exists()
-        assert not ThreadBinding.objects.filter(ticket=ticket, thread_ts=row.slack_ts).exists()
+        assert ThreadBinding.objects.filter(ticket=ticket, thread_ts=row.slack_ts).exists()
 
 
 class TestDrainExcludesInternalAudience(TestCase):

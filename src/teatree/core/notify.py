@@ -197,7 +197,6 @@ def notify_user_outcome(
                 blocks=outgoing_blocks,
                 ticket_id=options.ticket_id,
                 deliver=_deliver_dm,
-                post_root=_post_ticket_root,
                 question_id=options.question_id,
                 fallback_thread_ts=options.fallback_thread_ts,
             )
@@ -348,10 +347,6 @@ def _preflight_result(
         record_pulled(idempotency_key=idempotency_key, kind=kind, text=text, audience=audience)
         return blocked(NotifyReason.ROUTED_TO_PULL)
     return None
-
-
-def _post_ticket_root(backend: MessagingBackend, channel: str, text: str) -> RawAPIDict:
-    return backend.post_message(channel=channel, text=text, thread_ts="")
 
 
 def _deliver_dm(
