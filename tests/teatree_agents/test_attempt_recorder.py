@@ -120,6 +120,33 @@ class TestValidateResultKeys(TestCase):
         assert all(line in error for line in owner_stop_limits_lines())
         assert classify_failure(error) == FailureKind.RESULT_SCHEMA_INVALID
 
+    def test_standing_factory_actions_cannot_be_owner_stops(self) -> None:
+        for question in (
+            "May I continue after the round limit?",
+            "May I push the finished branch once more after the push round limit?",
+            "May I retry the blocked read-only verification through the existing approval router?",
+        ):
+            with self.subTest(question=question):
+                error = validate_result_keys(owner_stop(question) | {"summary": "waiting"})
+                assert error.startswith(OWNER_STOP_REFUSAL_PREFIX)
+                assert "standing" in error
+        existing = owner_stop(
+            "Can you provide bot access for live proof?", "credentials", "The existing approved credential is in use."
+        )
+        assert validate_result_keys(existing | {"summary": "waiting"}).startswith(OWNER_STOP_REFUSAL_PREFIX)
+
+    def test_true_owner_limits_keep_their_card(self) -> None:
+        for kind, question in (
+            ("money_or_plan", "May I spend money on this service?"),
+            ("irreversible", "May I delete work that exists on no remote?"),
+            ("credentials", "May I widen the credential's use to a new service?"),
+            ("public_post", "May I send these words to a colleague in your name?"),
+            ("money_or_plan", "May I pay to extend the round limit?"),
+            ("credentials", "May I widen credential use for read-only verification through the approval router?"),
+        ):
+            with self.subTest(kind=kind):
+                assert validate_result_keys(owner_stop(question, kind) | {"summary": "waiting"}) == ""
+
 
 class TestRecordResultEnvelope(TestCase):
     def _claimed(self, *, phase: str = "coding") -> Task:
@@ -177,6 +204,25 @@ class TestRecordResultEnvelope(TestCase):
                 "files_modified": [{"path": "a.py", "action": "modified"}],
             },
             usage=AttemptUsage(route_candidate_index=0, route_source_skill="debug"),
+        )
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.failure_kind == FailureKind.RESULT_ERROR
+        assert task.attempts.failed_route_candidates("debug") == {0: attempt.pk}
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_routed_access_denial_fails_this_candidate_without_an_owner_question(self) -> None:
+        task = self._claimed(phase="debugging")
+        envelope = owner_stop(
+            "Can you provide bot access for live proof?", "credentials", "The current route denied access."
+        )
+        attempt = record_result_envelope(
+            task,
+            envelope | {"summary": "Current route denied access."},
+            usage=AttemptUsage(
+                route_candidate_index=0, route_source_skill="debug", selected_harness="codex_app_server"
+            ),
         )
 
         task.refresh_from_db()

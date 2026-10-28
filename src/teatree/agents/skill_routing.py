@@ -59,7 +59,9 @@ def resolve_skill_route(
 _FALLBACK_PATTERNS = (
     re.compile(r"\b(?:401|403|408|425|429|5\d\d)\b", re.IGNORECASE),
     re.compile(r"\b(?:auth(?:entication|orization)?|credential|quota|rate.?limit|token outage)\b", re.IGNORECASE),
-    re.compile(r"\b(?:model access|access denied|not entitled|not available)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:model access|access denied|denied access|permission denied|not entitled|not available)\b", re.IGNORECASE
+    ),
     re.compile(r"\b(?:connection|transport|network|timed? out|timeout|temporarily unavailable)\b", re.IGNORECASE),
     re.compile(r"\b(?:could not start|failed to start|enoent)\b", re.IGNORECASE),
 )
@@ -79,6 +81,16 @@ def sticky_reason(text: str) -> bool:
 def runtime_fallback_reason(error: BaseException | str) -> str | None:
     text = str(error).strip()
     return text if text and any(pattern.search(text) for pattern in _FALLBACK_PATTERNS) else None
+
+
+def owner_stop_route_denied(result: Mapping[str, object]) -> bool:
+    if result.get("needs_user_input") is not True:
+        return False
+    checked = result.get("user_input_checked")
+    if not isinstance(checked, list):
+        return False
+    text = " ".join(item for item in checked if isinstance(item, str)).casefold()
+    return any(word in text for word in ("denied", "refused", "failed")) and runtime_fallback_reason(text) is not None
 
 
 @dataclass(frozen=True, slots=True)

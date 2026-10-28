@@ -43,6 +43,7 @@ from teatree.agents.review_envelope_recorder import (
 )
 from teatree.agents.review_request_recorder import record_returned_review_request
 from teatree.agents.ship_readiness_recorder import record_returned_ship_readiness
+from teatree.agents.skill_routing import owner_stop_route_denied
 from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
@@ -162,7 +163,25 @@ def validate_result_keys(result: AgentResultBlob) -> str:
         )
     if problems := card.problems(str(result.get("user_input_reason", ""))):
         return owner_stop_refusal("; ".join(problems))
+    question = str(result.get("user_input_reason", "")).casefold()
+    checked = " ".join(card.checked).casefold()
+    if _standing_action_is_owner_stop(card, question, checked):
+        return owner_stop_refusal("the standing factory rule already decides this action")
     return ""
+
+
+def _standing_action_is_owner_stop(card: QuestionCard, question: str, checked: str) -> bool:
+    if card.decision in {OwnerDecision.PUBLIC_POST, OwnerDecision.IRREVERSIBLE}:
+        return False
+    if card.decision is OwnerDecision.MONEY_OR_PLAN and any(word in question for word in ("pay", "spend")):
+        return False
+    if card.decision is OwnerDecision.CREDENTIALS and any(word in question for word in ("widen", "expand")):
+        return False
+    return (
+        "round limit" in question
+        or ("read-only" in question and "approval router" in question)
+        or ("bot access" in question and "existing approved credential" in checked)
+    )
 
 
 def record_result_envelope(
@@ -379,6 +398,11 @@ def _check_before_recording(
         validate_result_keys(result)
         or review_head_mismatch_refusal(task, result, phase=phase)
         or review_venue_limit_refusal(task, result, phase=phase)
+        or (
+            "result_error: routed agent access denied"
+            if usage.route_candidate_index is not None and owner_stop_route_denied(result)
+            else ""
+        )
     ):
         return _PreRecordCheck(error, result)
 
