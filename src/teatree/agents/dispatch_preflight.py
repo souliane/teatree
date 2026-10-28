@@ -57,7 +57,10 @@ def standing_hold_brief_lines(task: "Task") -> tuple[str, ...]:
         (
             "A later independent merge_safe verdict must answer EVERY standing HOLD point in "
             "review_verdict.hold_dispositions: [{hold_id, points: [{index, classification: "
-            "disproved_premise|venue_limit, citation}]}]. Cite fresh evidence for each point."
+            "disproved_premise|venue_limit, citation, counter_reproduction: {command, observed_result}}]}]. "
+            "Cite fresh evidence for each point. A point marked [needs counter_reproduction] reports an "
+            "executed failure: answer it only with the command or test node id you ran at this head and "
+            "the result it printed; a citation alone leaves that point unanswered."
         )
     ]
     for hold in holds:
@@ -65,7 +68,11 @@ def standing_hold_brief_lines(task: "Task") -> tuple[str, ...]:
             f"HOLD {hold.pk} by {hold.reviewer_identity}: indices "
             f"{sorted(ReviewHoldDisposition.blocking_indices(hold))}"
         )
-        lines.extend(f"  {index}: {finding.describe()}" for index, finding in enumerate(hold.structured_findings))
+        lines.extend(
+            f"  {index}: {finding.describe()}"
+            + (" [needs counter_reproduction]" if ReviewHoldDisposition.needs_counter_reproduction(finding) else "")
+            for index, finding in enumerate(hold.structured_findings)
+        )
     return tuple(lines)
 
 

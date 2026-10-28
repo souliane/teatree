@@ -30,6 +30,16 @@ HOLD_DISPOSITIONS_SCHEMA_PROPERTY = {
                         "index": {"type": "integer"},
                         "classification": {"type": "string", "enum": ["venue_limit", "disproved_premise"]},
                         "citation": {"type": "string"},
+                        "counter_reproduction": {
+                            "type": "object",
+                            "description": (
+                                "REQUIRED when the held finding carries an executed reproduction: the command "
+                                "or test node id you ran at this head and the result it printed."
+                            ),
+                            "properties": {"command": {"type": "string"}, "observed_result": {"type": "string"}},
+                            "required": ["command", "observed_result"],
+                            "additionalProperties": False,
+                        },
                     },
                     "required": ["index", "classification", "citation"],
                     "additionalProperties": False,
@@ -161,6 +171,31 @@ class HoldDispositionResponse(TypedDict):
     points: list[HoldPointResponse]
 
 
+def _counter_reproduction_shape_ok(counter: object) -> bool:
+    return counter is None or (
+        isinstance(counter, dict)
+        and isinstance(counter.get("command"), str)
+        and isinstance(counter.get("observed_result"), str)
+    )
+
+
+def _hold_response_shape_error(response: object) -> str:
+    if not isinstance(response, dict) or type(response.get("hold_id")) is not int:
+        return "each hold_dispositions item needs an integer hold_id"
+    points = response.get("points")
+    if not isinstance(points, list) or any(
+        not isinstance(point, dict)
+        or type(point.get("index")) is not int
+        or not isinstance(point.get("classification"), str)
+        or not isinstance(point.get("citation"), str)
+        for point in points
+    ):
+        return "each hold_dispositions item needs points with index, classification, and citation"
+    if any(not _counter_reproduction_shape_ok(point.get("counter_reproduction")) for point in points):
+        return "counter_reproduction must be an object with string command and observed_result"
+    return ""
+
+
 def review_envelope_shape_error(envelope: ReviewVerdictEnvelope) -> str:
     findings = envelope.get("findings", [])
     if not isinstance(findings, list) or any(not isinstance(item, dict) for item in findings):
@@ -171,19 +206,7 @@ def review_envelope_shape_error(envelope: ReviewVerdictEnvelope) -> str:
     responses = envelope.get("hold_dispositions", [])
     if not isinstance(responses, list):
         return "hold_dispositions must be a list of objects"
-    for response in responses:
-        if not isinstance(response, dict) or type(response.get("hold_id")) is not int:
-            return "each hold_dispositions item needs an integer hold_id"
-        points = response.get("points")
-        if not isinstance(points, list) or any(
-            not isinstance(point, dict)
-            or type(point.get("index")) is not int
-            or not isinstance(point.get("classification"), str)
-            or not isinstance(point.get("citation"), str)
-            for point in points
-        ):
-            return "each hold_dispositions item needs points with index, classification, and citation"
-    return ""
+    return next((error for response in responses if (error := _hold_response_shape_error(response))), "")
 
 
 REVIEW_VENUE_LIMIT_SCHEMA_PROPERTY = {

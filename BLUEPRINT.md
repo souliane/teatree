@@ -80,7 +80,7 @@ Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) — and the 
 
 ## 4. Domain Models
 
-`ReviewVerdict` records `merge_safe`, `hold`, or typed `unverified` evidence gaps at one PR head. `ReviewHoldDisposition` stores an independent later review's cited answer to each held point; `MergeClear` snapshots the disposition ids that released a same-head hold. An unanswered or appended point keeps the hold active (§17.4).
+`ReviewVerdict` records `merge_safe`, `hold`, or typed `unverified` evidence gaps at one PR head. `ReviewHoldDisposition` stores an independent later review's cited answer to each held point, and a point whose finding carries an executed reproduction is answered only by a `counter_reproduction` (the command or test node id run at that head and the result it printed); `MergeClear` snapshots the disposition ids that released a same-head hold. An unanswered or appended point keeps the hold active (§17.4).
 
 **Ticket DM identity (#5361).** `TicketDmThread` owns one outbound Slack DM root per ticket, with a generation incremented only after a deleted root is proven. `TicketDmPost` records each confirmed header, note, card, chase, and answer reply in that generation; its channel and message timestamp pair is unique. `ThreadBinding` still maps inbound roots to tickets. A question card keeps its own mirror timestamp even when posted inside the ticket root, so button taps still address that card.
 

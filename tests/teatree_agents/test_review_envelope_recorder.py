@@ -197,6 +197,20 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
         assert "hold_id" in attempt.error
         assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
 
+    def test_malformed_counter_reproduction_refuses_without_a_traceback(self) -> None:
+        ticket = _author_ticket()
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        point = {"index": 0, "classification": "disproved_premise", "citation": "run", "counter_reproduction": "ran it"}
+        verdict["hold_dispositions"] = [{"hold_id": 1, "points": [point]}]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert is_recorder_refusal(attempt.error)
+        assert "counter_reproduction" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, pr_id=_PR_ID).exists()
+
     def test_unhashable_evidence_gap_refuses_without_a_traceback(self) -> None:
         ticket = _author_ticket()
         result = _envelope(grades=None, verdict="unverified")
@@ -731,13 +745,20 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
                         "index": 0,
                         "classification": "disproved_premise",
                         "citation": "pytest test_a.py: passed at reviewed head",
+                        "counter_reproduction": {
+                            "command": "pytest test_a.py::test_runtime",
+                            "observed_result": "1 passed in 0.2s at the reviewed head",
+                        },
                     }
                 ],
             }
         ]
 
         task = _reviewing_task_via_dispatch()
-        assert f"HOLD {hold.pk}" in "\n".join(phase_specific_lines(task, []))
+        brief = "\n".join(phase_specific_lines(task, []))
+        assert f"HOLD {hold.pk}" in brief
+        assert "0: [major]" in brief
+        assert "[needs counter_reproduction]" in brief
         attempt = record_result_envelope(task, result, phase="reviewing")
 
         assert attempt.error == ""
@@ -746,6 +767,41 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
             ClearRequest(pr_id=_PR_ID, slug=_SLUG, reviewed_sha=_HEAD, reviewer_identity=_REVIEWER)
         )
         assert clear.hold_disposition_ids == [disposition.pk]
+
+    def test_a_one_character_citation_cannot_answer_an_executed_reproduction(self) -> None:
+        ticket = _author_ticket()
+        hold = ReviewVerdict.record(
+            pr_id=_PR_ID,
+            slug=_SLUG,
+            reviewed_sha=_HEAD,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            ticket=ticket,
+            findings=[
+                Finding(
+                    severity="major",
+                    kind="blocking",
+                    summary="Runtime failure",
+                    file="a.py",
+                    line=1,
+                    basis="executed",
+                    reproduction="pytest test_a.py: failed",
+                )
+            ],
+        )
+        result = _envelope(grades=_full_pass())
+        verdict = result["review_verdict"]
+        assert isinstance(verdict, dict)
+        verdict["hold_dispositions"] = [
+            {"hold_id": hold.pk, "points": [{"index": 0, "classification": "disproved_premise", "citation": "x"}]}
+        ]
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "counter_reproduction" in attempt.error
+        assert not ReviewVerdict.objects.filter(pr_id=_PR_ID, reviewer_identity=_REVIEWER).exists()
+        assert not ReviewHoldDisposition.objects.filter(hold=hold).exists()
+        assert ReviewVerdict.objects.unreconciled_holds_at(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD) == [hold]
 
     def test_incomplete_hold_answers_roll_back_the_later_verdict(self) -> None:
         ticket = _author_ticket()

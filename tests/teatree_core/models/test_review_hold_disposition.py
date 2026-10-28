@@ -4,10 +4,13 @@ from django.test import TestCase
 from teatree.core.models import Finding, ReviewHoldDisposition, ReviewHoldDispositionError, ReviewVerdict
 
 _SHA = "a" * 40
+_COUNTER = {"command": "pytest test_premise.py::test_premise", "observed_result": "1 passed in 0.1s at this head"}
 
 
 class TestReviewHoldDisposition(TestCase):
-    def _pair(self, *, same_reviewer: bool = False) -> tuple[ReviewVerdict, ReviewVerdict]:
+    def _pair(
+        self, *, same_reviewer: bool = False, finding: Finding | None = None
+    ) -> tuple[ReviewVerdict, ReviewVerdict]:
         hold = ReviewVerdict.record(
             pr_id=7,
             slug="souliane/teatree",
@@ -15,7 +18,8 @@ class TestReviewHoldDisposition(TestCase):
             verdict="hold",
             reviewer_identity="first-reviewer",
             findings=[
-                Finding(
+                finding
+                or Finding(
                     severity="major",
                     summary="premise is unproved",
                     file="a.py",
@@ -89,3 +93,91 @@ class TestReviewHoldDisposition(TestCase):
                 clearing_verdict=clearing,
                 points=[{"index": 0, "classification": "disproved_premise", "citation": "new run"}],
             )
+
+    def test_a_one_character_citation_cannot_answer_an_executed_reproduction(self) -> None:
+        hold, clearing = self._pair()
+
+        with pytest.raises(ReviewHoldDispositionError, match="needs a counter_reproduction"):
+            ReviewHoldDisposition.record(
+                hold=hold,
+                clearing_verdict=clearing,
+                points=[{"index": 0, "classification": "disproved_premise", "citation": "x"}],
+            )
+
+        assert not ReviewHoldDisposition.objects.exists()
+        assert ReviewVerdict.objects.unreconciled_holds_at(slug=hold.slug, pr_id=7, head_sha=_SHA) == [hold]
+
+    def test_a_thin_or_repeated_counter_reproduction_is_refused(self) -> None:
+        hold, clearing = self._pair()
+        thin = [
+            {"command": "x", "observed_result": "1 passed in 0.1s at this head"},
+            {"command": "pytest test_premise.py::test_premise", "observed_result": "ok"},
+            {"command": "", "observed_result": ""},
+            {"command": "pytest test_premise.py: failed", "observed_result": "1 passed in 0.1s at this head"},
+            {"command": "pytest test_premise.py::test_premise", "observed_result": "pytest test_premise.py: failed"},
+            {
+                "command": "pytest test_premise.py::test_premise",
+                "observed_result": "pytest test_premise.py::test_premise",
+            },
+            "ran it",
+        ]
+
+        for counter in thin:
+            with self.subTest(counter=counter), pytest.raises(ReviewHoldDispositionError, match="counter_reproduction"):
+                ReviewHoldDisposition.record(
+                    hold=hold,
+                    clearing_verdict=clearing,
+                    points=[
+                        {
+                            "index": 0,
+                            "classification": "disproved_premise",
+                            "citation": "run at this head",
+                            "counter_reproduction": counter,
+                        }
+                    ],
+                )
+
+        assert not ReviewHoldDisposition.objects.exists()
+
+    def test_a_counter_reproduction_with_a_command_and_a_result_answers_the_point(self) -> None:
+        hold, clearing = self._pair()
+
+        disposition = ReviewHoldDisposition.record(
+            hold=hold,
+            clearing_verdict=clearing,
+            points=[
+                {
+                    "index": 0,
+                    "classification": "disproved_premise",
+                    "citation": "run at this head",
+                    "counter_reproduction": _COUNTER,
+                }
+            ],
+        )
+
+        assert disposition.covers(hold)
+
+    def test_an_executed_basis_without_a_recorded_reproduction_still_needs_a_counter_reproduction(self) -> None:
+        hold, clearing = self._pair(
+            finding=Finding(severity="major", summary="fails when run", file="a.py", line=3, basis="executed")
+        )
+
+        with pytest.raises(ReviewHoldDispositionError, match="needs a counter_reproduction"):
+            ReviewHoldDisposition.record(
+                hold=hold,
+                clearing_verdict=clearing,
+                points=[{"index": 0, "classification": "disproved_premise", "citation": "looks fine"}],
+            )
+
+    def test_a_point_without_a_reproduction_is_answered_by_a_cited_response(self) -> None:
+        hold, clearing = self._pair(
+            finding=Finding(severity="major", summary="behaviour no test pins", file="a.py", line=3)
+        )
+
+        disposition = ReviewHoldDisposition.record(
+            hold=hold,
+            clearing_verdict=clearing,
+            points=[{"index": 0, "classification": "disproved_premise", "citation": "pinned by test_x at this head"}],
+        )
+
+        assert disposition.covers(hold)

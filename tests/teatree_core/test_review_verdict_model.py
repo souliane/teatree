@@ -108,7 +108,17 @@ class TestRecordContract(TestCase):
         disposition = ReviewHoldDisposition.record(
             hold=hold,
             clearing_verdict=clearing,
-            points=[{"index": 0, "classification": "disproved_premise", "citation": "CI run at this head is green"}],
+            points=[
+                {
+                    "index": 0,
+                    "classification": "disproved_premise",
+                    "citation": "CI run at this head is green",
+                    "counter_reproduction": {
+                        "command": "gh run view --json conclusion",
+                        "observed_result": "conclusion: success at the reviewed head",
+                    },
+                }
+            ],
         )
 
         assert (

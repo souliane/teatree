@@ -1,19 +1,30 @@
-from typing import TYPE_CHECKING, ClassVar, TypedDict
+from typing import TYPE_CHECKING, ClassVar, NotRequired, TypedDict
 
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.models.finding_standard import FindingKind
+from teatree.core.models.finding_standard import Finding, FindingKind
 from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 
 if TYPE_CHECKING:
     from teatree.core.models.review_verdict import ReviewVerdict
+
+#: A counter-reproduction is a content floor, not proof of execution: a command or test node id too
+#: short to be run, or an observed result too short to say anything, never answers a reproduced failure.
+MIN_COUNTER_COMMAND_CHARS = 8
+MIN_COUNTER_RESULT_CHARS = 16
+
+
+class CounterReproduction(TypedDict):
+    command: str
+    observed_result: str
 
 
 class HoldPointResponse(TypedDict):
     index: int
     classification: str
     citation: str
+    counter_reproduction: NotRequired[CounterReproduction]
 
 
 class ReviewHoldDispositionError(ValueError):
@@ -41,6 +52,22 @@ def _check_pair(hold: "ReviewVerdict", clearing_verdict: "ReviewVerdict") -> Non
         raise ReviewHoldDispositionError(msg)
 
 
+def _squashed(text: object) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _counter_reproduction_error(point: HoldPointResponse, finding: Finding) -> str:
+    counter = point.get("counter_reproduction")
+    if not isinstance(counter, dict):
+        return "a point whose finding carries an executed reproduction needs a counter_reproduction"
+    command, result = _squashed(counter.get("command")), _squashed(counter.get("observed_result"))
+    if len(command) < MIN_COUNTER_COMMAND_CHARS or len(result) < MIN_COUNTER_RESULT_CHARS:
+        return "counter_reproduction needs the command that was run and the result it printed"
+    if command == result or _squashed(finding.reproduction) in {command, result}:
+        return "counter_reproduction must be a run of its own, not the held reproduction repeated"
+    return ""
+
+
 def _check_points(hold: "ReviewVerdict", points: list[HoldPointResponse]) -> None:
     required = ReviewHoldDisposition.blocking_indices(hold)
     answered = [point.get("index") for point in points]
@@ -59,6 +86,12 @@ def _check_points(hold: "ReviewVerdict", points: list[HoldPointResponse]) -> Non
         ):
             msg = "venue_limit can answer only a venue-limit finding"
             raise ReviewHoldDispositionError(msg)
+        if point["index"] >= 0:
+            finding = hold.structured_findings[point["index"]]
+            if ReviewHoldDisposition.needs_counter_reproduction(finding) and (
+                error := _counter_reproduction_error(point, finding)
+            ):
+                raise ReviewHoldDispositionError(error)
 
 
 class ReviewHoldDisposition(models.Model):
@@ -93,6 +126,12 @@ class ReviewHoldDisposition(models.Model):
                 msg = "a recorded disposition is immutable"
                 raise ReviewHoldDispositionError(msg)
             return row
+
+    @staticmethod
+    def needs_counter_reproduction(finding: Finding) -> bool:
+        return finding.kind == FindingKind.BLOCKING and (
+            bool(finding.reproduction.strip()) or finding.basis == "executed"
+        )
 
     @staticmethod
     def blocking_indices(hold: "ReviewVerdict") -> set[int]:
