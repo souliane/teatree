@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import PartialReviewPublishError, PrReview, PrReviewComment
 from teatree.core.issue_hygiene import IssueDraft, create_or_extend_by_marker, open_candidates
+from teatree.core.modelkit.task_failure_taxonomy import COMMENT_CHECK_PREFIX, NIT_HEAD_MOVED
 from teatree.core.on_behalf_gate_recorded import OnBehalfPartialPublishError, require_on_behalf_approval
 from teatree.core.review.comment_checks import added_lines, comment_refusal, review_refusal
 from teatree.core.review.review_candidate import is_self_authored
@@ -57,7 +58,7 @@ def validate_nit_comments(points: tuple[NitPoint, ...]) -> None:
             marker="",
         )
         if refusal := review_refusal(review, file_diffs=dict):
-            message = f"comment check — {refusal}; revise the NIT and retry this head"
+            message = f"{COMMENT_CHECK_PREFIX}{refusal}; revise the NIT and retry this head"
             raise NitLaneError(message)
 
 
@@ -129,7 +130,7 @@ def _post_missing(
     )
     review = PrReview(commit_sha=head_sha, body="", comments=comments, marker="")
     if refusal := review_refusal(review, file_diffs=lambda: host.get_pr_file_diffs(repo=ref.slug, pr_iid=ref.pr_id)):
-        message = f"comment check — {refusal}"
+        message = f"{COMMENT_CHECK_PREFIX}{refusal}"
         raise NitLaneError(message)
 
     def publish() -> "RawAPIDict":
@@ -159,7 +160,7 @@ def _target(host: "CodeHostBackend", pr_url: str, head_sha: str, points: tuple[N
         message = "Every NIT needs a summary"
         raise NitLaneError(message)
     if host.fetch_live_head_sha(slug=ref.slug, pr_id=ref.pr_id) != head_sha:
-        message = "NIT review head moved before publication"
+        message = NIT_HEAD_MOVED
         raise NitLaneError(message)
     identities = confirmed_self_identity_set(pr_url, host=host)
     own_pr = is_self_authored(pr_url, host, identities) if identities is not None else None
@@ -393,7 +394,7 @@ def _resolve_threads(host: "CodeHostBackend", context: _NitContext, thread_ids: 
 def track_nits(*, host: "CodeHostBackend", pr_url: str, head_sha: str, points: tuple[NitPoint, ...]) -> NitReceipt:
     for point in points:
         if refusal := comment_refusal(f"Nit: {point.summary}", general=False):
-            message = f"comment check — {refusal}"
+            message = f"{COMMENT_CHECK_PREFIX}{refusal}"
             raise NitLaneError(message)
     context = _target(host, pr_url, head_sha, points)
     paired, thread_ids = _paired_comments(host, context, points)
