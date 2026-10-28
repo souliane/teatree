@@ -131,6 +131,68 @@ class TestBranchBehindTarget:
 
 
 class TestRequireCurrentBranch:
+    def test_refuses_wrong_checkout_when_branch_is_current(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _make_feature_branch(clone, "feat/x", "b.txt", "feature\n")
+        _git(clone, "checkout", "-b", "other")
+        before = _git(clone, "rev-parse", "HEAD")
+
+        result = require_current_branch(str(clone), "feat/x")
+
+        assert result["error"] is not None
+        assert "is on 'other', not recorded branch 'feat/x'" in result["error"]
+        assert _git(clone, "rev-parse", "HEAD") == before
+
+    def test_accepts_branch_that_shares_its_name_with_a_tag(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _make_feature_branch(clone, "v2", "b.txt", "feature\n")
+        _git(clone, "tag", "v2", "HEAD~1")
+        _advance_remote(tmp_path, bare, filename="c.txt", content="remote-add\n")
+
+        pre_merge_sha = _git(clone, "rev-parse", "refs/heads/v2")
+        staleness = branch_behind_target(str(clone), "v2")
+        result = require_current_branch(str(clone), "v2")
+
+        assert staleness is not None
+        assert staleness.base_oid == pre_merge_sha
+        assert result["auto_merged"] is True
+        assert result["error"] is None
+
+    def test_refuses_to_merge_into_another_checked_out_branch(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _make_feature_branch(clone, "feat/x", "b.txt", "feature\n")
+        _git(clone, "checkout", "-b", "other")
+        (clone / "d.txt").write_text("other\n")
+        _git(clone, "add", "d.txt")
+        _git(clone, "commit", "-m", "other")
+        _advance_remote(tmp_path, bare, filename="c.txt", content="remote-add\n")
+        before = _git(clone, "rev-parse", "HEAD")
+
+        result = require_current_branch(str(clone), "feat/x")
+
+        assert result["auto_merged"] is False
+        assert result["post_merge_sha"] is None
+        assert "is on 'other', not recorded branch 'feat/x'" in (result["error"] or "")
+        assert _git(clone, "rev-parse", "HEAD") == before
+
+    def test_refuses_to_merge_at_detached_head(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _make_feature_branch(clone, "feat/x", "b.txt", "feature\n")
+        before = _git(clone, "rev-parse", "HEAD")
+        _git(clone, "checkout", "--detach", before)
+        _advance_remote(tmp_path, bare, filename="c.txt", content="remote-add\n")
+
+        result = require_current_branch(str(clone), "feat/x")
+
+        assert result["auto_merged"] is False
+        assert result["post_merge_sha"] is None
+        assert "detached HEAD" in (result["error"] or "")
+        assert _git(clone, "rev-parse", "HEAD") == before
+
     def test_auto_merged_when_zero_conflict(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
