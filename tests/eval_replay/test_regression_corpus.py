@@ -11,6 +11,7 @@ The corpus runs under :class:`~django.test.TestCase` so the DB-backed checks
 (merge precondition, loop-lease, migration graph) execute against the test DB.
 """
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -19,6 +20,7 @@ from unittest.mock import patch
 from django.db.migrations.graph import MigrationGraph
 from django.test import TestCase
 
+from teatree.cli.verify_gates import _stage_env
 from teatree.core import merge as merge_execution
 from teatree.core.models import LoopLease
 from teatree.core.review import mr_metadata
@@ -50,6 +52,18 @@ def _forked_core_graph() -> MigrationGraph:
 
 
 class TestRegressionCorpusGreen(TestCase):
+    def test_corpus_stays_green_under_the_environment_verify_gates_exports(self) -> None:
+        registry = json.dumps({"leak": ["zzsynthetic"], "prose_collider": ["zzsynthetic"]})
+        with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": registry}):
+            stage_env = _stage_env(raw)
+            with patch.dict(os.environ, stage_env, clear=True):
+                assert os.environ["TEATREE_TERM_REGISTRY"] == registry
+                assert os.environ["XDG_DATA_HOME"] == raw
+                report = run_regression_corpus()
+        failures = [(result.check.failure_class, result.detail) for result in report.failures]
+        assert report.ok, f"corpus went RED under verify-gates environment: {failures}"
+        assert report.validated
+
     def test_every_check_passes_on_the_fixed_code(self) -> None:
         report = run_regression_corpus()
         failures = [(r.check.failure_class, r.detail) for r in report.failures]

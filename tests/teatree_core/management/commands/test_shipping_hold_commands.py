@@ -4,6 +4,7 @@ import json
 from io import StringIO
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
@@ -22,19 +23,27 @@ class TestShippingHoldCommands(TestCase):
             extra={"shipping_hold": {"reason": "awaiting evidence", "checked_at": ""}},
         )
         errors = StringIO()
-        with patch("teatree.core.managers_task_claim.claim_admission_block_reason", return_value="quiescing"):
+        with (
+            patch("teatree.core.managers_task_claim.claim_admission_block_reason", return_value="quiescing"),
+            pytest.raises(SystemExit) as exit_info,
+        ):
             call_command("ticket", "settle-holds", stderr=errors)
+        assert exit_info.value.code == 1
         assert "settlement deferred: quiescing" in errors.getvalue()
 
     def test_settle_holds_reports_applied_rows_after_later_failure(self) -> None:
         output = StringIO()
         errors = StringIO()
         applied = Settlement(12, "hold", "unverified: forge")
-        with patch(
-            "teatree.core.management.commands._shipping_hold_commands.settle_held_tickets",
-            side_effect=SettlementPassError("ticket 13: forge unavailable", [applied]),
+        with (
+            patch(
+                "teatree.core.management.commands._shipping_hold_commands.settle_held_tickets",
+                side_effect=SettlementPassError("ticket 13: forge unavailable", [applied]),
+            ),
+            pytest.raises(SystemExit) as exit_info,
         ):
             call_command("ticket", "settle-holds", "--json", stdout=output, stderr=errors)
+        assert exit_info.value.code == 1
         assert json.loads(output.getvalue()) == [{"ticket_id": 12, "action": "hold", "reason": "unverified: forge"}]
         assert "ticket 13: forge unavailable" in errors.getvalue()
 
