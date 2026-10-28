@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from datetime import timedelta
 from io import StringIO
 from typing import cast
@@ -40,6 +41,45 @@ def _merged_pr(ticket: Ticket, number: int, *, minutes_ago: int) -> None:
         repo_slug="souliane/teatree",
         merged_at=timezone.now() - timedelta(minutes=minutes_ago),
     )
+
+
+type _Report = dict[str, list[dict[str, object]]]
+type _GhRunner = Callable[[list[str]], tuple[int, str, str]]
+
+
+def _merged_ticket(issue: int, pr: int, *, overlay: str = "t3-teatree") -> Ticket:
+    ticket = Ticket.objects.create(
+        overlay=overlay,
+        issue_url=f"https://github.com/souliane/teatree/issues/{issue}",
+        state=Ticket.State.MERGED,
+    )
+    _merged_pr(ticket, pr, minutes_ago=10)
+    return ticket
+
+
+def _part_of(issue: int) -> str:
+    return f"Part of #{issue}\n\nUnmet: finish the report\nRemaining after this PR: wire the docs\n"
+
+
+def _pr_bodies(bodies: dict[str, str]) -> _GhRunner:
+    def run(argv: list[str]) -> tuple[int, str, str]:
+        return 0, json.dumps({"title": "A change", "body": bodies[argv[2]]}), ""
+
+    return run
+
+
+def _report(
+    *args: str, gh: _GhRunner, issue: Callable[[str], dict[str, str]], stderr: StringIO | None = None
+) -> _Report:
+    with (
+        patch.object(forge_merge_rpc, "gh_runner", return_value=gh),
+        patch.object(github_client.GitHubCodeHost, "get_issue", side_effect=issue),
+    ):
+        return cast("_Report", call_command("ticket", "partial-merge-report", *args, stderr=stderr))
+
+
+def _open_issue(url: str) -> dict[str, str]:
+    return {"state": "open", "body": ""}
 
 
 class TestPartialMergeReport(TestCase):
@@ -171,3 +211,70 @@ class TestPartialMergeReport(TestCase):
             {"ticket_id": failing.pk, "reason": "issue unreadable on the forge"},
         ]
         assert [row["ticket_id"] for row in result["matches"]] == [partial.pk]
+
+    def test_an_issue_the_forge_returns_without_a_known_state_is_one_unreadable_row(self) -> None:
+        no_state = _merged_ticket(4242, 859)
+        odd_state = _merged_ticket(4243, 860)
+
+        def issue(url: str) -> dict[str, str]:
+            return {"body": ""} if url.endswith("4242") else {"state": "draft", "body": ""}
+
+        result = _report(gh=_pr_bodies({"859": _part_of(4242), "860": _part_of(4243)}), issue=issue)
+
+        assert result == {
+            "matches": [],
+            "unreadable": [
+                {"ticket_id": no_state.pk, "reason": "issue state unreadable"},
+                {"ticket_id": odd_state.pk, "reason": "issue state unreadable"},
+            ],
+        }
+
+    def test_a_pull_request_body_the_forge_does_not_return_is_one_unreadable_row(self) -> None:
+        silent = _merged_ticket(4242, 859)
+        readable = _merged_ticket(4243, 860)
+        readable_body = _pr_bodies({"860": _part_of(4243)})
+
+        def gh(argv: list[str]) -> tuple[int, str, str]:
+            return (1, "", "HTTP 502") if argv[2] == "859" else readable_body(argv)
+
+        result = _report(gh=gh, issue=_open_issue)
+
+        assert result["unreadable"] == [{"ticket_id": silent.pk, "reason": "pull request body unreadable"}]
+        assert [row["ticket_id"] for row in result["matches"]] == [readable.pk]
+
+    def test_the_overlay_option_limits_the_report_to_that_overlays_tickets(self) -> None:
+        _merged_ticket(4242, 859)
+        other = _merged_ticket(4243, 860, overlay="other-overlay")
+
+        result = _report(
+            "--overlay",
+            "other-overlay",
+            gh=_pr_bodies({"859": _part_of(4242), "860": _part_of(4243)}),
+            issue=_open_issue,
+        )
+
+        assert [row["ticket_id"] for row in result["matches"]] == [other.pk]
+        assert result["unreadable"] == []
+
+    def test_the_human_output_lists_matches_then_unreadable_tickets(self) -> None:
+        unreadable = _merged_ticket(4242, 859)
+        partial = _merged_ticket(4243, 860)
+        stderr = StringIO()
+
+        def issue(url: str) -> dict[str, str]:
+            return {"body": ""} if url.endswith("4242") else {"state": "open", "body": ""}
+
+        _report(gh=_pr_bodies({"860": _part_of(4243)}), issue=issue, stderr=stderr)
+
+        pr_url = "https://github.com/souliane/teatree/pull/860"
+        assert stderr.getvalue().splitlines() == [
+            f"ticket {partial.pk} {partial.issue_url} — {pr_url}: finish the report, wire the docs",
+            f"ticket {unreadable.pk}: unreadable (issue state unreadable)",
+        ]
+
+    def test_the_human_output_says_so_when_no_merged_ticket_declares_a_remainder(self) -> None:
+        stderr = StringIO()
+
+        _report(gh=_pr_bodies({}), issue=_open_issue, stderr=stderr)
+
+        assert stderr.getvalue().strip() == "no merged tickets with a declared remainder"
