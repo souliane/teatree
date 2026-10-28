@@ -6,12 +6,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import PartialReviewPublishError, PrReview, PrReviewComment
+from teatree.core.gates.privacy_gate import format_refusal, scan_outbound_text
 from teatree.core.issue_hygiene import IssueDraft, create_or_extend_by_marker, open_candidates
 from teatree.core.on_behalf_gate_recorded import OnBehalfPartialPublishError, require_on_behalf_approval
 from teatree.core.review.comment_checks import added_lines, comment_refusal, review_refusal
 from teatree.core.review.review_candidate import is_self_authored
 from teatree.core.self_forge_identities import confirmed_self_identity_set, require_self_authored_issue
-from teatree.core.send_proxy import route_forge_write
+from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.on_behalf_gate import OnBehalfContext
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -48,7 +49,8 @@ class NitLaneError(RuntimeError):
     pass
 
 
-def validate_nit_comments(points: tuple[NitPoint, ...]) -> None:
+def validate_nit_comments(points: tuple[NitPoint, ...], *, pr_url: str = "") -> None:
+    ref = pr_ref_from_url(pr_url) if pr_url else None
     for point in points:
         review = PrReview(
             commit_sha="",
@@ -59,6 +61,13 @@ def validate_nit_comments(points: tuple[NitPoint, ...]) -> None:
         if refusal := review_refusal(review, file_diffs=dict):
             message = f"comment check — {refusal}; revise the NIT and retry this head"
             raise NitLaneError(message)
+        if ref is not None:
+            scan = scan_outbound_text(
+                text=f"{point.file}:{point.line}\nNit: {point.summary}", target_repo=ref.slug, forge=ref.host_kind
+            )
+            if scan.refused:
+                message = f"comment check — {format_refusal(scan)}; revise the NIT and retry this head"
+                raise NitLaneError(message)
 
 
 def nit_pr_marker(pr_url: str) -> str:
@@ -395,8 +404,11 @@ def track_nits(*, host: "CodeHostBackend", pr_url: str, head_sha: str, points: t
         if refusal := comment_refusal(f"Nit: {point.summary}", general=False):
             message = f"comment check — {refusal}"
             raise NitLaneError(message)
-    context = _target(host, pr_url, head_sha, points)
-    paired, thread_ids = _paired_comments(host, context, points)
-    issue_url = _follow_up_issue(host, context, paired=paired, thread_ids=thread_ids)
-    _resolve_threads(host, context, thread_ids)
+    try:
+        context = _target(host, pr_url, head_sha, points)
+        paired, thread_ids = _paired_comments(host, context, points)
+        issue_url = _follow_up_issue(host, context, paired=paired, thread_ids=thread_ids)
+        _resolve_threads(host, context, thread_ids)
+    except OutboundBlockedError as exc:
+        raise NitLaneError(str(exc)) from exc
     return NitReceipt(issue_url, thread_ids, head_sha)

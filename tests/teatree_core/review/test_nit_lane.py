@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
 from teatree.core.backend_protocols import PrReview
 from teatree.core.review.nit_lane import (
@@ -20,6 +21,8 @@ from teatree.core.review.nit_lane import (
     track_nits,
 )
 from teatree.utils.url_slug import pr_ref_from_url
+
+PRIVATE_PATH = "/home/example/private.txt"  # privacy-scan:allow (fake fixture path, not PII)
 
 
 class _Host:
@@ -289,6 +292,52 @@ def test_inline_review_never_posts_when_privacy_scan_refuses() -> None:
         )
     assert host.review_posts == []
     assert host.issues == {}
+
+
+class TestRealOutboundLeak(TestCase):
+    def test_real_outbound_leak_is_a_recoverable_nit_lane_error(self) -> None:
+        host = _Host()
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+            patch("teatree.core.review.nit_lane.confirmed_self_identity_set", return_value={"alice"}),
+            patch("teatree.core.review.nit_lane.is_self_authored", return_value=True),
+            pytest.raises(NitLaneError, match="generic:home_path"),
+        ):
+            track_nits(
+                host=host,
+                pr_url="https://github.com/souliane/teatree/pull/9",
+                head_sha="a" * 40,
+                points=(NitPoint(file="x.py", line=2, summary=f"Inspect {PRIVATE_PATH}"),),
+            )
+        assert host.review_posts == []
+        assert host.issues == {}
+
+    def test_issue_only_privacy_refusal_is_a_recoverable_nit_lane_error(self) -> None:
+        host = _Host()
+        with (
+            patch(
+                "teatree.core.send_proxy.route_send",
+                side_effect=lambda request: SimpleNamespace(allowed=True, payload=request.payload),
+            ),
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate._db_banned_terms", return_value=[]),
+            patch("teatree.core.gates.privacy_gate._registered_overlay_rules_union", return_value=([], [])),
+            patch("teatree.core.review.nit_lane.confirmed_self_identity_set", return_value={"alice"}),
+            patch("teatree.core.review.nit_lane.is_self_authored", return_value=True),
+            pytest.raises(NitLaneError, match="generic:home_path"),
+        ):
+            track_nits(
+                host=host,
+                pr_url="https://github.com/souliane/teatree/pull/9",
+                head_sha="a" * 40,
+                points=(NitPoint(file=PRIVATE_PATH, line=0, summary="Rename helper"),),
+            )
+        assert host.review_posts == []
+        assert host.issues == {}
 
 
 def test_missing_or_off_diff_anchor_becomes_issue_only() -> None:
