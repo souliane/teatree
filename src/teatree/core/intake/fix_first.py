@@ -1,6 +1,7 @@
 """Bounded fix-first evidence for the intake landscape survey."""
 
 import json
+import logging
 from datetime import datetime
 from typing import TypedDict
 
@@ -24,6 +25,7 @@ AUTHOR_STATE_PHASE: dict[str, str] = {
 DEFAULT_STUCK_IDLE_HOURS = 6
 FIX_FIRST_LIST_CAP = 5
 FIX_FIRST_MAX_BYTES = 3072
+logger = logging.getLogger(__name__)
 
 
 class DefectEntry(TypedDict):
@@ -73,7 +75,8 @@ def _defects(host: CodeHostBackend | None, repo_slugs: list[str]) -> tuple[list[
     for slug in repo_slugs:
         try:
             issues = host.list_repo_open_issues(repo=slug)
-        except Exception as exc:  # noqa: BLE001 — surface a failed external read in the survey
+        except Exception as exc:
+            logger.exception("Could not list defects in %s", slug)
             unread.append(f"could not list defects in {slug}: {exc}"[:160])
             continue
         if not isinstance(issues, list):
