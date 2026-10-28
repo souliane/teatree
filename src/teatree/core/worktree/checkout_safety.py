@@ -1,6 +1,8 @@
 """Factory decision for a checkout whose prior attestation no longer matches."""
 
+import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -20,6 +22,7 @@ from teatree.core.models.checkout_custody import Custody
 from teatree.core.models.worktree_occupancy import occupancy_holder, task_holder_id
 from teatree.core.worktree.checkout_recovery import checkout_state_unchanged, interrupted_writer, released_hand_off
 from teatree.core.worktree.checkout_released import owned_github_pr_url
+from teatree.core.worktree.checkout_state import uncommitted_paths
 from teatree.utils import git
 
 if TYPE_CHECKING:
@@ -127,6 +130,28 @@ def _head_obstacle(task: Task, worktree: Worktree, state: "CheckoutState", prese
     return ""
 
 
+def _inode_changed_at(path: Path, checkout: Path) -> float:
+    while not os.path.lexists(path) and path != checkout:
+        path = path.parent
+    return path.lstat().st_ctime
+
+
+def _dirt_predates(checkout: Path, ended_at: str) -> bool:
+    try:
+        cutoff = datetime.fromisoformat(ended_at).timestamp()
+        return all(_inode_changed_at(path, checkout) <= cutoff for path in uncommitted_paths(checkout))
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _interrupted_writer_owns_dirt(task: Task, custody: Custody | None, checkout: Path) -> bool:
+    return (
+        custody is not None
+        and interrupted_writer(task, custody) is not None
+        and _dirt_predates(checkout, custody.tenures[-2].ended_at)
+    )
+
+
 def assess_checkout_safety(
     task: Task,
     worktree: Worktree,
@@ -138,8 +163,7 @@ def assess_checkout_safety(
     path = Path(worktree.worktree_path)
     deferred = worktree.get_extra().get("deferred_exit")
     custody = Custody.from_extra(worktree.get_extra()) if state.uncommitted else None
-    prior = interrupted_writer(task, custody) if custody is not None else None
-    recover_owned_dirt = prior is not None
+    recover_owned_dirt = _interrupted_writer_owns_dirt(task, custody, path)
     allow_deferred_dirt = (
         attested == state.digest
         or (isinstance(deferred, dict) and deferred.get("digest") == state.digest)
