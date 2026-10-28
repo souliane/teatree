@@ -128,20 +128,20 @@ class TestOrchestratePhaseManifestGolden(django.test.TestCase):
 
 
 class TestOrchestratePhaseClaimSemantics(django.test.TestCase):
-    def test_held_starters_do_not_consume_the_planning_claim_slot(self) -> None:
-        for index in range(3):
+    def test_many_live_pull_requests_do_not_hold_starters(self) -> None:
+        for index in range(20):
             ticket = Ticket.objects.create()
             PullRequest.objects.record_opened(
                 ticket=ticket, url=f"https://github.com/example-org/example-repo/pull/{index + 300}"
             )
-        held = [_dispatchable_task(phase="coding") for _ in range(2)]
-        planning = _dispatchable_task(phase="planning")
+        starters = [_dispatchable_task(phase="coding") for _ in range(2)]
 
         with _with_wip(Wip.SLOW):
             manifest = orchestrate_phase(backends=[OverlayBackends(name="a", max_concurrent_auto_starts=1)], claim=True)
 
-        assert [entry.task_id for entry in manifest.entries] == [planning.pk]
-        assert all(Task.objects.get(pk=task.pk).status == Task.Status.PENDING for task in held)
+        assert [entry.task_id for entry in manifest.entries] == [starters[0].pk]
+        assert Task.objects.get(pk=starters[0].pk).status == Task.Status.CLAIMED
+        assert Task.objects.get(pk=starters[1].pk).status == Task.Status.PENDING
 
     def test_default_plan_is_read_only_and_claims_nothing(self) -> None:
         task = _dispatchable_task()

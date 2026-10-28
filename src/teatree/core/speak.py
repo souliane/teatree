@@ -1,25 +1,16 @@
-"""Text-to-speech egress — the ``speak()`` seam + the shared user-DM chokepoint (#2060).
+"""Text-to-speech egress for bot-to-user DMs (#2060).
 
 A single place that reads the resolved :class:`~teatree.types.SpeakConfig`
 (a ``local`` :class:`~teatree.types.LocalPlayback` enum + a ``slack`` bool)
-and delivers spoken agent text. Two distinct deliveries share one config:
+and delivers spoken agent text through two DM paths:
 
-*   :func:`deliver_user_dm` — the ONE chokepoint both bot→user DM egress
-    points call (:func:`teatree.core.notify.notify_user` and the on-behalf
-    self-DM in :func:`teatree.core.on_behalf_egress.OnBehalfSlackEgress.post`).
-    When ``slack`` is on and synthesis succeeds it posts a SINGLE DM carrying
-    the text + an inline audio attachment
-    (:meth:`~teatree.backends.slack.bot.SlackBotBackend.post_audio_dm`); on a
-    synthesis failure (or ``slack`` off) it degrades to a text-only
-    :meth:`post_message`. Independently, when ``local`` is ``dm`` or ``all``
-    the same text plays through the machine's speakers — so the user's own DM
-    both reaches his phone with audio and reads aloud locally, driven from one
-    call. The two axes are independent: Slack never auto-plays, so the local
-    play is never suppressed by the Slack attach.
-*   :func:`speak` — the in-client last-turn read the Stop hook drives via a
-    detached ``t3 speak`` subprocess. It plays ONLY through the local speakers
-    and only when ``local == all`` — in-client turns are never Slack messages,
-    so there is no double-play to suppress.
+*   :func:`deliver_user_dm` posts an on-behalf self-DM with an inline audio
+    attachment when ``slack`` is on and synthesis succeeds, else text only.
+*   :func:`deliver_user_dm_sidecar` enriches an already-posted ``notify_user``
+    DM with audio under its text message when ``slack`` is on.
+
+Both paths play locally when ``local`` is ``dm``. Slack never auto-plays, so
+local playback is independent of the audio attachment.
 
 **Presence gate at playback, not at config.** A configured presence backend
 reporting ``IN_MEETING`` silences LOCAL playback — not the ``slack`` arm, which
@@ -29,9 +20,8 @@ configured :class:`~teatree.types.SpeakConfig` unchanged. The user's configured
 ``local`` is never mutated or overridden by presence — only actual playback is
 gated.
 
-**Cross-process speaker mutual exclusion (#2152).** Local playback fans out
-from two independent sources — each DM's :func:`_maybe_speak_local` leg and
-the detached ``t3 speak`` Stop-hook read — each spawning its own ``say``.
+**Cross-process speaker mutual exclusion (#2152).** Local playback can fan out
+from independent DMs, each spawning its own ``say``.
 :func:`_speak_local` therefore takes a single machine-wide :func:`fcntl.flock`
 on a lockfile under the teatree state dir (:func:`_speaker_lock_path`) around
 the actual ``say`` call. The lock is best-effort: if the lockfile cannot be
@@ -79,7 +69,6 @@ __all__ = [
     "deliver_user_dm",
     "deliver_user_dm_sidecar",
     "resolve_speak",
-    "speak",
     "synthesise",
 ]
 
@@ -94,8 +83,7 @@ _AFCONVERT_BINARY = "afconvert"
 _SPEAK_SUBPROCESS_TIMEOUT = 120
 
 # A single machine-wide lockfile gives every ``say`` invocation MUTUAL
-# EXCLUSION — across in-process daemon threads AND the separate detached
-# ``t3 speak`` subprocesses — so local reads never talk over each other.
+# EXCLUSION across in-process daemon threads, so local reads never overlap.
 _SPEAKER_LOCK_NAMESPACE = "speak"
 _SPEAKER_LOCK_FILENAME = "speaker.lock"
 
@@ -103,7 +91,7 @@ _SPEAKER_LOCK_FILENAME = "speaker.lock"
 # in a short retry loop with a total budget: a read that cannot acquire it
 # within the budget falls through and plays without serialization rather than
 # being dropped. Local reads fan out from many sources (every bot→user DM
-# local-play leg + every Stop-hook ``t3 speak`` read), so an unbounded blocking
+# local-play leg), so an unbounded blocking
 # acquire builds a multi-minute backlog under a flood — a message could play
 # 15 min after it was printed. A brief overlap is strictly better than a
 # 15-min-late read: serialization holds in the common case and latency is capped
@@ -163,36 +151,6 @@ def _speak_local_closing_connections(text: str) -> None:
         close_thread_db_connections()
 
 
-def speak(text: str, *, block: bool = False) -> None:
-    """Read ``text`` aloud through the LOCAL speakers — never raises (#2060).
-
-    The Stop-hook seam: the detached ``t3 speak`` subprocess calls this with
-    the in-client turn's last assistant text. It plays only on the local
-    speakers — the Slack-audio attach is owned by :func:`deliver_user_dm`,
-    not this path — so a blank cleaned text, ``local`` not ``all``, or any
-    failure is a silent no-op. The Stop-hook arm only spawns this when
-    ``local == all``; in-client turns are never Slack messages, so the
-    ``slack`` attach is irrelevant here.
-
-    ``block=False`` dispatches on a daemon thread so an in-process caller is
-    never delayed; ``block=True`` runs synchronously — used by the detached
-    subprocess, whose whole job is to deliver before it exits.
-    """
-    config = resolve_speak()
-    if not config.speaks_in_client_turns():
-        return
-    cleaned = clean_for_speech(text)
-    if not cleaned:
-        return
-    if block:
-        _speak_local(cleaned)
-        return
-    thread = threading.Thread(
-        target=_speak_local_closing_connections, args=(cleaned,), daemon=True, name=SPEAK_THREAD_NAME
-    )
-    thread.start()
-
-
 def deliver_user_dm(
     backend: MessagingBackend,
     *,
@@ -209,7 +167,7 @@ def deliver_user_dm(
     :meth:`post_audio_dm` carrying ``text`` as the message + the audio
     inline; otherwise (``slack`` off, ``say``/``afconvert`` absent, synthesis
     or upload failure) degrades to a text-only :meth:`post_message` so the
-    DM is never lost. Independently, when ``local`` is ``dm`` or ``all`` the
+    DM is never lost. Independently, when ``local`` is ``dm`` the
     same text plays through the speakers — never suppressed by ``slack``
     (Slack never auto-plays).
 
@@ -257,7 +215,7 @@ def deliver_user_dm_sidecar(
         ``post_audio_dm`` response is intentionally ignored here: the caller
         already has the ``ts`` from the text delivery and does not need it.
     *   **Local playback** — play the text through the machine's speakers
-        when ``local`` is ``dm`` or ``all``.
+        when ``local`` is ``dm``.
 
     ``initial_comment`` controls the text posted ALONGSIDE the audio (F4.4).
     ``None`` (the default) reuses ``text`` as the audio DM's ``initial_comment``
@@ -383,7 +341,7 @@ def _speaker_lock_path() -> Path:
 
     Lives under the canonical teatree state dir
     (:func:`teatree.paths.get_data_dir`), never an ad-hoc path, so the in-process
-    daemon threads and the separate detached ``t3 speak`` subprocesses all flock
+    daemon threads in separate processes all flock
     the SAME file — the only way to serialize across processes.
     """
     return get_data_dir(_SPEAKER_LOCK_NAMESPACE) / _SPEAKER_LOCK_FILENAME
@@ -464,7 +422,7 @@ def _speak_local(text: str) -> None:
 
     Mutually exclusive machine-wide: the actual ``say`` call runs under the
     cross-process :func:`_serial_speaker` lock so concurrent local reads (in
-    other threads or separate ``t3 speak`` subprocesses) never overlap. The lock
+    other threads or processes) never overlap. The lock
     is best-effort: if it cannot be acquired within the wait budget, the read
     falls through and plays anyway (without serialization) — a concurrent overlap
     is better than a silenced read. Failure of ``say`` itself is tolerated

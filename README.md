@@ -422,7 +422,6 @@ t3 goal set/list/clear          # register / list / clear a standing verified-gr
 t3 cost                         # cycle-to-date SDK-equivalent spend + effective-token (ET) totals, split by subscription/metered lane
 t3 cost-profile [--since ISO-8601] [--json]  # profile real dispatches: cache read share, context size, and addressable spend bounds
 t3 capabilities --json          # machine-readable registry of which t3 commands emit JSON and their exit-code contract (a front-end drives teatree from this)
-t3 speak                        # read text aloud on local speakers per [teatree.speak] (no-op unless local = all)
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
 t3 push [--repo p] [--remote r] [--branch b] [--force-with-lease]  # the supported push path from the worker container: resolves the forge token (GH_TOKEN → TEATREE_GH_TOKEN → the overlay's pass store) and hands it to git as env only, disables every interactive credential prompt so a missing token fails fast instead of hanging, and refuses a remote whose URL embeds a credential. Never passes --no-verify — the pre-push hooks still run
 t3 fast-push [-m msg] [--remaining txt]  # leak-gated escape hatch for session hand-offs: stage → in-process leak gates (banned-terms, secret-scan, overlay-leak, public-repo author-identity; fail-closed) → commit → push → create-or-update the PR; skips every non-leak gate; any finding refuses the push
