@@ -8,8 +8,9 @@ never be added on the producing side without the consuming side learning it.
 Two seams produce an envelope refusal, and they used to name it in two
 hand-maintained vocabularies that drifted:
 
-* the RUNNER (:func:`teatree.agents.runner._record_success`) refuses a run whose
-    output carried no JSON object at all — :data:`NO_ENVELOPE_ERROR`;
+* the RUNNER (:func:`teatree.agents.runner_outcomes.record_success`) refuses a run whose
+    output carried no JSON object or an unparsable envelope — :data:`NO_ENVELOPE_ERROR`
+    or :data:`UNPARSEABLE_ENVELOPE_PREFIX`;
 * the RECORDER (:mod:`teatree.agents.attempt_recorder`, :func:`…result_schema.check_evidence`)
     refuses an envelope that parsed but is unusable — wrong keys, not an object, or
     missing the phase's evidence field.
@@ -35,6 +36,7 @@ from teatree.agents.result_schema import (
     required_evidence_for_phase,
 )
 from teatree.core.modelkit.task_failure_taxonomy import (
+    COMMENT_CHECK_PREFIX,
     MALFORMED_FIX_RECORD_PREFIX,
     MALFORMED_RUBRIC_GRADES_PREFIX,
     MALFORMED_TICKET_SWEEP_PREFIX,
@@ -54,6 +56,8 @@ NO_ENVELOPE_PREFIX = "no_result_envelope: "
 #: identical fingerprint and halted a phase that was never doomed.
 NO_ENVELOPE_ERROR = f"{NO_ENVELOPE_PREFIX}agent produced no JSON result envelope; refusing to record success"
 
+UNPARSEABLE_ENVELOPE_PREFIX = "result is not valid JSON: "
+
 #: Prefixes on review context blocks. They retain the recording-refused failure kind.
 REVIEW_CONTEXT_REFUSAL_PREFIX = "review context recording refused: "
 ANTI_VACUITY_REFUSAL_PREFIX = "anti-vacuity recording refused: "
@@ -64,7 +68,7 @@ ANTI_VACUITY_REFUSAL_PREFIX = "anti-vacuity recording refused: "
 _RECORDER_REFUSAL_MARKERS = (
     "missing required evidence",
     "unexpected keys",
-    "result is not valid json",
+    UNPARSEABLE_ENVELOPE_PREFIX.strip().casefold(),
     "result must be a json object",
     MALFORMED_FIX_RECORD_PREFIX.strip().casefold(),
     MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
@@ -92,10 +96,18 @@ def is_no_envelope_refusal(error: str) -> bool:
     return NO_ENVELOPE_PREFIX.strip().casefold() in error.casefold()
 
 
+def is_unparseable_envelope_refusal(error: str) -> bool:
+    return error.casefold().startswith(UNPARSEABLE_ENVELOPE_PREFIX.casefold())
+
+
 def is_recorder_refusal(error: str) -> bool:
     """Whether *error* is a RECORDER-side refusal of a parsed-but-unusable envelope."""
     haystack = error.casefold()
     return any(marker in haystack for marker in _RECORDER_REFUSAL_MARKERS)
+
+
+def is_comment_check_refusal(error: str) -> bool:
+    return COMMENT_CHECK_PREFIX.casefold() in error.casefold()
 
 
 def is_review_shape_refusal(error: str) -> bool:

@@ -35,8 +35,9 @@ def _loops() -> None:
 def list_command(
     *,
     json_output: bool = typer.Option(False, "--json", help="Emit the loops as JSON."),
+    by_cost: bool = typer.Option(False, "--by-cost", help="Rank by the share of one core the idle ticks take."),
 ) -> None:
-    """List DB-configured autonomous loops: name, enabled, delay, last run, next due.
+    """List DB-configured autonomous loops: name, enabled, delay, last run, next due, idle tick cost.
 
     Read-only: it reads the ``Loop`` table and prints it — never ticks, marks a
     run, or mutates a row.
@@ -45,9 +46,7 @@ def list_command(
 
     from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
-    kwargs: dict[str, bool] = {}
-    if json_output:
-        kwargs["json_output"] = True
+    kwargs = {key: True for key, flag in (("json_output", json_output), ("by_cost", by_cost)) if flag}
     call_command("loops_list", **kwargs)
 
 

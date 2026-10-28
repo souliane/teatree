@@ -244,6 +244,7 @@ class _GhStub:
 
 
 class TestShipAndMergeGatePreservation(TestCase):
+    @pytest.mark.usefixtures("readable_ship_tree")
     def test_pr_create_blocks_without_visited_phases(self) -> None:
         # The shipping gate must fire identically over MCP: a worktree'd ticket
         # with no testing/reviewing phases visited ⇒ structured gate failure,

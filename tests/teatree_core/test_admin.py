@@ -336,6 +336,12 @@ class TestLoopAdmin(django.test.TestCase):
         model_admin = admin.site._registry[Loop]
         assert "colleague_facing" in model_admin.list_editable
 
+    def test_machine_written_loop_counters_are_read_only(self) -> None:
+        model_admin = admin.site._registry[Loop]
+        assert {"idle_cpu_seconds", "busy_cpu_seconds", "consecutive_deadline_kills"} <= set(
+            model_admin.readonly_fields
+        )
+
     def test_loop_admin_action_shows_script_or_prompt(self) -> None:
         model_admin = admin.site._registry[Loop]
         prompt_loop = Loop(name="demo-prompt", delay_seconds=60, prompt=_prompt())

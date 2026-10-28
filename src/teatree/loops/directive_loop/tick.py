@@ -62,6 +62,7 @@ from teatree.loops.directive_loop.verify import (
     verify_and_decide,
 )
 from teatree.loops.shared.guards import GuardSeams
+from teatree.loops.tick_cost import action_found_work
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +75,6 @@ _INTAKE_STATES = frozenset(
         Directive.State.RATIFY_PENDING,
     }
 )
-
-#: Tick actions that report a wait on someone else rather than a step taken.
-_NO_PROGRESS_ACTIONS = frozenset({"waiting", "pending", "refused", "idle"})
 
 #: How many ratify questions may sit UNANSWERED on the owner at once.
 #:
@@ -188,7 +186,7 @@ def _drain_intake(actives: list[Directive], *, budget: int, stepped: set[int]) -
         result = _advance_intake(directive, ratify_slots=MAX_OPEN_RATIFY_QUESTIONS - _open_ratify_questions(actives))
         stepped.add(directive.pk)
         results.append(result)
-        if result.action not in _NO_PROGRESS_ACTIONS:
+        if action_found_work(result.action):
             spent += 1
     return results
 
@@ -238,9 +236,9 @@ def _run_execution_step(
 
 def _summarise(results: list[DirectiveTickResult]) -> DirectiveTickResult:
     """Report the first result that made progress, tagged with how many directives moved."""
-    advanced = sum(1 for result in results if result.action not in _NO_PROGRESS_ACTIONS)
+    advanced = sum(1 for result in results if action_found_work(result.action))
     headline = next(
-        (result for result in results if result.action not in _NO_PROGRESS_ACTIONS),
+        (result for result in results if action_found_work(result.action)),
         results[0] if results else DirectiveTickResult(action="idle", reason="no_active_directive"),
     )
     return replace(headline, advanced=advanced)

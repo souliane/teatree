@@ -481,7 +481,7 @@ non-zero when any of these holds:
 
 ## Related skills
 
-- `t3:scanning-news` — the sibling cadence/ask-gate loop scanner.
+- `t3:scanning-news` — the sibling cadence scanner with per-article decisions.
 - `t3:retro` — distinct domain (additive memory rules from transcripts); this
   skill is deliberately *not* folded into it (#2419).
 

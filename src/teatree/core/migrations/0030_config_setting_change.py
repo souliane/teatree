@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0026_retire_checkout_questions"),
+        ("core", "0029_loop_tick_cost"),
     ]
 
     operations = [

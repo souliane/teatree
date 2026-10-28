@@ -85,7 +85,6 @@ skills/rules/references/sub-agents.md::glab ci status
 skills/rules/references/verification.md::gh pr view
 skills/rules/references/verification.md::glab mr view
 skills/rules/references/worked-dispatch-examples.md::gh pr create
-skills/scanning-news/SKILL.md::gh issue list
 skills/setup/SKILL.md::gh auth status
 skills/setup/SKILL.md::glab auth status
 skills/setup/SKILL.md::t3 config_setting set

@@ -47,6 +47,7 @@ RENAMED_CONFIG_SETTINGS = {
 RETIRED_CONFIG_SETTINGS = {
     "branch_prefix": "retired: no readers; branch naming uses T3_BRANCH_PREFIX (#2731)",
     "ask_before_post_on_behalf": "retired: no readers; posting uses resolve_on_behalf_verdict (#2731)",
+    "ask_before_creating_news_tickets": "retired: article decisions settle during the news scan (#5687)",
 }
 
 

@@ -9,15 +9,24 @@ calls :func:`record_reactive_envelopes` after the evidence gate has already
 refused a summary-only run, so each channel field is present and non-empty here.
 """
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, cast
 
+from django.db import transaction
 from django.utils import timezone
 
 from teatree.agents.result_payloads import answer_text, recommendation_issue_url, suggestion_url
 from teatree.agents.result_schema import AgentResultBlob, AnswerEnvelope, ArticleSuggestion, TriageRecommendation
+from teatree.core.issue_hygiene import (
+    DescriptionSection,
+    IssueDraft,
+    append_description_section,
+    create_or_extend_by_marker,
+)
+from teatree.core.issue_writes.issue_candidate_selection import description_of, open_candidates
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
@@ -27,6 +36,7 @@ from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.news_digest import DigestItem, render_digest
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.question_heal import record_withheld
+from teatree.core.self_forge_identities import ExternalIssueRefusedError
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
@@ -71,13 +81,7 @@ def record_reactive_envelopes(task: Task, result: AgentResultBlob, *, phase: str
 
 
 def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, phase: str) -> None:
-    """Persist a scanning_news agent's returned ``article_suggestions`` (corr-11, #9).
-
-    One ``PENDING`` :class:`PendingArticleSuggestion` per candidate, idempotent by
-    source URL. After at least one new candidate is recorded, the press-review
-    digest delivers the read. A non-scanning_news phase or a result with no
-    ``article_suggestions`` list is a no-op.
-    """
+    """Settle each newly verified news candidate before delivering the digest."""
     if normalize_phase(phase or task.phase) != _SCANNING_NEWS_PHASE:
         return
     suggestions = result.get("article_suggestions")
@@ -90,31 +94,101 @@ def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, ph
         if not url:
             continue
         item = cast("ArticleSuggestion", raw_item)
-        row = PendingArticleSuggestion.record_candidate(
-            url=url,
-            title=str(item.get("title") or ""),
-            summary=str(item.get("rationale") or ""),
-            overlay=overlay,
-        )
-        if row is not None:
-            recorded.append(row)
+        with transaction.atomic():
+            row = PendingArticleSuggestion.record_candidate(
+                url=url,
+                title=str(item.get("title") or ""),
+                summary=str(item.get("rationale") or ""),
+                overlay=overlay,
+            )
+            if row is not None:
+                _settle_news_candidate(row, item, overlay=overlay)
+                recorded.append(row)
     if not recorded:
         return
     _post_press_review_digest(task, recorded)
 
 
+def _settle_news_candidate(row: PendingArticleSuggestion, item: ArticleSuggestion, *, overlay: str) -> None:
+    reason = _news_drop_reason(item)
+    if reason:
+        row.settle_dropped(reason=reason)
+        return
+    host = _resolved_code_host(overlay)
+    source = f"Source: {row.url}"
+    title = str(item["ticket_title"]).strip()
+    idea_digest = hashlib.sha256(" ".join(title.casefold().split()).encode()).hexdigest()[:16]
+    marker = f"<!-- t3-news-idea:{idea_digest} -->"
+    body = f"{str(item['ticket_body']).strip()}\n\n{source}\n\n{marker}"
+    duplicate_of = str(item.get("duplicate_of") or "").strip()
+    if duplicate_of:
+        if duplicate_of not in open_candidates(host=host, repo="souliane/teatree"):
+            row.settle_dropped(reason="The reported duplicate is no longer open")
+            return
+        try:
+            append_description_section(
+                host=host,
+                issue_url=duplicate_of,
+                section=DescriptionSection(heading="News scan evidence", body=body, action="news_scan_candidate"),
+            )
+        except ExternalIssueRefusedError:
+            row.settle_dropped(reason=f"An existing externally authored issue covers this idea: {duplicate_of}")
+            return
+        row.settle_filed(issue_url=duplicate_of, reason="Extended an open issue for the same idea")
+        return
+    draft = IssueDraft(
+        repo="souliane/teatree",
+        title=title,
+        body=body,
+        labels=("from-news-scan", "needs-triage"),
+        action="news_scan_candidate",
+        forge="github",
+    )
+    outcome = create_or_extend_by_marker(host=host, draft=draft, marker=marker)
+    if outcome.kind == "external_conflict":
+        row.settle_dropped(reason=f"An existing externally authored issue covers this article: {outcome.issue_url}")
+    elif outcome.issue_url:
+        observed = description_of(host.get_issue(outcome.issue_url))
+        if marker not in observed or row.url not in observed:
+            message = "news issue write could not be confirmed on the forge"
+            raise RuntimeError(message)
+        row.settle_filed(issue_url=outcome.issue_url, reason=outcome.kind)
+    else:
+        message = "news issue filing returned no issue URL"
+        raise RuntimeError(message)
+
+
+def _news_drop_reason(item: ArticleSuggestion) -> str:
+    if item.get("action") != "file":
+        return str(item.get("decision_reason") or "No scoped teatree change was proposed")
+    if item.get("backlog_checked") is not True:
+        return "The open issue backlog was not checked"
+    if item.get("base_red") is not False:
+        return "The proposed check is already red or its base state is unknown"
+    if not str(item.get("ticket_title") or "").strip() or not str(item.get("ticket_body") or "").strip():
+        return "The scoped ticket draft is incomplete"
+    return ""
+
+
 def _post_press_review_digest(task: Task, rows: "list[PendingArticleSuggestion]") -> None:
     """Deliver the Slack-formatted press review for this scan (#3669).
 
-    The digest is the delivery the merged press-review sources feed. The
-    ``PendingArticleSuggestion`` row is the ask-gate record. ``notify_user``'s
-    idempotency key dedupes delivery per task.
+    The digest is the delivery the merged press-review sources feed.
+    ``notify_user``'s idempotency key dedupes delivery per task.
 
-    Record-and-proceed: a Slack failure is logged and swallowed. The candidates
-    are already persisted, and losing the read must never lose the backlog.
+    Record-and-proceed: a Slack failure is logged and swallowed after decisions persist.
     """
     text = render_digest(
-        [DigestItem(title=row.title or row.url, url=row.url, rationale=row.summary) for row in rows],
+        [
+            DigestItem(
+                title=row.title or row.url,
+                url=row.url,
+                rationale=row.summary,
+                decision="Filed" if row.status == PendingArticleSuggestion.Status.FILED else "Dropped",
+                issue_url=row.issue_url,
+            )
+            for row in rows
+        ],
         scanned_on=timezone.localdate().isoformat(),
     )
     if not text:
