@@ -99,28 +99,22 @@ def _add_slack_reactions_on_transition(
 ) -> None:
     """Post a Slack emoji reaction on the PR review message for this transition.
 
-    The reaction is on a colleague-facing surface (the review-request
-    message the user posted to reviewers), so it is gated by the
-    recorded-approval on-behalf path. Gate ON + recorded approval scoped
-    to ``(ticket.url, "transition_reaction:<name>")`` → reaction posts;
-    gate ON + no approval → skip without posting; gate OFF → post. The
-    FSM transition itself is never blocked.
-
-    An emoji announces ENTERING a state, so a state-preserving transition posts
-    nothing: the emoji is already on the message, and re-firing spends the
-    single-use :class:`OnBehalfApproval`, re-DMs the user a receipt, and re-runs
-    the post + verify-by-reread round trip for a reaction that is already there.
-    ``mark_merged``/``retrospect`` re-fire from their own target as the documented
-    operator retry, and an overlay may map a self-looping reviewer transition too.
+    A reaction on a review message needs recorded on-behalf approval. A
+    state-preserving transition adds no emoji: repeating one would spend a
+    single-use approval and re-send the receipt for an existing reaction.
+    The FSM transition itself is never blocked.
     """
     if source == target:
         return
     gate_target = f"ticket:{instance.pk}"
     try:
+        publisher = get_reaction_publisher()
+        if not publisher.has_transition_target(instance):
+            return
         reacted = require_on_behalf_approval(
             target=gate_target,
             action=f"transition_reaction:{name}",
-            publish=lambda: get_reaction_publisher().add_reactions_for_transition(instance, name),
+            publish=lambda: publisher.add_reactions_for_transition(instance, name),
         )
     except OnBehalfPostBlockedError as blocked:
         logger.info("Transition reaction for ticket %s (%s) gated: %s", instance.pk, name, blocked)
@@ -173,22 +167,20 @@ def _add_approval_reaction_on_transition(
 def _publish_approval_effects(instance: PullRequest) -> None:
     """Post a ✅ on the requester's review message and close the ledger rows (#961).
 
-    The reaction is itself a post on the user's behalf, so it routes
-    through the same recorded-approval gate every other on-behalf post
-    uses (``require_on_behalf_approval`` — gate ON + recorded approval →
-    proceed + audit; gate ON + no approval → skip without posting; gate
-    OFF → proceed). Satisfiable without a TTY: the user records an
-    :class:`OnBehalfApproval` scoped to (PR url, ``approval_reaction``)
-    and the next approve transition publishes. The FSM transition itself
-    is never blocked — only the on-behalf post is.
+    The on-behalf gate controls the reaction, while approval bookkeeping
+    still runs when there is no review message or a reaction cannot post.
+    The FSM transition itself is never blocked.
     """
     target = _approval_reaction_target(instance)
+    reacted = 0
     try:
-        reacted = require_on_behalf_approval(
-            target=target,
-            action="approval_reaction",
-            publish=lambda: get_reaction_publisher().add_approval_reaction(instance),
-        )
+        publisher = get_reaction_publisher()
+        if publisher.has_approval_target(instance):
+            reacted = require_on_behalf_approval(
+                target=target,
+                action="approval_reaction",
+                publish=lambda: publisher.add_approval_reaction(instance),
+            )
     except OnBehalfPostBlockedError as blocked:
         logger.info("Approval reaction for PR %s gated: %s", instance.pk, blocked)
         reacted = 0
