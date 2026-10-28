@@ -30,6 +30,7 @@ ADMISSION_ORDER: tuple[str | OrderBy, ...] = (
 _REVIEW_STAGE = 400
 _STARTED_PR_STAGE = 150
 _CONTINUING_STAGE = 100
+_NEW_FIX_STAGE = 20
 _NEW_TICKET_STAGE = 0
 #: Priority part: an expedited ticket lifts its work above all unexpedited non-review work, never above a review.
 _EXPEDITED_PRIORITY = 200
@@ -59,6 +60,7 @@ def _stage_part(started: Exists) -> Case:
     return Case(
         When(phase__in=cheap_phase_spellings(), then=Value(_REVIEW_STAGE)),
         When(started, then=Value(_STARTED_PR_STAGE)),
+        When(_new_ticket_autostart_q() & Q(ticket__kind="fix"), then=Value(_NEW_FIX_STAGE)),
         When(_new_ticket_autostart_q(), then=Value(_NEW_TICKET_STAGE)),
         default=Value(_CONTINUING_STAGE),
         output_field=IntegerField(),

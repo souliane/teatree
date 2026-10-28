@@ -549,9 +549,13 @@ class TestQueueCommand:
 class TestAdmissionScore:
     """Reviews first (expedited before plain), then expedited work, continuing work, new-ticket auto-starts."""
 
-    def _task(self, *, phase: str, parented: bool = False, expedited: bool = False) -> Task:
+    def _task(
+        self, *, phase: str, parented: bool = False, expedited: bool = False, kind: Ticket.Kind = Ticket.Kind.FEATURE
+    ) -> Task:
         url = f"https://x/{phase}/{Ticket.objects.count()}"
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme", expedited=expedited)
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme", expedited=expedited, kind=kind
+        )
         session = Session.objects.create(ticket=ticket, agent_id=f"a-{ticket.pk}")
         parent = Task.objects.create(ticket=ticket, session=session, phase="planning") if parented else None
         return Task.objects.create(ticket=ticket, session=session, phase=phase, parent_task=parent)
@@ -578,6 +582,22 @@ class TestAdmissionScore:
             expedited.pk,
             continuing.pk,
             new_ticket.pk,
+        ]
+
+    def test_new_fix_precedes_new_feature_but_follows_started_pr_and_continuing_work(self) -> None:
+        feature = self._task(phase="planning")
+        fix = self._task(phase="planning", kind=Ticket.Kind.FIX)
+        continuing = self._task(phase="coding")
+        started = self._task(phase="coding")
+        PullRequest.objects.record_opened(
+            ticket=started.ticket, url="https://github.com/example-org/example-repo/pull/805"
+        )
+
+        assert self._admission_order([feature, fix, continuing, started]) == [
+            started.pk,
+            continuing.pk,
+            fix.pk,
+            feature.pk,
         ]
 
     def test_a_nit_follow_up_ranks_after_real_work_even_during_review(self) -> None:
