@@ -163,10 +163,8 @@ def _parked_task_answer(index: SubjectIndex, question: DeferredQuestion) -> Subj
 def _stuck_halt_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectAnswer:
     """The ticket a ``stuck-redispatch-halt:N`` question names in its dedupe marker.
 
-    ``stuck_ticket_redispatch._escalate_once`` records the question with no session and
-    no parked task, so the marker is the ONLY handle on its subject — which is why nine
-    of these sat pending after their shared dispatch failure was fixed, reachable by the
-    age backstop alone.
+    Such a row has no session and no parked task, so the marker is the ONLY handle on its
+    subject; without this source it would be reachable by the age backstop alone.
 
     A marker naming a ticket that no longer exists is UNDETERMINABLE, not absent: the
     row is owned by this source and kept, rather than falling through to a source that

@@ -214,12 +214,15 @@ _PLAN_RETURN_LINES: tuple[str, ...] = (
 # omits ``article_suggestions``. Symmetric to ``_ANSWER_RETURN_LINES``.
 _ARTICLE_SUGGESTIONS_RETURN_LINES: tuple[str, ...] = (
     "",
-    "RETURN YOUR CANDIDATES AS SUGGESTIONS (this phase has no shell — do NOT try to file issues",
-    "via `t3 <overlay>` or `gh`; you cannot enqueue, you HAND BACK the candidates):",
-    "add an `article_suggestions` array to your final JSON result. The orchestrator queues each",
-    "behind the per-article ask-gate (a PendingArticleSuggestion) for the user's approval:",
+    "DECIDE EACH NEWS CANDIDATE (this phase has no shell; return decisions for the server to settle):",
+    "Check backlog fit, whether the base is already red, and duplicates of open tickets.",
+    "Add an `article_suggestions` array to your final JSON result. Each item names its action:",
     '  "article_suggestions": [{"title": "<article title>", "url": "<article url>",',
-    '                           "rationale": "<one-line why-this-matters for teatree>"}]',
+    '                           "rationale": "<why>", "action": "file|drop",',
+    '                           "decision_reason": "<why>", "backlog_checked": true,',
+    '                           "base_red": false, "duplicate_of": "<open issue URL or empty>",',
+    '                           "ticket_title": "<scoped idea>", "ticket_body": "<scope and evidence>"}]',
+    "A file decision without checked backlog, clean base and scoped draft is dropped.",
     "Each item's `url` MUST be non-empty. A summary-only result with no `article_suggestions`",
     "silently drops the scan and the phase is refused, wasting the run.",
 )

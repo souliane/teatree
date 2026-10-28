@@ -30,13 +30,13 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core.modelkit.owner_decision import owner_kept_decision
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_assignment import ReviewAssignment
 from teatree.core.models.waiting_item import WaitingItem
-from teatree.core.review.owner_waits import owner_kept_wait
 
 if TYPE_CHECKING:
     from teatree.core.factory.merge_backlog import SupersedeContext
@@ -112,7 +112,7 @@ def _question_entries(now: datetime) -> list[WaitingEntry]:
                 age=now - question.created_at,
                 url=card.subject if card else "",
                 row_id=question.pk,
-                owner_only=owner_kept_wait(question, card),
+                owner_only=owner_kept_decision(card.decision if card else None),
             )
         )
     return entries
@@ -173,6 +173,8 @@ def _has_covering_clear(pr: PullRequest, context: "SupersedeContext") -> bool:
     )
     for clear in clears:
         if not clear.is_actionable() or clear_is_superseded(clear, context):
+            continue
+        if clear.is_substrate() and not clear.human_authorizer:
             continue
         if pr_repo and normalize_repo_slug(resolved_repo_slug(clear)) == pr_repo:
             return True
