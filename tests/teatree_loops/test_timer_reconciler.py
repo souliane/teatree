@@ -257,6 +257,12 @@ class TestAScheduleSlotGetsAHeadAndTicks(ModeWithoutOverrideMixin):
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
 class TestMaintenanceChains(django.test.TestCase):
+    def test_wake_debounce_and_lease_retry_leave_time_for_the_first_reply(self) -> None:
+        debounce_seconds = timer_reconciler.WAKE_MIN_INTERVAL_SECONDS
+        lease_retry_seconds = timer_reconciler.WAKE_MIN_INTERVAL_SECONDS
+
+        assert 0 < debounce_seconds + lease_retry_seconds <= 60 // 3
+
     def setUp(self) -> None:
         DBTaskResult.objects.all().delete()
 
@@ -597,6 +603,7 @@ class TestMaintenanceChains(django.test.TestCase):
         PendingChatInjection.record(channel="C1", slack_ts="1.0", text="question", context=DmContext(user_id="U1"))
         assert LoopLease.objects.acquire(timer_reconciler.SLACK_ANSWER_LEASE, owner="cadence-run")
 
+        started = timezone.now()
         result = timer_reconciler.wake_slack_answer.func()
 
         assert result == {"skipped_lease_held": 1, "rearmed": 1}
@@ -604,7 +611,8 @@ class TestMaintenanceChains(django.test.TestCase):
             task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
         )
         assert rearmed.priority == timer_reconciler.WAKE_PRIORITY
-        assert rearmed.run_after > timezone.now()
+        delay = dt.timedelta(seconds=timer_reconciler.WAKE_MIN_INTERVAL_SECONDS)
+        assert started + delay <= rearmed.run_after <= timezone.now() + delay
 
     def test_wake_slack_answer_does_not_rearm_when_nothing_waits(self) -> None:
         assert LoopLease.objects.acquire(timer_reconciler.SLACK_ANSWER_LEASE, owner="cadence-run")
