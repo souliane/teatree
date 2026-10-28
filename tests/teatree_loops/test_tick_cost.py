@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import django.test
 import pytest
-from django.db import OperationalError
+from django.db import InterfaceError, OperationalError
 
 from teatree.core.models import Loop
 from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
@@ -40,6 +40,14 @@ class TestRecordTickCost(django.test.TestCase):
         with (
             patch.dict(os.environ, {TICK_SUBPROCESS_ENV_MARKER: "1"}),
             patch.object(Loop.objects, "record_tick_cost", side_effect=OperationalError("database is locked")),
+            self.assertLogs("teatree.loops.tick_cost", level="WARNING"),
+        ):
+            record_tick_cost("probe", found_work=False)
+
+    def test_a_closed_database_connection_does_not_fail_the_tick(self) -> None:
+        with (
+            patch.dict(os.environ, {TICK_SUBPROCESS_ENV_MARKER: "1"}),
+            patch.object(Loop.objects, "record_tick_cost", side_effect=InterfaceError("connection closed")),
             self.assertLogs("teatree.loops.tick_cost", level="WARNING"),
         ):
             record_tick_cost("probe", found_work=False)

@@ -4,7 +4,7 @@ import logging
 import os
 import resource
 
-from django.db import DatabaseError
+from django.db import DatabaseError, InterfaceError
 
 from teatree.core.models import Loop
 from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
@@ -33,5 +33,5 @@ def record_tick_cost(loop: str, *, found_work: bool) -> None:
         return
     try:
         Loop.objects.record_tick_cost(loop, cpu_seconds=process_cpu_seconds(), found_work=found_work)
-    except DatabaseError:
+    except (DatabaseError, InterfaceError):
         logger.warning("could not record the tick cost of loop %r", loop, exc_info=True)

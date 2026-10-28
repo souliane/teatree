@@ -312,7 +312,7 @@ class Command(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human="\n".join([verdict, *warnings, *listing, *stalls]),
         )
-        return bool(report.signal_count or report.action_count or repairs)
+        return bool(any(action.kind != "statusline" for action in report.actions) or repairs)
 
     @staticmethod
     def _set_statusline_readers(*, active: bool) -> None:
