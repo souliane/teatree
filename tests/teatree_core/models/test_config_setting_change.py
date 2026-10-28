@@ -67,22 +67,42 @@ class TestConfigSettingChange(TestCase):
         assert ConfigSettingChange.objects.filter(key="agent_max_turns").count() == 1
 
     def test_set_then_clear_keeps_both_old_values_and_writers(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", 250, authorized_by="operator")
-        ConfigSetting.objects.set_value("agent_max_turns", 9, authorized_by="review-loop")
+        ConfigSetting.objects.set_value("agent_max_turns", 1500, authorized_by="operator")
+        ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="review-loop")
         assert ConfigSetting.objects.clear("agent_max_turns", authorized_by="operator") is True
 
         changes = list(ConfigSettingChange.objects.filter(key="agent_max_turns").order_by("changed_at", "pk"))
         assert [(row.action, row.old_value, row.new_value, row.written_by) for row in changes] == [
-            ("set", None, 250, "operator"),
-            ("set", 250, 9, "review-loop"),
-            ("clear", 9, None, "operator"),
+            ("set", None, 1500, "operator"),
+            ("set", 1500, 1000, "review-loop"),
+            ("clear", 1000, None, "operator"),
         ]
         assert all(row.changed_at is not None for row in changes)
 
     def test_same_value_write_does_not_add_an_audit_row(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", 300, authorized_by="operator")
-        ConfigSetting.objects.set_value("agent_max_turns", 300, authorized_by="operator")
+        ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="operator")
+        ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="operator")
         assert ConfigSettingChange.objects.filter(key="agent_max_turns").count() == 1
+
+    def test_equal_python_values_with_different_json_types_are_written(self) -> None:
+        ConfigSetting.objects.set_value("autoload", value=True, authorized_by="operator")
+        ConfigSetting.objects.set_value("autoload", 1, authorized_by="operator")
+        assert ConfigSettingChange.objects.filter(key="autoload").count() == 2
+        assert ConfigSetting.objects.get(key="autoload").value == 1
+        ConfigSetting.objects.set_value("subagent_spawn_ceiling", 2, authorized_by="operator")
+        ConfigSetting.objects.set_value("subagent_spawn_ceiling", 2.0, authorized_by="operator")
+        assert ConfigSettingChange.objects.filter(key="subagent_spawn_ceiling").count() == 2
+
+    def test_manager_rejects_sub_floor_value(self) -> None:
+        with pytest.raises(ValidationError, match="agent_max_turns"):
+            ConfigSetting.objects.set_value("agent_max_turns", 9)
+        with pytest.raises(ValidationError, match="agent_max_turns"):
+            ConfigSetting.objects.set_value("agent_max_turns", "9")
+        with pytest.raises(ValidationError, match="agent_max_turns"):
+            ConfigSetting.objects.set_values([("agent_max_turns", 9, "")])
+        with pytest.raises(ValidationError, match="agent_max_turns"):
+            ConfigSetting.objects.seed("agent_max_turns", 9, code_default=3000)
+        assert not ConfigSetting.objects.filter(key="agent_max_turns").exists()
 
     def test_same_value_new_writer_and_seed_takeover_are_recorded(self) -> None:
         ConfigSetting.objects.seed("agent_max_turns", 1200, code_default=3000, seeded_by="deploy")
@@ -99,17 +119,17 @@ class TestConfigSettingChange(TestCase):
         ]
 
     def test_seed_update_and_removal_are_recorded(self) -> None:
-        ConfigSetting.objects.seed("agent_max_turns", 400, code_default=3000, seeded_by="deploy")
-        ConfigSetting.objects.seed("agent_max_turns", 500, code_default=3000, seeded_by="deploy")
+        ConfigSetting.objects.seed("agent_max_turns", 1400, code_default=3000, seeded_by="deploy")
+        ConfigSetting.objects.seed("agent_max_turns", 1500, code_default=3000, seeded_by="deploy")
         ConfigSetting.objects.seed("agent_max_turns", 3000, code_default=3000, seeded_by="deploy")
         assert list(
             ConfigSettingChange.objects.filter(key="agent_max_turns").values_list(
                 "action", "old_value", "new_value", "written_by"
             )
         ) == [
-            ("seed", None, 400, "deploy"),
-            ("seed", 400, 500, "deploy"),
-            ("clear", 500, None, "deploy"),
+            ("seed", None, 1400, "deploy"),
+            ("seed", 1400, 1500, "deploy"),
+            ("clear", 1500, None, "deploy"),
         ]
 
     def test_rejected_bulk_write_rolls_back_settings_and_history(self) -> None:

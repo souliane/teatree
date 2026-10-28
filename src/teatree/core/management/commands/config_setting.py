@@ -207,11 +207,7 @@ class Command(TyperCommand):
         try:
             ConfigSetting.objects.set_value(key, canonical, scope=overlay)
         except ValidationError as exc:
-            # A coupled-key inconsistency (#3688) — e.g. an agent_harness_provider
-            # no resulting agent_harness would accept at dispatch. Refuse loudly at
-            # write time, leaving the store untouched, instead of a fleet-wide
-            # repair-halt flood on every later dispatch.
-            self.stderr.write(f"  refusing inconsistent config for {key!r}: {exc.messages[0]}")
+            self.stderr.write(f"  refused config write for {key!r}: {exc.messages[0]}")
             raise SystemExit(2) from exc
         except ValueError as exc:
             self.stderr.write(f"  refused: {exc}")

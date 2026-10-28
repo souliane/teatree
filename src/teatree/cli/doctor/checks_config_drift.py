@@ -93,7 +93,7 @@ def _finding_line(drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSe
     stored = masked_display(drift.key, drift.stored)
     shipped = masked_display(drift.key, drift.shipped)
     hours = max(0, int((timezone.now() - row.updated_at).total_seconds() // 3600))
-    writer = row.written_by or row.seeded_by or "unknown writer"
+    writer = change.written_by if change else row.written_by or row.seeded_by or "unknown writer"
     previous = masked_display(drift.key, change.old_value) if change else "unknown (written before audit)"
     ignored = unhonourable_overlay_scope_reason(drift.key, drift.scope)
     bounds = SETTING_BOUNDS.get(drift.key)
@@ -103,12 +103,19 @@ def _finding_line(drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSe
         and not (bounds.zero_disables and drift.stored == 0)
         and drift.stored < bounds.minimum
     )
-    status = "WARN" if below_floor or ignored else "INFO"
+    above_maximum = (
+        bounds is not None
+        and bounds.maximum is not None
+        and isinstance(drift.stored, int | float)
+        and drift.stored > bounds.maximum
+    )
+    status = "WARN" if below_floor or above_maximum or ignored else "INFO"
     floor = f"; below minimum {bounds.minimum:g}" if below_floor and bounds else ""
+    ceiling = f"; above maximum {bounds.maximum:g}" if above_maximum and bounds and bounds.maximum else ""
     ignored_note = "; ignored by every reader" if ignored else ""
     return (
         f"{status}  {drift.key} [{drift.where}] is {stored}; shipped default is {shipped}; "
-        f"set {hours}h ago by {writer}; was {previous}{floor}{ignored_note}"
+        f"set {hours}h ago by {writer}; was {previous}{floor}{ceiling}{ignored_note}"
     )
 
 

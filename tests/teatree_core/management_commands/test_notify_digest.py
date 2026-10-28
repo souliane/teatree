@@ -56,7 +56,7 @@ class TestNotifyDigest(TestCase):
         assert exc.value.code == 2
 
     def test_setting_changes_show_without_pulled_signals_and_internal_rows_are_hidden(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", 250, authorized_by="operator")
+        ConfigSetting.objects.set_value("agent_max_turns", 1500, authorized_by="operator")
         ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="review-loop")
         ConfigSettingChange.record(
             key="host_projection_generation",
@@ -70,7 +70,7 @@ class TestNotifyDigest(TestCase):
         call_command("notify", "digest", stdout=out)
         rendered = out.getvalue()
         assert "agent_max_turns" in rendered
-        assert "250" in rendered
+        assert "1500" in rendered
         assert "1000" in rendered
         assert "review-loop" in rendered
         assert "host_projection_generation" not in rendered

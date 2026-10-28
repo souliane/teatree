@@ -55,6 +55,7 @@ from teatree.config.extra_headers import UNLISTED_HEADER_REFUSAL, carries_unlist
 from teatree.config.overlay_scope import reject_unhonourable_overlay_scope
 from teatree.config.setting_taxonomy import owner_only_reason
 from teatree.config.write_authority import review_write_refusal
+from teatree.config.write_validation import ConfigWriteError, validate_config_bounds
 from teatree.core.managers_task_claim import QUIESCE_SETTING_KEY, advance_quiesce_fence
 from teatree.core.models.config_setting_change import ConfigSettingChange
 from teatree.core.session_identity import is_unattended_unauthorized_write, loop_principal
@@ -130,14 +131,23 @@ def reject_unlisted_extra_header(key: str, value: object) -> None:
         raise ValidationError(UNLISTED_HEADER_REFUSAL)
 
 
+def reject_out_of_bounds(key: str, value: ConfigValue) -> None:
+    try:
+        validate_config_bounds(key, value)
+    except ConfigWriteError as exc:
+        raise ValidationError(str(exc)) from exc
+
+
 def reject_review_config_write(database: str) -> None:
     if reason := review_write_refusal(connections[database].settings_dict["NAME"]):
         raise ValidationError(reason)
 
 
 def unchanged_operator_row(row: "ConfigSetting | None", value: ConfigValue, writer: str) -> "ConfigSetting | None":
+    if row is None:
+        return None
     if (
-        row is not None
+        type(row.value) is type(value)
         and row.value == value
         and not row.seeded_by
         and row.seed_value is None
@@ -244,6 +254,7 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         reject_unhonourable_overlay_scope(key, scope)
         reject_unattended_governed_write(key, authorized_by=authorized_by)
         reject_unlisted_extra_header(key, value)
+        reject_out_of_bounds(key, value)
         self.reject_inconsistent_cross_key(key, value, scope)
         with transaction.atomic(using=self.db):
             previous = self.select_for_update().filter(scope=scope, key=key).first()
@@ -290,6 +301,7 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
                 reject_unhonourable_overlay_scope(key, scope)
                 reject_unattended_governed_write(key, authorized_by=authorized_by)
                 reject_unlisted_extra_header(key, value)
+                reject_out_of_bounds(key, value)
             for key, value, scope in rows:
                 previous = self.select_for_update().filter(scope=scope, key=key).first()
                 writer = decider(authorized_by)
@@ -368,6 +380,7 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         reject_review_config_write(self.db)
         reject_unhonourable_overlay_scope(key, scope)
         reject_unlisted_extra_header(key, value)
+        reject_out_of_bounds(key, value)
         row = self.filter(scope=scope, key=key).first()
         equals_default = value == code_default
         if row is None:

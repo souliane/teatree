@@ -19,3 +19,6 @@ def test_review_refuses_only_canonical_database(tmp_path: Path) -> None:
         assert review_write_refusal(scratch, env={CONFIG_WRITE_PHASE_ENV: "reviewing"}) is None
         assert review_write_refusal(":memory:", env={CONFIG_WRITE_PHASE_ENV: "reviewing"}) is None
         assert review_write_refusal(live, env={CONFIG_WRITE_PHASE_ENV: "coding"}) is None
+        assert review_write_refusal(live, env={CONFIG_WRITE_PHASE_ENV: " ReViEwInG "}) is not None
+        assert review_write_refusal(live, env={CONFIG_WRITE_PHASE_ENV: "requesting_review"}) is None
+        assert review_write_refusal(live, env={CONFIG_WRITE_PHASE_ENV: "unknown_review"}) is not None

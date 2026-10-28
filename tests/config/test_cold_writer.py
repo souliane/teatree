@@ -34,6 +34,8 @@ _REAL_SCHEMA = (
     '"value" text NOT NULL CHECK ((JSON_VALID("value") OR "value" IS NULL)), '
     '"created_at" datetime NOT NULL, '
     '"updated_at" datetime NOT NULL, '
+    '"seeded_by" varchar(255) NOT NULL, "written_by" varchar(255) NOT NULL, '
+    '"seed_value" text NULL CHECK ((JSON_VALID("seed_value") OR "seed_value" IS NULL)), '
     'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
 )
 _AUDIT_SCHEMA = (
@@ -119,6 +121,38 @@ class TestWriteRoundTrip:
                 "WHERE key='autoload' ORDER BY id"
             ).fetchall()
         assert rows == [("set", None, "true", "cold-writer"), ("set", "true", "false", "cold-writer")]
+        with closing(sqlite3.connect(db)) as conn:
+            provenance = conn.execute(
+                "SELECT seeded_by, written_by FROM teatree_config_setting WHERE key='autoload'"
+            ).fetchone()
+        assert provenance == ("", "cold-writer")
+
+    def test_unusable_audit_table_keeps_rescue_write(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        db = tmp_path / "bad-audit.sqlite3"
+        _make_real_schema_db(db)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE teatree_config_setting_change (id INTEGER PRIMARY KEY)")
+            conn.commit()
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+        assert cold_reader.read_setting("autoload", db_path=db) is False
+        assert "audit" in capsys.readouterr().err
+
+    def test_rescue_write_takes_ownership_from_seed(self, tmp_path: Path) -> None:
+        db = tmp_path / "seeded.sqlite3"
+        _make_real_schema_db(db)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                "INSERT INTO teatree_config_setting "
+                "(scope, key, value, created_at, updated_at, seeded_by, written_by, seed_value) "
+                "VALUES ('', 'autoload', 'true', '', '', 'deploy', 'deploy', 'true')"
+            )
+            conn.commit()
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+        with closing(sqlite3.connect(db)) as conn:
+            row = conn.execute(
+                "SELECT value, seeded_by, written_by, seed_value FROM teatree_config_setting WHERE key='autoload'"
+            ).fetchone()
+        assert row == ("false", "", "cold-writer", None)
 
     def test_missing_audit_table_is_loud_but_keeps_the_rescue_write(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

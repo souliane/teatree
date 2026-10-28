@@ -22,7 +22,7 @@ from teatree.cli.doctor.checks_config_drift import (
     _check_config_rows_shadowing_shipped_defaults,
     drifted_settings,
 )
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, ConfigSettingChange
 
 
 def _run() -> str:
@@ -77,6 +77,24 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         assert "t3-batch" in out
         assert "t3-auto" in out
 
+    def test_latest_audit_writer_and_above_maximum_are_reported(self) -> None:
+        ConfigSetting.objects.create(key="admission_write_concurrency_per_core", value=3, written_by="old-writer")
+        ConfigSettingChange.objects.create(
+            key="admission_write_concurrency_per_core",
+            scope="",
+            action="set",
+            old_value=1,
+            new_value=3,
+            written_by="cold-writer",
+        )
+        with patch(
+            "teatree.cli.doctor.checks_config_drift.declared_defaults",
+            return_value={"admission_write_concurrency_per_core": 1},
+        ):
+            out = _run()
+        assert "by cold-writer" in out
+        assert "above maximum 2" in out
+
     def test_it_returns_without_raising_so_the_exit_code_is_untouched(self) -> None:
         # The invariant that makes it safe to ship: most drifted rows are deliberate, so a
         # finding here must never turn a green doctor run red.
@@ -115,8 +133,10 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         assert "shipped-term" not in out
 
     def test_a_below_floor_override_shows_writer_age_and_previous_value(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", 250, authorized_by="operator")
-        ConfigSetting.objects.set_value("agent_max_turns", 9, authorized_by="review-loop")
+        ConfigSetting.objects.create(key="agent_max_turns", value=9, written_by="review-loop")
+        ConfigSettingChange.objects.create(
+            key="agent_max_turns", scope="", action="set", old_value=1000, new_value=9, written_by="review-loop"
+        )
         with patch("teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={"agent_max_turns": 3000}):
             out = _run()
         assert "WARN" in out
@@ -124,7 +144,7 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         assert "1000" in out
         assert "review-loop" in out
         assert "ago" in out
-        assert "250" in out
+        assert "below minimum" in out
 
     def test_an_ignored_overlay_row_is_listed(self) -> None:
         ConfigSetting.objects.create(key="loop_cadence_seconds", scope="demo", value=600)

@@ -293,7 +293,7 @@ class Command(TyperCommand):
         self,
         since_hours: Annotated[
             int,
-            typer.Option("--since-hours", help="How far back to read the pulled status signals."),
+            typer.Option("--since-hours", help="How far back to read status signals and setting changes."),
         ] = 24,
         overlay: Annotated[
             str,

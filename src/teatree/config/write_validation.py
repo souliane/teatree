@@ -53,14 +53,21 @@ def validate_config_write(key: str, raw: object) -> ConfigWriteValue:
         value = parser(raw)
     except (ValueError, TypeError, AttributeError) as exc:
         raise ConfigWriteError(str(exc)) from exc
+    validate_config_bounds(key, value)
+    return value
+
+
+def validate_config_bounds(key: str, value: ConfigWriteValue) -> None:
     if bounds := SETTING_BOUNDS.get(key):
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            msg = f"{key} requires a numeric value, got {value!r}"
+            raise ConfigWriteError(msg)
         if bounds.zero_disables and value == 0:
-            return value
+            return
         if not (bounds.minimum <= value and (bounds.maximum is None or value <= bounds.maximum)):
             if bounds.maximum is not None:
-                msg = f"{key} must be between {bounds.minimum:g} and {bounds.maximum:g}, got {raw!r}"
+                msg = f"{key} must be between {bounds.minimum:g} and {bounds.maximum:g}, got {value!r}"
             else:
                 zero = "0 (uncapped) or " if bounds.zero_disables else ""
-                msg = f"{key} must be {zero}at least {bounds.minimum:g}, got {raw!r}: {bounds.why}"
+                msg = f"{key} must be {zero}at least {bounds.minimum:g}, got {value!r}: {bounds.why}"
             raise ConfigWriteError(msg)
-    return value

@@ -112,7 +112,7 @@ class TestTheDumpSaysWhatEachKeyAccepts(TestCase):
             assert choice_token(choice) in offered, f"{choice!r} missing from {offered!r}"
 
     def test_an_open_typed_keys_line_names_its_type_and_offers_no_list(self) -> None:
-        ConfigSetting.objects.set_value("agent_max_turns", 400)
+        ConfigSetting.objects.set_value("agent_max_turns", 1400)
         line = self._line("agent_max_turns")
         assert "# int" in line
         assert "one of:" not in line

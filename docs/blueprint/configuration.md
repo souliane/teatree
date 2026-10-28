@@ -1202,7 +1202,7 @@ therefore carries the coordinate alone. Every write runs `ConfigSetting.objects.
 so the cross-key check and the seed-provenance clear fire exactly as they do for
 `config_setting set`; `ConfigSetting.clean` runs that same cross-key check, so an
 inconsistent coupled pair is a form error rather than a silent save. The masking taxonomy is
-ONE function (`teatree.core.config_display.is_secret`) shared by all three rendering
+ONE function (`teatree.config.value_visibility.is_secret`) shared by all three rendering
 surfaces — it lives in `core` because the admin sits below `dash` in the layer graph. There
 is no `list_editable`: an inline widget must round-trip the raw value (so it cannot mask)
 and the changelist formset writes through `Model.save()` (so it cannot use the seam).

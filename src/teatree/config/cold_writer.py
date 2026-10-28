@@ -30,9 +30,11 @@ _BUSY_TIMEOUT_MS = 30000
 _DJANGO_SQLITE_DATETIME = "%Y-%m-%d %H:%M:%S.%f"
 
 _UPSERT = (
-    "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
-    "VALUES (?, ?, ?, ?, ?) "
-    "ON CONFLICT(scope, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+    "INSERT INTO teatree_config_setting "
+    "(scope, key, value, created_at, updated_at, seeded_by, written_by, seed_value) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+    "ON CONFLICT(scope, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at, "
+    "seeded_by=excluded.seeded_by, written_by=excluded.written_by, seed_value=excluded.seed_value"
 )
 
 
@@ -160,12 +162,19 @@ def _write_classified(conn: sqlite3.Connection, scope: str, key: str, value: obj
                     else None
                 )
                 new_json = json.dumps(MASKED if withholds_value(key, value) else value)
-                conn.execute(
-                    "INSERT INTO teatree_config_setting_change "
-                    "(scope, key, action, old_value, new_value, written_by, changed_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (scope, key, "set", old_json, new_json, "cold-writer", now),
-                )
+                conn.execute("SAVEPOINT audit_row")
+                try:
+                    conn.execute(
+                        "INSERT INTO teatree_config_setting_change "
+                        "(scope, key, action, old_value, new_value, written_by, changed_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (scope, key, "set", old_json, new_json, "cold-writer", now),
+                    )
+                except sqlite3.Error as error:
+                    conn.execute("ROLLBACK TO audit_row")
+                    sys.stderr.write(f"WARNING: config audit row could not be written: {error}\n")
+                finally:
+                    conn.execute("RELEASE audit_row")
             else:
                 sys.stderr.write("WARNING: config audit table is absent; rescue write has no audit row\n")
         if key != GENERATION_KEY:
@@ -180,4 +189,4 @@ def _write_classified(conn: sqlite3.Connection, scope: str, key: str, value: obj
 
 def _upsert(conn: sqlite3.Connection, scope: str, key: str, value: object) -> None:
     now = datetime.now(tz=UTC).strftime(_DJANGO_SQLITE_DATETIME)
-    conn.execute(_UPSERT, (scope, key, json.dumps(value), now, now))
+    conn.execute(_UPSERT, (scope, key, json.dumps(value), now, now, "", "cold-writer", None))

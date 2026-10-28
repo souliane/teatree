@@ -255,7 +255,7 @@ class TestATurnCeilingKeepsFinishedWork(_Dispatch):
 
 class TestARuntimeCeilingKeepsFinishedWork(_Dispatch):
     def setUp(self) -> None:
-        ConfigSetting.objects.set_value("watchdog_max_runtime_seconds", 1, scope="")
+        ConfigSetting.objects.create(key="watchdog_max_runtime_seconds", value=1, scope="")
 
     def test_an_envelope_written_before_the_runtime_ceiling_is_recorded(self) -> None:
         task = self._task()

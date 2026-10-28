@@ -26,7 +26,6 @@ credential coordinates) and defeat the band. See ``CredentialEntry.mask_if_priva
 
 from teatree.config.value_visibility import MASKED, is_secret, withholds_value
 
-#: Rendered in place of a secret VALUE — never the real value.
 #: The shipped-defaults column for a key ``defaults.toml`` carries NO entry for. A distinct
 #: sentence rather than a bare ``none``, which reads as a value and is what let "the file has
 #: no entry for this key" and "the entry is empty" look identical on the page (#4078). The key

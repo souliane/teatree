@@ -5,13 +5,16 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from teatree.config.cold_reader import canonical_config_db
+from teatree.config.phase_names import REVIEW_PHASES, normalize_phase
 
 CONFIG_WRITE_PHASE_ENV = "T3_CONFIG_WRITE_PHASE"
 
 
 def _review_phase(phase: str) -> bool:
-    normalized = phase.replace("-", "_")
-    return normalized in {"review", "reviewing"} or normalized.endswith(("_review", "_reviewing"))
+    normalized = normalize_phase(phase.replace("-", "_"))
+    return normalized in REVIEW_PHASES or (
+        normalized != "requesting_review" and normalized.endswith(("_review", "_reviewing"))
+    )
 
 
 def review_write_refusal(db_path: str | Path, *, env: Mapping[str, str] = os.environ) -> str | None:

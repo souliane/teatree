@@ -80,9 +80,12 @@ class TestConfigSettingSet(TestCase):
                 ("seed", "agent_max_turns", "2000"),
                 ("clear", "agent_max_turns"),
             ):
+                errors = StringIO()
                 with pytest.raises(SystemExit) as caught:
-                    call_command("config_setting", *args, stderr=StringIO())
+                    call_command("config_setting", *args, stderr=errors)
                 assert caught.value.code == 2
+                if args[0] == "set":
+                    assert "refused config write" in errors.getvalue()
         assert ConfigSetting.objects.get_effective("agent_max_turns") == 1000
 
     def test_set_and_clear_report_previous_audit_value(self) -> None:
@@ -839,8 +842,8 @@ class TestGetNamesWhoDecided(TestCase):
 
     def test_an_invalid_other_row_does_not_break_single_key_diagnostics(self) -> None:
         ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
-        ConfigSetting.objects.set_value("agent_max_turns", 7)
-        assert "agent_max_turns = 7" in self._get("agent_max_turns")
+        ConfigSetting.objects.set_value("agent_max_turns", 1000)
+        assert "agent_max_turns = 1000" in self._get("agent_max_turns")
 
     def test_an_invalid_other_row_does_not_break_an_unset_key_diagnostic(self) -> None:
         ConfigSetting.objects.create(key="merge_wip", scope="", value="garbage")
