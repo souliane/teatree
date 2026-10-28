@@ -88,7 +88,7 @@ git merge-base --is-ancestor origin/main HEAD || git merge origin/main --no-edit
 
 Run this **before** the cleanup checklist. Resolve any conflicts the same way you would on a normal merge — no rebase, no stash.
 
-**Cold-review checkout — fetch the exact pushed head (Non-Negotiable).** Use `teatree.utils.review_checkout.add_review_worktree_at_head(repo, ref=<branch>, expected_sha=<pr-head-sha>)`. It fetches into a unique detached worktree and raises `StaleReviewCheckoutError` if HEAD differs; checking out the branch itself can collide with another worktree and lead to a stale fallback (souliane/teatree#2132). Remove the checkout with `teatree.utils.git.worktree_remove`.
+**Cold-review checkout — use `t3 review checkout <pr-url> --sha <head>`; never `git worktree add <branch>` (Non-Negotiable).** The command fetches the PR/MR head into a unique detached worktree and verifies HEAD matches the requested SHA; a mismatch exits 1 with `stale_checkout`. Raw branch worktrees can collide with an existing checkout and lead to a stale fallback (souliane/teatree#2132). Remove the returned checkout with `teatree.utils.git.worktree_remove`.
 
 On a wrong checkout, return `review_head_mismatch` (`observed_sha`, `reason`) with no verdict or owner question. The factory retries once at the live head, then records a card.
 

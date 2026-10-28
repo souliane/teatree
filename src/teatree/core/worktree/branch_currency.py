@@ -9,8 +9,8 @@ work when the two diverging edits actually *conflict*; a behind-but-
 mergeable branch is safe to clear and squash-merge — GitHub re-applies
 the branch's diff onto the current target at merge time.
 
-The ship-side gate (:func:`require_current_branch`) fetches the target,
-then either:
+The ship-side gate (:func:`require_current_branch`) checks checkout identity
+before fetching the target, then returns one of:
 
 * **auto-merges** the target into the feature branch on a zero-conflict
     fast-forward (``MergeOutcome.ZERO_CONFLICT``); the caller records the
@@ -19,6 +19,8 @@ then either:
     ``git merge --abort`` restores the worktree, the gate names the
     conflicting paths, and returns an actionable hint instead of leaving
     a half-merged tree that the next step would silently push.
+* **refuses** when the checkout is not on the recorded branch
+    before it mutates the tree.
 * **no-ops** when the branch is already current
     (``MergeOutcome.ALREADY_CURRENT``).
 
@@ -66,9 +68,9 @@ class BranchCurrencyResult(TypedDict):
 
     ``auto_merged`` is ``True`` only when the gate *performed* a
     zero-conflict merge (so the caller knows to re-read HEAD). ``error``
-    is set when the gate refused (conflict); ``hint`` carries the
-    manual remediation. ``post_merge_sha`` is the new HEAD after a
-    successful merge, or ``None`` when no merge ran.
+    is set when the gate refused (conflict or wrong checkout);
+    ``hint`` carries the manual remediation. ``post_merge_sha`` is the new
+    HEAD after a successful merge, or ``None`` when no merge ran.
     """
 
     auto_merged: bool
@@ -236,10 +238,11 @@ def branch_behind_target(repo: str, branch: str, target: str = "origin/main") ->
     """
     if not _fetch_target(repo, target):
         return None
-    behind = _rev_count(repo, f"{branch}..{target}")
+    branch_ref = f"refs/heads/{branch}"
+    behind = _rev_count(repo, f"{branch_ref}..{target}")
     if behind <= 0:
         return None
-    base_oid = _rev_parse(repo, branch)
+    base_oid = _rev_parse(repo, branch_ref)
     target_oid = _rev_parse(repo, target)
     return BranchStaleness(
         branch=branch,
@@ -258,6 +261,11 @@ class _MergeAttempt:
     conflicting_paths: tuple[str, ...]
 
 
+def _checkout_ref(repo: str) -> str:
+    rc, ref = _git(repo, "symbolic-ref", "--quiet", "HEAD")
+    return ref if rc == 0 else ""
+
+
 def _attempt_merge(repo: str, branch: str, target: str) -> _MergeAttempt:
     """Single-shot merge attempt: returns outcome and conflicting paths.
 
@@ -268,7 +276,7 @@ def _attempt_merge(repo: str, branch: str, target: str) -> _MergeAttempt:
     """
     if not _fetch_target(repo, target):
         return _MergeAttempt(MergeOutcome.FETCH_FAILED, ())
-    if _rev_count(repo, f"{branch}..{target}") <= 0:
+    if _rev_count(repo, f"refs/heads/{branch}..{target}") <= 0:
         return _MergeAttempt(MergeOutcome.ALREADY_CURRENT, ())
     rc, _ = _git(repo, "merge", "--no-edit", target)
     if rc == 0:
@@ -296,6 +304,16 @@ def _ok(
 _NON_BLOCKING_OUTCOMES = frozenset({MergeOutcome.ALREADY_CURRENT, MergeOutcome.FETCH_FAILED})
 
 
+def _wrong_checkout_result(repo: str, branch: str, current_ref: str) -> BranchCurrencyResult:
+    current = repr(current_ref.removeprefix("refs/heads/")) if current_ref else "a detached HEAD or unreadable checkout"
+    return BranchCurrencyResult(
+        auto_merged=False,
+        post_merge_sha=None,
+        error=f"refusing to ship: checkout {repo!r} is on {current}, not recorded branch {branch!r}",
+        hint=f"Check out {branch!r} in {repo!r} or correct the Worktree row's checkout path, then retry.",
+    )
+
+
 def require_current_branch(
     repo: str,
     branch: str,
@@ -305,25 +323,27 @@ def require_current_branch(
 ) -> BranchCurrencyResult:
     """Run the auto-merge gate; return the structured result.
 
-    ``dry_run`` reports the staleness without attempting any merge —
+    ``dry_run`` reports staleness without checking the checkout or merging —
     used by callers that just want to surface the gap (e.g. a doctor
     check, a defense-in-depth pre-push probe).
 
     On zero-conflict merge the caller should record the returned
     ``post_merge_sha`` so the downstream cold reviewer attests the
-    post-merge tree. On conflict the caller must NOT proceed — the
-    ``error`` + ``hint`` is the actionable refusal.
+    post-merge tree. On conflict or wrong checkout the caller must NOT
+    proceed — ``error`` + ``hint`` is the actionable refusal.
     """
+    if not dry_run:
+        current_ref = _checkout_ref(repo)
+        if current_ref != f"refs/heads/{branch}":
+            return _wrong_checkout_result(repo, branch, current_ref)
     staleness = branch_behind_target(repo, branch, target)
-    if staleness is None:
-        return _ok()
-    if dry_run:
-        return _ok(
-            hint=(
-                f"branch {branch!r} is {staleness.behind_count} commit(s) behind "
-                f"{target}; merge target before review/ship"
-            )
+    if staleness is None or dry_run:
+        hint = (
+            f"branch {branch!r} is {staleness.behind_count} commit(s) behind {target}; merge target before review/ship"
+            if staleness is not None
+            else None
         )
+        return _ok(hint=hint)
     attempt = _attempt_merge(repo, branch, target)
     if attempt.outcome is MergeOutcome.ZERO_CONFLICT:
         return _ok(auto_merged=True, post_merge_sha=_rev_parse(repo, "HEAD"))
