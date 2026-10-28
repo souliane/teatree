@@ -10,6 +10,18 @@ from teatree.core.retention.prune import apply_retention, plan_retention
 
 
 class SlackRowsRetentionTestCase(TestCase):
+    def test_null_owner_setting_preserves_unresolved_rows(self) -> None:
+        now = timezone.now()
+        ConfigSetting.objects.set_value("overlays", {"ov": {"slack_user_id": None}})
+        row = PendingChatInjection.record(
+            channel="D1", slack_ts="owner", text="unresolved", overlay="ov", context=DmContext(user_id="U_OWNER")
+        )
+        PendingChatInjection.objects.filter(pk=row.pk).update(received_at=now - dt.timedelta(days=31))
+
+        apply_retention(now=now)
+
+        assert PendingChatInjection.objects.filter(pk=row.pk).exists()
+
     def test_old_colleague_rows_are_pruned_without_retiring_owner_work(self) -> None:
         now = timezone.now()
         old = now - dt.timedelta(days=31)
