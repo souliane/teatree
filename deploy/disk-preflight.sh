@@ -17,11 +17,17 @@ read_build_space() {
     docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
     for path in / "${TMPDIR:-/tmp}" ${docker_root:+"$docker_root"}; do
         if ! output="$(df -Pk "$path" 2>/dev/null)"; then
+            [ "$path" = / ] && return 1
             continue
         fi
         stats="$(awk 'NR == 2 { print $2, $3, $4 }' <<<"$output")"
         read -r total used available <<<"$stats"
-        case "$total:$used:$available" in *[!0-9:]* | :* | *::*) continue ;; esac
+        case "$total:$used:$available" in
+            *[!0-9:]* | :* | *::*)
+                [ "$path" = / ] && return 1
+                continue
+                ;;
+        esac
         reserved=$((total - used - available))
         if [ -z "$BUILD_FREE_KIB" ] || [ "$available" -lt "$BUILD_FREE_KIB" ]; then
             BUILD_FREE_KIB="$available"

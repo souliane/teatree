@@ -47,6 +47,23 @@ def test_preflight_refuses_when_no_host_path_can_be_measured() -> None:
     assert "could not be measured" in result.stderr
 
 
+def test_preflight_refuses_when_root_cannot_be_measured() -> None:
+    script = (
+        "set -euo pipefail\n"
+        'docker() { printf "%s\\n" /unmounted-docker-root; }\n'
+        'df() { if [ "$2" = / ]; then return 1; fi; '
+        'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+        '/dev/fake 40000000 1000000 20971520 1%% /\\n"; }\n'
+        f'. "{DEPLOY.parent / "disk-preflight.sh"}"\n'
+        'require_build_space "deploy"\n'
+    )
+
+    result = subprocess.run([BASH, "-c", script], capture_output=True, text=True, check=False)
+
+    assert result.returncode != 0
+    assert "could not be measured" in result.stderr
+
+
 @pytest.mark.parametrize(("free_gib", "allowed"), [(16, False), (20, True)])
 def test_deploy_reclaims_then_checks_space_before_build(tmp_path: Path, free_gib: int, *, allowed: bool) -> None:
     source = DEPLOY.read_text(encoding="utf-8")
