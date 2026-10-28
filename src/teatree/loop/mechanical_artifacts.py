@@ -33,8 +33,8 @@ from teatree.core.cleanup.artifact_eviction import (
 from teatree.core.cleanup.isolated_roots import reap_idle_isolated_databases, reap_orphan_isolated_worktree_roots
 from teatree.core.cleanup.reclaim_pressure import effective_disk_floor_gb
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.notify import notify_user
-from teatree.core.notify_types import NotifyKind
+from teatree.core.notify import notify_user_outcome
+from teatree.core.notify_types import NotifyKind, NotifyReason
 from teatree.core.retention.scratch import sweep_scratch
 from teatree.core.tasks import TeardownDispatch
 from teatree.loop.dispatch import ActionPayload
@@ -52,6 +52,8 @@ if TYPE_CHECKING:
 ARTIFACT_PASS_BUDGET_SECONDS = 120.0
 #: The orphan env-dir reaper's checkout walk; together with the pass above, inside the 300 s tick.
 ENV_DIR_WALK_BUDGET_SECONDS = 60.0
+#: Not delivered because the notify policy decided so — recorded for the pulled surface, which a retry cannot change.
+_WITHHELD_BY_DESIGN = frozenset({NotifyReason.ROUTED_TO_PULL, NotifyReason.INTERNAL_AUDIENCE})
 
 
 def sweep_artifacts(payload: ActionPayload) -> None:
@@ -123,34 +125,30 @@ def _record_reclaim_status(
     floor = effective_disk_floor_gb(float(configured) if isinstance(configured, int | float) else 10.0)
     if free_after >= floor:
         marker.reclaim_blocked_since = None
-        marker.last_reclaim_notice_at = None
-        marker.save(update_fields=["last_reclaimed_gb", "reclaim_blocked_since", "last_reclaim_notice_at"])
+        marker.save(update_fields=["last_reclaimed_gb", "reclaim_blocked_since"])
         return
-    blocked_since = marker.reclaim_blocked_since or timezone.now()
-    marker.reclaim_blocked_since = blocked_since
+    marker.reclaim_blocked_since = marker.reclaim_blocked_since or timezone.now()
     marker.save(update_fields=["last_reclaimed_gb", "reclaim_blocked_since"])
-    if marker.last_reclaim_notice_at is not None:
+    _tell_owner_once_a_day(marker, free_gb=free_after, floor_gb=floor)
+
+
+def _tell_owner_once_a_day(marker: "ResourcePressureMarker", *, free_gb: float, floor_gb: float) -> None:
+    """At most one notice per UTC day however often the box crosses the floor, and three attempts to land it."""
+    day = marker.claim_reclaim_notice_attempt()
+    if day is None:
         return
-    reasons = [
-        line.strip()
-        for line in plan.steps
-        if "REFUSED" in line or "NEEDS OWNER" in line or "SKIP artifact eviction" in line
-    ]
-    detail = "; ".join(reasons[:3]) if reasons else "protected or unproven items need review"
     message = (
-        f"Disk reclaim left {free_after:.1f} GB free below the {floor:.1f} GB build floor "
-        f"(last reclaimed {marker.last_reclaimed_gb:.2f} GB). "
-        f"Reasons: {detail}. Can you restore the blocked probes or add space?"
+        f"Disk space is low: {free_gb:.1f} GB free, and a build needs {floor_gb:.1f} GB. "
+        f"The latest automatic cleanup reclaimed {marker.last_reclaimed_gb:.1f} GB, which was not enough."
     )
-    delivered = notify_user(
+    outcome = notify_user_outcome(
         message,
-        kind=NotifyKind.QUESTION,
-        idempotency_key=f"resource-reclaim-blocked:{blocked_since.isoformat()}",
-        audience=NotifyAudience.OWNER_QUESTION,
+        kind=NotifyKind.INFO,
+        idempotency_key=f"resource-reclaim-blocked:{day.isoformat()}",
+        audience=NotifyAudience.OWNER_ESCALATION,
     )
-    if delivered:
-        marker.last_reclaim_notice_at = timezone.now()
-        marker.save(update_fields=["last_reclaim_notice_at"])
+    if outcome.sent or outcome.reason in _WITHHELD_BY_DESIGN:
+        marker.settle_reclaim_notice()
 
 
 def _release_idle_database_copies(plan: FreePlan, *, deadline: float) -> None:

@@ -16,10 +16,13 @@ see what the scanner did (or *would have* done, when destructive flags are
 off) — satisfying the done-claims-require-artifact-evidence contract.
 """
 
+from datetime import UTC, date
 from typing import ClassVar
 
 from django.db import models
 from django.utils import timezone
+
+RECLAIM_NOTICE_MAX_ATTEMPTS = 3
 
 
 class ResourcePressureMarker(models.Model):
@@ -54,7 +57,9 @@ class ResourcePressureMarker(models.Model):
     scratch_var_tmp_cursor = models.TextField(blank=True, default="")
     last_reclaimed_gb = models.FloatField(default=0.0)
     reclaim_blocked_since = models.DateTimeField(null=True, blank=True)
+    # When the owner notice was last ATTEMPTED, and how many of that UTC day's attempts it has spent.
     last_reclaim_notice_at = models.DateTimeField(null=True, blank=True)
+    reclaim_notice_attempts = models.PositiveSmallIntegerField(default=0)
     # Separate from last_plan for the same reason last_artifact_sweep_at is separate
     # from last_freed_at: two passes run on this one mini-loop, and a single shared
     # field means whichever wrote last is the only account that survives — the other
@@ -103,6 +108,24 @@ class ResourcePressureMarker(models.Model):
         self.zero_yield_passes = self.zero_yield_passes + 1 if stalled else 0
         self.save(update_fields=["zero_yield_passes"])
         return self.zero_yield_passes
+
+    def claim_reclaim_notice_attempt(self) -> date | None:
+        """Spend one of today's UTC notice attempts and return the day; ``None`` once the day's budget is spent."""
+        now = timezone.now().astimezone(UTC)
+        last = self.last_reclaim_notice_at
+        if last is None or last.astimezone(UTC).date() != now.date():
+            self.reclaim_notice_attempts = 0
+        if self.reclaim_notice_attempts >= RECLAIM_NOTICE_MAX_ATTEMPTS:
+            return None
+        self.reclaim_notice_attempts += 1
+        self.last_reclaim_notice_at = now
+        self.save(update_fields=["reclaim_notice_attempts", "last_reclaim_notice_at"])
+        return now.date()
+
+    def settle_reclaim_notice(self) -> None:
+        """The day's notice is told or deliberately withheld, so no further attempt is owed today."""
+        self.reclaim_notice_attempts = RECLAIM_NOTICE_MAX_ATTEMPTS
+        self.save(update_fields=["reclaim_notice_attempts"])
 
     def record_adaptive_concurrency(self, value: int) -> None:
         """Stamp the derived intake concurrency; the timestamp IS its freshness heartbeat."""

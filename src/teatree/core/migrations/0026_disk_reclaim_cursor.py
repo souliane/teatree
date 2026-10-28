@@ -44,4 +44,9 @@ class Migration(migrations.Migration):
             name="last_reclaim_notice_at",
             field=models.DateTimeField(blank=True, null=True),
         ),
+        migrations.AddField(
+            model_name="resourcepressuremarker",
+            name="reclaim_notice_attempts",
+            field=models.PositiveSmallIntegerField(default=0),
+        ),
     ]
