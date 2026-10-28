@@ -32,9 +32,9 @@ from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.worktree.branch_currency import require_current_branch
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.core.worktree.target_branch import resolve_target_branch
+from teatree.types import VisualQASummary
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
-from teatree.visual_qa_types import VisualQASummary
 
 _log = logging.getLogger(__name__)
 

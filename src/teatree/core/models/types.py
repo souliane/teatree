@@ -11,7 +11,7 @@ from teatree.core.models.checkout_proof import (
 )
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
 from teatree.core.models.repo_expansion import TicketRepoExtra
-from teatree.visual_qa_types import VisualQASummary
+from teatree.types import VisualQASummary
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict

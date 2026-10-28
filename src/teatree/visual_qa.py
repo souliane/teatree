@@ -26,11 +26,11 @@ from typing import TYPE_CHECKING
 
 from teatree.browser.evidence import BrowserEvent, EvidenceRecorder
 from teatree.core.overlay import OverlayBase
+from teatree.types import VisualQAPageDetail, VisualQAPageError, VisualQASummary
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, TimeoutExpired, redact_secrets
 from teatree.visual_qa_server import ServedApp, ServerSpec, VisualQAUnavailableError
 from teatree.visual_qa_server import served_app as _served_app
-from teatree.visual_qa_types import VisualQAPageDetail, VisualQAPageError, VisualQASummary
 
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext
