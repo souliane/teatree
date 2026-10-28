@@ -29,9 +29,9 @@ mechanical conversion.
 Detection follows delegation (bounded depth) so a handler whose whole body is
 ``_report(self, name, json_output=json_output)`` counts as routed when that
 helper calls ``emit`` — the ``loop_state``/``loop_preset`` shape. Cross-module
-delegation resolves only through a sibling-module alias (``_lanes.run_lanes``,
-the ``e2e lanes`` shape); a bare ``self.x()`` never does, since attribute names
-collide across the package and resolving them would absolve a real defect.
+delegation resolves through an imported command-helper alias, including a nested
+helper; a bare ``self.x()`` never does, since attribute names collide across the
+package and resolving them would absolve a real defect.
 """
 
 import ast
@@ -93,7 +93,7 @@ def _called_names(fn: ast.FunctionDef) -> set[str]:
     return names
 
 
-def _sibling_module_calls(fn: ast.FunctionDef, aliases: frozenset[str]) -> set[str]:
+def _sibling_module_calls(fn: ast.FunctionDef, aliases: frozenset[str]) -> set[tuple[str, str]]:
     """Names called as ``<sibling-module-alias>.<func>(...)`` — the cross-module delegations.
 
     Only these resolve against the package-wide index. A bare ``self.x()`` or
@@ -101,7 +101,7 @@ def _sibling_module_calls(fn: ast.FunctionDef, aliases: frozenset[str]) -> set[s
     across the package, so resolving those would silently absolve a real defect.
     """
     return {
-        node.func.attr
+        (node.func.value.id, node.func.attr)
         for node in ast.walk(fn)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
@@ -119,6 +119,23 @@ def _sibling_module_aliases(module: ast.Module, stems: frozenset[str]) -> frozen
         for alias in node.names
         if alias.name in stems
     )
+
+
+def _nested_module_functions(module: ast.Module, root: Path) -> dict[str, dict[str, ast.FunctionDef]]:
+    package_prefix = "teatree.core.management.commands."
+    nested: dict[str, dict[str, ast.FunctionDef]] = {}
+    for node in ast.walk(module):
+        if not isinstance(node, ast.ImportFrom) or not node.module or not node.module.startswith(package_prefix):
+            continue
+        directory = root.joinpath(*node.module.removeprefix(package_prefix).split("."))
+        for alias in node.names:
+            path = directory / f"{alias.name}.py"
+            if path.is_file():
+                tree = ast.parse(path.read_text(), str(path))
+                nested[alias.asname or alias.name] = {
+                    fn.name: fn for fn in tree.body if isinstance(fn, ast.FunctionDef)
+                }
+    return nested
 
 
 def _assigns_print_result(fn: ast.FunctionDef) -> bool:
@@ -170,19 +187,25 @@ class _CallGraph:
     module (the ``e2e lanes`` → ``_e2e_lanes.run_lanes`` shape).
     """
 
-    def __init__(self, module: ast.Module, package: dict[str, ast.FunctionDef], stems: frozenset[str]) -> None:
+    def __init__(
+        self, module: ast.Module, package: dict[str, ast.FunctionDef], stems: frozenset[str], root: Path
+    ) -> None:
         self._local: dict[str, ast.FunctionDef] = {}
         for node in ast.walk(module):
             if isinstance(node, ast.FunctionDef):
                 self._local.setdefault(node.name, node)
         self._package = package
         self._aliases = _sibling_module_aliases(module, stems)
+        self._nested = _nested_module_functions(module, root)
 
     def _callees(self, fn: ast.FunctionDef) -> dict[str, ast.FunctionDef]:
         resolved = {name: self._local[name] for name in _called_names(fn) if name in self._local}
-        for name in _sibling_module_calls(fn, self._aliases):
+        for alias, name in _sibling_module_calls(fn, self._aliases):
             if name not in resolved and name in self._package:
-                resolved[name] = self._package[name]
+                resolved[f"{alias}.{name}"] = self._package[name]
+        for alias, name in _sibling_module_calls(fn, frozenset(self._nested)):
+            if name in self._nested[alias]:
+                resolved[f"{alias}.{name}"] = self._nested[alias][name]
         return resolved
 
     def reaches(self, fn: ast.FunctionDef, *, predicate_name: str) -> bool:
@@ -248,7 +271,7 @@ def _iter_defects(
     stems = frozenset(p.stem for p in root.glob("*.py"))
     for path in sorted(root.glob("*.py")):
         tree = ast.parse(path.read_text(), str(path))
-        index = _CallGraph(tree, functions, stems)
+        index = _CallGraph(tree, functions, stems, root)
         for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
             pinned_by_class = _class_chain_pins(cls, classes)
             for fn in [n for n in cls.body if isinstance(n, ast.FunctionDef) and _is_handler(n)]:

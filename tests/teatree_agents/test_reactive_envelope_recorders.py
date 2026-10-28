@@ -80,8 +80,7 @@ class TestScanningNewsDigestDelivery(TestCase):
         notify.assert_not_called()
 
     def test_an_empty_rendered_digest_posts_nothing_but_keeps_the_candidates(self) -> None:
-        # If the digest renders to empty text there is nothing to DM, so the post is
-        # skipped — yet the candidates the ask-gate needs are already persisted.
+        # An empty digest leaves the settled article decisions intact.
         task = _news_task()
 
         with (

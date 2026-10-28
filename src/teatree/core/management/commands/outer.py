@@ -18,10 +18,10 @@ from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Loop, LoopLease, OuterLoopExperiment
+from teatree.loops.tick_cost import action_found_work, record_tick_cost
 
-# The teatree.loops / teatree.loop imports below are DEFERRED to the method body on
-# purpose: a top-level teatree.loops import from a teatree.core management command is a
-# module-level import cycle (loops depends on core). They resolve fine at call time.
+# `tick_cost` imports only core.models, so it loads at the top; the loop modules the commands
+# below reach are DEFERRED to the method body.
 
 
 class Command(TyperCommand):
@@ -38,29 +38,36 @@ class Command(TyperCommand):
         )
         from teatree.loops.outer_loop.tick import REFUSED_ACTION, run_tick  # noqa: PLC0415 — cross-layer import cycle
 
-        now = timezone.now()
-        row = Loop.objects.filter(name=MINI_LOOP.name).first()
-        if row is None or not loop_admits(MINI_LOOP.name):
-            self.stdout.write("SKIP  outer_loop disabled (no enabled Loop row / LoopState hold).")
-            return
-        if not row.is_due(now):
-            self.stdout.write("SKIP  outer_loop cadence not elapsed.")
-            return
-
-        owner = f"pid-{os.getpid()}"
-        if not LoopLease.objects.acquire(OUTER_LOOP_LEASE_NAME, owner=owner, lease_seconds=OUTER_LOOP_LEASE_SECONDS):
-            self.stdout.write("SKIP  another outer_loop tick is already running — lease held.")
-            return
+        found_work = False
         try:
-            result = run_tick(now=now)
+            now = timezone.now()
+            row = Loop.objects.filter(name=MINI_LOOP.name).first()
+            if row is None or not loop_admits(MINI_LOOP.name):
+                self.stdout.write("SKIP  outer_loop disabled (no enabled Loop row / LoopState hold).")
+                return
+            if not row.is_due(now):
+                self.stdout.write("SKIP  outer_loop cadence not elapsed.")
+                return
+
+            owner = f"pid-{os.getpid()}"
+            if not LoopLease.objects.acquire(
+                OUTER_LOOP_LEASE_NAME, owner=owner, lease_seconds=OUTER_LOOP_LEASE_SECONDS
+            ):
+                self.stdout.write("SKIP  another outer_loop tick is already running — lease held.")
+                return
+            try:
+                result = run_tick(now=now)
+                found_work = action_found_work(result.action)
+            finally:
+                LoopLease.objects.release(OUTER_LOOP_LEASE_NAME, owner=owner)
+            Loop.objects.mark_run(MINI_LOOP.name, now)
+            detail = f" ({result.reason})" if result.reason else ""
+            experiment = f" experiment={result.experiment_id}" if result.experiment_id else ""
+            # A guard-chain refusal mutates nothing; labelling it OK read as an advanced tick.
+            label = "REFUSE" if result.action == REFUSED_ACTION else "OK    "
+            self.stdout.write(f"{label} outer_loop tick — {result.action}{detail}{experiment}.")
         finally:
-            LoopLease.objects.release(OUTER_LOOP_LEASE_NAME, owner=owner)
-        Loop.objects.mark_run(MINI_LOOP.name, now)
-        detail = f" ({result.reason})" if result.reason else ""
-        experiment = f" experiment={result.experiment_id}" if result.experiment_id else ""
-        # A guard-chain refusal mutates nothing; labelling it OK read as an advanced tick.
-        label = "REFUSE" if result.action == REFUSED_ACTION else "OK    "
-        self.stdout.write(f"{label} outer_loop tick — {result.action}{detail}{experiment}.")
+            record_tick_cost(MINI_LOOP.name, found_work=found_work)
 
     @command(name="status")
     def status(self) -> None:

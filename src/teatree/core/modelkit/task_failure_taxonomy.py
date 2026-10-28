@@ -118,6 +118,8 @@ RESUME_REFUSED_PHRASE = "the resumed conversation ended without taking a turn"
 HEAD_SUPERSEDED_PREFIX = "head_superseded: "
 WRONG_HEAD_RETRY_PREFIX = "review_wrong_head: "
 VENUE_LIMIT_PREFIX = "review_venue_limit: "
+COMMENT_CHECK_PREFIX = "comment check — "
+NIT_HEAD_MOVED = "NIT review head moved before publication"
 
 #: Prefix a run carries when the CLI fell back because its build cannot serve the requested model.
 CLI_TOO_OLD_PREFIX = "cli_too_old_for_model: "
@@ -308,6 +310,8 @@ _UNNAMED: frozenset[str] = frozenset(
 _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # First: the recorder stamps it ahead of a NoCurrentPlanError message that may quote any other phrase.
     (FailureKind.PLAN_STALE, (PLAN_STALE_PREFIX,)),
+    (FailureKind.HEAD_SUPERSEDED, (NIT_HEAD_MOVED,)),
+    (FailureKind.RECORDING_REFUSED, (COMMENT_CHECK_PREFIX,)),
     (FailureKind.RECORDING_REFUSED, (WRONG_HEAD_RETRY_PREFIX, VENUE_LIMIT_PREFIX)),
     (FailureKind.LEASE_EXPIRED, (LEASE_EXPIRED_PREFIX,)),
     (FailureKind.CANCELLED, (CANCELLED_PREFIX,)),

@@ -28,11 +28,10 @@ from typing import TYPE_CHECKING
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
-from teatree.core.models.review_target import ReviewTarget, review_target_for_task, review_target_for_ticket
+from teatree.core.models.review_target import ReviewTarget, review_target_for_task
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
-    from teatree.core.models.ticket import Ticket
 
 
 def unrecordable_review_refusal(task: "Task", *, phase: str) -> str | None:
@@ -46,16 +45,6 @@ def unrecordable_review_refusal(task: "Task", *, phase: str) -> str | None:
     if normalize_phase(phase) not in ENVELOPE_VERDICT_PHASES:
         return None
     return _refusal_for(review_target_for_task(task))
-
-
-def unrecordable_review_mint_refusal(ticket: "Ticket") -> str | None:
-    """Why no reviewing task may be MINTED for *ticket*, or ``None`` to mint it.
-
-    The producer-facing half: the mint seams re-emit every tick and carry no failure memory,
-    so a refused dispatch is re-minted as a brand-new task rather than retried. At mint time
-    no dispatch row exists yet, so the ticket half of the resolver is the whole answer.
-    """
-    return _refusal_for(review_target_for_ticket(ticket))
 
 
 def _refusal_for(target: ReviewTarget | None) -> str | None:

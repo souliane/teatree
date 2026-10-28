@@ -1542,7 +1542,7 @@
           "name": "stamp-identity"
         },
         {
-          "help": "List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none",
+          "help": "List branch verdicts; orphans have unmerged work but no PR; ``[]`` means no branch",
           "name": "list-orphans"
         },
         {
