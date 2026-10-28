@@ -11,7 +11,7 @@ import pytest
 
 from teatree.core.models import BotPing
 from teatree.core.models.waiting_item import WaitingItem
-from teatree.core.review.owner_waits import ask_owner_to_approve_post, ask_owner_to_read
+from teatree.core.review.owner_waits import ask_owner_to_approve_post
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.waiting_digest import WaitingDigestScanner
@@ -37,26 +37,6 @@ class TestWaitingDigestScanner:
         second_ping = BotPing.objects.order_by("-pk").first()
         assert second_ping is not None
         assert f"Q{second.pk}" in second_ping.text
-        assert second_ping.idempotency_key != first_ping.idempotency_key
-
-    def test_distinct_held_prs_have_distinct_digest_rows_and_hashes(self) -> None:
-        first_url = "https://github.com/example/repo/pull/1"
-        second_url = "https://github.com/example/repo/pull/2"
-        first = ask_owner_to_read(first_url, "First", "a" * 40)
-        assert first is not None
-        scanner = WaitingDigestScanner()
-
-        assert len(scanner.scan()) == 1
-        first_ping = BotPing.objects.get()
-        assert first_url in first_ping.text
-
-        first.mark_stale("the pull request settled", resolver_id="test")
-        assert ask_owner_to_read(second_url, "Second", "b" * 40) is not None
-
-        assert len(scanner.scan()) == 1
-        second_ping = BotPing.objects.order_by("-pk").first()
-        assert second_ping is not None
-        assert second_url in second_ping.text
         assert second_ping.idempotency_key != first_ping.idempotency_key
 
     def test_no_signal_when_nothing_waiting(self) -> None:

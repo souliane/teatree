@@ -12,9 +12,7 @@ Idempotency is by issue-URL hash: re-assessing the same issue URL on a later tic
 finds the existing row and does not enqueue a duplicate. An unknown verdict fails
 CLOSED — the row is dropped and logged, never stored with a bad verdict that the
 approval skill could not act on. This mirrors the durable-gate family already in
-core — :class:`teatree.core.models.pending_article_suggestion.PendingArticleSuggestion`
-(the news-scan ask-gate) and
-:class:`teatree.core.models.deferred_question.DeferredQuestion`: a recorded,
+core — :class:`teatree.core.models.deferred_question.DeferredQuestion`: a recorded,
 durable, reviewable row that gates an otherwise-autonomous action behind explicit
 user confirmation.
 """

@@ -40,7 +40,7 @@ from django.utils import timezone
 
 from teatree.core.cleanup.reclaim_pressure import reclaim_is_stalled
 from teatree.core.factory.dream_staleness import dream_fallen_behind
-from teatree.core.factory.halted_retries import halted_retry_signals
+from teatree.core.factory.halted_retries import halted_retry_signals, stuck_ticket_halt_signals
 from teatree.core.factory.harness_provider_consistency import harness_provider_mismatches
 from teatree.core.factory.health_signal import HealthSignal, SignalCollection
 from teatree.core.factory.secret_key_health import secret_key_signals
@@ -463,6 +463,7 @@ _COLLECTORS = (
     _stalled_backlog_signals,
     stalled_checkout_signals,
     halted_retry_signals,
+    stuck_ticket_halt_signals,
     _dream_staleness_signals,
     _harness_provider_consistency_signals,
     _admission_pressure_signals,

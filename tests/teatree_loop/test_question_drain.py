@@ -22,10 +22,10 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.provision.failure_question import record_provision_failure_question
-from teatree.core.review.owner_waits import ask_owner_to_read
 from teatree.loop.question_drain import (
     DrainReport,
     Verdict,
@@ -34,14 +34,22 @@ from teatree.loop.question_drain import (
     question_reachability,
     sweep_owner_questions,
 )
-from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from tests._git_repo import make_git_repo
 from tests._owner_channel import OWNER_DECISION, owner_card
 
+STUCK_HALT_MARKER = "stuck-redispatch-halt:{pk}"
+
 
 def _ticket(state: str = Ticket.State.WORK_STARTED) -> Ticket:
     return Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
+
+
+def _pr_question(subject: str) -> DeferredQuestion:
+    return DeferredQuestion.record(
+        "May I publish this review comment?",
+        card=replace(owner_card(OwnerDecision.PUBLIC_POST), subject=subject),
+    )
 
 
 def _parked_question(*, ticket_state: str) -> DeferredQuestion:
@@ -429,10 +437,10 @@ class TestSettledPullRequestsDrain(TestCase):
         assert question.status == DeferredQuestion.STATUS_PENDING
 
 
-class TestHeldPrSubjectDrain(TestCase):
+class TestPrSubjectDrain(TestCase):
     def test_unparsed_subject_keeps_exact_recorded_url_behavior(self) -> None:
         subject = "https://forge.example/reviews/7"
-        question = ask_owner_to_read(subject, "A reviewed change", "a" * 40)
+        question = _pr_question(subject)
         assert question is not None
         pr = PullRequest.objects.create(
             ticket=_ticket(Ticket.State.SELF_REVIEWED), url=subject, repo="example/repo", iid="7"
@@ -444,7 +452,7 @@ class TestHeldPrSubjectDrain(TestCase):
 
     def test_equivalent_review_url_retires_with_recorded_pr(self) -> None:
         subject = "http://www.github.com/acme/repo/pull/12/files"
-        question = ask_owner_to_read(subject, "A reviewed change", "a" * 40)
+        question = _pr_question(subject)
         assert question is not None
         pr = PullRequest.objects.create(
             ticket=_ticket(Ticket.State.SELF_REVIEWED),
@@ -470,7 +478,7 @@ class TestHeldPrSubjectDrain(TestCase):
 
     def test_only_a_recorded_settled_pr_closes_its_owner_card(self) -> None:
         url = "https://github.com/acme/repo/pull/12"
-        question = ask_owner_to_read(url, "A reviewed change", "a" * 40)
+        question = _pr_question(url)
         assert question is not None
         assert sweep_owner_questions().drained == 0
 
@@ -490,7 +498,7 @@ class TestHeldPrSubjectDrain(TestCase):
 
     def test_closed_pr_closes_its_owner_card(self) -> None:
         url = "https://github.com/acme/repo/pull/13"
-        question = ask_owner_to_read(url, "A reviewed change", "a" * 40)
+        question = _pr_question(url)
         assert question is not None
         ticket = _ticket(Ticket.State.SELF_REVIEWED)
         pr = PullRequest.objects.create(ticket=ticket, url=url, repo="acme/repo", iid="13")
@@ -504,7 +512,7 @@ class TestHeldPrSubjectDrain(TestCase):
 
     def test_subject_identity_ignores_a_stored_trailing_slash(self) -> None:
         url = "https://github.com/acme/repo/pull/14"
-        question = ask_owner_to_read(url, "A reviewed change", "a" * 40)
+        question = _pr_question(url)
         assert question is not None
         pr = PullRequest.objects.create(
             ticket=_ticket(Ticket.State.SELF_REVIEWED), url=f"{url}/", repo="acme/repo", iid="14"
@@ -518,7 +526,7 @@ class TestHeldPrSubjectDrain(TestCase):
 
     def test_an_open_variant_keeps_a_settled_subject_pending(self) -> None:
         url = "https://github.com/acme/repo/pull/15"
-        question = ask_owner_to_read(url, "A reviewed change", "a" * 40)
+        question = _pr_question(url)
         assert question is not None
         closed = PullRequest.objects.create(
             ticket=_ticket(Ticket.State.SELF_REVIEWED), url=url, repo="acme/repo", iid="15"
@@ -601,10 +609,9 @@ class TestTheAgeLadderTerminates(TestCase):
 
 
 def _halt_question(ticket_pk: int) -> DeferredQuestion:
-    """The shape ``stuck_ticket_redispatch._escalate_once`` records.
+    """The shape a stuck-ticket halt question from an older build has.
 
-    The subject lives in the dedupe marker alone — no session, no parked task — so
-    before #4706 no subject source could name it and only the backstop saw the row.
+    The subject lives in the dedupe marker alone: no session, no parked task.
     """
     return DeferredQuestion.record(
         f"Stuck ticket {ticket_pk} has no work in flight "

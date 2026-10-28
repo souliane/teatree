@@ -41,15 +41,12 @@ from teatree.core.review.pr_inventory import OpenPrRow
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import execute_provision
 from teatree.loop.ci_eval_heal_advance import advance_open_sessions
-from teatree.loop.dispatch import DispatchAction
-from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.pr_stall import repair_stalled_prs
 from teatree.loop.scanners import board_reconcile_issue_reopen as issue_reopen
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.scanners.memory_skim import MemorySkimScanner
 from teatree.loop.scanners.mr_triage_scan import MrTriageScanner
 from teatree.loop.scanners.review_nag import ReviewNagScanner
-from teatree.loop.stuck_ticket_redispatch import redispatch_stuck_tickets
 from teatree.loops import timer_chains
 from teatree.loops.directive_loop.revert import ask_revert as ask_directive_revert
 from teatree.loops.outer_loop.keep import ask_keep
@@ -73,7 +70,6 @@ from tests.teatree_loop.scanners.test_mr_triage_scan import _SCOPE, _channel, _o
 from tests.teatree_loop.test_ci_eval_heal_advance import _artifact, _awaiting, _completed, _FakeClient
 from tests.teatree_loop.test_review_nag_scanner import FakeHost, FakeSlack, _seed
 from tests.teatree_loop.test_scanners import FakeCodeHost
-from tests.teatree_loop.test_stuck_ticket_redispatch import _stuck_ticket
 from tests.teatree_loops.directive_loop.test_revert import _revert_pending as _directive_revert_pending
 from tests.teatree_loops.outer_loop.test_keep import _keep_pending
 from tests.teatree_loops.outer_loop.test_ratify import _make_experiment
@@ -206,24 +202,9 @@ def _halt_a_ci_eval_heal() -> None:
     )
 
 
-def _refuse_an_unrecordable_review() -> None:
-    url = "https://example.com/owner/repo/pull/4225"
-    payload = {"url": url, "head_sha": "", "previous_sha": "", "overlay": "acme"}
-    persist_agent_actions([DispatchAction(kind="agent", zone="t3:reviewer", detail=f"Review: {url}", payload=payload)])
-
-
 def _skim_promotable_memories() -> None:
     with patch("teatree.memory_audit.scan_all", return_value=[_entry("never-force-push")]):
         MemorySkimScanner().scan()
-
-
-def _halt_a_stuck_ticket() -> None:
-    ticket = _stuck_ticket()
-    for n in range(max_phase_iterations()):
-        task = _task("planning", ticket=ticket, status=Task.Status.FAILED)
-        attempt = TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error=f"run {'x' * n}")
-        TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - dt.timedelta(hours=48))
-    redispatch_stuck_tickets()
 
 
 def _proposed_experiment() -> OuterLoopExperiment:
@@ -326,9 +307,7 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
     ("src/teatree/core/question_heal.py", "record_withheld"): _withhold_an_answer_draft,
     ("src/teatree/core/tasks.py", "_record_attachment_hold_question"): _hold_an_unfetched_attachment,
     ("src/teatree/loop/ci_eval_heal_advance.py", "_escalate_via_deferred_question"): _halt_a_ci_eval_heal,
-    ("src/teatree/loop/persistence_reviewer.py", "_escalate_unrecordable_review"): _refuse_an_unrecordable_review,
     ("src/teatree/loop/scanners/memory_skim.py", "scan"): _skim_promotable_memories,
-    ("src/teatree/loop/stuck_ticket_redispatch.py", "_escalate_once"): _halt_a_stuck_ticket,
     ("src/teatree/loops/directive_loop/revert.py", "ask_revert"): lambda: ask_directive_revert(
         _directive_revert_pending()
     ),

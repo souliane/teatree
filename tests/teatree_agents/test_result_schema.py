@@ -35,7 +35,19 @@ class TestEnvelopeChannelSchema:
 
     def test_article_suggestion_items_carry_the_typed_shape(self) -> None:
         item = _PROPERTIES["article_suggestions"]["items"]
-        assert set(item["properties"]) == {"title", "url", "rationale"}
+        assert set(item["properties"]) == {
+            "title",
+            "url",
+            "rationale",
+            "action",
+            "decision_reason",
+            "backlog_checked",
+            "base_red",
+            "duplicate_of",
+            "ticket_title",
+            "ticket_body",
+        }
+        assert item["properties"]["action"]["enum"] == ["file", "drop"]
         assert item["required"] == ["url"]
 
     def test_answer_carries_the_typed_shape(self) -> None:

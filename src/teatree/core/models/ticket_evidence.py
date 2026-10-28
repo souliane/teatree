@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
 
+from django.apps import apps
 from django.db import transaction
 from django.utils import timezone
 
@@ -223,7 +224,18 @@ class TicketEvidenceModel(TicketFacet):
     def rearm_review_at(self, head_sha: str) -> None:
         """Aim this reviewer ticket at *head_sha*; a review an older head earned does not carry over (#959)."""
         if head_sha and (self.extra or {}).get("reviewed_sha") != head_sha:
-            self.merge_extra(set_keys={"reviewed_sha": head_sha}, pop_keys=["last_review_state", "discharged_sha"])
+            attempt_model = apps.get_model("core", "TaskAttempt")
+            last_attempt = (
+                attempt_model.objects.filter(task__ticket_id=self.pk)
+                .order_by("-pk")
+                .values_list("pk", flat=True)
+                .first()
+                or 0
+            )
+            self.merge_extra(
+                set_keys={"reviewed_sha": head_sha, "review_window_after_attempt": last_attempt},
+                pop_keys=["last_review_state", "discharged_sha"],
+            )
 
     def record_review_skill_run(self, skill: str) -> None:
         """Stamp durable evidence that the deep-review ``skill`` ran (#1539).
