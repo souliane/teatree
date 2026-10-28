@@ -20,7 +20,7 @@ from django.utils import timezone
 import teatree.utils.singleton as singleton_mod
 from teatree.core.claim_liveness import reset_driving_registry
 from teatree.core.modelkit import db_retry
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 from teatree.core.models.task_claim import (
     claim,
@@ -48,6 +48,32 @@ class TestClaim(TestCase):
         assert task.claimed_by == "worker"
         assert task.claimed_by_session == "sess"
         assert task.lease_expires_at is not None
+
+    def test_claims_a_start_task_with_twenty_live_pull_requests(self) -> None:
+        for index in range(20):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 3000}",
+            )
+        task = self._pending_task()
+
+        claim(task, claimed_by="worker")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
+    def test_claim_next_pending_returns_each_start_with_twenty_live_pull_requests(self) -> None:
+        for index in range(20):
+            PullRequest.objects.record_opened(
+                ticket=Ticket.objects.create(),
+                url=f"https://github.com/example-org/example-repo/pull/{index + 3300}",
+            )
+        starters = [self._pending_task() for _ in range(4)]
+
+        claimed = [Task.objects.claim_next_pending(claimed_by="worker") for _ in starters]
+
+        assert claimed == starters
+        assert all(Task.objects.get(pk=task.pk).status == Task.Status.CLAIMED for task in starters)
 
     def test_live_claim_is_not_stolen(self) -> None:
         task = self._pending_task()
