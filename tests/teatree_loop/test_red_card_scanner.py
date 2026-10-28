@@ -111,6 +111,21 @@ def _agent_message(text: str = "Sure, I'll do X") -> RawAPIDict:
     return {"text": text, "ts": AGENT_TS, "channel": CHANNEL, "user": "B0BOT"}
 
 
+class TestOnlyTheOwnersDmCanRaiseARedCard:
+    def test_a_colleagues_dm_saying_red_card_raises_nothing(self) -> None:
+        PendingChatInjection.record(
+            channel=DM_CHANNEL,
+            slack_ts=SIGNAL_TS,
+            text="RED CARD",
+            overlay="teatree",
+            context=DmContext(user_id=OTHER_USER),
+        )
+
+        signals = RedCardScanner(backend=FakeMessaging(), overlay="teatree").scan()
+
+        assert (signals, RedCardSignal.objects.count()) == ([], 0)
+
+
 class TestRedCircleReaction:
     def test_red_circle_creates_row_and_emits_signal(self) -> None:
         backend = FakeMessaging(

@@ -24,6 +24,7 @@ from teatree.core.models.task_phase_disposition import PHASE_WEDGE_MARKER_RE
 from teatree.core.telemetry.admission import checked_lifecycle_observations
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.owner_dm_rows import owner_dm_rows
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
 
@@ -407,7 +408,7 @@ class LifecycleIncidentDetector:
         )
         if self.overlay_name:
             rows = rows.filter(overlay=self.overlay_name)
-        rows = rows.filter(
+        rows = owner_dm_rows(rows).filter(
             Q(loop_replied_at__isnull=True)
             | Q(answer_kind__in=_SUBSTANTIVE_REPLIES)
             | Q(text__regex=PendingChatInjection.question_text_regex)

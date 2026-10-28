@@ -61,6 +61,14 @@ class _FakeReactionPublisher:
         self._transition = transition or (lambda *_a, **_k: 0)
         self._approval = approval or (lambda *_a, **_k: 0)
 
+    @staticmethod
+    def has_transition_target(_ticket: object) -> bool:
+        return True
+
+    @staticmethod
+    def has_approval_target(_pull_request: object) -> bool:
+        return True
+
     def add_reactions_for_transition(self, ticket: object, transition_name: str) -> int:
         return self._transition(ticket, transition_name)
 

@@ -18,9 +18,9 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState
+from teatree.core.intake.fix_first import AUTHOR_STATE_PHASE
 from teatree.core.models import Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.loop import stuck_ticket_redispatch
 from teatree.loop.scanners import board_reconcile, board_reconcile_issue_close
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.scanners.board_reconcile_report import BoardAction
@@ -236,7 +236,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.is_settled
-        assert ticket.state not in stuck_ticket_redispatch._STATE_PHASE
+        assert ticket.state not in AUTHOR_STATE_PHASE
 
     def test_a_ticket_the_fsm_refuses_is_skipped_not_crashed(self) -> None:
         ticket = self._ticket()

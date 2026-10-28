@@ -113,7 +113,30 @@ class OnlyTheOwnerIsMinedTestCase(_OwnerRegistryTestCase):
         ConfigSetting.objects.set_value("overlays", {"t3-teatree": {"slack_scope_profile": "dm_only"}})
         _dm(_CORRECTION)
 
-        assert slack_corpus.owner_slack_members(since=_window()) == []
+        with self.assertLogs(slack_corpus.logger, level="WARNING") as messages:
+            assert slack_corpus.owner_slack_members(since=_window()) == []
+        assert "no overlay records a slack_user_id" in messages.output[0]
+
+    def test_each_overlay_accepts_only_its_own_owner(self) -> None:
+        ConfigSetting.objects.set_value(
+            "overlays", {"t3-teatree": {"slack_user_id": _OWNER}, "other": {"slack_user_id": "U_OTHER"}}
+        )
+        _dm("owner A", user_id=_OWNER, ts="1.1")
+        PendingChatInjection.objects.create(
+            overlay="other",
+            channel="D0TEST",
+            slack_ts="2.1",
+            user_id="U_OTHER",
+            text="owner B",
+            received_at=datetime.now(tz=UTC),
+        )
+        _dm("foreign B in A", user_id="U_OTHER", ts="3.1")
+
+        bodies = "\n".join(m.text for m in slack_corpus.owner_slack_members(since=_window()))
+
+        assert "owner A" in bodies
+        assert "owner B" in bodies
+        assert "foreign B in A" not in bodies
 
 
 class WindowAndGroupingTestCase(_OwnerRegistryTestCase):
