@@ -16,9 +16,15 @@ import importlib.metadata
 import json
 import subprocess
 import sys
+from pathlib import Path
 from typing import NamedTuple
+from unittest.mock import patch
 
 import pytest
+
+from tests._budget_report import import_report
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Agent SDKs and rich Markdown parsing must stay out of MCP startup.
 # `openai` arrives via `pydantic_ai.models.openai` and cost ~18s of every `t3`
@@ -44,6 +50,7 @@ forbidden = {forbidden!r}
 print(json.dumps({{
     "loaded": sorted(m for m in forbidden if m in sys.modules),
     "count": len(sys.modules),
+    "modules": sorted(sys.modules),
 }}))
 """
 
@@ -53,6 +60,7 @@ class StartupImportGraph(NamedTuple):
 
     forbidden_loaded: tuple[str, ...]
     module_count: int
+    modules: tuple[str, ...]
 
 
 def _startup_import_graph() -> StartupImportGraph:
@@ -75,6 +83,7 @@ def _startup_import_graph() -> StartupImportGraph:
     return StartupImportGraph(
         forbidden_loaded=tuple(payload["loaded"]),
         module_count=int(payload["count"]),
+        modules=tuple(payload["modules"]),
     )
 
 
@@ -103,8 +112,21 @@ class TestMcpServeStartupBudget:
         assert graph.module_count <= MAX_STARTUP_MODULES - MIN_STARTUP_HEADROOM_MODULES, (
             f"`t3 mcp serve` imported {graph.module_count} modules, over the "
             f"{MAX_STARTUP_MODULES - MIN_STARTUP_HEADROOM_MODULES} headroom ceiling — "
-            "a new heavy dependency reached CLI startup. Defer it to its first call site."
+            "a new heavy dependency reached CLI startup. Defer it to its first call site. "
+            + import_report(graph.modules, _REPO_ROOT, graph.forbidden_loaded)
         )
+
+
+class TestTheCeilingFailureNamesTheBranch:
+    @pytest.mark.timeout(300)
+    def test_an_overrun_names_the_import_groups_the_forbidden_package_and_the_branchs_modules(self) -> None:
+        with (
+            patch.object(sys.modules[__name__], "MAX_STARTUP_MODULES", MIN_STARTUP_HEADROOM_MODULES + 1),
+            pytest.raises(
+                AssertionError, match=r"largest import groups: .*Forbidden packages loaded: .*Modules this branch"
+            ),
+        ):
+            TestMcpServeStartupBudget().test_startup_import_graph_stays_under_the_ceiling()
 
 
 class TestMcpSdkEnvironmentParity:

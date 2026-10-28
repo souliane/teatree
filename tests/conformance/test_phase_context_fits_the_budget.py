@@ -10,10 +10,12 @@ canonical path so the checkout's location cannot move it either.
 
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.agents import prompt
@@ -28,6 +30,7 @@ from teatree.core.models import Session, Task, Ticket
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
+from tests._budget_report import skill_report
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SKILLS_DIR = _REPO_ROOT / "skills"
@@ -88,9 +91,16 @@ class TestEveryPhaseFitsTheBudget(TestCase):
                 if "…truncated" in context or size > ceiling - _MIN_SPARE_BYTES:
                     over.append(
                         f"{phase}: {size} B (headroom ceiling {ceiling - _MIN_SPARE_BYTES} B, "
-                        f"truncated={'…truncated' in context})"
+                        f"truncated={'…truncated' in context}). {skill_report(context, _REPO_ROOT)}"
                     )
         assert not over, "phase contexts over the append budget:\n" + "\n".join(over)
+
+    def test_an_overrun_names_the_skill_sections_and_what_this_branch_changed(self) -> None:
+        with (
+            patch.object(sys.modules[__name__], "_HEADROOM_BYTES", MAX_APPEND_BYTES),
+            pytest.raises(AssertionError, match=r"largest skill sections: .*Skill bytes changed on this branch"),
+        ):
+            self.test_no_phase_context_is_truncated_or_over_the_headroom()
 
     def test_the_review_run_fits_with_its_full_generic_companion_embedded(self) -> None:
         ceiling = MAX_APPEND_BYTES - _HEADROOM_BYTES
