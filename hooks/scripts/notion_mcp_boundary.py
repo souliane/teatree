@@ -14,6 +14,7 @@ Cold-import safe: the module top imports only stdlib and hook siblings; the Noti
 ``teatree.hooks`` load inside the handlers, after ``src/`` is on ``sys.path``.
 """
 
+import logging
 import re
 import signal
 import sys
@@ -50,6 +51,8 @@ _ESCAPE = (
     "One-off escape: put `[gate-escape:notion_boundary: <reason>]` in tool input. "
     "Prefer a non-published field; a token in published text is sent with the write."
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _stamp_owner(data: dict) -> str:
@@ -197,7 +200,8 @@ def _probe(page_id: str) -> "LivenessVerdict | None":
             from teatree.backends.notion.credentials import build_notion_client  # noqa: PLC0415 — after src bootstrap
 
             return build_notion_client().page_liveness(page_id)
-        except Exception as exc:  # noqa: BLE001 — a probe that cannot run is named and never decides the verdict
+        except Exception as exc:
+            logger.debug("Notion liveness probe failed", exc_info=True)
             _skipped(page_id, f"{type(exc).__name__}: {str(exc).partition(chr(10))[0]}")
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)

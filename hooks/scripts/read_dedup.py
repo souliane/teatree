@@ -33,9 +33,9 @@ def handle_read_dedup(data: dict) -> None:
     # Load existing reads: each line is "mtime\tpath"
     reads: dict[str, str] = {}
     for line in read_lines(reads_file):
-        parts = line.split("\t", 1)
-        if len(parts) == 2:  # noqa: PLR2004 — self-documenting literal in this context
-            reads[parts[1]] = parts[0]
+        mtime, tab, path = line.partition("\t")
+        if tab:
+            reads[path] = mtime
 
     # Get current mtime
     try:
@@ -45,10 +45,10 @@ def handle_read_dedup(data: dict) -> None:
 
     prev_mtime = reads.get(file_path)
     if prev_mtime == current_mtime:
-        print(  # noqa: T201 — hook writes its protocol output to stdout
+        sys.stdout.write(
             f"TOKEN SAVINGS HINT: {file_path} was already read this session "
             "and hasn't changed. Use your cached knowledge of its contents "
-            "instead of re-reading."
+            "instead of re-reading.\n"
         )
 
     # Update the reads file (overwrite to keep latest mtime per path)
