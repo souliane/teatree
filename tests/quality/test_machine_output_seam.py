@@ -266,6 +266,47 @@ class TestDetectorBites:
         )
         assert scan_defects(root) == []
 
+    def test_nested_helper_module_delegation_counts_as_routed(self, tmp_path: Path) -> None:
+        nested = tmp_path / "_workspace"
+        nested.mkdir()
+        (nested / "orphan_listing.py").write_text(
+            "from teatree.core.machine_output import emit\n"
+            "def run_orphan_listing(*, as_json, out, err):\n"
+            "    emit([], json_output=as_json, out=out, err=err)\n"
+        )
+        root = self._write(
+            tmp_path,
+            "from typing import Annotated\n"
+            "import typer\n"
+            "from django_typer.management import TyperCommand\n"
+            "from teatree.core.management.commands._workspace import orphan_listing as _ol\n"
+            "class Command(TyperCommand):\n"
+            "    def handle(self, *, json_output: Annotated[bool, typer.Option('--json')] = False) -> None:\n"
+            "        _ol.run_orphan_listing(as_json=json_output, out=self.stdout, err=self.stderr)\n",
+        )
+        assert scan_defects(root) == []
+
+    def test_nested_helper_with_same_named_decoy_does_not_absolve(self, tmp_path: Path) -> None:
+        nested = tmp_path / "_workspace"
+        nested.mkdir()
+        (nested / "orphan_listing.py").write_text("def run_orphan_listing():\n    return []\n")
+        (nested / "decoy.py").write_text(
+            "from teatree.core.machine_output import emit\n"
+            "def run_orphan_listing():\n"
+            "    emit([], json_output=True, out=None, err=None)\n"
+        )
+        root = self._write(
+            tmp_path,
+            "from typing import Annotated\n"
+            "import typer\n"
+            "from django_typer.management import TyperCommand\n"
+            "from teatree.core.management.commands._workspace import orphan_listing as _ol\n"
+            "class Command(TyperCommand):\n"
+            "    def handle(self, *, json_output: Annotated[bool, typer.Option('--json')] = False) -> None:\n"
+            "        _ol.run_orphan_listing()\n",
+        )
+        assert [d.kind for d in scan_defects(root)] == [DefectKind.JSON_FLAG_BYPASSES_SEAM]
+
     def test_name_collision_with_a_sibling_helper_does_not_absolve(self, tmp_path: Path) -> None:
         """A bare ``self.run_verb()`` must NOT resolve to an unrelated sibling of the same name."""
         (tmp_path / "_helper.py").write_text(

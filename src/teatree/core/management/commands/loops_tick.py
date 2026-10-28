@@ -40,6 +40,7 @@ import typer
 from django.db import DatabaseError
 from django_typer.management import TyperCommand
 
+from teatree.config.discovery import overlay_entry_points_scanned_once
 from teatree.config.resolution import get_effective_settings
 from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
@@ -51,6 +52,7 @@ from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.pr_stall import StallRepair, repair_stalled_prs
 from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line_reader
 from teatree.loops.preset_status import overridden_loop_names, preset_line_handles
+from teatree.loops.tick_cost import record_tick_cost
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -59,13 +61,6 @@ if TYPE_CHECKING:
     from teatree.loops.base import BuildJobsContext
 
 type ReportDict = dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class _PrReport:
-    blocked_reason: str
-    open_prs: Sequence[OpenPrRow]
-    repairs: Sequence[StallRepair]
 
 
 #: The dedicated lease slot the reinstall drain acquires so parallel per-loop
@@ -234,7 +229,7 @@ def _drain_pending_reinstall_guarded() -> None:
 class Command(TyperCommand):
     help = "Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each worker `loop_timer` fires."
 
-    def _emit_skip(self, reason: str, *, json_output: bool, statusline_file: Path | None) -> None:
+    def _emit_skip(self, loop: str, reason: str, *, json_output: bool, statusline_file: Path | None) -> None:
         from teatree.loop.tick import _write_tick_meta  # noqa: PLC0415 — deferred: keeps command import light
 
         now = dt.datetime.now(tz=dt.UTC)
@@ -246,6 +241,7 @@ class Command(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human=f"SKIP  {reason}",
         )
+        record_tick_cost(loop, found_work=False)
 
     def _build_request(self, overlay: str) -> "TickRequest":
         """The tick's scan request — ALWAYS overlay backends, never a bare host (#3843).
@@ -282,8 +278,8 @@ class Command(TyperCommand):
         loop: str,
         *,
         json_output: bool,
-        pr_report: _PrReport,
-    ) -> None:
+        blocked_reason: str,
+    ) -> bool:
         """Emit the tick report, leading with a ``ran`` OR a reasoned ``SKIP`` verdict.
 
         A tick used to print NOTHING on the success path (``human`` was ``None``
@@ -299,7 +295,8 @@ class Command(TyperCommand):
         *blocked_reason* is set the verdict is a SKIP naming what refused the
         loop and how to lift it.
         """
-        blocked_reason, open_prs, repairs = pr_report.blocked_reason, pr_report.open_prs, pr_report.repairs
+        open_prs = [] if blocked_reason else _open_pr_rows(report)
+        repairs = _stall_repairs(report, open_prs)
         verdict = (
             f"SKIP  loop {loop!r} did not run — {blocked_reason}"
             if blocked_reason
@@ -315,6 +312,16 @@ class Command(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human="\n".join([verdict, *warnings, *listing, *stalls]),
         )
+        return bool(report.signals or any(action.kind != "statusline" for action in report.actions) or repairs)
+
+    @staticmethod
+    def _set_statusline_readers(*, active: bool) -> None:
+        from teatree.loop.statusline import set_mini_loop_schedules_reader  # noqa: PLC0415 — lazy command import
+        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415 — deferred: keeps command import light
+
+        set_mini_loop_schedules_reader(mini_loop_schedules if active else None)
+        set_preset_line_reader(preset_line_handles if active else None)
+        set_overridden_loops_reader(overridden_loop_names if active else None)
 
     def _run_followup_dry_run(self, *, overlay: str, json_output: bool) -> None:
         """``--dry-run``: scan built-in follow-up jobs, omit overlay hooks, and report breaches.
@@ -407,7 +414,11 @@ class Command(TyperCommand):
             run_loop_connector_preflight,
         )
 
-        run_loop_connector_preflight(loop)
+        try:
+            run_loop_connector_preflight(loop)
+        except (Exception, SystemExit):
+            record_tick_cost(loop, found_work=False)
+            raise
 
         from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
         from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
@@ -444,6 +455,7 @@ class Command(TyperCommand):
         )
         if not won:
             self._emit_skip(
+                loop,
                 f"loop slot {owner_slot!r} not owned by this session — owner is session {owner_session} "
                 f"(run `t3 loop claim --slot {owner_slot} --take-over` from the owning session to take over).",
                 json_output=json_output,
@@ -459,15 +471,14 @@ class Command(TyperCommand):
         owner = f"pid-{os.getpid()}"
         if not LoopLease.objects.acquire(tick_mutex, owner=owner):
             self._emit_skip(
+                loop,
                 "another tick is already running for this loop",
                 json_output=json_output,
                 statusline_file=statusline_file,
             )
             return
 
-        from teatree.loop.statusline import set_mini_loop_schedules_reader  # noqa: PLC0415 — lazy command import
         from teatree.loop.tick import run_tick  # noqa: PLC0415 — deferred: keeps command import light
-        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415 — deferred: keeps command import light
 
         # The statusline dedicated loop line shows due-soon loops with their own
         # next-tick countdowns (#1400) under the active-preset/schedule handle
@@ -476,27 +487,27 @@ class Command(TyperCommand):
         # it (the overridden-loops reader is what activates the collapse — so it is
         # installed together with the preset segment that represents the folded
         # loops), then reset after the tick so the process-global seams never leak.
-        set_mini_loop_schedules_reader(mini_loop_schedules)
-        set_preset_line_reader(preset_line_handles)
-        set_overridden_loops_reader(overridden_loop_names)
+        self._set_statusline_readers(active=True)
         builder = _ScopedJobsBuilder(loop=loop)
+        found_work = False
         try:
-            request = self._build_request(overlay)
-            report = run_tick(request, statusline_path=statusline_file, jobs_builder=builder)
-        finally:
-            set_mini_loop_schedules_reader(None)
-            set_preset_line_reader(None)
-            set_overridden_loops_reader(None)
-            LoopLease.objects.release(tick_mutex, owner=owner)
+            try:
+                with overlay_entry_points_scanned_once():
+                    request = self._build_request(overlay)
+                    report = run_tick(request, statusline_path=statusline_file, jobs_builder=builder)
+            finally:
+                self._set_statusline_readers(active=False)
+                LoopLease.objects.release(tick_mutex, owner=owner)
 
-        open_prs = [] if builder.blocked_reason else _open_pr_rows(report)
-        repairs = _stall_repairs(report, open_prs)
-        self._emit_report(
-            report,
-            loop,
-            json_output=json_output,
-            pr_report=_PrReport(builder.blocked_reason, open_prs, repairs),
-        )
+            found_work = self._emit_report(
+                report,
+                loop,
+                json_output=json_output,
+                blocked_reason=builder.blocked_reason,
+            )
+        finally:
+            record_tick_cost(loop, found_work=found_work)
+
         self._hard_exit_if_subprocess()
 
     @staticmethod
