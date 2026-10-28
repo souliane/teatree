@@ -59,6 +59,8 @@ class TestNonCredentialArgsAreUntouched:
             "the bearer of this note",
             "https://example.test:8443?next=a@b",
             '{"name": "abc123XYZ"}',
+            "ssh://git@host.test",
+            "ssh://abcdefghijk@host.test",
         ],
     )
     def test_ordinary_assignment_is_unchanged(self, arg: str) -> None:
@@ -113,6 +115,9 @@ class TestBearerUserinfoAndQuotedCredentialsAreRedacted:
             ("retry with bearer abc123XYZ now", "retry with bearer <redacted> now"),
             ("https://user:abc123XYZ@host.test:8443/path", "https://user:<redacted>@host.test:8443/path"),
             ("scheme://abc123XYZ@host.test", "scheme://<redacted>@host.test"),
+            ("scheme://abc_xyz@host.test", "scheme://<redacted>@host.test"),
+            ("scheme://abc-xyz@host.test", "scheme://<redacted>@host.test"),
+            ("scheme://abcdefghijkl@host.test", "scheme://<redacted>@host.test"),
             ('{"access_token": "abc123XYZ"}', '{"access_token": "<redacted>"}'),
             ('{"client_secret":"abc123XYZ"}', '{"client_secret":"<redacted>"}'),
             ("{'password': 'abc123XYZ'}", "{'password': '<redacted>'}"),
