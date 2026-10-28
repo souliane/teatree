@@ -15,6 +15,7 @@ fallback unchanged — pinned by ``test_headless``'s untouched scoping test.
 """
 
 import contextlib
+import json
 import tempfile
 from collections.abc import AsyncIterator, Generator
 from pathlib import Path
@@ -28,14 +29,22 @@ from pydantic_ai.models.test import TestModel
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 import teatree.core.worktree.checkout_fence as checkout_fence_mod
-from teatree.agents.attempt_recorder import record_result_envelope
-from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, is_no_envelope_refusal, is_recorder_refusal
+from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
+from teatree.agents.envelope_refusal import (
+    NO_ENVELOPE_ERROR,
+    UNPARSEABLE_ENVELOPE_PREFIX,
+    is_no_envelope_refusal,
+    is_recorder_refusal,
+)
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.worktree.checkout_state import checkout_state
+from teatree.loop.transient_requeue import requeue_transient_failed
+from teatree.loop.transient_requeue_correction import CORRECTIVE_MARKER
+from tests._owner_channel import owner_stop
 from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import assistant_text, assistant_tool_use, fake_sdk, result_message
 from tests.teatree_core.models._shared import _init_repo_with_branch
@@ -324,3 +333,74 @@ class TestMalformedEnvelopeRecording(TestCase):
                 assert attempt.error == ""
                 assert attempt.result["summary"] == raw[:1000]
                 assert any("malformed result envelope" in line for line in logs.output)
+
+
+_PROSE_PHASES = ("scoping", "retro")
+_OWNER_STOP = {"summary": "Blocked on a credential.", **owner_stop("Rotate the deploy token?")}
+_STOP_JSON = json.dumps(_OWNER_STOP)
+
+
+def _run_prose_phase(phase: str, raw: str) -> tuple[Task, TaskAttempt]:
+    ticket = planned_ticket()
+    session = Session.objects.create(ticket=ticket, agent_id=phase)
+    task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+    with _fake_sdk(raw):
+        attempt = run_agent(task, phase=phase, overlay_skill_metadata={})
+    task.refresh_from_db()
+    return task, attempt
+
+
+class TestMalformedProseEnvelopeKeepsTheOwnerStop(TestCase):
+    """A prose-accepted phase never records an owner stop it could not read as a SUCCESSFUL summary."""
+
+    def _assert_refused_for_one_correction(self, task: Task, attempt: TaskAttempt) -> None:
+        assert task.status == Task.Status.FAILED
+        assert attempt.error.startswith(UNPARSEABLE_ENVELOPE_PREFIX)
+        assert not attempt.result.get("needs_user_input")
+
+        requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert CORRECTIVE_MARKER in task.execution_reason
+
+    def test_the_fixture_stop_is_a_complete_owner_kept_card(self) -> None:
+        assert validate_result_keys(_OWNER_STOP) == ""
+
+    def test_a_malformed_envelope_that_declares_a_stop_fails_for_the_corrective_retry(self) -> None:
+        forms = {
+            "unclosed": "Blocked on a credential. " + _STOP_JSON[:-1],
+            "early-closed with the card in the fragment": (
+                '{"summary":"x","needs_user_input":true},"user_input_kind":"credentials","user_input_checked":["a"]}'
+            ),
+            "escaped inside a string": '{"summary":"' + _STOP_JSON.replace('"', '\\"') + '"',
+        }
+        for phase in _PROSE_PHASES:
+            for form, raw in forms.items():
+                with self.subTest(phase=phase, form=form):
+                    task, attempt = _run_prose_phase(phase, raw)
+
+                    self._assert_refused_for_one_correction(task, attempt)
+
+    def test_a_valid_stop_followed_by_junk_is_refused_whole_for_the_corrective_retry(self) -> None:
+        forms = {
+            "placeholder snippet": _STOP_JSON + '\n\nThe shape is {"summary": ...}',
+            "doubled closing brace": _STOP_JSON + "}",
+            "dangling extension key": _STOP_JSON + ',"skill_application":[{"skill":"x"}]}',
+        }
+        for phase in _PROSE_PHASES:
+            for form, raw in forms.items():
+                with self.subTest(phase=phase, form=form):
+                    task, attempt = _run_prose_phase(phase, raw)
+
+                    self._assert_refused_for_one_correction(task, attempt)
+
+    def test_a_malformed_envelope_that_declares_no_stop_still_records_the_prose_summary(self) -> None:
+        raw = 'No stop here. {"summary":"draft","needs_user_input":false},"skill_application":[{"skill":"x"}]}'
+        for phase in _PROSE_PHASES:
+            with self.subTest(phase=phase):
+                task, attempt = _run_prose_phase(phase, raw)
+
+                assert task.status == Task.Status.COMPLETED
+                assert attempt.error == ""
+                assert attempt.result["summary"] == raw[:1000]

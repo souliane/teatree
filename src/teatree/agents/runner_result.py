@@ -9,6 +9,9 @@ from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JS
 
 _RESULT_KEYS = frozenset(cast("JSONSchema", RESULT_JSON_SCHEMA["properties"]))
 
+# Generous on purpose: a false positive costs one corrective run, a miss swallows an owner stop.
+_OWNER_STOP_DECLARED = re.compile(r"""needs_user_input[\s"'`*\\]*[:=][\s"'`*\\]*(?:true|1)\b""", re.IGNORECASE)
+
 
 class ResultEnvelopeError(ValueError):
     """A result envelope could not be parsed as a JSON object."""
@@ -69,6 +72,10 @@ def _span_end(text: str, start: int, *, root_object: bool, resume_at: int | None
             if depth < 0 or (root_object and depth == 0):
                 return index + 1
     return len(text)
+
+
+def declares_owner_stop(text: str) -> bool:
+    return _OWNER_STOP_DECLARED.search(text) is not None
 
 
 def parse_result(agent_text: str) -> AgentResultBlob:

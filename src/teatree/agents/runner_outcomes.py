@@ -238,7 +238,11 @@ def record_success(
 ) -> TaskAttempt:
     """Record a successful SDK run via the shared recorder."""
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — avoids recorder cycle
-    from teatree.agents.runner_result import ResultEnvelopeError, parse_result  # noqa: PLC0415 — deferred import
+    from teatree.agents.runner_result import (  # noqa: PLC0415 — keeps result parsing off module import path
+        ResultEnvelopeError,
+        declares_owner_stop,
+        parse_result,
+    )
 
     provenance = provenance or DispatchProvenance()
     usage = _attempt_usage(
@@ -280,7 +284,11 @@ def record_success(
     )
     if not parsed:
         prose: AgentResultBlob = {"summary": outcome.agent_text[:_PROSE_SUMMARY_CHARS]}
-        if parse_error and ProseSummaryPolicy.accepted(phase or task.phase):
+        if (
+            parse_error
+            and ProseSummaryPolicy.accepted(phase or task.phase)
+            and not declares_owner_stop(outcome.agent_text)
+        ):
             logger.warning("Task %s produced a malformed result envelope: %s", task.pk, parse_error)
             parse_error = None
         if not parse_error and not ProseSummaryPolicy.allowed(phase or task.phase):

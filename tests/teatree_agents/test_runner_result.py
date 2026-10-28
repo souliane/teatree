@@ -5,7 +5,7 @@ import json
 import pytest
 
 from teatree.agents.attempt_recorder import ResultEnvelopeError
-from teatree.agents.runner_result import parse_result
+from teatree.agents.runner_result import declares_owner_stop, parse_result
 
 # --- Pure function tests (no DB) ---
 
@@ -130,6 +130,50 @@ def test_later_line_envelope_recovers_after_poisoned_prefix(prefix: str) -> None
 def test_malformed_tail_after_complete_envelope_is_refused() -> None:
     with pytest.raises(ResultEnvelopeError, match=r"^result is not valid JSON: "):
         parse_result('{"summary":"complete"}\n{"summary":"broken"')
+
+
+def test_doubled_closing_brace_after_a_complete_envelope_is_refused() -> None:
+    with pytest.raises(ResultEnvelopeError, match=r"^result is not valid JSON: "):
+        parse_result('{"summary":"ok"}}')
+
+
+def test_broken_envelope_ends_at_its_own_close_so_a_same_line_correction_recovers() -> None:
+    assert parse_result('{"summary":"draft" "oops"} {"summary":"corrected"}') == {"summary": "corrected"}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"needs_user_input": true}',
+        '{"needs_user_input":true}',
+        '{\n  "needs_user_input"  :\n    true\n}',
+        "{'needs_user_input': True}",
+        '{\\"needs_user_input\\": true}',
+        '{"needs_user_input": "true"}',
+        "needs_user_input = true",
+        "**needs_user_input**: true",
+        "NEEDS_USER_INPUT: TRUE",
+        '{"summary": "x", "needs_user_input": 1',
+    ],
+)
+def test_an_owner_stop_is_detected_in_any_quoting_of_the_raw_text(raw: str) -> None:
+    assert declares_owner_stop(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"needs_user_input": false}',
+        '{"needs_user_input": null}',
+        '{"needs_user_input": 10}',
+        '{"needs_user_input": true_ish}',
+        '{"user_input_reason": true}',
+        "needs_user_input",
+        "no owner input is needed here",
+    ],
+)
+def test_no_owner_stop_is_detected_when_the_text_declares_none(raw: str) -> None:
+    assert not declares_owner_stop(raw)
 
 
 @pytest.mark.parametrize(
