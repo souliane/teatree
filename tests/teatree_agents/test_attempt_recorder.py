@@ -233,7 +233,7 @@ class TestRecordResultEnvelope(TestCase):
 
     def test_routed_credentials_denied_command_fails_this_candidate_without_an_owner_question(self) -> None:
         task = self._claimed(phase="debugging")
-        envelope = owner_stop("Can you provide bot access for live proof?", "credentials", DENIED_START)
+        envelope = owner_stop("May I start the sub-agent again?", "credentials", DENIED_START)
 
         attempt = record_result_envelope(
             task, envelope | {"summary": "Current route denied the start."}, usage=_routed()
@@ -251,7 +251,7 @@ class TestRecordResultEnvelope(TestCase):
 
     def test_unrouted_credentials_denied_command_still_raises_the_card(self) -> None:
         task = self._claimed(phase="scoping")
-        envelope = owner_stop("Can you provide bot access for live proof?", "credentials", DENIED_START)
+        envelope = owner_stop("May I start the sub-agent again?", "credentials", DENIED_START)
 
         attempt = record_result_envelope(task, envelope | {"summary": "waiting"}, usage=AttemptUsage())
 
@@ -261,7 +261,7 @@ class TestRecordResultEnvelope(TestCase):
     def test_routed_credentials_stop_without_a_denial_word_keeps_its_card(self) -> None:
         task = self._claimed(phase="scoping")
         fact = "The sub-agent start returned a 403 after a timeout."
-        envelope = owner_stop("Can you provide bot access for live proof?", "credentials", fact)
+        envelope = owner_stop("May I start the sub-agent again?", "credentials", fact)
 
         attempt = record_result_envelope(task, envelope | {"summary": "waiting"}, usage=_routed())
 

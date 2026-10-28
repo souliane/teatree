@@ -39,6 +39,27 @@ def owner_stop(reason: str, kind: str = "credentials", *checked: str) -> dict[st
     }
 
 
+LOOKALIKE_DENIAL = "The sub-agent start was denied by the current route."
+
+#: Stops that borrow a benign row's words but ask a decision only the owner makes, or word it in a way no row knows.
+OWNER_KEPT_LOOKALIKES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("credentials", "May I use an admin credential for it?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I bypass the permission gate so the command runs?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I elevate the privileges so the command runs?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I use a personal credential for it?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I add the command to the allowlist?", (LOOKALIKE_DENIAL,)),
+    ("credentials", "May I borrow the deploy identity so the command runs?", (LOOKALIKE_DENIAL,)),
+    ("irreversible", "May I terminate the job I started, even though it would destroy the only copy?", ()),
+    ("irreversible", "May I stop the server I started, since stopping wipes the database volume?", ()),
+    ("irreversible", "May I kill the process I started, which holds unsaved work that exists on no remote?", ()),
+    ("irreversible", "May I stop the job I started, given that it loses the only copy?", ()),
+    ("irreversible", "May I stop the server I started and clear its history?", ()),
+    ("public_post", "May I force-push the finished branch over the protected main branch?", ()),
+    ("public_post", "May I push the finished branch to the public upstream repository?", ()),
+    ("public_post", "May I push the finished branch to the mirror?", ()),
+)
+
+
 class OwnerDecisionFields(TypedDict):
     card: QuestionCard
 

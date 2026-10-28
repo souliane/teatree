@@ -2,13 +2,14 @@ import pytest
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.owner_stop_misfits import OWNER_STOP_MISFITS, MisfitAction, owner_stop_misfit
-from tests._owner_channel import owner_stop
+from tests._owner_channel import OWNER_KEPT_LOOKALIKES, owner_stop
 
 ENVIRONMENT = MisfitAction.ENVIRONMENT_FAILURE
 REFUSE = MisfitAction.REFUSE_AND_DECIDE
 OWN_PUSH = "May I push the finished branch once more?"
 OWN_PROCESS = "May I stop the dev server I started for this check?"
 DENIED_START = "The sub-agent start was denied by the current route."
+RETRY = "May I start the sub-agent again?"
 
 
 def _misfit(kind: str, question: str, *facts: str) -> MisfitAction | None:
@@ -30,13 +31,16 @@ class TestARowFiresOnlyOnItsOwnKindAndWords:
     @pytest.mark.parametrize(
         ("kind", "question", "facts", "expected"),
         [
-            ("credentials", "Can you provide bot access for live proof?", (DENIED_START,), ENVIRONMENT),
+            ("credentials", RETRY, (DENIED_START,), ENVIRONMENT),
+            ("credentials", "May I retry the denied command?", (), ENVIRONMENT),
             ("credentials", "May I retry?", ("The shell command was rejected by the policy.",), ENVIRONMENT),
             ("credentials", "May I retry?", ("The review start was blocked by the venue.",), ENVIRONMENT),
             ("public_post", OWN_PUSH, (), REFUSE),
             ("public_post", "May I push my own pull-request branch again?", (), REFUSE),
             ("irreversible", OWN_PROCESS, (), REFUSE),
             ("irreversible", "May I kill the job this task started?", (), REFUSE),
+            ("irreversible", "May I restart the worker I started?", (), REFUSE),
+            ("irreversible", "May I terminate the container I launched for this run?", (), REFUSE),
         ],
     )
     def test_each_row_matches_its_kind(
@@ -44,17 +48,60 @@ class TestARowFiresOnlyOnItsOwnKindAndWords:
     ) -> None:
         assert _misfit(kind, question, *facts) is expected
 
-    @pytest.mark.parametrize("word", ["secret", "token", "password", "key", "login", "account", "grant", "widen"])
+    @pytest.mark.parametrize(
+        "word",
+        [
+            *("secret", "token", "password", "key", "login", "account", "grant", "widen"),
+            *("credential", "permission", "privilege", "admin", "elevate", "bypass", "override"),
+            *("allowlist", "access", "sudo", "root"),
+        ],
+    )
     def test_a_credential_word_leaves_the_denied_command_a_card(self, word: str) -> None:
-        assert _misfit("credentials", f"May I use another {word}?", DENIED_START) is None
+        assert _misfit("credentials", RETRY, DENIED_START, f"It needs another {word}.") is None
 
-    @pytest.mark.parametrize("word", ["comment", "message", "reply", "colleague"])
-    def test_a_colleague_word_leaves_the_own_branch_push_a_card(self, word: str) -> None:
-        assert _misfit("public_post", f"{OWN_PUSH} Then {word} on it.") is None
+    @pytest.mark.parametrize(
+        "word",
+        ["comment", "message", "reply", "colleague", "protected", "main", "force", "upstream", "public", "origin"],
+    )
+    def test_a_target_word_leaves_the_own_branch_push_a_card(self, word: str) -> None:
+        assert _misfit("public_post", OWN_PUSH, f"It concerns {word}.") is None
 
-    @pytest.mark.parametrize("word", ["delete", "deleting", "deletion", "discard", "unpushed", "uncommitted", "lose"])
+    @pytest.mark.parametrize(
+        "word",
+        [
+            *("delete", "deleting", "deletion", "discard", "unpushed", "uncommitted", "lose", "loses", "lost"),
+            *("destroy", "wipes", "unsaved", "no remote", "only copy", "drop", "purge", "overwrite", "truncate"),
+            *("database", "volume", "data", "files", "work"),
+        ],
+    )
     def test_a_destruction_word_leaves_the_own_process_stop_a_card(self, word: str) -> None:
-        assert _misfit("irreversible", f"{OWN_PROCESS} It would {word} its data.") is None
+        assert _misfit("irreversible", OWN_PROCESS, f"It concerns {word}.") is None
+
+    @pytest.mark.parametrize("kind", ["credentials", "public_post", "irreversible"])
+    def test_a_money_word_leaves_every_row_a_card(self, kind: str) -> None:
+        question = {"credentials": RETRY, "public_post": OWN_PUSH, "irreversible": OWN_PROCESS}[kind]
+
+        assert _misfit(kind, question, DENIED_START, "It would cost money.") is None
+
+    @pytest.mark.parametrize(("kind", "question", "facts"), OWNER_KEPT_LOOKALIKES)
+    def test_a_stop_outside_the_closed_forms_is_a_card(self, kind: str, question: str, facts: tuple[str, ...]) -> None:
+        assert _misfit(kind, question, *facts) is None
+
+    @pytest.mark.parametrize("question", ["May I stop my own server?", "May I stop the server of my own?"])
+    def test_the_word_own_alone_does_not_qualify_a_process_stop(self, question: str) -> None:
+        assert _misfit("irreversible", question) is None
+
+    def test_an_owner_kept_word_in_the_blocker_or_an_option_leaves_the_benign_ask_a_card(self) -> None:
+        stop = owner_stop(RETRY, "credentials", DENIED_START)
+        card = stop["user_input_card"]
+        assert isinstance(card, dict)
+        in_blocker = stop | {"user_input_card": card | {"blocker": "Only you can approve the admin credential."}}
+        option = {"label": "Use the admin credential", "description": "I run it with that.", "recommended": True}
+        in_option = stop | {"user_input_card": card | {"options": [option, *card["options"][1:]]}}
+
+        assert owner_stop_misfit(stop) is ENVIRONMENT
+        assert owner_stop_misfit(in_blocker) is None
+        assert owner_stop_misfit(in_option) is None
 
     @pytest.mark.parametrize(
         ("kind", "question", "facts"),
