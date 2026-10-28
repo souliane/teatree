@@ -20,11 +20,19 @@ NAMED, with the shipped value beside the stored one so the reader can judge in o
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 import typer
+from django.apps import apps
+from django.utils import timezone
 
 from teatree.config.declared_defaults import declared_defaults
+from teatree.config.overlay_scope import unhonourable_overlay_scope_reason
+from teatree.config.setting_registries import SETTING_BOUNDS
 from teatree.core.config_display import masked_display
+
+if TYPE_CHECKING:
+    from teatree.core.models import ConfigSetting, ConfigSettingChange
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,14 +75,13 @@ def drifted_settings(
     )
 
 
-def _stored_rows() -> list[tuple[str, str, object]]:
-    """Every ``ConfigSetting`` row as a ``(key, scope, value)`` triple."""
+def _stored_rows() -> list["ConfigSetting"]:
     from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM needs the app registry
 
-    return [(row.key, row.scope, row.value) for row in ConfigSetting.objects.all().order_by("key", "scope")]
+    return list(ConfigSetting.objects.all().order_by("key", "scope"))
 
 
-def _finding_line(drift: DriftedSetting) -> str:
+def _finding_line(drift: DriftedSetting, row: "ConfigSetting", change: "ConfigSettingChange | None") -> str:
     """One advisory line — key, scope, stored value, shipped value, both mask-safe.
 
     A drifted SECRET still has to surface: a stale secret row is exactly as misleading as any
@@ -85,7 +92,24 @@ def _finding_line(drift: DriftedSetting) -> str:
     """
     stored = masked_display(drift.key, drift.stored)
     shipped = masked_display(drift.key, drift.shipped)
-    return f"INFO  {drift.key} [{drift.where}] is {stored}; shipped default is {shipped}"
+    hours = max(0, int((timezone.now() - row.updated_at).total_seconds() // 3600))
+    writer = row.written_by or row.seeded_by or "unknown writer"
+    previous = masked_display(drift.key, change.old_value) if change else "unknown (written before audit)"
+    ignored = unhonourable_overlay_scope_reason(drift.key, drift.scope)
+    bounds = SETTING_BOUNDS.get(drift.key)
+    below_floor = (
+        bounds is not None
+        and isinstance(drift.stored, int | float)
+        and not (bounds.zero_disables and drift.stored == 0)
+        and drift.stored < bounds.minimum
+    )
+    status = "WARN" if below_floor or ignored else "INFO"
+    floor = f"; below minimum {bounds.minimum:g}" if below_floor and bounds else ""
+    ignored_note = "; ignored by every reader" if ignored else ""
+    return (
+        f"{status}  {drift.key} [{drift.where}] is {stored}; shipped default is {shipped}; "
+        f"set {hours}h ago by {writer}; was {previous}{floor}{ignored_note}"
+    )
 
 
 def _check_config_rows_shadowing_shipped_defaults() -> None:
@@ -97,7 +121,19 @@ def _check_config_rows_shadowing_shipped_defaults() -> None:
     finding.
     """
     try:
-        drifted = drifted_settings(stored=_stored_rows(), shipped=declared_defaults())
+        change_model = cast("type[ConfigSettingChange]", apps.get_model("core", "ConfigSettingChange"))
+        rows = _stored_rows()
+        coordinates = {(row.key, row.scope): row for row in rows}
+        drifted = drifted_settings(
+            stored=((row.key, row.scope, row.value) for row in rows), shipped=declared_defaults()
+        )
+        latest: dict[tuple[str, str], ConfigSettingChange] = {}
+        for change in change_model.objects.order_by("-changed_at", "-pk"):
+            latest.setdefault((change.key, change.scope), change)
+        lines = [
+            _finding_line(drift, coordinates[drift.key, drift.scope], latest.get((drift.key, drift.scope)))
+            for drift in drifted
+        ]
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Config-drift check crashed: {exc.__class__.__name__}: {exc}")
         return
@@ -108,5 +144,5 @@ def _check_config_rows_shadowing_shipped_defaults() -> None:
         "Most are deliberate; a stale one is the same shape as #4074. "
         "Clear one with `t3 <overlay> config_setting clear <key>`."
     )
-    for drift in drifted:
-        typer.echo(_finding_line(drift))
+    for line in lines:
+        typer.echo(line)

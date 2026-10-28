@@ -1399,7 +1399,7 @@ class TestPydanticAiStepCap(TestCase):
     def test_default_setting_is_a_real_turn_budget(self) -> None:
         # A live Lane-B task runs ~16 model requests, so the cap is a generous budget
         # well above that reality (the old 5 refused mid-task before ``open()``).
-        assert get_effective_settings().pydantic_ai_request_limit == 40
+        assert get_effective_settings().pydantic_ai_request_limit == 3000
 
 
 class TestPydanticAiMaxTokens(TestCase):

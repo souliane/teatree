@@ -14,8 +14,11 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.model_tiering import tier_models
-from teatree.config import get_effective_settings
 from teatree.core.cleanup.process_table import ProcessTable
+from teatree.core.management.commands.loop_dispatch import (
+    IN_SESSION_CLAIM_LEASE_SECONDS,
+    _interactive_claim_lease_seconds,
+)
 from teatree.core.models import ModeOverride, Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.task_claim import claim_generation
@@ -127,9 +130,7 @@ class TestClaimNextPayload(_LoopDispatchTest):
             held = occupancy_holder(Worktree.objects.get(pk=worktree.pk))
             assert held is not None
             assert held.holder == f"task:{task.pk}"
-            assert (
-                held.expires_at - held.since
-            ).total_seconds() == get_effective_settings().watchdog_max_runtime_seconds
+            assert (held.expires_at - held.since).total_seconds() == IN_SESSION_CLAIM_LEASE_SECONDS
 
     def test_a_recorded_in_session_run_attests_before_the_next_phase_claim(self) -> None:
         ticket = planned_ticket(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
@@ -360,7 +361,7 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
 
         task.refresh_from_db()
         held_for = (task.lease_expires_at - task.claimed_at).total_seconds()
-        assert held_for == get_effective_settings().watchdog_max_runtime_seconds
+        assert held_for == IN_SESSION_CLAIM_LEASE_SECONDS
 
     def test_two_sequential_ticks_never_double_dispatch_same_task(self) -> None:
         """THE N4 KEYSTONE: one pending Task, two ticks, dispatched exactly once.
@@ -858,3 +859,7 @@ class TestBudgetCountsWorkerInFlight(_LoopDispatchTest):
             write_admit_budget(2, statusline_path=sl)
             payload = self._run_claim_next(sl)
         assert [e["task_id"] for e in payload] == [pending.pk]
+
+
+def test_interactive_claim_lease_stays_short_when_the_watchdog_default_rises() -> None:
+    assert _interactive_claim_lease_seconds() == 10800

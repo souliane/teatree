@@ -17,6 +17,16 @@ from the DB. `config_setting export` / `import` are a byte-stable round-trip
 interchange; the shipped default VALUES, the pydantic schema that hosts them + the
 category taxonomy, and the model-derived registries are described in §10.7.
 
+Numeric run limits declare write-time floors alongside their setting definitions;
+zero keeps the documented uncapped option. Every manager or cold rescue change
+records an audit row with the previous value, writer and time. `t3 doctor check`
+shows divergent overrides with that context and flags rows below a floor;
+`t3 <overlay> notify digest` lists recent setting changes.
+Review and critic dispatches cannot write the canonical settings database;
+verification scripts that change settings must use a private test database.
+`config_setting set` and `clear` print the previous value from the audit row
+so an operator can restore the prior override.
+
 The keys and value shapes below are illustrative — set each one with
 `config_setting set`; the `[table]` syntax only shows how a key is scoped
 (`[teatree]` = global, `[overlays.<name>]` = that overlay):

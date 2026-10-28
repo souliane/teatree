@@ -354,6 +354,12 @@ class TestSettingsSet(TestCase):
         self._set("mode", {"value": '"auto"'})
         assert ConfigSetting.objects.get_effective("mode") == "auto"
 
+    def test_a_turn_ceiling_below_the_floor_is_refused_inline(self) -> None:
+        response = self._set("agent_max_turns", {"value": "9"})
+        assert response.status_code == 400
+        assert b"at least 1000" in response.content
+        assert ConfigSetting.objects.filter(key="agent_max_turns").exists() is False
+
     def test_set_rejects_an_unknown_key(self) -> None:
         response = self._set("not_a_setting", {"value": "1"})
         assert response.status_code == 400

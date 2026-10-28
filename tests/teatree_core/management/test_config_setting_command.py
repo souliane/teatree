@@ -18,6 +18,7 @@ from unittest import mock
 
 import pytest
 from django.core.management import call_command
+from django.db import connections
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
@@ -65,6 +66,55 @@ def _fixture_flag() -> Generator[None]:
 
 
 class TestConfigSettingSet(TestCase):
+    def test_review_command_refuses_live_set_seed_and_clear(self) -> None:
+        ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="operator")
+        database = connections[ConfigSetting.objects.db]
+        canonical = Path("/tmp/review-refusal-canonical.sqlite3")
+        with (
+            mock.patch.dict("os.environ", {"T3_CONFIG_WRITE_PHASE": "reviewing"}),
+            mock.patch.dict(database.settings_dict, {"NAME": str(canonical)}),
+            mock.patch("teatree.config.write_authority.canonical_config_db", return_value=canonical),
+        ):
+            for args in (
+                ("set", "agent_max_turns", "2000"),
+                ("seed", "agent_max_turns", "2000"),
+                ("clear", "agent_max_turns"),
+            ):
+                with pytest.raises(SystemExit) as caught:
+                    call_command("config_setting", *args, stderr=StringIO())
+                assert caught.value.code == 2
+        assert ConfigSetting.objects.get_effective("agent_max_turns") == 1000
+
+    def test_set_and_clear_report_previous_audit_value(self) -> None:
+        first = StringIO()
+        second = StringIO()
+        cleared = StringIO()
+        call_command("config_setting", "set", "agent_max_turns", "1000", stdout=first)
+        call_command("config_setting", "set", "agent_max_turns", "2000", stdout=second)
+        call_command("config_setting", "clear", "agent_max_turns", stdout=cleared)
+        assert "previous=none" in first.getvalue()
+        assert "previous=1000" in second.getvalue()
+        assert "cleared=2000" in cleared.getvalue()
+        assert "previous=1000" in cleared.getvalue()
+
+    def test_repeated_set_reports_the_unchanged_previous_value(self) -> None:
+        call_command("config_setting", "set", "agent_max_turns", "1000")
+        repeated = StringIO()
+        call_command("config_setting", "set", "agent_max_turns", "1000", stdout=repeated)
+        assert "previous=1000" in repeated.getvalue()
+
+    def test_turn_floor_refuses_nine_and_accepts_uncapped_and_ample_values(self) -> None:
+        err = StringIO()
+        with pytest.raises(SystemExit) as caught:
+            call_command("config_setting", "set", "agent_max_turns", "9", stderr=err)
+        assert caught.value.code == 2
+        assert "at least 1000" in err.getvalue()
+        assert ConfigSetting.objects.filter(key="agent_max_turns").exists() is False
+        call_command("config_setting", "set", "agent_max_turns", "1000")
+        assert ConfigSetting.objects.get_effective("agent_max_turns") == 1000
+        call_command("config_setting", "set", "agent_max_turns", "0")
+        assert ConfigSetting.objects.get_effective("agent_max_turns") == 0
+
     def test_set_bool_creates_row(self) -> None:
         call_command("config_setting", "set", "admit_colleague_prs_to_board", "true")
         assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is True

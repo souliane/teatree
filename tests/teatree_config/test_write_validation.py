@@ -2,7 +2,8 @@
 
 import pytest
 
-from teatree.config.setting_registries import BOX_GLOBAL_SETTINGS
+from teatree.config.setting_registries import BOX_GLOBAL_SETTINGS, SETTING_BOUNDS
+from teatree.config.settings import UserSettings
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 
 
@@ -74,3 +75,25 @@ class TestValidateConfigWrite:
 
     def test_load_factors_cannot_be_overridden_per_overlay(self) -> None:
         assert {"admission_load_brake_per_core", "admission_load_resume_per_core"} <= BOX_GLOBAL_SETTINGS
+
+    @pytest.mark.parametrize(
+        ("key", "minimum"),
+        [
+            ("agent_max_turns", 1000),
+            ("pydantic_ai_request_limit", 300),
+            ("watchdog_max_turns", 1000),
+            ("watchdog_max_runtime_seconds", 21600),
+            ("watchdog_max_cost_usd", 30),
+            ("ticket_budget_max_cost_usd", 60),
+        ],
+    )
+    def test_run_limit_refuses_a_stranding_value_and_explains_the_floor(self, key: str, minimum: int) -> None:
+        with pytest.raises(ConfigWriteError, match=rf"0 \(uncapped\) or at least {minimum}"):
+            validate_config_write(key, 9)
+        assert validate_config_write(key, 0) == 0
+        assert validate_config_write(key, minimum) == minimum
+
+    def test_every_declared_bound_admits_its_shipped_default(self) -> None:
+        defaults = UserSettings()
+        for key in SETTING_BOUNDS:
+            assert validate_config_write(key, getattr(defaults, key)) == getattr(defaults, key)

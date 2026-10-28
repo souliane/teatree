@@ -122,13 +122,13 @@ class TestTheDumpSaysWhatEachKeyAccepts(TestCase):
         # Both values diverge from their shipped default, so a row is genuinely rewritten
         # (import skips a value equal to the default, which would prove nothing here).
         ConfigSetting.objects.set_value("wip", "slow")
-        ConfigSetting.objects.set_value("agent_max_turns", 400)
+        ConfigSetting.objects.set_value("agent_max_turns", 1400)
         dumped = export_db_to_toml(scan_terms=()).toml
         ConfigSetting.objects.all().delete()
         result = import_toml_to_db(dumped, scan_terms=())
         assert not result.rejected, result.rejected
         assert ConfigSetting.objects.get_effective("wip") == "slow"
-        assert ConfigSetting.objects.get_effective("agent_max_turns") == 400
+        assert ConfigSetting.objects.get_effective("agent_max_turns") == 1400
 
 
 class TestBannedTermsNeverLeaveTheStoreViaExport(TestCase):

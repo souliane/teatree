@@ -1212,7 +1212,7 @@ class TestLoopWatchdog(TestCase):
         ConfigSetting.objects.set_value("watchdog_max_turns", 250, scope="")
         watchdog = LoopWatchdog.from_settings()
         assert watchdog.max_turns == 250
-        assert watchdog.max_runtime_seconds == 3 * 60 * 60
+        assert watchdog.max_runtime_seconds == 24 * 60 * 60
         assert watchdog.max_cost_usd == pytest.approx(0.0)
 
 

@@ -61,7 +61,10 @@ class TestTheChoiceTokenMakesTheInvisibleValuesVisible:
 
 class TestTheAnnotationSaysWhatMayIPutHere:
     def test_an_open_typed_key_names_its_type_alone(self) -> None:
-        assert setting_annotation("agent_max_turns") == "int"
+        assert setting_annotation("issue_implementer_max_concurrent") == "int"
+
+    def test_a_bounded_key_names_its_floor_and_uncapped_escape(self) -> None:
+        assert setting_annotation("agent_max_turns") == "int, 0 or at least 1000"
 
     def test_a_constrained_key_names_its_alternatives(self) -> None:
         assert setting_annotation("wip") == "str, one of: slow | medium | full | boost"

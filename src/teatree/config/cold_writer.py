@@ -18,6 +18,8 @@ from pathlib import Path
 from teatree.config.cold_db import projection_dir_for
 from teatree.config.cold_reader import canonical_config_db
 from teatree.config.host_projection import GENERATION_KEY, ProjectionPublisher, ProjectionPublishError, next_generation
+from teatree.config.value_visibility import MASKED, withholds_value
+from teatree.config.write_authority import review_write_refusal
 from teatree.db.boundary import ControlDbBoundary, DbBoundaryError
 
 _GLOBAL_SCOPE = ""
@@ -55,6 +57,13 @@ def _table_present(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _audit_table_present(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='teatree_config_setting_change'"
+    ).fetchone()
+    return row is not None
+
+
 def write_setting(
     key: str,
     value: object,
@@ -65,6 +74,8 @@ def write_setting(
 ) -> WriteOutcome:
     """Write one setting and return the target DB plus the result; boundary violations raise."""
     db = db_path if db_path is not None else canonical_config_db(env=env)
+    if reason := review_write_refusal(db, env=env):
+        raise ValueError(reason)
     boundary = ControlDbBoundary(db)
     if not boundary.read_write_allowed:
         raise DbBoundaryError(boundary.refusal())
@@ -132,7 +143,31 @@ def _write_classified(conn: sqlite3.Connection, scope: str, key: str, value: obj
     if not table_present:
         return WriteResult.NO_DB_TIER, "no teatree_config_setting table"
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        previous = conn.execute(
+            "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?", (scope, key)
+        ).fetchone()
         _upsert(conn, scope, key, value)
+        if previous is None or previous[0] != json.dumps(value):
+            if _audit_table_present(conn):
+                now = datetime.now(tz=UTC).strftime(_DJANGO_SQLITE_DATETIME)
+                old_value = json.loads(previous[0]) if previous else None
+                old_json = (
+                    json.dumps(MASKED)
+                    if old_value is not None and withholds_value(key, old_value)
+                    else previous[0]
+                    if previous
+                    else None
+                )
+                new_json = json.dumps(MASKED if withholds_value(key, value) else value)
+                conn.execute(
+                    "INSERT INTO teatree_config_setting_change "
+                    "(scope, key, action, old_value, new_value, written_by, changed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (scope, key, "set", old_json, new_json, "cold-writer", now),
+                )
+            else:
+                sys.stderr.write("WARNING: config audit table is absent; rescue write has no audit row\n")
         if key != GENERATION_KEY:
             _bump_generation(conn)
         conn.commit()

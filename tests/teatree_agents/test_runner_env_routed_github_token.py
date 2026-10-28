@@ -63,4 +63,6 @@ def test_spawn_marker_reaches_claude_without_a_routed_token() -> None:
         patch("teatree.agents.runner_preparation._overlay_scope", return_value="test"),
         patch("teatree.agents.runner_preparation.with_routed_github_token", return_value=None),
     ):
-        assert _capped_forge_env(Mock(), None)["T3_DISPATCHED_AGENT"] == "1"
+        env = _capped_forge_env(Mock(phase="reviewing"), None)
+        assert env["T3_DISPATCHED_AGENT"] == "1"
+        assert env["T3_CONFIG_WRITE_PHASE"] == "reviewing"

@@ -113,3 +113,24 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         assert "banned_term_registry" in out
         assert "leaked-term" not in out
         assert "shipped-term" not in out
+
+    def test_a_below_floor_override_shows_writer_age_and_previous_value(self) -> None:
+        ConfigSetting.objects.set_value("agent_max_turns", 250, authorized_by="operator")
+        ConfigSetting.objects.set_value("agent_max_turns", 9, authorized_by="review-loop")
+        with patch("teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={"agent_max_turns": 3000}):
+            out = _run()
+        assert "WARN" in out
+        assert "agent_max_turns" in out
+        assert "1000" in out
+        assert "review-loop" in out
+        assert "ago" in out
+        assert "250" in out
+
+    def test_an_ignored_overlay_row_is_listed(self) -> None:
+        ConfigSetting.objects.create(key="loop_cadence_seconds", scope="demo", value=600)
+        with patch(
+            "teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={"loop_cadence_seconds": 720}
+        ):
+            out = _run()
+        assert "loop_cadence_seconds" in out
+        assert "ignored by every reader" in out

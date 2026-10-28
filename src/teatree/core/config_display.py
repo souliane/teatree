@@ -24,13 +24,9 @@ broadening it to :func:`is_secret` would hide every credential name (they are al
 credential coordinates) and defeat the band. See ``CredentialEntry.mask_if_private``.
 """
 
-from teatree.config.extra_headers import carries_unlisted_header
-from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta
-from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
+from teatree.config.value_visibility import MASKED, is_secret, withholds_value
 
 #: Rendered in place of a secret VALUE — never the real value.
-MASKED = "***"
-
 #: The shipped-defaults column for a key ``defaults.toml`` carries NO entry for. A distinct
 #: sentence rather than a bare ``none``, which reads as a value and is what let "the file has
 #: no entry for this key" and "the entry is empty" look identical on the page (#4078). The key
@@ -64,27 +60,6 @@ def render_value(value: object) -> str:
     if isinstance(value, dict) and not value:
         return "(empty table)"
     return str(value)
-
-
-def is_secret(setting: str) -> bool:
-    """Whether *setting*'s VALUE must never be rendered — the four-class withhold union.
-
-    A ``Category.SECRET`` field, an explicit ``SECRET_SETTINGS`` denylist key, a credential
-    coordinate (``*_pass_path`` / ``*_token_ref`` / …), or a personal identifier
-    (``slack_user_id`` / …). Total over any string — the key-based classes are checked
-    before the model, so a denylist key that is not a schema field (a legacy token ref) is
-    still classified without a lookup that raises.
-    """
-    if setting in SECRET_SETTINGS or setting in PERSONAL_IDENTIFIERS or is_credential_reference(setting):
-        return True
-    if setting not in TeatreeSettingsSchema.model_fields:
-        return False
-    return setting_meta(setting).category is Category.SECRET
-
-
-def withholds_value(setting: str, value: object) -> bool:
-    """Whether *value* must never be rendered: *setting* is secret, or the value names a header off its allowlist."""
-    return is_secret(setting) or carries_unlisted_header(setting, value)
 
 
 def masked_display(setting: str, value: object) -> str:

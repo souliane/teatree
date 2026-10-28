@@ -8,7 +8,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, ConfigSetting, ConfigSettingChange
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.notify_types import NotifyReason
 
@@ -54,6 +54,33 @@ class TestNotifyDigest(TestCase):
         with pytest.raises(SystemExit) as exc:
             call_command("notify", "digest", "--since-hours", "0", stdout=io.StringIO())
         assert exc.value.code == 2
+
+    def test_setting_changes_show_without_pulled_signals_and_internal_rows_are_hidden(self) -> None:
+        ConfigSetting.objects.set_value("agent_max_turns", 250, authorized_by="operator")
+        ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="review-loop")
+        ConfigSettingChange.record(
+            key="host_projection_generation",
+            scope="",
+            action="set",
+            values=(1, 2),
+            written_by="internal",
+        )
+
+        out = io.StringIO()
+        call_command("notify", "digest", stdout=out)
+        rendered = out.getvalue()
+        assert "agent_max_turns" in rendered
+        assert "250" in rendered
+        assert "1000" in rendered
+        assert "review-loop" in rendered
+        assert "host_projection_generation" not in rendered
+
+    def test_setting_changes_outside_the_window_are_omitted(self) -> None:
+        ConfigSetting.objects.set_value("agent_max_turns", 1000, authorized_by="operator")
+        ConfigSettingChange.objects.filter(key="agent_max_turns").update(changed_at="2020-01-01T00:00:00Z")
+        out = io.StringIO()
+        call_command("notify", "digest", stdout=out)
+        assert "agent_max_turns" not in out.getvalue()
 
 
 class TestWithheldSignalExitsZero(TestCase):

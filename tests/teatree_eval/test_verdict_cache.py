@@ -561,7 +561,7 @@ class TestVerdictKeySettings(TestCase):
         baselines = {
             "openai_compatible_model": "vendor/model-a",
             "openai_compatible_base_url": "https://models.example.test/v1",
-            "pydantic_ai_request_limit": 40,
+            "pydantic_ai_request_limit": 3000,
             "pydantic_ai_max_tokens": 1233,
         }
         for index, (kind, backend, name, value) in enumerate(cases):

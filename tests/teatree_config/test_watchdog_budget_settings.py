@@ -29,7 +29,7 @@ class TestFieldsAreRegistered:
     def test_defaults_preserve_the_shipped_watchdog_posture(self) -> None:
         # The runtime ceiling is armed; turn and cost caps ship disabled.
         defaults = UserSettings()
-        assert defaults.watchdog_max_runtime_seconds == 3 * 60 * 60
+        assert defaults.watchdog_max_runtime_seconds == 24 * 60 * 60
         assert defaults.watchdog_max_turns == 0
         assert defaults.watchdog_max_cost_usd == pytest.approx(0.0)
         assert defaults.ticket_budget_max_cost_usd == pytest.approx(0.0)

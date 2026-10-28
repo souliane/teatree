@@ -196,6 +196,14 @@ class TestConfigSettingAdminWritesThroughSetValue(django.test.TestCase):
         url = reverse("admin:core_configsetting_change", args=[row.pk])
         return self.client.post(url, {"scope": row.scope, "key": row.key, "value": value})
 
+    def test_a_turn_ceiling_below_the_floor_is_a_form_error(self) -> None:
+        row = ConfigSetting.objects.set_value("agent_max_turns", 1000)
+        response = self._post_change(row, "9")
+        assert response.status_code == 200
+        assert "at least 1000" in str(response.context["adminform"].form.errors)
+        row.refresh_from_db()
+        assert row.value == 1000
+
     def test_an_inconsistent_cross_key_pair_is_refused_with_a_form_error(self) -> None:
         """``openai_compatible`` is invalid under the default ``claude_sdk`` harness."""
         row = ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")

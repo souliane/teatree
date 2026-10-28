@@ -48,12 +48,15 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
+from django.db import connections, models, transaction
 from django.utils import timezone
 
 from teatree.config.extra_headers import UNLISTED_HEADER_REFUSAL, carries_unlisted_header
+from teatree.config.overlay_scope import reject_unhonourable_overlay_scope
 from teatree.config.setting_taxonomy import owner_only_reason
+from teatree.config.write_authority import review_write_refusal
 from teatree.core.managers_task_claim import QUIESCE_SETTING_KEY, advance_quiesce_fence
+from teatree.core.models.config_setting_change import ConfigSettingChange
 from teatree.core.session_identity import is_unattended_unauthorized_write, loop_principal
 
 if TYPE_CHECKING:
@@ -75,38 +78,6 @@ GLOBAL_SCOPE = ""
 # it created, so a later redeploy re-seed and the ``t3 doctor --repair``
 # concurrency autofix can tell a deploy-seeded row from an operator override.
 ENTRYPOINT_SEEDER = "entrypoint"
-
-
-def reject_unhonourable_overlay_scope(key: str, scope: str) -> None:
-    """Refuse an overlay-scoped write of a key whose reader takes no overlay.
-
-    A cold/registry key (``agent_tier_models``, a gate kill-switch) is read at the global scope
-    alone, so its overlay row is accepted and then silently ignored.
-
-    A loop timer is one clock per box: the scanner it feeds is built with ``overlay=""``,
-    and the machine-wide tick cadence resolves through whichever overlay the process
-    happened to be running as. Writing the row is the only way one comes to exist, so
-    refusing here means the resolver never has to decide what an unhonourable row means.
-    """
-    from teatree.config.known_settings import SETTING_ENTRIES  # noqa: PLC0415 — deferred: cold-path import
-    from teatree.config.setting_registries import (  # noqa: PLC0415 — deferred: cold-path import
-        BOX_GLOBAL_SETTINGS,
-        OVERLAY_OVERRIDABLE_SETTINGS,
-    )
-
-    if scope and key in BOX_GLOBAL_SETTINGS:
-        msg = (
-            f"{key!r} is one clock per box, so it takes no overlay scope — its reader resolves no "
-            f"overlay, which makes a row scoped to {scope!r} either unreachable or decided by "
-            "whichever overlay the process happens to be. Set it globally instead."
-        )
-        raise ValueError(msg)
-    if scope and key in SETTING_ENTRIES and key not in OVERLAY_OVERRIDABLE_SETTINGS:
-        msg = (
-            f"{key!r} resolves at the global scope only — its reader (a cold/registry read) takes no "
-            f"overlay, so a row scoped to {scope!r} would never be read. Set it globally instead."
-        )
-        raise ValueError(msg)
 
 
 #: The scope a report names in place of a scope or entry name that carries a banned term.
@@ -157,6 +128,23 @@ def reject_unlisted_extra_header(key: str, value: object) -> None:
     """Refuse, on the seam every write reaches, a header map naming a header off its allowlist."""
     if carries_unlisted_header(key, value):
         raise ValidationError(UNLISTED_HEADER_REFUSAL)
+
+
+def reject_review_config_write(database: str) -> None:
+    if reason := review_write_refusal(connections[database].settings_dict["NAME"]):
+        raise ValidationError(reason)
+
+
+def unchanged_operator_row(row: "ConfigSetting | None", value: ConfigValue, writer: str) -> "ConfigSetting | None":
+    if (
+        row is not None
+        and row.value == value
+        and not row.seeded_by
+        and row.seed_value is None
+        and row.written_by == writer
+    ):
+        return row
+    return None
 
 
 class SeedOutcome(StrEnum):
@@ -252,22 +240,37 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         config into one loud error, not a fleet-wide repair-halt flood on every
         later dispatch. The store is left untouched on rejection.
         """
+        reject_review_config_write(self.db)
         reject_unhonourable_overlay_scope(key, scope)
         reject_unattended_governed_write(key, authorized_by=authorized_by)
         reject_unlisted_extra_header(key, value)
         self.reject_inconsistent_cross_key(key, value, scope)
-        row, _ = self.update_or_create(
-            scope=scope,
-            key=key,
-            defaults={
-                "value": value,
-                "seeded_by": "",
-                "seed_value": None,
-                "written_by": decider(authorized_by),
-            },
-        )
-        if key == QUIESCE_SETTING_KEY:
-            advance_quiesce_fence()
+        with transaction.atomic(using=self.db):
+            previous = self.select_for_update().filter(scope=scope, key=key).first()
+            writer = decider(authorized_by)
+            if unchanged := unchanged_operator_row(previous, value, writer):
+                if key == QUIESCE_SETTING_KEY:
+                    advance_quiesce_fence()
+                return unchanged
+            row, _ = self.update_or_create(
+                scope=scope,
+                key=key,
+                defaults={
+                    "value": value,
+                    "seeded_by": "",
+                    "seed_value": None,
+                    "written_by": writer,
+                },
+            )
+            ConfigSettingChange.record(
+                key=key,
+                scope=scope,
+                action="set",
+                values=(previous.value if previous else None, value),
+                written_by=row.written_by,
+            )
+            if key == QUIESCE_SETTING_KEY:
+                advance_quiesce_fence()
         return row
 
     def set_values(self, rows: "Sequence[tuple[str, ConfigValue, str]]", *, authorized_by: str = "") -> None:
@@ -281,21 +284,33 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         :class:`~django.core.exceptions.ValidationError` and rolls every row back —
         an interrupted bulk write can never leave the store half-imported.
         """
-        with transaction.atomic():
+        reject_review_config_write(self.db)
+        with transaction.atomic(using=self.db):
             for key, value, scope in rows:
                 reject_unhonourable_overlay_scope(key, scope)
                 reject_unattended_governed_write(key, authorized_by=authorized_by)
                 reject_unlisted_extra_header(key, value)
             for key, value, scope in rows:
-                self.update_or_create(
+                previous = self.select_for_update().filter(scope=scope, key=key).first()
+                writer = decider(authorized_by)
+                if unchanged_operator_row(previous, value, writer):
+                    continue
+                row, _ = self.update_or_create(
                     scope=scope,
                     key=key,
                     defaults={
                         "value": value,
                         "seeded_by": "",
                         "seed_value": None,
-                        "written_by": decider(authorized_by),
+                        "written_by": writer,
                     },
+                )
+                ConfigSettingChange.record(
+                    key=key,
+                    scope=scope,
+                    action="set",
+                    values=(previous.value if previous else None, value),
+                    written_by=row.written_by,
                 )
             if any(key == QUIESCE_SETTING_KEY for key, _value, _scope in rows):
                 advance_quiesce_fence()
@@ -338,6 +353,19 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         two clears the provenance, so the delete and the update match no row and
         the seed reports ``PRESERVED`` instead of overwriting a fresh pin.
         """
+        with transaction.atomic(using=self.db):
+            return self._seed_locked(key, value, code_default=code_default, seeded_by=seeded_by, scope=scope)
+
+    def _seed_locked(
+        self,
+        key: str,
+        value: ConfigValue,
+        *,
+        code_default: object,
+        seeded_by: str,
+        scope: str,
+    ) -> SeedOutcome:
+        reject_review_config_write(self.db)
         reject_unhonourable_overlay_scope(key, scope)
         reject_unlisted_extra_header(key, value)
         row = self.filter(scope=scope, key=key).first()
@@ -346,19 +374,28 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
             if equals_default:
                 return SeedOutcome.SKIPPED_DEFAULT
             self.create(scope=scope, key=key, value=value, seeded_by=seeded_by, seed_value=value)
+            ConfigSettingChange.record(key=key, scope=scope, action="seed", values=(None, value), written_by=seeded_by)
             return SeedOutcome.CREATED
         if row.seeded_by != seeded_by or row.value != row.seed_value:
             return SeedOutcome.PRESERVED
         still_owned = self.filter(pk=row.pk, seeded_by=seeded_by, seed_value=row.seed_value, value=row.seed_value)
         if equals_default:
             deleted, _ = still_owned.delete()
+            if deleted:
+                ConfigSettingChange.record(
+                    key=key, scope=scope, action="clear", values=(row.value, None), written_by=seeded_by
+                )
             return SeedOutcome.REMOVED if deleted else SeedOutcome.PRESERVED
         if row.value == value:
             return SeedOutcome.UNCHANGED
         updated = still_owned.update(value=value, seed_value=value, seeded_by=seeded_by, updated_at=timezone.now())
+        if updated:
+            ConfigSettingChange.record(
+                key=key, scope=scope, action="seed", values=(row.value, value), written_by=seeded_by
+            )
         return SeedOutcome.UPDATED if updated else SeedOutcome.PRESERVED
 
-    def clear(self, key: str, scope: str = GLOBAL_SCOPE) -> bool:
+    def clear(self, key: str, scope: str = GLOBAL_SCOPE, *, authorized_by: str = "") -> bool:
         """Delete the override row for *key* in *scope*; return whether one was removed.
 
         After ``clear`` the setting falls back through to the next tier
@@ -366,7 +403,23 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         a global clear falls back to file / env). ``get_effective`` returns
         ``None`` again for that scope.
         """
+        with transaction.atomic(using=self.db):
+            return self._clear_locked(key, scope, authorized_by=authorized_by)
+
+    def _clear_locked(self, key: str, scope: str, *, authorized_by: str) -> bool:
+        reject_review_config_write(self.db)
+        previous = self.select_for_update().filter(scope=scope, key=key).first()
+        if previous is None:
+            return False
         deleted, _ = self.filter(scope=scope, key=key).delete()
+        if deleted:
+            ConfigSettingChange.record(
+                key=key,
+                scope=scope,
+                action="clear",
+                values=(previous.value, None),
+                written_by=decider(authorized_by),
+            )
         return deleted > 0
 
     def overrides_for_scope(self, scope: str) -> dict[str, ConfigValue]:

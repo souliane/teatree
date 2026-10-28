@@ -13,6 +13,7 @@ against actual sqlite.
 """
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,13 @@ _REAL_SCHEMA = (
     '"updated_at" datetime NOT NULL, '
     'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
 )
+_AUDIT_SCHEMA = (
+    'CREATE TABLE "teatree_config_setting_change" ('
+    '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, '
+    '"scope" varchar(255) NOT NULL, "key" varchar(255) NOT NULL, '
+    '"action" varchar(10) NOT NULL, "old_value" text NULL, "new_value" text NULL, '
+    '"written_by" varchar(255) NOT NULL, "changed_at" datetime NOT NULL)'
+)
 
 
 def _make_real_schema_db(path: Path) -> None:
@@ -53,6 +61,15 @@ def _clean_canonical_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestWriteRoundTrip:
+    def test_review_phase_refuses_canonical_rescue_write(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "live.sqlite3"
+        _make_real_schema_db(db)
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        monkeypatch.setenv("T3_CONFIG_WRITE_PHASE", "reviewing")
+        with pytest.raises(ValueError, match="review or critic"):
+            cold_writer.write_setting("autoload", value=False)
+        assert cold_reader.read_setting("autoload", db_path=db) is None
+
     def test_write_then_cold_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _make_real_schema_db(db)
@@ -86,6 +103,44 @@ class TestWriteRoundTrip:
         assert outcome.db == db
         assert outcome.detail == ""
         assert cold_reader.read_setting("completion_claim_gate_enabled", scope="", db_path=db) is False
+
+    def test_a_rescue_write_records_the_previous_value_in_the_same_db(self, tmp_path: Path) -> None:
+        db = tmp_path / "audited.sqlite3"
+        _make_real_schema_db(db)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(_AUDIT_SCHEMA)
+            conn.commit()
+
+        assert cold_writer.write_setting("autoload", value=True, db_path=db).result is WriteResult.WROTE
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+        with closing(sqlite3.connect(db)) as conn:
+            rows = conn.execute(
+                "SELECT action, old_value, new_value, written_by FROM teatree_config_setting_change "
+                "WHERE key='autoload' ORDER BY id"
+            ).fetchall()
+        assert rows == [("set", None, "true", "cold-writer"), ("set", "true", "false", "cold-writer")]
+
+    def test_missing_audit_table_is_loud_but_keeps_the_rescue_write(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        db = tmp_path / "legacy.sqlite3"
+        _make_real_schema_db(db)
+        assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_a_sensitive_rescue_value_is_masked_in_history(self, tmp_path: Path) -> None:
+        db = tmp_path / "sensitive.sqlite3"
+        _make_real_schema_db(db)
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(_AUDIT_SCHEMA)
+            conn.commit()
+        value = {"leak": ["private-marker"]}
+        assert cold_writer.write_setting("banned_term_registry", value, db_path=db).result is WriteResult.WROTE
+        with closing(sqlite3.connect(db)) as conn:
+            stored = conn.execute(
+                "SELECT new_value FROM teatree_config_setting_change WHERE key='banned_term_registry'"
+            ).fetchone()[0]
+        assert "private-marker" not in stored
 
 
 class TestNoDbTierIsClassified:
