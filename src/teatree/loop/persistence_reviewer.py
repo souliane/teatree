@@ -18,13 +18,15 @@ on to break the cycle.
 import logging
 
 from teatree.core.gates.review_recordability_gate import unrecordable_review_mint_refusal
+from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.modelkit.review_state import DISCHARGED_REVIEW_STATES
-from teatree.core.models import DeferredQuestion, Task, Ticket
+from teatree.core.models import Task, Ticket
 from teatree.core.models.ticket_external_review import ReviewDeclined, schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_tables import ActionPayload
 from teatree.loop.persistence import _owning_overlay, _reconcile_existing_overlay
 from teatree.loop.persistence_phase_task import open_task_in_phase
+from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +70,28 @@ def handle_reviewer(action: DispatchAction) -> Task | None:
             pr_url,
         )
         return None
+    head_sha = head_sha or _read_live_head(ticket, pr_url)
+    if not head_sha:
+        return None
     ticket.rearm_review_at(head_sha)
     if payload.get("invalidates_discharge"):
         ticket.merge_extra(pop_keys=["discharged_sha"])
     return _mint_reviewer_task(ticket, payload=payload, head_sha=head_sha)
+
+
+def _read_live_head(ticket: Ticket, pr_url: str) -> str:
+    ref = pr_ref_from_url(pr_url)
+    if ref is None:
+        logger.warning("Not minting a review for ticket %s: unrecognised pull request URL", ticket.pk)
+        return ""
+    try:
+        head = CodeHostQuery.for_ref(ref).live_head_read()
+    except Exception:
+        logger.exception("Not minting a review for ticket %s: forge head read failed", ticket.pk)
+        return ""
+    if head.unreadable:
+        logger.warning("Not minting a review for ticket %s: forge head unreadable", ticket.pk)
+    return head.sha
 
 
 def _mint_reviewer_task(ticket: Ticket, *, payload: ActionPayload, head_sha: str) -> Task | None:
@@ -97,7 +117,7 @@ def _mint_reviewer_task(ticket: Ticket, *, payload: ActionPayload, head_sha: str
         return None
     unrecordable = unrecordable_review_mint_refusal(ticket)
     if unrecordable is not None:
-        _escalate_unrecordable_review(ticket, reason=unrecordable)
+        logger.warning("Not minting a review for ticket %s: %s", ticket.pk, unrecordable)
         return None
     result = schedule_external_review(ticket)
     if result is ReviewDeclined.PR_STATE_UNKNOWN:
@@ -107,30 +127,6 @@ def _mint_reviewer_task(ticket: Ticket, *, payload: ActionPayload, head_sha: str
         return None
     _link_broadcast_reviewer_task(payload, result)
     return result
-
-
-def _escalate_unrecordable_review(ticket: Ticket, *, reason: str) -> None:
-    """Name a review nobody can record, once per ticket, and mint no task for it.
-
-    The producers re-emit every tick and this seam has no failure memory, so without the
-    refusal above each tick minted a fresh task that paid for a full review and discarded
-    its verdict. Refusing silently would trade that burn for an invisible gap, so the
-    condition is recorded where the operator already looks — deduped per ticket across
-    ANSWERED questions too, exactly like ``stuck_ticket_redispatch._escalate_once``, so
-    answering it never resurrects a fresh one.
-
-    Self-healing rather than latched: the rung re-evaluates every tick, so the first
-    emission carrying a real head stamps ``reviewed_sha`` above and mints normally.
-    """
-    marker = f"review-unrecordable:{ticket.pk}"
-    logger.warning("Not minting a review for ticket %s: %s", ticket.pk, reason)
-    if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
-        return
-    DeferredQuestion.record(
-        f"{reason} Nothing is scheduled for it. Should the head be supplied, or the reviewer ticket closed?",
-        session_id="",
-        dedupe_marker=marker,
-    )
 
 
 def _link_broadcast_reviewer_task(payload: ActionPayload, task: Task) -> None:

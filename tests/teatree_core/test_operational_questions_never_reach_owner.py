@@ -41,8 +41,6 @@ from teatree.core.review.pr_inventory import OpenPrRow
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import execute_provision
 from teatree.loop.ci_eval_heal_advance import advance_open_sessions
-from teatree.loop.dispatch import DispatchAction
-from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.pr_stall import repair_stalled_prs
 from teatree.loop.scanners import board_reconcile_issue_reopen as issue_reopen
 from teatree.loop.scanners.board_reconcile import reconcile_board
@@ -206,12 +204,6 @@ def _halt_a_ci_eval_heal() -> None:
     )
 
 
-def _refuse_an_unrecordable_review() -> None:
-    url = "https://example.com/owner/repo/pull/4225"
-    payload = {"url": url, "head_sha": "", "previous_sha": "", "overlay": "acme"}
-    persist_agent_actions([DispatchAction(kind="agent", zone="t3:reviewer", detail=f"Review: {url}", payload=payload)])
-
-
 def _skim_promotable_memories() -> None:
     with patch("teatree.memory_audit.scan_all", return_value=[_entry("never-force-push")]):
         MemorySkimScanner().scan()
@@ -326,7 +318,6 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
     ("src/teatree/core/question_heal.py", "record_withheld"): _withhold_an_answer_draft,
     ("src/teatree/core/tasks.py", "_record_attachment_hold_question"): _hold_an_unfetched_attachment,
     ("src/teatree/loop/ci_eval_heal_advance.py", "_escalate_via_deferred_question"): _halt_a_ci_eval_heal,
-    ("src/teatree/loop/persistence_reviewer.py", "_escalate_unrecordable_review"): _refuse_an_unrecordable_review,
     ("src/teatree/loop/scanners/memory_skim.py", "scan"): _skim_promotable_memories,
     ("src/teatree/loop/stuck_ticket_redispatch.py", "_escalate_once"): _halt_a_stuck_ticket,
     ("src/teatree/loops/directive_loop/revert.py", "ask_revert"): lambda: ask_directive_revert(

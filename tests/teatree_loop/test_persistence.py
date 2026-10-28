@@ -1,10 +1,12 @@
 """Tick → DB persistence: kind=agent actions become Ticket + Task rows."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState, ReviewState
+from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.models import (
     BroadcastObservation,
     DeferredQuestion,
@@ -181,7 +183,11 @@ class TestPersistReviewer(TestCase):
             extra={"reviewed_sha": "sha-approved", "last_review_state": ReviewState.APPROVED.value},
         )
 
-        created = persist_agent_actions([self._action(url=url, head_sha="")])
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+            return_value=SimpleNamespace(live_head_read=lambda: LiveHeadRead.of("new-sha")),
+        ):
+            created = persist_agent_actions([self._action(url=url, head_sha="")])
 
         assert len(created) == 1
         assert created[0].phase == "reviewing"
@@ -554,6 +560,14 @@ class TestAReviewWithNoRecordedHeadIsNeverMinted(TestCase):
 
     _URL = "https://example.com/owner/repo/pull/4225"
 
+    def setUp(self) -> None:
+        self.enterContext(
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+                return_value=SimpleNamespace(live_head_read=lambda: LiveHeadRead.of("")),
+            )
+        )
+
     def _action(self) -> DispatchAction:
         return DispatchAction(
             kind="agent",
@@ -561,9 +575,6 @@ class TestAReviewWithNoRecordedHeadIsNeverMinted(TestCase):
             detail=f"Review needed: {self._URL}",
             payload={"url": self._URL, "head_sha": "", "previous_sha": "", "overlay": "acme"},
         )
-
-    def _marker(self) -> str:
-        return f"review-unrecordable:{Ticket.objects.get(issue_url=self._URL).pk}"
 
     def test_no_reviewing_task_is_minted_for_a_pull_request_with_no_head(self) -> None:
         assert persist_agent_actions([self._action()]) == []
@@ -581,19 +592,27 @@ class TestAReviewWithNoRecordedHeadIsNeverMinted(TestCase):
 
         assert Task.objects.filter(ticket__issue_url=self._URL).count() == 0
 
-    def test_the_condition_is_escalated_exactly_once_across_both_emissions(self) -> None:
+    def test_unreadable_forge_creates_no_question_across_both_emissions(self) -> None:
         persist_agent_actions([self._action()])
         persist_agent_actions([self._action()])
 
-        assert DeferredQuestion.objects.filter(dedupe_marker=self._marker()).count() == 1
+        assert DeferredQuestion.objects.count() == 0
 
-    def test_the_escalation_names_the_pull_request_and_is_internal(self) -> None:
-        persist_agent_actions([self._action()])
+    def test_missing_action_head_reads_forge_and_mints_review(self) -> None:
+        head = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"
+        with (
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+                return_value=SimpleNamespace(live_head_read=lambda: LiveHeadRead.of(head)),
+            ),
+            pr_open_state(PrOpenState.OPEN),
+        ):
+            created = persist_agent_actions([self._action()])
 
-        question = DeferredQuestion.objects.get(dedupe_marker=self._marker())
-        assert "owner/repo#4225" in question.question
-        assert "no pull request head is recorded" in question.question
-        assert question.audience == DeferredQuestion.Audience.INTERNAL
+        assert len(created) == 1
+        assert created[0].phase == "reviewing"
+        assert created[0].ticket.extra["reviewed_sha"] == head
+        assert DeferredQuestion.objects.count() == 0
 
     def test_a_later_emission_carrying_the_head_mints_normally(self) -> None:
         persist_agent_actions([self._action()])

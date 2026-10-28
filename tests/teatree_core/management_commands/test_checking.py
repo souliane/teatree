@@ -37,7 +37,6 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.notify import notify_user
 from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
-from teatree.core.review.owner_waits import ask_owner_to_read
 from tests._owner_channel import owner_card
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -1236,7 +1235,10 @@ class TestCheckingNotify:
     def test_owner_cards_keep_distinct_subjects_in_native_recap_rows(self, checkpoint_file: Path) -> None:
         subjects = [f"https://github.com/acme/widgets/pull/{number}" for number in (8, 9)]
         for number, subject in zip((8, 9), subjects, strict=True):
-            assert ask_owner_to_read(subject, f"review {number}", f"{number:040x}") is not None
+            DeferredQuestion.record(
+                f"May I post review {number}?",
+                card=replace(owner_card(OwnerDecision.PUBLIC_POST), subject=subject),
+            )
 
         with patch("teatree.core.management.commands.checking.notify_user", wraps=notify_user) as send:
             _call("checking", "show", "--this-overlay", "--notify", "--no-advance")
@@ -1266,7 +1268,10 @@ class TestCheckingNotify:
     def test_internal_escalation_count_reaches_the_native_blocks_beside_owner_waits(
         self, checkpoint_file: Path
     ) -> None:
-        assert ask_owner_to_read("https://github.com/acme/widgets/pull/8", "review 8", "8" * 40) is not None
+        DeferredQuestion.record(
+            "May I post this review?",
+            card=replace(owner_card(OwnerDecision.PUBLIC_POST), subject="https://github.com/acme/widgets/pull/8"),
+        )
         DeferredQuestion.record("repair-halt on coding: investigate?")
 
         with patch("teatree.core.management.commands.checking.notify_user", wraps=notify_user) as send:
