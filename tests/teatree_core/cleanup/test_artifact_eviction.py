@@ -208,7 +208,7 @@ class TestPressureEscalation(_EvictionFixture):
         Worktree.objects.create(
             ticket=ticket, overlay="test", repo_path="org/repo", branch=name, extra={"worktree_path": str(checkout)}
         )
-        edge = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="started")
+        edge = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="work_started")
         stamp = timezone.now() - timedelta(hours=last_activity_hours_ago)
         TicketTransition.objects.filter(pk=edge.pk).update(created_at=stamp)
         return artifact
