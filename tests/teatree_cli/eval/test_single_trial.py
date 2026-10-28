@@ -37,6 +37,7 @@ from teatree.eval.backends import (
 )
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
 from teatree.eval.report import JudgeGrader, JudgeOutcome, MatcherResult, ScenarioResult
+from teatree.llm.anthropic_limits import CreditExhaustedError
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 
 SENTINEL = "SECRET_TRANSCRIPT_LEAK_single_trial"
@@ -147,6 +148,19 @@ def _call(
 
 
 class TestRunSingleTrialArtifacts:
+    def test_credit_exhaustion_parks_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def exhausted(_name: str) -> EvalRun:
+            message = "credits exhausted"
+            raise CreditExhaustedError(message)
+
+        _run_with(monkeypatch, exhausted)
+        with pytest.raises(typer.Exit) as exit_info:
+            _call([_spec("alpha")], transcript_html=None, summary_md=None)
+        assert exit_info.value.exit_code == 75
+        assert "ABORTED: credits exhausted" in capsys.readouterr().err
+
     def test_judge_limit_parks_remaining_grades(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
