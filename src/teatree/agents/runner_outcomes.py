@@ -253,12 +253,12 @@ def record_success(
             model_fell_back=outcome.model_fell_back,
         ),
     )
-    parse_error = ""
+    parse_error: ResultEnvelopeError | None = None
     try:
         parsed = parse_result(outcome.agent_text)
     except ResultEnvelopeError as exc:
         parsed = {}
-        parse_error = str(exc)
+        parse_error = exc
     if provenance.skill_assurance is not None:
         prior_loads = (
             task.attempts.skill_loads_in_session(outcome.result_message.session_id)
@@ -280,10 +280,11 @@ def record_success(
     )
     if not parsed:
         prose: AgentResultBlob = {"summary": outcome.agent_text[:_PROSE_SUMMARY_CHARS]}
-        if parse_error and not ProseSummaryPolicy.accepted(phase or task.phase):
-            return _record_failure(task, exit_code=0, error=parse_error, result=prose, usage=usage)
-        if not ProseSummaryPolicy.allowed(phase or task.phase):
+        if parse_error and ProseSummaryPolicy.accepted(phase or task.phase):
+            logger.warning("Task %s produced a malformed result envelope: %s", task.pk, parse_error)
+            parse_error = None
+        if not parse_error and not ProseSummaryPolicy.allowed(phase or task.phase):
             logger.warning("Task %s produced no result envelope; refusing to record success", task.pk)
             return _record_failure(task, exit_code=0, error=NO_ENVELOPE_ERROR, result=prose, usage=usage)
         result = prose
-    return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=bool(parsed))
+    return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=parse_error or bool(parsed))

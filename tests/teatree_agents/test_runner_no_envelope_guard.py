@@ -272,10 +272,11 @@ class TestMalformedEnvelopeRecording(TestCase):
                 session = Session.objects.create(ticket=self.ticket, agent_id=phase)
                 task = Task.objects.create(ticket=self.ticket, session=session, phase=phase)
 
-                with _fake_sdk(raw):
+                with self.assertLogs("teatree.agents.runner_outcomes", level="WARNING") as logs, _fake_sdk(raw):
                     attempt = run_agent(task, phase=phase, overlay_skill_metadata={})
 
                 task.refresh_from_db()
                 assert task.status == Task.Status.COMPLETED
                 assert attempt.error == ""
                 assert attempt.result["summary"] == raw[:1000]
+                assert any("malformed result envelope" in line for line in logs.output)

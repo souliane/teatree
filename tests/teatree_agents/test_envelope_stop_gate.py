@@ -228,3 +228,23 @@ class TestMalformedEnvelopeStopGate(_GateTest):
 
         assert verdict == {}
         assert gate.refused == 0
+
+    def test_unclosed_draft_then_corrected_envelope_allows_the_turn_end(self) -> None:
+        gate = EnvelopeStopGate("debugging")
+
+        verdict = _run(gate, _stop_input(self.transcript('{"summary":"draft"', '{"summary":"corrected"}')))
+
+        assert verdict == {}
+        assert gate.refused == 0
+
+    def test_malformed_refusal_has_excerpt_and_sentence_boundary(self) -> None:
+        gate = EnvelopeStopGate("debugging")
+        raw = '{"summary":"draft","detail":"unfinished'
+
+        reason = _run(gate, _stop_input(self.transcript(raw)))["reason"]
+
+        assert "Near:" in reason
+        assert "unfinished" in reason
+        assert ". This run is ONE-SHOT" in reason
+        assert " at char " not in reason
+        assert "at at char" not in reason

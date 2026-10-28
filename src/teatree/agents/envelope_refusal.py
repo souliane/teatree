@@ -8,8 +8,9 @@ never be added on the producing side without the consuming side learning it.
 Two seams produce an envelope refusal, and they used to name it in two
 hand-maintained vocabularies that drifted:
 
-* the RUNNER (:func:`teatree.agents.runner._record_success`) refuses a run whose
-    output carried no JSON object at all — :data:`NO_ENVELOPE_ERROR`;
+* the RUNNER (:func:`teatree.agents.runner_outcomes.record_success`) refuses a run whose
+    output carried no JSON object or an unparsable envelope — :data:`NO_ENVELOPE_ERROR`
+    or :data:`UNPARSEABLE_ENVELOPE_PREFIX`;
 * the RECORDER (:mod:`teatree.agents.attempt_recorder`, :func:`…result_schema.check_evidence`)
     refuses an envelope that parsed but is unusable — wrong keys, not an object, or
     missing the phase's evidence field.

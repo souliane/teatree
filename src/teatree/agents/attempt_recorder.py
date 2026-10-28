@@ -168,7 +168,7 @@ def record_result_envelope(
     *,
     phase: str = "",
     usage: AttemptUsage | None = None,
-    envelope_parsed: bool = True,
+    envelope_parsed: bool | ResultEnvelopeError = True,
 ) -> TaskAttempt:
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
@@ -194,16 +194,10 @@ def record_result_envelope(
     lands FAILED with the diagnostic signature, never COMPLETED — the ticket FSM
     must not advance over work an outage interrupted.
 
-    *envelope_parsed* is how the RUNNER tells this recorder whether the blob it
-    hands over was actually parsed out of the agent's output. It is ``False``
-    only for the manufactured ``{"summary": <prose>}`` of a run that emitted no
-    JSON at all: the evidence gate then refuses "you omitted `tests_run`", which
-    reads as an envelope with a missing key and is not what happened. On an
-    evidence phase that refusal is therefore re-diagnosed as
-    :data:`~teatree.agents.envelope_refusal.NO_ENVELOPE_ERROR`. The salvage still
-    runs first, so a coder that landed real work is still rescued; the in-session
-    ``record-attempt`` path parsed its own envelope and keeps the per-field
-    diagnosis by default. On success the attempt is
+    *envelope_parsed* is ``True`` for a parsed blob, ``False`` for prose with no
+    JSON, or a :class:`ResultEnvelopeError` for malformed JSON. The latter two
+    keep their distinct diagnostics after the evidence gate and coding salvage.
+    On success the attempt is
     COMPLETED and ``task.complete`` fires, auto-advancing the ticket FSM (a
     ``needs_user_input`` result completes the task too — ``_advance_ticket`` then
     schedules the interactive follow-up rather than firing the phase
@@ -364,7 +358,7 @@ def _check_before_recording(
     *,
     phase: str,
     usage: AttemptUsage,
-    envelope_parsed: bool,
+    envelope_parsed: bool | ResultEnvelopeError,
 ) -> _PreRecordCheck:
     """Run the ordered refusal chain that precedes any recording side effect.
 
@@ -393,8 +387,10 @@ def _check_before_recording(
     if action_error:
         return _PreRecordCheck(action_error, result)
 
+    parse_error = str(envelope_parsed) if isinstance(envelope_parsed, ResultEnvelopeError) else ""
     evidence_error = (
-        (
+        parse_error
+        or (
             ""
             if is_executor_draft_run(phase or task.phase, usage.selected_harness)
             else check_evidence(result, phase or task.phase)

@@ -94,7 +94,7 @@ class EnvelopeStopGate:
 
     def _refusal(self, missing: str) -> HookJSONOutput:
         reason = (
-            f"{missing} This run is ONE-SHOT: ending your turn ends the run, there is no next "
+            f"{missing.rstrip('.')}. This run is ONE-SHOT: ending your turn ends the run, there is no next "
             "turn and no scheduled wakeup, and everything you have done so far is discarded "
             "unrecorded. Finish the work in THIS turn — wait for any command you started to "
             f"complete — then write the result envelope ({required_keys_phrase(self.phase)}) as "
@@ -125,7 +125,13 @@ def _missing_envelope_reason(agent_text: str, phase: str) -> str | None:
     try:
         result = parse_result(agent_text)
     except ResultEnvelopeError as exc:
-        return f"Your {exc}"
+        cause = exc.__cause__
+        if isinstance(cause, json.JSONDecodeError):
+            source = agent_text.strip()
+            excerpt = source[max(0, cause.pos - 30) : cause.pos + 30].replace("\n", "\\n")
+            detail = cause.msg.removesuffix(" at")
+            return f"Your result is not valid JSON: {detail}. Near: {excerpt!r}."
+        return f"Your {exc}."
     if not result:
         return "Your output carries no JSON result envelope."
     evidence_error = check_evidence(result, phase)

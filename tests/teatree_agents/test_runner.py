@@ -457,6 +457,42 @@ class TestNoResultEnvelopeGuardLeavesEvidenceGatedPhasesAlone(TestCase):
         assert task.status == Task.Status.COMPLETED
         assert attempt.result["files_modified"] == [{"path": "f0.txt", "action": "modified"}]
 
+    def test_malformed_envelope_with_a_landed_commit_is_still_salvaged(self) -> None:
+        for phase in ("coding", "debugging"):
+            with self.subTest(phase=phase):
+                ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+                session = Session.objects.create(ticket=ticket, agent_id=phase)
+                task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+                repo_dir = self._tmp_path / f"repo-{ticket.pk}"
+                branch = f"feature-{ticket.pk}"
+                _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=1)
+                Worktree.objects.create(
+                    ticket=ticket,
+                    repo_path=str(repo_dir),
+                    branch=branch,
+                    extra={"worktree_path": str(repo_dir), "attested_state": checkout_state(repo_dir).digest},
+                )
+
+                stream = [
+                    _assistant_tool_use("Edit"),
+                    _assistant_text('{"summary":"landed","detail":"unfinished'),
+                    _result_message(),
+                ]
+                with (
+                    _fake_sdk(stream),
+                    patch.object(
+                        checkout_fence_mod,
+                        "read_process_table",
+                        return_value=ProcessTable(frozenset(), "/proc"),
+                    ),
+                ):
+                    attempt = run_agent(task, phase=phase, overlay_skill_metadata={})
+
+                task.refresh_from_db()
+                assert task.status == Task.Status.COMPLETED
+                assert attempt.error == ""
+                assert attempt.result["files_modified"] == [{"path": "f0.txt", "action": "modified"}]
+
 
 class _UnresolvableStageConfig:
     """An overlay config declaring one stage skill with no SKILL.md on disk."""

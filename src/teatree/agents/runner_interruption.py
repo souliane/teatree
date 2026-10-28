@@ -151,7 +151,8 @@ def _produced_result(outcome: "HarnessOutcome") -> AgentResultBlob:
 
     try:
         return parse_result(outcome.agent_text)
-    except ResultEnvelopeError:
+    except ResultEnvelopeError as exc:
+        logger.warning("Interrupted run produced a malformed result envelope: %s", exc)
         return {}
 
 

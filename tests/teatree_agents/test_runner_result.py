@@ -81,6 +81,25 @@ def test_later_corrected_envelope_replaces_malformed_draft() -> None:
 
 
 @pytest.mark.parametrize(
+    "prefix",
+    [
+        '{"summary":"draft"',
+        '{"summary":"draft","detail":"unfinished',
+        "Narration {} ,",
+        '{"summary":"draft"\n{"summary":"first correction"}',
+    ],
+)
+def test_later_line_envelope_recovers_after_poisoned_prefix(prefix: str) -> None:
+    good = '{"summary":"corrected","needs_user_input":false}'
+    assert parse_result(prefix + "\n" + good) == {"summary": "corrected", "needs_user_input": False}
+
+
+def test_malformed_tail_after_complete_envelope_is_refused() -> None:
+    with pytest.raises(ResultEnvelopeError, match=r"^result is not valid JSON: "):
+        parse_result('{"summary":"complete"}\n{"summary":"broken"')
+
+
+@pytest.mark.parametrize(
     ("raw", "expected"),
     [
         ('prose {x}\n{"summary":"done"}', {"summary": "done"}),
