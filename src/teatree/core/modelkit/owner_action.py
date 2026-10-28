@@ -10,6 +10,7 @@ from teatree.core.modelkit.escape_scope import ESCAPE_SCOPE_FIELDS
 class OwnerActionKind(StrEnum):
     ESCAPE = "escape"
     VOID = "void"
+    MERGE_ITEM_WAIVER = "merge_item_waiver"
 
 
 class ActionRequest(TypedDict):

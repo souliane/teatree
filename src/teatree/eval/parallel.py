@@ -246,7 +246,7 @@ class UsageLimitLatch:
             return usage_limit_skip(spec.name)
         try:
             run = self.runner.run(spec)
-        except UsageLimitReachedError:
+        except (UsageLimitReachedError, CreditExhaustedError):
             run = usage_limit_skip(spec.name)
         self.limited = is_usage_limit_skip(run)
         return run

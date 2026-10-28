@@ -21,7 +21,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.management.commands._task_cancel_auth import direct_owner_action
+from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.models import Worktree
 from teatree.core.worktree.checkout_attest import AttestRefusedError, attest_checkout
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, held_worktrees, occupancy_holder, release

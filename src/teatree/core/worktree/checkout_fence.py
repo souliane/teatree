@@ -3,11 +3,12 @@
 from datetime import timedelta
 from pathlib import Path
 
+from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.modelkit.phase_tools import phase_writes_checkout
-from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.models import LocalStackQueueItem, Task, TaskAttempt, Worktree, WorktreeEnvOverride
 from teatree.core.models.checkout_custody import Custody, Tenure
 from teatree.core.models.checkout_exit import mark_verified_checkout_run
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
@@ -35,6 +36,7 @@ from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
 
 _PARK_RETRY = timedelta(minutes=30)
+_DUPLICATE_COUNT = 2
 
 
 class CheckoutFenceError(RuntimeError):
@@ -72,7 +74,7 @@ def verify_task_checkout(task: Task, path: str, *, namespace: str = "") -> None:
 
 
 def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
-    rows = checkout_rows(path)
+    rows = _release_redundant_checkout_row(task, path, checkout_rows(path))
     if len(rows) != 1 or not Worktree.objects.filter(pk=rows[0].pk, ticket=task.ticket).exists():
         message = f"checkout {path} needs exactly one Worktree row; found {len(rows)}"
         raise CheckoutFenceError(message)
@@ -93,6 +95,46 @@ def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
         worktree.merge_extra(set_keys={"attested_state": state.digest})
     _accept_changed_checkout(task, worktree, state, table, attested)
     _anchor_verified_checkout(task, worktree, state, namespace=namespace)
+
+
+def _release_redundant_checkout_row(task: Task, path: str, rows: list[Worktree]) -> list[Worktree]:
+    if len(rows) != _DUPLICATE_COUNT:
+        return rows
+    with transaction.atomic():
+        live = list(Worktree.objects.select_for_update().filter(pk__in=[row.pk for row in rows]).order_by("pk"))
+        if len(live) != _DUPLICATE_COUNT or any(
+            not row.worktree_path or not paths_match(row.worktree_path, path) for row in live
+        ):
+            return rows
+        first, second = live
+        if any(
+            (row.ticket_id, row.overlay, row.repo_path, row.branch)
+            != (task.ticket.pk, first.overlay, first.repo_path, first.branch)
+            for row in live
+        ):
+            return rows
+        duplicate = first if len(first.extra or {}) < len(second.extra or {}) else second
+        if not _is_empty_duplicate(duplicate):
+            return rows
+        duplicate.merge_extra(pop_keys=("worktree_path",))
+    return checkout_rows(path)
+
+
+def _is_empty_duplicate(row: Worktree) -> bool:
+    return all(
+        (
+            row.state in {Worktree.State.CREATED, Worktree.State.PROVISIONED},
+            not row.db_name,
+            not row.compose_project,
+            row.last_used_at is None,
+            row.last_e2e_run is None,
+            not row.occupied_by,
+            not row.occupied_by_session,
+            not WorktreeEnvOverride.objects.filter(worktree=row).exists(),
+            not LocalStackQueueItem.objects.filter(worktree=row).exists(),
+            set(row.extra or {}) == {"worktree_path"},
+        )
+    )
 
 
 def _reattest_changed_checkout(
@@ -124,7 +166,7 @@ def _accept_changed_checkout(
             return
         if attest_deferred_exit(task, worktree, state, table):
             return
-        if evidence.recover_crash_dirt and reattest_on_proof(task, worktree, state, table):
+        if evidence.recover_owned_dirt and reattest_on_proof(task, worktree, state, table):
             return
         reason = f"checkout {worktree.worktree_path} holds {state.uncommitted} uncommitted file(s)"
         raise CheckoutFenceError(reason)

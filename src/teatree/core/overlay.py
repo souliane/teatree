@@ -592,6 +592,10 @@ class OverlayReview:
         """STATIC working-repo slugs the §17.4/#2323 cross-repo merge probe binds against."""
         return []
 
+    def repo_project_paths(self) -> dict[str, str]:
+        """Declared bare repo names mapped to their full project paths for ticket review."""
+        return {}
+
     def repo_owner_for_slug(self, slug: str) -> RepoOwner:
         """Which org function reviews *slug* — picks how long a review request waits."""
         _ = slug

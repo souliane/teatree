@@ -22,6 +22,7 @@ from django.test import TestCase
 import teatree.config as config_facade
 import teatree.config.loader as loader_mod
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings, get_effective_settings
+from teatree.config.known_settings import config_key_hint
 from teatree.config.setting_registries import ENV_SETTING_OVERRIDES
 from teatree.core.models import ConfigSetting
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
@@ -157,6 +158,7 @@ RETIRED_LOOP_SCANNER_FLAGS: tuple[str, ...] = (
 )
 
 RETIRED_ALWAYS_ON_SETTINGS: tuple[str, ...] = (
+    "ask_before_creating_news_tickets",
     "dream_derive_evals",
     "dream_validate_live",
     "require_anti_vacuity_attestation",
@@ -178,6 +180,9 @@ class TestAlwaysOnSettingsRemoved:
     def test_key_is_absent_and_retired(self, key: str) -> None:
         assert key not in _field_names()
         assert key not in OVERLAY_OVERRIDABLE_SETTINGS
+
+    def test_news_approval_key_reports_its_retirement(self) -> None:
+        assert "article decisions settle" in config_key_hint("ask_before_creating_news_tickets")
 
 
 class TestStoredAlwaysOnSettingsRemoved(TestCase):

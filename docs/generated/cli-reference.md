@@ -4277,8 +4277,9 @@ Usage: t3 tool verify-gates [OPTIONS]
  Run the FULL CI-equivalent local gate set (commit, push and manual CI-job
  stages).
 
- Runs commit and manual stages under a 600-second deadline; pre-push also
- allows the shared push-gate lock's 1500-second wait. Exits non-zero if ANY
+ Runs each prek stage under a load-aware deadline (600 seconds of work at
+ idle, up to three times that under load; pre-push also allows the shared
+ push-gate lock's 1500-second wait). Exits non-zero if ANY
  stage fails. The push-stage run is
  what catches the gates CI fails on but a bare ``prek run --all-files``
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
@@ -5895,7 +5896,7 @@ Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ list    List DB-configured autonomous loops: name, enabled, delay, last run, │
-│         next due.                                                            │
+│         next due, idle tick cost.                                            │
 │ audit   Report every shipped loop/preset/schedule missing, disabled, not     │
 │         ticking, or diverged.                                                │
 │ delete  Delete a loop row — a loop that ships by default needs ``--confirm   │
@@ -5910,14 +5911,16 @@ Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 loops list [OPTIONS]
 
- List DB-configured autonomous loops: name, enabled, delay, last run, next due.
+ List DB-configured autonomous loops: name, enabled, delay, last run, next due,
+ idle tick cost.
 
  Read-only: it reads the ``Loop`` table and prints it — never ticks, marks a
  run, or mutates a row.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit the loops as JSON.                                      │
-│ --help          Show this message and exit.                                  │
+│ --json             Emit the loops as JSON.                                   │
+│ --by-cost          Rank by the share of one core the idle ticks take.        │
+│ --help             Show this message and exit.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10106,12 +10109,13 @@ Usage: t3 teatree workspace relocate [OPTIONS]
 ```
 Usage: t3 teatree workspace list-orphans [OPTIONS]
 
- List orphan branches (commits ahead of origin/main AND no open PR) across the
- workspace; ``[]`` if none.
+ List branch verdicts; orphans have unmerged work but no PR; ``[]`` means no
+ branch.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit JSON.                                                   │
-│ --help          Show this message and exit.                                  │
+│ --branch        TEXT  Scan only this branch.                                 │
+│ --json                Emit JSON.                                             │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12867,6 +12871,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              criteria (#2241).                               │
 │ rubric-waive                 Record an owner's waiver of one rubric          │
 │                              criterion.                                      │
+│ merge-item-waive             Request an owner's waiver of one LLM            │
+│                              merge-critic item.                              │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -13891,6 +13897,23 @@ Usage: t3 teatree ticket rubric-waive [OPTIONS] TICKET_ID
 │ --waived-by        TEXT  Owner identity recording the waiver.                │
 │ --reason           TEXT  Why this criterion is waived.                       │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket merge-item-waive`
+
+```
+Usage: t3 teatree ticket merge-item-waive [OPTIONS] TICKET_ID
+
+ Request an owner button answer for one LLM merge item.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --item          TEXT  The LLM merge item: test_value or cleanliness.         │
+│ --reason        TEXT  Why this item is waived.                               │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

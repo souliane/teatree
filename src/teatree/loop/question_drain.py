@@ -16,8 +16,8 @@ The sweep runs in two stages, and the split is the whole design:
     retrying, so PR_OPENED ends it; an owner row drains only on
     :func:`~teatree.core.models.question_subject.finished_subject_reason`, because a
     PR_OPENED review is still the owner's to decide. Three later resolvers read facts the FSM
-    state cannot carry — a subject whose pull requests have all settled, a held PR card
-    whose recorded PR has settled, and a parked lane that has since re-run to completion —
+    state cannot carry — a subject whose pull requests have all settled, an owner card
+    whose recorded pull request has settled, and a parked lane that has since re-run to completion —
     and all three are POSITIVE-ONLY: short of proof they answer nothing at all, so they add
     drains without ever suppressing one.
     The :data:`~teatree.core.question_heal.HEAL_CHECKS` resolvers are positive-only too:

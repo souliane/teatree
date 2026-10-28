@@ -8,7 +8,7 @@ that is genuinely answerable-for-a-PR-with-no-head, and stays silent everywhere 
 
 from django.test import TestCase
 
-from teatree.core.gates.review_recordability_gate import unrecordable_review_mint_refusal, unrecordable_review_refusal
+from teatree.core.gates.review_recordability_gate import unrecordable_review_refusal
 from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX, FailureKind, classify_failure
 from teatree.core.models import AutoReviewDispatch, PullRequest, Session, Task, Ticket
 
@@ -51,9 +51,6 @@ class TestARecordedHeadDispatchesUnchanged(TestCase):
 
         assert unrecordable_review_refusal(task, phase="reviewing") is None
 
-    def test_the_mint_seam_admits_a_ticket_that_carries_its_head(self) -> None:
-        assert unrecordable_review_mint_refusal(_reviewer_ticket(extra={"reviewed_sha": _HEAD})) is None
-
 
 class TestAMissingHeadIsRefused(TestCase):
     def setUp(self) -> None:
@@ -84,12 +81,6 @@ class TestAMissingHeadIsRefused(TestCase):
         self.ticket.save(update_fields=["extra"])
 
         assert unrecordable_review_refusal(_task_for(self.ticket), phase="reviewing") is not None
-
-    def test_the_mint_seam_refuses_the_same_ticket_with_the_same_statement(self) -> None:
-        mint_refusal = unrecordable_review_mint_refusal(self.ticket)
-        dispatch_refusal = unrecordable_review_refusal(_task_for(self.ticket), phase="reviewing")
-
-        assert mint_refusal == dispatch_refusal
 
 
 class TestThePhaseScopeIsNotOverWide(TestCase):
@@ -123,8 +114,3 @@ class TestATaskAnswerableForNoPullRequestKeepsItsCompletion(TestCase):
         PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="souliane/teatree", iid=_PR_URL.rsplit("/", 1)[-1])
 
         assert unrecordable_review_refusal(_task_for(ticket), phase="reviewing") is None
-
-    def test_the_mint_seam_likewise_admits_a_ticket_that_is_no_pull_request(self) -> None:
-        ticket = Ticket.objects.create(issue_url=_ISSUE_URL, overlay="teatree", role=Ticket.Role.AUTHOR)
-
-        assert unrecordable_review_mint_refusal(ticket) is None

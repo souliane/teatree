@@ -517,3 +517,11 @@ class TestAMovedPrHeadIsItsOwnNamedCause:
         pairs = [(FailureKind.LANDING_UNVERIFIED, "aaaa"), (FailureKind.LANDING_UNVERIFIED, "aaaa")]
 
         assert stall_fingerprints(pairs) == ["aaaa", "aaaa"]
+
+    def test_nit_publication_head_move_uses_the_same_fresh_head_path(self) -> None:
+        assert classify_failure("NIT review head moved before publication") == FailureKind.HEAD_SUPERSEDED
+
+    def test_comment_check_refusal_is_a_correctable_recording_refusal(self) -> None:
+        kind = classify_failure("comment check — comment lacks an exact source line")
+        assert kind == FailureKind.RECORDING_REFUSED
+        assert recovery_strategy(kind) is RecoveryStrategy.CORRECTIVE_RETRY

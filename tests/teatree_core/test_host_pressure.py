@@ -192,10 +192,10 @@ def test_missing_feed_warning_memo_can_be_reset(tmp_path: Path, caplog: pytest.L
 def test_host_load_is_judged_against_host_cores_not_the_container_quota(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Load 28 on the 10-core host is under the braked 3/core resume watermark,
-    # even when a 3-core cgroup quota caps agent concurrency.
+    # The host load stays under the 10-core resume watermark, but exceeds the
+    # 3-core cgroup's watermark.
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
-    _write_feed(tmp_path, epoch=int(time.time()), load1=28.0, ram_available_mib=12 * 1024, swap_used_mib=0)
+    _write_feed(tmp_path, epoch=int(time.time()), load1=12.0, ram_available_mib=12 * 1024, swap_used_mib=0)
     monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: 3)
     _stub_uncapped(monkeypatch)
     machine = read_machine_signal()

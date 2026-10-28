@@ -1,4 +1,4 @@
-"""Retention predicates for settled Slack DM rows and sent notification text."""
+"""Retention predicates for old Slack DM rows and sent notification text."""
 
 import datetime as dt
 

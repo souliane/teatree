@@ -5,6 +5,8 @@ would read an empty database. ``IMMEDIATE`` matches the production SQLite transa
 """
 
 import sqlite3
+import threading
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -48,3 +50,30 @@ def file_backed_default_database() -> Generator[Path]:
             wrapper.settings_dict["OPTIONS"] = original_options
             wrapper.transaction_mode = original_transaction_mode
             wrapper.connection = original_raw
+
+
+def hold_write_lock(database: Path, *, seconds: float) -> threading.Thread:
+    """Take the SQLite write lock on a second connection; it is released after *seconds*. Join the thread to wait."""
+    locked = threading.Event()
+
+    def hold() -> None:
+        raw = sqlite3.connect(database, timeout=0, isolation_level=None)
+        raw.execute("BEGIN IMMEDIATE")
+        locked.set()
+        time.sleep(seconds)
+        raw.execute("ROLLBACK")
+        raw.close()
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert locked.wait(5)
+    return holder
+
+
+@contextmanager
+def writer_holding_the_lock(database: Path, *, seconds: float) -> Generator[None]:
+    holder = hold_write_lock(database, seconds=seconds)
+    try:
+        yield
+    finally:
+        holder.join()

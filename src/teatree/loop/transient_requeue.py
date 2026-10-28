@@ -50,6 +50,7 @@ from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_caus
 from teatree.loop.config_self_repair import repair_for_error
 from teatree.loop.transient_requeue_correction import CORRECTIVE_MARKER as _CORRECTIVE_MARKER
 from teatree.loop.transient_requeue_correction import corrective_note, retry_review_contract, wrong_head_retry_head
+from teatree.loop.transient_requeue_critic import critic_dispatch_halt, park_if_critic_settled
 from teatree.loop.transient_requeue_disposal import (
     LIVE_SUCCESSOR_STAMP,
     MOVED_TARGET_KINDS,
@@ -98,6 +99,7 @@ def _route_failed_task(task: Task, *, now: datetime) -> int:
         retire_if_dead_artifact(task)
         or _answer_moved_target(task, error=error)
         or park_if_live_successor(task)
+        or park_if_critic_settled(task, error=error)
         or _park_cancelled(task, error=error)
     ):
         task.ticket.pop_task_thread(int(task.pk))
@@ -110,14 +112,20 @@ def _route_failed_task(task: Task, *, now: datetime) -> int:
     # build cannot route on a stale kind.
     strategy = recovery_strategy(classify_failure(error))
     if strategy is RecoveryStrategy.RETRY:
-        halt = _budget_halt_reason(task)
-        if halt is None:
-            return _reopen(task)
-        _escalate_once(task, reason=halt)
-        return 0
+        return _retry_failed_task(task)
     if (cause := recoverable_exhaustion_cause(error)) is not None:
         return _requeue_on_window_reset(task, cause, now=now)
     return _handle_deterministic(task, strategy)
+
+
+def _retry_failed_task(task: Task) -> int:
+    if not Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).exists():
+        return 0
+    halt = critic_dispatch_halt(task, fallback=_budget_halt_reason)
+    if halt is None:
+        return _reopen(task)
+    _escalate_once(task, reason=halt)
+    return 0
 
 
 def _answer_moved_target(task: Task, *, error: str) -> bool:

@@ -37,7 +37,8 @@ import sys
 from django.tasks import task
 from django.utils import timezone
 
-from teatree.loops.deadlined_tick import run_deadlined_argv
+from teatree.core.models.loop import OFF_LIVE_TICK_WAKE_SECONDS
+from teatree.loops.deadlined_tick import run_deadlined_argv, tick_subprocess_env
 from teatree.loops.enable_verdict import fleet_admits_work
 from teatree.loops.timer_chains import DAILY_TICK_DEADLINE_SECONDS, LOOPS_QUEUE
 
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 #: (``directive_loop``'s hour), so a due loop waits at most this long, and cheap at that
 #: rate because every tick command self-gates on its own ``Loop.is_due`` ledger and
 #: returns SKIP without doing work.
-DRIVE_INTERVAL_SECONDS = 600
+DRIVE_INTERVAL_SECONDS = OFF_LIVE_TICK_WAKE_SECONDS
 
 #: The DEFAULT per-command ceiling for one off-live-tick tick subprocess. These are the
 #: heaviest passes in the codebase, so they get the daily-tick allowance rather than
@@ -118,6 +119,7 @@ def drive_off_live_tick_loops() -> dict[str, int]:
                 [sys.executable, "-m", "teatree", *argv_tail],
                 label=f"off-live-tick loop {name!r}",
                 deadline=deadline,
+                env=tick_subprocess_env(),
             )
         except Exception:
             logger.exception("off-live-tick driver: %r failed to run; the chain and the other loops survive", name)

@@ -8,6 +8,11 @@ from teatree.backends.gitlab import http_client as gitlab_http
 from teatree.core.backend_protocols import BackendResolutionError
 
 
+@pytest.fixture(autouse=True)
+def _route_httpx_stubs_through_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gitlab_http, "client_for_url", lambda _url: gitlab_http.httpx)
+
+
 class _PagedResponse:
     """Minimal httpx.Response stand-in for a single GitLab REST list page."""
 

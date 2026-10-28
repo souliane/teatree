@@ -72,6 +72,13 @@ class ArticleSuggestion(TypedDict, total=False):
     title: str
     url: str
     rationale: str
+    action: str
+    decision_reason: str
+    backlog_checked: bool
+    base_red: bool
+    duplicate_of: str
+    ticket_title: str
+    ticket_body: str
 
 
 class TriageRecommendation(TypedDict, total=False):
@@ -356,13 +363,20 @@ RESULT_JSON_SCHEMA: JSONSchema = {
         },
         "article_suggestions": {
             "type": "array",
-            "description": "Candidate news articles a shell-denied scanning_news agent hands back for queuing.",
+            "description": "Article decisions a shell-denied scanning_news agent hands back for settlement.",
             "items": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
                     "url": {"type": "string"},
                     "rationale": {"type": "string"},
+                    "action": {"type": "string", "enum": ["file", "drop"]},
+                    "decision_reason": {"type": "string"},
+                    "backlog_checked": {"type": "boolean"},
+                    "base_red": {"type": "boolean"},
+                    "duplicate_of": {"type": "string"},
+                    "ticket_title": {"type": "string"},
+                    "ticket_body": {"type": "string"},
                 },
                 "required": ["url"],
             },
