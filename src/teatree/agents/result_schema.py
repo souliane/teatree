@@ -1,17 +1,4 @@
-"""Structured output schema for agent task results.
-
-Agents return JSON matching this schema. Any agent that can produce JSON works —
-Claude structured output just makes schema compliance guaranteed.
-
-Phase-specific evidence requirements (#1284 / codex #1282-6): a successful
-phase task must carry concrete evidence the work actually happened — not just
-a summary string. ``PHASE_REQUIRED_EVIDENCE`` names the per-phase fields the
-agent must supply (in addition to ``summary``); ``_record_success`` consults
-this map and refuses to complete the task when the claim has no evidence. The
-"DM sent successfully but didn't deliver" false-positive class is exactly the
-shape this prevents: a one-line summary advancing the FSM with no underlying
-proof.
-"""
+"""Structured result schema and phase evidence requirements for agent tasks."""
 
 from collections.abc import Callable
 from typing import TypedDict
@@ -24,13 +11,30 @@ from teatree.agents.result_payloads import (
     verdict_carries_payload,
 )
 from teatree.agents.result_schema_critic import CRITIC_VERDICT_SCHEMA_PROPERTY
+from teatree.agents.result_schema_draft import (
+    REVIEW_REQUEST_SCHEMA_PROPERTY,
+    SHIP_READINESS_SCHEMA_PROPERTY,
+    ReviewRequestDraft,
+    ShipReadiness,
+)
 from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
-from teatree.agents.result_schema_review import REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY, ReviewHeadMismatch
+from teatree.agents.result_schema_review import (
+    REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY,
+    REVIEW_VENUE_LIMIT_SCHEMA_PROPERTY,
+    REVIEW_VERDICT_SCHEMA_PROPERTY,
+    ReviewHeadMismatch,
+    ReviewVenueLimit,
+)
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, RubricGrade
+from teatree.core.models.types import (
+    FIX_RECORD_FIELDS,
+    FixRecord,
+    PlanAdequacy,
+    RubricGrade,
+    fix_record_required_fields,
+)
 
 
 class FileChange(TypedDict, total=False):
@@ -170,6 +174,7 @@ class AgentResult(OwnerStop, total=False):
     operator_inputs: list[str]
     review_verdict: ReviewVerdictEnvelope
     review_head_mismatch: ReviewHeadMismatch
+    review_venue_limit: ReviewVenueLimit
     review_context: ReviewContextEnvelope
     anti_vacuity: AntiVacuityEnvelope
     integration_review: IntegrationReviewEnvelope
@@ -181,6 +186,8 @@ class AgentResult(OwnerStop, total=False):
     work_item: WorkItemEnvelope
     fix_record: FixRecord
     ticket_sweep: TicketSweepEvidence
+    review_request: ReviewRequestDraft
+    ship_readiness: ShipReadiness
     next_steps: list[str]
     commands_executed: list[str]
     skill_application: list[SkillApplication]
@@ -295,74 +302,8 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "description": "Accepted live operator directions recorded by the control path.",
         },
         "review_head_mismatch": REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY,
-        "review_verdict": {
-            "type": "object",
-            "description": "A reviewing-phase agent's typed verdict, recorded server-side (corr-11).",
-            "properties": {
-                "verdict": {"type": "string", "enum": ["merge_safe", "hold"]},
-                "reviewed_sha": {
-                    "type": "string",
-                    "description": (
-                        "Full 40-char hex SHA the review bound to. REQUIRED: an undisclosed head is "
-                        "refused, never read as agreement with the dispatch head (#4168)."
-                    ),
-                },
-                "reviewer_identity": {"type": "string"},
-                "gh_verify_result": {"type": "string", "enum": ["green", "pending", "failed"]},
-                "blast_class": {"type": "string", "enum": ["substrate", "logic", "docs"]},
-                "findings": {
-                    "type": "array",
-                    "description": ENVELOPE_FINDINGS_RULE,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "severity": {"type": "string"},
-                            "summary": {"type": "string"},
-                            "file": {"type": "string"},
-                            "line": {"type": "integer"},
-                        },
-                    },
-                },
-                "merge_result_retake": {
-                    "type": "boolean",
-                    "description": (
-                        "Attests that every finding citing a file outside the PR's changed-file set was "
-                        "re-measured on the materialised MERGE RESULT (`t3 review merge-tree`), not the "
-                        "branch checkout alone. Without it such a finding cannot carry blocking severity "
-                        "and the whole verdict is refused (#4251)."
-                    ),
-                },
-                "rubric_grades": {
-                    "type": "array",
-                    "description": (
-                        "Your grade of EVERY criterion on the reviewed ticket's rubric — you are the "
-                        "independent verifier the done-gate requires. A verdict leaving any criterion "
-                        "ungraded is refused and records nothing. NOT in `required`: whether the ticket "
-                        "HAS a rubric is a DB question only the recorder can answer."
-                    ),
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "ordinal": {"type": "integer"},
-                            "text_hash": {
-                                "type": "string",
-                                "description": "Hash shown beside the criterion being graded.",
-                            },
-                            "status": {"type": "string", "enum": ["pass", "fail"]},
-                            "rationale": {
-                                "type": "string",
-                                "description": (
-                                    "What proves the criterion — any test kind, free-form prose. "
-                                    "REQUIRED on a pass; a fail needs none."
-                                ),
-                            },
-                        },
-                        "required": ["ordinal", "status"],
-                    },
-                },
-            },
-            "required": ["verdict", "reviewed_sha"],
-        },
+        "review_venue_limit": REVIEW_VENUE_LIMIT_SCHEMA_PROPERTY,
+        "review_verdict": REVIEW_VERDICT_SCHEMA_PROPERTY,
         "review_context": {
             "type": "object",
             "properties": {
@@ -467,12 +408,15 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                 "A fix-ticket's Definition-of-Done record, recorded server-side onto ticket.extra "
                 "(#4520). Required on a kind=fix ticket — the DoD gate refuses DELIVERED without "
                 "one — and ignored on any other. Omit the key entirely rather than returning a "
-                "partial object: a partial record is refused, an absent one is a no-op."
+                "partial object: a partial record is refused, an absent one is a no-op. "
+                "observed_red is required when the forced-repro gate is on."
             ),
             "properties": {field: {"type": "string"} for field in FIX_RECORD_FIELDS},
-            "required": list(FIX_RECORD_FIELDS),
+            "required": list(fix_record_required_fields(red_required=False)),
         },
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
+        "review_request": REVIEW_REQUEST_SCHEMA_PROPERTY,
+        "ship_readiness": SHIP_READINESS_SCHEMA_PROPERTY,
         **OWNER_STOP_SCHEMA_PROPERTIES,
         "next_steps": {
             "type": "array",
@@ -511,7 +455,8 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:   result is indistinguishable from a healthy review, so the absence was
 #:   invisible. The verdict is the only artifact the merge gate consumes, so it
 #:   is the only accepted evidence.
-#: - ``shipping``: at least one command executed (``git push``, ``gh pr``...).
+#: - ``shipping``: at least one command executed (``git push``, ``gh pr``...). A read-only executor run
+#:   returns ``ship_readiness`` instead, checked by ``result_schema_draft.executor_draft_evidence_error``.
 #: - ``scanning_news``: at least one ``article_suggestion`` returned — the
 #:   shell-denied scanner hands its candidates back through the envelope, so a
 #:   summary-only run is a silently-dropped scan (#9), refused here.

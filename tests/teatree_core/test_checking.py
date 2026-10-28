@@ -12,6 +12,7 @@ are omitted, and an all-empty report collapses to one line.
 
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -28,14 +29,18 @@ from teatree.core.checking import (
     gather_all_overlays_report,
     gather_checking_report,
 )
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
+from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from tests._owner_channel import OWNER_DECISION
+from teatree.core.models.waiting_item import WaitingItem
+from tests._owner_channel import OWNER_DECISION, owner_card
 
 _SHA = "a" * 40
 _REVIEWER = "cold-reviewer"
@@ -395,8 +400,75 @@ class TestNeedsYouGroup(CheckingTestBase):
         labels = [item.label for item in report.needs_you.items]
         assert any(label.startswith(f"Q{owner.pk}:") for label in labels)
         assert not any(label.startswith(f"Q{internal.pk}:") for label in labels)
-        assert "1 internal escalations: factory work, not questions" in labels
-        assert report.needs_you.total == 2
+        assert report.needs_you.total == 1
+        assert report.internal_escalations == 1
+        assert "1 internal escalations" in report.to_terse()
+        assert report.to_dict()["internal_escalations"] == 1
+
+    def test_all_wait_kinds_are_oldest_first_and_linked(self) -> None:
+        oldest = DeferredQuestion.record(
+            "May I use this plan?", card=replace(owner_card(), subject="https://example.com/plan")
+        )
+        newest = DeferredQuestion.record(
+            "May I use this scope?", card=replace(owner_card(), subject="https://example.com/scope")
+        )
+        DeferredQuestion.objects.filter(pk=oldest.pk).update(created_at=self.now - timedelta(days=10))
+        DeferredQuestion.objects.filter(pk=newest.pk).update(created_at=self.now - timedelta(days=1))
+        ticket = self._ticket()
+        pr = PullRequest.objects.create(
+            ticket=ticket,
+            overlay=self.OVERLAY,
+            url="https://github.com/acme/widgets/pull/31",
+            repo="acme/widgets",
+            iid="31",
+        )
+        pr.request_review()
+        pr.approve()
+        pr.save()
+        PullRequest.objects.filter(pk=pr.pk).update(review_requested_at=self.now - timedelta(days=7))
+        review = ReviewAssignment.record(
+            ReviewIntent(
+                mr_url="https://github.com/acme/widgets/pull/32",
+                user_id="u1",
+                channel="C1",
+                slack_ts="1.1",
+                trigger="reaction",
+                overlay=self.OVERLAY,
+            )
+        )
+        ReviewAssignment.objects.filter(pk=review.pk).update(observed_at=self.now - timedelta(days=5))
+        manual = WaitingItem.objects.add("Read the plan")
+        WaitingItem.objects.filter(pk=manual.pk).update(created_at=self.now - timedelta(days=3))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert [item.kind for item in report.needs_you.items] == [
+            "question",
+            "merge_authorization",
+            "review_request",
+            "manual",
+            "question",
+        ]
+        assert [item.age_days for item in report.needs_you.items] == [10, 7, 5, 3, 1]
+        assert [item.url for item in report.needs_you.items[:3]] == ["https://example.com/plan", pr.url, review.mr_url]
+        assert report.needs_you.total == 5
+
+    def test_young_wait_age_renders_in_hours_not_zero_days(self) -> None:
+        manual = WaitingItem.objects.add("Read the plan")
+        WaitingItem.objects.filter(pk=manual.pk).update(created_at=self.now - timedelta(hours=3))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert [item.detail for item in report.needs_you.items] == ["waiting 3h"]
+
+    def test_kept_decisions_are_owner_only(self) -> None:
+        for decision in OwnerDecision:
+            DeferredQuestion.record("May I proceed?", card=owner_card(decision))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, cap=10)
+
+        assert {item.kind for item in report.needs_you.items} == {"question"}
+        assert [item.owner_only for item in report.needs_you.items] == [True, True, True, True, False, False]
 
     def test_failed_attempt_surfaces_blocker_with_clickable_url(self) -> None:
         ticket = self._ticket(state=Ticket.State.WORK_STARTED)
@@ -443,6 +515,15 @@ class TestTerseFormatting(CheckingTestBase):
         terse = report.to_terse(overlay_name=self.OVERLAY)
         assert terse.startswith("Nothing since ")
         assert "\n" not in terse
+
+    def test_internal_escalations_alone_are_not_reported_as_nothing(self) -> None:
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        terse = report.to_terse(overlay_name=self.OVERLAY)
+
+        assert not terse.startswith("Nothing since ")
+        assert terse.splitlines()[-1] == "1 internal escalations: factory work, not questions"
 
     def test_empty_group_is_omitted(self) -> None:
         ticket = self._ticket()
@@ -506,7 +587,16 @@ class TestJsonShape(CheckingTestBase):
         payload = report.to_dict()
         encoded = json.dumps(payload)  # must not raise
         decoded = json.loads(encoded)
-        assert set(decoded) == {"since", "merged", "in_flight", "needs_you", "metered", "remaining", "terse"}
+        assert set(decoded) == {
+            "since",
+            "merged",
+            "in_flight",
+            "needs_you",
+            "metered",
+            "internal_escalations",
+            "remaining",
+            "terse",
+        }
         assert decoded["merged"]["total"] == 1
         assert decoded["merged"]["items"][0]["label"] == "acme/widgets#7"
 
@@ -661,6 +751,41 @@ class TestAllOverlaysAggregation(CheckingTestBase):
         assert f"[{self.OVERLAY}]" in terse
         assert f"[{self.OVERLAY_B}]" in terse
 
+    def test_overlay_scoped_waits_are_tagged_only_in_the_combined_report(self) -> None:
+        pr = PullRequest.objects.create(
+            ticket=self._ticket(),
+            overlay=self.OVERLAY,
+            url="https://github.com/acme/widgets/pull/31",
+            repo="acme/widgets",
+            iid="31",
+        )
+        pr.request_review()
+        pr.approve()
+        pr.save()
+        PullRequest.objects.filter(pk=pr.pk).update(review_requested_at=self.now - timedelta(days=7))
+        review = ReviewAssignment.record(
+            ReviewIntent(
+                mr_url="https://github.com/acme/widgets/pull/32",
+                user_id="u1",
+                channel="C1",
+                slack_ts="1.1",
+                trigger="reaction",
+                overlay=self.OVERLAY,
+            )
+        )
+        ReviewAssignment.objects.filter(pk=review.pk).update(observed_at=self.now - timedelta(days=5))
+        windows = {self.OVERLAY: (self.since, self.now), self.OVERLAY_B: (self.since, self.now)}
+        configs = {self.OVERLAY: ("github", []), self.OVERLAY_B: ("github", [])}
+
+        scoped = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+        combined = gather_all_overlays_report(overlay_windows=windows, overlay_configs=configs)
+
+        assert [item.label for item in scoped.needs_you.items] == ["acme/widgets#31", review.mr_url]
+        assert [item.label for item in combined.needs_you.items] == [
+            f"[{self.OVERLAY}] acme/widgets#31",
+            f"[{self.OVERLAY}] {review.mr_url}",
+        ]
+
     def test_empty_across_all_overlays(self) -> None:
         overlay_windows = {
             self.OVERLAY: (self.since, self.now),
@@ -675,6 +800,17 @@ class TestAllOverlaysAggregation(CheckingTestBase):
 
         assert terse.startswith("Nothing since ")
         assert "\n" not in terse
+
+    def test_internal_escalations_alone_are_not_reported_as_nothing_across_overlays(self) -> None:
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+        overlay_windows = {self.OVERLAY: (self.since, self.now), self.OVERLAY_B: (self.since, self.now)}
+        overlay_configs = {self.OVERLAY: ("github", []), self.OVERLAY_B: ("github", [])}
+
+        report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
+
+        terse = report.to_terse()
+        assert not terse.startswith("Nothing since ")
+        assert terse.splitlines()[-1] == "1 internal escalations: factory work, not questions"
 
     def test_deferred_questions_not_duplicated_in_multi_overlay(self) -> None:
         DeferredQuestion.record("Should I proceed?", **OWNER_DECISION)

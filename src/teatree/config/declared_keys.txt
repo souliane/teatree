@@ -197,3 +197,4 @@ worktree_containment_gate_enabled
 write_wip
 issue_intake_idle_hold_hours
 RETIRED agent_compaction_keep_recent
+self_improve_owner_wait_minutes

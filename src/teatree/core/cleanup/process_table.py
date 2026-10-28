@@ -148,25 +148,31 @@ def venue_proc_root() -> Path | None:
     return _OWN_PROC_ROOT if _pid_dirs(_OWN_PROC_ROOT) else None
 
 
-def current_pid_namespace() -> str:
-    root = venue_proc_root()
-    if root is None:
-        return ""
+def pid_namespace_of(pid_dir: Path) -> str:
     try:
-        return str((root / "self" / "ns" / "pid").readlink())
+        return str((pid_dir / "ns" / "pid").readlink())
     except OSError:
         return ""
+
+
+def current_pid_namespace() -> str:
+    root = venue_proc_root()
+    return "" if root is None else pid_namespace_of(root / "self")
 
 
 def pid_namespace_depth(pid_dir: Path) -> int:
+    return len(namespace_pids(pid_dir))
+
+
+def namespace_pids(pid_dir: Path) -> tuple[str, ...]:
     try:
         status = (pid_dir / "status").read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return 0
+        return ()
     for line in status.splitlines():
         if line.startswith("NSpid:"):
-            return len(line.split()) - 1
-    return 0
+            return tuple(line.split()[1:])
+    return ()
 
 
 def nested_pid_namespace() -> str:
@@ -309,8 +315,10 @@ __all__ = [
     "ProcessTable",
     "current_pid_namespace",
     "host_proc_root",
+    "namespace_pids",
     "nested_pid_namespace",
     "pid_namespace_depth",
+    "pid_namespace_of",
     "read_process_table",
     "running_in_a_container",
     "venue_proc_root",

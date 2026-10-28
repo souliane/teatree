@@ -14,15 +14,30 @@ load-bearing assertions:
 - One bad row never blocks the others.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
 
-from teatree.core.models import PendingChatInjection, Task, Ticket
+from teatree.core.modelkit.question_card import CardOption
+from teatree.core.models import (
+    DeferredQuestion,
+    DmContext,
+    PendingChatInjection,
+    PullRequest,
+    Session,
+    Task,
+    ThreadBinding,
+    Ticket,
+    TicketDmPost,
+    TicketDmThread,
+)
+from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
+from tests._owner_channel import OWNER_DECISION
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -108,8 +123,115 @@ class RecordingBackend:
         return ""
 
 
+class TestTicketThreadStatus:
+    @pytest.mark.parametrize("text", ["Can you explain the approach?", "What is the plan?"])
+    def test_bound_non_status_question_reaches_live_routing(self, text: str) -> None:
+        ticket = Ticket.objects.create(short_description="Explain the work")
+        ThreadBinding.bind(ticket=ticket, channel="C1", thread_ts="100.0")
+        row = PendingChatInjection.record(
+            channel="C1", slack_ts="101.0", text=text, context=DmContext(user_id=_USER_UID, thread_ts="100.0")
+        )
+        assert row is not None
+        backend = RecordingBackend()
+
+        with patch("teatree.loop.slack_answer.cycle._live_receipt", return_value=True) as live_receipt:
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        live_receipt.assert_called_once()
+        assert backend.replies == []
+
+    def test_bound_status_uses_ticket_rows_without_statusline_or_model(self) -> None:
+        ticket = Ticket.objects.create(overlay="", short_description="Fix retry")
+        ThreadBinding.bind(ticket=ticket, channel="C1", thread_ts="100.0")
+        thread = TicketDmThread.objects.create(ticket=ticket, channel="C1", root_ts="100.0")
+        card = replace(OWNER_DECISION["card"], options=())
+        question = DeferredQuestion.record("Which action?", card=card, slack_channel="C1", slack_ts="100.5")
+        TicketDmPost.objects.create(thread=thread, generation=0, channel="C1", slack_ts="100.5", question=question)
+        Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        PullRequest.objects.create(
+            ticket=ticket, url="https://github.com/example/project/pull/12", repo="example/project", iid="12"
+        )
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://github.com/example/project/pull/11",
+            repo="example/project",
+            iid="11",
+            state=PullRequest.State.MERGED,
+        )
+        other = Ticket.objects.create(short_description="Other")
+        Task.objects.create(ticket=other, session=Session.objects.create(ticket=other), phase="shipping")
+        row = PendingChatInjection.record(
+            channel="C1",
+            slack_ts="101.0",
+            text="what's the status?",
+            context=DmContext(user_id=_USER_UID, thread_ts="100.0"),
+        )
+        assert row is not None
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        reading = InboundReading(
+            intent=InboundIntent.QUESTION, answerable=True, work_summary="", source=ReadingSource.HEURISTIC
+        )
+
+        with (
+            patch(
+                "teatree.loop.slack_answer.simple_answer.statusline_for_slack", return_value="global state"
+            ) as statusline,
+            patch("teatree.loop.slack_answer.simple_answer._run_cheap_turn") as model,
+        ):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend), reader=lambda _text: reading)
+
+        assert report.answered_simple == 1
+        assert f"ticket-{ticket.pk}" in backend.replies[0][2]
+        assert ticket.state in backend.replies[0][2]
+        assert "coding" in backend.replies[0][2]
+        assert "example/project/pull/12" in backend.replies[0][2]
+        assert "example/project/pull/11" not in backend.replies[0][2]
+        assert "shipping" not in backend.replies[0][2]
+        posted_ts = backend.thread_replies["100.0"][0]["ts"]
+        assert TicketDmPost.objects.filter(channel="C1", slack_ts=posted_ts).exists()
+        assert question.is_pending
+        statusline.assert_not_called()
+        model.assert_not_called()
+
+    def test_latest_card_answer_with_status_word_binds_before_status_shortcut(self) -> None:
+        ticket = Ticket.objects.create(overlay="", short_description="Fix retry")
+        ThreadBinding.bind(ticket=ticket, channel="C1", thread_ts="100.0")
+        thread = TicketDmThread.objects.create(ticket=ticket, channel="C1", root_ts="100.0")
+        card = replace(
+            OWNER_DECISION["card"],
+            options=(
+                CardOption("Status update", "Send the update.", recommended=True),
+                CardOption("Wait", "Keep the current state."),
+            ),
+        )
+        question = DeferredQuestion.record("Which action?", card=card, slack_channel="C1", slack_ts="110.0")
+        TicketDmPost.objects.create(thread=thread, generation=0, channel="C1", slack_ts="110.0", question=question)
+        row = PendingChatInjection.record(
+            channel="C1",
+            slack_ts="120.0",
+            text="Status update",
+            context=DmContext(user_id=_USER_UID, thread_ts="100.0"),
+        )
+        assert row is not None
+        backend = RecordingBackend()
+        backend.message_meta[row.slack_ts] = {"ts": row.slack_ts, "thread_ts": "100.0"}
+        reading = InboundReading(
+            intent=InboundIntent.INSTRUCTION, answerable=False, work_summary="", source=ReadingSource.HEURISTIC
+        )
+
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend), reader=lambda _text: reading)
+
+        question.refresh_from_db()
+        assert question.answer_text == "Status update"
+        assert report.answered_question == 1
+        assert report.answered_simple == 0
+
+
 def _row(text: str, ts: str = "1.0", overlay: str = "") -> PendingChatInjection:
-    row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text, overlay=overlay)
+    row = PendingChatInjection.record(
+        channel="C1", slack_ts=ts, text=text, overlay=overlay, context=DmContext(user_id=_USER_UID)
+    )
     assert row is not None
     return row
 
@@ -356,6 +478,7 @@ class TestRowIsolation:
     def test_one_bad_row_does_not_block_others(self, monkeypatch: pytest.MonkeyPatch) -> None:
         bad = _row("thanks", ts="1.0")
         good = _row("ok", ts="2.0")
+        PendingChatInjection.objects.filter(pk=good.pk).update(received_at=bad.received_at + timedelta(minutes=2))
         backend = RecordingBackend()
 
         # Make the first row's react raise, the rest must still process.

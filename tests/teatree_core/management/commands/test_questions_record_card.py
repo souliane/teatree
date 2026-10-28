@@ -3,12 +3,14 @@
 
 import io
 import json
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard, plain_text, word_count
+from teatree.core.models import Session, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.question_text import options_digest
 from tests._owner_channel import assert_a_plain_card
@@ -74,6 +76,16 @@ class TestAJargonQuestionIsRefused(TestCase):
 
 
 class TestACompleteCardIsRecorded(TestCase):
+    def test_record_attaches_latest_session_of_invoking_ticket(self) -> None:
+        ticket = Ticket.objects.create(short_description="Question subject")
+        Session.objects.create(ticket=ticket)
+        latest = Session.objects.create(ticket=ticket)
+        with patch("teatree.core.management.commands.questions.resolve_invoking_ticket", return_value=ticket):
+            code, _out, _err = _record("Can I rotate the deploy token?", *_complete())
+
+        assert code == 0
+        assert DeferredQuestion.objects.get().task_session_id == latest.pk
+
     def test_the_card_is_stored_and_reads_plainly(self) -> None:
         code, out, _err = _record("Can I rotate the deploy token?", *_complete())
 

@@ -7,16 +7,8 @@ question is *captured*, never silently dropped — exactly the §17.1
 invariant 9 guarantee — and the user later answers it via
 ``t3 teatree questions list|answer|dismiss``.
 
-This model mirrors the ``OnBehalfApproval`` shape (#960, mirrored from
-#953 ``DbApproval`` and §17.4 ``MergeClear``):
-
-* guarded factory :meth:`DeferredQuestion.record` is the only path that
-    writes a row, and it refuses empty payloads (no silent drop);
-* :meth:`consume` atomically claims and stamps ``answered_at``/
-    ``dismissed_at`` so the same row can never be answered twice;
-* :class:`DeferredQuestionAudit` is the post-answer audit row — who
-    answered, what they answered, when — matching the
-    ``MergeAudit``/``OnBehalfAudit``/``DbAudit`` family.
+Like ``OnBehalfApproval``, a guarded factory records the row, atomic
+consumption resolves it once, and an audit row records the answer.
 
 Unlike ``OnBehalfApproval`` (which records a *prior* approval the gate
 *consumes*), a ``DeferredQuestion`` is a *queued question* the user
@@ -30,16 +22,18 @@ from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import DatabaseError, models, transaction
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone
 
 from teatree import answer_handback
-from teatree.core.modelkit.owner_action import action_marker, is_owner_action_marker
+from teatree.core.modelkit.notify_policy import CHECKOUT_ATTEST_HOLD
+from teatree.core.modelkit.owner_action import OwnerActionKind, action_marker, is_owner_action_marker
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.question_actions import DeferredQuestionAuditQuerySet, DeferredQuestionQuerySet, held_question
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import options_digest
 from teatree.core.models.question_withheld import carried_wait
+from teatree.core.models.ticket_dm_thread import TicketDmPost
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
 if TYPE_CHECKING:
@@ -262,14 +256,18 @@ class DeferredQuestion(models.Model):
 
     @classmethod
     def unmirrored_pending(cls) -> models.QuerySet["DeferredQuestion"]:
-        """Pending rows with no Slack mirror yet, oldest first.
+        """Owner questions ready for their first Slack mirror, oldest first."""
+        return cls.outside_attest_hold().filter(slack_ts="")
 
-        The headless lane and ``task_repair._escalate_stall`` record a row
-        with an empty ``slack_ts``; the tick-level poster drains exactly these
-        so a reply can later bind. A row already mirrored (``slack_ts != ""``)
-        or resolved is excluded.
-        """
-        return cls.owner_pending().filter(slack_ts="")
+    @classmethod
+    def outside_attest_hold(cls) -> models.QuerySet["DeferredQuestion"]:
+        """Owner questions visible to drains after the checkout card's hold."""
+        return cls.owner_pending().filter(
+            Q(slack_ts__gt="")
+            | Q(evidence__action__kind__isnull=True)
+            | ~Q(evidence__action__kind=OwnerActionKind.ATTEST)
+            | Q(created_at__lte=timezone.now() - CHECKOUT_ATTEST_HOLD)
+        )
 
     @classmethod
     def supersedable(
@@ -376,7 +374,12 @@ class DeferredQuestion(models.Model):
         """
         if not channel or not after_ts:
             return None
-        candidates = list(cls._reply_candidates(channel=channel, after_ts=after_ts)[:2])
+        nested_question_ids = TicketDmPost.objects.filter(channel=channel, question_id__isnull=False).values_list(
+            "question_id", flat=True
+        )
+        candidates = list(
+            cls._reply_candidates(channel=channel, after_ts=after_ts).exclude(pk__in=nested_question_ids)[:2]
+        )
         return candidates[0] if len(candidates) == 1 else None
 
     def mark_stale(self, reason: str, *, resolver_id: str = "") -> None:

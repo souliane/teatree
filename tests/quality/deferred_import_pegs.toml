@@ -75,7 +75,7 @@
 "src/teatree/core/gates/dod_gate.py" = 2
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3
 "src/teatree/core/gates/fix_dod_gate.py" = 1
-"src/teatree/core/gates/live_post_gate.py" = 1
+"src/teatree/core/gates/live_post_gate.py" = 2
 "src/teatree/core/gates/local_stack_gate.py" = 4
 # 2: the owner-ratification citation check needs `PlanArtifact` (an ORM read) and
 # `reviewer_identity.is_non_reviewer_role` (imports the model module), both of which
@@ -119,9 +119,9 @@
 "src/teatree/core/management/commands/loop_dispatch.py" = 3
 "src/teatree/core/management/commands/loop_drain_queue.py" = 1
 "src/teatree/core/management/commands/loop_owner.py" = 4
-# 3: owner-alert egress and active-overlay discovery stay call-time, so command
+# 2: the lease model and active-overlay discovery stay call-time, so command
 # import does not register credential/default providers before Django is ready.
-"src/teatree/core/management/commands/loop_self_improve.py" = 3
+"src/teatree/core/management/commands/loop_self_improve.py" = 2
 "src/teatree/core/management/commands/loop_slack_answer.py" = 1
 # 1: `discharge-pending` resolves `PendingPullRequest` at call time for the same
 # app-registry reason as the rest of this command's ORM reads.

@@ -1,0 +1,220 @@
+import ipaddress
+import re
+from collections.abc import Callable
+from datetime import timedelta
+from math import ceil
+from secrets import token_hex
+from time import sleep
+from typing import Self, TypedDict
+from urllib.parse import urlsplit
+
+from django.utils import timezone
+
+from teatree.backends.github.repository_webhooks import RepositoryHook, RepositoryWebhooks, hook_body
+from teatree.core.intake.github_payload import HOOK_EVENTS
+from teatree.core.models import IncomingEvent
+from teatree.core.views._webhook_secrets import REFRESH_WINDOW_SECONDS, STORE_PREFIX
+from teatree.utils.run import TimeoutExpired
+from teatree.utils.secrets import (
+    SecretStoreError,
+    pass_entry_names,
+    read_pass,
+    remove_pass,
+    write_pass,
+    write_pass_with_backup,
+)
+
+_REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+
+
+class WebhookConnectError(RuntimeError):
+    @classmethod
+    def invalid_repo(cls) -> Self:
+        return cls("--repo must be an owner/name repository slug")
+
+    @classmethod
+    def invalid_url(cls) -> Self:
+        return cls("--url must be a public HTTPS URL ending in /hooks/github/ without credentials or query")
+
+    @classmethod
+    def missing_ping(cls) -> Self:
+        return cls(
+            "no ping delivery stored; check that the public URL reaches this listener with valid TLS "
+            "and this command shares the listener's control DB"
+        )
+
+    @classmethod
+    def hook_still_present(cls) -> Self:
+        return cls("GitHub hook still appears after delete")
+
+    @classmethod
+    def store_not_restored(cls, key: str, backup_key: str, reason: str, cause: str) -> Self:
+        kept = f" The previous secret is still in {backup_key}." if backup_key else ""
+        return cls(
+            f"GitHub hook write failed: {cause}\n"
+            f"The secret store could not restore {key} ({reason}).{kept} "
+            "Fix the secret store, then rerun with --replace-secret."
+        )
+
+
+class ConnectResult(TypedDict):
+    repo: str
+    hook_id: int
+    status: str
+    ping_verified: bool
+
+
+def failure_text(error: BaseException, *, connecting: bool = True) -> str:
+    if not isinstance(error, TimeoutExpired):
+        return str(error) or type(error).__name__
+    text = f"GitHub webhook request timed out after {error.timeout} seconds"
+    if connecting:
+        text += "; the hook may have been updated, and rerunning with --replace-secret repairs it if pings fail"
+    return text
+
+
+def webhook_target(repo_id: int) -> str:
+    return f"repository-{repo_id}"
+
+
+def secret_key(repo_id: int) -> str:
+    return f"{STORE_PREFIX}/{webhook_target(repo_id)}"
+
+
+def validate_target(repo: str, url: str) -> None:
+    if not _REPO.fullmatch(repo) or ".." in repo:
+        raise WebhookConnectError.invalid_repo()
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname or ""
+        port = parsed.port
+    except ValueError as exc:
+        raise WebhookConnectError.invalid_url() from exc
+    scheme_and_path_valid = parsed.scheme == "https" and parsed.path == "/hooks/github/"
+    authority_valid = bool(hostname) and parsed.username is None and parsed.password is None
+    hostname_valid = hostname != "localhost" and not hostname.endswith((".localhost", ".local", ".internal"))
+    if (
+        not (scheme_and_path_valid and authority_valid and hostname_valid)
+        or parsed.query
+        or parsed.fragment
+        or port == 0
+    ):
+        raise WebhookConnectError.invalid_url()
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        if "." not in hostname:
+            message = "--url must have a public DNS hostname"
+            raise WebhookConnectError(message) from None
+    else:
+        if not address.is_global:
+            message = "--url must be a public HTTPS URL with a public IP address"
+            raise WebhookConnectError(message)
+
+
+class WebhookConnection:
+    def __init__(self, repo: str, url: str, token: str, *, echo: Callable[[str], object]) -> None:
+        self.repo = repo
+        self.url = url
+        self.webhooks = RepositoryWebhooks(repo, token)
+        self.echo = echo
+
+    def _verify_hook(self, hook: RepositoryHook) -> None:
+        if not self.webhooks.get(hook.id).satisfies(self.url, HOOK_EVENTS):
+            message = "GitHub hook did not match after write"
+            raise WebhookConnectError(message)
+
+    def _restore_store(self, key: str, previous: str, *, existed: bool, backup_key: str, cause: BaseException) -> None:
+        reason = "the store reported failure"
+        try:
+            restored = write_pass(key, previous) if existed else remove_pass(key)
+        except SecretStoreError as exc:
+            restored, reason = False, str(exc)
+        if not restored:
+            raise WebhookConnectError.store_not_restored(key, backup_key, reason, failure_text(cause)) from cause
+        if backup_key:
+            self._discard_backup(backup_key)
+
+    def _discard_backup(self, backup_key: str) -> None:
+        try:
+            removed = remove_pass(backup_key)
+        except SecretStoreError:
+            removed = False
+        if not removed:
+            self.echo(f"The backup {backup_key} could not be removed; it holds the restored secret and can be deleted.")
+
+    def _write_hook(
+        self, repo_id: int, hook: RepositoryHook | None, *, replace_secret: bool
+    ) -> tuple[RepositoryHook, str]:
+        key = secret_key(repo_id)
+        stored = read_pass(key)
+        parent, _, name = key.rpartition("/")
+        secret_existed = bool(stored) or name in pass_entry_names(parent)
+        secret = stored
+        backup_key = ""
+        backup_messages: list[str] = []
+        secret_written = not secret or replace_secret
+        if secret_written:
+            secret = token_hex(32)
+            backup_key = write_pass_with_backup(key, secret, echo=backup_messages.append)
+        try:
+            if hook is None:
+                hook = self.webhooks.create(hook_body(self.url, HOOK_EVENTS, secret))
+                status = "created"
+            elif secret != stored or not hook.satisfies(self.url, HOOK_EVENTS):
+                self.webhooks.update(hook.id, hook_body(self.url, HOOK_EVENTS, secret))
+                status = "updated"
+            else:
+                status = "unchanged"
+            if status != "unchanged":
+                self._verify_hook(hook)
+        except BaseException as error:
+            if secret_written:
+                self._restore_store(key, stored, existed=secret_existed, backup_key=backup_key, cause=error)
+            raise
+        for message in backup_messages:
+            self.echo(message)
+        return hook, status
+
+    def connect(self, *, replace_secret: bool) -> ConnectResult:
+        repo_id = self.webhooks.repository_id()
+        hook, status = self._write_hook(repo_id, self.webhooks.find(self.url), replace_secret=replace_secret)
+        repo_key = f"github:{repo_id}"
+        started = timezone.now()
+        polls_per_ping = 15
+        attempts = ceil(REFRESH_WINDOW_SECONDS / polls_per_ping) + 1
+        for attempt in range(attempts):
+            self.echo(f"Checking GitHub ping delivery ({attempt + 1}/{attempts})")
+            self.webhooks.ping(hook.id)
+            for _ in range(polls_per_ping):
+                elapsed = timezone.now() - started
+                if (
+                    IncomingEvent.objects.webhooks_verified_for(
+                        "github", repo_key, "ping", elapsed + timedelta(seconds=1)
+                    )
+                    and IncomingEvent.objects.filter(
+                        source="github",
+                        repo_key=repo_key,
+                        event_name="ping",
+                        origin="webhook",
+                        signer=webhook_target(repo_id),
+                        received_at__gte=started,
+                    ).exists()
+                ):
+                    return ConnectResult(repo=self.repo, hook_id=hook.id, status=status, ping_verified=True)
+                sleep(1)
+        raise WebhookConnectError.missing_ping()
+
+    def disconnect(self) -> ConnectResult:
+        repo_id = self.webhooks.repository_id()
+        hook = self.webhooks.find(self.url)
+        if hook is None:
+            return ConnectResult(repo=self.repo, hook_id=0, status="absent", ping_verified=False)
+        self.webhooks.delete(hook.id)
+        if self.webhooks.find(self.url) is not None:
+            raise WebhookConnectError.hook_still_present()
+        key = secret_key(repo_id)
+        if read_pass(key) and not remove_pass(key):
+            message = f"GitHub hook removed, but secret {key} could not be removed"
+            raise WebhookConnectError(message)
+        return ConnectResult(repo=self.repo, hook_id=hook.id, status="disconnected", ping_verified=False)

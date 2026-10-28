@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from teatree.backends.gitlab.inline_position import fetch_diff_refs
+from teatree.cli.review.on_behalf import LivePostBlockedResult
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabAPI
@@ -61,6 +62,8 @@ def publish_live_post(
     """
     from django.db import transaction  # noqa: PLC0415 — deferred: keeps CLI startup light
 
+    from teatree.cli.review.audit import gitlab_mr_url  # noqa: PLC0415 — lazy refusal link
+    from teatree.cli.review.forge_target import resolve_base_url  # noqa: PLC0415 — lazy refusal link
     from teatree.core.gates.live_post_gate import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         LivePostBlockedError,
         require_live_post_approval,
@@ -69,9 +72,12 @@ def publish_live_post(
     with transaction.atomic():
         if token_required:
             try:
-                require_live_post_approval(mr_url=f"{repo}!{mr}")
+                require_live_post_approval(
+                    mr_url=f"{repo}!{mr}",
+                    review_url_supplier=lambda: gitlab_mr_url(resolve_base_url(repo), repo, mr),
+                )
             except LivePostBlockedError as blocked:
-                return str(blocked), 1
+                return LivePostBlockedResult(str(blocked), 1)
         result = publish()
         if result[1]:
             transaction.set_rollback(True)

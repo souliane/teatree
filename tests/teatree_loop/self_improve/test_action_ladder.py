@@ -29,6 +29,7 @@ from teatree.loop.self_improve.detectors import (
     DispatchGapDetector,
     ForgottenMergeDetector,
     LifecycleIncidentDetector,
+    LoopHealthDetector,
     PressureIncidentDetector,
     SkillAssuranceGapDetector,
     StaleStatuslineEntryDetector,
@@ -47,6 +48,7 @@ def _report(  # noqa: PLR0913  # test helper: each kwarg maps 1:1 to a DetectorR
     max_rung: str = ActionRung.TICKET,
     auto_fix: bool = False,
     requested_rung: str = ActionRung.STATUSLINE,
+    kind: str = "",
 ) -> DetectorReport:
     return DetectorReport(
         detector=detector,
@@ -55,7 +57,7 @@ def _report(  # noqa: PLR0913  # test helper: each kwarg maps 1:1 to a DetectorR
         severity=severity,
         max_rung=max_rung,
         summary="test report",
-        payload={"slack_channel": "C123"},
+        payload={"slack_channel": "C123", "kind": kind},
         auto_fix=auto_fix,
         requested_rung=requested_rung,
     )
@@ -73,6 +75,7 @@ class ActionLadderStructuralTests(TestCase):
             DispatchGapDetector.__name__: False,
             ForgottenMergeDetector.__name__: False,
             LifecycleIncidentDetector.__name__: False,
+            LoopHealthDetector.__name__: False,
             PressureIncidentDetector.__name__: False,
             SkillAssuranceGapDetector.__name__: False,
             StaleStatuslineEntryDetector.__name__: True,
@@ -146,9 +149,9 @@ class ActionLadderBehaviourTests(TestCase):
         messaging.post_message.return_value = {"ok": True, "ts": "100.1"}
         result = run_action_ladder(second, messaging=messaging)
         assert result is not None
-        # statusline → slack is the escalation when ceiling allows it.
-        assert result.rung == ActionRung.SLACK
-        messaging.post_message.assert_called_once()
+        assert result.rung == ActionRung.TICKET
+        assert result.firing.ticket_id is not None
+        messaging.post_message.assert_not_called()
 
     def test_ceiling_caps_escalation(self) -> None:
         """A statusline-ceiling detector cannot escalate past statusline."""
@@ -167,9 +170,9 @@ class ActionLadderBehaviourTests(TestCase):
         seed = _report(detector="forgotten_merge", dedup_key="forgotten_merge::pr1")
         record_firing(seed, action=ActionRung.SLACK)
         # Now try to escalate a different detector to slack.
-        first = _report(detector="other", dedup_key="other::1", state_hash_value="h1")
+        first = _report(detector="other", dedup_key="other::1", state_hash_value="h1", kind="ram_probe_inert")
         run_action_ladder(first)
-        second = _report(detector="other", dedup_key="other::1", state_hash_value="h2")
+        second = _report(detector="other", dedup_key="other::1", state_hash_value="h2", kind="ram_probe_inert")
         messaging = MagicMock()
         result = run_action_ladder(second, messaging=messaging)
         assert result is not None
@@ -179,11 +182,8 @@ class ActionLadderBehaviourTests(TestCase):
 
     def test_auto_fix_only_runs_when_detector_opted_in(self) -> None:
         """Even at AUTO_FIX rung, a non-whitelisted detector falls back to statusline."""
-        # Walk the ladder to the AUTO_FIX rung for a non-whitelisted report.
-        report = _report(max_rung=ActionRung.AUTO_FIX, auto_fix=False, state_hash_value="h1")
-        run_action_ladder(report)  # statusline
-        run_action_ladder(_report(max_rung=ActionRung.AUTO_FIX, auto_fix=False, state_hash_value="h2"))  # slack
-        run_action_ladder(_report(max_rung=ActionRung.AUTO_FIX, auto_fix=False, state_hash_value="h3"))  # ticket
+        report = _report(max_rung=ActionRung.AUTO_FIX, auto_fix=False, state_hash_value="h3")
+        record_firing(report, action=ActionRung.TICKET)
         callable_ = MagicMock()
         result = run_action_ladder(
             _report(max_rung=ActionRung.AUTO_FIX, auto_fix=False, state_hash_value="h4"),
@@ -433,10 +433,10 @@ class ActionLadderBehaviourTests(TestCase):
             repeated = run_action_ladder(report, owner_alert=_deliver_owner_alert, overlay_name="t3-teatree")
 
         assert first is not None
-        assert first.rung == ActionRung.STATUSLINE
+        assert first.rung == ActionRung.TICKET
         assert repeated is None
-        assert SelfImproveFiring.objects.get().last_action == ActionRung.STATUSLINE
-        assert BotPing.objects.filter(status=BotPing.Status.PULLED).count() == 1
+        assert SelfImproveFiring.objects.get().last_action == ActionRung.TICKET
+        assert BotPing.objects.filter(status=BotPing.Status.PULLED).count() == 0
         assert BotPing.objects.filter(status=BotPing.Status.SENT).count() == 0
 
     def test_critical_alerts_reach_owner_through_real_push_policy(self) -> None:

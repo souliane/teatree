@@ -2,6 +2,7 @@
 
 import os
 import re
+import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -343,7 +344,11 @@ def _exposure_refusal(probe: _Probe, read_only: set[str]) -> str | None:
         if scan.owner == probe.uid:
             return f"it runs as uid {probe.uid}, which owns {target}"
         if scan.secrets:
-            return f"it can read {scan.secrets[0]}, a secret file under {target}"
+            secret = scan.secrets[0]
+            return (
+                f"it can read {secret}, a secret file under {target}; "
+                f"fix: chmod o-rwx {shlex.quote(secret)} in the worker, or move it out of {target}"
+            )
     return None
 
 

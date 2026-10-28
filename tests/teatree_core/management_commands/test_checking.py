@@ -10,6 +10,7 @@ tests never touch the real DATA_DIR.
 
 import json
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from datetime import datetime, timedelta
 from io import StringIO
 from pathlib import Path
@@ -26,13 +27,18 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.checking import gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import BotPing, DeferredQuestion, Session, Task, TaskAttempt
+from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.models import BotPing, Session, Task, TaskAttempt, WaitingItem
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.notify import notify_user
 from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
+from teatree.core.review.owner_waits import ask_owner_to_read
+from tests._owner_channel import owner_card
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -237,8 +243,41 @@ class TestCheckingShow:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay", "--json")
         payload = json.loads(out)
-        assert set(payload) == {"since", "merged", "in_flight", "needs_you", "metered", "remaining", "terse"}
+        assert set(payload) == {
+            "since",
+            "merged",
+            "in_flight",
+            "needs_you",
+            "metered",
+            "internal_escalations",
+            "remaining",
+            "terse",
+        }
         assert payload["merged"]["items"][0]["label"] == "acme/widgets#7"
+
+    def test_json_separates_owner_waits_from_internal_escalations(self, checkpoint_file: Path) -> None:
+        owner = DeferredQuestion.record(
+            "May I publish this?", card=replace(owner_card(), subject="https://github.com/acme/widgets/pull/8")
+        )
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--json", "--no-advance"))
+
+        assert payload["needs_you"]["total"] == 1
+        assert payload["needs_you"]["items"][0]["row_id"] == owner.pk
+        assert payload["needs_you"]["items"][0]["url"] == "https://github.com/acme/widgets/pull/8"
+        assert payload["internal_escalations"] == 1
+        assert payload["terse"].splitlines()[-1] == "1 internal escalations: factory work, not questions"
+
+    def test_owner_only_question_does_not_offer_agent_dismissal(self, checkpoint_file: Path) -> None:
+        DeferredQuestion.record("May I publish this?", card=owner_card(OwnerDecision.PUBLIC_POST))
+
+        payload = json.loads(_call("checking", "show", "--this-overlay", "--json", "--no-advance"))
+
+        item = payload["needs_you"]["items"][0]
+        assert item["owner_only"] is True
+        assert "questions dismiss" not in item["detail"]
+        assert "Slack" in item["detail"]
 
     def test_overlay_scoping_excludes_other_overlay(
         self, checkpoint_file: Path, monkeypatch: pytest.MonkeyPatch
@@ -1194,6 +1233,57 @@ class TestCheckingNotify:
         assert "```" in row.text
         assert "acme/widgets#7" in row.text
 
+    def test_owner_cards_keep_distinct_subjects_in_native_recap_rows(self, checkpoint_file: Path) -> None:
+        subjects = [f"https://github.com/acme/widgets/pull/{number}" for number in (8, 9)]
+        for number, subject in zip((8, 9), subjects, strict=True):
+            assert ask_owner_to_read(subject, f"review {number}", f"{number:040x}") is not None
+
+        with patch("teatree.core.management.commands.checking.notify_user", wraps=notify_user) as send:
+            _call("checking", "show", "--this-overlay", "--notify", "--no-advance")
+
+        blocks = send.call_args.kwargs["blocks"]
+        for subject in subjects:
+            assert subject in str(blocks)
+        links = {
+            cell["elements"][0]["elements"][0].get("url")
+            for block in blocks
+            if block["type"] == "table"
+            for row in block["rows"][1:]
+            for cell in row
+        }
+        assert set(subjects) <= links
+
+    def test_owner_question_without_subject_url_keeps_its_text_in_recap(self, checkpoint_file: Path) -> None:
+        DeferredQuestion.record("May I publish this?", card=owner_card(OwnerDecision.PUBLIC_POST))
+
+        with patch("teatree.core.management.commands.checking.notify_user", wraps=notify_user) as send:
+            _call("checking", "show", "--this-overlay", "--notify", "--no-advance")
+
+        blocks = send.call_args.kwargs["blocks"]
+        assert "May I publish this?" in str(blocks)
+        assert "May I publish this?" in send.call_args.args[0]
+
+    def test_internal_escalation_count_reaches_the_native_blocks_beside_owner_waits(
+        self, checkpoint_file: Path
+    ) -> None:
+        assert ask_owner_to_read("https://github.com/acme/widgets/pull/8", "review 8", "8" * 40) is not None
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+
+        with patch("teatree.core.management.commands.checking.notify_user", wraps=notify_user) as send:
+            _call("checking", "show", "--this-overlay", "--notify", "--no-advance")
+
+        assert "1 internal escalations" in str(send.call_args.kwargs["blocks"])
+
+    def test_internal_only_report_is_visible_in_human_view_and_recap(self, checkpoint_file: Path) -> None:
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+
+        out = _call("checking", "show", "--this-overlay", "--notify", "--no-advance")
+
+        assert "1 internal escalations" in out
+        assert "Nothing since" not in out
+        row = BotPing.objects.get(idempotency_key__startswith="checking_recap:acme:")
+        assert "1 internal escalations" in row.text
+
     def test_a_metered_attempt_reaches_the_table_and_the_recap(self, checkpoint_file: Path) -> None:
         ticket = Ticket.objects.create(
             overlay="acme",
@@ -1247,6 +1337,34 @@ class TestCheckingNotify:
             _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
         backend.post_message.assert_not_called()
         assert BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:").count() == 1
+
+    @pytest.mark.parametrize("aged", [timedelta(minutes=5), timedelta(hours=5), timedelta(days=2)])
+    def test_wait_age_does_not_reissue_unchanged_recap(self, checkpoint_file: Path, aged: timedelta) -> None:
+        wait = WaitingItem.objects.add("Read the pending review")
+        _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+        WaitingItem.objects.filter(pk=wait.pk).update(created_at=timezone.now() - aged)
+
+        _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+
+        assert BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:").count() == 1
+
+    def test_changed_in_flight_state_reissues_recap(self, checkpoint_file: Path) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/acme/widgets/issues/42",
+            short_description="A change in progress",
+        )
+        TicketTransition.objects.create(
+            ticket=ticket, from_state=Ticket.State.WORK_STARTED, to_state=Ticket.State.CODED
+        )
+        _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+
+        TicketTransition.objects.create(ticket=ticket, from_state=Ticket.State.CODED, to_state=Ticket.State.TESTED)
+        _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+
+        rows = list(BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:"))
+        assert len(rows) == 2
+        assert all(detail in "\n".join(row.text for row in rows) for detail in ("→ coded", "→ tested"))
 
 
 class TestCheckingShowAllOverlays:

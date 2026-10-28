@@ -29,7 +29,7 @@ ATTEST_MARKER_PREFIX = f"{MARKER_PREFIX}{OwnerActionKind.ATTEST}:"
 
 def action_marker(action: ActionRequest) -> str:
     parts = [action["kind"], action["target"], action["binding"]]
-    if "host_evidence" in action:
+    if "host_evidence" in action and action["kind"] != OwnerActionKind.ATTEST:
         parts.append(f"host_evidence:{action['host_evidence']}")
     if "task_id" in action:
         parts.append(f"task:{action['task_id']}")

@@ -2,18 +2,39 @@
 
 from typing import TypedDict
 
+from teatree.core.modelkit import question_card
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import OptionDict
+from teatree.core.modelkit.task_failure_taxonomy import OWNER_STOP_REFUSAL_PREFIX
 
 type JSONSchema = dict[str, object]
 
 #: What a refusal tells an agent about the card an owner stop must carry.
 OWNER_STOP_SHAPE = (
     "Stop for the owner with `user_input_reason` (ONE question ending in `?`), `user_input_kind`, `user_input_checked` "
-    '(1-4 facts) and `user_input_card` {"why": "<one sentence>", "blocker": "<what stops you>", "options": '
-    '[{"label", "description", "recommended": true}]} (2-4 options, the recommended one first, or none); '
-    "at most 120 words in all, plain English, no ids or code."
+    'and `user_input_card` {"why": "<one sentence>", "blocker": "<what stops you>", "options": '
+    '[{"label", "description", "recommended": true}]}.'
 )
+
+
+def owner_stop_limits_lines() -> tuple[str, ...]:
+    return (
+        (
+            f"Card: 1-{question_card.MAX_CHECKED_FACTS} facts; question max {question_card.MAX_QUESTION_CHARS} chars; "
+            f"why/blocker/facts one sentence each, max {question_card.MAX_SENTENCE_CHARS} chars, one line; "
+            f"max {question_card.MAX_WORDS} words total."
+        ),
+        (
+            f"Options: 0 or {question_card.MIN_OPTIONS}-{question_card.MAX_OPTIONS}; "
+            f"labels unique/nonblank, max {question_card.MAX_LABEL_CHARS} chars; "
+            f"consequences max {question_card.MAX_CONSEQUENCE_CHARS} chars; exactly one recommended first; "
+            "plain English: no IDs, paths, flags or code names."
+        ),
+    )
+
+
+def owner_stop_refusal(reason: str) -> str:
+    return f"{OWNER_STOP_REFUSAL_PREFIX}{reason}. {OWNER_STOP_SHAPE} {' '.join(owner_stop_limits_lines())}"
 
 
 class OwnerCard(TypedDict, total=False):

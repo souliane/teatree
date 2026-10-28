@@ -34,6 +34,7 @@ from django.utils import timezone
 
 from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha
 from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, unrecognised_reviewer_message
+from teatree.core.models.rubric_phase_criteria import PHASE_CRITERIA, withheld_by_deployment
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.types import RubricGrade
 from teatree.quality.falsifiable_criteria import falsifiability_violation
@@ -42,26 +43,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from django.db.models import QuerySet
-
-
-#: The probe-first standard, one gradeable criterion per phase that has one.
-#:
-#: ``core.Rubric`` shipped with a CLI, a manager, a done-gate and an error type, and zero
-#: rows — a checklist nobody writes is one nobody grades, so the gate over it could only ever
-#: be armed against an empty table. These are the content it lacked: the standard the factory
-#: has to hold itself to WITHOUT the owner in the loop, stated so a verifier can fail it.
-#:
-#: Each is positive by construction — it names something that must be PRESENT — because a
-#: criterion satisfied by inaction certifies nothing, which is what
-#: :func:`~teatree.quality.falsifiable_criteria.falsifiability_violation` refuses at
-#: population and what a seeded criterion must never be.
-PHASE_CRITERIA: dict[str, str] = {
-    "planning": "the plan cites at least one measurement of the LIVE system, with its venue named",
-    "design": "each claim about existing behaviour names the consumer that was read, not prose inferred from it",
-    "investigation": "every empty result is paired with a control proving the probe would have found something",
-    "fix": "a RED pin exists and was observed failing before the fix",
-    "coding": "changed behaviour is asserted by a test that fails without the change",
-}
 
 
 class RubricError(ValueError):
@@ -166,6 +147,9 @@ class Rubric(models.Model):
         (:func:`~teatree.quality.falsifiable_criteria.falsifiability_violation`), judged
         on the criteria being ADDED: an unfalsifiable set certifies nothing whether it
         arrives through the operator seam or the plan.
+
+        A text the ticket's owner waived (``rubric_waivers``) is skipped, so a waived
+        criterion is never re-added by a later seed.
         """
         cleaned = [text.strip() for text in criteria if text.strip()]
         if not cleaned:
@@ -177,7 +161,7 @@ class Rubric(models.Model):
             rubric, _ = cls.objects.get_or_create(ticket=ticket)
             existing = set(rubric.criteria.values_list("text", flat=True))
             extra = Ticket.objects.get(pk=ticket.pk).extra or {}
-            waivers = [entry for entry in extra.get("rubric_waivers", []) if isinstance(entry, dict)]
+            waivers = [entry for entry in extra.get("rubric_waivers") or [] if isinstance(entry, dict)]
             waived = {entry.get("text_hash") for entry in waivers}
             spent = [*rubric.criteria.values_list("ordinal", flat=True)]
             spent += [entry["ordinal"] for entry in waivers if isinstance(entry.get("ordinal"), int)]
@@ -192,14 +176,14 @@ class Rubric(models.Model):
 
     @classmethod
     def seed_phase_criterion(cls, ticket: Ticket, phase: str) -> "Rubric | None":
-        """ADD *phase*'s standing criterion to *ticket*'s rubric; ``None`` when it has none."""
+        """ADD *phase*'s standing criterion; ``None`` when it has none or the deployment withholds it."""
         text = PHASE_CRITERIA.get(phase)
-        if text is None:
+        if text is None or withheld_by_deployment(ticket, text):
             return None
         return cls.add_criteria(ticket, [text])
 
     @staticmethod
-    def carry_grades(ticket: Ticket, *, from_head: str, to_head: str) -> int:
+    def carry_grades(ticket: Ticket, *, from_head: str, to_head: str, only: set[str] | None = None) -> int:
         """Re-record the grades bound to *from_head* at *to_head*, keeping every grader and rationale.
 
         A criterion already graded at *to_head* keeps its own grade; the count is the grades added.
@@ -212,7 +196,7 @@ class Rubric(models.Model):
         at_target = by_head.get(target) or {}
         if not isinstance(carried, dict) or not isinstance(at_target, dict):
             return 0
-        added = {key: grade for key, grade in carried.items() if key not in at_target}
+        added = {key: grade for key, grade in carried.items() if key not in at_target and (only is None or key in only)}
         if added:
             ticket.merge_extra(merge_into_dicts={"rubric_grades_by_head": {target: {**at_target, **added}}})
         return len(added)
@@ -309,9 +293,8 @@ class Rubric(models.Model):
         NAMES the criteria that failed it, so the remediation points at what to fix
         rather than at a count.
 
-        *waived* is the human-authorized plan-bypass, and it keeps exactly one rung: a
-        recorded FAIL. A bypass says "there was nothing to declare"; it cannot say "the
-        verifier's FAIL does not count".
+        *waived* applies to a human-authorized plan bypass or an owner-merged
+        delivery; it keeps exactly one rung, a recorded FAIL.
         """
         criteria = list(self.criteria.all())
         if head_sha is not None and not waived:

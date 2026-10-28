@@ -7,11 +7,11 @@ Mechanics for [`../SKILL.md`](../SKILL.md) § 4a1.
 The no-orphan pre-push hook runs `t3 <overlay> pr ensure-pr` with no ticket handle, and `teatree.loop.scanners.pending_pr.PendingPrDrainScanner` re-runs the same path for a deferred first push. Both resolve the owning ticket through `teatree.core.management.commands._ensure_pr._ticket_for_branch` alone, which asks `teatree.core.worktree.branch_owner.ticket_owning_pr_branch` for the one live author ticket whose `Worktree` row sits on the branch in the pushed repo. A checkout made by a bare `git worktree add` has no row, so the PR opens and nothing records it:
 
 - No `PullRequest` row is written, so `mcp__teatree__pr_for_ticket` is empty.
-- `teatree.core.models.ticket_introspection.TicketIntrospectionModel.has_shippable_diff` finds no worktree with commits ahead. The review step sets `shipping_skipped` ("no shippable diff") and the ticket is auto-ignored.
+- `teatree.core.models.ticket_introspection.TicketIntrospectionModel.has_shippable_diff` finds no worktree with commits ahead. The review step records a shipping hold; the settlement sweep keeps a rowless ticket held while it checks the workspace and forge.
 - `teatree.core.merge.ticket_resolution.resolve_gated_ticket` finds no ledger row and no `MergeClear`, so the reviewer's brief carries no rubric and the rubric done-gate never binds the merge.
 - The hook writes its placeholder body before any ticket is known, so it carries no `Tracks <issue>` line. Unless the commit message itself has a closing keyword, `src/teatree/loop/manual_pr_reconcile.py` cannot attach the PR through the body; it attaches it through the head branch (see Heal).
 
-That is how PR #4903 (issue #4900) merged with its ticket ignored and its rubric out of the merge gate's reach.
+PR #4903 (issue #4900) merged this way with its rubric out of the merge gate's reach.
 
 ## The Hook Runs the Installed `t3`
 

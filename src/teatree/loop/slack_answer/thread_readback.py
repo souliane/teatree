@@ -65,43 +65,59 @@ def bot_reply_present_in_thread(
     after_ts: str | None = None,
     expected_ts: str | ExpectedReply | None = None,
 ) -> bool:
-    """True iff a relevant bot reply is visible under *thread_root*.
+    return (
+        bot_reply_match_in_thread(
+            backend, channel=channel, thread_root=thread_root, after_ts=after_ts, expected_ts=expected_ts
+        )
+        is not None
+    )
+
+
+def bot_reply_match_in_thread(
+    backend: MessagingBackend,
+    *,
+    channel: str,
+    thread_root: str,
+    after_ts: str | None = None,
+    expected_ts: str | ExpectedReply | None = None,
+) -> str | None:
+    """The matching bot reply timestamp under *thread_root*, if confirmed.
 
     Reads the thread root's replies and tests each against the bot's own
     ``after_ts`` binds dedup to the current inbound turn; ``expected_ts``
     binds post-delivery verification to the exact reply Slack accepted. An
     older answer in the same thread must never acknowledge a new question.
     Conservative on uncertainty — invalid timestamps, unresolved identity,
-    empty reads, and read failures all report ``False``.
+    empty reads, and read failures all report ``None``.
     """
     floor = _timestamp(after_ts) if after_ts is not None else None
     expected_value = expected_ts.ts if isinstance(expected_ts, ExpectedReply) else expected_ts
     expected_text = expected_ts.text if isinstance(expected_ts, ExpectedReply) else None
     expected = _timestamp(expected_value) if expected_value is not None else None
     if (after_ts is not None and floor is None) or (expected_value is not None and expected is None):
-        return False
+        return None
     identity = resolve_own_identity(backend)
     if identity is None:
         logger.warning("Bot identity unresolved; cannot confirm reply under %s/%s", channel, thread_root)
-        return False
+        return None
     try:
         replies = backend.fetch_thread_replies(channel=channel, thread_ts=thread_root)
     except Exception as exc:  # noqa: BLE001 — a read raise must never break the cycle
         logger.warning("Thread read-back raised for %s/%s: %s", channel, thread_root, exc)
-        return False
+        return None
     for reply in replies:
         if not is_self_authored(reply, identity):
             continue
         if expected_text is not None and reply.get("text") != expected_text:
             continue
         if floor is None and expected is None:
-            return True
+            return str(reply.get("ts") or "")
         reply_time = _timestamp(reply.get("ts"))
         if reply_time is None or (floor is not None and reply_time <= floor):
             continue
         if expected is None or reply_time == expected:
-            return True
-    return False
+            return str(reply["ts"])
+    return None
 
 
-__all__ = ["bot_reply_present_in_thread", "resolve_thread_root"]
+__all__ = ["bot_reply_match_in_thread", "bot_reply_present_in_thread", "resolve_thread_root"]

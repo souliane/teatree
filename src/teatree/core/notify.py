@@ -30,8 +30,7 @@ branch on delivered-or-not. Both are no-op-safe and never raise into the CLI tur
 
 import logging
 import os
-
-from django.db import DatabaseError
+from collections.abc import Callable
 
 from teatree.core.backend_factory import OwnerMessagingTransport, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
@@ -178,13 +177,39 @@ def notify_user_outcome(
 
     payload_text = maybe_linkify(text) if options.linkify else text
 
-    channel, posted_ts, failure = _deliver_dm(
-        resolved_backend,
-        user_id=resolved_user_id,
-        text=format_notification(payload_text, kind_value),
-        blocks=options.blocks,
-        thread_ts=options.dm_thread,
+    outgoing_text = format_notification(payload_text, kind_value)
+    outgoing_blocks = options.blocks
+    if audience is NotifyAudience.OWNER_QUESTION:
+        outgoing_text, outgoing_blocks = _owner_question_payload(outgoing_text, outgoing_blocks, resolved_user_id)
+
+    from teatree.core.owner_dm.ticket_dm_delivery import (  # noqa: PLC0415 — deferred: load ticket routing on delivery
+        TicketDmRequest,
+        deliver_ticket_dm,
+        record_ticket_thread_post,
     )
+
+    if options.ticket_id is not None and not options.thread_ts:
+        channel, posted_ts, failure = deliver_ticket_dm(
+            TicketDmRequest(
+                backend=resolved_backend,
+                user_id=resolved_user_id,
+                text=outgoing_text,
+                blocks=outgoing_blocks,
+                ticket_id=options.ticket_id,
+                deliver=_deliver_dm,
+                post_root=_post_ticket_root,
+                question_id=options.question_id,
+                fallback_thread_ts=options.fallback_thread_ts,
+            )
+        )
+    else:
+        channel, posted_ts, failure = _deliver_dm(
+            resolved_backend,
+            user_id=resolved_user_id,
+            text=outgoing_text,
+            blocks=outgoing_blocks,
+            thread_ts=options.thread_ts,
+        )
     if failure:
         # Any non-delivery — empty channel from ``open_dm`` (Slack
         # ``conversations.open ok:false``), a transport exception, a
@@ -200,6 +225,8 @@ def notify_user_outcome(
         )
         finalize_failed(idempotency_key=idempotency_key, error=failure)
         return blocked(NotifyReason.DELIVERY_FAILED, error=failure)
+    if options.thread_ts:
+        record_ticket_thread_post(channel, options.thread_ts, posted_ts)
     # ``channel`` and ``posted_ts`` are both non-empty here — ``_deliver_dm``
     # only returns no failure when both are set, so no defensive re-check.
     try:
@@ -225,6 +252,27 @@ def notify_user_outcome(
         posted_ts=posted_ts,
     )
     return DELIVERED
+
+
+def _owner_question_payload(
+    text: str, blocks: list[RawAPIDict] | None, user_id: str
+) -> tuple[str, list[RawAPIDict] | None]:
+    mention = f"<@{user_id}>"
+    if mention not in text:
+        text = f"{mention} {text}"
+    if not blocks or mention in repr(blocks):
+        return text, blocks
+
+    first = blocks[0]
+    first_text = first.get("text")
+    if (
+        first.get("type") == "section"
+        and isinstance(first_text, dict)
+        and first_text.get("type") == "mrkdwn"
+        and isinstance(first_text.get("text"), str)
+    ):
+        return text, [{**first, "text": {**first_text, "text": f"{mention} {first_text['text']}"}}, *blocks[1:]]
+    return text, [{"type": "section", "text": {"type": "mrkdwn", "text": mention}}, *blocks]
 
 
 def resolve_owner_dm_backend() -> tuple[MessagingBackend | None, NotifyReason]:
@@ -302,14 +350,8 @@ def _preflight_result(
     return None
 
 
-def _active_dm_thread(channel: str) -> str:
-    from teatree.core.models import IncomingEvent  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-    try:
-        return IncomingEvent.objects.active_dm_thread(channel=channel)
-    except DatabaseError as exc:
-        logger.debug("active_dm_thread lookup failed for channel=%s: %s", channel, exc)
-        return ""
+def _post_ticket_root(backend: MessagingBackend, channel: str, text: str) -> RawAPIDict:
+    return backend.post_message(channel=channel, text=text, thread_ts="")
 
 
 def _deliver_dm(
@@ -318,15 +360,12 @@ def _deliver_dm(
     user_id: str,
     text: str,
     blocks: list[RawAPIDict] | None = None,
-    thread_ts: str | None = None,
+    thread_ts: str | Callable[[str], str] | None = None,
 ) -> tuple[str, str, str]:
     """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
 
-    ``thread_ts`` is :attr:`NotifyOptions.dm_thread`: a named thread to post into,
-    ``""`` for the DM root (skipping the active-DM-thread lookup), or ``None`` to
-    nest under whatever DM thread the owner is currently in. A caller stores the
-    returned ``ts`` as a reply-binding identity only when it posted at root — see
-    :class:`NotifyOptions`.
+    ``thread_ts`` names an explicit thread, or a callback that resolves a
+    ticket thread after the DM channel opens. Empty posts at the DM root.
 
     ``failure`` is ``""`` on a confirmed delivery (non-empty channel,
     ``ok:true`` response with a non-empty ``ts``). Otherwise it holds a
@@ -367,11 +406,17 @@ def _deliver_dm(
     suppressed = suppressed_egress_response(user_id, "owner_dm_post", EgressKind.POST)
     if suppressed is not None:
         return "dry-run", str(suppressed.get("ts") or "dry-run"), ""
+    channel = ""
     try:
         channel = backend.open_dm(user_id)
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
-        thread = _active_dm_thread(channel) if thread_ts is None else thread_ts
+        if isinstance(thread_ts, str):
+            thread = thread_ts
+        elif thread_ts is None:
+            thread = ""
+        else:
+            thread = thread_ts(channel)
         # Pass ``blocks`` only when a table is actually present — the common
         # text-only path stays a 3-arg call, so any backend (or test double)
         # that predates the ``blocks`` kwarg keeps working unchanged.
@@ -380,7 +425,7 @@ def _deliver_dm(
         else:
             response = backend.post_message(channel=channel, text=text, thread_ts=thread, blocks=blocks)
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
-        return "", "", str(exc)
+        return channel, "", str(exc)
 
     posted_ts = str(response.get("ts", "")) if isinstance(response, dict) else ""
     response_ok = bool(response.get("ok")) if isinstance(response, dict) else False

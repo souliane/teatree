@@ -140,6 +140,7 @@ SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
         "on_behalf_auto_actions",
         "send_proxy_allowlist",
         "trusted_issue_authors",
+        "user_identity_aliases",
         "independent_reviewer_identities",
         "bulk_close_threshold",
         "eval_ci_account_allowlist",

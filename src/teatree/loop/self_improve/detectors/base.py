@@ -62,8 +62,8 @@ class DetectorReport:
 
     ``dedup_key`` is the canonical identity (see
     :func:`teatree.loop.self_improve.dedup.canonical_key`); same key +
-    same ``state_hash`` is suppressed by cool-down.  ``max_rung`` caps
-    the ladder so a detector cannot escalate past its declared ceiling.
+    same ``state_hash`` is suppressed by cool-down. ``max_rung`` caps ordinary
+    escalation; repair-first handling can open a ticket at the Slack rung.
     """
 
     detector: str

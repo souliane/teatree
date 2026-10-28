@@ -14,13 +14,14 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from django.db import OperationalError
+from django.db import OperationalError, connection
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
+from teatree.core.backend_protocols import MessagingReadRefusedError
 from teatree.core.egress_transport import EgressKind, suppress_on_behalf_egress
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import BotPing, IncomingEvent
+from teatree.core.models import BotPing, IncomingEvent, Ticket, TicketDmPost, TicketDmThread
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyReason
 from teatree.types import RawAPIDict
@@ -54,6 +55,280 @@ def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p170000
 
 
 class TestNotifyUser(TestCase):
+    def test_ticket_notes_share_one_header_per_ticket(self) -> None:
+        tickets = [
+            Ticket.objects.create(
+                overlay="teatree",
+                issue_url=f"https://github.com/example/project/issues/{number}",
+                short_description=f"Issue {number}",
+            )
+            for number in (12, 13)
+        ]
+        backend = _backend()
+        posted: list[tuple[str, str, str]] = []
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "", **_kwargs: object) -> RawAPIDict:
+            ts = f"1700000000.{len(posted) + 1:06d}"
+            posted.append((text, thread_ts, ts))
+            return {"ok": True, "ts": ts}
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = lambda *, channel, thread_ts: [
+            {"ts": thread_ts, "text": next(text for text, _, ts in posted if ts == thread_ts)}
+        ]
+
+        for index, ticket in enumerate((tickets[0], tickets[1], tickets[0])):
+            outcome = notify_user_outcome(
+                f"note {index}",
+                kind=NotifyKind.INFO,
+                idempotency_key=f"ticket-note-{index}",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+            assert outcome.sent
+
+        roots = [entry for entry in posted if not entry[1]]
+        assert len(roots) == 2
+        assert roots[0][0] == "<https://github.com/example/project/issues/12|example/project#12> Issue 12"
+        assert roots[1][0] == "<https://github.com/example/project/issues/13|example/project#13> Issue 13"
+        assert [entry[1] for entry in posted if "note " in entry[0]] == [
+            roots[0][2],
+            roots[1][2],
+            roots[0][2],
+        ]
+        assert TicketDmPost.objects.count() == 5
+
+    def test_failed_ticket_header_never_posts_body_at_root(self) -> None:
+        ticket = Ticket.objects.create(overlay="teatree", short_description="Retry")
+        backend = _backend()
+        backend.post_message.return_value = {"ok": False, "error": "ratelimited"}
+
+        outcome = notify_user_outcome(
+            "body",
+            kind=NotifyKind.INFO,
+            idempotency_key="failed-header",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert not outcome.sent
+        assert "ticket header failed" in outcome.detail
+        assert backend.post_message.call_count == 1
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.root_ts, thread.generation) == ("", 0)
+
+    def test_proven_deleted_root_reopens_on_next_message(self) -> None:
+        ticket = Ticket.objects.create(overlay="teatree", short_description="Retry")
+        backend = _backend()
+        posted: list[tuple[str, str, str]] = []
+        refusal = ""
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "", **_kwargs: object) -> RawAPIDict:
+            nonlocal refusal
+            if "second" in text:
+                refusal = "thread_not_found"
+                return {"ok": False, "error": "ratelimited"}
+            ts = f"1700000000.{len(posted) + 1:06d}"
+            posted.append((text, thread_ts, ts))
+            return {"ok": True, "ts": ts}
+
+        def fetch(*, channel: str, thread_ts: str) -> list[RawAPIDict]:
+            if refusal:
+                method = "conversations.replies"
+                raise MessagingReadRefusedError(method, thread_ts, refusal)
+            return [{"ts": thread_ts, "text": "header"}]
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = fetch
+
+        def send(body: str) -> bool:
+            return notify_user_outcome(
+                body,
+                kind=NotifyKind.INFO,
+                idempotency_key=f"deleted-root-{body}",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            ).sent
+
+        assert send("first")
+        first_root = TicketDmThread.objects.get(ticket=ticket).root_ts
+        assert not send("second")
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.root_ts, thread.generation) == ("", 1)
+        refusal = ""
+        assert send("third")
+        thread.refresh_from_db()
+        assert thread.root_ts != first_root
+        assert thread.generation == 1
+        assert len([entry for entry in posted if not entry[1]]) == 2
+
+    def test_tombstoned_root_reopens_after_refusing_the_current_message(self) -> None:
+        ticket = Ticket.objects.create(short_description="Tombstone")
+        backend = _backend()
+        posts: list[tuple[str, str]] = []
+        tombstoned = False
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+            posts.append((text, thread_ts))
+            return {"ok": True, "ts": f"1700000000.{len(posts):06d}"}
+
+        def fetch(*, channel: str, thread_ts: str) -> list[RawAPIDict]:
+            return [{"ts": thread_ts, "subtype": "tombstone" if tombstoned else ""}]
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = fetch
+
+        def send(body: str) -> bool:
+            return notify_user_outcome(
+                body,
+                kind=NotifyKind.INFO,
+                idempotency_key=f"tombstoned-{body}",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            ).sent
+
+        assert send("first")
+        tombstoned = True
+        assert not send("second")
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.root_ts, thread.generation) == ("", 1)
+        tombstoned = False
+        assert send("third")
+        assert len([thread_ts for _, thread_ts in posts if not thread_ts]) == 2
+
+    def test_refused_root_read_preserves_generation_and_delivers_body(self) -> None:
+        ticket = Ticket.objects.create(short_description="Read refusal")
+        backend = _backend()
+        posts: list[tuple[str, str]] = []
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+            posts.append((text, thread_ts))
+            return {"ok": True, "ts": f"1700000000.{len(posts):06d}"}
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = MessagingReadRefusedError(
+            "conversations.replies", "1700000000.000001", "ratelimited"
+        )
+        outcome = notify_user_outcome(
+            "body",
+            kind=NotifyKind.INFO,
+            idempotency_key="read-refusal",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert outcome.sent
+        assert len(posts) == 2
+        assert posts[0][1] == ""
+        assert posts[1][1] == "1700000000.000001"
+        thread = TicketDmThread.objects.get(ticket=ticket)
+        assert (thread.root_ts, thread.generation) == ("1700000000.000001", 0)
+
+    def test_failed_root_read_delivers_without_a_second_header(self) -> None:
+        ticket = Ticket.objects.create(short_description="Read failure")
+        backend = _backend()
+        posts: list[tuple[str, str]] = []
+
+        def post_message(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+            posts.append((text, thread_ts))
+            return {"ok": True, "ts": f"1700000000.{len(posts):06d}"}
+
+        backend.post_message.side_effect = post_message
+        backend.fetch_thread_replies.side_effect = [OSError("read offline"), [{"ts": "1700000000.000001"}]]
+
+        def send() -> bool:
+            return notify_user_outcome(
+                "body",
+                kind=NotifyKind.INFO,
+                idempotency_key="root-read-retry",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            ).sent
+
+        assert send()
+        assert TicketDmThread.objects.get(ticket=ticket).root_ts == "1700000000.000001"
+        assert send()
+        assert len([thread_ts for _, thread_ts in posts if not thread_ts]) == 1
+        assert len(posts) == 2
+
+    def test_header_read_releases_the_write_transaction(self) -> None:
+        ticket = Ticket.objects.create(short_description="Read outside lock")
+        backend = _backend()
+        atomic_depth = len(connection.atomic_blocks)
+
+        def fetch(*, channel: str, thread_ts: str) -> list[RawAPIDict]:
+            assert len(connection.atomic_blocks) == atomic_depth
+            return [{"ts": thread_ts}]
+
+        backend.fetch_thread_replies.side_effect = fetch
+        outcome = notify_user_outcome(
+            "body",
+            kind=NotifyKind.INFO,
+            idempotency_key="read-outside-lock",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert outcome.sent
+
+    def test_schedule_anchor_and_explicit_thread_keep_existing_routing(self) -> None:
+        ticket = Ticket.objects.create(issue_url="schedule:daily", short_description="Daily")
+        backend = _backend()
+        first = notify_user_outcome(
+            "schedule note",
+            kind=NotifyKind.INFO,
+            idempotency_key="schedule-note",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+        second = notify_user_outcome(
+            "named thread",
+            kind=NotifyKind.INFO,
+            idempotency_key="named-thread",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk, thread_ts="9.0"),
+        )
+
+        assert first.sent
+        assert second.sent
+        assert [call.kwargs["thread_ts"] for call in backend.post_message.call_args_list] == ["", "9.0"]
+        assert not TicketDmThread.objects.filter(ticket=ticket).exists()
+
+    def test_ticket_without_issue_or_title_stays_at_dm_root(self) -> None:
+        ticket = Ticket.objects.create(short_description="")
+        backend = _backend()
+
+        outcome = notify_user_outcome(
+            "untitled note",
+            kind=NotifyKind.INFO,
+            idempotency_key="untitled-ticket",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+        )
+
+        assert outcome.sent
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
+        assert not TicketDmThread.objects.filter(ticket=ticket).exists()
+
+    def test_explicit_send_into_ticket_root_records_its_post(self) -> None:
+        ticket = Ticket.objects.create(short_description="Existing thread")
+        TicketDmThread.objects.create(ticket=ticket, channel="D-USER", root_ts="1700000000.000001")
+        backend = _backend()
+        backend.post_message.return_value = {"ok": True, "ts": "1700000000.000002"}
+
+        outcome = notify_user_outcome(
+            "progress note",
+            kind=NotifyKind.INFO,
+            idempotency_key="explicit-ticket-root",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", thread_ts="1700000000.000001"),
+        )
+
+        assert outcome.sent
+        assert TicketDmPost.objects.filter(
+            channel="D-USER", slack_ts="1700000000.000002", thread__ticket=ticket
+        ).exists()
+
     def test_happy_path_posts_dm_and_records_audit_with_permalink(self) -> None:
         backend = _backend()
         sent = notify_user(
@@ -84,7 +359,7 @@ class TestNotifyUser(TestCase):
         assert row.permalink.startswith("https://")
         assert row.text == "tests are green"
 
-    def test_threads_under_active_dm_thread_when_one_exists(self) -> None:
+    def test_unnamed_dm_stays_at_root_when_an_inbound_thread_exists(self) -> None:
         IncomingEvent.objects.create(
             source=IncomingEvent.Source.SLACK,
             channel_ref="D-USER",
@@ -102,9 +377,9 @@ class TestNotifyUser(TestCase):
             user_id="U_ME",
         )
 
-        assert backend.post_message.call_args.kwargs["thread_ts"] == "1700000000.000111"
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
 
-    def test_as_thread_root_ignores_the_active_dm_thread(self) -> None:
+    def test_unnamed_dm_ignores_the_active_dm_thread(self) -> None:
         IncomingEvent.objects.create(
             source=IncomingEvent.Source.SLACK,
             channel_ref="D-USER",
@@ -118,10 +393,102 @@ class TestNotifyUser(TestCase):
             kind=NotifyKind.QUESTION,
             idempotency_key="rooted-question",
             audience=NotifyAudience.OWNER_QUESTION,
-            options=NotifyOptions(backend=backend, user_id="U_ME", as_thread_root=True),
+            options=NotifyOptions(backend=backend, user_id="U_ME"),
         )
 
         assert backend.post_message.call_args.kwargs["thread_ts"] == ""
+
+    def test_owner_question_mentions_recipient_in_text_and_section_without_mutating_blocks(self) -> None:
+        backend = _backend()
+        blocks: list[RawAPIDict] = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "Choose a plan"}},
+            {"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "Yes"}}]},
+        ]
+
+        notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-section",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+
+        posted = backend.post_message.call_args.kwargs
+        assert posted["text"] == "<@U_ME> Choose a plan"
+        assert posted["blocks"][0]["text"]["text"] == "<@U_ME> Choose a plan"
+        assert posted["blocks"][1] == blocks[1]
+        assert blocks[0]["text"]["text"] == "Choose a plan"
+        assert BotPing.objects.get(idempotency_key="mention-section").text == "Choose a plan"
+
+    def test_owner_question_prepends_section_when_first_block_is_not_mrkdwn(self) -> None:
+        backend = _backend()
+        blocks: list[RawAPIDict] = [{"type": "actions", "elements": []}]
+
+        notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-new-section",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+
+        assert backend.post_message.call_args.kwargs["blocks"] == [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "<@U_ME>"}},
+            *blocks,
+        ]
+        assert blocks == [{"type": "actions", "elements": []}]
+
+    def test_owner_question_with_empty_mrkdwn_block_still_posts(self) -> None:
+        backend = _backend()
+        blocks: list[RawAPIDict] = [{"type": "section", "text": {"type": "mrkdwn"}}]
+
+        outcome = notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-empty-mrkdwn",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+
+        assert outcome.sent
+        assert backend.post_message.call_args.kwargs["blocks"] == [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "<@U_ME>"}},
+            *blocks,
+        ]
+
+    def test_owner_question_existing_mention_and_other_audience_stay_unchanged(self) -> None:
+        backend = _backend()
+        blocks: list[RawAPIDict] = [{"type": "section", "text": {"type": "mrkdwn", "text": "<@U_ME> choose"}}]
+
+        notify_user_outcome(
+            "<@U_ME> choose",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-already-present",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+        assert backend.post_message.call_args.kwargs["text"] == "<@U_ME> choose"
+        assert backend.post_message.call_args.kwargs["blocks"] == blocks
+
+        notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="mention-in-blocks",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks),
+        )
+        assert backend.post_message.call_args.kwargs["text"] == "<@U_ME> Choose a plan"
+        assert backend.post_message.call_args.kwargs["blocks"] == blocks
+
+        notify_user_outcome(
+            "Choose a plan",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="other-audience-unchanged",
+            audience=NotifyAudience.COLLEAGUE_ACTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", blocks=blocks, requested_push=True),
+        )
+        assert backend.post_message.call_args.kwargs["text"] == "Choose a plan"
+        assert backend.post_message.call_args.kwargs["blocks"] == blocks
 
     def test_no_active_thread_posts_at_root(self) -> None:
         backend = _backend()
@@ -175,24 +542,6 @@ class TestNotifyUser(TestCase):
         )
 
         assert "blocks" not in backend.post_message.call_args.kwargs
-
-    def test_active_thread_lookup_db_error_falls_back_to_root(self) -> None:
-        backend = _backend()
-        with patch(
-            "teatree.core.models.IncomingEvent.objects.active_dm_thread",
-            side_effect=OperationalError("database is locked"),
-        ):
-            sent = notify_user(
-                "lookup blew up but the DM still lands",
-                kind=NotifyKind.INFO,
-                idempotency_key="thread-lookup-db-error",
-                audience=NotifyAudience.OWNER_QUESTION,
-                backend=backend,
-                user_id="U_ME",
-            )
-
-        assert sent is True
-        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
 
     def test_kind_accepts_string_alias(self) -> None:
         backend = _backend()
@@ -321,6 +670,9 @@ class TestNotifyUser(TestCase):
         )
         good_backend.open_dm.assert_called_once_with("U_ME")
         good_backend.post_message.assert_called_once()
+        assert bad_backend.post_message.call_args.kwargs["text"].count("<@U_ME>") == 1
+        assert good_backend.post_message.call_args.kwargs["text"].count("<@U_ME>") == 1
+        assert BotPing.objects.get(idempotency_key="retry-1306").text == "retry me"
         # The terminal ledger row reflects the eventual success.
         assert BotPing.objects.get(idempotency_key="retry-1306").status == BotPing.Status.SENT
 
