@@ -332,7 +332,67 @@ class TestRatifiedTestStrategyAnchor(TestCase):
         assert "budget-count branch" in anchor
 
 
+class TestTheContractIsExhaustiveAndRemembersEveryRound(TestCase):
+    def test_supplied_changed_tests_are_named_as_current_head_context(self) -> None:
+        changed = ["tests/alpha.py::test_edge", "tests/beta.py::TestFlow::test_retry"]
+
+        contract = build_merge_quality_contract(_ordinary_ticket(), _FORTY_HEX, changed_tests=changed)
+
+        assert "Tests changed since the last passing head" in contract
+        assert "- tests/alpha.py::test_edge" in contract
+        assert "- tests/beta.py::TestFlow::test_retry" in contract
+
+    def test_it_requires_every_redundant_or_vacuous_test_in_one_citation(self) -> None:
+        contract = build_merge_quality_contract(_ordinary_ticket(), _FORTY_HEX)
+
+        assert "EVERY redundant or vacuous test in ONE `test_value` citation, one per line" in contract
+        assert "`REDUNDANT <test node> — pinned by <test node>`" in contract
+        assert "`VACUOUS <test node> — <why>`" in contract
+
+    def test_it_lists_every_earlier_verdict_and_asks_for_consistency(self) -> None:
+        ticket = _ordinary_ticket()
+        oldest, newer = "c" * 40, _OTHER_HEX
+        CriticVerdict.objects.create(
+            ticket=ticket,
+            transition="merge",
+            head_sha=oldest,
+            grader_identity="critic-agent-7",
+            items=[_fail("test_value", "tests/old.py::t_first is vacuous")],
+        )
+        CriticVerdict.objects.create(
+            ticket=ticket,
+            transition="merge",
+            head_sha=newer,
+            grader_identity="critic-agent-7",
+            items=[_pass("test_value"), _fail("cleanliness", "src/x.py:4 duplicate")],
+        )
+
+        contract = build_merge_quality_contract(ticket, _FORTY_HEX)
+
+        assert f"{oldest} test_value: fail; tests/old.py::t_first is vacuous" in contract
+        assert f"{newer} cleanliness: fail; src/x.py:4 duplicate" in contract
+        assert f"{newer} test_value: pass;" in contract
+        assert "stay consistent with these earlier verdicts" in contract
+        assert "must say what changed" in contract
+
+    def test_a_first_pass_contract_has_no_history(self) -> None:
+        contract = build_merge_quality_contract(_ordinary_ticket(), _FORTY_HEX)
+
+        assert "EARLIER MERGE VERDICTS" not in contract
+        assert "stay consistent" not in contract
+
+
 class TestArming(TestCase):
+    def test_supplied_changed_tests_reach_the_armed_critic_task(self) -> None:
+        ticket = _ordinary_ticket()
+
+        with pytest.raises(MergeQualityVerdictError):
+            check_merge_quality_verdict(ticket, _FORTY_HEX, changed_tests=["tests/alpha.py::test_edge"])
+
+        dispatch = CriticDispatch.objects.get(ticket=ticket, transition="merge", head_sha=_FORTY_HEX)
+        assert dispatch.task is not None
+        assert "- tests/alpha.py::test_edge" in dispatch.task.execution_reason
+
     def test_no_verdict_arms_the_async_critic_at_the_head(self) -> None:
         ticket = _directive_ticket()
         with contextlib.suppress(MergeQualityVerdictError):

@@ -9,11 +9,13 @@ from django.db import transaction
 from django.db.models import Max, Min
 from django.utils import timezone
 
+from teatree.core.gates.merge_item_waiver import MergeItemWaiverError, waive_merge_item
 from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError, approve_owner_void
 from teatree.core.modelkit.escape_scope import EscapeScope
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_action import ActionRequest, OwnerActionKind, action_marker, read_action
 from teatree.core.modelkit.question_card import match_action_option
+from teatree.core.models import Ticket
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.gate_escape import GateEscape, GateEscapeError
 from teatree.core.models.question_actions import ACTION_OUTCOMES, owner_declined
@@ -77,9 +79,32 @@ def _prepare_escape(_row: DeferredQuestion, action: ActionRequest, actor: str) -
     return write
 
 
+def _prepare_merge_item_waiver(row: DeferredQuestion, action: ActionRequest, actor: str) -> _Write:
+    ticket = Ticket.objects.filter(pk=action["target"]).first() if action["target"].isdigit() else None
+    if ticket is None:
+        message = "The ticket no longer exists."
+        raise OwnerActionRefusedError(message)
+
+    def write() -> str:
+        try:
+            waiver = waive_merge_item(
+                ticket,
+                slug=action["binding"],
+                waived_by=actor,
+                reason=action.get("note", ""),
+                owner_question=row,
+            )
+        except MergeItemWaiverError as exc:
+            raise OwnerActionRefusedError(str(exc)) from exc
+        return f"Waived the {action['binding']} merge item for ticket {ticket.pk} by {waiver['waived_by']}."
+
+    return write
+
+
 _PREPARE: dict[OwnerActionKind, Callable[[DeferredQuestion, ActionRequest, str], _Write]] = {
     OwnerActionKind.ESCAPE: _prepare_escape,
     OwnerActionKind.VOID: _prepare_void,
+    OwnerActionKind.MERGE_ITEM_WAIVER: _prepare_merge_item_waiver,
 }
 
 
