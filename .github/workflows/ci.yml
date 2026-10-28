@@ -175,10 +175,10 @@ jobs:
           persist-credentials: false
           # fetch-depth: 0 so the PR-vs-base ``git diff`` resolves.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - name: Classify the PR diff into CI lanes
@@ -287,10 +287,10 @@ jobs:
           persist-credentials: false
           # fetch-depth: 0 so `git merge-base origin/main HEAD` resolves.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -340,10 +340,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -371,10 +371,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -400,10 +400,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -444,10 +444,10 @@ jobs:
           persist-credentials: false
           # fetch-depth: 0 so `origin/<base>...HEAD` resolves.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -476,10 +476,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -501,10 +501,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync --group docs
@@ -596,10 +596,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -624,10 +624,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -1019,10 +1019,10 @@ jobs:
         with:
           pattern: durations-shard-*
           path: /tmp/durations-shards
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - name: Merge shard durations and decide whether to refresh
@@ -1225,10 +1225,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -1366,10 +1366,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: ${{ matrix.python-version }}
       # WHY ``--group shuffle`` (not the default ``dev``): adding pytest-randomly to
@@ -1435,10 +1435,10 @@ jobs:
           persist-credentials: false
           # fetch-depth: 0 so ``git merge-base origin/main HEAD`` resolves.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync --group mutation
@@ -1468,10 +1468,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync --group mutation
@@ -1525,11 +1525,11 @@ jobs:
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: "3.13"
@@ -1575,11 +1575,11 @@ jobs:
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: "3.13"
@@ -1622,7 +1622,7 @@ jobs:
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: "3.13"
@@ -1657,10 +1657,10 @@ jobs:
           persist-credentials: false
           # fetch-depth: 0 so `git merge-base origin/<base> HEAD` resolves.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -1717,10 +1717,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       # A green audit is only evidence if the audit can still SEE. Nothing reds
@@ -1784,10 +1784,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -1821,13 +1821,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
         with:
           enable-cache: true
           # PIN the uv version: `uv audit` is preview, so a floating `latest`
           # could change flags out from under this lane. Bump deliberately.
           version: "0.11.15"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.13"
       # `--frozen` audits the locked `uv.lock` resolution without re-locking;
