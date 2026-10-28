@@ -93,10 +93,18 @@ class TestCodexHold(TestCase):
         assert self._next_candidate(task, later=timedelta(0)) == 0
 
     def test_a_transient_server_error_that_already_made_tool_calls_keeps_the_short_hold(self) -> None:
-        for text in ("API Error: 503 service unavailable", "API Error: 408 request timeout"):
-            with self.subTest(text=text):
+        for status in (503, 408):
+            with self.subTest(status=status):
                 outcome = scripted_session(
-                    [assistant_tool_use(), result_message(is_error=True, subtype="error_during_execution", result=text)]
+                    [
+                        assistant_tool_use(),
+                        result_message(
+                            is_error=True,
+                            subtype="error_during_execution",
+                            result=f"API Error: {status}",
+                            api_error_status=status,
+                        ),
+                    ]
                 )
 
                 task, _attempt = self._run(outcome)

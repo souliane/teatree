@@ -251,7 +251,7 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
         assert task.not_before == window.resets_at
         assert f"{MANAGED}: ticket is claude_only" in attempt.error
 
-    def test_the_third_consecutive_park_on_a_route_hold_fails_instead(self) -> None:
+    def test_the_third_consecutive_usage_limit_hold_remains_parked(self) -> None:
         task = self._task()
         self._hold_codex(task)
         self._window_claude(3)
@@ -263,8 +263,10 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
         task.refresh_from_db()
         assert first.error.startswith(LIMIT_PARKED_PREFIX)
         assert second.error.startswith(LIMIT_PARKED_PREFIX)
-        assert third.error.startswith("No available harness")
-        assert task.status == Task.Status.FAILED
+        assert third.error.startswith(LIMIT_PARKED_PREFIX)
+        assert task.status == Task.Status.PENDING
+        assert task.not_before is not None
+        assert task.not_before > timezone.now()
 
     def test_a_real_run_between_hold_parks_starts_a_new_count(self) -> None:
         task = self._task()

@@ -176,6 +176,8 @@ def park_until(task: Task, not_before: datetime) -> None:
 def fallback_reason_for_outcome(outcome: HarnessOutcome, *, metered_transport: bool, lane: str = "") -> str | None:
     if outcome.driver_ended:
         return None
+    if outcome.stuck_reason is not None:
+        return outcome.stuck_reason
     matched = limit_match(outcome.result_message, outcome.rate_limit_info, metered_transport=metered_transport)
     if matched is not None:
         if matched.cause is LimitCause.LEAK_BLOCKED or (
@@ -184,11 +186,10 @@ def fallback_reason_for_outcome(outcome: HarnessOutcome, *, metered_transport: b
             return None
         return matched.as_reason()
     message = outcome.result_message
-    if message is None or not message.is_error:
-        return None
-    status = message.api_error_status
-    if status in {408, 425, HTTPStatus.TOO_MANY_REQUESTS} or (
-        status is not None and _SERVER_ERROR_START <= status < _SERVER_ERROR_END
-    ):
-        return f"api_error_status={status}"
+    if message is not None and message.is_error:
+        status = message.api_error_status
+        if status in {408, 425, HTTPStatus.TOO_MANY_REQUESTS} or (
+            status is not None and _SERVER_ERROR_START <= status < _SERVER_ERROR_END
+        ):
+            return f"api_error_status={status}"
     return None
