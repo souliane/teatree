@@ -46,9 +46,9 @@ _FILED = f"https://github.com/{_REPO}/issues/7200"
 class FakeSlack:
     """Minimal messaging backend — enough for the cycle's react/post/read-back path."""
 
+    user_id: str = "U-owner"
     replies: list[tuple[str, str, str]] = field(default_factory=list)
     reactions: list[str] = field(default_factory=list)
-    user_id: str = "U-owner"
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         self.replies.append((channel, ts, text))

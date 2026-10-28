@@ -17,8 +17,10 @@ truth for "this row needs a reply".
 
 import datetime as dt
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import partial
+from functools import partial, reduce
+from operator import or_
 from typing import ClassVar
 
 from django.db import models, transaction
@@ -97,6 +99,11 @@ class PendingChatInjectionQuerySet(models.QuerySet):
 
     def prunable(self, cutoff: dt.datetime) -> "PendingChatInjectionQuerySet":
         return self.filter(loop_replied_at__isnull=False, received_at__lt=cutoff)
+
+    def sent_by_owners(self, owner_ids: Mapping[str, str]) -> "PendingChatInjectionQuerySet":
+        """Only the rows each overlay's owner sent; an overlay with no owner id contributes none."""
+        authorized = [models.Q(overlay=overlay, user_id=owner) for overlay, owner in owner_ids.items() if owner]
+        return self.filter(reduce(or_, authorized)) if authorized else self.none()
 
 
 class PendingChatInjection(models.Model):
@@ -218,7 +225,7 @@ class PendingChatInjection(models.Model):
         return None
 
     @classmethod
-    def loop_unreplied(cls, *, overlay: str = "") -> models.QuerySet["PendingChatInjection"]:
+    def loop_unreplied(cls, *, overlay: str = "") -> PendingChatInjectionQuerySet:
         """Return the reactive Slack-answer loop's work-queue, oldest first.
 
         Gates on ``loop_replied_at`` (the loop's own column, #1075 / Option B),

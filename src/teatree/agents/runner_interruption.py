@@ -127,13 +127,17 @@ def _record_operator_pause(task: Task, *, usage: "AttemptUsage | None") -> TaskA
     return _record_interrupted_attempt(task, summary="operator pause — the claim had moved on", usage=usage)
 
 
-def _record_checkpoint(task: Task, *, checkpoint: str, usage: "AttemptUsage | None") -> TaskAttempt:
+def _record_checkpoint(task: Task, *, checkpoint: str, usage: "AttemptUsage | None", summary: str = "") -> TaskAttempt:
     """Park the run to resume it — unless a rival now holds its claim, when the row is no longer its to park."""
     with transaction.atomic():
         live = Task.objects.filter(pk=task.pk, status=Task.Status.CLAIMED).first()
         if live is not None and claim_generation(live) == claim_generation(task):
             return record_park(
-                task, reason=f"{LIMIT_PARKED_PREFIX}{checkpoint}", not_before=timezone.now(), usage=usage
+                task,
+                reason=f"{LIMIT_PARKED_PREFIX}{checkpoint}",
+                not_before=timezone.now(),
+                usage=usage,
+                summary=summary,
             )
     logger.warning("Task %s checkpointed after its claim moved on; leaving the row alone", task.pk)
     return _record_interrupted_attempt(

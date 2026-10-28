@@ -23,6 +23,13 @@ from tests.secret_memory_store import MemoryStore
 
 
 class TestSecretImportPlan(TestCase):
+    def test_project_pass_paths_are_referenced(self) -> None:
+        ConfigSetting.objects.create(
+            scope="global", key="gitlab_read_token_pass_paths", value={"group/repo": "team/read-only"}
+        )
+        with patch("teatree.core.sealed.references.get_all_overlays", return_value={}):
+            assert "team/read-only" in referenced_entry_names()
+
     def test_overlay_declared_pass_key_is_referenced(self) -> None:
         config = SimpleNamespace(
             declared_credentials=lambda: frozenset({"artifact_token"}),

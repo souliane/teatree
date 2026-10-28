@@ -27,27 +27,34 @@ def corrective_note(task: Task, error: str) -> str | None:
     ``debugging`` (already in :data:`CORRECTIVE_PHASES`) plus every no-evidence,
     non-prose-exempt phase outside it (``architectural_review``, ``bughunt``, ``e2e``,
     ``codex_*``) — which the old gate left paging a human on the first prose-only run.
-    A RECORDER-side refusal stays gated on the set, except for an owner card on any phase
-    and a ``reviewing`` run whose envelope has misnamed, misplaced, or malformed keys.
-    The reopened row resumes its conversation for one correction. A withheld verdict
-    is still a judgement to surface. ``None`` for a genuine defect or a spent retry.
+    A RECORDER-side refusal on any phase but ``reviewing`` earns one correction too: the
+    evidence instruction on the set, a note quoting the refusal elsewhere. A ``reviewing``
+    run earns it only for misnamed, misplaced, or malformed envelope keys, and a withheld
+    verdict is still a judgement to surface. The reopened row resumes its conversation.
+    ``None`` for a genuine defect or a spent retry.
     """
     if CORRECTIVE_MARKER in task.execution_reason:
         return None
     phase = normalize_phase(task.phase)
+    note: str | None = None
     if phase == "reviewing" and error.startswith(VENUE_LIMIT_PREFIX):
-        return "Retry this review on another venue; the previous venue could not complete it."
-    if phase == "reviewing" and (head := wrong_head_retry_head(error)):
-        return (
+        note = "Retry this review on another venue; the previous venue could not complete it."
+    elif phase == "reviewing" and (head := wrong_head_retry_head(error)):
+        note = (
             f"Retry the review once at the live pull request head {head}. "
             f"Run `t3 review checkout {task.ticket.issue_url} --sha {head}` and verify HEAD. "
             "If checkout still resolves elsewhere, return review_head_mismatch with the observed SHA."
         )
-    if specific := _specific_refusal_note(phase, error):
-        return specific
-    if is_no_envelope_refusal(error) or (phase in CORRECTIVE_PHASES and is_recorder_refusal(error)):
-        return corrective_instruction(task.phase)
-    return refused_envelope_instruction(error) if phase == "reviewing" and is_review_shape_refusal(error) else None
+    elif specific := _specific_refusal_note(phase, error):
+        note = specific
+    elif is_no_envelope_refusal(error) or (phase != "reviewing" and is_recorder_refusal(error)):
+        if is_no_envelope_refusal(error) or phase in CORRECTIVE_PHASES:
+            note = corrective_instruction(task.phase)
+        else:
+            note = f"Correct the recorded refusal once and return the required phase evidence: {error}"
+    elif phase == "reviewing" and is_review_shape_refusal(error):
+        note = refused_envelope_instruction(error)
+    return note
 
 
 def _specific_refusal_note(phase: str, error: str) -> str | None:

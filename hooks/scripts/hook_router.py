@@ -1003,9 +1003,8 @@ def _extract_mr_fields(data: dict) -> "tuple[str, str] | GateSkipped | None":
 def handle_quote_scanner_pretool(data: dict) -> bool:
     """Refuse a publish whose body carries a verbatim user-quote pattern.
 
-    Promotes the prose-only "never quote user verbatim" rule
-    (``feedback_redcard_never_quote_user_on_public_repos.md``) to a
-    deterministic pre-publish gate. Surfaces covered include Bash calls
+    Enforces "never quote the user verbatim in public text" before publish.
+    Surfaces covered include Bash calls
     that publish to GitHub/GitLab/Slack/git itself (``gh issue create``,
     ``glab mr update``, ``git commit -m``, ``curl … chat.postMessage``
     and siblings), the per-overlay t3 publish family (``review
@@ -1484,8 +1483,7 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     """#1442: deny a main-agent foreground ``Agent`` dispatch.
 
     A foreground dispatch blocks the orchestrator for the entire
-    sub-agent runtime (often 30+ min) — a recurring failure (memory rule
-    ``feedback_always_run_in_background_for_sub_agent_dispatch``). Only
+    sub-agent runtime (often 30+ min). Only
     the main agent is governed; a sub-agent dispatching its own ``Agent``
     may pick foreground.
 
@@ -1511,9 +1509,7 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
         "to the prompt for a genuine foreground dispatch, or disable this "
         "gate by setting the DB-home `orchestrator_boundary_agent_gate_enabled` to "
         "false (`t3 <overlay> config_setting set orchestrator_boundary_agent_gate_enabled false`).\n"
-        "Memory rule: "
-        "feedback_always_run_in_background_for_sub_agent_dispatch "
-        "(RED CARD recurrence).",
+        "A main agent never blocks on a foreground sub-agent dispatch.",
         gate_id="orchestrator_foreground_dispatch",
     )
 

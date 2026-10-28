@@ -21,8 +21,6 @@ This skill delegates the generic branch-finalization doctrine to:
 
 Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
-From "code is done" to "PR is merged."
-
 ### Dispatching a t3:shipper sub-agent (Non-Negotiable)
 
 When the orchestrator dispatches a `t3:shipper` sub-agent, the brief MUST carry the **exact MR/PR title** and a **description skeleton** — never leave the subject for the sub-agent to improvise. The title format is gated (the active overlay's `validate_pr` rejects a non-conforming first line at push), so an improvised subject is the real cause of off-target titles and failed pre-push validation: the sub-agent guesses a subject, it fails the gate, and the run burns a retry. Compose the title in the orchestrator from the ticket data and hand it over verbatim.
@@ -54,9 +52,9 @@ Use the active overlay's `validate_pr(title, description)` policy for title and 
    glab issue list --search '<keywords>'                 # CLI fallback (GitLab)
    ```
 
-   The MCP search returns at most ten linked open issues (number, title, url, state, updated_at) and `truncated`; narrow the query when true.
+   MCP returns up to ten linked open issues and `truncated`; narrow the query when set.
 
-   If you find it, **use that reference** — it is the canonical one. Do not open a new issue that duplicates an existing one.
+   Use the found issue; do not file a duplicate.
 
 2. **If no existing issue is found, the fallback depends on the repo class** (the same colleague-facing-vs-own distinction the [`../rules/SKILL.md`](../rules/SKILL.md) § "Three Orthogonal Repo Axes" tracks):
 
@@ -557,7 +555,7 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
 - **Prefer `git commit -a`** when committing changes that touch files the linter might reformat. Pre-commit hooks (ruff-format, end-of-file-fixer) modify files and re-stage them. If you stage specific files, the hook may modify OTHER files that remain unstaged. The pre-push hook then stashes these unstaged changes and fails to restore the patch. Use selective staging only when you specifically need to exclude files.
 - **Verify static asset URLs** after any change to `<script src>` or `<link href>` in templates: (1) check the URL resolves (`curl -sI <url>`), (2) if vendoring locally, verify file size > 1KB (a 45-byte file is an error page), (3) Playwright screenshot + console error check.
 - **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/PR/merge/remote-delete needs separate explicit approval. In `auto` mode (DB-home `mode = auto` via `config_setting set mode auto`, or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
-- **Merging is the §17.4 keystone transition, not raw `gh`.** Raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` helper are FSM-incoherent (they skip `MergeClear` validation, `expected_head_oid` SHA-binding, the atomic CLEAR-consume + `MergeAudit` + attestation binding + `mark_merged()`) and are **mechanically refused** — `hook_router._BLOCKED_COMMANDS` denies the raw commands and `pr merge` returns a redirect error. The sanctioned path is two `t3` steps, maker != checker throughout:
+- **Merging is the §17.4 keystone transition, not raw `gh`.** Raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` helper are FSM-incoherent (they skip `MergeClear` validation, `expected_head_oid` SHA-binding, the atomic CLEAR-consume + `MergeAudit` + attestation binding + `mark_merged()`, and the check that a `Part of #N` body declaring a remainder keeps its ticket out of `merged`) and are **mechanically refused** — `hook_router._BLOCKED_COMMANDS` denies the raw commands and `pr merge` returns a redirect error. The sanctioned path is two `t3` steps, maker != checker throughout:
   1. **The orchestrator (coordinator) issues the per-diff CLEAR** after an independent cold review: `t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> --reviewer-identity "<the independent reviewer's id, e.g. codex — must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker>" --blast-class <substrate|logic|docs> [--forge <github|gitlab>] [--ticket-id N] [--human-authorize <id>]`. The reviewer identity must not be a maker/coding-agent/loop role and must differ from the executing loop (§17.8 clause 3). This prints a `clear_id`, which the orchestrator passes to the loop.
   2. **The durable review-loop executes it**: the `mcp__teatree__pr_merge` MCP tool, or `t3 <overlay> ticket merge <clear_id>` when the MCP server isn't connected — issuing the CLEAR in step 1 stays CLI-only. The transition re-reads the CLEAR from the DB, re-verifies the live head SHA == `reviewed_sha`, live required-checks green, not-draft, and binds the GitHub merge to `expected_head_oid` (fail-closed on head drift). The #764 noreply-author guarantee is unchanged — the server-side squash author is the merging account's `users.noreply.github.com` address.
 
@@ -643,4 +641,4 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
 
 ### Git History Rewriting
 
-The `filter-branch --msg-filter` recipe, the post-rewrite hash verification, and the rebase todo shorthand are in [`skills/ship/references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md).
+History rewrite recipes are in [`skills/ship/references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md).

@@ -32,6 +32,7 @@ from teatree.core.models import PendingChatInjection
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundReader, read_inbound
+from teatree.loop.owner_identity import owner_rows
 from teatree.loop.question_binding import BoundAnswer, apply_bound_answer, bind_reply
 from teatree.loop.scanners.base import ScanSignal
 
@@ -58,7 +59,8 @@ class AskUserQuestionReplyScanner:
 
     def scan(self) -> list[ScanSignal]:
         egress = OnBehalfSlackEgress(self.backend)
-        for reply in list(PendingChatInjection.loop_unreplied(overlay=self.overlay)[:_BATCH]):
+        owned = owner_rows(PendingChatInjection.loop_unreplied(overlay=self.overlay), lambda _overlay: self.backend)
+        for reply in list(owned[:_BATCH]):
             try:
                 self._apply_one(reply, egress)
             except Exception:

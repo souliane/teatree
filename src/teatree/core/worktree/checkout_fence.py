@@ -1,14 +1,11 @@
 """Refuse a writing task when its checkout cannot be proven to be its own."""
 
-import logging
-from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
 from django.utils import timezone
 
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
-from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.phase_tools import phase_writes_checkout
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.models.checkout_custody import Custody, Tenure
@@ -26,32 +23,22 @@ from teatree.core.models.worktree_occupancy import (
     release,
     task_holder_id,
 )
-from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.worktree.checkout_attest import (
-    CheckoutAttestation,
-    ask_owner_to_attest,
-    checkout_rows,
-    declined_attest_tasks,
-)
+from teatree.core.worktree.checkout_attest import checkout_rows
 from teatree.core.worktree.checkout_recovery import attest_deferred_exit, reattest_on_proof
 from teatree.core.worktree.checkout_released import reattest_released_pr_head
+from teatree.core.worktree.checkout_safety import (
+    CheckoutSafetyEvidence,
+    assess_checkout_safety,
+    auto_attest_safe_checkout,
+)
 from teatree.core.worktree.checkout_state import CheckoutState, checkout_state
 from teatree.core.worktree.worktree_paths import paths_match
 
-logger = logging.getLogger(__name__)
 _PARK_RETRY = timedelta(minutes=30)
 
 
 class CheckoutFenceError(RuntimeError):
-    def __init__(self, message: str, *, attestable: CheckoutAttestation | None = None) -> None:
-        super().__init__(message)
-        self.attestable = attestable
-
-
-@dataclass(frozen=True)
-class _AttestationStatus:
-    digest: str | None
-    declined: bool
+    pass
 
 
 def _confirm_owner_attestation(task: Task, path: str, state: CheckoutState) -> None:
@@ -99,45 +86,57 @@ def _verify_one_checkout(task: Task, path: str, *, namespace: str = "") -> None:
         message = f"checkout {path} state could not be read: {exc}"
         raise CheckoutFenceError(message) from exc
     worktree = rows[0]
-    # Another step's owner Accept never covers a step the owner declined for this same folder state.
-    declined = task.pk in declined_attest_tasks(worktree, state.digest, task_id=task.pk)
-    attested = None if declined else worktree.get_extra().get("attested_state")
+    attested = worktree.get_extra().get("attested_state")
     owner_attested = f"owner:{state.digest}"
-    if not table.usable and attested != owner_attested:
-        message = f"checkout {path} process table unavailable: {table.refuse_reason()}"
-        raise CheckoutFenceError(message, attestable=CheckoutAttestation(worktree, state, host_evidence=False))
     if attested == owner_attested:
         _confirm_owner_attestation(task, path, state)
         worktree.merge_extra(set_keys={"attested_state": state.digest})
-        attested = state.digest
-    if attested is None and state.pristine and not declined:
-        worktree.merge_extra(set_keys={"attested_state": state.digest})
-        attested = state.digest
-    _accept_changed_checkout(task, worktree, state, table, _AttestationStatus(attested, declined))
+    _accept_changed_checkout(task, worktree, state, table, attested)
     _anchor_verified_checkout(task, worktree, state, namespace=namespace)
 
 
+def _reattest_changed_checkout(
+    task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable, evidence: CheckoutSafetyEvidence
+) -> bool:
+    if evidence.preserved.requires_pr:
+        return reattest_released_pr_head(task, worktree, state, table)
+    return (
+        attest_deferred_exit(task, worktree, state, table)
+        or reattest_on_proof(task, worktree, state, table)
+        or reattest_released_pr_head(task, worktree, state, table)
+    )
+
+
 def _accept_changed_checkout(
-    task: Task, worktree: Worktree, state: CheckoutState, table: ProcessTable, status: _AttestationStatus
+    task: Task,
+    worktree: Worktree,
+    state: CheckoutState,
+    table: ProcessTable,
+    attested: str | None,
 ) -> None:
-    if status.digest != state.digest and not (
-        not status.declined
-        and (
-            attest_deferred_exit(task, worktree, state, table)
-            or reattest_on_proof(task, worktree, state, table)
-            or reattest_released_pr_head(task, worktree, state, table)
-        )
+    if attested == f"owner:{state.digest}":
+        return
+    evidence = assess_checkout_safety(task, worktree, state, table, attested=attested)
+    if isinstance(evidence, str):
+        raise CheckoutFenceError(evidence)
+    if state.uncommitted:
+        if attested == state.digest:
+            return
+        if attest_deferred_exit(task, worktree, state, table):
+            return
+        if evidence.recover_crash_dirt and reattest_on_proof(task, worktree, state, table):
+            return
+        reason = f"checkout {worktree.worktree_path} holds {state.uncommitted} uncommitted file(s)"
+        raise CheckoutFenceError(reason)
+    needs_recovery = (
+        attested != state.digest or not table.usable or table.eviction_gaps or evidence.preserved.requires_pr
+    )
+    if (
+        needs_recovery
+        and not _reattest_changed_checkout(task, worktree, state, table, evidence)
+        and (reason := auto_attest_safe_checkout(task, worktree, state, evidence))
     ):
-        if status.digest is None and not status.declined:
-            message = (
-                f"checkout {worktree.worktree_path} has no attested state; inspect it and run "
-                f"`t3 <overlay> worktree attest {worktree.worktree_path}`"
-            )
-        else:
-            message = f"checkout {worktree.worktree_path} differs from its attested state"
-        raise CheckoutFenceError(
-            message, attestable=CheckoutAttestation(worktree, state, host_evidence=not table.eviction_gaps)
-        )
+        raise CheckoutFenceError(reason)
 
 
 def _anchor_verified_checkout(task: Task, worktree: Worktree, state: CheckoutState, *, namespace: str = "") -> None:
@@ -159,7 +158,6 @@ def park_task_checkout(
     *,
     reason: str,
     behind: OccupancyHolder | None = None,
-    attestable: CheckoutAttestation | None = None,
     unknown_holder: bool = False,
 ) -> TaskAttempt:
     prior = TaskAttempt.objects.filter(task__ticket=task.ticket).order_by("-pk").first()
@@ -179,7 +177,6 @@ def park_task_checkout(
             "summary": f"{CHECKOUT_PARKED_PREFIX}{reason}",
             "checkout_episode": episode or f"attempt:{task.pk}",
             **blocker,
-            **({"checkout_worktree_id": attestable.worktree.pk} if attestable is not None else {}),
         },
     )
     result = {**attempt.result, **blocker}
@@ -201,21 +198,6 @@ def park_task_checkout(
         checkout_capacity_opened.send(sender=Task)
     if rearmed:
         return attempt
-    if attestable is not None:
-        question = ask_owner_to_attest(task, attestable)
-        if question is not None or task.pk in declined_attest_tasks(
-            attestable.worktree, attestable.state.digest, task_id=task.pk
-        ):
-            return attempt
-    try:
-        notify_user(
-            f"Ticket {task.ticket.pk} is parked before writing its checkout: {reason}",
-            kind=NotifyKind.INFO,
-            idempotency_key=f"checkout-hold:{task.ticket.pk}:{attempt.result['checkout_episode']}",
-            audience=NotifyAudience.OWNER_ESCALATION,
-        )
-    except Exception:
-        logger.exception("Could not page owner for checkout hold on task %s", task.pk)
     return attempt
 
 
@@ -247,11 +229,8 @@ def _rearm_if_occupancy_cleared(task: Task, *, behind: OccupancyHolder | None, u
 
 def park_refused_checkout(task: Task, refusal: WorktreeOccupiedError | CheckoutFenceError) -> TaskAttempt:
     behind = refusal.holder if isinstance(refusal, WorktreeOccupiedError) else None
-    attestable = refusal.attestable if isinstance(refusal, CheckoutFenceError) else None
     unknown_holder = isinstance(refusal, WorktreeOccupiedError) and behind is None
-    return park_task_checkout(
-        task, reason=str(refusal), behind=behind, attestable=attestable, unknown_holder=unknown_holder
-    )
+    return park_task_checkout(task, reason=str(refusal), behind=behind, unknown_holder=unknown_holder)
 
 
 def claim_task_checkout_or_park(task: Task, *, lease_seconds: int | None = None) -> TaskAttempt | None:

@@ -49,7 +49,15 @@ class TestUnconditionalEnforcement:
         _set_allowlist(["C_TEAM"])
         verdict = route_send(_request(destination="C_TEAM"))
         assert verdict.allowlist_ok is True
+        assert verdict.audit_id == SendAudit.objects.get().pk
         assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.ALLOWED.value
+
+    def test_audit_failure_keeps_send_allowed_without_audit_id(self) -> None:
+        _set_allowlist(["C_TEAM"])
+        with patch("teatree.core.send_proxy._record_audit", return_value=None):
+            verdict = route_send(_request(destination="C_TEAM"))
+        assert verdict.allowed is True
+        assert verdict.audit_id is None
 
     def test_denies_a_non_allowlisted_destination(self) -> None:
         _set_allowlist(["C_TEAM"])

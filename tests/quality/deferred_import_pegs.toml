@@ -162,8 +162,9 @@
 "src/teatree/core/merge/execution.py" = 3
 # souliane/teatree#3840: the keystone post hook moved to its own module and took its
 # call-time ORM imports with it. Only the retry helper is left deferred — `MergeClear`
-# is now a module-level import, the same edge `ci_rollup` already declares.
-"src/teatree/core/merge/post_hook.py" = 1
+# is now a module-level import, the same edge `ci_rollup` already declares. The partial-merge
+# reader is deferred too: a top-level import put three modules on the `t3 mcp serve` import graph.
+"src/teatree/core/merge/post_hook.py" = 2
 # substrate_standing defers `from teatree.core.overlay_loader import infer_overlay_for_url`
 # so resolving a repo's owning overlay stays a call-time read of the live overlay
 # registry — the edge moved here verbatim from merge/authorization.py (#3648).
