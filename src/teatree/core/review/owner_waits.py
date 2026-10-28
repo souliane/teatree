@@ -1,4 +1,4 @@
-"""Durable owner cards for PR and live-post waits."""
+"""Durable owner cards for live-post waits."""
 
 import hashlib
 import logging

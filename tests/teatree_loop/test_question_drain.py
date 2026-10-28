@@ -609,10 +609,9 @@ class TestTheAgeLadderTerminates(TestCase):
 
 
 def _halt_question(ticket_pk: int) -> DeferredQuestion:
-    """The shape ``stuck_ticket_redispatch._escalate_once`` records.
+    """The shape a stuck-ticket halt question from an older build has.
 
-    The subject lives in the dedupe marker alone — no session, no parked task — so
-    before #4706 no subject source could name it and only the backstop saw the row.
+    The subject lives in the dedupe marker alone: no session, no parked task.
     """
     return DeferredQuestion.record(
         f"Stuck ticket {ticket_pk} has no work in flight "
