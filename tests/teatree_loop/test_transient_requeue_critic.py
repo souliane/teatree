@@ -10,6 +10,7 @@ from django.db import connection, connections
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
+from teatree.core.factory.halted_retries import halted_retry_signals
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.critic_dispatch import CriticDispatch
@@ -79,7 +80,7 @@ class TestACrashedCriticIsDecidedByItsDispatchBudget(TestCase):
 
         assert not CriticDispatch.saturated().filter(pk=self.dispatch.pk).exists()
 
-    def test_a_crash_at_the_dispatch_cap_escalates_once(self) -> None:
+    def test_a_crash_at_the_dispatch_cap_halts_once(self) -> None:
         CriticDispatch.objects.filter(pk=self.dispatch.pk).update(attempts=MAX_DISPATCH_ATTEMPTS)
         self._crashed_over_the_ticket_phase_budget()
 
@@ -90,9 +91,10 @@ class TestACrashedCriticIsDecidedByItsDispatchBudget(TestCase):
         assert self.task.status == Task.Status.FAILED
         assert HALT_STAMP in self.task.execution_reason
         assert self._attempts() == MAX_DISPATCH_ATTEMPTS
-        assert _open_questions() == 1
+        assert len(halted_retry_signals().signals) == 1
+        assert _open_questions() == 0
 
-    def test_the_last_attempt_is_spent_then_the_next_crash_escalates(self) -> None:
+    def test_the_last_attempt_is_spent_then_the_next_crash_halts(self) -> None:
         CriticDispatch.objects.filter(pk=self.dispatch.pk).update(attempts=MAX_DISPATCH_ATTEMPTS - 1)
         self._crashed_over_the_ticket_phase_budget()
         assert requeue_transient_failed() == 1
@@ -101,7 +103,8 @@ class TestACrashedCriticIsDecidedByItsDispatchBudget(TestCase):
         _crash(self.task, error="result_error: the reopened critic died too")
 
         assert requeue_transient_failed() == 0
-        assert _open_questions() == 1
+        assert len(halted_retry_signals().signals) == 1
+        assert _open_questions() == 0
 
     def test_a_covering_verdict_parks_the_crash_without_a_question(self) -> None:
         CriticVerdict.objects.create(ticket=self.ticket, transition="merge", head_sha=_HEAD, grader_identity="critic")
@@ -139,8 +142,11 @@ class TestACrashedCriticIsDecidedByItsDispatchBudget(TestCase):
 
         assert requeue_transient_failed() == 0
 
-        assert LIVE_SUCCESSOR_STAMP not in Task.objects.get(pk=self.task.pk).execution_reason
-        assert _open_questions() == 1
+        execution_reason = Task.objects.get(pk=self.task.pk).execution_reason
+        assert LIVE_SUCCESSOR_STAMP not in execution_reason
+        assert HALT_STAMP in execution_reason
+        assert len(halted_retry_signals().signals) == 1
+        assert _open_questions() == 0
 
     def _assert_parked_silently(self, *, attempts: int = 1) -> None:
         self.task.refresh_from_db()
@@ -240,7 +246,8 @@ class TestOnlyACriticOwnsADispatchBudget(TestCase):
         assert requeue_transient_failed() == 0
 
         assert Task.objects.get(pk=task.pk).status == Task.Status.FAILED
-        assert _open_questions() == 1
+        assert len(halted_retry_signals().signals) == 1
+        assert _open_questions() == 0
 
     def test_a_coding_task_keeps_the_ticket_phase_budget_beside_a_newer_critic(self) -> None:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
@@ -253,4 +260,5 @@ class TestOnlyACriticOwnsADispatchBudget(TestCase):
         assert requeue_transient_failed() == 0
 
         assert HALT_STAMP in Task.objects.get(pk=coding.pk).execution_reason
-        assert _open_questions() == 1
+        assert len(halted_retry_signals().signals) == 1
+        assert _open_questions() == 0

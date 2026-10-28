@@ -16,7 +16,7 @@ from teatree.loop.scanners.owner_actions import OwnerActionScanner
 
 class TestOwnerActionScanner(TestCase):
     def test_scanner_emits_a_real_answered_action_result_once(self) -> None:
-        action = ActionRequest(kind=OwnerActionKind.ATTEST, target="99999", binding="digest")
+        action = ActionRequest(kind=OwnerActionKind.VOID, target="99999", binding="digest")
         card = QuestionCard(
             decision=OwnerDecision.IRREVERSIBLE,
             checked=("The checkout changed.",),
