@@ -5,10 +5,13 @@ test added tomorrow inherits it — a per-file marker is exactly the thing the
 next author forgets, and the symptom is a killed push blamed on flakiness.
 """
 
+from pathlib import Path
+
 import pytest
 
 from tests.conformance._lane_ceiling import apply_lane_ceiling
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    apply_lane_ceiling(items)
+def pytest_collection_finish(session: pytest.Session) -> None:
+    conformance_dir = Path(__file__).parent
+    apply_lane_ceiling([item for item in session.items if item.path.is_relative_to(conformance_dir)])

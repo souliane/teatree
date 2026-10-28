@@ -144,3 +144,8 @@ class TestCollectionHookWrapperForceKeeps:
         nodeids = {i.nodeid for i in items}
         assert "tests/teatree_other/test_z.py" not in nodeids
         assert "tests/quality/test_floor.py" in nodeids
+
+
+class TestConformanceCeilingScope:
+    def test_unrelated_item_keeps_the_project_timeout(self, request: pytest.FixtureRequest) -> None:
+        assert request.node.get_closest_marker("timeout") is None
