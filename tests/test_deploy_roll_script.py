@@ -301,6 +301,15 @@ def test_a_deploy_already_in_flight_refuses_with_tempfail(tmp_path: Path) -> Non
 
 
 def test_the_record_outlasts_the_drain_grace_the_roller_is_given(tmp_path: Path) -> None:
+    date = tmp_path / "bin" / "date"
+    date.parent.mkdir()
+    date.write_text(
+        "#!/bin/bash\n"
+        'if [ -e "$FAKE_DIR/date.once" ]; then echo 1001; exit; fi\n'
+        'touch "$FAKE_DIR/date.once"\necho 1000\n',
+        encoding="utf-8",
+    )
+    date.chmod(0o755)
     _roll(tmp_path, _fork(tmp_path), "origin/main", "--drain-timeout", "7200")
 
     record = next(line for line in (tmp_path / "roll.env").read_text().splitlines() if line.startswith("record="))

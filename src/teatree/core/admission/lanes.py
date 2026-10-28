@@ -4,6 +4,9 @@ from dataclasses import dataclass
 
 from teatree.core.admission.write_ceiling import AdmissionCeiling
 
+#: Two seats cover the measured peak (at most 2 answering tasks created in any 60 s window) and bound the extra load.
+ANSWERING_LANE_WIDTH = 2
+
 
 @dataclass
 class LaneBound:
@@ -26,6 +29,7 @@ class LaneOccupancy:
     expensive: int
     review: int
     retiring: int
+    answering: int = 0
 
     @property
     def cheap(self) -> int:
@@ -50,3 +54,8 @@ class LaneWidths:
     @property
     def cheap(self) -> int:
         return self.review + 1
+
+    @property
+    def answering(self) -> int:
+        """The owner-answering class sits beside the cheap lane, so it shares none of its seats."""
+        return ANSWERING_LANE_WIDTH

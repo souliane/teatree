@@ -6,7 +6,7 @@ When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, **proceed t
 
 1. **Repo is a full clone:** `git -C "$T3_REPO" rev-parse --is-shallow-repository` → `false`
 2. **Full gate set passes:** `cd "$T3_REPO" && t3 tool verify-gates` — runs the commit-stage, push-stage and declared manual CI-job hooks (a bare `prek run --all-files` skips the push-stage and manual gates CI re-runs); if it fails, fix first.
-3. **Affected tests pass:** `cd "$T3_REPO" && bash dev/test-affected.sh` — must be green. The diff-scoped lane, not the whole suite: it escalates to FULL itself on anything it cannot prove local, and CI's sharded lane is the whole-tree authority ([#3994](https://github.com/souliane/teatree/issues/3994)).
+3. **Local tests pass:** inspect `t3 tool affected-tests`; run `bash dev/test-affected.sh` when SCOPED, or the changed test files/node ids when FULL. CI's sharded lane owns whole-tree proof ([#3994](https://github.com/souliane/teatree/issues/3994)).
 4. **Privacy scan passes:** see § Privacy Scan.
 
 ## Worktree, Never the Main Clone, Never `main`
