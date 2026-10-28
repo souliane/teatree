@@ -35,6 +35,7 @@ CI jobs no local hook covers so exit 0 cannot be read as "CI will be green".
 """
 
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -46,6 +47,7 @@ from tempfile import TemporaryDirectory
 import typer
 import yaml
 
+from teatree.core.admission import machine_load
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.hooks.banned_term_registry import load_registry
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
@@ -71,6 +73,8 @@ _MIN_DISK_MIB = 4096
 _MIN_MEMORY_MIB = 2048
 _BYTES_PER_MIB = 1024 * 1024
 _STAGE_DEADLINE_SECONDS = 600
+_PUSH_GATE_MAX_WAIT_SECONDS = 1500
+_MAX_LOAD_DEADLINE_FACTOR = 3.0
 _MAX_SCOPED_FILES = 500
 # prek's own precedence when one directory holds several (measured on prek 0.4.10 and 0.5.3).
 _PREK_CONFIG_NAMES = ("prek.toml", ".pre-commit-config.yaml", ".pre-commit-config.yml")
@@ -285,11 +289,21 @@ def _run_stages(stages: list[tuple[str, list[str]]], repo: Path, env: dict[str, 
     failed: list[str] = []
     incomplete: list[str] = []
     for label, cmd in stages:
+        load1, cores = machine_load.read_load_and_cores()
+        load_factor = min(_MAX_LOAD_DEADLINE_FACTOR, max(1.0, load1 / max(cores, 1)))
+        work_deadline = math.ceil(_STAGE_DEADLINE_SECONDS * load_factor)
+        is_push_stage = label.startswith("pre-push")
+        deadline = work_deadline + (_PUSH_GATE_MAX_WAIT_SECONDS if is_push_stage else 0)
+        measured_cmd = [*cmd[:3], f"{deadline}s", *cmd[4:]]
+        stage_env = (
+            {**env, "T3_PUSH_GATE_LOCK_WAIT_SECONDS": str(_PUSH_GATE_MAX_WAIT_SECONDS)} if is_push_stage else env
+        )
         typer.echo(f"== verify-gates: {label} ==", err=True)
+        typer.echo(f"verify-gates: load {load1:.1f}/{cores}; deadline {deadline}s", err=True)
         # ``check=False`` inherits stdio and lets us collect both stage results.
-        result = run_streamed(cmd, check=False, cwd=repo, env=env)
+        result = run_streamed(measured_cmd, check=False, cwd=repo, env=stage_env)
         if result in {124, 137}:
-            incomplete.append(label)
+            incomplete.append(f"{label} (load {load1:.1f}/{cores}, deadline {deadline}s)")
         elif result != 0:
             failed.append(label)
     return failed, incomplete
@@ -356,7 +370,8 @@ def verify_gates(
 ) -> None:
     """Run the FULL CI-equivalent local gate set (commit, push and manual CI-job stages).
 
-    Runs each prek stage under a 600-second deadline and exits non-zero if ANY
+    Runs each prek stage under a load-aware deadline (600 seconds at idle, plus
+    the lock wait for pre-push) and exits non-zero if ANY
     stage fails. The push-stage run is
     what catches the gates CI fails on but a bare ``prek run --all-files``
     cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
