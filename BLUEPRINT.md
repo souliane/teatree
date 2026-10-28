@@ -84,6 +84,8 @@ Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) — and the 
 
 Ticket-bound bot notifications resolve the first requester to that user's registered Slack identity. A known requester without one falls back to the owner with a visible requester label; an unknown requester keeps the owner route. A failed operator delivery never retries to the owner under the same key. Registered operator DMs use the bot token and must pass the send-proxy decision; public channels remain denied by the owner-restricted bot. Only the owner's own DM receives the send-proxy self-DM carve-out.
 
+Question replies and card taps bind to the same ticket addressee that received the card. An operator's bound answer reaches only that question; unrelated messages, priority directives, and live-session controls keep the owner-only route. App-posted replies survive the self-filter only in a pending card thread addressed to their recorded author.
+
 Forge issue sync, loop issue intake, unlinked GitLab MR sync, and Slack work dispatch record the first requester; a work ticket filed from a Slack conversation inherits that requester. A linked MR leaves requester attribution to the issue intake.
 
 **Ticket DM identity (#5361).** `TicketDmThread` owns one outbound Slack DM root per ticket, with a generation incremented only after a deleted root is proven. `TicketDmPost` records each confirmed header, note, card, chase, and answer reply in that generation; its channel and message timestamp pair is unique. `ThreadBinding` still maps inbound roots to tickets. A question card keeps its own mirror timestamp even when posted inside the ticket root, so button taps still address that card.

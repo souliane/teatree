@@ -17,7 +17,7 @@ for the after-receipt visibility DM, the always-on receipt
 Out of scope of the on-behalf concerns (the posture gate,
 #949): those govern posts the agent makes
 *as the user* to a colleague/customer surface. ``notify_user`` itself is
-the **bot** talking to its own operator — a different concern with a
+the **bot** talking to the ticket requester or owner — a different concern with a
 different doctrine.
 
 :func:`notify_user_outcome` is the egress; it returns a :class:`NotifyOutcome`
@@ -456,7 +456,9 @@ def _deliver_dm(
 
 def _operator_proxy_gate(text: str, idempotency_key: str, addressee: Addressee) -> NotifyOutcome | None:
     verdict = _route_through_send_proxy(text, destination=addressee.user_id, is_self_dm=addressee.is_owner)
-    if addressee.is_owner or (verdict is not None and verdict.allowed and not verdict.payload_redacted):
+    if addressee.is_owner or (
+        verdict is not None and verdict.allowed and not verdict.payload_redacted and not verdict.redaction_failed
+    ):
         return None
     error = verdict.reason if verdict is not None else "send-proxy unavailable"
     if verdict is not None and verdict.payload_redacted:
@@ -475,6 +477,7 @@ def _route_through_send_proxy(text: str, *, destination: str, is_self_dm: bool) 
                 payload=text,
                 action="notify_user",
                 is_self_dm=is_self_dm,
+                strict_redaction=not is_self_dm,
             ),
         )
     except Exception as exc:  # noqa: BLE001 — send-proxy audit is a side path; never break notify.

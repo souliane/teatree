@@ -329,6 +329,8 @@ depends_on = [
   "teatree.core.modelkit",
   "teatree.core.admission.pr_start_cap",
   "teatree.core.owner_question_message",
+  "teatree.core.owner_dm.question_ticket",
+  "teatree.core.notify_targets",
   "teatree.core.forge_url",
   "teatree.core.models.errors",
   "teatree.core.models",
@@ -906,7 +908,17 @@ depends_on = ["teatree.agents", "teatree.loop.inbound_classifier"]
 # mirroring teatree.loop.inbound_reading above.
 path = "teatree.loop.question_binding"
 layer = "domain"
-depends_on = ["teatree.core.models", "teatree.core.owner_question_message", "teatree.loop.inbound_reading"]
+depends_on = ["teatree.core.models", "teatree.core.notify_targets", "teatree.core.owner_question_message", "teatree.loop.inbound_reading"]
+
+[[modules]]
+path = "teatree.core.notify_targets"
+layer = "domain"
+depends_on = ["teatree.config", "teatree.core.models", "teatree.core.owner_dm.question_ticket", "teatree.types"]
+
+[[modules]]
+path = "teatree.core.owner_dm.question_ticket"
+layer = "domain"
+depends_on = ["teatree.core.models"]
 
 [[modules]]
 # The shared paginated ``check-runs`` argv + page-parser (#4090 sibling). A pure leaf

@@ -123,6 +123,7 @@ peer_instances
 plan_edit_gate_enabled
 pr_review_backend
 private_repos
+operator_oauth_apps
 provision_fast_step_timeout_seconds
 provision_max_concurrency
 provision_ram_ceiling_percent

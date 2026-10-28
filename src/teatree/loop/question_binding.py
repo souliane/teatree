@@ -23,8 +23,8 @@ wins pick it replaces silently answered the wrong row: with 149 questions
 mirrored into a single DM, a reply to a three-day-old question resolved
 whichever had been posted last, and ✅-acked the owner for it.
 
-Every rung binds only a reply whose recorded author is the owner's Slack user id;
-any other reply, or an unknown owner id, binds nothing and is left for the DM path.
+Every rung binds only a reply whose recorded author is the question's Slack
+addressee: the ticket requester when linked, otherwise the configured owner.
 
 A tap on an option button is the strongest evidence of all: :func:`answer_from_click` joins the
 tapped message onto its question by channel and own ``ts``, then the root, and records the option's label.
@@ -45,6 +45,7 @@ from teatree.core.models import PendingChatInjection, TicketDmPost, TicketDmThre
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.models.question_actions import is_action_question
 from teatree.core.models.question_text import options_digest
+from teatree.core.notify_targets import question_addressee
 from teatree.core.owner_question_message import (
     ALREADY_ANSWERED,
     NO_LONGER_NEEDED,
@@ -103,6 +104,11 @@ def _is_the_owner(user_id: str, owner_user_id: str) -> bool:
     return bool(owner_user_id) and user_id == owner_user_id
 
 
+def is_question_addressee(question: DeferredQuestion, user_id: str, backend: "MessagingBackend") -> bool:
+    target = question_addressee(question, owner_id=configured_owner_id(backend)).user_id
+    return bool(target) and user_id == target
+
+
 def bind_reply(
     reply: PendingChatInjection, *, reader: InboundReader, backend: "MessagingBackend", text: str = ""
 ) -> BoundAnswer | AmbiguousCards | UnmatchedCardThread | None:
@@ -111,9 +117,7 @@ def bind_reply(
     *text* overrides the row body for a caller that coalesces several rows into
     one logical turn. See the module docstring for the binding ladder.
     """
-    if not _is_the_owner(reply.user_id, configured_owner_id(backend)):
-        _log_reply(reply, "rejected: author is not the owner")
-        return None
+    owner_reply = _is_the_owner(reply.user_id, configured_owner_id(backend))
     body = text or reply.text
     addressed = _addressed(body)
     if addressed is not None:
@@ -128,19 +132,22 @@ def bind_reply(
         ):
             stop = UnmatchedCardThread(CardThreadStop.NOT_WAITING, question_id)
             _log_reply(reply, f"ignored: {stop.reason}")
-            return stop
+            return stop if owner_reply else None
     else:
         inferred = _inferred_cards(reply, backend=backend, body=body, reader=reader)
         if isinstance(inferred, AmbiguousCards):
             _log_reply(reply, f"ambiguous: questions {inferred.question_ids} share this thread")
-            return inferred
+            return inferred if owner_reply else None
         if isinstance(inferred, UnmatchedCardThread):
             _log_reply(reply, f"ignored: {inferred.reason}")
-            return inferred
+            return inferred if owner_reply else None
         question, key = inferred
-    if question is None:
-        no_card = "no pending card in this thread" if reply.thread_ts else "no pending card"
-        _log_reply(reply, f"ignored: {key or no_card}")
+    if question is None or not is_question_addressee(question, reply.user_id, backend):
+        if question is None:
+            no_card = "no pending card in this thread" if reply.thread_ts else "no pending card"
+            _log_reply(reply, f"ignored: {key or no_card}")
+        else:
+            _log_reply(reply, "rejected: author is not the addressee")
         return None
     return _bind_found(reply, question=question, body=body, reader=reader, key=key)
 
@@ -237,12 +244,9 @@ def answer_from_click(
     backend: "MessagingBackend",
     on_answer: Callable[[DeferredQuestion], object] | None = None,
 ) -> bool:
-    """Record the option the owner tapped and close the card; ``True`` only when this tap answered it."""
+    """Record the addressee's tapped option and close the card; ``True`` only when this tap answered it."""
     tap = _parse_tap(payload)
     if tap is None:
-        return False
-    if not _is_the_owner(tap.user_id, configured_owner_id(backend)):
-        logger.warning("Refused a tap on the card at message %s: not the owner", tap.root_ts)
         return False
     question = (
         DeferredQuestion.objects.filter(
@@ -254,6 +258,9 @@ def answer_from_click(
         .first()
     )
     if question is None:
+        return False
+    if not is_question_addressee(question, tap.user_id, backend):
+        logger.warning("Refused a tap on the card at message %s: not the owner or ticket addressee", tap.root_ts)
         return False
     if question.is_pending:
         label = _tapped_label(question, tap)

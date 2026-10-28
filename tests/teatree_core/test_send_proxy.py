@@ -91,6 +91,14 @@ class TestSelfDmNeverLockout:
 
 
 class TestUnconditionalRedaction:
+    def test_unreadable_redaction_policy_is_visible_to_operator_dm_callers(self) -> None:
+        _set_allowlist(["C_TEAM"])
+        with patch("teatree.core.send_proxy.overlay_privacy_rules", side_effect=RuntimeError("policy unavailable")):
+            verdict = route_send(_request(destination="C_TEAM", strict_redaction=True))
+        assert verdict.redaction_failed
+        assert not verdict.allowed
+        assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.DENIED.value
+
     def test_redacts_a_matching_term_in_the_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _set_allowlist(["C_TEAM"])
         monkeypatch.setattr("teatree.core.send_proxy._redact_terms", lambda _overlay: ["SECRETCORP"])

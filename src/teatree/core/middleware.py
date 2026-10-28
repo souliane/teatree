@@ -24,7 +24,7 @@ class OperatorLoginRequiredMiddleware:
         self.get_response = get_response
 
     def __call__(self, request: "HttpRequest") -> "HttpResponse":
-        if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/login/local/")):
+        if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/login/local/", "/login/oauth/")):
             return self.get_response(request)
         if request.user.is_authenticated and request.user.is_staff:
             return self.get_response(request)

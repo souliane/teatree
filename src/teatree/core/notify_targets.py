@@ -17,12 +17,13 @@ from html import escape
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from teatree.config import load_config
-from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models.operator_identity import OperatorIdentity, canonical_operator_key
+from teatree.core.owner_dm.question_ticket import single_question_ticket_id
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
-    from teatree.core.models import Ticket
+    from teatree.core.backend_protocols import MessagingBackend
+    from teatree.core.models import DeferredQuestion, Ticket
 
 
 @runtime_checkable
@@ -66,6 +67,10 @@ def resolve_ticket_addressee(ticket_id: int | None, *, owner_id: str) -> Address
     return addressee_for(ticket, owner_id=owner_id) if ticket is not None else Addressee(owner_id)
 
 
+def question_addressee(question: "DeferredQuestion", *, owner_id: str) -> Addressee:
+    return resolve_ticket_addressee(single_question_ticket_id(question), owner_id=owner_id)
+
+
 def label_fallback(text: str, blocks: list[RawAPIDict] | None, requester: str) -> tuple[str, list[RawAPIDict] | None]:
     if not requester:
         return text, blocks
@@ -83,7 +88,7 @@ def registered_operator_slack_ids() -> frozenset[str]:
     )
 
 
-def configure_operator_dm_policy(backend: MessagingBackend | None) -> MessagingBackend | None:
+def configure_operator_dm_policy(backend: "MessagingBackend | None") -> "MessagingBackend | None":
     if isinstance(backend, OperatorDmConfigurable):
         backend.allow_operator_dms(registered_operator_slack_ids)
     return backend
@@ -170,6 +175,7 @@ __all__ = [
     "addressee_for",
     "configure_operator_dm_policy",
     "label_fallback",
+    "question_addressee",
     "resolve_ticket_addressee",
     "resolve_user_channel",
     "resolve_user_id",

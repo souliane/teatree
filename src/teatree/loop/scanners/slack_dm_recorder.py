@@ -10,8 +10,8 @@ Two write-side filters apply, so the consumer inherits them without re-implement
 
 * :func:`teatree.loop.scanners.slack_self_filter.filter_self_messages` drops the bot's
     OWN outbound DMs, keyed on the bot's resolved identity (#1346).
-* An app-posted owner reply survives only when its Slack thread holds a recorded
-    owner card. Other app posts still cannot enter the reactive work queue (#1941).
+* An app-posted reply survives only when its Slack thread holds a recorded
+    card addressed to that author. Other app posts cannot enter the reactive work queue (#1941).
 
 Fail-closed (the identity filter only): when the bot's own identity cannot be resolved,
 :func:`filter_self_messages` returns ``None`` and nothing is recorded — better silent
@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pending_chat_injection import DmContext, PendingChatInjection
-from teatree.loop.question_binding import cards_in_thread, configured_owner_id
+from teatree.loop.question_binding import cards_in_thread, is_question_addressee
 from teatree.loop.scanners.slack_self_filter import (
     OwnSlackIdentity,
     filter_self_messages,
@@ -84,22 +84,22 @@ class SlackDmRecorder:
             ):
                 continue
             try:
-                owner_card_reply = app_posted and self._owner_card_reply(event)
+                addressee_card_reply = app_posted and self._addressee_card_reply(event)
             except Exception:
                 logger.exception("Slack thread read failed for DM event %s; retrying", _event_ts(event))
                 self.retry_events.append(event)
                 continue
-            if app_posted and not owner_card_reply:
+            if app_posted and not addressee_card_reply:
                 if log_ignored and _event_thread_ts(event):
                     logger.info("Slack reply %s ignored: posted through an app token", _event_ts(event))
                 continue
             recorded += self._record_one(event)
         return recorded
 
-    def _owner_card_reply(self, event: RawAPIDict) -> bool:
+    def _addressee_card_reply(self, event: RawAPIDict) -> bool:
         thread_ts = _event_thread_ts(event)
-        owner_id = configured_owner_id(self.backend)
-        if not thread_ts or not owner_id or _str_field(event, "user") != owner_id or event.get("bot_id"):
+        user_id = _str_field(event, "user")
+        if not thread_ts or not user_id or event.get("bot_id"):
             return False
         cards, _ = cards_in_thread(
             channel=_str_field(event, "channel"),
@@ -107,7 +107,12 @@ class SlackDmRecorder:
             before_ts=_event_ts(event),
             backend=self.backend,
         )
-        return any(card.is_pending and card.audience == DeferredQuestion.Audience.OWNER_QUESTION for card in cards)
+        return any(
+            card.is_pending
+            and card.audience == DeferredQuestion.Audience.OWNER_QUESTION
+            and is_question_addressee(card, user_id, self.backend)
+            for card in cards
+        )
 
     def _record_one(self, event: RawAPIDict) -> bool:
         ts = _event_ts(event)

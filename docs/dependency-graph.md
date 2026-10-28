@@ -75,6 +75,8 @@ graph TD
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.admission.pr_start_cap
     teatree.core --> teatree.core.owner_question_message
+    teatree.core --> teatree.core.owner_dm.question_ticket
+    teatree.core --> teatree.core.notify_targets
     teatree.core --> teatree.core.forge_url
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
@@ -336,8 +338,14 @@ graph TD
     teatree.loop.inbound_reading --> teatree.agents
     teatree.loop.inbound_reading --> teatree.loop.inbound_classifier
     teatree.loop.question_binding --> teatree.core.models
+    teatree.loop.question_binding --> teatree.core.notify_targets
     teatree.loop.question_binding --> teatree.core.owner_question_message
     teatree.loop.question_binding --> teatree.loop.inbound_reading
+    teatree.core.notify_targets --> teatree.config
+    teatree.core.notify_targets --> teatree.core.models
+    teatree.core.notify_targets --> teatree.core.owner_dm.question_ticket
+    teatree.core.notify_targets --> teatree.types
+    teatree.core.owner_dm.question_ticket --> teatree.core.models
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager
     teatree.loop.loop_scoping --> teatree.loop.session_identity
     teatree.loop.statusline_loop_chunks --> teatree.loop.loop_scoping

@@ -63,6 +63,7 @@ from teatree.loop.question_binding import (
     BoundAnswer,
     apply_bound_answer,
     bind_reply,
+    configured_owner_id,
     log_coalesced_replies,
 )
 from teatree.loop.slack_answer.coalescing import _coalesce, _Unit
@@ -448,7 +449,7 @@ def _process_unit(
         if unit.lead.thread_ts
         else None
     )
-    if _reject_foreign_unit(backend, unit, report):
+    if _handle_foreign_question(backend, unit, report, reader):
         return
     if _react_eyes_once(backend, unit):
         report.eyes_reacted += 1
@@ -478,6 +479,23 @@ def _process_unit(
         return
 
     _route_unbound(backend, unit, report, read, binding)
+
+
+def _handle_foreign_question(
+    backend: MessagingBackend, unit: _Unit, report: SlackAnswerReport, reader: InboundReader
+) -> bool:
+    owner_id = configured_owner_id(backend)
+    if owner_id and unit.lead.user_id == owner_id:
+        return False
+    result = bind_reply(unit.lead, reader=memoized_reader(reader), backend=backend, text=unit.text)
+    if not isinstance(result, BoundAnswer):
+        _reject_foreign_unit(backend, unit, report)
+        return True
+    if _react_eyes_once(backend, unit):
+        report.eyes_reacted += 1
+    log_coalesced_replies(unit.rows, result)
+    _answer_or_acknowledge_question(backend, unit, report, result)
+    return True
 
 
 def _route_unbound(

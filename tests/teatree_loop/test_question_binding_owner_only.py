@@ -2,10 +2,11 @@
 
 from unittest.mock import PropertyMock, patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from teatree.backends.messaging_noop import NoopMessagingBackend
-from teatree.core.models import DmContext, PendingChatInjection
+from teatree.core.models import DmContext, OperatorIdentity, PendingChatInjection, Session, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_binding import bind_reply
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
@@ -32,6 +33,40 @@ def _scan(backend: FakeMessaging) -> FakeMessaging:
 
 
 class TestOnlyTheOwnersReplyBinds(TestCase):
+    def _operator_question(self) -> DeferredQuestion:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        question = _question("Ship it?", slack_ts="100.0")
+        question.task_session = Session.objects.create(ticket=ticket)
+        question.save(update_fields=["task_session"])
+        return question
+
+    def test_registered_requester_can_bind_own_question_but_owner_cannot(self) -> None:
+        question = self._operator_question()
+        operator_reply = _reply(f"#{question.pk} yes", author="U-OP")
+        owner_reply = PendingChatInjection.record(
+            channel=_CHANNEL,
+            slack_ts="401.0",
+            text=f"#{question.pk} yes",
+            context=DmContext(user_id=OWNER_SLACK_ID),
+        )
+
+        assert bind_reply(operator_reply, reader=_statement, backend=FakeMessaging()) is not None
+        assert owner_reply is not None
+        assert bind_reply(owner_reply, reader=_statement, backend=FakeMessaging()) is None
+
+    def test_reactive_cycle_applies_registered_requesters_answer(self) -> None:
+        question = self._operator_question()
+        _reply("yes", author="U-OP", thread_ts="100.0")
+
+        report = run_slack_answer_cycle(messaging_resolver=lambda _o: RecordingBackend(), reader=CountingReader())
+
+        question.refresh_from_db()
+        assert report.answered_question == 1
+        assert question.answer_text == "yes"
+
     def _assert_unbound(self, question: DeferredQuestion, backend: FakeMessaging, reply: PendingChatInjection) -> None:
         question.refresh_from_db()
         reply.refresh_from_db()

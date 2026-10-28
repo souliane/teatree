@@ -135,6 +135,26 @@ class TestNotifyUser(TestCase):
         assert outcome.reason is NotifyReason.DELIVERY_FAILED
         backend.post_message.assert_not_called()
 
+    def test_operator_dm_refuses_an_unreadable_redaction_policy(self) -> None:
+        user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-OP")
+        ticket = Ticket.objects.create(requested_by="github:alice")
+        backend = _backend()
+        with patch(
+            "teatree.core.notify.route_send",
+            return_value=SendVerdict(allowed=True, payload="question", allowlist_ok=True, redaction_failed=True),
+        ):
+            outcome = notify_user_outcome(
+                "question",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="operator-policy-unreadable",
+                audience=NotifyAudience.OWNER_QUESTION,
+                options=NotifyOptions(backend=backend, user_id="U_ME", ticket_id=ticket.pk),
+            )
+        assert outcome.reason is NotifyReason.DELIVERY_FAILED
+        backend.post_message.assert_not_called()
+
     def test_requester_without_chat_identity_goes_to_owner_with_label(self) -> None:
         user = get_user_model().objects.create_superuser(username="alice", email="", password="unused")
         OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
