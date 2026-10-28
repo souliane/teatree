@@ -111,7 +111,9 @@ def _apply(task: Task, run_id: str, folds: list[dict[str, str]], gaps: list[tupl
                     ),
                 ),
             )
-        task.ticket.merge_extra(set_keys={"sweep_fold_proposals": {str(task.pk): {"folds": folds, "run_id": run_id}}})
+        task.ticket.merge_extra(
+            merge_into_dicts={"sweep_fold_proposals": {str(task.pk): {"folds": folds, "run_id": run_id}}}
+        )
     except SweepProposalError:
         raise
     except (Exception, SystemExit) as exc:

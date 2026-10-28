@@ -67,6 +67,23 @@ class TestSweepProposalRecording(TestCase):
         assert run.examined_count == 0
         assert run.changed_count == 0
 
+    def test_later_sweep_preserves_earlier_proposal_record(self) -> None:
+        proposals = {"examined": [], "folds": [], "gaps": []}
+        self._record(proposals)
+        first_task_id = self.task.pk
+        self.task = Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            phase="backlog_sweep",
+            execution_reason="ASK-GATE: return proposals",
+        )
+        self.task.claim(claimed_by="loop-slot")
+
+        self._record(proposals)
+
+        self.ticket.refresh_from_db()
+        assert set(self.ticket.extra["sweep_fold_proposals"]) == {str(first_task_id), str(self.task.pk)}
+
     def test_folds_are_stored_and_ask_once_without_forge_mutation(self) -> None:
         member = "https://github.com/example-org/example-repo/issues/1"
         host = "https://github.com/example-org/example-repo/issues/2"
