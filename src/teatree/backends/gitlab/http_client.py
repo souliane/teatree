@@ -34,6 +34,7 @@ from teatree.backends.http_retry import BoundedRetryTransport, SleepFn, env_floa
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlays.overlay_credentials import overlay_pass_key
 from teatree.llm.credentials import Credential, CredentialError, CredentialSpec
+from teatree.utils.forge_http import client_for_url
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         request_timeout = timeout if timeout is not None else self._timeout
 
         def attempt() -> httpx.Response:
-            return httpx.get(url, headers=self._headers(), timeout=request_timeout)
+            return client_for_url(url).get(url, headers=self._headers(), timeout=request_timeout)
 
         return self._run(attempt, idempotent=True)
 
@@ -188,7 +189,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
-            return httpx.post(url, headers=self._headers(), json=json, timeout=self._timeout)
+            return client_for_url(url).post(url, headers=self._headers(), json=json, timeout=self._timeout)
 
         return self._run(attempt, idempotent=idempotent)
 
@@ -196,7 +197,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
-            return httpx.put(url, headers=self._headers(), json=json, timeout=self._timeout)
+            return client_for_url(url).put(url, headers=self._headers(), json=json, timeout=self._timeout)
 
         # PUT is idempotent by HTTP semantics — safe to replay on a response-phase
         # failure — but a caller that reconciles a possibly-landed write ITSELF (the
@@ -207,7 +208,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
-            return httpx.delete(url, headers=self._headers(), timeout=self._timeout)
+            return client_for_url(url).delete(url, headers=self._headers(), timeout=self._timeout)
 
         return self._run(attempt, idempotent=True)
 
@@ -336,8 +337,9 @@ class GitLabHTTPClient(BoundedRetryTransport):
     def upload_file(self, project_id: int, filepath: str) -> RawMR | None:
         self._require_token()
         with Path(filepath).open("rb") as f:
-            response = httpx.post(
-                self._url(f"projects/{project_id}/uploads"),
+            url = self._url(f"projects/{project_id}/uploads")
+            response = client_for_url(url).post(
+                url,
                 headers=self._headers(),
                 files={"file": (Path(filepath).name, f)},
                 timeout=_UPLOAD_TIMEOUT_SECONDS,
@@ -368,7 +370,7 @@ class GitLabHTTPClient(BoundedRetryTransport):
         graphql_url = self.base_url.replace("/api/v4", "/api/graphql")
 
         def attempt() -> httpx.Response:
-            return httpx.post(
+            return client_for_url(graphql_url).post(
                 graphql_url,
                 headers=self._headers(),
                 json={"query": query, "variables": variables or {}},

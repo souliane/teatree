@@ -18,19 +18,19 @@ def test_unchecked_runner_refuses_empty_token(monkeypatch: pytest.MonkeyPatch) -
 
 def test_post_accepts_empty_success_body(monkeypatch: pytest.MonkeyPatch) -> None:
     run = Mock(return_value=CompletedProcess(["gh"], 0, stdout="", stderr=""))
-    monkeypatch.setattr(api, "run_checked", run)
+    monkeypatch.setattr(api, "_run_gh", run)
     assert api._gh_api_post("repos/example/repo/hooks/7/pings", {}, token="test-token") is None
-    argv = run.call_args.args[0]
-    assert argv[-2:] == ["--input", "-"]
+    argv = run.call_args.args
+    assert argv[-2:] == ("--input", "-")
     assert run.call_args.kwargs["stdin_text"] == "{}"
 
 
 def test_delete_sends_no_body(monkeypatch: pytest.MonkeyPatch) -> None:
     run = Mock(return_value=CompletedProcess(["gh"], 0, stdout="", stderr=""))
-    monkeypatch.setattr(api, "run_checked", run)
+    monkeypatch.setattr(api, "_run_gh", run)
     api._gh_api_delete("repos/example/repo/hooks/7", token="test-token")
-    argv = run.call_args.args[0]
-    assert argv[3:5] == ["--method", "DELETE"]
+    argv = run.call_args.args
+    assert argv[3:5] == ("--method", "DELETE")
     assert "--input" not in argv
     assert "stdin_text" not in run.call_args.kwargs
 
@@ -47,6 +47,6 @@ def test_strict_paginated_read_rejects_unreadable_response(
     monkeypatch: pytest.MonkeyPatch, stdout: str, complaint: str
 ) -> None:
     run = Mock(return_value=CompletedProcess(["gh"], 0, stdout=stdout, stderr=""))
-    monkeypatch.setattr(api, "run_checked", run)
+    monkeypatch.setattr(api, "_run_gh", run)
     with pytest.raises(ValueError, match=f"{complaint}$"):
         api.gh_api_get_paginated("repos/example/repo/hooks", token="test-token", strict=True)

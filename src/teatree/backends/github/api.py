@@ -1,6 +1,6 @@
-"""GitHub ``gh`` CLI request helpers — the low-level transport concern.
+"""GitHub CLI and pooled API request helpers — the low-level transport concern.
 
-Free functions wrapping ``gh`` / ``gh api`` (GET / paginated GET / search /
+Free functions wrapping ``gh`` and pooled API calls (GET / paginated GET / search /
 POST / PATCH) plus the issue-URL parse and the HTTP 404 predicate, so
 :class:`teatree.backends.github.GitHubCodeHost` stays focused on the cross-host
 Protocol surface and under the module-health cap — the same split shape as
@@ -11,29 +11,26 @@ import json
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from typing import cast
 from urllib.parse import urlparse
 
+import httpx
+
 from teatree.types import RawAPIDict
+from teatree.utils.forge_http import client_for_url
 from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
-# Bound every ``gh`` subprocess so a stalled TLS handshake or a hung read degrades
-# (raises TimeoutExpired → the caller's fail-open) instead of wedging the
-# single-threaded loop indefinitely. Generous enough not to false-trip a
-# fully-paginated fetch; the GitLab client already bounds each request at 10s.
+# Bound each forge request and non-API ``gh`` subprocess so a network stall cannot wedge a loop.
 _FORGE_READ_TIMEOUT_SECONDS = 60.0
 
 
-def _run_gh(*args: str, token: str = "", timeout: float | None = None) -> CompletedProcess[str]:
-    """Run a ``gh`` CLI command and return the result.
-
-    Auth via ``GH_TOKEN`` env, never ``--header``: only ``gh api`` accepts
-    ``--header``; injecting it into ``gh pr create`` fails with
-    ``unknown flag --header``. *timeout* (seconds) bounds the subprocess; the
-    default ``None`` leaves every existing caller unbounded as before.
-    """
+def _run_gh(
+    *args: str, token: str = "", timeout: float | None = None, stdin_text: str | None = None
+) -> CompletedProcess[str]:
+    """Route API calls through the host pool; keep non-API ``gh`` commands on the CLI."""
     if not token:
         raise CommandFailedError(
             list(args),
@@ -41,7 +38,113 @@ def _run_gh(*args: str, token: str = "", timeout: float | None = None) -> Comple
             "",
             "github_token_pass_key resolved no token; refusing ambient gh authentication",
         )
-    return run_checked(list(args), env=_gh_env(token), timeout=timeout)
+    if args[:2] == ("gh", "api"):
+        return _run_pooled_api(args, token=token, timeout=timeout, stdin_text=stdin_text)
+    if stdin_text is None:
+        return run_checked(list(args), env=_gh_env(token), timeout=timeout)
+    return run_checked(list(args), env=_gh_env(token), timeout=timeout, stdin_text=stdin_text)
+
+
+def _api_url(endpoint: str) -> str:
+    host = os.environ.get("GH_HOST", "github.com").strip().lower() or "github.com"
+    base = "https://api.github.com" if host in {"github.com", "api.github.com"} else f"https://{host}/api/v3"
+    return f"{base}/{endpoint.lstrip('/')}"
+
+
+@dataclass(frozen=True, slots=True)
+class _ApiOptions:
+    method: str
+    headers: dict[str, str]
+    fields: dict[str, str]
+    paginate: bool
+    slurp: bool
+    silent: bool
+    jq: str
+
+
+def _parse_api_options(args: tuple[str, ...], token: str) -> _ApiOptions:
+    method = "POST" if args[2] == "graphql" else "GET"
+    headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}"}
+    fields: dict[str, str] = {}
+    flags: set[str] = set()
+    jq = ""
+    index = 3
+    while index < len(args):
+        option = args[index]
+        if option in {"--header", "--method", "--jq", "-f", "--field", "--input"}:
+            value = args[index + 1]
+            if option == "--header":
+                name, _, content = value.partition(":")
+                headers[name] = content.strip()
+            elif option == "--method":
+                method = value
+            elif option == "--jq":
+                jq = value
+            elif option in {"-f", "--field"}:
+                name, _, content = value.partition("=")
+                fields[name] = content
+            index += 2
+            continue
+        if option in {"--paginate", "--slurp", "--silent"}:
+            flags.add(option)
+            index += 1
+            continue
+        raise CommandFailedError(list(args), 2, "", f"Unsupported pooled gh api option: {option}")
+    return _ApiOptions(method, headers, fields, "--paginate" in flags, "--slurp" in flags, "--silent" in flags, jq)
+
+
+def _request_api(
+    args: tuple[str, ...], url: str, options: _ApiOptions, *, timeout: float | None, body: str | None
+) -> httpx.Response:
+    try:
+        headers = {**options.headers, "Content-Type": "application/json"} if body is not None else options.headers
+        response = client_for_url(url).request(
+            options.method,
+            url,
+            headers=headers,
+            content=body,
+            json=options.fields or None,
+            timeout=timeout or _FORGE_READ_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise CommandFailedError(list(args), 1, "", f"gh api: HTTP {exc.response.status_code}") from exc
+    except httpx.RequestError as exc:
+        raise CommandFailedError(list(args), 1, "", f"gh api: {type(exc).__name__}: {exc}") from exc
+    return response
+
+
+def _api_pages(args: tuple[str, ...], url: str, options: _ApiOptions, *, timeout: float | None) -> list[object]:
+    pages: list[object] = []
+    first_origin = str(httpx.URL(url).copy_with(path="", query=None, fragment=None))
+    for _ in range(1000):
+        response = _request_api(args, url, options, timeout=timeout, body=None)
+        pages.append(response.json())
+        next_url = response.links.get("next", {}).get("url")
+        if not next_url:
+            return pages
+        if str(httpx.URL(next_url).copy_with(path="", query=None, fragment=None)) != first_origin:
+            raise CommandFailedError(list(args), 1, "", "gh api: pagination crossed forge host")
+        url = next_url
+    raise CommandFailedError(list(args), 1, "", "gh api: pagination limit exceeded")
+
+
+def _run_pooled_api(
+    args: tuple[str, ...], *, token: str, timeout: float | None, stdin_text: str | None
+) -> CompletedProcess[str]:
+    endpoint = args[2]
+    options = _parse_api_options(args, token)
+
+    url = _api_url(endpoint)
+    if endpoint == "graphql":
+        url = _api_url("graphql").replace("/api/v3/graphql", "/api/graphql")
+    if options.paginate:
+        pages = _api_pages(args, url, options, timeout=timeout)
+        stdout = json.dumps(pages if options.slurp else pages[-1])
+    else:
+        response = _request_api(args, url, options, timeout=timeout, body=stdin_text)
+        stdout = str(response.json()["sha"]) + "\n" if options.jq == ".sha" else response.text
+    return CompletedProcess(args=list(args), returncode=0, stdout="" if options.silent else stdout, stderr="")
 
 
 def is_not_found(exc: CommandFailedError) -> bool:
@@ -165,15 +268,7 @@ def gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDic
 
 
 def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str = "") -> object:
-    """Call ``gh api`` with a body-carrying verb (POST / PATCH) and return parsed JSON.
-
-    The token is passed via ``GH_TOKEN`` env, never ``--header
-    "Authorization: Bearer <token>"`` — an argv header is visible in
-    ``/proc/<pid>/cmdline`` and ``ps`` for the lifetime of the subprocess.
-    Every write is timeout-bounded so a hung TLS handshake degrades (raises
-    ``TimeoutExpired`` → the caller's fail-open) instead of wedging the
-    single-threaded loop.
-    """
+    """Send a body-carrying API write with a request-scoped token and bounded timeout."""
     if not token:
         raise CommandFailedError(
             ["gh", "api", endpoint],
@@ -181,8 +276,8 @@ def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str
             "",
             "github_token_pass_key resolved no token; refusing ambient gh authentication",
         )
-    result = run_checked(
-        [
+    result = _run_gh(
+        *[
             "gh",
             "api",
             endpoint,
@@ -194,7 +289,7 @@ def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str
             "-",
         ],
         stdin_text=json.dumps(payload),
-        env=_gh_env(token),
+        token=token,
         timeout=_FORGE_READ_TIMEOUT_SECONDS,
     )
     return json.loads(result.stdout) if result.stdout.strip() else None

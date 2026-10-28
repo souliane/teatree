@@ -664,6 +664,8 @@ Every external API concern is a `@runtime_checkable Protocol` in `teatree.core.b
 | `CIService` — pipeline cancel/trigger/quality-check | `GitLabCIService` |
 | `MessagingBackend` — mentions/DMs/post/reply/update (in place, always with blocks)/react | `SlackBotBackend`, `NoopMessagingBackend` |
 
+Forge API transport shares one process-wide HTTPX client per complete origin (scheme, host and port), with at most eight live and eight idle connections. GitLab REST, GraphQL, upload and trace reads and GitHub `gh api` REST/GraphQL calls use the same per-host pool; credentials remain on individual requests. Non-API `gh` commands retain their CLI path.
+
 Multi-field request parameters are grouped into frozen `slots=True` dataclasses (`PullRequestSpec`). `repo + pr_iid` is the natural unit on both code hosts — protocol methods never accept free-form PR URLs.
 
 Review tracking reads inline discussion threads through `list_review_threads` and resolves a confirmed thread through `resolve_review_thread`; an unreadable thread list fails loudly. A GitLab follow-up issue can atomically resolve discussions with `create_issue_resolving_threads(IssueResolutionSpec)`, while GitHub refuses that operation and uses its GraphQL thread-resolution method after the issue is verified. The ordinary `create_issue` contract stays unchanged.
