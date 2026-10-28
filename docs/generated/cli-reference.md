@@ -1627,6 +1627,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           touched; exit --skip-code when none.               │
 │ ci-trigger                Dispatch ``eval-ci-heal.yml`` for a PR branch and  │
 │                           print the head SHA it keys on.                     │
+│ baseline-status           Report whether a recent full-suite green proof     │
+│                           over the current catalog is on record.             │
 │ ci-status                 Resolve one eval-ci-heal run's verdict (and, on    │
 │                           failure, its triaged reds).                        │
 │ green-proof               Assert the merged eval-heal JSON proves a          │
@@ -2012,6 +2014,29 @@ Usage: t3 eval ci-trigger [OPTIONS]
 │    --repo              TEXT  owner/repo the eval-ci-heal workflow lives in.  │
 │                              [default: souliane/teatree]                     │
 │    --help                    Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval baseline-status`
+
+```
+Usage: t3 eval baseline-status [OPTIONS]
+
+ Report whether a recent full-suite green proof over the current catalog is on
+ record.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ref                 TEXT                  Branch whose eval-ci-heal        │
+│                                             full-suite runs count as the     │
+│                                             baseline.                        │
+│                                             [default: main]                  │
+│ --max-age-days        INTEGER RANGE [x>=1]  Oldest full-suite proof still    │
+│                                             called current.                  │
+│                                             [default: 7]                     │
+│ --repo                TEXT                  owner/repo the eval-ci-heal      │
+│                                             workflow lives in.               │
+│                                             [default: souliane/teatree]      │
+│ --help                                      Show this message and exit.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
