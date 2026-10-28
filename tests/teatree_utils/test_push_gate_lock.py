@@ -181,10 +181,18 @@ class TestThePushGateRunsNoIncrementalSweepWithoutTheLock:
         assert first_runs[2].ended <= second_runs[2].started
 
 
-def test_push_gate_sizes_the_worker_pool_before_waiting_for_the_lock() -> None:
+def test_push_gate_acquires_before_sizing_the_worker_pool() -> None:
     body = _PUSH_GATE.read_text(encoding="utf-8")
 
-    assert body.index("bound_xdist_workers_to_memory") < body.index("acquire_push_gate_lock")
+    assert body.index("acquire_push_gate_lock") < body.index("bound_xdist_workers_to_memory")
+
+
+def test_push_gate_sizes_the_worker_pool_just_before_the_locked_stage() -> None:
+    body = _PUSH_GATE.read_text(encoding="utf-8")
+
+    assert body.index("bound_xdist_workers_to_memory") < body.index("record_push_gate_bound")
+    assert body.index("record_push_gate_bound") < body.index("record_push_gate_stage 3")
+    assert body.index("record_push_gate_stage 2") < body.index("bound_xdist_workers_to_memory")
 
 
 def test_lock_starts_after_the_two_serial_safety_stages() -> None:
@@ -219,3 +227,25 @@ def test_lock_helper_keeps_the_portable_path_fallbacks() -> None:
     assert "/host-tmp/t3-push-gate.lock" in body
     assert "/tmp/t3-push-gate.lock" in body
     assert 'exec 9<>"$lock_path"' in body
+
+
+class TestLockAbortSaysWhatDidNotRun:
+    def test_an_unopenable_lock_reports_that_stage_three_did_not_run(self, tmp_path: Path) -> None:
+        result = _run_bash(
+            f'. dev/lib/gate-lock.sh; T3_PUSH_GATE_LOCK="{tmp_path}/missing-dir/push-gate.lock" acquire_push_gate_lock'
+        )
+
+        assert result.returncode == 75
+        assert "stage 3 (the incremental sweep) did not run" in result.stderr
+        assert "no check ran" not in result.stderr
+
+    def test_a_failing_lock_helper_reports_that_stage_three_did_not_run(self, tmp_path: Path) -> None:
+        result = _run_bash(
+            f'. dev/lib/gate-lock.sh; T3_PUSH_GATE_LOCK="{tmp_path}/push-gate.lock" '
+            "T3_PUSH_GATE_LOCK_WAIT_SECONDS=not-a-number acquire_push_gate_lock"
+        )
+
+        assert result.returncode == 75
+        assert "lock helper failed" in result.stderr
+        assert "stage 3 (the incremental sweep) did not run" in result.stderr
+        assert "no check ran" not in result.stderr

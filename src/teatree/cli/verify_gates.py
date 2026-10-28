@@ -308,7 +308,8 @@ def _run_stages(stages: list[tuple[str, list[str]]], repo: Path, env: dict[str, 
         # ``check=False`` inherits stdio and lets us collect both stage results.
         result = run_streamed(measured_cmd, check=False, cwd=repo, env=stage_env)
         if result in {124, 137}:
-            incomplete.append(f"{label} (load {load1:.1f}/{cores}, deadline {deadline}s)")
+            lock_wait = _PUSH_GATE_LOCK_WAIT_SECONDS if is_push_stage else 0
+            incomplete.append(f"{label} (load {load1:.1f}/{cores}, deadline {deadline}s, lock wait {lock_wait}s)")
         elif result != 0:
             failed.append(label)
     return failed, incomplete

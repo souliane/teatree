@@ -587,6 +587,20 @@ class TestVerifyGatesRunsBothStages:
         assert run.call_args_list[1].kwargs["env"]["T3_PUSH_GATE_LOCK_WAIT_SECONDS"] == "1500"
         assert "load 16.0/8" in result.output
         assert "2700s" in result.output
+        assert "pre-push (CI-parity gates) (load 16.0/8, deadline 2700s, lock wait 1500s)" in result.output
+
+    def test_a_timed_out_commit_stage_reports_no_lock_wait(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates._timeout_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.core.admission.machine_load.read_load_and_cores", return_value=(0.0, 8)),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=[124, 0, 0]),
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+
+        assert result.exit_code == 1
+        assert "commit (load 0.0/8, deadline 600s, lock wait 0s)" in result.output
 
     def test_load_multiplier_stops_at_three(self) -> None:
         with (

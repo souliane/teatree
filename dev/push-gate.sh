@@ -59,14 +59,6 @@ trap 'finish_push_gate_record "$?"' EXIT
 . dev/lib/gate-lock.sh
 select_push_gate_lock_path
 
-# `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
-# change — so a memory-capped container spawns host-many workers and dies as an opaque
-# xdist crash. Bound the pool from available cgroup memory instead (an explicit
-# PYTEST_XDIST_AUTO_NUM_WORKERS is a ceiling; an uncapped box is left alone).
-. dev/lib/xdist-workers.sh
-bound_xdist_workers_to_memory
-record_push_gate_bound
-
 # A bare `uv run` from a workspace MEMBER syncs the ROOT's shared `.venv`, reconciling it
 # to the member's dependency set while this gate is importing from it — so the run dies
 # on ImportErrors naming packages no diff went near. `uv_project_run_prefix` redirects to
@@ -127,5 +119,14 @@ record_push_gate_lock
 if [ "$gate_lock_rc" -ne 0 ]; then
     exit "$gate_lock_rc"
 fi
+
+# `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
+# change — so a memory-capped container spawns host-many workers and dies as an opaque
+# xdist crash. Bound the pool from available cgroup memory instead (an explicit
+# PYTEST_XDIST_AUTO_NUM_WORKERS is a ceiling; an uncapped box is left alone).
+. dev/lib/xdist-workers.sh
+bound_xdist_workers_to_memory
+record_push_gate_bound
+
 record_push_gate_stage 3
 "${UV_PROJECT_RUN[@]}" run t3 tool push-gate --run 9>&-
