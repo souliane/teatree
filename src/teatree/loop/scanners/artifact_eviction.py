@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from django.utils import timezone
 
+from teatree.core.cleanup.reclaim_pressure import below_floor
 from teatree.loop.scanners.base import ScanSignal
 
 
@@ -64,7 +65,13 @@ class ArtifactEvictionScanner:
         last_sweep = getattr(marker, "last_artifact_sweep_at", None)
         if last_sweep is None:
             return False
-        return (timezone.now() - last_sweep).total_seconds() / 60.0 < self.cadence_minutes
+        cadence = self.cadence_minutes
+        if below_floor(
+            free_gb=getattr(marker, "last_disk_free_gb", None),
+            crit_gb=self.disk_crit_free_gb,
+        ):
+            cadence = min(cadence, 5)
+        return (timezone.now() - last_sweep).total_seconds() / 60.0 < cadence
 
 
 __all__ = ["ArtifactEvictionScanner"]

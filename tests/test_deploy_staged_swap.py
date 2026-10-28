@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._deploy_space import install_build_space_stub
+
 _ROOT = Path(__file__).resolve().parents[1]
 _DEPLOY_DIR = _ROOT / "deploy"
 _BASH = shutil.which("bash") or "bash"
@@ -228,6 +230,7 @@ def checkout(tmp_path: Path) -> Path:
     deploy.mkdir(parents=True)
     for name in (
         "deploy.sh",
+        "disk-preflight.sh",
         "deploy-lock.sh",
         "git-pins.sh",
         "Dockerfile",
@@ -258,6 +261,7 @@ def _run(checkout: Path, tmp_path: Path, **env_extra: str) -> tuple[subprocess.C
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir(exist_ok=True)
     _write_exec(stub_bin / "docker", _DOCKER_STUB)
+    install_build_space_stub(stub_bin)
     _write_exec(stub_bin / "curl", _CURL_STUB)
     _write_exec(stub_bin / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
 

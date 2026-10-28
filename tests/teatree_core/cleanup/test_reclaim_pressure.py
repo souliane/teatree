@@ -8,11 +8,23 @@ never age into eligibility, whatever the disk is doing.
 
 import pytest
 
-from teatree.core.cleanup.reclaim_pressure import ZERO_YIELD_ALARM_PASSES, effective_idle_days, reclaim_is_stalled
+from teatree.core.cleanup.reclaim_pressure import (
+    BUILD_NEED_GB,
+    ZERO_YIELD_ALARM_PASSES,
+    effective_disk_floor_gb,
+    effective_idle_days,
+    reclaim_is_stalled,
+)
 
 _WARN = 25.0
 _CRIT = 10.0
 _IDLE = 2.0
+
+
+def test_disk_floor_keeps_one_build_of_available_blocks_ahead_of_the_cliff() -> None:
+    assert pytest.approx(17.0) == BUILD_NEED_GB
+    assert effective_disk_floor_gb(10.0) == pytest.approx(17.0)
+    assert effective_disk_floor_gb(25.0) == pytest.approx(25.0)
 
 
 class TestEffectiveIdleDays:
@@ -27,7 +39,7 @@ class TestEffectiveIdleDays:
         assert effective_idle_days(free_gb=0.2, warn_gb=_WARN, crit_gb=_CRIT, idle_days=_IDLE) is None
 
     def test_between_the_thresholds_the_requirement_decays_linearly(self) -> None:
-        assert effective_idle_days(free_gb=17.5, warn_gb=_WARN, crit_gb=_CRIT, idle_days=_IDLE) == pytest.approx(1.0)
+        assert effective_idle_days(free_gb=21.0, warn_gb=_WARN, crit_gb=_CRIT, idle_days=_IDLE) == pytest.approx(1.0)
 
     @pytest.mark.parametrize("free_gb", [None, 17.5])
     def test_an_unmeasurable_threshold_never_relaxes(self, free_gb: float | None) -> None:

@@ -29,6 +29,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.resource_pressure import (
@@ -37,6 +38,7 @@ from teatree.loop.scanners.resource_pressure import (
     _parse_vm_stat_avail_gb,
     measure_resources,
     read_disk_free_gb,
+    read_disk_reserved_gb,
     read_ram_avail_gb,
 )
 
@@ -139,6 +141,15 @@ class DiskMeasurementTests(TestCase):
     def test_statvfs_oserror_returns_none(self) -> None:
         with patch("teatree.loop.scanners.resource_pressure.os.statvfs", side_effect=OSError):
             assert read_disk_free_gb("/") is None
+
+    def test_reserved_blocks_are_free_to_root_but_unavailable_to_the_worker(self) -> None:
+        class _Stat:
+            f_bfree = 16 * _GIB // 4096
+            f_bavail = 7 * _GIB // 4096
+            f_frsize = 4096
+
+        with patch(f"{_MODULE}.os.statvfs", return_value=_Stat()):
+            assert read_disk_reserved_gb("/") == pytest.approx(9.0)
 
 
 class CgroupProbeVisibilityTests(TestCase):
@@ -487,6 +498,12 @@ class ClassificationTests(_ScannerHarness):
         signals = self._scan_with(disk_gb=100.0, ram_gb=10.0)
         assert signals == []
 
+    def test_build_headroom_triggers_reclaim_before_the_ordinary_user_cliff(self) -> None:
+        signals = self._scan_with(disk_gb=16.0, ram_gb=10.0)
+        disk = next(s for s in signals if s.payload.get("resource") == "disk")
+        assert disk.kind == "resource.cleanup_needed"
+        assert disk.payload["disk_crit_free_gb"] == pytest.approx(17.0)
+
     def test_apfs_trap_low_free_classifies_critical_not_normal(self) -> None:
         """7 G free on a 460 G APFS container is CRITICAL — proves absolute, not percent."""
         signals = self._scan_with(disk_gb=7.0, ram_gb=10.0)
@@ -500,7 +517,7 @@ class ClassificationTests(_ScannerHarness):
         signals = self._scan_with(disk_gb=7.0, ram_gb=10.0)
         disk_sig = next(s for s in signals if s.payload.get("resource") == "disk")
         assert disk_sig.payload["disk_warn_free_gb"] == pytest.approx(25.0)
-        assert disk_sig.payload["disk_crit_free_gb"] == pytest.approx(10.0)
+        assert disk_sig.payload["disk_crit_free_gb"] == pytest.approx(17.0)
 
     def test_disk_warn_band_is_advisory_only(self) -> None:
         signals = self._scan_with(disk_gb=18.0, ram_gb=10.0)
@@ -642,12 +659,12 @@ class ThresholdBoundaryTests(_ScannerHarness):
     """Free exactly AT the crit threshold is NOT critical; one step below IS."""
 
     def test_disk_exactly_at_crit_is_not_critical(self) -> None:
-        signals = self._scan_with(disk_gb=10.0, ram_gb=100.0)
-        # 10.0 == disk_crit_free_gb → not below → WARN band (10 < 25), not cleanup.
+        signals = self._scan_with(disk_gb=17.0, ram_gb=100.0)
+        # The computed 17 GiB floor is the boundary when the configured floor is 10 GiB.
         assert all(s.kind != "resource.cleanup_needed" for s in signals)
 
     def test_disk_just_below_crit_is_critical(self) -> None:
-        signals = self._scan_with(disk_gb=9.99, ram_gb=100.0)
+        signals = self._scan_with(disk_gb=16.99, ram_gb=100.0)
         assert any(s.kind == "resource.cleanup_needed" for s in signals)
 
     def test_disk_exactly_at_warn_is_not_warn(self) -> None:
@@ -780,6 +797,21 @@ class CleanupPayloadTests(_ScannerHarness):
         signals = self._scan_with(disk_gb=5.0, ram_gb=100.0, scanner=scanner)
         disk_sig = next(s for s in signals if s.kind == "resource.cleanup_needed")
         assert disk_sig.payload["disk_cache_allowlist"] == ["~/.cache/pre-commit"]
+
+    def test_unrecovered_pressure_reports_free_and_last_reclaimed_on_statusline(self) -> None:
+        marker = ResourcePressureMarker.load()
+        marker.reclaim_blocked_since = timezone.now()
+        marker.last_reclaimed_gb = 1.25
+        marker.save(update_fields=["reclaim_blocked_since", "last_reclaimed_gb"])
+
+        with patch(f"{_MODULE}.read_disk_reserved_gb", return_value=9.6):
+            signals = self._scan_with(disk_gb=16.0, ram_gb=100.0)
+
+        status = next(signal for signal in signals if signal.kind == "resource.reclaim_blocked")
+        assert "16.0 GB free" in status.summary
+        assert "9.6 GB reserved" in status.summary
+        assert "1.25 GB" in status.summary
+        assert dispatch([status])[0].zone == "action_needed"
 
     def test_the_payload_does_not_carry_the_artifact_retention_window(self) -> None:
         """The sweep moved off this ladder (#4244), so this signal no longer configures it.

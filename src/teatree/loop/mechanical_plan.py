@@ -35,6 +35,8 @@ class FreePlan:
     steps: list[str] = field(default_factory=list)
     estimated_reclaim_gb: float = 0.0
     reclaimed_gb: float = 0.0
+    #: Why the ladder step that just ran did not finish; set by the step, cleared by the ladder once it defers.
+    unfinished: str = ""
 
     def render(self) -> str:
         head = (

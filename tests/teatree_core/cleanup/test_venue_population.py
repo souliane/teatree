@@ -5,6 +5,7 @@ provisions into; the protectors are deliberately wider, and the tests pin that n
 one never narrows the other.
 """
 
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -32,6 +33,8 @@ class _VenueCase(TestCase):
         self.outside = base / "outside"
         self.outside.mkdir()
         self.clone = make_git_repo(self.venue / "org" / "repo")
+        self.codex_home = base / "codex-home"
+        self.enterContext(patch.dict(os.environ, {"T3_CODEX_HOME": str(self.codex_home)}))
         self.enterContext(patch(f"{_POPULATION}.clone_root", return_value=self.venue))
         self.enterContext(patch(f"{_POPULATION}.canonical_worktree_root", return_value=self.venue / "t3-workspaces"))
 
@@ -54,6 +57,14 @@ class TestVenueRoots(_VenueCase):
 
 
 class TestCandidates(_VenueCase):
+    def test_codex_volume_workspace_checkout_is_a_candidate(self) -> None:
+        codex_checkout = make_git_repo(self.codex_home / "workspace" / "owner" / "project")
+
+        found = venue_candidates(self.venue)
+
+        assert str(codex_checkout) in found.candidates
+        assert found.complete, found.gaps
+
     def test_a_checkout_is_not_walked_but_its_nested_linked_worktree_is_found(self) -> None:
         nested = self.clone / ".claude" / "worktrees" / "agent-1"
         run_git(self.clone, "worktree", "add", "-q", "-b", "agent-1", str(nested))
