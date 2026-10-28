@@ -9,6 +9,7 @@ from teatree.core.modelkit.task_failure_taxonomy import HALT_STAMP, FailureKind
 from teatree.core.models import Task, Ticket
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.ref_render import render_ref
+from teatree.core.stuck_ticket_halt import ticket_halt_is_current
 
 
 def halted_retry_signals() -> SignalCollection:
@@ -55,3 +56,35 @@ def halted_retry_signals() -> SignalCollection:
             evidence_url=task.ticket.issue_url,
         )
     return SignalCollection(tuple(signals.values()))
+
+
+def stuck_ticket_halt_signals() -> SignalCollection:
+    tickets = Ticket.objects.filter(extra__stuck_halt__isnull=False).exclude(
+        state__in=(
+            Ticket.State.PR_OPENED,
+            Ticket.State.MERGED,
+            Ticket.State.DELIVERED,
+            Ticket.State.REVIEW_DELIVERED,
+            Ticket.State.IGNORED,
+        )
+    )
+    signals = []
+    for ticket in tickets:
+        if not ticket_halt_is_current(ticket):
+            continue
+        stamp = ticket.extra["stuck_halt"]
+        reason = str(stamp["reason"])
+        signals.append(
+            HealthSignal(
+                fingerprint=f"stuck-halt:{ticket.pk}:{stamp['newest_task']}:{stamp['reviewed_sha']}",
+                severity=KnownIssue.Severity.WARNING,
+                kind="halted_retries",
+                overlay=ticket.overlay,
+                summary=(
+                    f"ticket {render_ref(f'#{ticket.pk}', title=ticket.short_description)} "
+                    f"stopped redispatching: {reason}"
+                ),
+                evidence_url=ticket.issue_url,
+            )
+        )
+    return SignalCollection(tuple(signals))

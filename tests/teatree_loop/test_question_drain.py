@@ -34,10 +34,11 @@ from teatree.loop.question_drain import (
     question_reachability,
     sweep_owner_questions,
 )
-from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from tests._git_repo import make_git_repo
 from tests._owner_channel import OWNER_DECISION, owner_card
+
+STUCK_HALT_MARKER = "stuck-redispatch-halt:{pk}"
 
 
 def _ticket(state: str = Ticket.State.WORK_STARTED) -> Ticket:

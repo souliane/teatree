@@ -6,8 +6,8 @@ scheduled to advance it. A **failing** ticket is not idle at all — its latest
 attempt for the implied phase failed and nothing is in flight, so it churns rather
 than stops. Both classes cover author AND reviewer roles (the failing population is
 dominated by the ``reviewing`` phase, which lives on reviewer tickets), and both run
-through the SAME #2009 repair budget, escalating LOUDLY via a ``DeferredQuestion``
-when the budget is exhausted — so a stuck ticket is drained or surfaced, never silent.
+through the SAME #2009 repair budget, recording a factory health signal when
+the budget is exhausted — so a stuck ticket is drained or surfaced, never silent.
 """
 
 import json
@@ -28,6 +28,7 @@ from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.runner import HarnessOutcome
 from teatree.agents.runner_interruption import _record_stuck_outcome
 from teatree.core.backend_protocols import PrOpenState
+from teatree.core.factory.operational_health import collect_signals
 from teatree.core.mode_resolution import set_mode_override
 from teatree.core.modelkit.task_failure_taxonomy import (
     CANCELLED_PREFIX,
@@ -105,6 +106,18 @@ def _lease_reaps(ticket: Ticket, count: int, *, phase: str = "testing") -> None:
         )
 
 
+def _assert_halted(ticket: Ticket) -> None:
+    ticket.refresh_from_db()
+    newest = ticket.tasks.order_by("-pk").first()
+    assert ticket.extra["stuck_halt"]["newest_task"] == (newest.pk if newest else 0)
+    assert not DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{ticket.pk}").exists()
+    assert any(
+        signal.fingerprint.startswith(f"stuck-halt:{ticket.pk}:")
+        for signal in collect_signals().signals
+        if signal.kind == "halted_retries"
+    )
+
+
 class TestStuckTicketRedispatch(TestCase):
     def test_stuck_started_ticket_schedules_planning(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
@@ -168,13 +181,13 @@ class TestStuckTicketRedispatch(TestCase):
         assert ticket.tasks.count() == 0
 
     def test_scheduling_refusal_is_escalated(self) -> None:
-        _stuck_ticket(state=Ticket.State.WORK_STARTED)
+        ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
 
         with patch.object(Ticket, "schedule_planning", side_effect=InvalidTransitionError("gate refused")):
             scheduled = redispatch_stuck_tickets()
 
         assert scheduled == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        _assert_halted(ticket)
 
     def test_poison_ticket_does_not_abort_the_sweep(self) -> None:
         # #3441: one stuck ticket whose per-item processing raises an unexpected
@@ -250,10 +263,10 @@ class TestStuckTicketRedispatch(TestCase):
 
         assert scheduled == 0
         assert ticket.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        _assert_halted(ticket)
         # Idempotent: a second sweep neither schedules nor spams another escalation.
         assert redispatch_stuck_tickets() == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        _assert_halted(ticket)
 
     def test_repeated_lease_reaps_halt_redispatch_without_spending_repair_iterations(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.CODED)
@@ -267,7 +280,7 @@ class TestStuckTicketRedispatch(TestCase):
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 0
-        assert DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{ticket.pk}").count() == 1
+        _assert_halted(ticket)
 
     def test_lease_reaps_below_the_cap_remain_retryable(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.CODED)
@@ -303,7 +316,7 @@ class TestStuckTicketRedispatch(TestCase):
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 0
-        assert DeferredQuestion.objects.filter(dedupe_marker=f"stuck-redispatch-halt:{ticket.pk}").count() == 1
+        _assert_halted(ticket)
 
     def test_an_audit_row_between_two_deterministic_failures_breaks_stall_adjacency(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
@@ -363,18 +376,16 @@ class TestStuckTicketRedispatch(TestCase):
             )
             TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(hours=48))
 
-    def test_answered_escalation_does_not_re_escalate(self) -> None:
-        # #6: an escalated stuck ticket is parked. Answering the question must NOT spawn
-        # a fresh escalation on the next tick (the old open-only dedup re-fired here).
+    def test_halted_ticket_does_not_reprocess_unchanged_inputs(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
         self._burn_planning_budget(ticket)
         assert redispatch_stuck_tickets() == 0
-        question = DeferredQuestion.objects.get()
-        question.answered_at = timezone.now()
-        question.save(update_fields=["answered_at"])
+        _assert_halted(ticket)
 
-        assert redispatch_stuck_tickets() == 0
-        assert DeferredQuestion.objects.count() == 1  # no re-escalation after the answer
+        with patch("teatree.loop.stuck_ticket_redispatch._budget_halt_reason") as budget:
+            assert redispatch_stuck_tickets() == 0
+            budget.assert_not_called()
+        _assert_halted(ticket)
 
     def test_wired_into_tick_recovery(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
@@ -432,8 +443,7 @@ class TestAStalePlanGetsAPlanningPass(TestCase):
         assert redispatch_stuck_tickets() == 0
 
         assert not ticket.tasks.filter(status=Task.Status.PENDING).exists()
-        halt = DeferredQuestion.objects.get()
-        assert halt.audience == DeferredQuestion.Audience.INTERNAL
+        _assert_halted(ticket)
 
 
 class TestReviewerRoleCandidates(TestCase):
@@ -573,7 +583,7 @@ class TestReviewerRoleCandidates(TestCase):
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        _assert_halted(ticket)
 
 
 _NO_HEAD_REFUSAL = (
@@ -666,7 +676,7 @@ class TestFinishedPrsMintNothing(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.NOT_STARTED
-        assert DeferredQuestion.objects.count() == 1
+        _assert_halted(ticket)
         assert len(host.calls) == 1
 
     def test_a_halted_reviewer_ticket_whose_pr_state_is_unreadable_is_still_escalated(self) -> None:
@@ -677,7 +687,7 @@ class TestFinishedPrsMintNothing(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.NOT_STARTED
-        assert DeferredQuestion.objects.count() == 1
+        _assert_halted(ticket)
 
     def test_a_ticket_in_an_unknown_state_mints_no_task_and_warns(self) -> None:
         ticket = self._failed_reviewer()
@@ -814,7 +824,7 @@ class TestFailingCandidates(TestCase):
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        _assert_halted(ticket)
 
     def test_repeated_causeless_failures_are_redispatched_within_the_cap(self) -> None:
         # #4075: ``no_result_envelope`` is the ABSENCE of a cause — the run reported
@@ -910,7 +920,7 @@ class TestFailingCandidates(TestCase):
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        _assert_halted(ticket)
 
     def test_two_closed_issue_refusals_halt_and_carry_their_own_name(self) -> None:
         # #2663 end to end: the pre-harness gate's refusal reaches the sweep as a NAMED
@@ -929,7 +939,7 @@ class TestFailingCandidates(TestCase):
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        _assert_halted(ticket)
         kinds = {a.failure_kind for t in ticket.tasks.all() for a in t.attempts.all()}
         assert kinds == {FailureKind.ISSUE_CLOSED}
 
@@ -1008,7 +1018,7 @@ class TestFailingCandidates(TestCase):
             _finished_task(ticket, phase="shipping", status=Task.Status.FAILED, error=_ALREADY_LANDED)
 
         assert redispatch_stuck_tickets() == 0
-        assert DeferredQuestion.objects.count() == 1
+        _assert_halted(ticket)
 
 
 class TestEveryClassPassesTheBudget(TestCase):
@@ -1047,7 +1057,9 @@ class TestEveryClassPassesTheBudget(TestCase):
             assert redispatch_stuck_tickets() == 0
 
         assert Task.objects.filter(status__in=Task.Status.active()).count() == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 4
+        for ticket in Ticket.objects.all():
+            _assert_halted(ticket)
+        assert DeferredQuestion.objects.count() == 0
 
     def test_the_same_candidates_are_all_drained_when_the_budget_allows(self) -> None:
         # The control: without it, a sweep that silently found NO candidates would pass
@@ -1293,22 +1305,27 @@ class TestAHaltEscalationIsAboutTheBoxNotTheOwner(TestCase):
         redispatch_stuck_tickets()
         return ticket
 
-    def test_the_escalation_is_internal_so_it_never_reaches_the_owner_feed(self) -> None:
-        self._escalated_ticket()
-        row = DeferredQuestion.objects.get()
-        assert row.audience == DeferredQuestion.Audience.INTERNAL
-
-    def test_it_dedupes_on_the_indexed_marker_rather_than_the_question_text(self) -> None:
+    def test_halt_is_health_only_and_a_new_task_reopens_the_sweep(self) -> None:
         ticket = self._escalated_ticket()
-        row = DeferredQuestion.objects.get()
-        assert row.dedupe_marker == f"stuck-redispatch-halt:{ticket.pk}"
+        ticket.refresh_from_db()
+        assert DeferredQuestion.objects.count() == 0
+        assert ticket.extra["stuck_halt"]["newest_task"] == ticket.tasks.order_by("-pk").first().pk
+        assert len([signal for signal in collect_signals().signals if signal.kind == "halted_retries"]) == 1
 
-    def test_a_second_sweep_after_the_question_is_answered_files_nothing(self) -> None:
-        # The escalate-ONCE property the text scan bought, kept on the indexed marker.
-        self._escalated_ticket()
-        DeferredQuestion.objects.update(answered_at=timezone.now())
-        assert redispatch_stuck_tickets() == 0
-        assert DeferredQuestion.objects.count() == 1
+        with patch("teatree.loop.stuck_ticket_redispatch._budget_halt_reason") as budget:
+            assert redispatch_stuck_tickets() == 0
+            budget.assert_not_called()
+
+        _finished_task(ticket, phase="planning", status=Task.Status.FAILED, error="new failure")
+        assert not [signal for signal in collect_signals().signals if signal.kind == "halted_retries"]
+        with patch("teatree.loop.stuck_ticket_redispatch._budget_halt_reason", return_value=None):
+            assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
+
+    def test_the_halt_has_no_owner_question(self) -> None:
+        ticket = self._escalated_ticket()
+        _assert_halted(ticket)
+        assert DeferredQuestion.objects.count() == 0
 
 
 class TestRepeatedUnrecordableReviewsHaltTheRedispatch(TestCase):
@@ -1348,7 +1365,7 @@ class TestRepeatedUnrecordableReviewsHaltTheRedispatch(TestCase):
         with pr_open_state(PrOpenState.OPEN):
             assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        _assert_halted(ticket)
 
     def test_the_pair_is_genuinely_not_text_identical(self) -> None:
         """Guards the guard: if the two texts ever converge, the test above goes vacuous."""
@@ -1400,4 +1417,4 @@ class TestAFrozenFactoryAndTheCancelRace(TestCase):
         set_mode_override("frozen-redispatch-test", reason="test")
 
         assert redispatch_stuck_tickets() == 0
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        _assert_halted(ticket)
