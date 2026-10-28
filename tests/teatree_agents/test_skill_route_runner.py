@@ -249,6 +249,7 @@ class TestSkillRouteRuntimeFallback(TestCase):
         )
         outcome = HarnessOutcome("work done", terminal, None, tool_calls=1, round_handoff="round ceiling")
         task = self._task()
+        task.claim(claimed_by="test-worker", claimed_by_session="session-1")
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory) / "repo"
             _init_repo_with_branch(repo, branch="feature", commits_ahead=1)
@@ -260,9 +261,10 @@ class TestSkillRouteRuntimeFallback(TestCase):
 
         parked.task.refresh_from_db()
         assert self.built == ["codex_like"]
-        assert parked.result["needs_user_input"] is True
-        assert parked.task.status == Task.Status.COMPLETED
-        assert DeferredQuestion.objects.filter(parked_task=parked.task).exists()
+        assert parked.error.startswith("limit_parked: round ceiling")
+        assert parked.task.status == Task.Status.PENDING
+        assert "check the branch and its pipeline" in parked.task.execution_reason
+        assert not DeferredQuestion.objects.filter(parked_task=parked.task).exists()
         assert not parked.task.attempts.filter(failure_kind="result_error").exists()
         assert not AgentRouteAvailability.objects.exists()
 

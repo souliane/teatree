@@ -3,8 +3,7 @@
 A shipping task ran four hours of fix / verify-gates / push / red-pipeline rounds against a
 moving main, renewing its lease the whole time, so a deploy drain could never finish. The
 wall-clock watchdog interrupts mid-work and records a failure; this acts only when a NEW round
-starts — a push or ``verify-gates`` — and hands the task off through ``needs_user_input``,
-which parks it behind a deferred question.
+starts — a push or ``verify-gates`` — and queues a bounded continuation of the same task.
 
 A runtime that takes hooks gets :meth:`RoundCeiling.pre_tool_use`, which refuses the round
 start before it runs and tells the agent to hand off. A runtime without hooks is watched
@@ -106,6 +105,7 @@ class RoundCeiling:
             return {}
         if breach := self._breach():
             self.refused += 1
+            self.handoff = f"{breach}; refused at the start of round {self.pushes + 1}"
             return self._refusal(breach)
         return {}
 
@@ -151,10 +151,8 @@ class RoundCeiling:
 
     def _refusal(self, breach: str) -> HookJSONOutput:
         reason = (
-            f"Round ceiling reached: {breach}. Do not start another round. End this run now with "
-            "`needs_user_input: true` and a `user_input_reason` that says where the work stands "
-            "(branch, last pipeline, what is still red) and what the next round should do; it is "
-            "recorded as factory work and nothing resumes on its own."
+            f"Round ceiling reached: {breach}. Do not start another round. The factory is stopping this run "
+            "and will queue a bounded continuation to check the branch and pipeline, or record an exhausted halt."
         )
         logger.warning("round ceiling refused a new round: %s (refused=%d)", breach, self.refused)
         return {

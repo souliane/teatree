@@ -16,6 +16,14 @@ class TestReactionPublisherRegistry:
 
     def test_register_then_get_round_trips(self) -> None:
         class _Fake:
+            @staticmethod
+            def has_transition_target(_ticket: object) -> bool:
+                return True
+
+            @staticmethod
+            def has_approval_target(_pull_request: object) -> bool:
+                return True
+
             def add_reactions_for_transition(self, ticket: object, transition_name: str) -> int:
                 return 7
 
@@ -28,6 +36,8 @@ class TestReactionPublisherRegistry:
             pub = reaction_dispatch.get_reaction_publisher()
             assert pub.add_reactions_for_transition(object(), "merge") == 7
             assert pub.add_approval_reaction(object()) == 9
+            assert pub.has_transition_target(object())
+            assert pub.has_approval_target(object())
         finally:
             reaction_dispatch.register_reaction_publisher(original)
 
@@ -39,5 +49,7 @@ class TestReactionPublisherRegistry:
             pub = reaction_dispatch.get_reaction_publisher()
             assert pub.add_reactions_for_transition(object(), "merge") == 0
             assert pub.add_approval_reaction(object()) == 0
+            assert not pub.has_transition_target(object())
+            assert not pub.has_approval_target(object())
         finally:
             reaction_dispatch.register_reaction_publisher(original)

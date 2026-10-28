@@ -5,9 +5,7 @@ publish text to an external surface (a public-repo issue/PR body, a
 commit message, a Slack message, a t3 review post) and refuses the call
 when the body matches user-attributed quote patterns.
 
-The rule has been prose only in the memory ledger and recurred multiple
-times in a single session before being promoted to a tooling gate per
-``feedback_failed_memory_escalate_to_enforcement.md``.
+A rule that fails repeatedly as prose is promoted to an enforced gate.
 
 Design notes:
 

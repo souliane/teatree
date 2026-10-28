@@ -12819,6 +12819,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
+│ partial-merge-report         List merged tickets whose open issue has a      │
+│                              declared remainder.                             │
 │ settle-holds                 Check held no-diff reviews; --dry-run reads     │
 │                              without changing tickets.                       │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
@@ -13407,6 +13409,20 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the rows as JSON.                                       │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket partial-merge-report`
+
+```
+Usage: t3 teatree ticket partial-merge-report [OPTIONS]
+
+ List merged tickets whose open issue has a declared remainder.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Limit the report to one overlay.                      │
+│ --json                 Emit machine-readable JSON.                           │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

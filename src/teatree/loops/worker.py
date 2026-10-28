@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from teatree.agents.runner_heartbeat import CHECKPOINT_GRACE_SECONDS
+from teatree.core.admission.lanes import ANSWERING_LANE_WIDTH
 from teatree.core.admission_pressure import MACHINE_BRAKE_CAUSES
 from teatree.core.managers_task_claim import process_exit
 from teatree.core.modelkit.phases import CheapClass
@@ -91,9 +92,10 @@ def loops_executor_count() -> int:
 def agent_executor_queues(widths: "LaneWidths | None") -> tuple[str, ...]:
     """One executor per seat the verdict can admit, so no admitted seat lapses waiting for a thread."""
     if widths is None:
-        # An unavailable probe still leaves one worker for each cheap class.
-        return ("default",) * max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency()) + ("cheap",) * len(CheapClass)
-    return ("default",) * widths.expensive + ("cheap",) * widths.cheap
+        # An unavailable probe still leaves one worker for each cheap class and each answering seat.
+        cheap_seats = len(CheapClass) + ANSWERING_LANE_WIDTH
+        return ("default",) * max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency()) + ("cheap",) * cheap_seats
+    return ("default",) * widths.expensive + ("cheap",) * (widths.cheap + widths.answering)
 
 
 def _read_pool_pressure() -> "AdmissionDecision | None":

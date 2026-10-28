@@ -22,7 +22,7 @@ from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
-from teatree.core.models.usage_window_state import CHECKOUT_PARKED_PREFIX, OPERATOR_PAUSED_PREFIX
+from teatree.core.models.usage_window_state import OPERATOR_PAUSED_PREFIX
 
 _DEFAULT_REASON = "Agent needs human input"
 
@@ -86,16 +86,6 @@ def _parked_by(task: Task, prefix: str) -> bool:
 
 def is_operator_paused(task: Task) -> bool:
     return _parked_by(task, OPERATOR_PAUSED_PREFIX)
-
-
-def release_checkout_park(task: Task) -> bool:
-    """Wake an unchanged pending checkout task after the owner accepts its state."""
-    if not _parked_by(task, CHECKOUT_PARKED_PREFIX):
-        return False
-    updated = Task.objects.filter(pk=task.pk, status=Task.Status.PENDING, not_before__isnull=False).update(
-        not_before=None
-    )
-    return bool(updated)
 
 
 def release_operator_pause(task: Task) -> bool:

@@ -7,12 +7,14 @@ that table is unreachable via the overlay CLI even though the core
 """
 
 from collections import Counter
+from pathlib import Path
 from unittest.mock import patch
 
 import typer
+from typer.testing import CliRunner
 
 from teatree.cli.loop.preset import register as register_preset
-from teatree.cli.overlay import DJANGO_GROUPS
+from teatree.cli.overlay import DJANGO_GROUPS, OverlayAppBuilder
 from teatree.core.management.commands.e2e import Command as E2eCommand
 from teatree.core.management.commands.honesty import Command as HonestyCommand
 from teatree.core.management.commands.learnings import Command as LearningsCommand
@@ -64,6 +66,14 @@ def _notify_subcommands() -> set[str]:
 
 def _questions_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["questions"].subcommands}
+
+
+def test_ticket_partial_merge_report_routes_through_the_overlay_cli(tmp_path: Path) -> None:
+    app = OverlayAppBuilder(overlay_name="example", project_path=tmp_path).build()
+    with patch("teatree.cli.overlay.run_streamed") as run:
+        result = CliRunner().invoke(app, ["ticket", "partial-merge-report", "--json"])
+    assert result.exit_code == 0, result.output
+    assert run.call_args.args[0][-3:] == ["ticket", "partial-merge-report", "--json"]
 
 
 def test_ticket_group_exposes_comment() -> None:

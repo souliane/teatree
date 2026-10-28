@@ -541,7 +541,7 @@ holistic (`architectural-review`).
 
 **Anti-pattern.** A loop scanner, cadence task or headless batch pass that turns each candidate it surfaces into a forge issue or ticket directly — a create_issue per candidate, or a dispatched skill told to file them. One unattended pass publishes durable artifacts under the owner's account that nobody decided should exist, and a noisy feed floods the backlog.
 
-**Preferred.** Record each candidate as one PENDING row, idempotent on its source key (PendingArticleSuggestion, PendingTriageRecommendation), surface the batch as one approval question, and file only the approved rows — no answer files nothing. A shell-denied agent returns its candidates in the result envelope and the server-side recorder writes the rows. The boundary is a single deduped defect report a human must resolve, labelled needs-triage: that is the agent-filed path, not a candidate stream, and the dream binding-reconciliation issue (Decision-3) is that case.
+**Preferred.** Record each candidate as one PENDING row, idempotent on its source key (PendingArticleSuggestion, PendingTriageRecommendation), surface the news batch as a digest and the triage batch as one approval question, and file only after explicit approval — no answer files nothing. A shell-denied agent returns its candidates in the result envelope and the server-side recorder writes the rows. The boundary is a single deduped defect report a human must resolve, labelled needs-triage: that is the agent-filed path, not a candidate stream, and the dream binding-reconciliation issue (Decision-3) is that case.
 
 ## Absent, unreadable or stale signal reported as a definite verdict
 
