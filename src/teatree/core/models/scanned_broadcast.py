@@ -26,7 +26,7 @@ State machine
 
 ``all_merged`` — every MR in the broadcast is already merged + approved.
 The scanner posts ``:white_check_mark:`` on the parent message and skips
-reviewer dispatch (per ``feedback_review_request_already_done_green_check``).
+reviewer dispatch; an already-merged broadcast only gets the green check.
 
 ``pending`` — at least one MR is still open. The scanner posts ``:eyes:`` and
 dispatches a reviewer task scoped to the open subset.

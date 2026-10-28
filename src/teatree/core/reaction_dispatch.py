@@ -19,12 +19,26 @@ if TYPE_CHECKING:
 
 
 class ReactionPublisher(Protocol):
+    @staticmethod
+    def has_transition_target(ticket: "Ticket", /) -> bool: ...
+
+    @staticmethod
+    def has_approval_target(pull_request: "PullRequest", /) -> bool: ...
+
     def add_reactions_for_transition(self, ticket: "Ticket", transition_name: str) -> int: ...  # pragma: no branch
 
     def add_approval_reaction(self, pull_request: "PullRequest") -> int: ...  # pragma: no branch
 
 
 class _NoopReactionPublisher:
+    @staticmethod
+    def has_transition_target(_ticket: "Ticket") -> bool:
+        return False
+
+    @staticmethod
+    def has_approval_target(_pull_request: "PullRequest") -> bool:
+        return False
+
     def add_reactions_for_transition(self, ticket: "Ticket", transition_name: str) -> int:  # noqa: ARG002, PLR6301 — reaction-dispatch seam: instance method by Protocol contract; args used by real backends
         return 0
 

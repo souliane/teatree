@@ -75,16 +75,9 @@ def add_reaction(token: str, channel_id: str, timestamp: str, emoji: str) -> boo
     returns HTML on a 2xx must not block FSM transitions, and there is no
     auth gap to surface.
 
-    Slack-API-level failures (``ok:false`` — ``missing_scope``,
-    ``not_in_channel``, ``mcp_externally_shared_channel_restricted``, …)
-    raise :class:`SlackReactionError` (#1281). The pre-#1281 silent
-    ``return False`` lets callers fall back to
-    ``chat.postMessage(text=":emoji:")`` on the broadcast's thread —
-    which the BINDING memory ``feedback_react_not_emoji_thread_comment``
-    forbids. Raising loudly forecloses that substitute. FSM-side wrappers
-    (:func:`add_reactions_for_transition`) catch the raise locally so a
-    Slack auth gap during a state transition still degrades to a no-op
-    that retries on the next tick.
+    Slack-API failures (``ok:false``) raise :class:`SlackReactionError`;
+    a bare ``:emoji:`` thread reply is never a substitute for a reaction.
+    FSM wrappers catch the error so a Slack auth gap cannot block a transition.
     """
     if not (token and channel_id and timestamp and emoji):
         return False
@@ -204,6 +197,14 @@ def _iter_pr_permalinks(ticket: "Ticket") -> list[str]:
     return permalinks
 
 
+def _transition_targets(ticket: "Ticket") -> list[tuple[str, str]]:
+    return [parsed for permalink in _iter_pr_permalinks(ticket) if (parsed := parse_permalink(permalink))]
+
+
+def _approval_target(pull_request: "PullRequest") -> tuple[str, str] | None:
+    return parse_permalink(pull_request.slack_url)
+
+
 def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
     """Add the emoji mapped to *transition_name* to every PR permalink.
 
@@ -237,11 +238,7 @@ def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
         return 0
 
     posted = 0
-    for permalink in _iter_pr_permalinks(ticket):
-        parsed = parse_permalink(permalink)
-        if not parsed:
-            continue
-        channel_id, timestamp = parsed
+    for channel_id, timestamp in _transition_targets(ticket):
         try:
             success = add_reaction_verified(token, channel_id, timestamp, emoji)
         except SlackReactionError as exc:
@@ -282,10 +279,7 @@ def add_approval_reaction(pull_request: "PullRequest") -> int:
     permalink, missing token). Never raises — a Slack outage must not
     block the FSM transition.
     """
-    permalink = pull_request.slack_url
-    if not permalink:
-        return 0
-    parsed = parse_permalink(permalink)
+    parsed = _approval_target(pull_request)
     if not parsed:
         return 0
 
@@ -318,6 +312,14 @@ class SlackReactionPublisher:
     ``core.signals`` reaches the Slack reaction publisher without importing
     ``backends`` (#1922).
     """
+
+    @staticmethod
+    def has_transition_target(ticket: "Ticket") -> bool:
+        return bool(_transition_targets(ticket))
+
+    @staticmethod
+    def has_approval_target(pull_request: "PullRequest") -> bool:
+        return _approval_target(pull_request) is not None
 
     def add_reactions_for_transition(self, ticket: "Ticket", transition_name: str) -> int:  # noqa: PLR6301 — reaction-dispatch seam method; on the instance by Protocol contract
         return add_reactions_for_transition(ticket, transition_name)

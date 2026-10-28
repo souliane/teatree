@@ -902,7 +902,7 @@ class TestMainAgentForegroundAgentIsBlocked1442:
     paths below prove the no-lockout off-ramps.
     """
 
-    _RULE_CITATION = "feedback_always_run_in_background_for_sub_agent_dispatch"
+    _RULE_STATEMENT = "A main agent never blocks on a foreground sub-agent dispatch."
 
     @pytest.fixture(autouse=True)
     def _agent_gate_on(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -917,7 +917,7 @@ class TestMainAgentForegroundAgentIsBlocked1442:
         assert out["permissionDecision"] == "deny"
         assert "main-agent-orchestration-guard" in out["permissionDecisionReason"]
         assert "run_in_background" in out["permissionDecisionReason"]
-        assert self._RULE_CITATION in out["permissionDecisionReason"]
+        assert self._RULE_STATEMENT in out["permissionDecisionReason"]
         assert out["gate_id"] == "orchestrator_foreground_dispatch"
 
     def test_agent_absent_run_in_background_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
