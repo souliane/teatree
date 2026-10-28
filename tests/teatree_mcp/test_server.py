@@ -81,6 +81,13 @@ _MAILBOX_TOOLS = {
 }
 
 
+def _raising(error: Exception) -> Callable[[], str]:
+    def refuse() -> str:
+        raise error
+
+    return refuse
+
+
 class TestCrashingToolAnswers(TestCase):
     async def _call(self, fn: Callable[[], str | Awaitable[str]]) -> CallToolResult:
         with patch("teatree.mcp.server.get_all_overlays", return_value={}):
@@ -164,21 +171,12 @@ class TestCrashingToolAnswers(TestCase):
         assert text == f"Error executing tool probe: RuntimeError: {'x' * 480} refresh_token=<reda"
         assert "notarealvalue" not in text
 
-    def test_deliberate_tool_error_keeps_its_text(self) -> None:
-        message = "bad input"
+    def test_a_deliberate_refusal_keeps_its_text(self) -> None:
+        for refusal in (ToolError, ResourceError):
+            with self.subTest(refusal=refusal.__name__):
+                text = self._text(asyncio.run(self._call(_raising(refusal("bad input")))))
 
-        def refuse() -> str:
-            raise ToolError(message)
-
-        assert self._text(asyncio.run(self._call(refuse))) == "Error executing tool probe: bad input"
-
-    def test_resource_error_keeps_its_text(self) -> None:
-        message = "bad input"
-
-        def refuse() -> str:
-            raise ResourceError(message)
-
-        assert self._text(asyncio.run(self._call(refuse))) == "Error executing tool probe: bad input"
+                assert text == "Error executing tool probe: bad input"
 
     def test_protocol_error_remains_a_protocol_error(self) -> None:
         message = "protocol says no"
