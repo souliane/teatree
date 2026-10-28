@@ -254,12 +254,14 @@ class TestManyLivePullRequestsDoNotHoldAStart(_AdmissionCase):
             )
         return tickets
 
-    def test_four_author_starts_without_a_pull_request_are_admitted_with_twenty_live_pull_requests(self) -> None:
+    def test_four_author_starts_without_a_pull_request_are_claimed_with_twenty_live_pull_requests(self) -> None:
         self._open_prs(20)
         starters = [self._task("coding", ticket=Ticket.objects.create()) for _ in range(4)]
 
         assert drain_queue_body()["enqueued"] == [task.pk for task in starters]
         assert all(self._admitted(task) for task in starters)
+        assert [Task.objects.claim_next_pending(claimed_by="worker") for _ in starters] == starters
+        assert all(Task.objects.get(pk=task.pk).status == Task.Status.CLAIMED for task in starters)
 
 
 class TestAFrozenFactoryAdmitsNothing(_AdmissionCase):
