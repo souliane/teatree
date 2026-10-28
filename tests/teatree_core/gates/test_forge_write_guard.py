@@ -36,13 +36,13 @@ class TestGitLabWriteGuard(TestCase):
         )
 
     def test_off_keeps_body_and_writes_no_ledger(self) -> None:
-        with self._setting(None), patch("httpx.post", return_value=_response("POST")) as request:
+        with self._setting(None), patch("httpx.Client.post", return_value=_response("POST")) as request:
             GitLabHTTPClient(token="CLIENT").post_json("projects/group%2Frepo/issues/7/notes", {"body": "/close"})
         assert request.call_args.kwargs["json"] == {"body": "/close"}
         assert SendAudit.objects.filter(action__startswith="guard:").count() == 0
 
     def test_cap_persists_across_clients_and_items_are_independent(self) -> None:
-        with self._setting({"cap_per_hour": 2}), patch("httpx.post", return_value=_response("POST")) as request:
+        with self._setting({"cap_per_hour": 2}), patch("httpx.Client.post", return_value=_response("POST")) as request:
             for _ in range(2):
                 GitLabHTTPClient(token="CLIENT").post_json("projects/group%2Frepo/issues/7/notes", {"body": "hi"})
             with pytest.raises(WriteRefusedError):
@@ -53,7 +53,7 @@ class TestGitLabWriteGuard(TestCase):
 
     def test_labels_and_quick_actions(self) -> None:
         setting = {"label_allowlist": ["allowed"], "escape_quick_actions": True}
-        with self._setting(setting), patch("httpx.post", return_value=_response("POST")) as request:
+        with self._setting(setting), patch("httpx.Client.post", return_value=_response("POST")) as request:
             with pytest.raises(WriteRefusedError):
                 GitLabHTTPClient(token="CLIENT").post_json("projects/group%2Frepo/issues/7", {"labels": "other"})
             GitLabHTTPClient(token="CLIENT").post_json(
@@ -68,7 +68,7 @@ class TestGitLabWriteGuard(TestCase):
             with (
                 self.subTest(payload=payload),
                 self._setting({"label_allowlist": ["allowed", "also-allowed"]}),
-                patch("httpx.post", return_value=_response("POST")) as request,
+                patch("httpx.Client.post", return_value=_response("POST")) as request,
             ):
                 GitLabHTTPClient(token="CLIENT").post_json("projects/group%2Frepo/issues/7", payload)
             assert request.call_args.kwargs["json"] == payload
@@ -76,7 +76,7 @@ class TestGitLabWriteGuard(TestCase):
     def test_label_allowlist_refuses_a_foreign_label_in_list_form(self) -> None:
         with (
             self._setting({"label_allowlist": ["allowed"]}),
-            patch("httpx.post", return_value=_response("POST")) as request,
+            patch("httpx.Client.post", return_value=_response("POST")) as request,
             pytest.raises(WriteRefusedError),
         ):
             GitLabHTTPClient(token="CLIENT").post_json(
@@ -87,10 +87,13 @@ class TestGitLabWriteGuard(TestCase):
     def test_label_allowlist_vets_add_labels_and_remove_labels(self) -> None:
         for key in ("add_labels", "remove_labels"):
             with self.subTest(key=key), self._setting({"label_allowlist": ["allowed"]}):
-                with patch("httpx.put", return_value=_response("PUT")) as request:
+                with patch("httpx.Client.put", return_value=_response("PUT")) as request:
                     GitLabHTTPClient(token="CLIENT").put_json("projects/group%2Frepo/issues/7", {key: "allowed"})
                 request.assert_called_once()
-                with patch("httpx.put", return_value=_response("PUT")) as request, pytest.raises(WriteRefusedError):
+                with (
+                    patch("httpx.Client.put", return_value=_response("PUT")) as request,
+                    pytest.raises(WriteRefusedError),
+                ):
                     GitLabHTTPClient(token="CLIENT").put_json("projects/group%2Frepo/issues/7", {key: "other"})
                 request.assert_not_called()
 
@@ -99,7 +102,7 @@ class TestGitLabWriteGuard(TestCase):
             with self.subTest(value=value, readable=readable):
                 with (
                     self._setting(value, readable=readable),
-                    patch("httpx.post", return_value=_response("POST")) as request,
+                    patch("httpx.Client.post", return_value=_response("POST")) as request,
                     pytest.raises(WriteRefusedError),
                 ):
                     GitLabHTTPClient(token="CLIENT").post_json("projects/group%2Frepo/issues/7", {})
@@ -109,8 +112,8 @@ class TestGitLabWriteGuard(TestCase):
         setting = {"own_items_only": True}
         with (
             self._setting(setting),
-            patch("httpx.get", return_value=_response("GET")),
-            patch("httpx.put", return_value=_response("PUT")) as request,
+            patch("httpx.Client.get", return_value=_response("GET")),
+            patch("httpx.Client.put", return_value=_response("PUT")) as request,
             pytest.raises(WriteRefusedError),
         ):
             GitLabHTTPClient(token="CLIENT").put_json("projects/group%2Frepo/issues/7", {"title": "x"})
@@ -127,8 +130,8 @@ class TestGitLabWriteGuard(TestCase):
         )
         with (
             self._setting({"own_items_only": True}),
-            patch("httpx.get", side_effect=[issue, user]),
-            patch("httpx.put", return_value=_response("PUT")) as request,
+            patch("httpx.Client.get", side_effect=[issue, user]),
+            patch("httpx.Client.put", return_value=_response("PUT")) as request,
         ):
             GitLabHTTPClient(token="CLIENT").put_json("projects/group%2Frepo/issues/7", {"title": "x"})
         request.assert_called_once()
@@ -152,8 +155,8 @@ class TestGitLabWriteGuard(TestCase):
                 with (
                     self.subTest(suffix=suffix, author=author, status=status),
                     self._setting({"own_items_only": True}),
-                    patch("httpx.get", side_effect=self._item_reads(author=author, status=status)),
-                    patch("httpx.put", return_value=_response("PUT")) as request,
+                    patch("httpx.Client.get", side_effect=self._item_reads(author=author, status=status)),
+                    patch("httpx.Client.put", return_value=_response("PUT")) as request,
                 ):
                     client = GitLabHTTPClient(token="CLIENT")
                     endpoint = f"projects/group%2Frepo/merge_requests/7/{suffix}"
@@ -186,8 +189,8 @@ class TestGitLabWriteGuard(TestCase):
                 with (
                     self.subTest(method=method, endpoint=endpoint),
                     self._setting({"own_items_only": True}),
-                    patch("httpx.get", side_effect=self._item_reads(author="me")) as read,
-                    patch(f"httpx.{method}", return_value=_response(method.upper())) as write,
+                    patch("httpx.Client.get", side_effect=self._item_reads(author="me")) as read,
+                    patch(f"httpx.Client.{method}", return_value=_response(method.upper())) as write,
                     pytest.raises(WriteRefusedError),
                 ):
                     send(endpoint)
@@ -203,8 +206,8 @@ class TestGitLabWriteGuard(TestCase):
                 with (
                     self.subTest(method=method, first=first),
                     self._setting({"own_items_only": True}),
-                    patch("httpx.get", side_effect=self._item_reads(author="colleague")) as read,
-                    patch(f"httpx.{method}", return_value=_response(method.upper())) as write,
+                    patch("httpx.Client.get", side_effect=self._item_reads(author="colleague")) as read,
+                    patch(f"httpx.Client.{method}", return_value=_response(method.upper())) as write,
                     pytest.raises(WriteRefusedError),
                 ):
                     send(endpoint)
@@ -216,8 +219,8 @@ class TestGitLabWriteGuard(TestCase):
             with (
                 self.subTest(author=author),
                 self._setting({"own_items_only": True}),
-                patch("httpx.get", side_effect=self._item_reads(author=author)),
-                patch("httpx.delete", return_value=_response("DELETE")) as write,
+                patch("httpx.Client.get", side_effect=self._item_reads(author=author)),
+                patch("httpx.Client.delete", return_value=_response("DELETE")) as write,
             ):
                 client = GitLabHTTPClient(token="CLIENT")
                 if allowed:
@@ -235,14 +238,14 @@ class TestGitLabWriteGuard(TestCase):
 
     def test_hour_window_expires_while_day_window_remains(self) -> None:
         endpoint = "projects/group%2Frepo/issues/7/notes"
-        with self._setting({"cap_per_hour": 1}), patch("httpx.post", return_value=_response("POST")) as request:
+        with self._setting({"cap_per_hour": 1}), patch("httpx.Client.post", return_value=_response("POST")) as request:
             GitLabHTTPClient(token="CLIENT").post_json(endpoint, {})
             SendAudit.objects.filter(action__startswith="guard:").update(created_at=timezone.now() - timedelta(hours=2))
             GitLabHTTPClient(token="CLIENT").post_json(endpoint, {})
         assert request.call_count == 2
         with (
             self._setting({"cap_per_day": 2}),
-            patch("httpx.post", return_value=_response("POST")) as request,
+            patch("httpx.Client.post", return_value=_response("POST")) as request,
             pytest.raises(WriteRefusedError),
         ):
             GitLabHTTPClient(token="CLIENT").post_json(endpoint, {})
@@ -294,7 +297,7 @@ class TestGitLabWriteGuard(TestCase):
                 "teatree.core.push.fast_push.run_checked",
                 return_value=SimpleNamespace(stdout="https://gitlab.com/Group/Repo/-/merge_requests/7"),
             ),
-            patch("httpx.post", return_value=_response("POST")) as request,
+            patch("httpx.Client.post", return_value=_response("POST")) as request,
         ):
             forge.create_pr(branch="branch", title="title", body="first")
             with pytest.raises(WriteRefusedError):
@@ -304,7 +307,7 @@ class TestGitLabWriteGuard(TestCase):
     def test_graphql_label_ids_are_refused_before_post(self) -> None:
         with (
             self._setting({"label_allowlist": ["allowed"]}),
-            patch("httpx.post", return_value=_response("POST")) as request,
+            patch("httpx.Client.post", return_value=_response("POST")) as request,
             pytest.raises(WriteRefusedError),
         ):
             GitLabHTTPClient(token="CLIENT").graphql("mutation { updateIssue }", {"input": {"labelIds": [1]}})

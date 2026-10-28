@@ -34,7 +34,12 @@ from rich.table import Table
 from teatree.cli.eval.corpus import corpus_grade_lane, grade_shipped_corpus
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
-from teatree.cli.eval.run_modes import RunGuards, build_transcript_manifest, render_transcript_text
+from teatree.cli.eval.run_modes import (
+    RunGuards,
+    build_transcript_manifest,
+    park_credit_exhaustion,
+    render_transcript_text,
+)
 from teatree.cli.eval.skill_command_lane import skill_command_validity_lane, validate_shipped_skill_commands
 from teatree.cli.eval.skill_prose_lane import run_prose_judge, skill_prose_judge_lane
 from teatree.cli.eval.transcript_replay import replay_transcript_for_all
@@ -55,7 +60,6 @@ from teatree.eval.skip_guard import (
 )
 from teatree.eval.surface import is_advisory
 from teatree.eval.transcript_conformance import InvariantResult
-from teatree.llm.anthropic_limits import CreditExhaustedError
 from teatree.utils.django_bootstrap import ensure_django
 
 
@@ -207,11 +211,8 @@ def run_ai_lane(
     if isinstance(runner, TranscriptRunner) and not _any_transcript_present(specs, runner):
         _emit_transcript_recipe(specs, target_dir)
         return AiLaneOutcome(lane=_ai_lane_result([], backend=backend, graded=False), results=[])
-    try:
+    with park_credit_exhaustion():
         runs = run_specs(runner, specs, parallel=parallel)
-    except CreditExhaustedError as exc:
-        typer.echo(f"ABORTED: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
     results = list(starmap(evaluate, zip(specs, runs, strict=True)))
     return AiLaneOutcome(lane=_ai_lane_result(results, backend=backend, graded=True), results=results)
 

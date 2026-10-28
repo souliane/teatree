@@ -15,7 +15,7 @@ import typer
 from django.core.management import call_command
 from mcp.server.mcpserver.exceptions import ToolError
 
-from teatree.core.machine_output import last_json_object
+from teatree.utils.machine_json import last_json_object
 
 
 def run_command(command: str, *args: object, **kwargs: object) -> object:

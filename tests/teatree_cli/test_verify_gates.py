@@ -54,21 +54,6 @@ runner = CliRunner()
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_push_stage_deadline_uses_configured_lock_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("T3_PUSH_GATE_LOCK_WAIT_SECONDS", "2400")
-    push = _stage_commands([], tmp_path, tmp_path)[1][1]
-    assert "3000s" in push
-
-
-@pytest.mark.parametrize(("setting", "expected"), [("-1", "600s"), ("invalid", "2100s")])
-def test_push_stage_deadline_handles_invalid_lock_wait(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setting: str, expected: str
-) -> None:
-    monkeypatch.setenv("T3_PUSH_GATE_LOCK_WAIT_SECONDS", setting)
-    push = _stage_commands([], tmp_path, tmp_path)[1][1]
-    assert expected in push
-
-
 class TestPrivateGateDatabase(TransactionTestCase):
     def test_snapshot_preserves_ticket_brief_for_push_hook(self) -> None:
         with TemporaryDirectory() as temp_root:
@@ -432,8 +417,7 @@ class TestVerifyGatesRunsBothStages:
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0
         calls = _calls(run)
-        assert [c[3] for c in calls] == ["600s", "2100s", "600s"]
-        assert all(c[:3] == ["timeout", "--signal=TERM", "--kill-after=15s"] for c in calls)
+        assert all(c[:3] == ["timeout", "--signal=TERM", "--kill-after=15s"] and c[3].endswith("s") for c in calls)
         assert any(c[4:] == ["prek", "run", "--files", "README.md"] for c in calls)
         # One push-stage run — the gate CI re-runs that the bare run skips.
         push = [c for c in calls if "--hook-stage" in c]
@@ -583,6 +567,53 @@ class TestVerifyGatesRunsBothStages:
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 1
         assert "INCOMPLETE" in result.output
+
+    def test_deadline_includes_load_and_the_pre_push_lock_wait(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates._timeout_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch(
+                "teatree.core.admission.machine_load.read_load_and_cores",
+                side_effect=[(0.0, 8), (16.0, 8), (0.0, 8)],
+            ),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=[0, 124, 0]) as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+
+        assert result.exit_code == 1
+        commands = _calls(run)
+        assert [command[3] for command in commands] == ["600s", "2700s", "600s"]
+        assert run.call_args_list[1].kwargs["env"]["T3_PUSH_GATE_LOCK_WAIT_SECONDS"] == "1500"
+        assert "load 16.0/8" in result.output
+        assert "2700s" in result.output
+        assert "pre-push (CI-parity gates) (load 16.0/8, deadline 2700s, lock wait 1500s)" in result.output
+
+    def test_a_timed_out_commit_stage_reports_no_lock_wait(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates._timeout_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.core.admission.machine_load.read_load_and_cores", return_value=(0.0, 8)),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=[124, 0, 0]),
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+
+        assert result.exit_code == 1
+        assert "commit (load 0.0/8, deadline 600s, lock wait 0s)" in result.output
+
+    def test_load_multiplier_stops_at_three(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates._timeout_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.core.admission.machine_load.read_load_and_cores", return_value=(80.0, 8)),
+            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+
+        assert result.exit_code == 0
+        assert [command[3] for command in _calls(run)] == ["1800s", "3300s", "1800s"]
 
     def test_missing_timeout_fails_closed(self) -> None:
         with (

@@ -25,7 +25,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 addressable upper bounds.                                    │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
-│ speak           Refuse to speak — local audio cannot reach the user.         │
 │ push            Push a branch using the forge credential the loop already    │
 │                 holds.                                                       │
 │ fast-push       Stage, commit, push, and create-or-update the PR in one      │
@@ -255,24 +254,6 @@ Usage: t3 tokens [OPTIONS]
 │ --scope         TEXT  Routing scope to select for; defaults to the active    │
 │                       overlay (T3_OVERLAY_NAME).                             │
 │ --help                Show this message and exit.                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 speak`
-
-```
-Usage: t3 speak [OPTIONS] TEXT
-
- Refuse to speak — local audio cannot reach the user.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │
-│                      [required]                                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay Slack   │
-│                        creds).                                               │
-│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4296,8 +4277,9 @@ Usage: t3 tool verify-gates [OPTIONS]
  Run the FULL CI-equivalent local gate set (commit, push and manual CI-job
  stages).
 
- Runs commit and manual stages under a 600-second deadline; pre-push also
- allows the shared push-gate lock's 1500-second wait. Exits non-zero if ANY
+ Runs each prek stage under a load-aware deadline (600 seconds of work at
+ idle, up to three times that under load; pre-push also allows the shared
+ push-gate lock's 1500-second wait). Exits non-zero if ANY
  stage fails. The push-stage run is
  what catches the gates CI fails on but a bare ``prek run --all-files``
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak

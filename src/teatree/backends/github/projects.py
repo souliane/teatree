@@ -18,8 +18,7 @@ from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
 
-# Bound every ``gh api graphql`` subprocess so a stalled read degrades (raises
-# TimeoutExpired) instead of wedging the single-threaded loop.
+# Bound every GraphQL request so a stalled read cannot wedge the single-threaded loop.
 _GRAPHQL_TIMEOUT_SECONDS = 60.0
 
 # GitHub's per-connection maximum. An issue carrying more labels than one page
@@ -41,12 +40,7 @@ class ProjectItem:
 
 
 def _gh_graphql(query: str, *, token: str = "") -> RawAPIDict:
-    """Execute a GraphQL query via ``gh api graphql``.
-
-    The token is passed via ``GH_TOKEN`` env, never ``--header "Authorization:
-    Bearer <token>"`` — an argv header leaks the credential to
-    ``/proc/<pid>/cmdline`` and ``ps``.
-    """
+    """Execute a GraphQL query through the shared host pool with a request-scoped token."""
     result = _run_gh(
         "gh",
         "api",
