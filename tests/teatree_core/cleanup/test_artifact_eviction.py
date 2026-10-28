@@ -1379,6 +1379,17 @@ class TestTheVenueBoundsThePopulation(TestCase):
         assert theirs not in {candidate.artifact for candidate in plan.candidates}
         assert any(f"#{row.pk}" in note and "skipped" in note for note in plan.excluded)
 
+    def test_codex_workspace_venv_is_in_the_eviction_plan(self) -> None:
+        self.venue.mkdir()
+        codex_home = self.outside / "codex-home"
+        artifact = _artifact_in(make_git_repo(codex_home / "workspace" / "owner" / "project"))
+
+        with patch.dict(os.environ, {"T3_CODEX_HOME": str(codex_home)}):
+            plan = plan_artifact_eviction(self.venue, idle_days=1)
+
+        assert not plan.refusal, plan.refusal
+        assert artifact in {candidate.artifact for candidate in plan.candidates}
+
 
 class TestThePassBudget(_EvictionFixture):
     """The pass ends inside its budget with what it did recorded, never by the tick's kill (#98)."""

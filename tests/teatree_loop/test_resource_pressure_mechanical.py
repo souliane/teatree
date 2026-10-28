@@ -13,7 +13,9 @@ from django.test import TestCase
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.docker.reclaim import PruneOutcome, ReclaimReport, ReclaimStep
 from teatree.loop import mechanical_resources
+from teatree.loop.mechanical_artifacts import ARTIFACT_PASS_BUDGET_SECONDS, ENV_DIR_WALK_BUDGET_SECONDS
 from teatree.loop.mechanical_resources import free_resources
+from teatree.loops.timer_chains import MIN_TICK_DEADLINE_SECONDS
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -177,6 +179,26 @@ class DiskCachePurgeTests(TestCase):
         assert marker.last_plan
         assert "PURGE cache" in marker.last_plan
         assert marker.last_freed_at is not None
+
+    def test_failed_step_persists_completed_and_failed_lines(self) -> None:
+        with (
+            patch.object(mechanical_resources, "_run_uv_cache_prune", side_effect=RuntimeError("uv failed")),
+            pytest.raises(RuntimeError, match="uv failed"),
+        ):
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+
+        plan = ResourcePressureMarker.load().last_plan
+        assert "DONE allowlisted caches" in plan
+        assert "FAILED uv cache: uv failed" in plan
+
+    def test_reclaim_pass_budgets_leave_tick_margin(self) -> None:
+        assert (
+            mechanical_resources.DISK_PASS_BUDGET_SECONDS
+            + ARTIFACT_PASS_BUDGET_SECONDS
+            + ENV_DIR_WALK_BUDGET_SECONDS
+            + 30
+            <= MIN_TICK_DEADLINE_SECONDS
+        )
 
     def test_an_absent_allowlist_entry_is_named_in_the_plan(self) -> None:
         """A stale allow-list entry must be VISIBLE, not silently worth 0.00 GB (#3852).

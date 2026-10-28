@@ -458,3 +458,19 @@ class UnattendedHousekeepingTests(TestCase):
         assert notify.call_count == 1
         assert "open-file probe unsighted" in notify.call_args.args[0]
         assert ResourcePressureMarker.load().reclaim_blocked_since is not None
+
+    def test_recovered_pressure_clears_the_notice_for_a_new_episode(self) -> None:
+        marker = ResourcePressureMarker.load()
+        marker.last_disk_free_gb = 16.0
+        marker.reclaim_blocked_since = timezone.now()
+        marker.last_reclaim_notice_at = timezone.now()
+        marker.save(update_fields=["last_disk_free_gb", "reclaim_blocked_since", "last_reclaim_notice_at"])
+        with patch(
+            f"{_SWEEP}.measure_resources",
+            return_value=SimpleNamespace(disk_free_gb=30.0, disk_probe_degraded=False),
+        ):
+            self._sweep()
+
+        marker.refresh_from_db()
+        assert marker.reclaim_blocked_since is None
+        assert marker.last_reclaim_notice_at is None

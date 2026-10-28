@@ -52,8 +52,11 @@ from pathlib import Path
 
 from django.utils import timezone
 
-from teatree.core.models.worktree import Worktree
 from teatree.core.retention.liveness import ProcessTableView, held_paths, normalized_spelling
+from teatree.core.retention.scratch_guards import covers as _covers
+from teatree.core.retention.scratch_guards import worktree_paths as _worktree_paths
+from teatree.core.retention.scratch_tree import TreeStats
+from teatree.core.retention.scratch_tree import tree_stats as _tree_stats
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +127,8 @@ class ScratchSweepPlan:
     applied: bool = False
     reclaimed_bytes: int = 0
     last_checked_path: str = ""
+    checked_paths: tuple[str, ...] = ()
+    kept_count: int | None = None
     refused: bool = False
     """A read the sweep depends on FAILED, so it deleted nothing and says so.
 
@@ -147,7 +152,8 @@ class ScratchSweepPlan:
     @property
     def summary(self) -> str:
         if self.refused and not self.entries:
-            head = f"{self.root}: REFUSED — residency not measured"
+            kept = f"{self.kept_count} entry(ies) kept" if self.kept_count is not None else "item count unavailable"
+            head = f"{self.root}: REFUSED — {kept}; residency not measured"
         elif self.refused:
             head = (
                 f"{self.root}: REFUSED — reclaimed nothing of "
@@ -163,108 +169,6 @@ class ScratchSweepPlan:
                 f"across {len(self.candidates)}/{len(self.entries)} entry(ies)"
             )
         return f"{head} — {self.probe_gap}" if self.probe_gap else head
-
-
-@dataclass(frozen=True, slots=True)
-class _TreeStats:
-    """What one recursive walk of a candidate tree answers, computed together.
-
-    ``newest_mtime`` is the NEWEST ``st_mtime`` of any node anywhere in the
-    tree (every file's own mtime, every directory's own mtime, and the top
-    entry's), never just the top-level entry's own stat. A directory's own
-    mtime moves only when an entry is added, removed, or renamed DIRECTLY
-    inside it — editing a file two levels down never touches it — so a
-    top-level-only check reads an actively-written working tree as stale the
-    moment its own last direct-child change aged out of the window, even
-    though content underneath was written seconds ago.
-
-    ``holds_git_repo`` is True when a ``.git`` entry (directory for a clone,
-    file for a worktree) exists anywhere in the tree — the ad-hoc-repo guard
-    that catches a git checkout the ``Worktree`` table never learned about.
-    ``None`` for ``newest_mtime`` means the top entry itself could not be
-    stat-ed, OR some directory anywhere in the tree could not be SCANNED (an
-    ``EACCES`` on a subdirectory this uid cannot search) — either way never
-    removable, because an unscanned subtree could hold content written a
-    moment ago and silently under-reporting it is the same fail-open shape
-    as reading only the top-level entry's own mtime.
-    """
-
-    size_bytes: int
-    newest_mtime: float | None
-    holds_git_repo: bool
-
-
-def _tree_stats(path: Path, *, deadline: float | None = None) -> _TreeStats:
-    """Size, tree-wide newest mtime, and ad-hoc-repo detection in ONE walk."""
-    try:
-        top = path.lstat()
-    except OSError:
-        return _TreeStats(size_bytes=0, newest_mtime=None, holds_git_repo=False)
-    if path.is_symlink() or not path.is_dir():
-        return _TreeStats(size_bytes=top.st_size, newest_mtime=top.st_mtime, holds_git_repo=False)
-    total_size = 0
-    newest = top.st_mtime
-    try:
-        # A directory this uid cannot search (EACCES) raises here, same as it
-        # will on os.walk's own scandir below — caught there via `unreadable`.
-        holds_git = (path / ".git").exists()
-    except OSError:
-        holds_git = False
-    unreadable = False
-
-    def _blind(_error: OSError) -> None:
-        # os.walk's default onerror=None silently drops whatever a subtree it
-        # cannot scandir would have contributed — the same fail-open shape as
-        # reading only the top-level mtime, one level deeper. Recorded, not
-        # swallowed: newest_mtime becomes None below, so the entry is kept.
-        nonlocal unreadable
-        unreadable = True
-
-    for root, dirs, files in os.walk(path, onerror=_blind, followlinks=False):
-        if deadline is not None and time.monotonic() >= deadline:
-            unreadable = True
-            break
-        if ".git" in dirs or ".git" in files:
-            holds_git = True
-        file_stats, files_denied = _lstat_all(root, files)
-        dir_stats, dirs_denied = _lstat_all(root, dirs)
-        unreadable = unreadable or files_denied or dirs_denied
-        for info in file_stats:
-            total_size += info.st_size
-            newest = max(newest, info.st_mtime)
-        for info in dir_stats:
-            newest = max(newest, info.st_mtime)
-    return _TreeStats(
-        size_bytes=total_size,
-        newest_mtime=None if unreadable else newest,
-        holds_git_repo=holds_git,
-    )
-
-
-def _lstat_all(root: str, names: list[str]) -> tuple[list[os.stat_result], bool]:
-    """``lstat()`` each of *names* under *root*, plus whether a read was DENIED rather than absent.
-
-    A directory readable but not searchable (0444) lets ``os.walk``'s scandir
-    succeed — so ``onerror`` never fires — while every child ``lstat`` raises
-    EACCES. Swallowing that alongside the vanished-entry case reports the tree's
-    newest mtime as the parent's, so content written seconds ago classifies as
-    stale; a denial is a blind spot, not an absence.
-
-    ONLY ``ENOENT`` is an absence. Every other errno — ELOOP, ENAMETOOLONG, EIO,
-    a stale NFS handle — is a read this walk could not complete, and scoring it as
-    "the entry was not there" is the same absence/blindness conflation one branch
-    lower.
-    """
-    stats = []
-    denied = False
-    for name in names:
-        try:
-            stats.append((Path(root) / name).lstat())
-        except FileNotFoundError:
-            continue
-        except OSError:
-            denied = True
-    return stats, denied
 
 
 def _remove(path: Path) -> bool:
@@ -312,6 +216,7 @@ class ScratchSweep:
                 root=str(self.root),
                 retention_days=self.retention_days,
                 entries=(),
+                kept_count=len(children),
                 probe_gap="pass budget exhausted before scratch could be checked",
                 refused=True,
             )
@@ -321,7 +226,9 @@ class ScratchSweep:
             # about the root either way, and 0.00 GB from an unseen root is false.
             return self._inert_plan(f"{off}; {unlistable}" if unlistable else off, children)
         if unlistable:
-            return self._inert_plan(unlistable, children, refused=True)
+            return ScratchSweepPlan(
+                root=str(self.root), retention_days=self.retention_days, entries=(), probe_gap=unlistable, refused=True
+            )
         view = held_paths(self.proc_root)  # the only liveness probe; apply() never re-runs it (#4356)
         if not view.sighted:
             return self._inert_plan(self._unsighted_gap(view), children, refused=True)
@@ -346,6 +253,7 @@ class ScratchSweep:
             entries=_ranked(entries),
             probe_gap=f"pass budget exhausted; {deferred} entry(ies) deferred" if deferred else "",
             last_checked_path=entries[-1].path if entries else "",
+            checked_paths=tuple(entry.path for entry in entries),
         )
 
     def _unsighted_gap(self, view: ProcessTableView) -> str:
@@ -366,7 +274,8 @@ class ScratchSweep:
         like a close, and the real fixes — a lease over the root, or per-entry
         openat+flock — are a design decision. Unreachable while the lane ships off.
         """
-        plan = self.plan()
+        plan_deadline = time.monotonic() + (self.deadline - time.monotonic()) / 2 if self.deadline is not None else None
+        plan = replace(self, deadline=plan_deadline).plan()
         if plan.refused:
             # Never the reclaimed-0.00-GB INFO line: a read failure reported as a
             # clean no-op is indistinguishable from an empty box, which is how an
@@ -375,15 +284,24 @@ class ScratchSweep:
             return plan
         cutoff = self._cutoff()
         reclaimed = 0
-        for entry in plan.candidates:
+        by_path = {entry.path: entry for entry in plan.entries}
+        checked_paths = plan.checked_paths or tuple(entry.path for entry in plan.entries)
+        processed = 0
+        for entry in (by_path[path] for path in checked_paths):
             if self.deadline is not None and time.monotonic() >= self.deadline:
                 break
+            if not entry.removable:
+                processed += 1
+                continue
             path = Path(entry.path)
             # Re-walk the WHOLE tree immediately before the unlink, not just the
             # top-level entry: the box provisions continuously, and a nested file
             # written since the plan is live work the top-level stat alone would
             # miss (the exact gap tree-wide staleness exists to close).
             stats = _tree_stats(path, deadline=self.deadline)
+            if stats.newest_mtime is None and self.deadline is not None and time.monotonic() >= self.deadline:
+                break
+            processed += 1
             if stats.newest_mtime is None or stats.newest_mtime >= cutoff:
                 continue
             if _remove(path):
@@ -393,17 +311,26 @@ class ScratchSweep:
             root=plan.root,
             retention_days=plan.retention_days,
             entries=plan.entries,
-            probe_gap=plan.probe_gap,
+            probe_gap=(
+                f"pass budget exhausted; {len(checked_paths) - processed} checked entry(ies) deferred; {plan.probe_gap}"
+                if processed < len(checked_paths)
+                else plan.probe_gap
+            ),
             applied=True,
             reclaimed_bytes=reclaimed,
-            last_checked_path=plan.last_checked_path,
+            last_checked_path=checked_paths[processed - 1] if processed else self.start_after,
         )
 
     def _inert_plan(self, gap: str, children: list[Path], *, refused: bool = False) -> ScratchSweepPlan:
         """A plan that removes nothing but still reports what is resident and why."""
         if refused and self.deadline is not None:
             return ScratchSweepPlan(
-                root=str(self.root), retention_days=self.retention_days, entries=(), probe_gap=gap, refused=True
+                root=str(self.root),
+                retention_days=self.retention_days,
+                entries=(),
+                probe_gap=gap,
+                kept_count=len(children),
+                refused=True,
             )
         entries = []
         for child in children:
@@ -470,7 +397,7 @@ class ScratchSweep:
         self,
         child: Path,
         *,
-        stats: _TreeStats,
+        stats: TreeStats,
         cutoff: float,
         held: frozenset[str],
         reserved: frozenset[str],
@@ -489,7 +416,7 @@ class ScratchSweep:
             return "holds a git repository"
         return ""
 
-    def _staleness_reason(self, child: Path, *, stats: _TreeStats, cutoff: float) -> str:
+    def _staleness_reason(self, child: Path, *, stats: TreeStats, cutoff: float) -> str:
         """Why *child* is not provably stale scratch of this uid, or ``""``."""
         if stats.newest_mtime is None:
             return "unreadable — cannot prove it is stale"
@@ -522,35 +449,6 @@ class ScratchSweep:
 
 def _ranked(entries: list[ScratchEntry]) -> tuple[ScratchEntry, ...]:
     return tuple(sorted(entries, key=lambda entry: (-entry.size_bytes, entry.path)))
-
-
-def _worktree_paths() -> frozenset[str] | None:
-    """Registered checkout + repo paths; ``None`` when the read fails."""
-    try:
-        rows = list(Worktree.objects.values_list("repo_path", "extra"))
-    except Exception:
-        logger.exception("scratch sweep: could not read registered worktrees")
-        return None
-    paths: set[str] = set()
-    for repo_path, extra in rows:
-        checkout = extra.get("worktree_path", "") if isinstance(extra, dict) else ""
-        paths.update(str(value) for value in (repo_path, checkout) if value)
-    return frozenset(paths)
-
-
-def _covers(paths: frozenset[str], candidate: str, *, nested_only: bool) -> bool:
-    """True when *candidate* is one of *paths*, contains one, or (unless *nested_only*) is inside one.
-
-    A held fd names a file INSIDE the candidate, so nesting one way is enough there.
-    A worktree relationship matters in both directions: the candidate may be the
-    checkout, hold it, or sit inside its root.
-    """
-    for path in paths:
-        if path == candidate or path.startswith(candidate + os.sep):
-            return True
-        if not nested_only and candidate.startswith(path + os.sep):
-            return True
-    return False
 
 
 def resolve_scratch_sweep(configured: str = "") -> ScratchSweep:

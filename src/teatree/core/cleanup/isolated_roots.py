@@ -64,7 +64,7 @@ from teatree.core.cleanup.unshipped_work import ARTIFACT_NAMESPACE as SALVAGE_NA
 from teatree.core.gates.idle_stack import worktree_protects_against_reap
 from teatree.core.models import Worktree
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
-from teatree.core.retention.scratch import _tree_stats
+from teatree.core.retention.scratch_tree import tree_stats
 
 _STAMP_NAMES = frozenset({paths.OWNER_STAMP_NAME, paths.OWNER_LOCATION_NAME})
 _IDLE_DB_SECONDS = 3 * 60 * 60
@@ -73,14 +73,14 @@ _IDLE_DB_SECONDS = 3 * 60 * 60
 def reap_idle_isolated_databases(workspace: Path, *, deadline: float | None = None) -> list[str]:
     """Remove only idle SQLite copies owned by registered, inactive live checkouts."""
     del workspace
-    table = read_process_table()
-    if reason := table.eviction_refuse_reason():
-        return [f"REFUSED idle database reclaim: process probe unsighted — {reason}"]
     candidates, gap = _idle_database_candidates()
     if gap:
         return [f"REFUSED idle database reclaim: {gap}"]
     if not candidates:
         return []
+    table = read_process_table()
+    if reason := table.eviction_refuse_reason():
+        return [f"REFUSED idle database reclaim: {len(candidates)} item(s) kept; process probe unsighted — {reason}"]
     marker = ResourcePressureMarker.load()
     rows = _registered_database_owners()
     start = bisect.bisect_right(candidates, Path(marker.idle_db_cursor)) if marker.idle_db_cursor else 0
@@ -170,7 +170,7 @@ def _idle_database_file_reason(env_dir: Path, table: ProcessTable, *, deadline: 
         return "a symlink cannot be reclaimed"
     if table.holds(env_dir):
         return "open by a live process"
-    stats = _tree_stats(env_dir, deadline=deadline)
+    stats = tree_stats(env_dir, deadline=deadline)
     if stats.holds_git_repo:
         return "the env dir holds git state"
     if stats.newest_mtime is None:

@@ -90,6 +90,55 @@ def test_deploy_reclaims_then_checks_space_before_build(tmp_path: Path, free_gib
     assert "17.0 GiB" in result.stdout + result.stderr
 
 
+def test_deploy_uses_prune_fallback_when_worker_reclaim_fails(tmp_path: Path) -> None:
+    source = DEPLOY.read_text(encoding="utf-8")
+    start = source.index('. "$SCRIPT_DIR/disk-preflight.sh"')
+    end = source.index("# Fetch now, fast-forward later:", start)
+    trace = tmp_path / "trace"
+    script = (
+        "set -euo pipefail\n"
+        f"SCRIPT_DIR={DEPLOY.parent}\nTRACE={trace}\n"
+        'compose() { printf "compose %s\\n" "$*" >>"$TRACE"; return 1; }\n'
+        'docker() { case "$1" in info) return 0;; esac; printf "docker %s\\n" "$*" >>"$TRACE"; }\n'
+        "df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n"
+        "/dev/fake 40000000 1000000 20971520 1%% /\\n'; }\n" + source[start:end]
+    )
+
+    result = subprocess.run([BASH, "-c", script], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert trace.read_text(encoding="utf-8").splitlines() == [
+        "compose exec -T teatree-worker t3 worker reclaim --budget-seconds 90",
+        "docker builder prune -f",
+        "docker image prune -f",
+    ]
+
+
+def test_deploy_low_space_log_keeps_the_preflight_error() -> None:
+    source = DEPLOY.read_text(encoding="utf-8")
+    start = source.index('. "$SCRIPT_DIR/disk-preflight.sh"')
+    end = source.index("# Fetch now, fast-forward later:", start)
+    script = (
+        "set -euo pipefail\n"
+        f"SCRIPT_DIR={DEPLOY.parent}\n"
+        'compose() { :; }\ndocker() { printf "%s\\n" /; }\n'
+        "df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n"
+        "/dev/fake 40000000 1000 524288 1%% /\\n'; }\n" + source[start:end]
+    )
+
+    result = subprocess.run([BASH, "-c", script], capture_output=True, text=True, check=False)
+
+    assert result.returncode != 0
+    log_line = next(line for line in result.stdout.splitlines() if line.startswith("deploy: low-space log: "))
+    log = Path(log_line.removeprefix("deploy: low-space log: "))
+    try:
+        assert log.parent == Path("/dev/shm")
+        assert "reserved" in log.read_text(encoding="utf-8")
+        assert "17.0 GiB" in log.read_text(encoding="utf-8")
+    finally:
+        log.unlink(missing_ok=True)
+
+
 @pytest.mark.parametrize(("free_gib", "allowed"), [(16, False), (20, True)])
 def test_staged_build_rechecks_space_after_archive_staging(tmp_path: Path, free_gib: int, *, allowed: bool) -> None:
     source = DEPLOY.read_text(encoding="utf-8")

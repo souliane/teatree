@@ -124,7 +124,10 @@ class TestIdleDatabaseCopies(TestCase):
             result = reaper.reap_idle_isolated_databases(self.workspace)
 
         assert (idle / "db.sqlite3").exists()
-        assert any("REFUSED" in line and "host process table unavailable" in line for line in result)
+        assert any(
+            "REFUSED" in line and "host process table unavailable" in line and "1 item(s) kept" in line
+            for line in result
+        )
 
 
 def _make_env_dir(root: Path, slug: str) -> Path:

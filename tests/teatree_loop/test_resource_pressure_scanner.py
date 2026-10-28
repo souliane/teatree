@@ -38,6 +38,7 @@ from teatree.loop.scanners.resource_pressure import (
     _parse_vm_stat_avail_gb,
     measure_resources,
     read_disk_free_gb,
+    read_disk_reserved_gb,
     read_ram_avail_gb,
 )
 
@@ -140,6 +141,15 @@ class DiskMeasurementTests(TestCase):
     def test_statvfs_oserror_returns_none(self) -> None:
         with patch("teatree.loop.scanners.resource_pressure.os.statvfs", side_effect=OSError):
             assert read_disk_free_gb("/") is None
+
+    def test_reserved_blocks_are_free_to_root_but_unavailable_to_the_worker(self) -> None:
+        class _Stat:
+            f_bfree = 16 * _GIB // 4096
+            f_bavail = 7 * _GIB // 4096
+            f_frsize = 4096
+
+        with patch(f"{_MODULE}.os.statvfs", return_value=_Stat()):
+            assert read_disk_reserved_gb("/") == pytest.approx(9.0)
 
 
 class CgroupProbeVisibilityTests(TestCase):
@@ -794,10 +804,12 @@ class CleanupPayloadTests(_ScannerHarness):
         marker.last_reclaimed_gb = 1.25
         marker.save(update_fields=["reclaim_blocked_since", "last_reclaimed_gb"])
 
-        signals = self._scan_with(disk_gb=16.0, ram_gb=100.0)
+        with patch(f"{_MODULE}.read_disk_reserved_gb", return_value=9.6):
+            signals = self._scan_with(disk_gb=16.0, ram_gb=100.0)
 
         status = next(signal for signal in signals if signal.kind == "resource.reclaim_blocked")
         assert "16.0 GB free" in status.summary
+        assert "9.6 GB reserved" in status.summary
         assert "1.25 GB" in status.summary
         assert dispatch([status])[0].zone == "action_needed"
 

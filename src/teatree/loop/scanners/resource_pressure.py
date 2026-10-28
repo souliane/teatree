@@ -89,6 +89,7 @@ class ResourceReading:
     #: have moved since.
     disk_probed_paths: tuple[str, ...] = ()
     disk_answered_by: str = ""
+    disk_reserved_gb: float | None = None
     cgroup_probe_inert: bool = False
 
     @property
@@ -142,6 +143,15 @@ def read_disk_free_gb(path: str) -> float | None:
         logger.warning("resource_pressure: os.statvfs(%r) failed", path)
         return None
     return (stat.f_bavail * stat.f_frsize) / _GIB
+
+
+def read_disk_reserved_gb(path: str) -> float | None:
+    try:
+        stat = os.statvfs(path)
+    except OSError:
+        logger.warning("resource_pressure: reserved blocks on %r could not be measured", path)
+        return None
+    return max(stat.f_bfree - stat.f_bavail, 0) * stat.f_frsize / _GIB
 
 
 def read_ram_avail_gb() -> float | None:
@@ -267,6 +277,7 @@ def measure_resources() -> ResourceReading:
         ram_avail_gb=read_ram_avail_gb(),
         disk_probed_paths=paths,
         disk_answered_by=answered_by,
+        disk_reserved_gb=read_disk_reserved_gb(answered_by) if answered_by else None,
         cgroup_probe_inert=cgroup_memory_probe_inert(),
     )
 
@@ -448,11 +459,21 @@ class ResourcePressureScanner:
         disk_crit = reading.disk_ladder_gb < effective_disk_floor_gb(self.disk_crit_free_gb)
         if disk_crit and getattr(marker, "reclaim_blocked_since", None) is not None:
             reclaimed = getattr(marker, "last_reclaimed_gb", 0.0) or 0.0
+            reserved = (
+                f"{reading.disk_reserved_gb:.1f} GB reserved"
+                if reading.disk_reserved_gb is not None
+                else "reserved space unmeasured"
+            )
             inert.append(
                 ScanSignal(
                     kind="resource.reclaim_blocked",
-                    summary=f"disk {reading.disk_ladder_gb:.1f} GB free; last reclaimed {reclaimed:.2f} GB",
-                    payload={"resource": "disk", "free_gb": reading.disk_ladder_gb, "last_reclaimed_gb": reclaimed},
+                    summary=f"disk {reading.disk_ladder_gb:.1f} GB free; {reserved}; last reclaimed {reclaimed:.2f} GB",
+                    payload={
+                        "resource": "disk",
+                        "free_gb": reading.disk_ladder_gb,
+                        "reserved_gb": reading.disk_reserved_gb,
+                        "last_reclaimed_gb": reclaimed,
+                    },
                 )
             )
         ram_crit = reading.ram_ladder_gb < self.ram_crit_avail_gb
