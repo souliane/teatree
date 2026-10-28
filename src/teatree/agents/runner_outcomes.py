@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from django.db import transaction
+
 from teatree.agents.compaction_guard import COMPACTION_BLOCKED_REASON
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import Harness
@@ -18,7 +20,12 @@ from teatree.agents.runner_failure_taxonomy import (
 )
 from teatree.agents.runner_failure_taxonomy import error_result_reason as _error_result_reason
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match
-from teatree.agents.runner_interruption import CeilingSalvage, _record_failure, _record_stuck_outcome
+from teatree.agents.runner_interruption import (
+    CeilingSalvage,
+    _record_checkpoint,
+    _record_failure,
+    _record_stuck_outcome,
+)
 from teatree.agents.runner_stream import HarnessOutcome
 from teatree.agents.runner_truncation import (
     alert_owner_max_tokens_truncation,
@@ -41,6 +48,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PROSE_SUMMARY_CHARS = 1000
+_ROUND_PARK_PREFIX = "limit_parked: round ceiling"
+_ROUND_NOTE_MARKER = "[round-ceiling-continuation]"
+MAX_ROUND_CONTINUATIONS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +75,7 @@ def outcome_failure(
 ) -> TaskAttempt | None:
     """Fold a non-success drive outcome into a recorded failure or park."""
     usage = _failure_usage(outcome, lane=lane, transport=transport)
-    if (stopped := _record_stop(task, outcome, phase=phase, usage=usage)) is not None:
+    if (stopped := _record_stop(task, outcome, usage=usage)) is not None:
         return stopped
     limit = _limit_match(outcome.result_message, outcome.rate_limit_info, metered_transport=transport.metered)
     if limit is not None:
@@ -91,29 +101,41 @@ def outcome_failure(
     return None
 
 
-def _record_stop(task: Task, outcome: HarnessOutcome, *, phase: str, usage: "AttemptUsage") -> TaskAttempt | None:
+def _record_stop(task: Task, outcome: HarnessOutcome, *, usage: "AttemptUsage") -> TaskAttempt | None:
     """A run the driver ended: a round-boundary hand-off parks, a watchdog breach or lost lease fails."""
     if outcome.round_handoff:
-        return record_round_handoff(task, outcome, phase=phase, usage=usage)
+        return record_round_handoff(task, outcome, usage=usage)
     if outcome.stuck_reason is not None:
         return _record_stuck_outcome(task, outcome, stuck_reason=outcome.stuck_reason, usage=usage)
     return None
 
 
-def record_round_handoff(task: Task, outcome: HarnessOutcome, *, phase: str, usage: "AttemptUsage") -> TaskAttempt:
-    """Park a run the driver stopped at a round boundary, as the agent's own ``needs_user_input`` would."""
-    from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — avoids recorder cycle
-
+def record_round_handoff(task: Task, outcome: HarnessOutcome, *, usage: "AttemptUsage") -> TaskAttempt:
+    """Requeue a bounded fresh round after a driver-enforced round ceiling."""
     logger.warning("Task %s stopped at a round boundary: %s", task.pk, outcome.round_handoff)
-    result: AgentResultBlob = {
-        "summary": outcome.agent_text.strip()[-_PROSE_SUMMARY_CHARS:] or "Stopped at a round boundary.",
-        "needs_user_input": True,
-        "user_input_reason": (
-            f"Round ceiling reached: {outcome.round_handoff}. That round's command may have partially run "
-            "(a push may already have landed), so check the branch and its pipeline, then continue the work."
-        ),
-    }
-    return record_result_envelope(task, result, phase=phase, usage=usage)
+    prior = sum(
+        1 + repeats
+        for repeats in TaskAttempt.objects.filter(task=task, error__startswith=_ROUND_PARK_PREFIX).values_list(
+            "park_repeats", flat=True
+        )
+    )
+    if prior >= MAX_ROUND_CONTINUATIONS:
+        return _record_failure(task, error=f"round_ceiling_exhausted: {outcome.round_handoff}", usage=usage)
+    summary = outcome.agent_text.strip()[-_PROSE_SUMMARY_CHARS:] or "Stopped at a round boundary."
+    note = (
+        f"{_ROUND_NOTE_MARKER} Fresh round {prior + 1}: check the branch and its pipeline first; "
+        f"the prior round stopped at {outcome.round_handoff}. Its last progress: {summary}"
+    )
+    with transaction.atomic():
+        attempt = _record_checkpoint(
+            task, checkpoint=f"round ceiling: {outcome.round_handoff}", usage=usage, summary=note
+        )
+        if Task.objects.filter(pk=task.pk, status=Task.Status.PENDING).exists():
+            base = task.execution_reason.partition(_ROUND_NOTE_MARKER)[0].rstrip()
+            reason = f"{base}\n\n{note}" if base else note
+            Task.objects.filter(pk=task.pk).update(execution_reason=reason)
+            task.execution_reason = reason
+    return attempt
 
 
 def cli_too_old_failure(task: Task, outcome: HarnessOutcome, *, lane: str, transport: Transport) -> TaskAttempt | None:

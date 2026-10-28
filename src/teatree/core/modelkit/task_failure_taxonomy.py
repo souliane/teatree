@@ -177,6 +177,9 @@ class RecoveryStrategy(StrEnum):
     HALT = "halt_and_escalate"
 
 
+HALT_STAMP = "[repair-halt-parked]"
+
+
 @dataclass(frozen=True)
 class Recovery:
     """One kind's row: what to do about it, and whose fault it was."""
@@ -487,6 +490,7 @@ __all__ = [
     "AGENT_ABANDONED_PREFIX",
     "CANCELLED_PREFIX",
     "CLI_TOO_OLD_PREFIX",
+    "HALT_STAMP",
     "LEASE_EXPIRED_PREFIX",
     "NON_REPAIR_KINDS",
     "PLAN_STALE_PREFIX",
