@@ -1,0 +1,9 @@
+{% extends "admin/login.html" %}
+
+{% block content %}
+<nav aria-label="Operator sign-in">
+  <a href="{% url 'operator-oauth-start' 'gitlab' %}">Sign in with GitLab</a>
+  <a href="{% url 'operator-oauth-start' 'github' %}">Sign in with GitHub</a>
+</nav>
+{{ block.super }}
+{% endblock %}

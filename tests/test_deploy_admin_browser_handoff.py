@@ -1,5 +1,5 @@
 # test-path: cross-cutting — drives deploy/t3 (no src mirror).
-"""``deploy/t3`` owns the last two steps of ``t3 admin`` / ``t3 dashboard``.
+"""``deploy/t3`` owns the last two steps of operator browser commands.
 
 The CLI runs inside the stack. The image carries no browser and no ``$BROWSER``, and the
 CLI's own ``127.0.0.1`` is the CONTAINER's — so it can neither open the operator's browser
@@ -48,8 +48,8 @@ class TestTheBrowserHandoffIsSingleSourced:
         assert "8000" not in handoff
 
 
-class TestOnlyTheTwoBrowserVerbsTakeTheHostHop:
-    @pytest.mark.parametrize("verb", ["admin", "dashboard"])
+class TestBrowserVerbsTakeTheHostHop:
+    @pytest.mark.parametrize("verb", ["admin", "dashboard", "login"])
     def test_the_page_verbs_are_routed_to_the_host(self, wrapper: str, verb: str) -> None:
         assert verb in _body(wrapper, "wants_host_browser()")
 

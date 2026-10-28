@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, override
 from django import forms
 from django.apps import apps
 from django.contrib import admin
+from django.contrib.auth import get_user_model
+from django.contrib.auth.admin import UserAdmin
 from django.db import models
 from django.db.models.constants import LOOKUP_SEP
 from django.forms.renderers import BaseRenderer
@@ -21,6 +23,8 @@ from teatree.core.models import (
     ModeOverride,
     ModeSchedule,
     ModeScheduleSlot,
+    OperatorGrant,
+    OperatorIdentity,
     Prompt,
     PromptVersion,
     SealedSecret,
@@ -113,6 +117,36 @@ class SealedSecretAdmin(ReadOnlyAdmin):
     @admin.display(description="Value")
     def encrypted(_obj: SealedSecret) -> str:
         return "encrypted"
+
+
+class OperatorIdentityInline(admin.TabularInline):
+    model = OperatorIdentity
+    fields = ("platform", "handle", "external_id")
+    extra = 0
+
+
+class OperatorGrantInline(admin.TabularInline):
+    model = OperatorGrant
+    fields = ("forge", "scope", "expires_at", "updated_at")
+    readonly_fields = fields
+    extra = 0
+    can_delete = False
+
+    @override
+    def has_add_permission(self, request: "HttpRequest", obj: models.Model | None = None) -> bool:
+        return False
+
+    @override
+    def has_change_permission(self, request: "HttpRequest", obj: models.Model | None = None) -> bool:
+        return False
+
+
+class OperatorUserAdmin(UserAdmin):
+    inlines = (OperatorIdentityInline, OperatorGrantInline)
+
+
+admin.site.unregister(get_user_model())
+admin.site.register(get_user_model(), OperatorUserAdmin)
 
 
 def register_read_only_defaults(site: admin.AdminSite, candidates: Iterable[type[models.Model]]) -> None:
@@ -356,3 +390,4 @@ class ModeScheduleSlotAdmin(admin.ModelAdmin):
 
 # Last on purpose: every core model without a hand-written admin above gets the read-only default.
 register_read_only_defaults(admin.site, apps.get_app_config("core").get_models())
+admin.site.login_template = "teatree/operator_login.html"

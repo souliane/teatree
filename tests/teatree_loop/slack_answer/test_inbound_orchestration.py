@@ -25,10 +25,11 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import DmContext, PendingChatInjection, Task, Ticket
+from teatree.core.models import DmContext, OperatorIdentity, PendingChatInjection, Task, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
@@ -165,6 +166,39 @@ class TestWorkImplyingMessageDispatchesExactlyOneTask:
             reader=_reader(_work("fix the interest-rate rounding")),
         )
         assert Task.objects.get().ticket.requested_by == "slack:U-owner"
+
+    def test_registered_operator_can_request_new_work(self) -> None:
+        user = get_user_model().objects.create_superuser(username="operator", email="", password=None)
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-operator")
+        _row("fix the interest-rate rounding", ts="1.0", user_id="U-operator")
+
+        report = run_slack_answer_cycle(
+            messaging_resolver=_resolver(RecordingBackend()),
+            reader=_reader(_work("fix the interest-rate rounding")),
+        )
+
+        assert report.dispatched == 1
+        assert Task.objects.get().ticket.requested_by == "slack:U-operator"
+
+    def test_unregistered_sender_cannot_request_new_work(self) -> None:
+        _row("fix the interest-rate rounding", ts="1.0", user_id="U-stranger")
+        report = run_slack_answer_cycle(
+            messaging_resolver=_resolver(RecordingBackend()),
+            reader=_reader(_work("fix the interest-rate rounding")),
+        )
+        assert report.dispatched == 0
+        assert not Task.objects.exists()
+
+    def test_registered_operator_cannot_issue_a_control_verb(self) -> None:
+        user = get_user_model().objects.create_superuser(username="operator", email="", password=None)
+        OperatorIdentity.objects.create(user=user, platform="slack", handle="U-operator")
+        _row("pause #12", ts="1.0", user_id="U-operator")
+        report = run_slack_answer_cycle(
+            messaging_resolver=_resolver(RecordingBackend()),
+            reader=_reader(_work("pause task 12")),
+        )
+        assert report.dispatched == 0
+        assert not Task.objects.exists()
 
     def test_the_dispatch_is_signalled_as_in_flight_not_done(self) -> None:
         """A dispatched lane is IN FLIGHT — never the completion emoji."""

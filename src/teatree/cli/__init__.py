@@ -27,6 +27,7 @@ import teatree.cli.capabilities as _capabilities
 import teatree.cli.cost as _cost
 import teatree.cli.fast_push as _fast_push
 import teatree.cli.info as _info
+import teatree.cli.login as _login
 import teatree.cli.push as _push
 import teatree.cli.sessions as _sessions
 import teatree.cli.speak as _speak
@@ -192,6 +193,8 @@ app.add_typer(_info.info_app, name="info")
 app.command()(_ui.ui)
 app.command()(_admin.admin)
 app.command()(_admin.dashboard)
+app.command()(_login.login)
+app.command()(_login.logout)
 app.add_typer(config_app, name="config")
 app.add_typer(banned_terms_app, name="banned-terms")
 app.add_typer(ci_app, name="ci")

@@ -915,7 +915,7 @@ HOST_RUN_RUNNER="$HOST_RUN_DIR/runner.sh"
 
 wants_host_browser() {
     case "${1:-}" in
-    admin | dashboard) ;;
+    admin | dashboard | login) ;;
     *) return 1 ;;
     esac
     local arg

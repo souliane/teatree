@@ -82,9 +82,13 @@ Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) — and the 
 
 **Operator identity ([#5122](https://github.com/souliane/teatree/issues/5122)).** `Ticket.requested_by` stores a canonical `platform:handle` key; blank means the requester is unknown. `OperatorIdentity` binds a forge or Slack identity to a Django user, with unique platform/handle and external forge ID constraints. Requester attribution is first-write-wins and survives a later save of a stale ticket object. Existing tickets migrate with a blank requester.
 
+Admin and dashboard requests require a signed-in staff user; webhook receivers remain reachable without a session and verify their signatures. The admin login page and `t3 login gitlab|github` start an authorization-code flow with PKCE and one-use server-side state. A first forge sign-in creates a superuser. `OperatorGrant` stores each user's access and refresh tokens sealed under the installation master key, indexed by user and forge; the OAuth app secret stays in the bootstrap secret store. GitHub login requests `offline_access` so the grant can refresh. `t3 logout <forge>` revokes the forge grant and removes the row only after a denied read confirms revocation.
+
 Ticket-bound bot notifications resolve the first requester to that user's registered Slack identity. A known requester without one falls back to the owner with a visible requester label; an unknown requester keeps the owner route. A failed operator delivery never retries to the owner under the same key. Registered operator DMs use the bot token and must pass the send-proxy decision; public channels remain denied by the owner-restricted bot. Only the owner's own DM receives the send-proxy self-DM carve-out.
 
 Question replies and card taps bind to the same ticket addressee that received the card. An operator's bound answer reaches only that question; unrelated messages, priority directives, and live-session controls keep the owner-only route. App-posted replies survive the self-filter only in a pending card thread addressed to their recorded author.
+
+A registered, active operator may start new work from an unbound Slack message. Unregistered senders are acknowledged without dispatch, and control verbs or priority directives from registered non-owners cannot create work or steer a live session.
 
 Forge issue sync, loop issue intake, unlinked GitLab MR sync, and Slack work dispatch record the first requester; a work ticket filed from a Slack conversation inherits that requester. A linked MR leaves requester attribution to the issue intake.
 

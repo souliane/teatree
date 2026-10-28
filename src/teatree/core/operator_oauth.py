@@ -61,7 +61,7 @@ def _secret(app: dict[str, str], forge: str) -> str:
 
 
 def _scope(forge: str) -> str:
-    return "repo read:user" if forge == "github" else "api"
+    return "repo read:user offline_access" if forge == "github" else "api"
 
 
 @require_GET
@@ -132,14 +132,18 @@ def _token_response(
     )
 
 
-def _forge_identity(forge: str, app: dict[str, str], access_token: str) -> tuple[str, str]:
+def _profile_response(forge: str, app: dict[str, str], access_token: str) -> httpx.Response:
     if forge == "github":
         url = "https://api.github.com/user"
         headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"}
     else:
         url = f"{_base_url(forge, app)}/api/v4/user"
         headers = {"Authorization": f"Bearer {access_token}"}
-    response = httpx.get(url, headers=headers, timeout=_TIMEOUT_SECONDS)
+    return httpx.get(url, headers=headers, timeout=_TIMEOUT_SECONDS)
+
+
+def _forge_identity(forge: str, app: dict[str, str], access_token: str) -> tuple[str, str]:
+    response = _profile_response(forge, app, access_token)
     response.raise_for_status()
     profile = response.json()
     handle = profile.get("login" if forge == "github" else "username")
@@ -217,3 +221,35 @@ def operator_access_token(user: "AbstractBaseUser", forge: str) -> str:
             raise OperatorOAuthUnavailableError(forge) from exc
         OperatorGrant.objects.store(user=user, forge=forge, tokens=refreshed, key=key)
         return refreshed.access_token
+
+
+def revoke_operator_grant(user: "AbstractBaseUser", forge: str) -> None:
+    app = _app(forge)
+    grant = OperatorGrant.objects.filter(user=user, forge=forge).first()
+    if grant is None:
+        raise OperatorOAuthUnavailableError(forge)
+    tokens = grant.reveal(master_key_source().load())
+    access = tokens.access_token
+    secret = _secret(app, forge)
+    if forge == "gitlab":
+        for token in (access, tokens.refresh_token):
+            response = httpx.post(
+                f"{_base_url(forge, app)}/oauth/revoke",
+                data={"client_id": app["client_id"], "client_secret": secret, "token": token},
+                timeout=_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+    else:
+        response = httpx.request(
+            "DELETE",
+            f"https://api.github.com/applications/{app['client_id']}/grant",
+            auth=(app["client_id"], secret),
+            json={"access_token": access},
+            timeout=_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    verification = _profile_response(forge, app, access)
+    if verification.status_code != httpx.codes.UNAUTHORIZED:
+        message = f"operator {forge} grant is still active or could not be verified"
+        raise RuntimeError(message)
+    grant.delete()

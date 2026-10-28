@@ -36,6 +36,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 gunicorn server.                                             │
 │ dashboard       Open the teatree dashboard board, served by the same local   │
 │                 gunicorn as the admin.                                       │
+│ login                                                                        │
+│ logout                                                                       │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
@@ -386,6 +388,33 @@ Usage: t3 dashboard [OPTIONS]
 │                              port for the forward (default 8803).            │
 │ --no-browser                 Do not open the browser at the dashboard.       │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 login`
+
+```
+Usage: t3 login [OPTIONS] FORGE
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    forge      TEXT  GitHub or GitLab OAuth provider. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 logout`
+
+```
+Usage: t3 logout [OPTIONS] FORGE
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    forge      TEXT  GitHub or GitLab OAuth provider. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --user        TEXT  Operator username when several people have grants.       │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

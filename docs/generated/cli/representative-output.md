@@ -39,6 +39,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 gunicorn server.                                             │
 │ dashboard       Open the teatree dashboard board, served by the same local   │
 │                 gunicorn as the admin.                                       │
+│ login                                                                        │
+│ logout                                                                       │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
