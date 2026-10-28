@@ -34,6 +34,7 @@ from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
 from teatree.core.admission.lanes import ANSWERING_LANE_WIDTH
 from teatree.core.admission_governor import MachineSignal, QuotaSignal, decide_admission
+from teatree.core.admission_pressure import BRAKE_LOAD_PER_CORE as SHIPPED_BRAKE_PER_CORE
 from teatree.core.agent_admission import (
     AgentAdmission,
     HeadlessAdmissionStatus,
@@ -316,20 +317,35 @@ class TestTheShedBandRefusesTheExpensiveClassAlone(TestCase):
 class TestTheWriteFactorNeverOutrunsTheLoadShed(TestCase):
     """A wider per-core factor buys seats on an idle box, never on a loaded one."""
 
-    _SHED_LOAD = 15.2  # 0.95 of the 16 watermark on 8 cores: past the 0.9 shed point, short of HALT
+    _CORES = 8
+    _SHED_FRACTION = 0.95  # past the 0.9 shed point, short of HALT, whatever the watermark is
+
+    def _machine_in_the_shed_band(self, watermark_per_core: float) -> MachineSignal:
+        return MachineSignal(
+            cores=self._CORES,
+            load1=self._SHED_FRACTION * watermark_per_core * self._CORES,
+            ram_available_gb=20.0,
+            load_brake_per_core=watermark_per_core,
+            load_resume_per_core=watermark_per_core / 2,
+        )
 
     def test_the_shed_band_refuses_expensive_work_whatever_the_factor(self) -> None:
-        for factor in (0.25, 0.5, 2.0):
-            with self.subTest(factor=factor):
-                ConfigSetting.objects.set_value("admission_write_concurrency_per_core", factor)
-                with (
-                    patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
-                    patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=self._SHED_LOAD)),
-                    patch.object(Task.objects, "expensive_lane_occupancy", return_value=0),
-                ):
-                    verdict = agent_admission_verdict()
-                assert "shed band" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
-                assert verdict.denied_for(PhaseCost.CHEAP) is None
+        for watermark_per_core in (SHIPPED_BRAKE_PER_CORE, 5.0):
+            for factor in (0.25, 0.5, 2.0):
+                with self.subTest(watermark_per_core=watermark_per_core, factor=factor):
+                    ConfigSetting.objects.set_value("admission_write_concurrency_per_core", factor)
+                    with (
+                        patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+                        patch.object(
+                            gate_mod,
+                            "read_machine_signal",
+                            return_value=self._machine_in_the_shed_band(watermark_per_core),
+                        ),
+                        patch.object(Task.objects, "expensive_lane_occupancy", return_value=0),
+                    ):
+                        verdict = agent_admission_verdict()
+                    assert "shed band" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+                    assert verdict.denied_for(PhaseCost.CHEAP) is None
 
 
 _CEILING_PARTS = (

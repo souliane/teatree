@@ -190,7 +190,7 @@ class TestGitLabWriteGuard(TestCase):
                     self.subTest(method=method, endpoint=endpoint),
                     self._setting({"own_items_only": True}),
                     patch("httpx.Client.get", side_effect=self._item_reads(author="me")) as read,
-                    patch(f"httpx.{method}", return_value=_response(method.upper())) as write,
+                    patch(f"httpx.Client.{method}", return_value=_response(method.upper())) as write,
                     pytest.raises(WriteRefusedError),
                 ):
                     send(endpoint)
@@ -207,7 +207,7 @@ class TestGitLabWriteGuard(TestCase):
                     self.subTest(method=method, first=first),
                     self._setting({"own_items_only": True}),
                     patch("httpx.Client.get", side_effect=self._item_reads(author="colleague")) as read,
-                    patch(f"httpx.{method}", return_value=_response(method.upper())) as write,
+                    patch(f"httpx.Client.{method}", return_value=_response(method.upper())) as write,
                     pytest.raises(WriteRefusedError),
                 ):
                     send(endpoint)
