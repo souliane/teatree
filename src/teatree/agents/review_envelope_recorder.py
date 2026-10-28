@@ -13,13 +13,10 @@ from typing import TYPE_CHECKING, cast
 
 from django.db import transaction
 
-from teatree.agents.envelope_refusal import (
-    MALFORMED_REVIEW_VERDICT_PREFIX,
-    MALFORMED_RUBRIC_GRADES_PREFIX,
-    review_envelope_shape_error,
-)
+from teatree.agents.envelope_refusal import MALFORMED_REVIEW_VERDICT_PREFIX, MALFORMED_RUBRIC_GRADES_PREFIX
 from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
+from teatree.agents.result_schema_review import review_envelope_shape_error
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
 from teatree.agents.review_nit_policy import normalize_review_envelope
 from teatree.agents.review_rubric_recorder import ReviewGrading, merge_safe_over_fail_error, rubric_coverage_error
