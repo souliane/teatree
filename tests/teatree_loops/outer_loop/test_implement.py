@@ -7,7 +7,6 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
-from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
 from teatree.core.models import (
     DeferredQuestion,
     FactoryScoreSnapshot,
@@ -23,17 +22,18 @@ from tests.loop_ticket_git import installed_checkout_owner, installed_package_wi
 
 
 class TestScheduleExperimentFix(TestCase):
-    def test_open_pr_cap_holds_new_experiment_ticket(self) -> None:
+    def test_twenty_live_pull_requests_allow_new_experiment_ticket(self) -> None:
         experiment = self._admitted()
-        for index in range(OPEN_PR_START_CAP):
+        for index in range(20):
             PullRequest.objects.record_opened(
                 ticket=Ticket.objects.create(),
                 url=f"https://github.com/example-org/example-repo/pull/{index + 900}",
             )
-        assert schedule_experiment_fix(experiment) is None
+        task = schedule_experiment_fix(experiment)
         experiment.refresh_from_db()
-        assert experiment.state == OuterLoopExperiment.State.ADMITTED
-        assert experiment.ticket_id is None
+        assert task is not None
+        assert experiment.state == OuterLoopExperiment.State.IMPLEMENTING
+        assert experiment.ticket_id == task.ticket_id
 
     def _admitted(self, *, overlay: str = "") -> OuterLoopExperiment:
         exp = _make_experiment(
