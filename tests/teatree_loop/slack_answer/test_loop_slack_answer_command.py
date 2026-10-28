@@ -21,6 +21,7 @@ from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import DmContext, LoopLease, PendingChatInjection
 from teatree.types import RawAPIDict
 from tests._loop_principal_env import pinned_loop_principal
+from tests._owner_channel import OWNER_SLACK_ID
 from tests._t3_master_env import worker_owns_t3_master
 
 runner = CliRunner()
@@ -31,7 +32,7 @@ pytestmark = pytest.mark.django_db
 
 @dataclass
 class RecordingBackend:
-    user_id: str = "UOWNER"
+    user_id: str = OWNER_SLACK_ID
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
 
@@ -64,13 +65,15 @@ class RecordingBackend:
         return ""
 
 
-def _row(text: str = "thanks!", ts: str = "1.0") -> None:
-    PendingChatInjection.record(channel="C1", slack_ts=ts, text=text, context=DmContext(user_id="UOWNER"))
+def _owner_dm(ts: str, text: str) -> None:
+    PendingChatInjection.record(channel="C1", slack_ts=ts, text=text, context=DmContext(user_id=OWNER_SLACK_ID))
 
 
 class TestLoopSlackAnswerCommand:
     def test_command_acks_seeded_message(self) -> None:
-        _row()
+        PendingChatInjection.record(
+            channel="C1", slack_ts="1.0", text="thanks!", context=DmContext(user_id=OWNER_SLACK_ID)
+        )
         backend = RecordingBackend()
         out = io.StringIO()
         with (
@@ -83,7 +86,9 @@ class TestLoopSlackAnswerCommand:
         assert any(e[2] for e in backend.reactions)
 
     def test_command_json_report_shape(self) -> None:
-        _row()
+        PendingChatInjection.record(
+            channel="C1", slack_ts="1.0", text="thanks!", context=DmContext(user_id=OWNER_SLACK_ID)
+        )
         backend = RecordingBackend()
         out = io.StringIO()
         with (
@@ -99,7 +104,9 @@ class TestLoopSlackAnswerCommand:
         assert "covered" in payload
 
     def test_lease_contention_skips(self) -> None:
-        _row()
+        PendingChatInjection.record(
+            channel="C1", slack_ts="1.0", text="thanks!", context=DmContext(user_id=OWNER_SLACK_ID)
+        )
         LoopLease.objects.acquire("loop-slack-answer", owner="other-pid")
         out = io.StringIO()
         with worker_owns_t3_master():
@@ -108,7 +115,9 @@ class TestLoopSlackAnswerCommand:
         assert "SKIP" in out.getvalue()
 
     def test_foreign_t3_master_owner_skips(self) -> None:
-        _row()
+        PendingChatInjection.record(
+            channel="C1", slack_ts="1.0", text="thanks!", context=DmContext(user_id=OWNER_SLACK_ID)
+        )
         LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="sess-other", owner_pid=os.getpid())
         out = io.StringIO()
         with pinned_loop_principal("sess-mine"):
@@ -167,9 +176,23 @@ class TestSlackAnswerCliStatus:
         assert "queue empty" in result.stdout
 
     def test_status_with_loop_unreplied_messages(self) -> None:
-        _row("hi")
-        _row("there", "2.0")
-        result = runner.invoke(loop_app, ["slack-answer", "status"])
+        _owner_dm("1.0", "hi")
+        PendingChatInjection.record(
+            channel="C1", slack_ts="2.0", text="there", context=DmContext(user_id=OWNER_SLACK_ID)
+        )
+        with patch("teatree.loop.scanners.owner_dm_rows.messaging_from_overlay", return_value=RecordingBackend()):
+            result = runner.invoke(loop_app, ["slack-answer", "status"])
 
         assert result.exit_code == 0
         assert "2 loop-unreplied" in result.stdout
+
+    def test_status_does_not_count_legacy_foreign_rows(self) -> None:
+        _owner_dm("1.0", "owner")
+        PendingChatInjection.record(
+            channel="C1", slack_ts="2.0", text="foreign", context=DmContext(user_id="U_FOREIGN")
+        )
+        with patch("teatree.loop.scanners.owner_dm_rows.messaging_from_overlay", return_value=RecordingBackend()):
+            result = runner.invoke(loop_app, ["slack-answer", "status"])
+
+        assert result.exit_code == 0
+        assert "1 loop-unreplied" in result.stdout

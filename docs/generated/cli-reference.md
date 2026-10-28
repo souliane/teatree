@@ -6787,6 +6787,10 @@ Usage: t3 slack check [OPTIONS]
  is already the message channel, and a sentinel would need filtering by
  every future consumer.
 
+ A direct message from anyone but the overlay's configured owner is dropped
+ silently:
+ never printed, never acknowledged.
+
  A singleton guard serialises the drain: the 30s cron can double-fire and
  two concurrent drains would ack the same mentions twice, so a second drain
  stands down (exit 0) while the first holds the lock.

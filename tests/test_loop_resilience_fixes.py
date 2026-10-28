@@ -118,6 +118,7 @@ class TestF3SlackMentionsRecordsDrainedDmsBeforeCommit(TestCase):
 
     def test_drained_dm_row_exists_when_the_drain_commits(self) -> None:
         backend = MagicMock()
+        backend.user_id = "U_HUMAN"
         backend.fetch_mentions.return_value = []
         backend.auth_test.return_value = {"ok": True, "user_id": "U_BOT", "bot_id": "B_BOT"}
         backend.get_permalink.return_value = ""

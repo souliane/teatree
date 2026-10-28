@@ -34,6 +34,7 @@ class FakeMessaging:
     """A messaging backend that records every outbound call it is asked to make."""
 
     outbound: list[str] = field(default_factory=list)
+    user_id: str = "U1"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since

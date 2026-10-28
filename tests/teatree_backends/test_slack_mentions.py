@@ -6,9 +6,11 @@ from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.types import RawAPIDict
 
+_OWNER = "U_OWNER"
+
 
 def _queued_dm(**fields: str) -> dict[str, RawAPIDict]:
-    return {"event": {"type": "message", "channel_type": "im", **fields}}
+    return {"event": {"type": "message", "channel_type": "im", "user": _OWNER, **fields}}
 
 
 def _scan_draining(scanner: SlackMentionsScanner, queued: list[dict[str, RawAPIDict]]) -> list[ScanSignal]:
@@ -19,6 +21,7 @@ def _scan_draining(scanner: SlackMentionsScanner, queued: list[dict[str, RawAPID
 class TestSlackMentionsScanner:
     def _make_backend(self, *, mentions: list | None = None) -> MagicMock:
         backend = MagicMock()
+        backend.user_id = _OWNER
         backend.fetch_mentions.return_value = mentions or []
         # An unresolved bot identity makes the drained-DM recorder fail closed, so no test here touches the DB.
         backend.auth_test.return_value = {"ok": False}
