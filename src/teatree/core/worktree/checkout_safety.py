@@ -15,7 +15,6 @@ from teatree.core.cleanup.unshipped_work import (
     probe_unshipped_work,
 )
 from teatree.core.forge_push_refs import head_is_detached, operation_in_progress
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Worktree
 from teatree.core.models.checkout_custody import Custody
 from teatree.core.models.worktree_occupancy import occupancy_holder, task_holder_id
@@ -45,7 +44,7 @@ class _Preservation:
 class CheckoutSafetyEvidence:
     process: _ProcessProof
     preserved: _Preservation
-    recover_crash_dirt: bool
+    recover_owned_dirt: bool
 
 
 def _bundle_matches(prefix: str, expected: str) -> bool:
@@ -140,11 +139,11 @@ def assess_checkout_safety(
     deferred = worktree.get_extra().get("deferred_exit")
     custody = Custody.from_extra(worktree.get_extra()) if state.uncommitted else None
     prior = interrupted_writer(task, custody) if custody is not None else None
-    recover_crash_dirt = prior is not None and prior.failure_kind == FailureKind.HARNESS_CRASH
+    recover_owned_dirt = prior is not None
     allow_deferred_dirt = (
         attested == state.digest
         or (isinstance(deferred, dict) and deferred.get("digest") == state.digest)
-        or recover_crash_dirt
+        or recover_owned_dirt
     )
     if obstacle := _checkout_obstacle(path, state, allow_deferred_dirt=allow_deferred_dirt):
         return obstacle
@@ -157,7 +156,7 @@ def assess_checkout_safety(
         return preserved
     if not checkout_state_unchanged(task, worktree, state):
         return f"checkout {path} changed during safety verification"
-    return CheckoutSafetyEvidence(proof, preserved, recover_crash_dirt)
+    return CheckoutSafetyEvidence(proof, preserved, recover_owned_dirt)
 
 
 def auto_attest_safe_checkout(
