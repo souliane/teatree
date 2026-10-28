@@ -71,10 +71,66 @@ class OperatorOAuthTestCase(TestCase):
     @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
     @patch("teatree.core.operator_oauth.httpx.get")
     @patch("teatree.core.operator_oauth.httpx.post")
-    def test_github_pkce_login_creates_a_superuser_and_sealed_per_user_grant(
+    def test_uninvited_forge_account_cannot_sign_in(self, post: Mock, get: Mock, secret: Mock, source: Mock) -> None:
+        source.return_value.load.return_value = self.key
+        post.return_value = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://github.com/login/oauth/access_token"),
+            json={"access_token": "access-secret", "refresh_token": "refresh-secret", "expires_in": 3600},
+        )
+        get.return_value = httpx.Response(
+            200, request=httpx.Request("GET", "https://api.github.com/user"), json={"id": 123, "login": "Alice"}
+        )
+        state = parse_qs(urlsplit(self.client.get("/login/oauth/github/start/").headers["Location"]).query)["state"][0]
+
+        response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+
+        assert response.status_code == 403
+        assert b"administrator" in response.content
+        assert not get_user_model().objects.filter(username="github:123").exists()
+        assert not OperatorIdentity.objects.filter(platform="github", external_id="123").exists()
+        assert not OperatorGrant.objects.exists()
+        secret.assert_called_once_with("github/oauth-app")
+        source.assert_not_called()
+
+    @patch("teatree.core.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_oauth.httpx.post")
+    def test_signed_in_admin_cannot_link_an_uninvited_forge_account(
         self, post: Mock, get: Mock, secret: Mock, source: Mock
     ) -> None:
         source.return_value.load.return_value = self.key
+        user = get_user_model().objects.create_superuser("operator", email="", password="password")
+        self.client.force_login(user)
+        post.return_value = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://github.com/login/oauth/access_token"),
+            json={"access_token": "access-secret", "refresh_token": "refresh-secret", "expires_in": 3600},
+        )
+        get.return_value = httpx.Response(
+            200, request=httpx.Request("GET", "https://api.github.com/user"), json={"id": 123, "login": "Alice"}
+        )
+        state = parse_qs(urlsplit(self.client.get("/login/oauth/github/start/").headers["Location"]).query)["state"][0]
+
+        response = self.client.get("/login/oauth/github/callback/", {"code": "code", "state": state})
+
+        assert response.status_code == 403
+        assert not OperatorIdentity.objects.filter(platform="github", external_id="123").exists()
+        assert not OperatorGrant.objects.filter(user=user, forge="github").exists()
+        secret.assert_called_once_with("github/oauth-app")
+        source.assert_not_called()
+
+    @patch("teatree.core.operator_oauth.master_key_source")
+    @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
+    @patch("teatree.core.operator_oauth.httpx.get")
+    @patch("teatree.core.operator_oauth.httpx.post")
+    def test_github_pkce_login_uses_invited_superuser_and_sealed_per_user_grant(
+        self, post: Mock, get: Mock, secret: Mock, source: Mock
+    ) -> None:
+        source.return_value.load.return_value = self.key
+        user = get_user_model().objects.create_superuser("github:123", email="", password=None)
+        OperatorIdentity.objects.create(user=user, platform="github", handle="alice", external_id="123")
         post.return_value = httpx.Response(
             200,
             request=httpx.Request("POST", "https://github.com/login/oauth/access_token"),
@@ -102,7 +158,7 @@ class OperatorOAuthTestCase(TestCase):
         callback = self.client.get("/login/oauth/github/callback/", {"code": "one-use-code", "state": state})
         assert callback.status_code == 302
         assert callback.headers["Location"] == "/admin/"
-        user = get_user_model().objects.get(username="github:123")
+        user.refresh_from_db()
         assert user.is_superuser
         assert user.is_staff
         assert not user.has_usable_password()
@@ -125,10 +181,12 @@ class OperatorOAuthTestCase(TestCase):
     @patch("teatree.core.operator_oauth.read_pass", return_value="app-secret")
     @patch("teatree.core.operator_oauth.httpx.get")
     @patch("teatree.core.operator_oauth.httpx.post")
-    def test_gitlab_login_creates_separate_operator_and_uses_configured_forge(
+    def test_gitlab_login_uses_invited_operator_and_configured_forge(
         self, post: Mock, get: Mock, secret: Mock, source: Mock
     ) -> None:
         source.return_value.load.return_value = self.key
+        user = get_user_model().objects.create_superuser("gitlab:456", email="", password=None)
+        OperatorIdentity.objects.create(user=user, platform="gitlab", handle="bob", external_id="456")
         post.return_value = httpx.Response(
             200,
             request=httpx.Request("POST", "https://gitlab.example/oauth/token"),
@@ -145,7 +203,7 @@ class OperatorOAuthTestCase(TestCase):
         assert query["scope"] == ["api"]
         callback = self.client.get("/login/oauth/gitlab/callback/", {"code": "gitlab-code", "state": query["state"][0]})
         assert callback.status_code == 302
-        user = get_user_model().objects.get(username="gitlab:456")
+        user.refresh_from_db()
         assert OperatorGrant.objects.get(user=user, forge="gitlab").reveal(self.key).access_token == "gitlab-access"
         assert get.call_args.args[0] == "https://gitlab.example/api/v4/user"
         secret.assert_called_once_with("gitlab/oauth-app")

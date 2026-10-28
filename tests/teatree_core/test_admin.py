@@ -86,6 +86,41 @@ class TestConfigSettingAdmin:
 
 
 class TestOperatorUserAdmin(django.test.TestCase):
+    def test_administrator_can_invite_forge_identity_on_user_page(self) -> None:
+        administrator = get_user_model().objects.create_superuser("administrator", "admin@example.com", "pw")
+        operator = get_user_model().objects.create_superuser("operator", "operator@example.com", None)
+        self.client.force_login(administrator)
+
+        response = self.client.post(
+            reverse("admin:auth_user_change", args=[operator.pk]),
+            {
+                "username": operator.username,
+                "email": operator.email,
+                "is_active": "on",
+                "is_staff": "on",
+                "is_superuser": "on",
+                "date_joined_0": operator.date_joined.date().isoformat(),
+                "date_joined_1": operator.date_joined.time().strftime("%H:%M:%S"),
+                "operator_identities-TOTAL_FORMS": "1",
+                "operator_identities-INITIAL_FORMS": "0",
+                "operator_identities-MIN_NUM_FORMS": "0",
+                "operator_identities-MAX_NUM_FORMS": "1000",
+                "operator_identities-0-platform": "github",
+                "operator_identities-0-handle": "Alice",
+                "operator_identities-0-external_id": "123",
+                "oauth_grants-TOTAL_FORMS": "0",
+                "oauth_grants-INITIAL_FORMS": "0",
+                "oauth_grants-MIN_NUM_FORMS": "0",
+                "oauth_grants-MAX_NUM_FORMS": "1000",
+            },
+        )
+
+        assert response.status_code == 302, (
+            response.context["adminform"].form.errors,
+            [inline.formset.errors for inline in response.context["inline_admin_formsets"]],
+        )
+        assert OperatorIdentity.objects.get(platform="github", external_id="123").user == operator
+
     def test_user_page_shows_identity_and_grant_metadata_without_tokens(self) -> None:
         user = get_user_model().objects.create_superuser("operator", "operator@example.com", "pw")
         OperatorIdentity.objects.create(user=user, platform="github", handle="operator", external_id="123")

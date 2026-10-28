@@ -6,11 +6,11 @@ import hmac
 import secrets
 import time
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
 import httpx
-from django.contrib.auth import get_user_model, login
+from django.contrib.auth import login
 from django.db import transaction
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import redirect
@@ -174,36 +174,20 @@ def finish_login(request: "HttpRequest", forge: str) -> HttpResponse:
     if not code:
         return HttpResponseBadRequest("operator OAuth code missing")
     try:
-        try:
-            app = _app(forge)
-            tokens = _token_response(
-                forge, app, grant_type="authorization_code", credential=code, verifier=str(pending["verifier"])
-            )
-        except OperatorOAuthUnavailableError:
-            return HttpResponse(f"operator OAuth login failed; run `t3 login {forge}`", status=502)
+        app = _app(forge)
+        tokens = _token_response(
+            forge, app, grant_type="authorization_code", credential=code, verifier=str(pending["verifier"])
+        )
         external_id, handle = _forge_identity(forge, app, tokens.access_token)
         with transaction.atomic():
             identity = OperatorIdentity.objects.filter(platform=forge, external_id=external_id).first()
-            if identity is not None:
-                user = identity.user
-                if not user.is_active or not user.is_superuser:
-                    raise OperatorOAuthUnavailableError(forge)
-                identity.handle = handle
-                identity.save(update_fields=["handle"])
-            else:
-                if request.user.is_authenticated:
-                    user = cast("AbstractBaseUser", request.user)
-                    if not getattr(user, "is_superuser", False):
-                        raise OperatorOAuthUnavailableError(forge)
-                else:
-                    user = get_user_model().objects.create_superuser(
-                        username=f"{forge}:{external_id}", email="", password=None
-                    )
-                    user.set_unusable_password()
-                    user.save(update_fields=["password"])
-                OperatorIdentity.objects.create(user=user, platform=forge, handle=handle, external_id=external_id)
+            if identity is None or not identity.user.is_active or not identity.user.is_superuser:
+                return HttpResponseForbidden("forge account needs administrator approval before sign-in")
+            user = identity.user
+            identity.handle = handle
+            identity.save(update_fields=["handle"])
             OperatorGrant.objects.store(user=user, forge=forge, tokens=tokens, key=master_key_source().load())
-    except (httpx.HTTPError, ValueError, KeyError, TypeError, OverflowError) as exc:
+    except (OperatorOAuthUnavailableError, httpx.HTTPError, ValueError, KeyError, TypeError, OverflowError) as exc:
         return HttpResponse(f"operator OAuth login failed: {type(exc).__name__}; run `t3 login {forge}`", status=502)
     login(request, user, backend=_BACKEND)
     return redirect(str(pending.get("next", "/admin/")))

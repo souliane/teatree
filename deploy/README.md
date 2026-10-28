@@ -1215,6 +1215,10 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   superuser seeded by `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`. The SSH
   tunnel keeps the service off the public network, while the login protects it
   from other processes on the same host.
+  Before an operator's first GitHub or GitLab OAuth sign-in, an existing administrator
+  creates or selects that operator's superuser in Django admin and adds an Operator
+  identity inline with the forge, handle, and immutable forge account ID. An uninvited
+  account cannot sign in or create a user or grant.
 
 - **`t3 dashboard` / `t3 admin` from an operator's own machine:** the same local
   service, reached without an SSH tunnel. `deploy/t3` runs the CLI in the stack, so
