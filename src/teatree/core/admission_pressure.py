@@ -34,13 +34,15 @@ import math
 from dataclasses import dataclass
 from enum import StrEnum
 
+from teatree.config.settings_provisioning import ADMISSION_LOAD_BRAKE_PER_CORE, ADMISSION_LOAD_RESUME_PER_CORE
+
 WEEKLY_WINDOW_SECONDS = 7 * 24 * 3600
 
 #: Load watermarks, as multiples of the core count. Above ``BRAKE`` new admissions are
 #: denied; a braked governor only re-admits once load falls back under ``RESUME``. The
 #: gap is the hysteresis that stops it flapping around one threshold.
-BRAKE_LOAD_PER_CORE = 5.0
-RESUME_LOAD_PER_CORE = 3.0
+BRAKE_LOAD_PER_CORE = ADMISSION_LOAD_BRAKE_PER_CORE
+RESUME_LOAD_PER_CORE = ADMISSION_LOAD_RESUME_PER_CORE
 
 #: Memory watermarks in GB, the same shape as the load pair above: below ``RAM_BRAKE``
 #: new admissions are denied, and a braked governor re-admits only above ``RAM_RESUME``.
@@ -84,6 +86,7 @@ PACE_DENY = 0.1
 #: brake set. Documented in docs/blueprint/admission-governor.md so the behaviour is
 #: predictable rather than emergent.
 DEGRADE_AT = 0.7
+SHED_AT_MIN = 0.5
 SHED_AT_DEFAULT = 0.9
 HALT_AT = 1.0
 
@@ -171,6 +174,8 @@ class MachineSignal:
     #: The cores ``load1`` was measured across, when that differs from the execution
     #: capacity in ``cores`` — a host load average read from inside a CPU-capped container.
     load_cores: int | None = None
+    load_brake_per_core: float = BRAKE_LOAD_PER_CORE
+    load_resume_per_core: float = RESUME_LOAD_PER_CORE
 
     @property
     def load_scope_cores(self) -> int:
@@ -313,13 +318,13 @@ def resolve_shed_at(configured: float) -> float:
     """Clamp the operator's ``admission_pressure_shed_at`` into the documented range.
 
     A typo must not be able to wedge the expensive lane shut, so the floor is
-    :data:`DEGRADE_AT` rather than zero; the ceiling :data:`HALT_AT` is the rollback
+    :data:`SHED_AT_MIN` rather than zero; the ceiling :data:`HALT_AT` is the rollback
     lever (SHED collapses into HALT and admission is byte-identical to pre-#4508). A
     non-finite value is not a threshold at all and falls back to the shipped default.
     """
     if not math.isfinite(configured):
         return SHED_AT_DEFAULT
-    return min(HALT_AT, max(DEGRADE_AT, float(configured)))
+    return min(HALT_AT, max(SHED_AT_MIN, float(configured)))
 
 
 def weekly_pace(quota: QuotaSignal) -> float:
@@ -338,7 +343,7 @@ def weekly_pace(quota: QuotaSignal) -> float:
     return headroom / runway
 
 
-def box_load_headroom(*, load1: float | None, cores: int) -> float:
+def box_load_headroom(*, load1: float | None, cores: int, brake_per_core: float = BRAKE_LOAD_PER_CORE) -> float:
     """The fraction of the box's load budget still free — ``1.0`` idle, ``0.0`` saturated.
 
     Exactly ``1 - `` the ``load`` component below, clamped the way a ceiling multiplier
@@ -356,7 +361,11 @@ def box_load_headroom(*, load1: float | None, cores: int) -> float:
     """
     if load1 is None:
         return 1.0
-    return _headroom(_load_pressure(load1=load1, cores=cores, braked=False))
+    return _headroom(
+        _load_pressure(
+            load1=load1, cores=cores, braked=False, brake_per_core=brake_per_core, resume_per_core=RESUME_LOAD_PER_CORE
+        )
+    )
 
 
 def ram_headroom(ram_available_gb: float | None) -> float:
@@ -478,11 +487,22 @@ def _metered_components(metered: MeteredSignal) -> list[PressureComponent]:
 
 def _machine_components(machine: MachineSignal, *, braked: bool, shed_at: float) -> list[PressureComponent]:
     cores = machine.load_scope_cores
-    watermark = _load_watermark(cores=cores, braked=braked)
+    watermark = _load_watermark(
+        cores=cores,
+        braked=braked,
+        brake_per_core=machine.load_brake_per_core,
+        resume_per_core=machine.load_resume_per_core,
+    )
     components = [
         PressureComponent(
             name="load",
-            value=_load_pressure(load1=machine.load1, cores=cores, braked=braked),
+            value=_load_pressure(
+                load1=machine.load1,
+                cores=cores,
+                braked=braked,
+                brake_per_core=machine.load_brake_per_core,
+                resume_per_core=machine.load_resume_per_core,
+            ),
             detail=f"load {machine.load1:.0f} at/over the {watermark:.0f} watermark on {cores} core(s)",
         )
     ]
@@ -524,16 +544,19 @@ def _kernel_component(level: int, *, shed_at: float) -> PressureComponent:
     )
 
 
-def _load_watermark(*, cores: int, braked: bool) -> float:
-    return (RESUME_LOAD_PER_CORE if braked else BRAKE_LOAD_PER_CORE) * max(1, cores)
+def _load_watermark(*, cores: int, braked: bool, brake_per_core: float, resume_per_core: float) -> float:
+    return (resume_per_core if braked else brake_per_core) * max(1, cores)
 
 
 def _ram_floor(*, braked: bool) -> float:
     return RAM_RESUME_FLOOR_GB if braked else RAM_BRAKE_FLOOR_GB
 
 
-def _load_pressure(*, load1: float, cores: int, braked: bool) -> float:
-    return _clamp(load1 / _load_watermark(cores=cores, braked=braked))
+def _load_pressure(*, load1: float, cores: int, braked: bool, brake_per_core: float, resume_per_core: float) -> float:
+    return _clamp(
+        load1
+        / _load_watermark(cores=cores, braked=braked, brake_per_core=brake_per_core, resume_per_core=resume_per_core)
+    )
 
 
 def _ram_pressure(ram_available_gb: float, *, braked: bool) -> float:
