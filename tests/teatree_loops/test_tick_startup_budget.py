@@ -7,8 +7,8 @@ import sys
 import pytest
 
 _FORBIDDEN = ("claude_agent_sdk", "mcp", "openai", "pydantic_ai", "litellm", "anthropic")
-# Between the lean tick path (1951 modules here) and the same path with the agent SDKs loaded (2327).
-_MAX_TICK_IMPORT_MODULES = 2150
+# Within 3% of the 1992-module cold path measured in the review venue.
+_MAX_TICK_IMPORT_MODULES = 2052
 _PROBE = """
 import json, sys
 from teatree.utils.django_bootstrap import ensure_django

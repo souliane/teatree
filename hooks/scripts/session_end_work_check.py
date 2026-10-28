@@ -53,7 +53,7 @@ sys.modules.setdefault("hooks.scripts.session_end_work_check", sys.modules[__nam
 PROBE_TIMEOUT_SECONDS = 4
 PREVIEW_LIMIT = 5
 DETACHED_BRANCH = "(detached)"
-_FLEET_PROBE_BRANCHES = frozenset({DETACHED_BRANCH, "main", "master"})
+_NO_ORPHAN_PROBE_BRANCHES = frozenset({DETACHED_BRANCH, "main", "master"})
 
 _CLEAN_INDEX_CODES = frozenset({" ", "?"})
 _PORCELAIN_PREFIX_WIDTH = 3
@@ -151,10 +151,9 @@ def current_branch(repo: Path) -> str:
     return _git(repo, "symbolic-ref", "--short", "-q", "HEAD", absent_is_empty=True).strip() or DETACHED_BRANCH
 
 
-def fetch_orphans(branch: str | None = None) -> list[dict] | None:
-    """``t3 teatree workspace list-orphans --json``, or ``None`` when it could not answer."""
-    scope = () if branch is None or branch in _FLEET_PROBE_BRANCHES else ("--branch", branch)
-    argv = t3_argv("teatree", "workspace", "list-orphans", *scope, "--json")
+def fetch_orphans(branch: str) -> list[dict] | None:
+    """Branch-scoped orphan rows, or ``None`` when the probe could not answer."""
+    argv = t3_argv("teatree", "workspace", "list-orphans", "--branch", branch, "--json")
     if argv is None:
         return None
     try:
@@ -256,11 +255,14 @@ def scan_work(cwd: str) -> WorkScan:
             branch = current_branch(repo)
         except ProbeFailedError:
             branch = None
-    orphans = fetch_orphans(branch)
-    if orphans is None:
+    if branch is None or branch in _NO_ORPHAN_PROBE_BRANCHES:
         unanswered |= _ORPHAN_STATES
     else:
-        items += _orphan_items(orphans)
+        orphans = fetch_orphans(branch)
+        if orphans is None:
+            unanswered |= _ORPHAN_STATES
+        else:
+            items += _orphan_items(orphans)
     if (repo / ".git").exists():
         try:
             items += _worktree_items(repo, branch or current_branch(repo))

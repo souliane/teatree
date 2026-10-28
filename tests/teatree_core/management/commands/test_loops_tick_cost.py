@@ -47,13 +47,13 @@ class TestTickCostRecording(django.test.TestCase):
 
         assert sampled == {"idle": True, "busy": False}
 
-    def test_a_standing_signal_with_a_statusline_action_is_idle(self) -> None:
+    def test_a_standing_signal_with_a_statusline_action_is_busy(self) -> None:
         signal = ScanSignal(kind="ticket.active", summary="active")
         report = TickReport(started_at=dt.datetime.now(dt.UTC), signals=[signal], actions=dispatch([signal]))
 
         assert report.action_count == 1
         assert report.actions[0].kind == "statusline"
-        assert self._run_tick(report) == {"idle": True, "busy": False}
+        assert self._run_tick(report) == {"idle": False, "busy": True}
 
     def test_a_tick_that_dispatched_an_agent_is_busy(self) -> None:
         report = TickReport(

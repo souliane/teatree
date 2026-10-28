@@ -97,7 +97,7 @@ class TestTheSessionEndHookReadsTheRealCommand(TestCase):
             patch.object(work_check, "t3_argv", side_effect=lambda *args: ["/usr/bin/t3", *args]),
             patch.object(work_check, "run_t3", side_effect=_run_in_process),
         ):
-            return work_check.fetch_orphans()
+            return work_check.fetch_orphans("feat-1")
 
     def test_no_orphan_is_an_answer(self) -> None:
         assert self._fetch() == []
