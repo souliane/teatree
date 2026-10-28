@@ -88,12 +88,12 @@ class TestDetachedSpawnPinsTheCwd:
 
     def test_it_pins_the_checkout_root(self) -> None:
         with patch("subprocess.Popen") as popen:
-            t3_invocation.spawn_t3_detached(["t3", "speak", "hello"])
+            t3_invocation.spawn_t3_detached(["t3", "tool", "validate-mr"])
         assert popen.call_args.kwargs["cwd"] == str(t3_invocation.hook_checkout_root())
 
     def test_it_detaches_so_a_slow_call_never_holds_the_hook_open(self) -> None:
         with patch("subprocess.Popen") as popen:
-            t3_invocation.spawn_t3_detached(["t3", "speak", "hello"])
+            t3_invocation.spawn_t3_detached(["t3", "tool", "validate-mr"])
         kwargs = popen.call_args.kwargs
         assert kwargs["start_new_session"] is True
         assert kwargs["stdin"] == kwargs["stdout"] == kwargs["stderr"] == subprocess.DEVNULL
@@ -169,7 +169,7 @@ class TestTheInvocationCwdCrossesTheBoundary:
             patch.object(t3_invocation, "container_path", return_value="/mnt/checkout"),
             patch("subprocess.Popen") as popen,
         ):
-            t3_invocation.spawn_t3_detached(["t3", "speak", "hello"])
+            t3_invocation.spawn_t3_detached(["t3", "tool", "validate-mr"])
         assert popen.call_args.kwargs["env"]["TEATREE_INVOCATION_CWD"] == "/mnt/checkout"
 
 

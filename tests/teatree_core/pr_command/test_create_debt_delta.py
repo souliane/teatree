@@ -104,6 +104,7 @@ class TestRunDebtDeltaGate(TestCase):
         assert result["error"].startswith("[gate:debt_delta] DID NOT RUN: CommandFailedError")
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestPrCreateDebtDeltaWiring(TestCase):
     """End-to-end proof the gate is live in ``_run_ship_gates`` under ``pr create``."""
 

@@ -13,8 +13,6 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason, started_unfinished_pull_requests
-
 if TYPE_CHECKING:
     from teatree.core.admission_pressure import MachineSignal
 
@@ -109,10 +107,7 @@ def _check_box_occupancy() -> bool:
     machine, not a fault in the factory, and reddening the run on it would train the
     operator to ignore a red run. Crash-proof: any error degrades to OK.
     """
-    from teatree.core.admission_governor import (  # noqa: PLC0415 — deferred: keeps CLI startup light
-        BRAKE_LOAD_PER_CORE,
-        read_machine_signal,
-    )
+    from teatree.core.admission_governor import read_machine_signal  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.core.models import Task  # noqa: PLC0415 — ORM import needs the app registry
 
     try:
@@ -122,7 +117,7 @@ def _check_box_occupancy() -> bool:
         typer.echo(f"WARN  Box-occupancy check crashed: {exc.__class__.__name__}: {exc}")
         return True
     cores = machine.load_scope_cores
-    watermark = BRAKE_LOAD_PER_CORE * cores
+    watermark = machine.load_brake_per_core * cores
     reading = (
         f"factory agents in flight: {agents}; box load {machine.load1:.1f} on {cores} core(s) "
         f"({machine.load1 / cores:.1f} per core, brake watermark {watermark:.0f}){_pressure_reading(machine)}"
@@ -290,18 +285,16 @@ def _check_queue_stall() -> bool:
 
 
 def _check_merge_brake() -> bool:
-    """Report the live PR cap and FAIL when a whole overlay's merge board is stalled."""
+    """FAIL when a whole overlay's merge board is stalled."""
     from teatree.core.admission_governor import read_merge_signal  # noqa: PLC0415 — lazy CLI import
+    from teatree.core.models import PullRequest  # noqa: PLC0415 — ORM import needs the app registry
 
     try:
-        overlays = set(started_unfinished_pull_requests().values_list("overlay", flat=True).distinct())
+        overlays = set(PullRequest.objects.live().values_list("overlay", flat=True).distinct())
         stalled = [(overlay, read_merge_signal(overlay=overlay)) for overlay in sorted(overlays)]
-        cap = open_pr_start_cap_hold_reason()
     except Exception as exc:  # noqa: BLE001 — an unreadable probe is not proof of a halt
         typer.echo(f"WARN  Merge-brake check crashed: {exc.__class__.__name__}: {exc}")
         return True
-    if cap:
-        typer.echo(f"WARN  Issue intake held by open PR start cap: {cap}")
     failures = [(overlay, signal) for overlay, signal in stalled if signal.stalled]
     for overlay, signal in failures:
         refs = ", ".join(signal.stuck_refs)

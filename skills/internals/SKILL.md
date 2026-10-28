@@ -35,7 +35,7 @@ phases and enforces quality gates (e.g. can't ship without testing).
 
 ## CLI Reference
 
-Top-level commands (no overlay needed): `t3 startoverlay`, `t3 docs`, `t3 agent`, `t3 sessions`, `t3 cost`, `t3 tokens`, `t3 speak`, `t3 ui`, `t3 admin`, `t3 info`, `t3 config`, `t3 banned-terms`, `t3 ci`, `t3 codex`, `t3 review`, `t3 review-request`, `t3 eval`, `t3 doctor`, `t3 tool`, `t3 setup`, `t3 update`, `t3 assess`, `t3 overlay`, `t3 loop`, `t3 mcp`, `t3 notion`, `t3 slack`, `t3 task`, `t3 recover`, `t3 dogfood`, `t3 dream`, `t3 mutation`, `t3 push`. (This list is kept honest by `tests/teatree_skill_support/test_teatree_skill_cli_reference.py`, which asserts every name is a registered `t3` command; the in-sync full reference with descriptions is `docs/generated/cli-reference.md`.)
+Top-level commands (no overlay needed): `t3 startoverlay`, `t3 docs`, `t3 agent`, `t3 sessions`, `t3 cost`, `t3 tokens`, `t3 ui`, `t3 admin`, `t3 info`, `t3 config`, `t3 banned-terms`, `t3 ci`, `t3 codex`, `t3 review`, `t3 review-request`, `t3 eval`, `t3 doctor`, `t3 tool`, `t3 setup`, `t3 update`, `t3 assess`, `t3 overlay`, `t3 loop`, `t3 mcp`, `t3 notion`, `t3 slack`, `t3 task`, `t3 recover`, `t3 dogfood`, `t3 dream`, `t3 mutation`, `t3 push`. (This list is kept honest by `tests/teatree_skill_support/test_teatree_skill_cli_reference.py`, which asserts every name is a registered `t3` command; the in-sync full reference with descriptions is `docs/generated/cli-reference.md`.)
 
 Overlay-scoped commands require `t3 <overlay> <subcommand>` (e.g., `t3 teatree`):
 
@@ -191,7 +191,7 @@ On the facets (`overlay.provisioning`, `.runtime`, `.e2e`, `.review`, `.config`,
 | `provisioning` | `repo_clone_url(repo_name)`, `env_extra(worktree)`, `db_import_strategy(worktree)`, `db_import(...)`, `post_db_steps(...)`, `services_config(worktree)`, `compose_file(...)`, `symlinks(...)`, `envrc_lines(...)`, `docker_services(...)`, `health_checks(...)`, `cleanup_steps(...)`, `resolve_variant(...)` |
 | `runtime` | `run_commands(worktree)`, `pre_run_steps(...)`, `test_command(...)`, `lint_command(...)`, `verify_endpoints(...)`, `readiness_probes(...)` |
 | `e2e` | `env_extras(...)`, `preflight(...)`, `run_provenance(spec_path)`, `scenarios(spec_path)`, `playwright_args(spec_path)`, `spec_paths(...)` |
-| `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)`, `mandatory_e2e_exempt_repo_slugs(...)`, `get_followup_scanners(backend)` |
+| `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `repo_project_paths()`, `review_exempt_repo_slugs(...)`, `mandatory_e2e_exempt_repo_slugs(...)`, `get_followup_scanners(backend)` |
 | `config` | `get_gitlab_token()`, `get_github_token()`, `get_slack_token()`, `get_review_channel()`, `secret_pass_key(...)`, … (credentials, URLs, labels) |
 | `connectors` | `preflight()`, `mcp_tool_group()` |
 

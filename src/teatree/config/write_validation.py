@@ -17,6 +17,12 @@ this helper covers only the shared coercion, raising a single
 from teatree.config.extra_headers import UNLISTED_HEADER_REFUSAL, carries_unlisted_header
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS, config_key_hint
 from teatree.config.settings import WRITE_CONCURRENCY_PER_CORE_MAX, WRITE_CONCURRENCY_PER_CORE_MIN
+from teatree.config.settings_provisioning import (
+    ADMISSION_LOAD_FACTOR_MAX,
+    ADMISSION_LOAD_FACTOR_MIN,
+    FORGE_POOL_MAX_CONNECTIONS_MAX,
+    FORGE_POOL_MAX_CONNECTIONS_MIN,
+)
 
 # A canonical, JSON/TOML-storable config value — the shape every registry parser
 # returns (a ``StrEnum`` is a ``str``; the structured ``speak`` / ``mr_reminder``
@@ -27,6 +33,9 @@ type ConfigWriteValue = bool | int | float | str | list[object] | dict[str, obje
 #: The reader clamps these silently, so a write outside the range is refused where the operator sees it.
 _WRITE_RANGES: dict[str, tuple[float, float]] = {
     "admission_write_concurrency_per_core": (WRITE_CONCURRENCY_PER_CORE_MIN, WRITE_CONCURRENCY_PER_CORE_MAX),
+    "admission_load_brake_per_core": (ADMISSION_LOAD_FACTOR_MIN, ADMISSION_LOAD_FACTOR_MAX),
+    "admission_load_resume_per_core": (ADMISSION_LOAD_FACTOR_MIN, ADMISSION_LOAD_FACTOR_MAX),
+    "forge_pool_max_connections": (FORGE_POOL_MAX_CONNECTIONS_MIN, FORGE_POOL_MAX_CONNECTIONS_MAX),
 }
 
 

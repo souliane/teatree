@@ -9,6 +9,13 @@ from teatree.config.setting_parsers import _parse_str_list, _parse_strict_float,
 WRITE_CONCURRENCY_PER_CORE: Final = 0.5
 WRITE_CONCURRENCY_PER_CORE_MIN: Final = 0.25
 WRITE_CONCURRENCY_PER_CORE_MAX: Final = 2.0
+ADMISSION_LOAD_BRAKE_PER_CORE: Final = 2.0
+ADMISSION_LOAD_RESUME_PER_CORE: Final = 1.5
+ADMISSION_LOAD_FACTOR_MIN: Final = 0.5
+ADMISSION_LOAD_FACTOR_MAX: Final = 6.0
+FORGE_POOL_MAX_CONNECTIONS: Final = 4
+FORGE_POOL_MAX_CONNECTIONS_MIN: Final = 1
+FORGE_POOL_MAX_CONNECTIONS_MAX: Final = 16
 
 
 @dataclass
@@ -54,12 +61,30 @@ class _ProvisioningSettings:
     # #4508 The admission-pressure scalar at which the EXPENSIVE agent class is refused
     # while the CHEAP review/ship lanes keep draining. 1.0 collapses SHED into HALT —
     # the rollback lever, restoring pre-#4508 admission byte-for-byte. Clamped into
-    # [DEGRADE_AT, HALT_AT] on read so a typo cannot wedge the lane. Per-overlay overridable.
+    # [0.5, HALT_AT] on read so a typo cannot wedge the lane. Per-overlay overridable.
     admission_pressure_shed_at: float = setting(
         0.9,
         spec=SettingSpec(
             help=("pressure at which expensive agents are refused while review and ship keep draining"),
             parse=_parse_strict_float,
+        ),
+    )
+    forge_pool_max_connections: int = setting(
+        FORGE_POOL_MAX_CONNECTIONS,
+        spec=SettingSpec(
+            help="connections each process keeps open per forge host", parse=_parse_strict_int, box_global=True
+        ),
+    )
+    admission_load_brake_per_core: float = setting(
+        ADMISSION_LOAD_BRAKE_PER_CORE,
+        spec=SettingSpec(
+            help="box load per core at which new admissions halt", parse=_parse_strict_float, box_global=True
+        ),
+    )
+    admission_load_resume_per_core: float = setting(
+        ADMISSION_LOAD_RESUME_PER_CORE,
+        spec=SettingSpec(
+            help="box load per core below which halted admissions resume", parse=_parse_strict_float, box_global=True
         ),
     )
     # Box-global: the reader sizes this box's cores, so a per-overlay row cannot be honoured.

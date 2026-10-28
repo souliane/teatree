@@ -45,6 +45,7 @@ __all__ = [
     "get_overlay_for_worktree",
     "infer_overlay_for_url",
     "overlay_name_of",
+    "repo_project_paths_for_ticket",
     "reset_overlay_cache",
     "resolve_overlay_name",
     "ticket_repo_is_overlay_own",
@@ -95,6 +96,14 @@ def get_overlay_for_ticket(ticket: "Ticket") -> "OverlayBase":
         msg = f"Ticket {ticket.pk} has no overlay"
         raise ImproperlyConfigured(msg)
     return get_overlay(ticket.overlay)
+
+
+def repo_project_paths_for_ticket(ticket: "Ticket") -> dict[str, str]:
+    try:
+        overlay = get_overlay_for_ticket(ticket)
+    except ImproperlyConfigured:
+        return {}
+    return overlay.review.repo_project_paths()
 
 
 def get_overlay_for_worktree(worktree: "Worktree") -> "OverlayBase":

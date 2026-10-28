@@ -12,6 +12,7 @@ from django.http import HttpResponse
 from django.test import Client, TestCase
 from django.urls import reverse
 
+import teatree.backends.github.api as github_api_mod
 from teatree.core.management.commands._github_webhook_connect import ConnectResult, WebhookConnection, validate_target
 from teatree.core.models import ConfigSetting, IncomingEvent, Loop, Mode
 from teatree.core.views._webhook_secrets import reset_webhook_secrets
@@ -65,7 +66,7 @@ class FakeGitHub:
         return cast("dict[str, object]", self.hooks[0]["config"])
 
     def run(self, argv: list[str], **kwargs: object) -> CompletedProcess[str]:
-        stdin = str(kwargs.get("stdin_text", ""))
+        stdin = str(kwargs.get("stdin_text") or "")
         self.calls.append((argv, stdin))
         endpoint = argv[2]
         method = argv[argv.index("--method") + 1] if "--method" in argv else "GET"
@@ -153,6 +154,13 @@ class GitHubWebhookCommandTests(TestCase):
         reset_webhook_secrets()
         self.fake = FakeGitHub(self)
         self.enterContext(patch("teatree.backends.github.api.run_checked", self.fake.run))
+        self.enterContext(
+            patch.object(
+                github_api_mod,
+                "_run_pooled_api",
+                side_effect=lambda args, **kwargs: self.fake.run(list(args), **kwargs),
+            ),
+        )
         self.enterContext(
             patch(
                 "teatree.core.management.commands.github_webhook.resolve_slug_token",

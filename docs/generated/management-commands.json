@@ -1182,11 +1182,6 @@
       "subcommands": []
     },
     {
-      "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
-      "name": "speak",
-      "subcommands": []
-    },
-    {
       "help": "Register, clear, or list standing verified-green goals (PR-25).",
       "name": "standing_goal",
       "subcommands": [
@@ -1399,6 +1394,10 @@
         {
           "help": "Waive one rubric criterion by its text hash; an owner identity and a reason are required",
           "name": "rubric-waive"
+        },
+        {
+          "help": "Request an owner button answer for one LLM merge item",
+          "name": "merge-item-waive"
         },
         {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",
