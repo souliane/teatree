@@ -16,10 +16,9 @@ from django.test import TestCase
 
 from teatree.cli.doctor.checks_blank_work_overlays import check_blank_work_overlays
 from teatree.core.merge import merge_ticket_pr
-from teatree.core.merge.partial_merge import CLOSING_PATTERN, MergedPrReading, PrLink
+from teatree.core.merge.partial_merge import MergedPrReading, PrLink
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.runners.ship import CLOSE_KEYWORD_RE
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from tests._forge_stub import CLEAN_PR_BODY, CLEAN_PR_TITLE
 from tests.teatree_core.test_merge_execution import _clear, _GhStub
@@ -152,10 +151,6 @@ def test_unchecked_acceptance_boxes_the_body_does_not_claim_are_the_fallback_rem
     ).unmet
 
     assert unmet == ("measure live",)
-
-
-def test_the_closing_grammar_is_the_one_the_ship_sanitizer_uses() -> None:
-    assert CLOSING_PATTERN.pattern == CLOSE_KEYWORD_RE.pattern
 
 
 class _BodyStub(_GhStub):

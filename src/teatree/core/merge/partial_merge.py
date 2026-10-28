@@ -21,6 +21,7 @@ from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.models import MergeClear, PullRequest, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_ledger import stamp_reopened_over
+from teatree.core.runners.ship import CLOSE_KEYWORD_RE
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import repo_namespaced_key
 
@@ -30,8 +31,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ISSUE_REF = r"(?P<ref>(?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)"
-# Same grammar as ``teatree.core.runners.ship.CLOSE_KEYWORD_RE``; a test pins the two together.
-CLOSING_PATTERN = re.compile(rf"\b(?P<kw>close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::\s*|\s+){_ISSUE_REF}", re.IGNORECASE)
 _PARTIAL = re.compile(rf"\b(?:part\s+of|relates?\s+to|related\s+to)(?::\s*|\s+){_ISSUE_REF}", re.IGNORECASE)
 
 # The remainder markers — every phrase that declares work left over, in one place.
@@ -136,7 +135,7 @@ class MergedPrReading:
 
     @classmethod
     def parse(cls, body: str, ticket: Ticket) -> "MergedPrReading":
-        if _links_ticket(CLOSING_PATTERN, body, ticket):
+        if _links_ticket(CLOSE_KEYWORD_RE, body, ticket):
             return cls(PrLink.CLOSING)
         if not _links_ticket(_PARTIAL, body, ticket):
             return cls()
