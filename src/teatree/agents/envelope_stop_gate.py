@@ -31,7 +31,7 @@ from claude_agent_sdk.types import HookCallback, HookContext, HookJSONOutput, Ho
 
 from teatree.agents.envelope_refusal import required_keys_phrase
 from teatree.agents.result_schema import ProseSummaryPolicy, check_evidence
-from teatree.agents.runner_result import parse_result
+from teatree.agents.runner_result import ResultEnvelopeError, parse_result
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ class EnvelopeStopGate:
 
     def _refusal(self, missing: str) -> HookJSONOutput:
         reason = (
-            f"{missing} This run is ONE-SHOT: ending your turn ends the run, there is no next "
+            f"{missing.rstrip('.')}. This run is ONE-SHOT: ending your turn ends the run, there is no next "
             "turn and no scheduled wakeup, and everything you have done so far is discarded "
             "unrecorded. Finish the work in THIS turn — wait for any command you started to "
             f"complete — then write the result envelope ({required_keys_phrase(self.phase)}) as "
@@ -122,7 +122,16 @@ def _missing_envelope_reason(agent_text: str, phase: str) -> str | None:
     Mirrors the recorder's own order — parse first, then the evidence gate — so a
     turn this allows is a turn the recorder accepts.
     """
-    result = parse_result(agent_text)
+    try:
+        result = parse_result(agent_text)
+    except ResultEnvelopeError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, json.JSONDecodeError):
+            source = agent_text.strip()
+            excerpt = source[max(0, cause.pos - 30) : cause.pos + 30].replace("\n", "\\n")
+            detail = cause.msg.removesuffix(" at")
+            return f"Your result is not valid JSON: {detail}. Near: {excerpt!r}."
+        return f"Your {exc}."
     if not result:
         return "Your output carries no JSON result envelope."
     evidence_error = check_evidence(result, phase)
