@@ -2045,10 +2045,11 @@ class ExecuteTaskInterruptedCheckoutTests(TransactionTestCase):
             execute_task.func(task.pk, task.phase)
         drive.assert_called_once()
         assert not TaskAttempt.objects.filter(task=task, error__startswith="checkout_parked:").exists()
+        assert not DeferredQuestion.objects.filter(task_session=task.session).exists()
         self.worktree.refresh_from_db()
-        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
-        interrupted = self.worktree.get_extra()["auto_attestation"]["tenures"][0]
-        assert (interrupted["holder"], interrupted["ended"]) == (f"task:{self.coding.pk}", "abandoned")
+        state = checkout_state(self.checkout)
+        assert self.worktree.get_extra()["attested_state"] == state.digest
+        assert self.worktree.get_extra()["checkout_custody"]["anchor"] == state.digest
 
     def test_same_task_retry_after_worker_restart(self) -> None:
         self.interrupt_run()

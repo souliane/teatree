@@ -316,6 +316,7 @@ class OnBehalfSlackEgress:
         destination: str = "",
         summary: str = "",
         context: OnBehalfContext | None = None,
+        receipt: bool = True,
     ) -> RawAPIDict:
         """Post to *channel*, gated+audited on a colleague surface.
 
@@ -373,7 +374,7 @@ class OnBehalfSlackEgress:
                 )
             except _PublishDidNotLandError as unlanded:
                 return _observe_egress(target, action, EgressKind.POST, unlanded.response, destination=egress_location)
-            if response.get("ok"):
+            if response.get("ok") and receipt:
                 notify_user_on_behalf_post(
                     target=target,
                     action=action,

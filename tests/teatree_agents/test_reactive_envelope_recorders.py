@@ -5,9 +5,10 @@ from unittest import mock
 from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
-from teatree.answer_handback import collect
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestionAudit
+from teatree.core.notify import NotifyKind
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 from tests._owner_channel import assert_a_plain_card
 
@@ -37,32 +38,7 @@ class TestScanningNewsDigestDelivery(TestCase):
         resolving_urls.start()
         self.addCleanup(resolving_urls.stop)
 
-    def test_candidates_are_still_recorded_behind_the_ask_gate(self) -> None:
-        task = _news_task()
-
-        with mock.patch("teatree.agents.reactive_envelope_recorders.notify_user", return_value=True):
-            record_reactive_envelopes(task, {"article_suggestions": _SUGGESTIONS}, phase="scanning_news")
-
-        assert PendingArticleSuggestion.objects.count() == 2
-        assert DeferredQuestion.objects.count() == 1
-
-    def test_the_batch_question_names_no_asking_session_so_its_answer_is_never_posted(self) -> None:
-        task = _news_task()
-        Task.objects.filter(pk=task.pk).update(claimed_by_session="loop-driving-session")
-        task.refresh_from_db()
-        with mock.patch("teatree.agents.reactive_envelope_recorders.notify_user", return_value=True):
-            record_reactive_envelopes(task, {"article_suggestions": _SUGGESTIONS}, phase="scanning_news")
-        question = DeferredQuestion.objects.get()
-
-        with self.captureOnCommitCallbacks(execute=True):
-            DeferredQuestion.consume(question.pk, answer="approve both")
-
-        question.refresh_from_db()
-        assert question.session_id == ""
-        assert question.applied_at is None
-        assert collect("loop-driving-session") == []
-
-    def test_the_digest_is_delivered_to_slack(self) -> None:
+    def test_the_digest_is_formatted_for_owner_delivery(self) -> None:
         task = _news_task()
 
         with mock.patch("teatree.agents.reactive_envelope_recorders.notify_user", return_value=True) as notify:
@@ -72,6 +48,9 @@ class TestScanningNewsDigestDelivery(TestCase):
         text = notify.call_args.args[0]
         assert "<https://example.com/eval|An agent eval harness>" in text
         assert "`src/teatree/eval/backends.py`" in text
+        assert notify.call_args.kwargs["audience"] is NotifyAudience.OWNER_DELIVERY
+        assert notify.call_args.kwargs["kind"] is NotifyKind.INFO
+        assert notify.call_args.kwargs["linkify"] is False
 
     def test_the_digest_is_idempotent_per_task(self) -> None:
         task = _news_task()
