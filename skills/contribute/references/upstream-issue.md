@@ -131,15 +131,16 @@ Through the `<forge>_issue_create` MCP tool, never a raw `gh issue create` — t
 is the #162 hygiene facade's face, so the upstream backlog is judged BEFORE anything is
 filed. An unread backlog is how the same upstream gap gets filed three times.
 
-Two calls. The first writes nothing and hands back the open backlog:
+Two calls with the same title and body. The first writes nothing and hands back up to 20 closest open tickets:
 
 ```text
 github_issue_create(repo="<T3_UPSTREAM>", title="fix(<skill>): <title>", body="<built issue body>")
-  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...]}
+  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...],
+     "open_count": N, "compared": M}
 ```
 
-Judge every candidate — this is § 4's related-issue check, now mandatory rather than
-advisory — then call again with that same snapshot:
+Judge every returned candidate — `open_count - compared` were not compared — then
+call again with that same snapshot and unchanged title and body:
 
 ```text
 github_issue_create(repo="<T3_UPSTREAM>", title=..., body=...,
@@ -152,8 +153,8 @@ github_issue_create(repo="<T3_UPSTREAM>", title=..., body=...,
   Print that URL and tell the user no new issue was needed.
 - `external_conflict` → a fitting ticket someone else filed. Neither edited nor
   duplicated: print it and stop, so a human decides.
-- `stale_snapshot` → a ticket appeared while you were judging. Re-judge with the
-  `unjudged` URLs it names.
+- `stale_snapshot` → a ticket entered the closest set while you were judging,
+  possibly because the draft changed. Re-judge with the `unjudged` URLs it names.
 
 ## Issue Body Rules
 

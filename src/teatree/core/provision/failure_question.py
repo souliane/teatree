@@ -58,6 +58,8 @@ def record_provision_failure_question(ticket: Ticket, detail: str, *, retries: i
         )
     else:
         tried = f" after {retries} automatic retries" if retries else ""
+        if ticket.issue_url:
+            retry = f"`t3 {overlay} workspace ticket {ticket.issue_url} --repos <repo>`"
         question = (
             f"Provision failed on {where} (overlay {overlay}): {detail}{tried}, so there is nothing to check out. "
             f"Attach the repos by re-running checkout creation from the venue that owns the worktrees ({retry}), "

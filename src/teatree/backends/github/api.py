@@ -87,7 +87,7 @@ def gh_api_get(endpoint: str, *, token: str = "") -> object:
     return json.loads(result.stdout)
 
 
-def gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
+def gh_api_get_paginated(endpoint: str, *, token: str = "", strict: bool = False) -> list[RawAPIDict]:
     """Fetch EVERY page of a list endpoint and return one flat list.
 
     A plain ``gh api`` GET returns only the first page — GitHub's default
@@ -114,11 +114,20 @@ def gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
     )
     pages = json.loads(result.stdout)
     if not isinstance(pages, list):
+        if strict:
+            message = "GitHub returned a non-list page set"
+            raise ValueError(message)
         return []
     flattened: list[RawAPIDict] = []
     for page in pages:
         if isinstance(page, list):
+            if strict and not all(isinstance(item, dict) for item in page):
+                message = "GitHub returned a non-object hook"
+                raise ValueError(message)
             flattened.extend(cast("list[RawAPIDict]", page))
+        elif strict:
+            message = "GitHub returned a non-list page"
+            raise ValueError(message)
     return flattened
 
 
@@ -188,7 +197,7 @@ def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str
         env=_gh_env(token),
         timeout=_FORGE_READ_TIMEOUT_SECONDS,
     )
-    return json.loads(result.stdout)
+    return json.loads(result.stdout) if result.stdout.strip() else None
 
 
 def _gh_api_post(endpoint: str, payload: RawAPIDict, *, token: str = "") -> object:
@@ -199,6 +208,24 @@ def _gh_api_post(endpoint: str, payload: RawAPIDict, *, token: str = "") -> obje
 def _gh_api_patch(endpoint: str, payload: RawAPIDict, *, token: str = "") -> object:
     """Call ``gh api`` (PATCH) and return parsed JSON."""
     return _gh_api_write(endpoint, payload, method="PATCH", token=token)
+
+
+def _gh_api_empty(endpoint: str, *, method: str, token: str = "") -> None:
+    _run_gh(
+        "gh",
+        "api",
+        endpoint,
+        "--method",
+        method,
+        "--header",
+        "Accept: application/vnd.github+json",
+        token=token,
+        timeout=_FORGE_READ_TIMEOUT_SECONDS,
+    )
+
+
+def _gh_api_delete(endpoint: str, *, token: str = "") -> None:
+    _gh_api_empty(endpoint, method="DELETE", token=token)
 
 
 def parse_issue_ref(issue_url: str) -> tuple[str, int] | None:
