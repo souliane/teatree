@@ -17,7 +17,6 @@ on to break the cycle.
 
 import logging
 
-from teatree.core.gates.review_recordability_gate import unrecordable_review_mint_refusal
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.modelkit.review_state import DISCHARGED_REVIEW_STATES
 from teatree.core.models import Task, Ticket
@@ -51,7 +50,7 @@ def handle_reviewer(action: DispatchAction) -> Task | None:
     if not pr_url:
         logger.debug("Skipping t3:reviewer action with no url: %r", action.detail)
         return None
-    head_sha = str(payload.get("head_sha") or "")
+    head_sha = str(payload.get("head_sha") or "").strip()
     scan_tag = str(payload.get("overlay") or "")
     ticket, created = Ticket.objects.get_or_create(
         issue_url=pr_url,
@@ -97,8 +96,7 @@ def _read_live_head(ticket: Ticket, pr_url: str) -> str:
 def _mint_reviewer_task(ticket: Ticket, *, payload: ActionPayload, head_sha: str) -> Task | None:
     """Schedule *ticket*'s reviewing task, or ``None`` when a rung says not to.
 
-    Three rungs, each a reason NOT to mint: one is already open, one already reviewed this
-    head, or no verdict this review produced could be recorded at all.
+    Two rungs, each a reason NOT to mint: one is already open, or one already reviewed this head.
     """
     open_task = open_task_in_phase(ticket, phase="reviewing")
     if open_task is not None:
@@ -114,10 +112,6 @@ def _mint_reviewer_task(ticket: Ticket, *, payload: ActionPayload, head_sha: str
         # "already reviewed"; a SHA move resets it via the mismatch path
         # above, so a genuinely new revision is still reviewed.
         logger.debug("PR %s already approved at head %s — not re-enqueuing review", ticket.issue_url, head_sha)
-        return None
-    unrecordable = unrecordable_review_mint_refusal(ticket)
-    if unrecordable is not None:
-        logger.warning("Not minting a review for ticket %s: %s", ticket.pk, unrecordable)
         return None
     result = schedule_external_review(ticket)
     if result is ReviewDeclined.PR_STATE_UNKNOWN:

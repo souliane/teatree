@@ -592,11 +592,27 @@ class TestAReviewWithNoRecordedHeadIsNeverMinted(TestCase):
 
         assert Task.objects.filter(ticket__issue_url=self._URL).count() == 0
 
-    def test_unreadable_forge_creates_no_question_across_both_emissions(self) -> None:
-        persist_agent_actions([self._action()])
-        persist_agent_actions([self._action()])
+    def test_unreadable_forge_on_an_open_pull_request_mints_nothing_and_warns_on_both_emissions(self) -> None:
+        with (
+            pr_open_state(PrOpenState.OPEN),
+            self.assertLogs("teatree.loop.persistence_reviewer", level="WARNING") as logs,
+        ):
+            persist_agent_actions([self._action()])
+            persist_agent_actions([self._action()])
 
         assert DeferredQuestion.objects.count() == 0
+        assert Task.objects.filter(ticket__issue_url=self._URL).count() == 0
+        assert [line for line in logs.output if "forge head unreadable" in line] == logs.output
+        assert len(logs.output) == 2
+
+    def test_a_whitespace_only_head_is_read_from_the_forge_not_stamped(self) -> None:
+        action = self._action()
+        action.payload["head_sha"] = "   "
+
+        with pr_open_state(PrOpenState.OPEN), self.assertLogs("teatree.loop.persistence_reviewer", level="WARNING"):
+            assert persist_agent_actions([action]) == []
+
+        assert "reviewed_sha" not in (Ticket.objects.get(issue_url=self._URL).extra or {})
 
     def test_missing_action_head_reads_forge_and_mints_review(self) -> None:
         head = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"
