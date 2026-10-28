@@ -141,6 +141,31 @@ class TestIdleDatabaseCopies(TestCase):
         assert not (env_dir / "db.sqlite3").exists()
         assert sum("RECLAIMED" in line for line in result) == 1
 
+    def test_a_symlinked_env_dir_is_never_reclaimed_through_the_link(self) -> None:
+        env_dir, _ = self._copy("linked-dir")
+        elsewhere = self.workspace / "real-env-dir"
+        env_dir.rename(elsewhere)
+        env_dir.symlink_to(elsewhere)
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (elsewhere / "db.sqlite3").exists()
+        assert any("symlink" in line for line in result)
+
+    def test_a_symlinked_database_file_is_never_unlinked_as_a_copy(self) -> None:
+        env_dir, _ = self._copy("linked-file")
+        target = self.workspace / "shared.sqlite3"
+        target.write_bytes(b"shared")
+        (env_dir / "db.sqlite3").unlink()
+        (env_dir / "db.sqlite3").symlink_to(target)
+        self._age(env_dir)
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert target.read_bytes() == b"shared"
+        assert (env_dir / "db.sqlite3").is_symlink()
+        assert any("symlink" in line for line in result)
+
     def test_reaper_pinned_checkout_keeps_its_idle_database(self) -> None:
         env_dir, _ = self._copy("pinned")
         row = Worktree.objects.get(branch="pinned")

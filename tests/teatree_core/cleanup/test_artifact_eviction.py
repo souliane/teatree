@@ -18,6 +18,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from datetime import timedelta
 from fnmatch import fnmatchcase
 from pathlib import Path
 from threading import Event, Thread
@@ -41,7 +42,7 @@ from teatree.core.cleanup.artifact_removal import EVICTED_PREFIX
 from teatree.core.cleanup.artifact_sizing import MAX_EVICTIONS_PER_PASS
 from teatree.core.cleanup.checkout_registry import _NEVER_A_CHECKOUT, CheckoutRegistry
 from teatree.core.cleanup.reclaim_pressure import effective_idle_days
-from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models import Session, Task, Ticket, TicketTransition, Worktree
 from tests._git_repo import make_git_repo, plant_review_evidence_receipt, run_git
 from tests._hook_env import HOOK_ENV_NAME
 from tests._process_table_venue import blinded_process_table, holding, this_process_in
@@ -197,6 +198,36 @@ class TestPressureEscalation(_EvictionFixture):
 
         assert not artifact.exists()
         assert outcome.freed_bytes > 0
+
+    def _idle_registered_venv(self, name: str, *, last_activity_hours_ago: float) -> Path:
+        checkout = make_git_repo(self.workspace / name)
+        artifact = _artifact_in(checkout)
+        _age(artifact / "lib" / "big.so", artifact / "lib", artifact, checkout)
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url=f"https://example.com/issues/{name}")
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="org/repo", branch=name, extra={"worktree_path": str(checkout)}
+        )
+        edge = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="started")
+        stamp = timezone.now() - timedelta(hours=last_activity_hours_ago)
+        TicketTransition.objects.filter(pk=edge.pk).update(created_at=stamp)
+        return artifact
+
+    def test_a_ticket_active_within_two_hours_keeps_its_idle_venv(self) -> None:
+        artifact = self._idle_registered_venv("active-hour-ago", last_activity_hours_ago=1.9)
+
+        plan = self._plan(idle_days=None)
+        evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert any("ticket was active in the last 2 hours" in reason for reason in plan.kept)
+
+    def test_a_ticket_quiet_for_over_two_hours_no_longer_keeps_its_idle_venv(self) -> None:
+        artifact = self._idle_registered_venv("quiet-three-hours", last_activity_hours_ago=2.1)
+
+        evict_artifacts(self._plan(idle_days=None))
+
+        assert not artifact.exists()
 
     def test_a_reaper_pinned_checkout_keeps_its_idle_venv(self) -> None:
         checkout = make_git_repo(self.workspace / "pinned-ticket")

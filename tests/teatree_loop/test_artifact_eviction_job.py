@@ -423,6 +423,17 @@ class UnattendedHousekeepingTests(_SweepFixture):
         assert all(call.kwargs["retention_days"] == pytest.approx(1 / 6) for call in scratch.call_args_list)
         assert "worker scratch" in plan
 
+    def test_a_service_that_is_not_the_worker_never_sweeps_scratch(self) -> None:
+        for role in ("admin", ""):
+            with (
+                self.subTest(role=role),
+                patch.dict(os.environ, {"TEATREE_ROLE": role}),
+                patch(f"{_SWEEP}.sweep_scratch") as scratch,
+            ):
+                self._sweep()
+
+            scratch.assert_not_called()
+
     def test_the_scheduled_sweep_persists_each_root_cursor_for_the_next_tick(self) -> None:
         partial = ScratchSweepPlan(
             root="/tmp",
