@@ -1,7 +1,7 @@
 """Cross-process speaker mutual exclusion around ``say`` (#2152).
 
 Two local reads — whether two in-process daemon threads or two separate
-detached ``t3 speak`` subprocesses — must never run ``say`` at the same time,
+DM delivery processes — must never run ``say`` at the same time,
 or messages talk over each other. :func:`_speak_local` wraps the actual ``say``
 call in a single cross-process ``fcntl.flock`` on a lockfile under the teatree
 state dir, so plays are mutually exclusive machine-wide when the lock is

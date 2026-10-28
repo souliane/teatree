@@ -38,7 +38,7 @@ from enum import Enum
 from typing import TypedDict
 
 from teatree.utils.git import git_env_without_overrides
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import TimeoutExpired, run_allowed_to_fail, run_bounded_group
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +92,9 @@ def _git(repo: str, *args: str) -> tuple[int, str]:
     return result.returncode, result.stdout.strip()
 
 
+PLAN_CURRENCY_FETCH_TIMEOUT_SECONDS = 5.0
+
+
 def _fetch_target(repo: str, target: str) -> bool:
     """Fetch the remote behind ``target`` (e.g. ``origin`` for ``origin/main``).
 
@@ -101,6 +104,17 @@ def _fetch_target(repo: str, target: str) -> bool:
     remote = target.split("/", 1)[0] if "/" in target else "origin"
     rc, _ = _git(repo, "fetch", remote)
     return rc == 0
+
+
+def _fetch_target_bounded(repo: str, target: str, *, timeout: float) -> bool:
+    remote = target.split("/", 1)[0] if "/" in target else "origin"
+    try:
+        result = run_bounded_group(
+            ["git", "-C", repo, "fetch", remote], timeout=timeout, expected_codes=None, env=git_env_without_overrides()
+        )
+    except TimeoutExpired:
+        return False
+    return result.returncode == 0
 
 
 def _rev_parse(repo: str, ref: str) -> str:
@@ -193,12 +207,13 @@ def sha_conflicts_with_target(repo: str, reviewed_sha: str, target: str = "origi
 def fetch_target_head(repo: str, target: str = "origin/main") -> str:
     """Fetch ``target``'s remote and return its live HEAD SHA; ``''`` when inconclusive.
 
-    The plan-currency probe's fetch step (SELFCATCH-3), reusing the same fetch
-    posture as the gates above. An empty return (failed fetch, unresolvable ref)
-    signals an inconclusive probe so the caller fails OPEN — a network outage must
-    not wedge coding.
+    The plan-currency probe's fetch step (SELFCATCH-3). The fetch is bounded by
+    :data:`PLAN_CURRENCY_FETCH_TIMEOUT_SECONDS` and its whole process group is killed at
+    the deadline, because the caller can hold the database write lock while it waits.
+    An empty return (timeout, failed fetch, unresolvable ref) signals an inconclusive
+    probe so the caller fails OPEN — a network outage must not wedge coding.
     """
-    if not _fetch_target(repo, target):
+    if not _fetch_target_bounded(repo, target, timeout=PLAN_CURRENCY_FETCH_TIMEOUT_SECONDS):
         return ""
     return _rev_parse(repo, target)
 

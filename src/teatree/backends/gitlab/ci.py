@@ -5,6 +5,7 @@ import re
 from typing import cast
 from urllib.parse import urlencode
 
+from teatree.backends.forge_pool import client_for_url
 from teatree.backends.gitlab.api import GitLabAPI
 from teatree.core.backend_protocols import PipelineRead
 
@@ -154,11 +155,8 @@ class GitLabCIService:
         if not self._client.token:
             return JobTrace(unreadable_reason="no GitLab token resolved")
         try:
-            response = httpx.get(
-                f"{self._client.base_url}/projects/{project_id}/jobs/{job_id}/trace",
-                headers={"PRIVATE-TOKEN": self._client.token},
-                timeout=15.0,
-            )
+            url = f"{self._client.base_url}/projects/{project_id}/jobs/{job_id}/trace"
+            response = client_for_url(url).get(url, headers={"PRIVATE-TOKEN": self._client.token}, timeout=15.0)
         except httpx.HTTPError as exc:
             return JobTrace(unreadable_reason=f"{type(exc).__name__}: {exc}")
         if response.is_success:

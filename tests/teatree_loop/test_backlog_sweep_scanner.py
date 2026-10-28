@@ -28,7 +28,6 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.config import UserSettings
-from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
 from teatree.core.models import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
@@ -80,14 +79,14 @@ def _backdate_task(task: Task, *, hours: int) -> None:
 
 
 class BacklogSweepScannerTests(TestCase):
-    def test_open_pr_cap_holds_a_new_sweep(self) -> None:
-        for index in range(OPEN_PR_START_CAP):
+    def test_twenty_live_pull_requests_allow_a_new_sweep(self) -> None:
+        for index in range(20):
             PullRequest.objects.record_opened(
                 ticket=Ticket.objects.create(),
                 url=f"https://github.com/example-org/example-repo/pull/{index + 700}",
             )
-        assert _scanner().scan() == []
-        assert _last_sweep_task() is None
+        assert [signal.kind for signal in _scanner().scan()] == ["backlog_sweep.queued"]
+        assert _last_sweep_task() is not None
 
     def test_no_prior_run_queues_task(self) -> None:
         """First-ever run queues exactly one task (bootstrap trigger)."""

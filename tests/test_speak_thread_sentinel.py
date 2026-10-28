@@ -56,19 +56,6 @@ def _drive_teardown(sentinel: SpeakThreadSentinel, nodeid: str) -> None:
 class TestProductionThreadsAreNamed:
     """The guard matches on a name, so production must really be the thing that sets it."""
 
-    def test_speak_names_its_playback_thread(self) -> None:
-        release = threading.Event()
-        with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL)),
-            patch.object(speak_mod, "_speak_local", lambda _text: release.wait(timeout=30)),
-        ):
-            speak_mod.speak("hello")
-            try:
-                assert [t.name for t in live_speak_threads()] == [SPEAK_THREAD_NAME]
-            finally:
-                release.set()
-                join_speak_threads()
-
     def test_maybe_speak_local_names_its_playback_thread(self) -> None:
         release = threading.Event()
         with patch.object(speak_mod, "_speak_local", lambda _text: release.wait(timeout=30)):

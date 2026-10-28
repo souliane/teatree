@@ -49,7 +49,6 @@ Design notes
 """
 
 import datetime as dt
-import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -57,7 +56,6 @@ from django.apps import apps
 from django.db.models import Max
 from django.utils import timezone
 
-from teatree.core.admission.pr_start_cap import open_pr_start_cap_hold_reason
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
@@ -65,7 +63,6 @@ from teatree.loop.scanners.phase_cadence import PhaseCadence
 if TYPE_CHECKING:
     from teatree.core.models import TicketTransition as _TicketTransition
 
-logger = logging.getLogger(__name__)
 
 #: States that count as "merged" for the after-merge trigger. ``delivered``
 #: covers the post-merge "ticket fully closed" state; ``merged`` covers the
@@ -105,10 +102,6 @@ class ArchitecturalReviewScanner:
         trigger = self._evaluate_triggers(cadence, now=now, last_completed_at=last_completed_at)
         if trigger is None:
             return []
-        if reason := open_pr_start_cap_hold_reason():
-            logger.warning("architectural review is claiming nothing new: %s", reason)
-            return []
-
         task = cadence.queue_task(
             placeholder_issue_url=f"architectural-review://{self.overlay_name}",
             agent_id=f"architectural-review-{self.overlay_name}",

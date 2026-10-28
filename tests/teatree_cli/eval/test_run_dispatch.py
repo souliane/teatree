@@ -11,10 +11,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import typer
 
 from teatree.cli.eval.escalate import EscalationConfig
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.eval.models import EvalSpec
+from teatree.llm.anthropic_limits import CreditExhaustedError
 
 
 def _spec(name: str = "s") -> EvalSpec:
@@ -74,6 +76,25 @@ def lanes(monkeypatch: pytest.MonkeyPatch) -> dict[str, _LaneSpy]:
 
 
 class TestDispatchResolvedRun:
+    @pytest.mark.parametrize(
+        ("lane", "overrides"),
+        [("matrix", {"models": "opus"}), ("pass_at_k", {"trials": 2})],
+    )
+    def test_credit_exhaustion_parks_the_multi_trial_lanes(
+        self, lane: str, overrides: dict[str, object], lanes: dict[str, _LaneSpy], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        del lanes
+
+        def exhausted(*_args: object, **_kwargs: object) -> None:
+            message = "credits exhausted"
+            raise CreditExhaustedError(message)
+
+        name = "run_model_matrix_lane" if lane == "matrix" else "run_pass_at_k_lane"
+        monkeypatch.setattr(f"teatree.cli.eval.run_dispatch.{name}", exhausted)
+        with pytest.raises(typer.Exit) as exit_info:
+            dispatch_resolved_run([_spec()], _resolved(**overrides), grader=None, escalation=None)
+        assert exit_info.value.exit_code == 75
+
     def test_models_routes_to_the_matrix_lane(self, lanes: dict[str, _LaneSpy]) -> None:
         dispatch_resolved_run([_spec()], _resolved(models="opus,sonnet"), grader=None, escalation=None)
         assert lanes["matrix"].called

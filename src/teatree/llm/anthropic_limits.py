@@ -150,7 +150,7 @@ _SIGNATURES: tuple[tuple[str, LimitCause], ...] = (
 #: Opus/Sonnet caps) is the WEEKLY limit, and an ``overage`` window is the
 #: usage-based-billing credit cause (its remediation is to add credits, never to
 #: wait out a plan reset).
-_RATE_LIMIT_TYPE_CAUSES: dict["RateLimitType", LimitCause] = {
+_RATE_LIMIT_TYPE_CAUSES: "dict[RateLimitType, LimitCause]" = {
     "five_hour": LimitCause.SUBSCRIPTION_SESSION,
     "seven_day": LimitCause.SUBSCRIPTION_WEEKLY,
     "seven_day_opus": LimitCause.SUBSCRIPTION_WEEKLY,

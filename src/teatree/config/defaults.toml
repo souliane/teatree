@@ -263,10 +263,13 @@ task_attempt_retention_days = 30 # int — days a quiet finished ticket's task h
 task_result_retention_days = 1 # int — days a task result row is kept
 
 [teatree.Infrastructure.Provisioning]
+admission_load_brake_per_core = 2.0 # float — box load per core at which new admissions halt
+admission_load_resume_per_core = 1.5 # float — box load per core below which halted admissions resume
 admission_pressure_shed_at = 0.9 # float — pressure at which expensive agents are refused while review and ship keep draining
 admission_write_concurrency_per_core = 0.5 # float — agents the admission governor admits per CPU core before weekly pacing, in every dispatch lane
 cheap_phase_admission_ceiling = 2 # int — per-class width (min 1): reviews and shipping/review requests are each capped at this width inside a cheap lane one seat wider; machine brakes spare both classes
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
+forge_pool_max_connections = 4 # int — connections each process keeps open per forge host
 idle_stack_e2e_recent_minutes = 60 # int — minutes an E2E run keeps a stack safe from the idle reaper
 idle_stack_idle_minutes = 30 # int — minutes of inactivity after which a local stack counts as idle
 metered_spend_window_hours = 24 # int — the window the metered token ceiling is measured over

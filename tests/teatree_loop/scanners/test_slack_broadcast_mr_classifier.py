@@ -5,6 +5,7 @@ import subprocess
 import httpx
 import pytest
 
+from teatree.backends.gitlab import http_client as gitlab_http
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.slack_broadcast_mr_classifier import ForgeMrStateClassifier, _classifier_head_sha
@@ -16,6 +17,8 @@ API_URL = "https://owned.gitlab.example/api/v4/projects/team%2Fgroup%2Fproject/m
 
 @pytest.fixture(autouse=True)
 def _routed_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gitlab_http, "client_for_url", lambda _url: httpx)
+
     def resolve(_url: str, *, credential: str) -> ForgeTokenResolution:
         return ForgeTokenResolution(credential, "owner", ForgeTokenState.TOKEN, token=f"routed-{credential}")
 

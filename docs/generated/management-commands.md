@@ -600,10 +600,6 @@ Print the factory signals over the trailing window vs its baseline.
 
 Report which live global settings differ from the shipped defaults (writes nothing).
 
-## `speak`
-
-Read ``text`` aloud synchronously through the local speakers per [teatree.speak].
-
 ## `standing_goal`
 
 Register, clear, or list standing verified-green goals (PR-25).

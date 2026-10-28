@@ -33,7 +33,7 @@ def _response(status: int, text: str = "") -> httpx.Response:
 class TestUnreadableTraceStaysVisible:
     def test_a_forbidden_trace_still_reports_the_failed_job(self) -> None:
         service, _ = _service()
-        with patch("httpx.get", return_value=_response(403)):
+        with patch("httpx.Client.get", return_value=_response(403)):
             errors = service.fetch_pipeline_errors(project="org/repo", ref="main").findings
         assert len(errors) == 1
         assert "build" in errors[0]
@@ -42,7 +42,7 @@ class TestUnreadableTraceStaysVisible:
 
     def test_a_transport_error_still_reports_the_failed_job(self) -> None:
         service, _ = _service()
-        with patch("httpx.get", side_effect=httpx.ConnectTimeout("timed out")):
+        with patch("httpx.Client.get", side_effect=httpx.ConnectTimeout("timed out")):
             errors = service.fetch_pipeline_errors(project="org/repo", ref="main").findings
         assert len(errors) == 1
         assert "trace unreadable" in errors[0]
@@ -58,7 +58,7 @@ class TestUnreadableTraceStaysVisible:
     def test_a_readable_trace_reports_its_error_tail(self) -> None:
         service, _ = _service()
         trace = "setting up\nE   AssertionError: expected 3 got 4\nteardown"
-        with patch("httpx.get", return_value=_response(200, trace)):
+        with patch("httpx.Client.get", return_value=_response(200, trace)):
             errors = service.fetch_pipeline_errors(project="org/repo", ref="main").findings
         assert len(errors) == 1
         assert "AssertionError: expected 3 got 4" in errors[0]
@@ -69,5 +69,5 @@ class TestUnreadableTraceStaysVisible:
         # "failures whose traces could not be read".
         service, client = _service()
         client.get_json_paginated.return_value = [{"id": 900, "name": "build", "status": "success"}]
-        with patch("httpx.get", return_value=_response(403)):
+        with patch("httpx.Client.get", return_value=_response(403)):
             assert service.fetch_pipeline_errors(project="org/repo", ref="main") == PipelineRead()
