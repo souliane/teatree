@@ -59,8 +59,8 @@ class PrivacyGateResult:
         return self.is_public and bool(self.matches)
 
 
-# Default block patterns that apply regardless of overlay configuration
-# (recurrence-#3 enforcement gap from feedback_redcard_never_quote_user_on_public_repos):
+# Default block patterns that apply regardless of overlay configuration:
+# never quote the user verbatim in public text.
 # - Markdown blockquotes carrying first-person markers
 # - Verbatim quotation anchors
 _DEFAULT_QUOTE_PATTERNS: tuple[tuple[str, str], ...] = (

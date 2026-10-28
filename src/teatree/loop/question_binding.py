@@ -53,6 +53,7 @@ from teatree.core.owner_question_message import (
     replace_root,
 )
 from teatree.loop.inbound_reading import InboundIntent, InboundReader
+from teatree.loop.owner_identity import configured_owner_id, is_the_owner
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -95,14 +96,6 @@ class UnmatchedCardThread:
     options: tuple[str, ...] = ()
 
 
-def configured_owner_id(backend: object) -> str:
-    return str(getattr(backend, "user_id", "") or "")
-
-
-def _is_the_owner(user_id: str, owner_user_id: str) -> bool:
-    return bool(owner_user_id) and user_id == owner_user_id
-
-
 def bind_reply(
     reply: PendingChatInjection, *, reader: InboundReader, backend: "MessagingBackend", text: str = ""
 ) -> BoundAnswer | AmbiguousCards | UnmatchedCardThread | None:
@@ -111,7 +104,7 @@ def bind_reply(
     *text* overrides the row body for a caller that coalesces several rows into
     one logical turn. See the module docstring for the binding ladder.
     """
-    if not _is_the_owner(reply.user_id, configured_owner_id(backend)):
+    if not is_the_owner(reply.user_id, configured_owner_id(backend)):
         _log_reply(reply, "rejected: author is not the owner")
         return None
     body = text or reply.text
@@ -241,7 +234,7 @@ def answer_from_click(
     tap = _parse_tap(payload)
     if tap is None:
         return False
-    if not _is_the_owner(tap.user_id, configured_owner_id(backend)):
+    if not is_the_owner(tap.user_id, configured_owner_id(backend)):
         logger.warning("Refused a tap on the card at message %s: not the owner", tap.root_ts)
         return False
     question = (

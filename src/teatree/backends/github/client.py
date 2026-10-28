@@ -1,6 +1,5 @@
 """GitHub backend — code host via the ``gh`` CLI."""
 
-import logging
 from typing import cast
 from urllib.parse import quote_plus, urlparse
 
@@ -43,9 +42,6 @@ from teatree.core.evidence.forge_content import PrContentSnapshot
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
-from teatree.utils.throttled_log import warn_throttled
-
-logger = logging.getLogger(__name__)
 
 #: Intake's queue order. An unsorted GitHub search ranks by *best match* — a relevance
 #: score nobody set — so an issue that ranks low can lose every free slot indefinitely
@@ -127,23 +123,14 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
         """List merged PRs authored by *author*.
 
-        GitHub's search API caps EVERY query at 1000 results regardless of
-        pagination, so without an *updated_after* cutoff a prolific author's
-        merged-PR history silently truncates at the 1000 most recent. Callers
-        that need completeness must pass a recent *updated_after*; an uncut call
-        warns (throttled) so the truncation is visible rather than silent.
+        GitHub's search API caps EVERY query at 1000 results, so without an
+        *updated_after* cutoff a prolific author's history truncates at the 1000
+        most recent (the paginator warns). Callers that need completeness pass a
+        recent *updated_after*.
         """
         terms = [f"is:pr is:merged author:{author}"]
         if updated_after:
             terms.append(f"updated:>={updated_after}")
-        else:
-            warn_throttled(
-                logger,
-                f"github-merged-prs-uncapped:{author}",
-                "list_my_merged_prs(%r) has no updated_after cutoff — GitHub search caps at 1000 results, "
-                "older merged PRs may be silently truncated",
-                author,
-            )
         query = quote_plus(" ".join(terms))
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 

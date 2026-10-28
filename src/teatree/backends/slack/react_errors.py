@@ -2,25 +2,12 @@ r"""Errors that enforce ``t3 slack react`` as the only reaction surface (#1281).
 
 Two structural invariants live here:
 
-1.  :class:`SlackReactionError` — raised when Slack rejects a
-    ``reactions.add`` call with ``ok:false``. The pre-#1281 helpers
-    returned ``False`` on ``missing_scope``, ``not_in_channel``,
-    ``mcp_externally_shared_channel_restricted`` and friends; a caller
-    could then "fall back" to ``chat.postMessage(text=":emoji:")`` on the
-    broadcast's thread. The BINDING memory
-    ``feedback_react_not_emoji_thread_comment`` forbids that fallback.
-    Raising loudly at the helper boundary forecloses the silent swallow.
-2.  :class:`SingleEmojiBodyRefusedError` — raised when
-    ``SlackBotBackend.post_message`` / ``post_reply`` are handed a body
-    whose stripped form matches ``^:[a-z0-9_+\-]+:$``. The single-emoji
-    body is the exact failure-mode shape we want to ban — the substitute
-    the agent produced on 2026-05-20 when ``reactions.add`` failed and the
-    agent thought a thread-comment with ``:white_check_mark:`` as text was
-    "close enough". The error points the caller back at ``t3 slack react``.
+1.  :class:`SlackReactionError` raises on Slack ``reactions.add`` refusal,
+    preventing a silent fallback to a bare-emoji thread reply.
+2.  :class:`SingleEmojiBodyRefusedError` rejects bare-emoji message bodies
+    and directs callers to ``t3 slack react``.
 
-The module is intentionally tiny and free of Slack-API imports so every
-caller (CLI, backend, FSM-side helpers, the loop scanners) can depend on
-it without circular-import contortions.
+The module has no Slack-API imports, so callers can use it without an import cycle.
 """
 
 import re
@@ -55,8 +42,7 @@ SLACK_REACTION_REMEDIATION = (
     "Fix by re-running `t3 setup slack-user-token` (provisions the personal "
     "xoxp token with reactions:write; see souliane/teatree#1232). "
     "Do NOT fall back to posting a `:emoji:` thread reply — that is thread "
-    "spam under the user's name, not a reaction. See BINDING memory "
-    "`feedback_react_not_emoji_thread_comment`."
+    "spam under the user's name, not a reaction."
 )
 
 
@@ -71,8 +57,8 @@ class SlackReactionError(RuntimeError):
     Carries the raw Slack error code (``missing_scope``, ``not_in_channel``,
     ``mcp_externally_shared_channel_restricted``, etc.) so callers can
     branch on it without re-parsing the message. The message itself
-    points the operator at the documented remediation and the BINDING
-    that forbids the thread-emoji fallback.
+    points the operator at the documented remediation, which forbids
+    the thread-emoji fallback.
 
     ``already_reacted`` is **not** raised — it is the idempotent
     success case (the desired end state is the reaction being present).
@@ -100,7 +86,6 @@ class SingleEmojiBodyRefusedError(ValueError):
         super().__init__(
             f"Refusing to post single-emoji body {body!r} via chat.postMessage. "
             "A single :emoji: thread reply is thread spam, not a reaction — "
-            "use `t3 slack react <channel> <ts> <emoji>` instead (#1281, "
-            "BINDING `feedback_react_not_emoji_thread_comment`)."
+            "use `t3 slack react <channel> <ts> <emoji>` instead (#1281)."
         )
         self.body = body
