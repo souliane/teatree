@@ -42,7 +42,7 @@ from teatree.core.models import (
 )
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
-from tests.teatree_agents._route_fakes import scripted_session
+from tests.teatree_agents._route_fakes import failing_session, scripted_session
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, result_message, success_stream
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
@@ -355,6 +355,27 @@ class TestSkillRouteRuntimeFallback(TestCase):
         assert self.built == ["claude_like", "codex_like"]
         assert final.selected_harness == "codex_like"
         assert final.fallback_reason == "credential missing"
+
+    def test_lazy_credential_gap_retains_the_auth_hold(self) -> None:
+        self._register("codex_like", failing_session(runner_mod.CredentialError("credential missing")))
+        self._register("claude_like", FakeHarnessSession)
+
+        final = self._run(self._config("codex_like", "claude_like"))
+
+        hold = AgentRouteAvailability.objects.get(harness="codex_like")
+        assert final.selected_harness == "claude_like"
+        assert hold.retry_at >= timezone.now() + timedelta(minutes=59)
+
+    def test_bare_http_429_retains_the_quota_hold(self) -> None:
+        failure = result_message(subtype="error_during_execution", is_error=True, api_error_status=429, result="")
+        self._register("codex_like", scripted_session([failure]))
+        self._register("claude_like", FakeHarnessSession)
+
+        final = self._run(self._config("codex_like", "claude_like"))
+
+        hold = AgentRouteAvailability.objects.get(harness="codex_like")
+        assert final.selected_harness == "claude_like"
+        assert hold.retry_at >= timezone.now() + timedelta(minutes=59)
 
     def test_retryable_failure_after_side_effects_requeues_without_switching(self) -> None:
         self._register("codex_like", _PostSideEffectFailureSession)

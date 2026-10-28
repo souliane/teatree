@@ -4,6 +4,7 @@ import contextlib
 import traceback
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 
 from django.utils import timezone
 
@@ -59,7 +60,12 @@ class RouteFailureRecord:
             metered_transport=self.lane == TaskAttempt.Lane.METERED,
         )
         if match is None:
-            return None
+            message = self.outcome.result_message
+            return (
+                QUOTA_AUTH_HOLD
+                if message is not None and message.api_error_status == HTTPStatus.TOO_MANY_REQUESTS
+                else None
+            )
         reset = match.stated_reset
         epoch = self.outcome.rate_limit_info.resets_at if self.outcome.rate_limit_info is not None else None
         if epoch is not None:
@@ -177,6 +183,8 @@ def fallback_reason_for_outcome(outcome: HarnessOutcome, *, metered_transport: b
     if message is None or not message.is_error:
         return None
     status = message.api_error_status
-    if status in {408, 425} or (status is not None and _SERVER_ERROR_START <= status < _SERVER_ERROR_END):
+    if status in {408, 425, HTTPStatus.TOO_MANY_REQUESTS} or (
+        status is not None and _SERVER_ERROR_START <= status < _SERVER_ERROR_END
+    ):
         return f"api_error_status={status}"
     return None

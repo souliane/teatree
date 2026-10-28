@@ -56,6 +56,7 @@ from teatree.agents.runner_preparation import (
     _capped_forge_env,
     _ChildEnvDispatch,
     _resolve_child_env_or_failure,
+    credential_fallback_kind,
 )
 from teatree.agents.runner_preparation import prepare_run as _prepare_run_impl
 from teatree.agents.runner_preparation import restore_unconsumed_resume_thread as _restore_unconsumed_resume_thread
@@ -201,7 +202,13 @@ def _retry_route_exception(
         preflight.skills,
         fallback=fallback,
         agent_session_id=exc.agent_session_id if isinstance(exc, HarnessFallbackError) else "",
-        kind=exc.kind if isinstance(exc, HarnessFallbackError) else None,
+        kind=(
+            exc.kind
+            if isinstance(exc, HarnessFallbackError)
+            else credential_fallback_kind(exc)
+            if isinstance(exc, CredentialError)
+            else None
+        ),
         account=route_retry.account,
     )
     if isinstance(exc, HarnessFallbackError) and exc.side_effects_started:
