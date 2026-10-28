@@ -228,9 +228,7 @@ def _shed_at() -> float:
 
 def _load_factors() -> tuple[float, float]:
     try:
-        settings = get_effective_settings(
-            only_keys=frozenset({"admission_load_brake_per_core", "admission_load_resume_per_core"})
-        )
+        settings = get_effective_settings()
         brake = float(settings.admission_load_brake_per_core)
         resume = float(settings.admission_load_resume_per_core)
     except Exception:

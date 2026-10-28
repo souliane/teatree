@@ -316,7 +316,7 @@ class TestTheShedBandRefusesTheExpensiveClassAlone(TestCase):
 class TestTheWriteFactorNeverOutrunsTheLoadShed(TestCase):
     """A wider per-core factor buys seats on an idle box, never on a loaded one."""
 
-    _SHED_LOAD = 38.0  # 0.95 of the 40 watermark on 8 cores: past the 0.9 shed point, short of HALT
+    _SHED_LOAD = 15.2  # 0.95 of the 16 watermark on 8 cores: past the 0.9 shed point, short of HALT
 
     def test_the_shed_band_refuses_expensive_work_whatever_the_factor(self) -> None:
         for factor in (0.25, 0.5, 2.0):

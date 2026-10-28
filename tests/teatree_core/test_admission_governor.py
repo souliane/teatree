@@ -663,20 +663,20 @@ class TestWeeklyPace:
 class TestReadMachineSignal:
     def test_box_global_load_settings_reach_the_live_signal(self) -> None:
         settings = SimpleNamespace(admission_load_brake_per_core=4.0, admission_load_resume_per_core=2.0)
-        with patch("teatree.config.get_effective_settings", return_value=settings):
+        with patch.object(admission_governor, "get_effective_settings", return_value=settings):
             signal = read_machine_signal()
         assert signal.load_brake_per_core == pytest.approx(4.0)
         assert signal.load_resume_per_core == pytest.approx(2.0)
 
     def test_invalid_load_pair_keeps_shipped_hysteresis(self) -> None:
         settings = SimpleNamespace(admission_load_brake_per_core=1.0, admission_load_resume_per_core=2.0)
-        with patch("teatree.config.get_effective_settings", return_value=settings):
+        with patch.object(admission_governor, "get_effective_settings", return_value=settings):
             signal = read_machine_signal()
         assert signal.load_brake_per_core == BRAKE_LOAD_PER_CORE
         assert signal.load_resume_per_core == pytest.approx(1.5)
 
     def test_unreadable_load_settings_keep_shipped_hysteresis(self) -> None:
-        with patch("teatree.config.get_effective_settings", side_effect=RuntimeError("unreadable")):
+        with patch.object(admission_governor, "get_effective_settings", side_effect=RuntimeError("unreadable")):
             signal = read_machine_signal()
         assert signal.load_brake_per_core == BRAKE_LOAD_PER_CORE
         assert signal.load_resume_per_core == pytest.approx(1.5)

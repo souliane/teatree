@@ -24,6 +24,7 @@ import pytest
 from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.backends.gitlab import http_client as gitlab_http
 from teatree.core.models import ScannedBroadcast, Session, Task, Ticket
 from teatree.core.review import author_trust
 from teatree.core.review.review_taken import ReviewTaken
@@ -52,6 +53,8 @@ def _repo_public_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _routed_forge_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gitlab_http, "client_for_url", lambda _url: httpx)
+
     def _resolve(_url: str, *, credential: str) -> ForgeTokenResolution:
         return ForgeTokenResolution(credential, "owner", ForgeTokenState.TOKEN, token=f"routed-{credential}")
 

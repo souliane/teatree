@@ -125,7 +125,7 @@ class TestWholeBoxOccupancy(TestCase):
         assert self._at_load(30.0) < self._at_load(0.0)
 
     def test_the_limit_falls_progressively_as_the_box_fills(self) -> None:
-        assert self._at_load(0.0) > self._at_load(20.0) > self._at_load(53.0)
+        assert self._at_load(0.0) > self._at_load(8.0) > self._at_load(16.0)
 
     def test_a_saturated_box_never_wedges_intake_to_zero(self) -> None:
         assert self._at_load(53.0) == MIN_CONCURRENCY

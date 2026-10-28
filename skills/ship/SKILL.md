@@ -167,9 +167,9 @@ If the changes touch architecture, add new modules, rename commands, or change e
 2. If it doesn't, update it **before** pushing. Ask the user before modifying.
 3. This applies to all repos that have a `BLUEPRINT.md`.
 
-### 3a1. Documentation Discipline (Non-Negotiable)
+### Documentation Discipline (Non-Negotiable)
 
-Update the matching documentation in the same PR when the diff changes user- or colleague-visible behaviour; otherwise attest `docs: n/a — <reason>` in the PR body. Triggers, examples, and gate mechanics are in [`skills/ship/references/documentation-trigger-check.md`](references/documentation-trigger-check.md).
+A PR must update README.md for user-facing commands or the skill catalogue, BLUEPRINT.md for architecture or lifecycle changes, and the matching skill for changed workflow behaviour. Otherwise attest `docs: n/a — <reason>` in the PR body. Triggers and gate mechanics are in [`skills/ship/references/documentation-trigger-check.md`](references/documentation-trigger-check.md).
 
 ### 3b. Self-Review Against Repo Rules
 

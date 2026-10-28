@@ -1,6 +1,6 @@
 # Per-Namespace Close-Trailer Gate (`ban_close_trailers_on_namespaces`)
 
-Some namespaces drive their issue lifecycle through a separate workflow and forbid the platform's auto-close behaviour entirely. `ban_close_trailers_on_namespaces` is a DB-home setting — configure those namespaces in the `ConfigSetting` store:
+Some namespaces drive their issue lifecycle through a separate workflow and forbid the platform's auto-close behaviour entirely. `ban_close_trailers_on_namespaces` is a DB-home setting — configure those namespaces with `mcp__teatree__config_setting_set` first, or use this CLI fallback:
 
 ```bash
 t3 <overlay> config_setting set ban_close_trailers_on_namespaces '["my-group/*"]'

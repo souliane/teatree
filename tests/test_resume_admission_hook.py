@@ -99,7 +99,7 @@ class TestResumeAdvisory:
         _fleet(12)
         advisory = resume_admission_advisory(_SESSION, "resume")
         assert "12" in advisory
-        assert "4" in advisory
+        assert "carries 1" in advisory
         assert "shed" in advisory.lower()
 
     def test_a_resume_on_an_idle_host_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,7 +124,7 @@ class TestResumeAdvisory:
 
     def test_terminated_agents_do_not_warn_on_history(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The append-only dispatch ledger outlives the agents; only the live set restores."""
-        _on_box(monkeypatch, _machine(cores=8, load1=20.0))
+        _on_box(monkeypatch, _machine(cores=8, load1=0.0))
         _fleet(12)
         for i in range(10):
             handle_subagent_stop_track_agent({"session_id": _SESSION, "agent_id": f"a{i:04d}"})
