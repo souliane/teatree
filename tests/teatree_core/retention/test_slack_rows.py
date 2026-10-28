@@ -5,11 +5,34 @@ import datetime as dt
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import BotPing, PendingChatInjection
+from teatree.core.models import BotPing, ConfigSetting, DmContext, PendingChatInjection
 from teatree.core.retention.prune import apply_retention, plan_retention
 
 
 class SlackRowsRetentionTestCase(TestCase):
+    def test_old_colleague_rows_are_pruned_without_retiring_owner_work(self) -> None:
+        now = timezone.now()
+        old = now - dt.timedelta(days=31)
+        ConfigSetting.objects.set_value("overlays", {"ov": {"slack_user_id": "U_OWNER"}})
+        owner = PendingChatInjection.record(
+            channel="D1", slack_ts="owner", text="owner work", overlay="ov", context=DmContext(user_id="U_OWNER")
+        )
+        colleague = PendingChatInjection.record(
+            channel="D1", slack_ts="colleague", text="foreign text", overlay="ov", context=DmContext(user_id="U_OTHER")
+        )
+        unknown = PendingChatInjection.record(
+            channel="D1",
+            slack_ts="unknown",
+            text="unattributed",
+            overlay="unknown",
+            context=DmContext(user_id="U_OTHER"),
+        )
+        PendingChatInjection.objects.filter(pk__in=[owner.pk, colleague.pk, unknown.pk]).update(received_at=old)
+
+        apply_retention(now=now)
+
+        assert set(PendingChatInjection.objects.values_list("pk", flat=True)) == {owner.pk, unknown.pk}
+
     def test_only_replied_old_dms_and_sent_old_text_are_pruned(self) -> None:
         now = timezone.now()
         old = now - dt.timedelta(days=31)

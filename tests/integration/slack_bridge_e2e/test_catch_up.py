@@ -2,7 +2,8 @@
 
 Real ``SlackBotBackend`` over the fake transport, real recorder, real JSONL queues, the
 DB task backend for the answer-cycle wake, and the real reaction consumers. Only the
-network and the overlay-to-backend resolution are substituted.
+network and the overlay-to-backend resolution are substituted. Live and replayed DMs share
+one sender policy: only the configured owner's DM becomes owner work.
 """
 
 import json
@@ -16,9 +17,21 @@ from django.tasks import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.backends.slack.receiver import DeliveredEvents, default_reactions_queue_path
-from teatree.core.models import PendingChatInjection
+from teatree.backends.slack.receiver import (
+    DeliveredEvents,
+    DeliveryContext,
+    QueuePaths,
+    default_queue_path,
+    default_reactions_queue_path,
+    deliver_event,
+)
+from teatree.core.models import DmContext, PendingChatInjection, Task
+from teatree.loop.dispatch import dispatch
+from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
+from teatree.loop.slack_answer.cycle import SlackAnswerReport, run_slack_answer_cycle
 from teatree.loops import timer_reconciler
 from teatree.loops.slack_inbound import catch_up_on_connect, record_and_wake_slack_answer
 from teatree.types import RawAPIDict
@@ -28,7 +41,9 @@ pytestmark = pytest.mark.integration
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 _OWNER = "U_HUMAN"
+_COLLEAGUE = "U_COLLEAGUE"
 _BOT = "B_BOT"
+_PR_REQUEST = "please review https://github.com/acme/app/pull/7 right now"
 _DM = "D-USER"
 _DAY = 86400.0
 
@@ -216,3 +231,103 @@ class TestOwnerReactionsAreReplayed(CatchUpCase):
         catch_up_on_connect("demo", time.time() - 300)
 
         assert self._queued_reactions() == []
+
+
+def _asks_for_work(_text: str) -> InboundReading:
+    return InboundReading(
+        intent=InboundIntent.INSTRUCTION,
+        answerable=False,
+        work_summary="act on the request",
+        source=ReadingSource.MODEL,
+        rationale="test fixture",
+    )
+
+
+class TestOnlyTheOwnersDmBecomesOwnerWork(CatchUpCase):
+    def _over_the_socket(self, user: str, ts: str, *, text: str = _PR_REQUEST) -> list[ScanSignal]:
+        context = DeliveryContext(
+            queues=QueuePaths(events=default_queue_path(), reactions=default_reactions_queue_path()),
+            identity=None,
+            on_event=record_and_wake_slack_answer,
+            seen=DeliveredEvents(),
+        )
+        assert deliver_event("demo", {**_live(ts, text), "user": user}, context=context)
+        return SlackMentionsScanner(backend=self.backend, overlay="demo").scan()
+
+    def _answer_cycle(self) -> SlackAnswerReport:
+        return run_slack_answer_cycle(messaging_resolver=lambda _overlay: self.backend, reader=_asks_for_work)
+
+    def test_a_colleagues_dm_over_the_socket_never_becomes_owner_work(self) -> None:
+        signals = self._over_the_socket(_COLLEAGUE, _ago(30))
+
+        actions = dispatch(signals)
+        report = self._answer_cycle()
+
+        assert (signals, actions, report.processed) == ([], [], 0)
+        assert (PendingChatInjection.objects.count(), self._wakes(), Task.objects.count()) == (0, 0, 0)
+        assert not [c for c in self.transport.calls if c.method in {"reactions.add", "chat.postMessage"}]
+
+    def test_a_long_colleague_dm_creates_no_owner_work(self) -> None:
+        signals = self._over_the_socket(_COLLEAGUE, _ago(30), text="do this " * 2000)
+
+        assert signals == []
+        assert self._answer_cycle().processed == 0
+        assert (PendingChatInjection.objects.count(), self._wakes(), Task.objects.count()) == (0, 0, 0)
+
+    def test_colleague_dm_with_an_owner_timestamp_cannot_replace_the_owner_row(self) -> None:
+        ts = _ago(30)
+        self._over_the_socket(_OWNER, ts)
+
+        signals = self._over_the_socket(_COLLEAGUE, ts, text="replace the owner request")
+
+        assert signals == []
+        assert list(PendingChatInjection.objects.values_list("user_id", "text")) == [(_OWNER, _PR_REQUEST)]
+        assert self._wakes() == 1
+
+    def test_the_owners_dm_over_the_same_path_is_one_row_one_wake_one_task(self) -> None:
+        signals = self._over_the_socket(_OWNER, _ago(30))
+
+        report = self._answer_cycle()
+
+        assert [signal.kind for signal in signals] == ["slack.dm"]
+        assert (PendingChatInjection.objects.count(), self._wakes()) == (1, 1)
+        assert (report.dispatched, Task.objects.filter(status=Task.Status.PENDING).count()) == (1, 1)
+
+    def test_legacy_foreign_rows_stay_inert_while_a_later_owner_row_is_answered(self) -> None:
+        for number in range(12):
+            PendingChatInjection.record(
+                channel=_DM,
+                slack_ts=f"{number + 1}.0",
+                text="legacy request",
+                overlay="demo",
+                context=DmContext(user_id=_COLLEAGUE),
+            )
+        PendingChatInjection.record(
+            channel=_DM, slack_ts=_ago(30), text="owner request", overlay="demo", context=DmContext(user_id=_OWNER)
+        )
+
+        report = self._answer_cycle()
+
+        assert report.dispatched == 1
+        assert PendingChatInjection.objects.filter(user_id=_COLLEAGUE, loop_replied_at__isnull=False).count() == 0
+        assert {c.payload["timestamp"] for c in self.transport.calls_to("reactions.add")}.isdisjoint(
+            {f"{number + 1}.0" for number in range(12)}
+        )
+
+
+class TestCatchUpAppliesTheSameSenderDecision(CatchUpCase):
+    def test_only_the_owners_message_in_the_history_is_recorded(self) -> None:
+        owner_ts = _ago(40)
+        serve_history(
+            self.transport,
+            [
+                {"ts": owner_ts, "user": _OWNER, "text": "ship it"},
+                {"ts": _ago(30), "user": _COLLEAGUE, "text": "run my job"},
+                {"ts": _ago(20), "text": "a message with no sender"},
+            ],
+        )
+
+        catch_up_on_connect("demo", time.time() - 120)
+
+        assert list(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == [owner_ts]
+        assert self._wakes() == 1

@@ -44,10 +44,10 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
-from django.conf import settings
-from django.db.models import Count, Max, Q
+from django.db.models import Count, Q
 from django.utils import timezone
 
+from teatree.core.intake.fix_first import AUTHOR_STATE_PHASE, stuck_idle_hours, ticket_last_activity
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import (
@@ -81,20 +81,6 @@ from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_STUCK_IDLE_HOURS = 6
-
-#: The non-terminal work-states an AUTHOR ticket re-dispatches from, mapped to the
-#: phase the state implies. NOT_STARTED / SCOPED await provisioning (excluded);
-#: terminal states have nothing left to do. A reviewer ticket has no equivalent map
-#: — see :func:`_implied_phase`.
-_STATE_PHASE: dict[str, str] = {
-    Ticket.State.WORK_STARTED: "planning",
-    Ticket.State.PLAN_RECORDED: "coding",
-    Ticket.State.CODED: "testing",
-    Ticket.State.TESTED: "reviewing",
-    Ticket.State.SELF_REVIEWED: "shipping",
-}
-
 #: Attempt outcomes that mean the phase's last run did not succeed (#16's explicit
 #: discriminator, so an envelope refusal recorded with ``exit_code=0`` still counts).
 _FAILED_OUTCOMES = frozenset({TaskAttempt.Outcome.REFUSAL, TaskAttempt.Outcome.CRASH})
@@ -115,7 +101,7 @@ def redispatch_stuck_tickets() -> int:
     """
     _warn_unknown_states()
     now = timezone.now()
-    threshold = _idle_threshold_hours()
+    threshold = stuck_idle_hours()
     scheduled = 0
     for candidate in _stuck_candidates(now=now, threshold_hours=threshold):
         # An already-escalated ticket is parked — skip it BEFORE its budget query, so
@@ -200,7 +186,7 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
     Both roles admit an explicit list of KNOWN states, so a state value the code does not
     know is never read as live. The reviewer list is every state a finished review advances.
     """
-    author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(_STATE_PHASE))
+    author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(AUTHOR_STATE_PHASE))
     reviewer = Q(role=Ticket.Role.REVIEWER, state__in=tuple(Ticket.pre_ship_states()))
     open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__in=PullRequest.objects.live())
     return list(
@@ -246,7 +232,7 @@ def _implied_phase(ticket: Ticket) -> str | None:
     failure to repair, so the sweep leaves it alone rather than inventing work.
     """
     if ticket.role != Ticket.Role.REVIEWER:
-        return _STATE_PHASE.get(ticket.state)
+        return AUTHOR_STATE_PHASE.get(ticket.state)
     tasks = ticket.tasks.order_by("-pk")  # Django reverse FK
     return tasks.values_list("phase", flat=True).first() or None
 
@@ -320,17 +306,10 @@ def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:
     transition always writes a transition row, so a genuinely stuck ticket always
     has one).
     """
-    last = _last_activity(ticket)
+    last = ticket_last_activity(ticket)
     if last is None:
         return False
     return (now - last).total_seconds() >= threshold_hours * 3600
-
-
-def _last_activity(ticket: Ticket) -> datetime | None:
-    last_attempt = ticket.tasks.aggregate(ts=Max("attempts__started_at"))["ts"]  # Django reverse FK
-    if last_attempt is not None:
-        return last_attempt
-    return ticket.transitions.aggregate(ts=Max("created_at"))["ts"]
 
 
 def _redispatch(candidate: _Candidate) -> int:
@@ -433,13 +412,3 @@ def _deterministic_kinds(attempts: list[TaskAttempt]) -> list[str]:
     dropped on one repair path and compared on another.
     """
     return stall_kinds(a.failure_kind for a in attempts[-2:])
-
-
-def _idle_threshold_hours() -> int:
-    """Configured stuck-idle threshold (``STUCK_TICKET_IDLE_HOURS``, floor 1)."""
-    raw = getattr(settings, "STUCK_TICKET_IDLE_HOURS", DEFAULT_STUCK_IDLE_HOURS)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_STUCK_IDLE_HOURS
-    return max(1, value)

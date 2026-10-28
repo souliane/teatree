@@ -71,6 +71,7 @@ _MIN_DISK_MIB = 4096
 _MIN_MEMORY_MIB = 2048
 _BYTES_PER_MIB = 1024 * 1024
 _STAGE_DEADLINE_SECONDS = 600
+_PUSH_GATE_LOCK_WAIT_SECONDS = 1500
 _MAX_SCOPED_FILES = 500
 # prek's own precedence when one directory holds several (measured on prek 0.4.10 and 0.5.3).
 _PREK_CONFIG_NAMES = ("prek.toml", ".pre-commit-config.yaml", ".pre-commit-config.yml")
@@ -262,9 +263,15 @@ def _declared_manual_hooks(config: Path) -> tuple[str, ...]:
 
 def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[tuple[str, list[str]]]:
     deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
+    push_deadline = [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=15s",
+        f"{_PUSH_GATE_LOCK_WAIT_SECONDS + _STAGE_DEADLINE_SECONDS}s",
+    ]
     stages = [
         ("commit", [*deadline, "prek", "run", *scope_args]),
-        ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
+        ("pre-push (CI-parity gates)", [*push_deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
     ]
     config = _prek_config(repo, toplevel)
     # A config nobody could read is not one declaring no hooks: keep every id so the run cannot go green on it.
@@ -356,7 +363,8 @@ def verify_gates(
 ) -> None:
     """Run the FULL CI-equivalent local gate set (commit, push and manual CI-job stages).
 
-    Runs each prek stage under a 600-second deadline and exits non-zero if ANY
+    Runs commit and manual stages under a 600-second deadline; pre-push also
+    allows the shared push-gate lock's 1500-second wait. Exits non-zero if ANY
     stage fails. The push-stage run is
     what catches the gates CI fails on but a bare ``prek run --all-files``
     cannot see (comment-density, doc-update, ensure-pr, the public-repo leak

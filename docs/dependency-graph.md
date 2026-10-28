@@ -238,6 +238,7 @@ graph TD
     teatree.cli --> teatree.overlay_init
     teatree.cli --> teatree.instance_id
     teatree.cli --> teatree.loop
+    teatree.cli --> teatree.loop.owner_identity
     teatree.cli --> teatree.utils
     teatree.cli --> teatree.self_update
     teatree.cli --> teatree.repo_mode
@@ -338,6 +339,9 @@ graph TD
     teatree.loop.question_binding --> teatree.core.models
     teatree.loop.question_binding --> teatree.core.owner_question_message
     teatree.loop.question_binding --> teatree.loop.inbound_reading
+    teatree.loop.question_binding --> teatree.loop.owner_identity
+    teatree.loop.owner_identity --> teatree.core.models
+    teatree.loop.owner_identity --> teatree.types
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager
     teatree.loop.loop_scoping --> teatree.loop.session_identity
     teatree.loop.statusline_loop_chunks --> teatree.loop.loop_scoping
@@ -377,6 +381,7 @@ graph TD
     teatree.loop.scanners --> teatree.core.admission.pr_start_cap
     teatree.loop.scanners --> teatree.loop.inbound_reading
     teatree.loop.scanners --> teatree.loop.question_binding
+    teatree.loop.scanners --> teatree.loop.owner_identity
     teatree.loop.scanners --> teatree.loop.main_check_runs
     teatree.loop.scanners --> teatree.types
     teatree.loop.scanners --> teatree.paths
@@ -457,6 +462,7 @@ graph TD
     teatree.loop.slack_answer --> teatree.loop.inbound_reading
     teatree.loop.slack_answer --> teatree.loop.inbound_classifier
     teatree.loop.slack_answer --> teatree.loop.question_binding
+    teatree.loop.slack_answer --> teatree.loop.owner_identity
     teatree.loop.slack_answer --> teatree.agents
     teatree.loop.slack_answer --> teatree.backends.slack
     teatree.loop.slack_answer --> teatree.core
