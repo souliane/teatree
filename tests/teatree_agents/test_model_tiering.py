@@ -46,6 +46,7 @@ from teatree.config.registries import (
     pydantic_ai_tier_models,
 )
 from teatree.config.resolution import effective_default
+from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE
 from teatree.core.models import ConfigSetting
 
 
@@ -88,11 +89,18 @@ class TestTierConstantIsSingleSource:
 
     def test_shipped_tier_models(self) -> None:
         assert tier_models() == {
-            "frontier": "claude-opus-5-5",
+            "frontier": "claude-sonnet-5-5",
             "balanced": "claude-sonnet-5-5",
             "cheap": "claude-sonnet-5-5",
         }
-        assert resolve_tier("frontier") == "claude-opus-5-5"
+        assert resolve_tier("frontier") == "claude-sonnet-5-5"
+
+    def test_no_shipped_model_table_names_opus_or_fable(self) -> None:
+        for key in ("agent_tier_models", "agent_pydantic_ai_tier_models", "agent_phase_models"):
+            assert all(
+                "opus" not in str(value).lower() and "fable" not in str(value).lower()
+                for value in COLD_SETTINGS[key].default.values()
+            )
 
     def test_resolve_tier_reads_the_constant(self) -> None:
         for tier, model in tier_models().items():
@@ -122,6 +130,7 @@ class TestDefaultPhaseTiers:
             "coding": "frontier",
             "debugging": "frontier",
             "reviewing": "frontier",
+            ARCHITECTURAL_REVIEW_PHASE: "frontier",
             "retrospecting": "frontier",
             "testing": "balanced",
             "shipping": "balanced",
@@ -310,11 +319,13 @@ class TestTierEffortConstantIsSingleSource:
 class TestResolveSpawnEffort:
     """`resolve_spawn_effort(phase)` maps a phase to its tier's effort."""
 
-    @pytest.mark.parametrize("phase", ["planning", "coding", "debugging", "reviewing", "retrospecting"])
+    @pytest.mark.parametrize(
+        "phase", ["planning", "coding", "debugging", "reviewing", "retrospecting", ARCHITECTURAL_REVIEW_PHASE]
+    )
     def test_frontier_phases_resolve_to_frontier_effort(self, phase: str) -> None:
         assert resolve_spawn_effort(phase) == tier_effort()["frontier"]
 
-    @pytest.mark.parametrize("phase", ["testing", "shipping", "architectural_review"])
+    @pytest.mark.parametrize("phase", ["testing", "shipping"])
     def test_balanced_and_unlisted_phases_resolve_to_high(self, phase: str) -> None:
         assert resolve_spawn_effort(phase) == "high"
 
@@ -495,8 +506,8 @@ class TestResolvePydanticAiModel:
             monkeypatch,
             agent_pydantic_ai_tier_models={"frontier": "vendor/hard", "balanced": "vendor/mundane"},
         )
-        assert resolve_pydantic_ai_model(tier_models()["frontier"]) == "vendor/hard"
-        assert resolve_pydantic_ai_model(tier_models()["balanced"]) == "vendor/mundane"
+        assert resolve_pydantic_ai_model(tier_models()["frontier"], tier="frontier") == "vendor/hard"
+        assert resolve_pydantic_ai_model(tier_models()["balanced"], tier="balanced") == "vendor/mundane"
 
     def test_shipped_cheap_tier_keeps_its_pydantic_handle(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

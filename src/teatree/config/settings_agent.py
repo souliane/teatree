@@ -142,22 +142,9 @@ class _ModeHarnessSettings:
     regulated_path_model_allowlist: list[str] = setting(
         default_factory=list, spec=SettingSpec(help="models allowed to touch a regulated path", parse=_parse_str_list)
     )
-    # Per-run sequential-request cap for the ``pydantic_ai`` harness
-    # (the metered-lane guardrail). Passed as pydantic_ai
-    # ``UsageLimits(request_limit=...)`` on every ``PydanticAiHarnessSession`` run
-    # so a cheap-model maker cannot drift on a long tool loop — the FSM already
-    # chunks work into phases and the orchestrator re-dispatches, so a per-run cap
-    # composes with orchestration rather than killing tasks. The default is a REAL
-    # turn budget: a live Lane-B task runs ~16 model requests, so the earlier cap of
-    # 5 refused mid-task before the run ever reached ``open()``. 40 clears that
-    # measured reality with generous headroom; a positive caller ``max_turns`` (an
-    # ``OneShotSpec`` cap, an eval override) still wins over it (``harness.py`` /
-    # ``eval/pydantic_ai_runner.py``). Applies ONLY to the ``pydantic_ai`` harness
-    # (the default ``claude_sdk`` harness is bounded by the loop watchdog instead),
-    # so it is inert until an overlay opts into ``agent_harness=pydantic_ai``. ``0``
-    # disables the cap (the escape hatch). Per-overlay overridable.
+    # The per-run pydantic-ai request cap; 0 disables it.
     pydantic_ai_request_limit: int = setting(
-        40, spec=SettingSpec(help="requests one pydantic-ai run may make", parse=_parse_strict_int)
+        3000, spec=SettingSpec(help="requests one pydantic-ai run may make", parse=_parse_strict_int)
     )
     # Per-request output-token ceiling for the ``pydantic_ai`` harness, passed as the base
     # ``max_tokens`` ``ModelSettings`` key on every run (both the OpenAI-compatible and native Anthropic
@@ -246,7 +233,7 @@ class _ModeHarnessSettings:
     # matching the shipped-off turn/cost caps (only the generous runtime ceiling is
     # armed by default). Per-overlay overridable.
     watchdog_max_runtime_seconds: int = setting(
-        3 * 60 * 60,
+        86400,
         spec=SettingSpec(help="seconds a watched run may take before the watchdog stops it", parse=_parse_strict_int),
     )
     watchdog_max_turns: int = setting(
@@ -279,19 +266,7 @@ class _ModeHarnessSettings:
         2,
         spec=SettingSpec(help="envelope-less turn-ends one run may have refused; 0 disables", parse=_parse_strict_int),
     )
-    # Per-RUN turn ceiling pinned on the headless ``claude_sdk`` spawn
-    # (``ClaudeAgentOptions.max_turns`` via ``agents/_runner_options``). Cache-read
-    # cost is ``turns x context_size`` and each turn re-reads the run's whole context,
-    # so the turn count is the multiplier on a dispatch's bill — a dimension the
-    # wall-clock ``watchdog_max_runtime_seconds`` cannot see and the
-    # ``watchdog_max_turns`` ceiling reads only from COMPLETED attempts, never the
-    # in-flight one. The default clears a long healthy phase run with headroom while
-    # bounding a run that has stopped converging. Reaching it is NOT silent: the CLI
-    # ends the run with ``ResultMessage(subtype="error_max_turns")``, which
-    # ``agents/runner`` records FAILED naming this setting AND escalates to the owner
-    # (``agents/runner_truncation``), so the ceiling is raised deliberately rather
-    # than the work being quietly truncated. ``0`` leaves the spawn uncapped (the
-    # escape hatch, matching the ceilings above). Per-overlay overridable.
+    # Per-run Claude SDK turn ceiling; 0 disables it.
     agent_max_turns: int = setting(
-        250, spec=SettingSpec(help="turn ceiling for one agent run", parse=_parse_strict_int)
+        3000, spec=SettingSpec(help="turn ceiling for one agent run", parse=_parse_strict_int)
     )

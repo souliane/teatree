@@ -13,12 +13,15 @@ currently indistinguishable from an intended one — that is the whole finding.
 
 import io
 from contextlib import redirect_stdout
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.cli.doctor.checks_config_drift import (
     DriftedSetting,
+    StoredRow,
     _check_config_rows_shadowing_shipped_defaults,
     drifted_settings,
 )
@@ -37,7 +40,7 @@ class TheDriftPredicateTestCase(TestCase):
 
     def test_a_row_that_differs_from_the_shipped_default_is_listed(self) -> None:
         found = drifted_settings(
-            stored=[("issue_implementer_label", "", "t3-batch")],
+            stored=[StoredRow("issue_implementer_label", "", "t3-batch")],
             shipped={"issue_implementer_label": "t3-auto"},
         )
         assert found == (DriftedSetting("issue_implementer_label", "", "t3-batch", "t3-auto"),)
@@ -45,19 +48,19 @@ class TheDriftPredicateTestCase(TestCase):
     def test_a_row_equal_to_the_shipped_default_is_not_listed(self) -> None:
         # The common case by far — a row written before the value became the default, or one
         # the operator set to the same thing. Nothing to report.
-        found = drifted_settings(stored=[("mode", "", "auto")], shipped={"mode": "auto"})
+        found = drifted_settings(stored=[StoredRow("mode", "", "auto")], shipped={"mode": "auto"})
         assert found == ()
 
     def test_a_key_absent_from_the_shipped_file_is_skipped(self) -> None:
         # There is no shipped VALUE to diverge from, so any claim of drift would be invented.
         # Personal/Secret keys are absent by construction, so this is not an edge case.
-        found = drifted_settings(stored=[("workspace_dir", "", "/somewhere")], shipped={})
+        found = drifted_settings(stored=[StoredRow("workspace_dir", "", "/somewhere")], shipped={})
         assert found == ()
 
     def test_each_scope_is_judged_on_its_own_row(self) -> None:
         # An overlay row and the global row are separate overrides of the same shipped floor.
         found = drifted_settings(
-            stored=[("mode", "", "auto"), ("mode", "demo", "interactive")],
+            stored=[StoredRow("mode", "", "auto"), StoredRow("mode", "demo", "interactive")],
             shipped={"mode": "auto"},
         )
         assert found == (DriftedSetting("mode", "demo", "interactive", "auto"),)
@@ -76,6 +79,28 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
         assert "issue_implementer_label" in out
         assert "t3-batch" in out
         assert "t3-auto" in out
+        assert "written by" in out
+        assert "ago" in out
+
+    def test_a_below_floor_stored_row_warns_even_when_the_default_matches(self) -> None:
+        ConfigSetting.objects.create(key="agent_max_turns", value=9, written_by="operator")
+        with patch("teatree.cli.doctor.checks_config_drift.declared_defaults", return_value={"agent_max_turns": 9}):
+            out = _run()
+        assert "WARN" in out
+        assert "agent_max_turns" in out
+        assert "100" in out
+
+    def test_writer_and_age_are_read_from_the_stored_row(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", "old", authorized_by="operator")
+        ConfigSetting.objects.filter(key="issue_implementer_label").update(
+            updated_at=timezone.now() - timedelta(hours=2)
+        )
+        with patch(
+            "teatree.cli.doctor.checks_config_drift.declared_defaults",
+            return_value={"issue_implementer_label": "new"},
+        ):
+            out = _run()
+        assert "written by operator 2h ago" in out
 
     def test_it_returns_without_raising_so_the_exit_code_is_untouched(self) -> None:
         # The invariant that makes it safe to ship: most drifted rows are deliberate, so a

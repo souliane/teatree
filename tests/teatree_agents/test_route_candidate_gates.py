@@ -99,6 +99,19 @@ class TestRouteCandidateGates(TestCase):
         assert dispatch.route_candidate_index == 1
         assert dispatch.rejected[0].reason == "model is below a loaded skill's scalar floor"
 
+    def test_a_frontier_route_with_a_sonnet_id_meets_a_frontier_floor(self) -> None:
+        config = AgentConfig(
+            skill_models={
+                "floor-skill": "frontier",
+                "route-skill": (AgentRouteCandidate(CLAUDE_LIKE, "claude-sonnet-5-5", tier="frontier"),),
+            }
+        )
+
+        dispatch = self._resolve(config, "route-skill", "floor-skill")
+
+        assert dispatch.model == "claude-sonnet-5-5"
+        assert dispatch.route_candidate_index == 0
+
     def test_a_candidate_naming_a_provider_keeps_it_on_the_dispatch(self) -> None:
         candidate = AgentRouteCandidate(CLAUDE_SDK, "opus", provider="subscription_oauth")
 

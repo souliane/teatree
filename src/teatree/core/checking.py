@@ -49,6 +49,7 @@ from teatree.core._checking_gather import (
     ticket_url,
 )
 from teatree.core.checking_remaining import empty_remaining, gather_remaining
+from teatree.core.checking_settings import gather_all_settings_group, gather_settings_group
 from teatree.core.checking_types import (
     DEFAULT_CAP,
     CheckGroup,
@@ -109,6 +110,7 @@ class CheckingReportDict(TypedDict):
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
     metered: CheckGroupDict
+    settings: CheckGroupDict
     internal_escalations: int
     remaining: RemainingGroupDict
     terse: str
@@ -121,6 +123,7 @@ class AllOverlaysReportDict(TypedDict):
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
     metered: CheckGroupDict
+    settings: CheckGroupDict
     internal_escalations: int
     remaining: RemainingGroupDict
     terse: str
@@ -137,6 +140,7 @@ class CheckingReport:
     metered: CheckGroup
     internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
+    settings: CheckGroup = field(default_factory=lambda: CheckGroup(title="Settings"))
 
     @property
     def groups(self) -> list[CheckGroup]:
@@ -144,7 +148,7 @@ class CheckingReport:
 
     @property
     def recap_groups(self) -> list[CheckGroup]:
-        return [self.merged, self.in_flight, self.needs_you, self.metered]
+        return [self.merged, self.in_flight, self.needs_you, self.metered, self.settings]
 
     def to_dict(self) -> CheckingReportDict:
         return CheckingReportDict(
@@ -153,6 +157,7 @@ class CheckingReport:
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
+            settings=self.settings.to_dict(),
             internal_escalations=self.internal_escalations,
             remaining=self.remaining.to_dict(),
             terse=self.to_terse(),
@@ -201,6 +206,7 @@ class AllOverlaysReport:
     metered: CheckGroup
     internal_escalations: int = 0
     remaining: RemainingGroup = field(default_factory=empty_remaining)
+    settings: CheckGroup = field(default_factory=lambda: CheckGroup(title="Settings"))
 
     @property
     def groups(self) -> list[CheckGroup]:
@@ -208,7 +214,7 @@ class AllOverlaysReport:
 
     @property
     def recap_groups(self) -> list[CheckGroup]:
-        return [self.merged, self.in_flight, self.needs_you, self.metered]
+        return [self.merged, self.in_flight, self.needs_you, self.metered, self.settings]
 
     def to_dict(self) -> AllOverlaysReportDict:
         return AllOverlaysReportDict(
@@ -218,6 +224,7 @@ class AllOverlaysReport:
             in_flight=self.in_flight.to_dict(),
             needs_you=self.needs_you.to_dict(),
             metered=self.metered.to_dict(),
+            settings=self.settings.to_dict(),
             internal_escalations=self.internal_escalations,
             remaining=self.remaining.to_dict(),
             terse=self.to_terse(),
@@ -318,6 +325,7 @@ def gather_all_overlays_report(
             items=[item for _, item in metered_entries[:cap]],
             total=sum(total for _, total in metered_groups),
         ),
+        settings=gather_all_settings_group(overlay_windows=overlay_windows, cap=cap),
         remaining=gather_remaining(
             now=max((window[1] for window in overlay_windows.values()), default=effective_since),
             overlay_names=list(overlay_windows),
@@ -395,6 +403,7 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         internal_escalations=internal_escalation_count(),
         metered=_metered_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
+        settings=gather_settings_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         remaining=gather_remaining(
             now=now, overlay_names=[overlay_name] if overlay_name else None, tag_overlays=False, cap=cap
         ),

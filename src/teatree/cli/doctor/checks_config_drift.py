@@ -20,11 +20,24 @@ NAMED, with the shipped value beside the stored one so the reader can judge in o
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 import typer
+from django.utils import timezone
 
 from teatree.config.declared_defaults import declared_defaults
+from teatree.config.write_bounds import bound_refusal
 from teatree.core.config_display import masked_display
+from teatree.core.waiting import format_age
+
+
+@dataclass(frozen=True, slots=True)
+class StoredRow:
+    key: str
+    scope: str
+    value: object
+    written_by: str = ""
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +48,8 @@ class DriftedSetting:
     scope: str  # "" is global
     stored: object
     shipped: object
+    writer: str = ""
+    age: timedelta = timedelta(0)
 
     @property
     def where(self) -> str:
@@ -42,12 +57,12 @@ class DriftedSetting:
 
 
 def drifted_settings(
-    *, stored: Iterable[tuple[str, str, object]], shipped: Mapping[str, object]
+    *, stored: Iterable[StoredRow], shipped: Mapping[str, object], now: datetime | None = None
 ) -> tuple[DriftedSetting, ...]:
     """The rows in *stored* whose value differs from *shipped*'s default for the same key.
 
     Pure, so the judgement is testable without a database and the doctor wrapper is left with
-    only the read. *stored* is ``(key, scope, value)`` triples — one per ``ConfigSetting`` row,
+    only the read. *stored* carries one ``StoredRow`` per ``ConfigSetting`` row,
     NOT a resolved effective value: the question is "does this ROW disagree with the file",
     and resolving first would hide a shadowed row behind a higher tier that happens to agree.
 
@@ -60,18 +75,29 @@ def drifted_settings(
     Each scope is judged on its own row: an overlay override and the global row are separate
     overrides of the same floor, and only one of them may have gone stale.
     """
+    clock = now or timezone.now()
     return tuple(
-        DriftedSetting(key, scope, value, shipped[key])
-        for key, scope, value in stored
-        if key in shipped and value != shipped[key]
+        DriftedSetting(
+            row.key,
+            row.scope,
+            row.value,
+            shipped[row.key],
+            row.written_by,
+            clock - row.updated_at if row.updated_at else timedelta(0),
+        )
+        for row in stored
+        if row.key in shipped and row.value != shipped[row.key]
     )
 
 
-def _stored_rows() -> list[tuple[str, str, object]]:
-    """Every ``ConfigSetting`` row as a ``(key, scope, value)`` triple."""
+def _stored_rows() -> list[StoredRow]:
+    """Every stored override, including its provenance and age."""
     from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM needs the app registry
 
-    return [(row.key, row.scope, row.value) for row in ConfigSetting.objects.all().order_by("key", "scope")]
+    return [
+        StoredRow(row.key, row.scope, row.value, row.written_by, row.updated_at)
+        for row in ConfigSetting.objects.all().order_by("key", "scope")
+    ]
 
 
 def _finding_line(drift: DriftedSetting) -> str:
@@ -85,7 +111,10 @@ def _finding_line(drift: DriftedSetting) -> str:
     """
     stored = masked_display(drift.key, drift.stored)
     shipped = masked_display(drift.key, drift.shipped)
-    return f"INFO  {drift.key} [{drift.where}] is {stored}; shipped default is {shipped}"
+    return (
+        f"INFO  {drift.key} [{drift.where}] is {stored}; shipped default is {shipped}; "
+        f"written by {drift.writer or 'unknown'} {format_age(drift.age)} ago"
+    )
 
 
 def _check_config_rows_shadowing_shipped_defaults() -> None:
@@ -97,16 +126,19 @@ def _check_config_rows_shadowing_shipped_defaults() -> None:
     finding.
     """
     try:
-        drifted = drifted_settings(stored=_stored_rows(), shipped=declared_defaults())
+        rows = _stored_rows()
+        drifted = drifted_settings(stored=rows, shipped=declared_defaults())
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Config-drift check crashed: {exc.__class__.__name__}: {exc}")
         return
-    if not drifted:
-        return
-    typer.echo(
-        f"INFO  {len(drifted)} stored config row(s) differ from the shipped default. "
-        "Most are deliberate; a stale one is the same shape as #4074. "
-        "Clear one with `t3 <overlay> config_setting clear <key>`."
-    )
+    if drifted:
+        typer.echo(
+            f"INFO  {len(drifted)} stored config row(s) differ from the shipped default. "
+            "Most are deliberate; a stale one is the same shape as #4074. "
+            "Clear one with `t3 <overlay> config_setting clear <key>`."
+        )
     for drift in drifted:
         typer.echo(_finding_line(drift))
+    for row in rows:
+        if reason := bound_refusal(row.key, row.value):
+            typer.echo(f"WARN  {row.key} [{row.scope or 'global'}] is below its write bound: {reason}")

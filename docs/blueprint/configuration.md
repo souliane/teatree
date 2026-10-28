@@ -72,6 +72,25 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 The operational (DB-home) settings are set in the store —
 globally, or scoped to one overlay with `--overlay <name>`:
 
+Runtime writes use one numeric-bounds table (`config.write_bounds`) at both the
+CLI parser and `ConfigSetting` manager. `agent_max_turns` and
+`pydantic_ai_request_limit` have a floor of 100, `watchdog_max_runtime_seconds`
+has a floor of 3600, and `watchdog_max_turns` has a floor of 100; zero disables
+each cap. The four existing admission and forge-pool ranges share this table.
+Fresh installs ship 3000 agent turns, 3000 pydantic-ai requests and an 86400
+second watchdog runtime. Every shipped bounded default passes its write bound.
+The shipped `agent_phase_models` table maps `architectural_review` to `frontier`,
+and all three shipped `agent_tier_models` tiers resolve to `claude-sonnet-5-5`.
+
+Each changed `set_value`, `set_values`, `clear` or `seed` write appends a
+`ConfigSettingChange` audit row in the same transaction. The row stores the
+key, scope, action, writer, time and masked display text for the old and new
+values; a no-op appends nothing, and secret values never enter the audit table.
+The check-in report's Settings group lists changes in its time window for the
+global scope and selected overlay. `t3 doctor` shows the writer and age of a
+stored row that differs from the shipped default and warns when a stored numeric
+value is below its write floor; both are read-only advisories.
+
 ```bash
 t3 <overlay> config_setting set mode auto                                  # global default
 t3 <overlay> config_setting set require_human_approval_to_merge false --overlay myproject

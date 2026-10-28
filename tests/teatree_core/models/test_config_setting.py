@@ -11,10 +11,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 from django.core.exceptions import ValidationError
+from django.db import DatabaseError, connection
 from django.db.models.signals import post_init
 from django.test import TestCase
 
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, ConfigSettingChange
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, GLOBAL_SCOPE, SeedOutcome, scope_label
 from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
 from tests._loop_principal_env import pinned_loop_principal
@@ -34,6 +35,15 @@ class TestScopeLabel:
 
 
 class TestConfigSettingStore(TestCase):
+    def test_run_cap_floor_is_enforced_by_the_manager_and_bulk_write_is_atomic(self) -> None:
+        with pytest.raises(ValidationError, match=r"agent_max_turns.*100"):
+            ConfigSetting.objects.set_value("agent_max_turns", 9)
+        with pytest.raises(ValidationError, match=r"agent_max_turns.*100"):
+            ConfigSetting.objects.set_values([("issue_implementer_label", "new", ""), ("agent_max_turns", 9, "")])
+        with pytest.raises(ValidationError, match=r"agent_max_turns.*100"):
+            ConfigSetting.objects.seed("agent_max_turns", 9, code_default=3000)
+        assert not ConfigSetting.objects.filter(key__in=["agent_max_turns", "issue_implementer_label"]).exists()
+
     def test_get_effective_absent_key_is_none(self) -> None:
         # Empty table -> fall-through sentinel, never an exception.
         assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is None
@@ -70,6 +80,62 @@ class TestConfigSettingStore(TestCase):
     def test_str_is_informative(self) -> None:
         row = ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
         assert "admit_colleague_prs_to_board" in str(row)
+
+
+class TestConfigSettingChangeAudit(TestCase):
+    def test_set_bulk_clear_and_seed_record_changes_with_provenance(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", "first", authorized_by="operator")
+        ConfigSetting.objects.set_values(
+            [("issue_implementer_label", "second", ""), ("mode", "auto", "")], authorized_by="operator"
+        )
+        assert ConfigSetting.objects.clear("issue_implementer_label")
+        assert ConfigSetting.objects.seed("issue_implementer_label", "seeded", code_default="") is SeedOutcome.CREATED
+
+        changes = list(ConfigSettingChange.objects.filter(key="issue_implementer_label").order_by("changed_at", "pk"))
+        assert [(change.action, change.old_value, change.new_value) for change in changes] == [
+            ("set", "—", "first"),
+            ("set", "first", "second"),
+            ("clear", "second", "—"),
+            ("seed", "—", "seeded"),
+        ]
+        assert changes[0].written_by == "operator"
+        assert changes[0].changed_at is not None
+        assert ConfigSettingChange.objects.filter(key="mode").count() == 1
+
+    def test_noop_and_missing_clear_create_no_audit_row(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", "same")
+        ConfigSetting.objects.set_value("issue_implementer_label", "same")
+        assert not ConfigSetting.objects.clear("missing")
+        assert ConfigSettingChange.objects.count() == 1
+
+    def test_secret_values_are_masked_in_audit_storage(self) -> None:
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["secret"], "prose_collider": []})
+        change = ConfigSettingChange.objects.get(key="banned_term_registry")
+        assert change.old_value == "***"
+        assert change.new_value == "***"
+
+    def test_seed_update_and_removal_are_audited_once_each(self) -> None:
+        assert ConfigSetting.objects.seed("issue_implementer_label", "first", code_default="") is SeedOutcome.CREATED
+        assert ConfigSetting.objects.seed("issue_implementer_label", "second", code_default="") is SeedOutcome.UPDATED
+        assert ConfigSetting.objects.seed("issue_implementer_label", "second", code_default="") is SeedOutcome.UNCHANGED
+        assert ConfigSetting.objects.seed("issue_implementer_label", "", code_default="") is SeedOutcome.REMOVED
+        assert list(
+            ConfigSettingChange.objects.filter(key="issue_implementer_label").values_list("action", flat=True)
+        ) == ["seed", "seed", "seed"]
+
+    def test_a_failed_audit_insert_rolls_back_the_setting(self) -> None:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "CREATE TRIGGER reject_config_audit BEFORE INSERT ON teatree_config_setting_change "
+                "BEGIN SELECT RAISE(ABORT, 'audit failed'); END"
+            )
+        try:
+            with pytest.raises(DatabaseError, match="audit failed"):
+                ConfigSetting.objects.set_value("issue_implementer_label", "new")
+            assert not ConfigSetting.objects.filter(key="issue_implementer_label").exists()
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute("DROP TRIGGER reject_config_audit")
 
 
 class TestConfigSettingEmptyValuesRoundTrip(TestCase):

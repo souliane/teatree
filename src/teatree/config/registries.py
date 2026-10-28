@@ -183,6 +183,7 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
             "coding": "frontier",
             "debugging": "frontier",
             "reviewing": "frontier",
+            "architectural_review": "frontier",
             "retrospecting": "frontier",
             "testing": "balanced",
             "shipping": "balanced",
@@ -202,7 +203,7 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
     "agent_tier_models": ColdHookSetting(
         _parse_registry_dict,
         default={
-            "frontier": "claude-opus-5-5",
+            "frontier": "claude-sonnet-5-5",
             "balanced": "claude-sonnet-5-5",
             "cheap": "claude-sonnet-5-5",
         },
@@ -523,7 +524,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     ),
     # Bespoke integer budgets ``hook_router`` reads straight from ``[teatree]``.
     "orchestrator_turn_budget": ColdHookSetting(
-        _parse_strict_int, default=25, help="output-token budget for one orchestrator turn", stored=int
+        _parse_strict_int, default=25, help="tool-call count that nudges one orchestrator turn", stored=int
     ),
     "orchestrator_turn_wall_clock_seconds": ColdHookSetting(
         _parse_strict_int, default=180, help="seconds one orchestrator turn may take", stored=int

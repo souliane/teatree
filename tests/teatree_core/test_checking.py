@@ -30,6 +30,7 @@ from teatree.core.checking import (
     gather_checking_report,
 )
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.models import ConfigSetting, ConfigSettingChange
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
@@ -91,6 +92,52 @@ class CheckingTestBase(TestCase):
             exit_code=exit_code,
         )
         TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=self.now - timedelta(hours=hours_ago))
+
+
+class TestSettingsGroup(CheckingTestBase):
+    def test_overlay_report_shows_only_in_window_global_and_overlay_changes(self) -> None:
+        for scope, value, hours_ago in (("", "global", 1), (self.OVERLAY, "local", 2), ("other", "other", 1)):
+            ConfigSetting.objects.set_value("issue_implementer_label", value, scope=scope, authorized_by="operator")
+            ConfigSettingChange.objects.filter(scope=scope, key="issue_implementer_label").update(
+                changed_at=self.now - timedelta(hours=hours_ago)
+            )
+        ConfigSetting.objects.set_value("mode", "auto", authorized_by="operator")
+        ConfigSettingChange.objects.filter(key="mode").update(changed_at=self.now - timedelta(hours=25))
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        assert report.settings.total == 2
+        assert "Settings" in report.to_terse()
+        assert "operator" in report.to_terse()
+        assert "global" in report.to_terse()
+        assert "other" not in str(report.to_dict()["settings"])
+        assert report.to_dict()["settings"]["total"] == 2
+
+    def test_all_overlays_report_includes_each_change_once(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", "global", authorized_by="operator")
+        ConfigSettingChange.objects.filter(key="issue_implementer_label").update(
+            changed_at=self.now - timedelta(hours=1)
+        )
+        report = gather_all_overlays_report(
+            overlay_windows={self.OVERLAY: (self.since, self.now), "other": (self.since, self.now)},
+            overlay_configs={},
+        )
+        assert report.settings.total == 1
+        assert report.to_dict()["settings"]["total"] == 1
+
+    def test_all_overlays_excludes_a_global_change_between_disjoint_windows(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", "global", authorized_by="operator")
+        ConfigSettingChange.objects.filter(key="issue_implementer_label").update(
+            changed_at=self.now - timedelta(hours=10)
+        )
+        report = gather_all_overlays_report(
+            overlay_windows={
+                self.OVERLAY: (self.now - timedelta(hours=24), self.now - timedelta(hours=20)),
+                "other": (self.now - timedelta(hours=2), self.now),
+            },
+            overlay_configs={},
+        )
+        assert report.settings.total == 0
 
 
 class TestMeteredGroup(CheckingTestBase):
@@ -593,6 +640,7 @@ class TestJsonShape(CheckingTestBase):
             "in_flight",
             "needs_you",
             "metered",
+            "settings",
             "internal_escalations",
             "remaining",
             "terse",

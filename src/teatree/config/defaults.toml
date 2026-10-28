@@ -69,7 +69,7 @@ excluded_skills = [] # list — skills never offered to an agent, whatever the l
 
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
-agent_max_turns = 250 # int — turn ceiling for one agent run
+agent_max_turns = 3000 # int — turn ceiling for one agent run
 agent_route_paid_fallback = false # bool — allow an ordered agent route to fall through to a metered lane
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
 backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
@@ -80,13 +80,13 @@ harness_skill_exclusions = [] # list — box-wide Claude Code or Codex skills re
 mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
 openai_compatible_lane = "factory" # str — which work lane routes to the OpenAI-compatible endpoint
 pydantic_ai_max_tokens = 64000 # int — token ceiling for one pydantic-ai request
-pydantic_ai_request_limit = 40 # int — requests one pydantic-ai run may make
+pydantic_ai_request_limit = 3000 # int — requests one pydantic-ai run may make
 regulated_path_model_allowlist = [] # list — models allowed to touch a regulated path
 scanning_news_skill = "scanning-news" # str — skill the news scanning loop runs
 subagent_spawn_ceiling = 20 # int — sub-agents one dispatch may spawn
 ticket_budget_max_cost_usd = 0.0 # float — dollars one ticket may cost before it is halted
 watchdog_max_cost_usd = 0.0 # float — dollars a watched run may spend before the watchdog stops it
-watchdog_max_runtime_seconds = 10800 # int — seconds a watched run may take before the watchdog stops it
+watchdog_max_runtime_seconds = 86400 # int — seconds a watched run may take before the watchdog stops it
 watchdog_max_turns = 0 # int — turns a watched run may take before the watchdog stops it
 
 [teatree.Loops."Cadence & throughput"]
@@ -227,7 +227,7 @@ mcp_slack_write_gate_enabled = true # bool — gate MCP Slack writes behind the 
 no_self_reviewer_assign_gate_enabled = true # bool — refuse assigning the author as their own reviewer
 orchestrator_boundary_agent_gate_enabled = true # bool — refuse orchestrator work that belongs in a sub-agent
 orchestrator_delegation_gate_enabled = true # bool — refuse an unbounded orchestrator read that belongs in a sub-agent
-orchestrator_turn_budget = 25 # int — output-token budget for one orchestrator turn
+orchestrator_turn_budget = 25 # int — tool-call count that nudges one orchestrator turn
 orchestrator_turn_wall_clock_seconds = 180 # int — seconds one orchestrator turn may take
 out_of_band_merge_gate_enabled = true # bool — refuse a merge that skipped the recorded review path
 owner_question_gate_enabled = true # bool — refuse batched or shorthand owner questions and decisions left in reply prose

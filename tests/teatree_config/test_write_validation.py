@@ -2,11 +2,29 @@
 
 import pytest
 
+from teatree.config.declared_defaults import declared_defaults
 from teatree.config.setting_registries import BOX_GLOBAL_SETTINGS
+from teatree.config.write_bounds import WRITE_BOUNDS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 
 
 class TestValidateConfigWrite:
+    def test_each_bounded_shipped_default_satisfies_its_write_bound(self) -> None:
+        defaults = declared_defaults()
+        for key in WRITE_BOUNDS:
+            if key in defaults:
+                assert validate_config_write(key, defaults[key]) == defaults[key]
+
+    @pytest.mark.parametrize(
+        "key", ["agent_max_turns", "pydantic_ai_request_limit", "watchdog_max_runtime_seconds", "watchdog_max_turns"]
+    )
+    def test_run_caps_refuse_values_below_the_floor_and_accept_zero(self, key: str) -> None:
+        floor = WRITE_BOUNDS[key].low
+        with pytest.raises(ConfigWriteError, match=f"{key}.*{floor:g}"):
+            validate_config_write(key, int(floor) - 1)
+        assert validate_config_write(key, 0) == 0
+        assert validate_config_write(key, int(floor)) == floor
+
     def test_returns_the_canonical_coerced_value(self) -> None:
         # An upper-case enum canonicalises, a numeric string coerces to int (#258).
         assert validate_config_write("mode", "AUTO") == "auto"
