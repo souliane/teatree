@@ -40,7 +40,6 @@ from typing import TYPE_CHECKING
 import typer
 
 from teatree.backends.gitlab.inline_position import find_added_line, resolve_inline_position
-from teatree.cli.review.approval import identity_has_reviewed
 from teatree.cli.review.audit import gitlab_mr_url
 from teatree.cli.review.drafts import register as _register_drafts
 from teatree.cli.review.evidence_gate import FindingEvidence
@@ -525,56 +524,14 @@ class ReviewService:
         return "\n".join(lines), 0
 
     def approve(self, repo: str, mr: int) -> tuple[str, int]:
-        """Approve an MR — refuses unless the identity has already reviewed it.
+        from teatree.cli.review.operator_approval import legacy_approve  # noqa: PLC0415 — ORM after bootstrap
 
-        Returns (message, exit_code). The review-first precondition encodes
-        the approve-on-review doctrine: an approval cannot be recorded
-        without a prior reviewing footprint from the same identity.
-
-        Gated by the active posture: an approval is
-        an outward post on the user's identity, so it routes through the
-        same recorded-approval gate every other on-behalf method uses. Gate
-        ON + no recorded :class:`OnBehalfApproval` matching
-        ``(<repo>!<mr>, "approve")`` → refuse without any GitLab side
-        effect; gate ON + recorded row → consume single-use and proceed.
-        """
-        blocked = check_on_behalf(repo, mr, "approve")
-        if blocked:
-            return blocked, 1
-        encoded = repo.replace("/", "%2F")
-        reviewed, error = identity_has_reviewed(self._get_api(), encoded, mr)
-        if error:
-            return error, 1
-        if not reviewed:
-            msg = (
-                f"Refusing to approve !{mr}: review before approve — no review note authored by your "
-                "identity exists on this MR yet. Post a review (`t3 review post-comment` / "
-                "`post-comment`) first, then approve."
-            )
-            return msg, 1
-        from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-        return publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
+        return legacy_approve(self, repo, mr)
 
     def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
-        """Revoke this identity's approval on an MR. Returns (message, exit_code).
+        from teatree.cli.review.operator_approval import legacy_unapprove  # noqa: PLC0415 — ORM after bootstrap
 
-        No review-first precondition — removing an approval is the safe
-        direction and must always be reachable.
-
-        Gated by the active posture: an unapproval
-        is still a colleague-visible post on the user's identity, so it
-        routes through the same recorded-approval gate as ``approve`` (and
-        every other on-behalf method). The recorded row scopes to
-        ``(<repo>!<mr>, "unapprove")``.
-        """
-        blocked = check_on_behalf(repo, mr, "unapprove")
-        if blocked:
-            return blocked, 1
-        from teatree.cli.review.post_impl import unapprove_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-        encoded = repo.replace("/", "%2F")
-        return publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
+        return legacy_unapprove(self, repo, mr)
 
 
 # Register sibling-module typer commands. Kept out of this file so the
