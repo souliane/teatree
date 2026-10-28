@@ -261,3 +261,40 @@ class CheckoutSafetyTests(TestCase):
         attempt = self._claim(ProcessTable(frozenset({self.checkout}), "/proc"))
         assert attempt is not None
         assert attempt.error.startswith("checkout_parked:")
+
+    def test_merge_in_progress_parks_before_claim(self) -> None:
+        self._record_prior_writer()
+        head = run_strict(repo=str(self.checkout), args=["rev-parse", "HEAD"])
+        (self.checkout / ".git" / "MERGE_HEAD").write_text(f"{head}\n")
+
+        attempt = self._claim(_VENUE_CLEAR)
+
+        assert attempt is not None
+        assert "a merge in progress" in attempt.error
+
+    def test_rebase_in_progress_parks_before_claim(self) -> None:
+        self._record_prior_writer()
+        (self.checkout / ".git" / "rebase-apply").mkdir()
+
+        attempt = self._claim(_VENUE_CLEAR)
+
+        assert attempt is not None
+        assert "a rebase in progress" in attempt.error
+
+    def test_detached_head_parks_before_claim(self) -> None:
+        self._record_prior_writer()
+        run_strict(repo=str(self.checkout), args=["checkout", "--detach", "HEAD"])
+
+        attempt = self._claim(_VENUE_CLEAR)
+
+        assert attempt is not None
+        assert "detached HEAD" in attempt.error
+
+    def test_index_lock_parks_before_claim(self) -> None:
+        self._record_prior_writer()
+        (self.checkout / ".git" / "index.lock").touch()
+
+        attempt = self._claim(_VENUE_CLEAR)
+
+        assert attempt is not None
+        assert "index lock" in attempt.error
