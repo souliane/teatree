@@ -21,6 +21,7 @@ from teatree.backends.github.api import gh_api_get as _gh_api_get
 from teatree.backends.github.api import gh_api_get_paginated as _gh_api_get_paginated
 from teatree.backends.github.api import gh_api_search_paginated as _gh_api_search_paginated
 from teatree.backends.github.projects import _gh_graphql
+from teatree.utils.throttled_log import reset_throttle
 
 
 def _reviewthreads_stdout(*, unresolved: int = 0, resolved: int = 0) -> str:
@@ -250,6 +251,35 @@ class TestGhApiSearchPaginated:
         with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=json.dumps(pages))
             assert _gh_api_search_paginated("search/issues?q=is:pr") == [{"number": 5}]
+
+    def test_warns_when_the_search_matched_more_than_it_returned(self, caplog: pytest.LogCaptureFixture) -> None:
+        reset_throttle()
+        pages = [{"total_count": 3146, "incomplete_results": False, "items": [{"number": 1}]}]
+        with (
+            patch.object(github_api_mod, "_run_gh", return_value=MagicMock(stdout=json.dumps(pages))),
+            caplog.at_level(logging.WARNING, logger="teatree.backends.github.api"),
+        ):
+            result = _gh_api_search_paginated("search/issues?q=is:pr")
+        assert result == [{"number": 1}]
+        assert any("3146" in record.message for record in caplog.records)
+
+    def test_a_complete_search_does_not_warn(self, caplog: pytest.LogCaptureFixture) -> None:
+        reset_throttle()
+        pages = [{"total_count": 1, "incomplete_results": False, "items": [{"number": 1}]}]
+        with (
+            patch.object(github_api_mod, "_run_gh", return_value=MagicMock(stdout=json.dumps(pages))),
+            caplog.at_level(logging.WARNING, logger="teatree.backends.github.api"),
+        ):
+            _gh_api_search_paginated("search/issues?q=is:pr")
+        assert not caplog.records
+
+    def test_refuses_a_search_the_server_gave_up_on(self) -> None:
+        pages = [{"total_count": 2, "incomplete_results": True, "items": [{"number": 1}]}]
+        with (
+            patch.object(github_api_mod, "_run_gh", return_value=MagicMock(stdout=json.dumps(pages))),
+            pytest.raises(ValueError, match="incomplete"),
+        ):
+            _gh_api_search_paginated("search/issues?q=is:pr")
 
 
 class TestRunGhTimeout:
@@ -1455,32 +1485,6 @@ class TestListMyPrsEnrichment:
         assert "status_check_rollup" not in prs[0]
 
 
-class TestListMyMergedPrsCap:
-    """F8.8 — an uncut merged-PR search warns about the 1000-result cap."""
-
-    def test_warns_without_cutoff(self, caplog) -> None:
-        from teatree.utils.throttled_log import reset_throttle  # noqa: PLC0415
-
-        reset_throttle()
-        with (
-            patch.object(github_mod, "_gh_api_search_paginated", return_value=[]),
-            caplog.at_level(logging.WARNING, logger="teatree.backends.github.client"),
-        ):
-            GitHubCodeHost().list_my_merged_prs(author="alice")
-        assert any("caps at 1000" in r.message for r in caplog.records)
-
-    def test_no_warning_with_cutoff(self, caplog) -> None:
-        from teatree.utils.throttled_log import reset_throttle  # noqa: PLC0415
-
-        reset_throttle()
-        with (
-            patch.object(github_mod, "_gh_api_search_paginated", return_value=[]),
-            caplog.at_level(logging.WARNING, logger="teatree.backends.github.client"),
-        ):
-            GitHubCodeHost().list_my_merged_prs(author="alice", updated_after="2026-01-01T00:00:00Z")
-        assert not any("caps at 1000" in r.message for r in caplog.records)
-
-
 class TestDirectRunGhTimeouts:
     """F8.4 — direct _run_gh calls on the host bound their subprocess."""
 
@@ -1496,8 +1500,3 @@ class TestDirectRunGhTimeouts:
         with patch.object(github_mod, "_run_gh", return_value=_completed("")) as mock_run:
             GitHubCodeHost().delete_issue_comment(issue_url="https://github.com/o/r/issues/3", comment_id=5)
         assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
-
-
-def test_logging_import_present() -> None:
-    # `logging` is imported at module top for the caplog-based tests above.
-    assert logging.getLogger("teatree.backends.github.client") is not None

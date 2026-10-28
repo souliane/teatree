@@ -85,10 +85,12 @@ class AgentAdmission:
     review_denied: str | None
     retiring_denied: str | None
     cheap_denied: str | None
+    answering_denied: str | None = None
     cheap_lane: LaneBound = field(default_factory=LaneBound)
     review_lane: LaneBound = field(default_factory=LaneBound)
     retiring_lane: LaneBound = field(default_factory=LaneBound)
     expensive_lane: LaneBound = field(default_factory=LaneBound)
+    answering_lane: LaneBound = field(default_factory=LaneBound)
     expensive_guard_denied: str | None = None
     cheap_guard_denied: str | None = None
     seats_released: int = 0
@@ -98,6 +100,8 @@ class AgentAdmission:
         """The class bound used for headroom and booking; cheap total is checked separately."""
         if cost is PhaseCost.EXPENSIVE:
             return self.expensive_lane
+        if cost is PhaseCost.ANSWERING:
+            return self.answering_lane
         return self.retiring_lane if cheap_class is CheapClass.RETIRING else self.review_lane
 
     def denied_for(self, cost: PhaseCost, *, cheap_class: CheapClass | None = None) -> str | None:
@@ -105,6 +109,9 @@ class AgentAdmission:
         if cost is PhaseCost.EXPENSIVE:
             denied = self.expensive_denied
             lane = self.expensive_lane
+        elif cost is PhaseCost.ANSWERING:
+            denied = self.answering_denied
+            lane = self.answering_lane
         else:
             denied = self.cheap_denied
             lane = self.cheap_lane
@@ -133,7 +140,7 @@ class AgentAdmission:
         """A seated row has paid for its lane; independent brakes can still refuse its claim."""
         if not seated:
             return self.denied_reason(phase)
-        return self.cheap_guard_denied if phase_cost(phase) is PhaseCost.CHEAP else self.expensive_guard_denied
+        return self.expensive_guard_denied if phase_cost(phase) is PhaseCost.EXPENSIVE else self.cheap_guard_denied
 
     def admit(self, task_pk: int, phase: str, *, at: str) -> bool:
         """True when *task_pk* now holds a seat and may be dispatched — else refuse, at *at*.
@@ -171,6 +178,7 @@ class AgentAdmission:
             cheap_class=cheap_class,
             lane_ceiling=total_lane.ceiling,
             class_ceiling=lane.ceiling if cheap_class is not None else None,
+            lane=cost,
         ):
             if reason := cap_hold_reason(task_pk):
                 return reason
@@ -310,16 +318,19 @@ class HeadlessAdmissionStatus:
         review_lane = LaneBound(ceiling=widths.review, headroom=max(0, widths.review - occupied.review))
         retiring_lane = LaneBound(ceiling=widths.retiring, headroom=max(0, widths.retiring - occupied.retiring))
         expensive_lane = LaneBound(ceiling=widths.expensive, headroom=max(0, widths.expensive - occupied.expensive))
+        answering_lane = LaneBound(ceiling=widths.answering, headroom=max(0, widths.answering - occupied.answering))
         if self.blocked:
             return AgentAdmission(
                 expensive_denied=self.blocked,
                 cheap_denied=self.blocked,
                 review_denied=self.blocked,
                 retiring_denied=self.blocked,
+                answering_denied=self.blocked,
                 cheap_lane=cheap_lane,
                 review_lane=review_lane,
                 retiring_lane=retiring_lane,
                 expensive_lane=expensive_lane,
+                answering_lane=answering_lane,
                 expensive_guard_denied=self.blocked,
                 cheap_guard_denied=self.blocked,
             )
@@ -331,15 +342,18 @@ class HeadlessAdmissionStatus:
         cheap = cheap_guard or _ceiling_denial(widths.cheap, occupied.cheap, lane="cheap")
         review = cheap_guard or _ceiling_denial(widths.review, occupied.review, lane="review")
         retiring = cheap_guard or _ceiling_denial(widths.retiring, occupied.retiring, lane="retiring")
+        answering = cheap_guard or _ceiling_denial(widths.answering, occupied.answering, lane="answering")
         return AgentAdmission(
             expensive_denied=expensive,
             cheap_denied=cheap,
             review_denied=review,
             retiring_denied=retiring,
+            answering_denied=answering,
             cheap_lane=cheap_lane,
             review_lane=review_lane,
             retiring_lane=retiring_lane,
             expensive_lane=expensive_lane,
+            answering_lane=answering_lane,
             expensive_guard_denied=expensive_guard,
             cheap_guard_denied=cheap_guard,
             seats_released=self.seats_released,
@@ -406,6 +420,7 @@ def _read_admission(
             expensive=task_model.objects.expensive_lane_occupancy(),
             review=task_model.objects.cheap_class_occupancy(CheapClass.REVIEW),
             retiring=task_model.objects.cheap_class_occupancy(CheapClass.RETIRING),
+            answering=task_model.objects.answering_lane_occupancy(),
         ),
         seats_released=task_model.objects.cheap_lane_seats_released(),
         blocked=blocked,
@@ -443,6 +458,7 @@ def agent_admission_verdict() -> AgentAdmission:
             cheap_denied=blocked,
             review_denied=blocked,
             retiring_denied=blocked,
+            answering_denied=blocked,
             expensive_guard_denied=blocked,
             cheap_guard_denied=blocked,
         )

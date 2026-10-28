@@ -210,10 +210,17 @@ CAPABILITIES: tuple[Capability, ...] = (
         "it is the only surviving record of; read-only (#4527)",
     ),
     Capability(
-        "teatree ticket settle-holds",
+        "teatree ticket partial-merge-report",
         json_output=True,
         exit_codes=("0",),
-        note="--dry-run reports held reviews without changing them; --json emits every decision",
+        note="--json emits merged tickets with an open issue and a declared remainder, plus unreadable rows; read-only",
+    ),
+    Capability(
+        "teatree ticket settle-holds",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--dry-run reports held reviews without changing them; --json emits every decision; "
+        "1 when the pass failed partway or was deferred (the rows already settled are still emitted)",
     ),
     Capability(
         "teatree review apply-reviewer-policy",

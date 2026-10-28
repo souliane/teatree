@@ -522,8 +522,8 @@ def drain_unmirrored_deferred_questions(
     """Post the un-mirrored :class:`DeferredQuestion` backlog and stamp its mirror.
 
     The tick-level outbound poster for the headless ask-loop (peer of
-    ``drain_undelivered_notifies``): the SDK lane and the orphaned
-    ``task_repair._escalate_stall`` rows record a pending question with no
+    ``drain_undelivered_notifies``): the SDK lane, and any repair-halt row
+    recorded before halts became health signals, hold a pending question with no
     ``slack_ts`` and nobody posts it. This drain posts each via
     :func:`notify_user` (idempotent under the
     ``mirror-deferred-question:<stable-ref>`` key — the row's

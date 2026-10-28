@@ -38,7 +38,7 @@ _BOT_DM: RawAPIDict = {
 
 @dataclass
 class FakeMessaging:
-    user_id: str = OWNER_SLACK_ID
+    user_id: str = "U_HUMAN"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -51,6 +51,9 @@ class FakeMessaging:
         return {"ok": True, "user_id": "U_BOT", "bot_id": "B_BOT"}
 
 
+_COLLEAGUE_DM: RawAPIDict = {**_HUMAN_DM, "ts": "1700000000.000300", "user": "U_COLLEAGUE", "text": "run my job"}
+
+
 class TestDrainedDmsAreRecorded(TestCase):
     def setUp(self) -> None:
         self.queue = Path(self.enterContext(TemporaryDirectory())) / "slack-events.jsonl"
@@ -61,8 +64,8 @@ class TestDrainedDmsAreRecorded(TestCase):
             queue.writelines(json.dumps({"overlay": "demo", "event": event}) + "\n" for event in events)
 
     @staticmethod
-    def _scan() -> None:
-        SlackMentionsScanner(backend=FakeMessaging(), overlay="demo").scan()
+    def _scan(backend: FakeMessaging | None = None) -> None:
+        SlackMentionsScanner(backend=backend or FakeMessaging(), overlay="demo").scan()
 
     def test_a_dm_whose_live_record_failed_is_recorded_by_the_next_drain(self) -> None:
         self._enqueue(_HUMAN_DM)
@@ -88,12 +91,12 @@ class TestDrainedDmsAreRecorded(TestCase):
         }
         self._enqueue(event)
         with (
-            patch.object(slack_inbound, "messaging_from_overlay", return_value=FakeMessaging()),
+            patch.object(slack_inbound, "messaging_from_overlay", return_value=FakeMessaging(user_id=OWNER_SLACK_ID)),
             patch.object(slack_inbound, "wake_slack_answer"),
             self.assertLogs("teatree.loop.scanners.slack_dm_recorder", level="INFO") as logs,
         ):
             slack_inbound.record_and_wake_slack_answer("demo", event)
-            self._scan()
+            self._scan(FakeMessaging(user_id=OWNER_SLACK_ID))
 
         assert PendingChatInjection.objects.count() == 0
         assert sum("101.2" in line and "posted through an app token" in line for line in logs.output) == 1
@@ -110,6 +113,7 @@ class TestDrainedDmsAreRecorded(TestCase):
 
         @dataclass
         class ReadingBackend(FakeMessaging):
+            user_id: str = OWNER_SLACK_ID
             reads: list[str] = field(default_factory=list)
 
             def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
@@ -134,6 +138,15 @@ class TestDrainedDmsAreRecorded(TestCase):
         self._scan()
 
         assert list(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == [_HUMAN_DM_TS]
+
+    def test_a_colleagues_drained_dm_is_neither_recorded_nor_signalled(self) -> None:
+        self._enqueue(_COLLEAGUE_DM, _HUMAN_DM)
+
+        signals = SlackMentionsScanner(backend=FakeMessaging(), overlay="demo").scan()
+
+        assert [signal.payload["ts"] for signal in signals] == [_HUMAN_DM_TS]
+        assert list(PendingChatInjection.objects.values_list("slack_ts", flat=True)) == [_HUMAN_DM_TS]
+        assert not self.queue.exists()
 
     def test_a_failed_card_thread_read_is_retained_while_another_dm_records(self) -> None:
         card = DeferredQuestion.record("Can I ship?", card=OWNER_CARD, slack_channel="D1", slack_ts="100.2")

@@ -25,9 +25,7 @@ resolver without importing the re-ask scheduler during CLI startup.
 """
 
 import enum
-from datetime import timedelta
 
-CHECKOUT_ATTEST_HOLD = timedelta(minutes=8)
 ACTIVE_SCHEDULE_SETTING = "active_loop_schedule"
 OWNER_FALLBACK_ZONE = "Europe/Paris"
 
@@ -61,7 +59,6 @@ OWNER_AUDIENCE_VALUES: frozenset[str] = frozenset(a.value for a in OWNER_AUDIENC
 
 __all__ = [
     "ACTIVE_SCHEDULE_SETTING",
-    "CHECKOUT_ATTEST_HOLD",
     "OWNER_AUDIENCES",
     "OWNER_AUDIENCE_VALUES",
     "OWNER_FALLBACK_ZONE",

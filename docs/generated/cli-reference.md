@@ -1627,6 +1627,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           touched; exit --skip-code when none.               │
 │ ci-trigger                Dispatch ``eval-ci-heal.yml`` for a PR branch and  │
 │                           print the head SHA it keys on.                     │
+│ baseline-status           Report whether a recent full-suite green proof     │
+│                           over the current catalog is on record.             │
 │ ci-status                 Resolve one eval-ci-heal run's verdict (and, on    │
 │                           failure, its triaged reds).                        │
 │ green-proof               Assert the merged eval-heal JSON proves a          │
@@ -2012,6 +2014,29 @@ Usage: t3 eval ci-trigger [OPTIONS]
 │    --repo              TEXT  owner/repo the eval-ci-heal workflow lives in.  │
 │                              [default: souliane/teatree]                     │
 │    --help                    Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval baseline-status`
+
+```
+Usage: t3 eval baseline-status [OPTIONS]
+
+ Report whether a recent full-suite green proof over the current catalog is on
+ record.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ref                 TEXT                  Branch whose eval-ci-heal        │
+│                                             full-suite runs count as the     │
+│                                             baseline.                        │
+│                                             [default: main]                  │
+│ --max-age-days        INTEGER RANGE [x>=1]  Oldest full-suite proof still    │
+│                                             called current.                  │
+│                                             [default: 7]                     │
+│ --repo                TEXT                  owner/repo the eval-ci-heal      │
+│                                             workflow lives in.               │
+│                                             [default: souliane/teatree]      │
+│ --help                                      Show this message and exit.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6763,6 +6788,10 @@ Usage: t3 slack check [OPTIONS]
  is unambiguous, and preferred over an ``EMPTY`` stdout sentinel: stdout
  is already the message channel, and a sentinel would need filtering by
  every future consumer.
+
+ A direct message from anyone but the overlay's configured owner is dropped
+ silently:
+ never printed, never acknowledged.
 
  A singleton guard serialises the drain: the 30s cron can double-fire and
  two concurrent drains would ack the same mentions twice, so a second drain
@@ -12822,6 +12851,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
+│ partial-merge-report         List merged tickets whose open issue has a      │
+│                              declared remainder.                             │
 │ settle-holds                 Check held no-diff reviews; --dry-run reads     │
 │                              without changing tickets.                       │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
@@ -13410,6 +13441,20 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the rows as JSON.                                       │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket partial-merge-report`
+
+```
+Usage: t3 teatree ticket partial-merge-report [OPTIONS]
+
+ List merged tickets whose open issue has a declared remainder.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Limit the report to one overlay.                      │
+│ --json                 Emit machine-readable JSON.                           │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

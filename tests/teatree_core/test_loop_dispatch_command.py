@@ -24,6 +24,7 @@ from teatree.core.worktree.occupancy import occupancy_holder
 from teatree.loop.admit_budget import write_admit_budget
 from teatree.loop.drain import set_worker_quiescing
 from teatree.skill_support import index as skill_index
+from tests._git_repo import run_git
 from tests._loop_principal_env import pinned_loop_principal
 from tests._pr_open_state_stub import mint_open_pr_review
 from tests._unreadable_apm_manifest import NOT_UTF8_MANIFEST, UNPARSABLE_MANIFEST, unreadable_running_manifest
@@ -92,12 +93,12 @@ class TestClaimNextPayload(_LoopDispatchTest):
         assert payload[0]["task_id"] == task.pk
         assert payload[0]["subagent"] == "t3:coder"
 
-    def test_dirty_unattested_checkout_parks_before_emitting_spawn(self) -> None:
+    def test_unpushed_checkout_without_proof_parks_before_emitting_spawn(self) -> None:
         task = self._author_task()
         with tempfile.TemporaryDirectory() as root:
             checkout = Path(root) / "checkout"
             _init_repo_with_branch(checkout, branch="feature", commits_ahead=3)
-            WorktreeFactory(ticket=task.ticket, extra={"worktree_path": str(checkout)})
+            WorktreeFactory(ticket=task.ticket, branch="feature", extra={"worktree_path": str(checkout)})
             stdout = StringIO()
             with patch(
                 "teatree.core.worktree.checkout_fence.read_process_table",
@@ -108,13 +109,14 @@ class TestClaimNextPayload(_LoopDispatchTest):
         assert json.loads(stdout.getvalue()) == []
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
+        assert "no owned pull request" in task.attempts.latest("pk").error
 
     def test_pristine_checkout_is_claimed_before_emitting_spawn(self) -> None:
         task = self._author_task()
         with tempfile.TemporaryDirectory() as root:
             checkout = Path(root) / "checkout"
             _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
-            worktree = WorktreeFactory(ticket=task.ticket, extra={"worktree_path": str(checkout)})
+            worktree = WorktreeFactory(ticket=task.ticket, branch="feature", extra={"worktree_path": str(checkout)})
             stdout = StringIO()
             with patch(
                 "teatree.core.worktree.checkout_fence.read_process_table",
@@ -135,15 +137,18 @@ class TestClaimNextPayload(_LoopDispatchTest):
         with tempfile.TemporaryDirectory() as root:
             checkout = Path(root) / "checkout"
             _init_repo_with_branch(checkout, branch="feature", commits_ahead=0)
-            worktree = WorktreeFactory(ticket=ticket, extra={"worktree_path": str(checkout)})
+            worktree = WorktreeFactory(ticket=ticket, branch="feature", extra={"worktree_path": str(checkout)})
             claimed = StringIO()
             with patch(
                 "teatree.core.worktree.checkout_fence.read_process_table",
                 return_value=ProcessTable(frozenset(), "/proc"),
             ):
                 call_command("loop_dispatch", "claim-next", "--json", stdout=claimed)
+            assert json.loads(claimed.getvalue())[0]["task_id"] == task.pk
             pristine = Worktree.objects.get(pk=worktree.pk).get_extra()["attested_state"]
             (checkout / "a.py").write_text("in-session edit\n")
+            run_git(checkout, "add", "a.py")
+            run_git(checkout, "commit", "-m", "in-session edit")
 
             with patch(
                 "teatree.core.worktree.occupancy.read_process_table",

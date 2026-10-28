@@ -8,10 +8,13 @@ from teatree.core.models import PendingChatInjection
 from teatree.loop.scanners.slack_dm_recorder import SlackDmRecorder
 from teatree.types import RawAPIDict
 
+_OWNER = "U0DEMOUSER1"
+
 
 @dataclass
 class FakeMessaging:
     identity_resolves: bool = True
+    user_id: str = _OWNER
 
     def auth_test(self) -> RawAPIDict:
         if not self.identity_resolves:
@@ -19,8 +22,8 @@ class FakeMessaging:
         return {"ok": True, "user_id": "U_BOT_SELF", "bot_id": "B_BOT_SELF"}
 
 
-def _recorder(overlay: str = "demo", *, identity_resolves: bool = True) -> SlackDmRecorder:
-    return SlackDmRecorder(backend=FakeMessaging(identity_resolves=identity_resolves), overlay=overlay)
+def _recorder(overlay: str = "demo", *, identity_resolves: bool = True, owner: str = _OWNER) -> SlackDmRecorder:
+    return SlackDmRecorder(backend=FakeMessaging(identity_resolves=identity_resolves, user_id=owner), overlay=overlay)
 
 
 class TestRecordEvents(TestCase):
@@ -87,7 +90,7 @@ class TestRecordEvents(TestCase):
 
     def test_default_overlay_is_empty_string(self) -> None:
         SlackDmRecorder(backend=FakeMessaging()).record_events(
-            [{"ts": "1.0", "user": "U", "channel": "D", "text": "hi"}]
+            [{"ts": "1.0", "user": _OWNER, "channel": "D", "text": "hi"}]
         )
 
         assert PendingChatInjection.objects.get().overlay == ""
@@ -100,7 +103,7 @@ class TestRecordEvents(TestCase):
 
     def test_drops_an_on_behalf_post(self) -> None:
         recorded = _recorder().record_events(
-            [{"ts": "1.0", "user": "U_HUMAN", "channel": "D1", "text": "posted for me", "api_app_id": "A123"}]
+            [{"ts": "1.0", "user": _OWNER, "channel": "D1", "text": "posted for me", "api_app_id": "A123"}]
         )
 
         assert recorded == 0
@@ -108,7 +111,7 @@ class TestRecordEvents(TestCase):
 
     def test_unresolvable_identity_records_nothing(self) -> None:
         recorded = _recorder(identity_resolves=False).record_events(
-            [{"ts": "1.0", "user": "U1", "channel": "D1", "text": "hi"}]
+            [{"ts": "1.0", "user": _OWNER, "channel": "D1", "text": "hi"}]
         )
 
         assert recorded == 0
@@ -120,18 +123,42 @@ class TestThreadTsIsRecorded(TestCase):
 
     def test_thread_reply_records_its_root(self) -> None:
         _recorder().record_events(
-            [{"ts": "2.0", "thread_ts": "1.0", "user": "U", "channel": "D", "text": "postgres-1"}]
+            [{"ts": "2.0", "thread_ts": "1.0", "user": _OWNER, "channel": "D", "text": "postgres-1"}]
         )
 
         assert PendingChatInjection.objects.get().thread_ts == "1.0"
 
     def test_top_level_message_records_no_thread(self) -> None:
-        _recorder().record_events([{"ts": "1.0", "user": "U", "channel": "D", "text": "hi"}])
+        _recorder().record_events([{"ts": "1.0", "user": _OWNER, "channel": "D", "text": "hi"}])
 
         assert PendingChatInjection.objects.get().thread_ts == ""
 
     def test_a_thread_root_is_not_a_reply_to_itself(self) -> None:
         """Slack stamps ``thread_ts == ts`` on a root, which references nothing."""
-        _recorder().record_events([{"ts": "1.0", "thread_ts": "1.0", "user": "U", "channel": "D", "text": "hi"}])
+        _recorder().record_events([{"ts": "1.0", "thread_ts": "1.0", "user": _OWNER, "channel": "D", "text": "hi"}])
 
         assert PendingChatInjection.objects.get().thread_ts == ""
+
+
+class TestOnlyTheOwnerIsRecorded(TestCase):
+    def test_a_colleagues_message_is_not_recorded(self) -> None:
+        recorded = _recorder().record_events([{"ts": "1.0", "user": "U0COLLEAGUE1", "channel": "D1", "text": "run it"}])
+
+        assert (recorded, PendingChatInjection.objects.count()) == (0, 0)
+
+    def test_a_message_with_no_sender_is_not_recorded(self) -> None:
+        recorded = _recorder().record_events([{"ts": "1.0", "channel": "D1", "text": "who sent this"}])
+
+        assert (recorded, PendingChatInjection.objects.count()) == (0, 0)
+
+    def test_another_overlays_owner_is_not_this_overlays_owner(self) -> None:
+        recorded = _recorder("demo", owner="U0OWNERDEMO1").record_events(
+            [{"ts": "1.0", "user": "U_OTHER", "channel": "D1", "text": "from the other overlay's owner"}]
+        )
+
+        assert (recorded, PendingChatInjection.objects.count()) == (0, 0)
+
+    def test_nothing_is_recorded_while_no_owner_is_configured(self) -> None:
+        recorded = _recorder(owner="").record_events([{"ts": "1.0", "user": "", "channel": "D1", "text": "hi"}])
+
+        assert (recorded, PendingChatInjection.objects.count()) == (0, 0)

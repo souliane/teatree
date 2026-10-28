@@ -32,6 +32,7 @@ from django.utils import timezone
 from teatree.config import get_effective_settings
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
+from teatree.core.admission.lanes import ANSWERING_LANE_WIDTH
 from teatree.core.admission_governor import MachineSignal, QuotaSignal, decide_admission
 from teatree.core.agent_admission import (
     AgentAdmission,
@@ -1443,3 +1444,66 @@ class TestOneVerdictResolvesTheSettingsOnce(TestCase):
     def test_the_metered_lane_resolves_once(self) -> None:
         _pin_metered_harness()
         self._assert_one_resolution()
+
+
+class TestOwnerAnsweringVerdict(TestCase):
+    """The owner-answering class has its own bound and the cheap classes' machine-brake exemption (#5655)."""
+
+    _MELTED = 8 * 5.0 + 1
+
+    def _verdict(self, *, load1: float = 1.0, coding: int = 0, answering: int = 0) -> AgentAdmission:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=load1)),
+            patch.object(Task.objects, "expensive_lane_occupancy", return_value=coding),
+            patch.object(Task.objects, "answering_lane_occupancy", return_value=answering),
+        ):
+            return agent_admission_verdict()
+
+    def test_a_load_brake_denies_coding_and_admits_an_owner_question(self) -> None:
+        verdict = self._verdict(load1=self._MELTED)
+
+        assert verdict.denied_reason("coding") is not None
+        assert verdict.denied_reason("answering") is None
+
+    def test_a_seated_owner_question_is_not_refused_at_claim_time_by_the_load_brake(self) -> None:
+        verdict = self._verdict(load1=self._MELTED)
+
+        assert verdict.claim_denied_reason("answering", seated=True) is None
+        assert verdict.claim_denied_reason("coding", seated=True) is not None
+
+    def test_a_full_coding_lane_does_not_refuse_an_owner_question(self) -> None:
+        verdict = self._verdict(coding=999)
+
+        assert verdict.denied_reason("coding") is not None
+        assert verdict.denied_reason("answering") is None
+
+    def test_the_answering_class_is_bounded_by_its_own_width(self) -> None:
+        verdict = self._verdict(answering=ANSWERING_LANE_WIDTH)
+
+        assert f"answering lane occupancy {ANSWERING_LANE_WIDTH} at/over the answering ceiling" in (
+            verdict.denied_reason("answering") or ""
+        )
+        assert verdict.denied_reason("reviewing") is None
+
+    def test_a_spent_token_budget_still_denies_the_answering_class(self) -> None:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_exhausted_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            verdict = agent_admission_verdict()
+
+        assert verdict.denied_reason("answering") is not None
+
+    def test_a_claim_block_denies_the_answering_class_too(self) -> None:
+        with patch.object(gate_mod, "claim_admission_block_reason", return_value="worker quiescing"):
+            verdict = agent_admission_verdict()
+
+        assert verdict.denied_reason("answering") == "worker quiescing"
+        assert verdict.claim_denied_reason("answering", seated=True) == "worker quiescing"
+
+    def test_the_status_read_carries_the_same_answering_denial_when_claims_are_blocked(self) -> None:
+        with patch.object(gate_mod, "claim_admission_block_reason", return_value="worker quiescing"):
+            verdict = headless_admission_status().verdict()
+
+        assert verdict.denied_reason("answering") == "worker quiescing"
