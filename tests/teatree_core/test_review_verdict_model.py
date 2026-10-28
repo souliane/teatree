@@ -60,6 +60,35 @@ class TestRecordContract(TestCase):
             is HeadVerdictState.NO_MERGE_SAFE
         )
 
+    def test_unverified_cannot_conceal_a_failed_check_or_a_blocking_finding(self) -> None:
+        blocking = Finding(
+            severity="major",
+            kind="blocking",
+            basis="executed",
+            summary="fails when run",
+            file="a.py",
+            line=1,
+            reproduction="pytest a.py: 1 failed",
+        )
+        concealing: list[dict[str, object]] = [
+            {"gh_verify_result": "failed", "findings": []},
+            {"gh_verify_result": "pending", "findings": [blocking]},
+        ]
+
+        for case in concealing:
+            with self.subTest(case=case), pytest.raises(ReviewVerdictError, match="conceal"):
+                ReviewVerdict.record(
+                    pr_id=42,
+                    slug="souliane/teatree",
+                    reviewed_sha=_SHA,
+                    verdict="unverified",
+                    reviewer_identity="cold-reviewer",
+                    evidence_gaps=["ci_unreadable"],
+                    **case,
+                )
+
+        assert not ReviewVerdict.objects.exists()
+
     def test_unverified_does_not_hide_a_recorded_same_head_pass(self) -> None:
         passed = ReviewVerdict.record(
             pr_id=42,

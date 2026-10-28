@@ -181,3 +181,58 @@ class TestReviewHoldDisposition(TestCase):
         )
 
         assert disposition.covers(hold)
+
+    def test_a_clearing_verdict_from_another_head_or_pr_cannot_clear_a_hold(self) -> None:
+        hold, _same_head = self._pair()
+        points = [
+            {
+                "index": 0,
+                "classification": "disproved_premise",
+                "citation": "run at this head",
+                "counter_reproduction": _COUNTER,
+            }
+        ]
+        elsewhere = {"reviewed_sha": "b" * 40, "pr_id": 7}, {"reviewed_sha": _SHA, "pr_id": 8}
+
+        for where in elsewhere:
+            clearing = ReviewVerdict.record(
+                slug="souliane/teatree", verdict="merge_safe", reviewer_identity="another-reviewer", **where
+            )
+            with self.subTest(where=where), pytest.raises(ReviewHoldDispositionError, match="same PR and head"):
+                ReviewHoldDisposition.record(hold=hold, clearing_verdict=clearing, points=points)
+
+        assert not ReviewHoldDisposition.objects.exists()
+
+    def test_a_confirmed_failed_check_cannot_be_dispositioned(self) -> None:
+        hold = ReviewVerdict.record(
+            pr_id=7,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            gh_verify_result="failed",
+            findings=[Finding(severity="major", summary="required check is red", reproduction="gh run view: failure")],
+        )
+        clearing = ReviewVerdict.record(
+            pr_id=7,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="independent-reviewer",
+        )
+
+        with pytest.raises(ReviewHoldDispositionError, match="confirmed failed check"):
+            ReviewHoldDisposition.record(
+                hold=hold,
+                clearing_verdict=clearing,
+                points=[
+                    {
+                        "index": 0,
+                        "classification": "disproved_premise",
+                        "citation": "re-ran the check at this head",
+                        "counter_reproduction": _COUNTER,
+                    }
+                ],
+            )
+
+        assert not ReviewHoldDisposition.objects.exists()
