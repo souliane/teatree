@@ -97,35 +97,31 @@ class TestCrashingToolAnswers(TestCase):
     def test_sync_crash_names_class_and_redacts_message(self) -> None:
         message = "boom token=abc123"
 
-        def sync_crash() -> str:
+        def crash() -> str:
             raise RuntimeError(message)
 
-        async def async_crash() -> str:
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == "Error executing tool probe: RuntimeError: boom token=<redacted>"
+        assert "abc123" not in text
+
+    def test_async_crash_names_class_and_redacts_message(self) -> None:
+        message = "boom token=abc123"
+
+        async def crash() -> str:
             await asyncio.sleep(0)
             raise RuntimeError(message)
 
-        for crash in (sync_crash, async_crash):
-            with self.subTest(crash=crash.__name__):
-                text = self._text(asyncio.run(self._call(crash)))
-                assert text == "Error executing tool probe: RuntimeError: boom token=<redacted>"
-                assert "abc123" not in text
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == "Error executing tool probe: RuntimeError: boom token=<redacted>"
 
     def test_long_crash_message_is_capped(self) -> None:
+        message = "x" * 5000
+
         def crash() -> str:
-            raise RuntimeError("x" * 5000)
+            raise RuntimeError(message)
 
         text = self._text(asyncio.run(self._call(crash)))
         assert text == f"Error executing tool probe: RuntimeError: {'x' * 500}"
-
-    def test_redaction_precedes_the_crash_detail_cap(self) -> None:
-        message = f"{'x' * 485} token=notarealvalue"
-
-        def crash_with_secret() -> str:
-            raise RuntimeError(message)
-
-        text = self._text(asyncio.run(self._call(crash_with_secret)))
-        assert text == f"Error executing tool probe: RuntimeError: {'x' * 485} token=<redacte"
-        assert "notarealvalue" not in text
 
     def test_redaction_scans_only_the_leading_ten_thousand_characters(self) -> None:
         message = "a" * 11_000 + " token=notarealvalue"
@@ -139,41 +135,50 @@ class TestCrashingToolAnswers(TestCase):
         assert [len(call.args[0]) for call in redactor.call_args_list] == [10_000]
         assert "notarealvalue" not in text
 
-    def test_crash_without_printable_detail_still_names_class(self) -> None:
-        def empty_crash() -> str:
+    def test_empty_crash_message_still_names_the_class(self) -> None:
+        def crash() -> str:
             raise RuntimeError
 
+        assert self._text(asyncio.run(self._call(crash))) == "Error executing tool probe: RuntimeError"
+
+    def test_crash_with_unprintable_message_still_names_the_class(self) -> None:
         class UnprintableError(RuntimeError):
             def __str__(self) -> str:
                 message = "str exploded token=notarealvalue"
                 raise RuntimeError(message)
 
-        def unprintable_crash() -> str:
+        def crash() -> str:
             raise UnprintableError
 
-        for crash, expected in (
-            (empty_crash, "RuntimeError"),
-            (unprintable_crash, "UnprintableError"),
-        ):
-            with self.subTest(crash=crash.__name__):
-                text = self._text(asyncio.run(self._call(crash)))
-                assert text == f"Error executing tool probe: {expected}"
-                assert "notarealvalue" not in text
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == "Error executing tool probe: UnprintableError"
+        assert "notarealvalue" not in text
 
-    def test_deliberate_errors_keep_their_text(self) -> None:
+    def test_redaction_precedes_the_crash_detail_cap(self) -> None:
+        message = f"{'x' * 480} refresh_token=notarealvalue"
+
+        def crash() -> str:
+            raise RuntimeError(message)
+
+        text = self._text(asyncio.run(self._call(crash)))
+        assert text == f"Error executing tool probe: RuntimeError: {'x' * 480} refresh_token=<reda"
+        assert "notarealvalue" not in text
+
+    def test_deliberate_tool_error_keeps_its_text(self) -> None:
         message = "bad input"
 
-        def build_refusal(error_type: type[ToolError] | type[ResourceError]) -> Callable[[], str]:
-            def refuse() -> str:
-                raise error_type(message)
+        def refuse() -> str:
+            raise ToolError(message)
 
-            return refuse
+        assert self._text(asyncio.run(self._call(refuse))) == "Error executing tool probe: bad input"
 
-        for error_type in (ToolError, ResourceError):
-            with self.subTest(error_type=error_type.__name__):
-                assert self._text(asyncio.run(self._call(build_refusal(error_type)))) == (
-                    "Error executing tool probe: bad input"
-                )
+    def test_resource_error_keeps_its_text(self) -> None:
+        message = "bad input"
+
+        def refuse() -> str:
+            raise ResourceError(message)
+
+        assert self._text(asyncio.run(self._call(refuse))) == "Error executing tool probe: bad input"
 
     def test_protocol_error_remains_a_protocol_error(self) -> None:
         message = "protocol says no"
