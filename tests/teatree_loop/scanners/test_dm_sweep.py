@@ -9,10 +9,9 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, Loop
-from teatree.core.owner_threads import OwnerThread
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.scanners.dm_sweep import DmSweepScanner, SlackThreadReply, _is_owner_reply
+from teatree.loop.scanners.dm_sweep import DmSweepScanner
 from teatree.types import RawAPIDict
 from tests._owner_channel import OWNER_DECISION
 
@@ -50,16 +49,27 @@ class TestSilenceWhenNothingToDo(TestCase):
 
 
 class TestOwnerReplyProbe(TestCase):
-    def test_an_owner_reply_in_the_thread_resolves_it(self) -> None:
+    def test_discussion_reply_keeps_an_unanswered_card_open(self) -> None:
+        row = _thread("Keep this rule?")
+        backend = _FakeMessaging(replies=[{"ts": "1779990002.000001", "text": "What does it say?"}])
+
+        signals = DmSweepScanner(backend=backend).scan()
+
+        row.refresh_from_db()
+        assert signals == []
+        assert row.status == DeferredQuestion.STATUS_PENDING
+        assert not row.audits.filter(action="dismissed").exists()
+
+    def test_an_owner_option_reply_does_not_let_the_sweep_resolve_it(self) -> None:
         row = _thread()
         backend = _FakeMessaging(replies=[{"ts": "1779990002.000001", "text": "yes, ship"}])
 
         signals = DmSweepScanner(backend=backend).scan()
 
-        assert [s.kind for s in signals] == ["dm_sweep.resolved"]
-        assert backend.calls == [(CHANNEL, TS)]
+        assert signals == []
+        assert backend.calls == []
         row.refresh_from_db()
-        assert row.status == DeferredQuestion.STATUS_DISMISSED
+        assert row.status == DeferredQuestion.STATUS_PENDING
 
     def test_the_bots_own_post_is_not_an_owner_reply(self) -> None:
         row = _thread()
@@ -87,32 +97,6 @@ class TestScanIsResilient(TestCase):
         with mock.patch("teatree.core.owner_dm_sweep.run_sweep", side_effect=RuntimeError("boom")):
             _, signals, error = _run_job(_ScannerJob(scanner=DmSweepScanner(), overlay=""))
         assert (signals, error) == ([], "RuntimeError: boom")
-
-
-class TestOwnerReplyProbeSkipsUnaddressableThreads(TestCase):
-    def test_a_thread_with_no_slack_coordinates_is_never_probed(self) -> None:
-        backend = _FakeMessaging()
-        probe = DmSweepScanner(backend=backend)._owner_replied_probe()
-        assert probe is not None
-
-        row = DeferredQuestion.record("Ship it?", slack_channel="", slack_ts="")
-        assert probe(OwnerThread(question=row)) is False
-        assert backend.calls == []
-
-
-class TestIsOwnerReply:
-    def test_a_non_dict_reply_is_never_an_owner_reply(self) -> None:
-        assert _is_owner_reply("not a dict", thread_ts="root") is False
-
-    def test_a_typed_human_reply_in_the_thread_counts(self) -> None:
-        reply: SlackThreadReply = {"ts": "1779990002.000001", "text": "yes, ship"}
-        assert _is_owner_reply(reply, thread_ts="1779990001.000001") is True
-
-    def test_a_bot_post_and_the_root_message_do_not_count(self) -> None:
-        bot: SlackThreadReply = {"ts": "1779990002.000001", "text": "Pending question", "bot_id": "B1"}
-        assert _is_owner_reply(bot, thread_ts="1779990001.000001") is False
-        root: SlackThreadReply = {"ts": "root", "text": "the question"}
-        assert _is_owner_reply(root, thread_ts="root") is False
 
 
 class TestWatermark(TestCase):

@@ -32,7 +32,7 @@ from django_typer.management import command, initialize
 
 from teatree.agents.invoking_ticket import resolve_invoking_ticket
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.management.commands._task_cancel_auth import direct_owner_action
+from teatree.core.management.commands.owner_action_auth import direct_owner_action
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
