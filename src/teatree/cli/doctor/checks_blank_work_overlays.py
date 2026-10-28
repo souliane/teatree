@@ -59,8 +59,8 @@ def check_blank_work_overlays() -> bool:
     tickets = apps.get_model("core", "Ticket").objects
     sessions = apps.get_model("core", "Session").objects
     worktrees = apps.get_model("core", "Worktree").objects
-    merged_urls = frozenset(
-        apps.get_model("core", "PullRequest").objects.filter(state="merged").values_list("url", flat=True)
+    merged_prs = frozenset(
+        apps.get_model("core", "PullRequest").objects.filter(state="merged").values_list("ticket_id", "url")
     )
     results = []
     for name, rows in (("Ticket", tickets), ("Session", sessions), ("Worktree", worktrees)):
@@ -84,8 +84,15 @@ def check_blank_work_overlays() -> bool:
             ),
             _emit(
                 sum(
-                    _pr_branch_unresolved(extra, merged_urls)
-                    for extra in tickets.values_list("extra", flat=True).iterator()
+                    _pr_branch_unresolved(
+                        extra,
+                        frozenset(
+                            url for url in (extra.get("reopened_over_pr_urls") or []) if (ticket_id, url) in merged_prs
+                        )
+                        if isinstance(extra, dict)
+                        else frozenset(),
+                    )
+                    for ticket_id, extra in tickets.values_list("pk", "extra").iterator()
                 ),
                 "unresolved PR branch row(s)",
                 "Repair pr_urls and pr_url_by_branch so every PR URL has a source branch.",

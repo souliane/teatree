@@ -16,10 +16,9 @@ from django.test import TestCase
 
 from teatree.cli.doctor.checks_blank_work_overlays import check_blank_work_overlays
 from teatree.core.merge import merge_ticket_pr
-from teatree.core.merge.partial_merge import CLOSING_PATTERN, MergedPrReading, PrLink
+from teatree.core.merge.partial_merge import MergedPrReading, PrLink
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.runners.ship import CLOSE_KEYWORD_RE
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from tests._forge_stub import CLEAN_PR_BODY, CLEAN_PR_TITLE
 from tests.teatree_core.test_merge_execution import _clear, _GhStub
@@ -113,6 +112,36 @@ def test_a_part_of_link_with_no_declared_remainder_leaves_none(body: str) -> Non
     assert not reading.leaves_remainder
 
 
+def test_a_socket_sentence_does_not_claim_the_issue_stays_open() -> None:
+    reading = MergedPrReading.parse(
+        "Part of #4242\n\nThe lease holder does not close the socket on timeout.\n", _ticket()
+    )
+
+    assert not reading.leaves_remainder
+
+
+def test_unmet_with_a_real_item_starting_with_no_is_a_remainder() -> None:
+    reading = MergedPrReading.parse("Part of #4242\n\nUnmet: no coverage for the retry path", _ticket())
+
+    assert reading.unmet == ("no coverage for the retry path",)
+
+
+def test_a_completed_status_cell_and_fenced_marker_do_not_declare_remainders() -> None:
+    body = (
+        "Part of #4242\n\n| Item | Status |\n| --- | --- |\n"
+        "| Retry path | Unmet before this PR, Met now |\n\n"
+        "```markdown\nUnmet: example only\n```\n"
+    )
+
+    assert not MergedPrReading.parse(body, _ticket()).leaves_remainder
+
+
+def test_a_closing_example_in_a_code_fence_does_not_override_a_partial_link() -> None:
+    body = "Part of #4242\n\n```markdown\nCloses #4242\n```\n\nUnmet: finish the report"
+
+    assert MergedPrReading.parse(body, _ticket()).unmet == ("finish the report",)
+
+
 @pytest.mark.parametrize(
     ("body", "link"),
     [
@@ -152,10 +181,6 @@ def test_unchecked_acceptance_boxes_the_body_does_not_claim_are_the_fallback_rem
     ).unmet
 
     assert unmet == ("measure live",)
-
-
-def test_the_closing_grammar_is_the_one_the_ship_sanitizer_uses() -> None:
-    assert CLOSING_PATTERN.pattern == CLOSE_KEYWORD_RE.pattern
 
 
 class _BodyStub(_GhStub):
@@ -275,6 +300,19 @@ class TestPartOfWithDeclaredRemainder(TestCase):
         assert passed is False
         assert "1 unresolved PR branch row(s)" in output.getvalue()
 
+    def test_the_doctor_flags_a_merged_pull_request_without_a_reopen_stamp(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        merged_url = "https://github.com/souliane/teatree/pull/859"
+        PullRequest.objects.filter(ticket=ticket).update(state=PullRequest.State.MERGED)
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"pr_urls": [merged_url], "pr_url_by_branch": {}})
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            passed = check_blank_work_overlays()
+
+        assert passed is False
+        assert "1 unresolved PR branch row(s)" in output.getvalue()
+
     def test_the_fallback_remainder_comes_from_the_issue_acceptance_boxes(self) -> None:
         ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
 
@@ -292,17 +330,17 @@ class TestPartOfWithDeclaredRemainder(TestCase):
 
         state = _merge(ticket, _SPACE_AT_THE_CAP, pr_id=860)
 
-        assert state == Ticket.State.MERGED
+        assert state == Ticket.State.WORK_STARTED
         assert len(_planning_tasks(ticket)) == 1
 
-    def test_a_second_merge_declaring_the_identical_remainder_does_not_reopen_again(self) -> None:
+    def test_a_second_merge_declaring_the_identical_remainder_replans_once(self) -> None:
         ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
         _merge(ticket, _STATUS_TABLE)
         Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_REQUESTED)
 
         state = _merge(ticket, _STATUS_TABLE, pr_id=860)
 
-        assert state == Ticket.State.MERGED
+        assert state == Ticket.State.WORK_STARTED
         assert len(_planning_tasks(ticket)) == 1
 
 
@@ -327,6 +365,17 @@ class TestMergesThatStillReachMerged(TestCase):
         _merge(ticket, _STATUS_TABLE)
 
         assert _merge(ticket, "Closes #4242\n", pr_id=860) == Ticket.State.MERGED
+
+    def test_a_later_completed_merge_supersedes_pending_planning(self) -> None:
+        ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)
+        _merge(ticket, _STATUS_TABLE)
+        (planning,) = _planning_tasks(ticket)
+
+        assert _merge(ticket, "Closes #4242\n", pr_id=860) == Ticket.State.MERGED
+
+        planning.refresh_from_db()
+        assert planning.status == Task.Status.FAILED
+        assert _planning_tasks(ticket) == []
 
     def test_a_later_part_of_pull_request_with_no_remainder_merges_the_held_ticket(self) -> None:
         ticket = _ticket_in(Ticket.State.REVIEW_REQUESTED)

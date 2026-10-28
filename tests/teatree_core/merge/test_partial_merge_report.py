@@ -43,6 +43,112 @@ def _merged_pr(ticket: Ticket, number: int, *, minutes_ago: int) -> None:
 
 
 class TestPartialMergeReport(TestCase):
+    def test_reports_issue_boxes_when_the_latest_partial_body_has_no_marker(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4242",
+            state=Ticket.State.MERGED,
+        )
+        _merged_pr(ticket, 859, minutes_ago=10)
+
+        def run(argv: list[str]) -> tuple[int, str, str]:
+            return 0, json.dumps({"title": "A change", "body": "Part of #4242"}), ""
+
+        with (
+            patch.object(forge_merge_rpc, "gh_runner", return_value=run),
+            patch.object(
+                github_client.GitHubCodeHost,
+                "get_issue",
+                return_value={"state": "open", "body": "## Acceptance\n- [ ] finish the report"},
+            ),
+        ):
+            result = cast(
+                "dict[str, list[dict[str, object]]]", call_command("ticket", "partial-merge-report", "--json")
+            )
+
+        assert result["matches"][0]["unmet"] == ["finish the report"]
+
+    def test_reports_unreadable_issue_state_and_pull_request_body(self) -> None:
+        unknown_state = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4242",
+            state=Ticket.State.MERGED,
+        )
+        _merged_pr(unknown_state, 859, minutes_ago=20)
+        missing_body = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4243",
+            state=Ticket.State.MERGED,
+        )
+        _merged_pr(missing_body, 860, minutes_ago=10)
+
+        def run(argv: list[str]) -> tuple[int, str, str]:
+            return 1, "", "unreadable"
+
+        def issue(url: str) -> dict[str, str]:
+            return {"state": "unknown" if url.endswith("4242") else "open", "body": ""}
+
+        with (
+            patch.object(forge_merge_rpc, "gh_runner", return_value=run),
+            patch.object(github_client.GitHubCodeHost, "get_issue", side_effect=issue),
+        ):
+            result = cast(
+                "dict[str, list[dict[str, object]]]", call_command("ticket", "partial-merge-report", "--json")
+            )
+
+        assert result["unreadable"] == [
+            {"ticket_id": unknown_state.pk, "reason": "issue state unreadable"},
+            {"ticket_id": missing_body.pk, "reason": "pull request body unreadable"},
+        ]
+
+    def test_reports_a_pull_request_read_exception_as_unreadable(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4242",
+            state=Ticket.State.MERGED,
+        )
+        _merged_pr(ticket, 859, minutes_ago=10)
+
+        with (
+            patch.object(github_client.GitHubCodeHost, "get_issue", return_value={"state": "open", "body": ""}),
+            patch.object(github_client.GitHubCodeHost, "fetch_pr_message", side_effect=RuntimeError("forge down")),
+        ):
+            result = cast(
+                "dict[str, list[dict[str, object]]]", call_command("ticket", "partial-merge-report", "--json")
+            )
+
+        assert result["unreadable"] == [{"ticket_id": ticket.pk, "reason": "pull request body unreadable"}]
+
+    def test_overlay_filter_and_human_output_show_only_selected_ticket(self) -> None:
+        selected = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/4242",
+            state=Ticket.State.MERGED,
+        )
+        _merged_pr(selected, 859, minutes_ago=10)
+        other = Ticket.objects.create(
+            overlay="other", issue_url="https://github.com/souliane/teatree/issues/4243", state=Ticket.State.MERGED
+        )
+        _merged_pr(other, 860, minutes_ago=5)
+
+        def run(argv: list[str]) -> tuple[int, str, str]:
+            return 0, json.dumps({"title": "A change", "body": "Part of #4242\n\nUnmet: finish the report"}), ""
+
+        with (
+            patch.object(forge_merge_rpc, "gh_runner", return_value=run),
+            patch.object(github_client.GitHubCodeHost, "get_issue", return_value={"state": "open", "body": ""}),
+        ):
+            output = StringIO()
+            result = cast(
+                "dict[str, list[dict[str, object]]]",
+                call_command("ticket", "partial-merge-report", "--overlay", "t3-teatree", stderr=output),
+            )
+
+        assert [row["ticket_id"] for row in result["matches"]] == [selected.pk]
+        assert f"ticket {selected.pk}" in output.getvalue()
+        assert "finish the report" in output.getvalue()
+        assert f"ticket {other.pk}" not in output.getvalue()
+
     def test_lists_open_merged_ticket_when_its_latest_merge_declares_a_remainder(self) -> None:
         ticket = Ticket.objects.create(
             overlay="t3-teatree",

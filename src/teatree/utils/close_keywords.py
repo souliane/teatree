@@ -21,6 +21,13 @@ CLOSE_KEYWORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Both readers share GitLab's closing-reference grammar; a space before the colon is not a separator.
+CLOSING_REFERENCE_RE = re.compile(
+    r"\b(?P<kw>close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::\s*|\s+)"
+    r"(?P<ref>(?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)",
+    re.IGNORECASE,
+)
+
 
 def parse_closes_ticket(description: str) -> str:
     """Return the first ``#N`` after a Closes/Fixes/Resolves keyword, else ``""``."""
