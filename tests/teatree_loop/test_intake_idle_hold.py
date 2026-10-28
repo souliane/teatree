@@ -12,7 +12,6 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.admission.pr_start_cap import OPEN_PR_START_CAP
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import (
     ImplementedIssueMarker,
@@ -117,36 +116,22 @@ class AnIdleStartedTicketHoldsIntakeTests(_IdleHoldCase):
         assert self._claimed() == [ISSUE]
 
 
-class OpenPullRequestCapHoldsIntakeTests(_IdleHoldCase):
-    def test_at_cap_claims_nothing_and_names_holding_pull_requests(self) -> None:
-        holders = [
-            PullRequestFactory(ticket=Ticket.objects.create(role=Ticket.Role.AUTHOR)) for _ in range(OPEN_PR_START_CAP)
-        ]
-        with self.assertLogs("teatree.loop.scanner_factories", level="WARNING") as logs:
-            claimed = self._claimed(window=0)
-        assert claimed == []
-        assert not ImplementedIssueMarker.objects.exists()
-        for holder in holders:
-            assert holder.url in "\n".join(logs.output)
-
-    def test_one_below_cap_claims_as_before(self) -> None:
-        for _ in range(OPEN_PR_START_CAP - 1):
+class ManyLivePullRequestsAllowIntakeTests(_IdleHoldCase):
+    def test_twenty_live_pull_requests_allow_claiming(self) -> None:
+        for _ in range(20):
             PullRequestFactory(ticket=Ticket.objects.create(role=Ticket.Role.AUTHOR))
         assert self._claimed(window=0) == [ISSUE]
 
-    def test_cap_reached_after_scanner_build_still_claims_nothing(self) -> None:
-        for _ in range(OPEN_PR_START_CAP - 1):
+    def test_twentieth_pull_request_after_scanner_build_still_allows_claiming(self) -> None:
+        for _ in range(19):
             PullRequestFactory(ticket=Ticket.objects.create(role=Ticket.Role.AUTHOR))
         host = _authored_host(ISSUE)
         with patch(_PATCH_TARGET, return_value=_enabled(issue_intake_idle_hold_hours=0)):
             scanner = _issue_intake_scanner_for(_backend_with_host(host))
         assert isinstance(scanner, IssueIntakeScanner)
         assert scanner.can_claim is True
-        holder = PullRequestFactory(ticket=Ticket.objects.create(role=Ticket.Role.AUTHOR))
-        with self.assertLogs("teatree.loop.scanners.issue_intake", level="WARNING") as logs:
-            assert scanner.scan() == []
-        assert holder.url in "\n".join(logs.output)
-        assert not ImplementedIssueMarker.objects.exists()
+        PullRequestFactory(ticket=Ticket.objects.create(role=Ticket.Role.AUTHOR))
+        assert [str(signal.payload["url"]) for signal in scanner.scan()] == [ISSUE]
 
 
 class NoHoldTests(_IdleHoldCase):
