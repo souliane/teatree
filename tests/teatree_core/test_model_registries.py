@@ -5,10 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.contrib.t3_teatree.overlay import TeatreeReview
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.model_registries import populate_model_registries
 from teatree.core.modelkit import gate_registry
 from teatree.core.models import Ticket
+from teatree.core.overlay import OverlayReview
 
 _PR = "https://ex.com/o/a/pull/1"
 
@@ -39,6 +41,12 @@ class TestGateRegistry:
 
 
 class TestPopulateModelRegistries:
+    def test_unconfigured_review_declares_no_project_paths(self) -> None:
+        assert OverlayReview().repo_project_paths() == {}
+
+    def test_teatree_review_declares_its_project_path(self) -> None:
+        assert TeatreeReview().repo_project_paths() == {"teatree": "souliane/teatree"}
+
     def test_ticket_repo_project_paths_resolver_is_registered(self) -> None:
         paths = gate_registry.get_resolver("repo_project_paths")(Ticket(overlay="t3-teatree"))
         assert paths == {"teatree": "souliane/teatree"}
