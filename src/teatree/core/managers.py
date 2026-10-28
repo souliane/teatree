@@ -531,6 +531,7 @@ class TaskQuerySet(models.QuerySet):
         lane when it is not derivable from ``cheap_class``.
 
         A row still holding a live seat is refused too: a second booking is a duplicate dispatch.
+
         A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save`` auto-enqueue is
         itself a ``post_save`` receiver, so saving the instance from inside it would re-enter the
         receiver, and the stamp must not be able to re-arm the dispatch it is recording.

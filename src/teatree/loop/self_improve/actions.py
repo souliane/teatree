@@ -274,7 +274,7 @@ def _record_ticket_or_defer(
     *,
     overlay_name: str | None,
     linked_ticket: Ticket | None,
-) -> tuple[SelfImproveFiring, str] | None:
+) -> tuple[SelfImproveFiring, str]:
     opens_ticket = _opens_ticket(linked_ticket)
     try:
         firing = _record_ticket_followup(
@@ -350,8 +350,6 @@ def run_action_ladder(
             overlay_name=resolved_overlay or overlay_name,
             linked_ticket=linked_ticket,
         )
-        if recorded is None:
-            return None
         firing, rung = recorded
     else:
         firing = record_firing(report, action=rung)

@@ -76,6 +76,44 @@ def _detector_now() -> dt.datetime:
 
 
 class RepairFirstTests(TestCase):
+    def test_real_lifecycle_incident_alerts_after_deferred_ticket_write(self) -> None:
+        task = TaskFactory()
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
+        start = timezone.now()
+        messages: list[str] = []
+        routes = DeliveryRoutes(
+            overlay_name="t3-teatree",
+            owner_wait=OwnerWaitChannel(
+                deliver=lambda text, _key: (messages.append(text), OwnerAlertDelivery(sent=True))[1],
+                quiet_now=lambda: False,
+                wait=dt.timedelta(minutes=60),
+            ),
+        )
+        detector = LifecycleIncidentDetector(now=_detector_now, overlay_name="t3-teatree")
+        with (
+            patch.object(
+                actions_module, "_record_ticket_followup", side_effect=ImproperlyConfigured("owner unavailable")
+            ),
+            patch("django.utils.timezone.now", return_value=start),
+        ):
+            first = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=routes)
+        firing = SelfImproveFiring.objects.get(detector="lifecycle_incident")
+        assert first.actions[0].rung == ActionRung.STATUSLINE
+        assert firing.ticket is None
+        assert RepairMarker.from_payload(firing.payload) is not None
+
+        with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=31)):
+            resumed = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=routes)
+        with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=60)):
+            due = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=routes)
+        with patch("django.utils.timezone.now", return_value=start + dt.timedelta(minutes=90)):
+            later = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=routes)
+
+        assert resumed.actions[0].firing.ticket_id is not None
+        assert [len(result.owner_waits) for result in (first, resumed, due, later)] == [0, 0, 1, 0]
+        assert len(messages) == 1
+        assert "Repair: ticket" in messages[0]
+
     def test_ticket_creation_failure_records_waiting_incident_and_alerts_once(self) -> None:
         start = timezone.now()
         messages: list[str] = []

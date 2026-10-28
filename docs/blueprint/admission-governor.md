@@ -22,7 +22,7 @@ When several machine components halt together, `load`, `memory` and `swap` share
 
 The shared admission score places a ticket with a live pull request above other continuing or new work in its lane. Review work retains its 400-point stage; a started pull request gets 150 points ahead of ordinary continuing work at 100. The 200-point expedite part remains additive, so an expedited ticket without a pull request can outrank an unexpedited started pull request. An owner expedite is an explicit priority call and keeps that meaning. Within equal scores, started pull requests use the ticket’s earliest current `Task.admitted_at`, falling back to its first transition and then to its pull request’s creation stamp, oldest first. The pull request creation stamp bounds a renewed admission that is later than the pull request; clearing a seat can lose the original admission time. Other tasks keep their task-row age order. The `PullRequest` ledger defines live as neither merged nor closed, and the same clock drives the start-to-merged signal.
 
-Live pull request rows set the started-work admission stage and feed the merge-brake diagnosis. They do not impose a count-based start cap. Claim and admission seats still respect task status, the `not_before` deadline, lane ceilings, machine pressure and the merge brake.
+Live pull request rows set the started-work admission stage and feed the merge-brake diagnosis. Task claims require pending status and a due `not_before` deadline; lane ceilings and machine pressure bound admission seats. The merge brake gates new issue intake.
 
 ## Shared pytest worker slots
 
