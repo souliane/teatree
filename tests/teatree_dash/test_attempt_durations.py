@@ -91,3 +91,39 @@ class AttemptDurationTestCase(TestCase):
         task = _task(admitted_at=admitted)
         attempt = TaskAttempt.objects.create(task=task)
         assert attempt.started_at - admitted >= dt.timedelta(seconds=90)
+
+    def test_a_readmitted_task_times_its_next_attempt_from_the_admission(self) -> None:
+        now = timezone.now()
+        task = _task(admitted_at=now - dt.timedelta(seconds=100))
+        _finished_attempt(task, ended_at=now - dt.timedelta(seconds=300), session="s1")
+        _finished_attempt(task, ended_at=now, session="s2")
+        self.assert_pages_show(task.ticket, ["0s", "1m 40s"])
+
+    def test_the_previous_attempt_is_looked_up_within_the_same_task(self) -> None:
+        now = timezone.now()
+        other = _task(admitted_at=now - dt.timedelta(seconds=60))
+        _finished_attempt(other, ended_at=now - dt.timedelta(seconds=10), session="s1")
+        task = _task(admitted_at=now - dt.timedelta(seconds=100))
+        _finished_attempt(task, ended_at=now, session="s2")
+        assert _durations_by_page(task.ticket) == {
+            "live": ["50s", "1m 40s"],
+            "sessions": ["50s", "1m 40s"],
+            "ticket": ["1m 40s"],
+        }
+
+    def test_an_unfinished_attempt_is_not_a_previous_attempt(self) -> None:
+        now = timezone.now()
+        task = _task(admitted_at=now - dt.timedelta(seconds=300))
+        _finished_attempt(task, ended_at=now - dt.timedelta(seconds=200), session="s1")
+        TaskAttempt.objects.create(task=task)
+        _finished_attempt(task, ended_at=now, session="s3")
+        assert _durations_by_page(task.ticket) == {
+            "live": ["1m 40s", "3m 20s"],
+            "sessions": ["1m 40s", "3m 20s"],
+            "ticket": ["1m 40s", "", "3m 20s"],
+        }
+
+    def test_an_unfinished_attempt_keeps_the_insert_stamp(self) -> None:
+        task = _task(admitted_at=timezone.now() - dt.timedelta(seconds=90))
+        attempt = TaskAttempt.objects.create(task=task)
+        assert attempt.display_started_at == attempt.started_at

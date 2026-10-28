@@ -42,11 +42,12 @@ t3 tool push-gate                # inspect the incremental push-gate plan for th
 t3 --help                        # CLI (installed via `uv tool install --editable . --overrides uv-overrides.txt`)
 ```
 
-**Before pushing a src-touching PR, run `bash dev/ci-parity-fast.sh`** — scoped prek,
+**Before pushing a src-touching PR, inspect `t3 tool affected-tests`; when SCOPED, run `bash dev/ci-parity-fast.sh`** — scoped prek,
 `makemigrations --check`, the affected-tests lane, and the incremental push gate. It is
 the necessary-and-sufficient local check: CI's required, sharded `test (3.13)` lane is
 the authority on the whole-tree 93% branch floor, and running its byte-equivalent
 duplicate locally buys nothing but wall-clock.
+If the selector reports FULL, run `uv run prek run`, `uv run python manage.py makemigrations --check --dry-run`, and `t3 tool push-gate --run` separately; run changed test files or pinned node ids locally and use CI's sharded whole-tree run for the merge verdict.
 
 A change to a `dev/` lane runner (`push-gate.sh`, `test-shuffle.sh`, …) now SCOPES rather
 than escalating to the whole tree ([#3817](https://github.com/souliane/teatree/issues/3817)) —

@@ -1,22 +1,10 @@
-"""Self-repo detection for ``workspace ticket`` provisioning (#727).
-
-``t3 <overlay> workspace ticket <issue_url>`` defaults to the overlay's
-*product* repo set (``overlay.get_workspace_repos()``). When the issue
-actually lives on the **overlay package repo** or on **teatree core**,
-that default provisions the wrong repos and forces a manual
-``git worktree add`` workaround.
-
-This module resolves the issue URL's ``owner/repo`` slug and matches it
-against the ``origin`` slug of teatree core (the running clone) and of
-the active overlay's package repo. A match means "single-repo,
-dev-tooling mode" — provision only that repo. No match means "use the
-product repo set" (the unchanged default).
-"""
+"""Resolve the smallest known repository set for ``workspace ticket``."""
 
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from teatree.config import discover_active_overlay
+from teatree.core.overlay_ownership import bare_name_owns, full_slug_owns
 from teatree.project import find_project_root
 from teatree.utils import git
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
@@ -44,8 +32,7 @@ def resolve_dev_repo(issue_url: str) -> str | None:
     Returns the matching repo slug when *issue_url* belongs to teatree
     core (the running clone's ``origin``) or to the active overlay's
     package repo. Returns ``None`` when the URL is unrecognised or points
-    at a product repo — the caller then falls back to the overlay's
-    product repo set.
+    at a product repo.
     """
     target = issue_url_slug(issue_url)
     if not target:
@@ -66,11 +53,9 @@ def resolve_dev_repo(issue_url: str) -> str | None:
 def resolve_repo_names(overlay: "OverlayBase", issue_url: str, repos: str) -> list[str]:
     """Resolve the repo set ``workspace ticket`` should provision.
 
-    Precedence (#727): an explicit ``--repos`` override always wins.
-    Otherwise, when the issue lives on teatree core or the overlay's own
-    package repo, provision only that single repo (dev-tooling mode) via
-    :func:`resolve_dev_repo`. Otherwise the overlay's product repo set
-    (``overlay.get_workspace_repos()``).
+    Precedence: explicit ``--repos``, overlay issue hint, dev repo, then
+    the single overlay entry that owns the issue's repo slug. An unknown
+    issue returns no repos, to be scoped before provisioning.
 
     #33: a ``--repos`` token may carry a per-repo branch as ``repo:branch``
     (e.g. ``"backend:fix/123,frontend:main"``) so split-branch repos compose
@@ -80,10 +65,20 @@ def resolve_repo_names(overlay: "OverlayBase", issue_url: str, repos: str) -> li
     """
     if repos:
         return [_repo_name(r) for r in repos.split(",") if r.strip()]
+    hinted = list(dict.fromkeys(name.strip() for name in overlay.metadata.get_issue_repos(issue_url) if name.strip()))
+    if hinted:
+        return hinted
     dev_repo = resolve_dev_repo(issue_url)
     if dev_repo:
         return [dev_repo]
-    return overlay.get_workspace_repos()
+    slug = issue_url_slug(issue_url)
+    if not slug:
+        return []
+    declared = overlay.get_workspace_repos()
+    full = [name for name in declared if full_slug_owns(name, slug)]
+    if full:
+        return [max(full, key=len)]
+    return [name for name in declared if bare_name_owns(name, slug)][:1]
 
 
 def _repo_name(token: str) -> str:

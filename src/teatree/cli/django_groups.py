@@ -8,6 +8,15 @@ a focused module; the group type itself is :class:`~teatree.cli.django_group.Dja
 from teatree.cli.django_group import DjangoGroup
 
 DJANGO_GROUPS: dict[str, DjangoGroup] = {
+    "github-webhook": DjangoGroup(
+        "Create or remove a signed GitHub repository webhook.",
+        [
+            ("connect", "Create or reconcile a repository webhook and verify its ping."),
+            ("disconnect", "Remove an exact-URL repository webhook and its secret."),
+        ],
+        core_dispatch=True,
+        command_name="github_webhook",
+    ),
     "secrets": DjangoGroup(
         "Inspect, manage and copy sealed credentials.",
         [

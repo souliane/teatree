@@ -84,7 +84,9 @@ def test_write_phases_never_bind_the_executor(phase: str) -> None:
 
 
 @pytest.mark.usefixtures("worker")
-@pytest.mark.parametrize("phase", ["planning", "reviewing", "critic_reviewing"])
+@pytest.mark.parametrize(
+    "phase", ["planning", "reviewing", "critic_reviewing", "answering", "requesting_review", "shipping"]
+)
 def test_served_phases_bind_the_executor_without_the_teatree_mcp_server(phase: str) -> None:
     harness = codex_app_server_spec().factory(HarnessBuildContext(phase=phase))
 

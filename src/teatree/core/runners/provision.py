@@ -323,7 +323,7 @@ class WorktreeProvisioner(RunnerBase):
         ticket = self.ticket
         repos = list(ticket.repos or [])
         if not repos:
-            return RunnerResult(ok=False, detail="no repos on ticket")
+            return RunnerResult(ok=False, detail="no repos on ticket", retryable=True)
 
         extra = cast("TicketExtra", ticket.extra or {})
         branch = extra.get("branch", "")
