@@ -157,7 +157,7 @@ class TestPressureEscalation(_EvictionFixture):
         plan = self._plan(idle_days=None)
 
         assert artifact not in {candidate.artifact for candidate in plan.candidates}
-        assert any("active task" in reason for reason in plan.kept)
+        assert any("active/claimed task" in reason for reason in plan.kept)
 
     def test_a_recent_write_inside_a_ticket_venv_keeps_it_under_pressure(self) -> None:
         checkout = make_git_repo(self.workspace / "recent-ticket")
@@ -197,6 +197,27 @@ class TestPressureEscalation(_EvictionFixture):
 
         assert not artifact.exists()
         assert outcome.freed_bytes > 0
+
+    def test_a_reaper_pinned_checkout_keeps_its_idle_venv(self) -> None:
+        checkout = make_git_repo(self.workspace / "pinned-ticket")
+        artifact = _artifact_in(checkout)
+        _age(artifact / "lib" / "big.so", artifact / "lib", artifact, checkout)
+        self._some_process_exists()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5618")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="pinned",
+            extra={"worktree_path": str(checkout), "reaper_pinned": True},
+        )
+
+        plan = self._plan(idle_days=None)
+        outcome = evict_artifacts(plan)
+
+        assert artifact.exists()
+        assert outcome.freed_bytes == 0
+        assert any("reaper_pinned" in reason for reason in plan.kept)
 
     def test_a_fresh_artifact_is_evicted_below_the_critical_floor(self) -> None:
         checkout = make_git_repo(self.workspace / "fresh")

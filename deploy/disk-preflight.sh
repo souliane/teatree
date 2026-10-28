@@ -10,17 +10,18 @@ build_space_gib() {
 }
 
 read_build_space() {
-    local docker_root path stats total used available reserved
+    local docker_root path output stats total used available reserved
     BUILD_FREE_KIB=""
     BUILD_RESERVED_KIB=""
     BUILD_SPACE_PATH=""
     docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
     for path in / "${TMPDIR:-/tmp}" ${docker_root:+"$docker_root"}; do
-        if ! stats="$(df -Pk "$path" 2>/dev/null | awk 'NR == 2 { print $2, $3, $4 }')"; then
-            return 1
+        if ! output="$(df -Pk "$path" 2>/dev/null)"; then
+            continue
         fi
+        stats="$(awk 'NR == 2 { print $2, $3, $4 }' <<<"$output")"
         read -r total used available <<<"$stats"
-        case "$total:$used:$available" in *[!0-9:]* | :* | *::*) return 1 ;; esac
+        case "$total:$used:$available" in *[!0-9:]* | :* | *::*) continue ;; esac
         reserved=$((total - used - available))
         if [ -z "$BUILD_FREE_KIB" ] || [ "$available" -lt "$BUILD_FREE_KIB" ]; then
             BUILD_FREE_KIB="$available"

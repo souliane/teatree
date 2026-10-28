@@ -146,7 +146,9 @@ class ScratchSweepPlan:
 
     @property
     def summary(self) -> str:
-        if self.refused:
+        if self.refused and not self.entries:
+            head = f"{self.root}: REFUSED — residency not measured"
+        elif self.refused:
             head = (
                 f"{self.root}: REFUSED — reclaimed nothing of "
                 f"{self.resident_bytes / _BYTES_PER_GIB:.2f} GB resident "
@@ -399,6 +401,10 @@ class ScratchSweep:
 
     def _inert_plan(self, gap: str, children: list[Path], *, refused: bool = False) -> ScratchSweepPlan:
         """A plan that removes nothing but still reports what is resident and why."""
+        if refused and self.deadline is not None:
+            return ScratchSweepPlan(
+                root=str(self.root), retention_days=self.retention_days, entries=(), probe_gap=gap, refused=True
+            )
         entries = []
         for child in children:
             stats = _tree_stats(child, deadline=self.deadline)

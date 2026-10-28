@@ -101,9 +101,20 @@ class TestIdleDatabaseCopies(TestCase):
         assert (busy / "db.sqlite3").exists()
         assert (evidence / "db.sqlite3").exists()
         assert (git_dir / "db.sqlite3").exists()
-        assert any("active task" in line for line in result)
+        assert any("active/claimed task" in line for line in result)
         assert any("protected evidence" in line for line in result)
         assert any("git" in line for line in result)
+
+    def test_reaper_pinned_checkout_keeps_its_idle_database(self) -> None:
+        env_dir, _ = self._copy("pinned")
+        row = Worktree.objects.get(branch="pinned")
+        row.extra = {**row.extra, "reaper_pinned": True}
+        row.save(update_fields=["extra"])
+
+        result = reaper.reap_idle_isolated_databases(self.workspace)
+
+        assert (env_dir / "db.sqlite3").exists()
+        assert any("reaper_pinned" in line for line in result)
 
     def test_unsighted_process_table_refuses_with_reason(self) -> None:
         idle, _ = self._copy("idle")

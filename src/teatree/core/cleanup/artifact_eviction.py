@@ -123,6 +123,7 @@ from teatree.core.cleanup.artifact_sizing import ArtifactCandidate, budget_spent
 from teatree.core.cleanup.checkout_registry import one_spelling_each
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.cleanup.venue_population import venue_population
+from teatree.core.gates.idle_stack import worktree_protects_against_reap
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
@@ -458,8 +459,8 @@ def _ticket_activity_reason(artifact: Path, checkout: Path, *, deadline: float |
             recorded = extra.get("worktree_path")
             if not recorded or Path(str(recorded)).resolve() != current:
                 continue
-            if row.ticket.has_active_work():
-                return "its ticket has an active task or session"
+            if reason := worktree_protects_against_reap(row):
+                return reason
             if reason := _recent_tree_write_reason(artifact, deadline=deadline):
                 return reason
             last_activity = row.ticket.last_activity_at()

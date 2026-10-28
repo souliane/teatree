@@ -216,6 +216,17 @@ class ScratchSweepPlanTests(ScratchSweepTestCase):
         assert "open-file probe unsighted" in plan.probe_gap
         assert plan.entries[0].size_bytes == 2048
 
+    def test_a_bounded_refused_pass_does_not_walk_scratch_trees(self) -> None:
+        _scratch(self.root, "t3after", days=9, size=2048)
+        sweep = self.sweep(proc_root=self.root / "no-such-proc")
+
+        with patch.object(scratch, "_tree_stats", side_effect=AssertionError("walked refused scratch")):
+            plan = replace(sweep, deadline=time.monotonic() + 10).plan()
+
+        assert plan.refused is True
+        assert "open-file probe unsighted" in plan.probe_gap
+        assert "residency not measured" in plan.summary
+
     def test_retention_days_zero_disables_the_sweep(self) -> None:
         _scratch(self.root, "t3after", days=99)
 

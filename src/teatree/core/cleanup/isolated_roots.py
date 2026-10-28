@@ -154,8 +154,8 @@ def _idle_database_owner_reason(env_dir: Path, row: Worktree) -> str:
     checkout = Path(str(extra.get("worktree_path", "")))
     if paths.IsolatedEnvDir(env_dir).owner != checkout or not (checkout / ".git").exists():
         return "owner stamp or checkout cannot be verified"
-    if row.ticket.has_active_work():
-        return "its ticket has an active task or session"
+    if reason := worktree_protects_against_reap(row):
+        return reason
     if is_clean_ignored(row.branch, overlay=row.overlay) or any(
         protected in row.branch.lower() for protected in ("evidence", "rescue", "backup")
     ):

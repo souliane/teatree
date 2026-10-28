@@ -226,7 +226,16 @@ class MarkerCouplingTests(TestCase):
         marker = ResourcePressureMarker.load()
         assert marker.last_freed_at is None, "the control: nothing has stamped it"
 
-        sweep_artifacts({"artifact_idle_days": 2.0})
+        with (
+            patch.dict(os.environ, {"TEATREE_ROLE": "worker"}),
+            patch(
+                f"{_SWEEP}.sweep_scratch",
+                return_value=ScratchSweepPlan(
+                    root="/tmp", retention_days=1 / 6, entries=(), refused=True, probe_gap="unsighted"
+                ),
+            ),
+        ):
+            sweep_artifacts({"artifact_idle_days": 2.0})
 
         marker.refresh_from_db()
         assert marker.last_freed_at is None, "a loss-free sweep must not trip the anti-thrash gate"
@@ -246,7 +255,14 @@ class MarkerCouplingTests(TestCase):
         marker.last_plan = ladder_plan
         marker.save(update_fields=["last_plan"])
 
-        sweep_artifacts({"artifact_idle_days": 2.0})
+        with (
+            patch.dict(os.environ, {"TEATREE_ROLE": "worker"}),
+            patch(
+                f"{_SWEEP}.sweep_scratch",
+                return_value=ScratchSweepPlan(root="/tmp", retention_days=1 / 6, entries=(), refused=True),
+            ),
+        ):
+            sweep_artifacts({"artifact_idle_days": 2.0})
 
         marker.refresh_from_db()
         assert marker.last_plan == ladder_plan, "the artifact sweep overwrote the ladder's plan"
