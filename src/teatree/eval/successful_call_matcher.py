@@ -12,7 +12,11 @@ def assert_successful_tool_call_before(
     result_regex: str,
     forbidden: CallPattern,
 ) -> None:
-    """Require a proved-successful call before any forbidden call, including same-turn calls."""
+    """Require a proved-successful call before any forbidden call, including same-turn calls.
+
+    Proof is a paired result flagged ``is_error=False`` whose exit status, when the sandbox
+    printed one, is 0: the Claude CLI lane reports success by the flag alone.
+    """
     command = re.compile(required.regex)
     result = re.compile(result_regex)
     forbidden_pattern = re.compile(forbidden.regex)
@@ -21,7 +25,7 @@ def assert_successful_tool_call_before(
             continue
         if not command.search(_arg_text(call, required.arg_path) or ""):
             continue
-        if call.exit_code != 0 or call.is_error is not False:
+        if call.is_error is not False or call.exit_code not in {None, 0}:
             continue
         if not result.search(call.result_excerpt):
             continue
