@@ -4,9 +4,10 @@ The two fresh-run backends — the ``claude-agent-sdk`` runner
 (:mod:`teatree.eval.api_runner`) and the ``pydantic_ai`` runner
 (:mod:`teatree.eval.pydantic_ai_runner`) — both yield the SAME
 ``claude_agent_sdk`` message vocabulary (``AssistantMessage`` / ``ResultMessage`` /
-``HookEventMessage``). That vocabulary is the provider-agnostic seam: this module
-is the single adapter that renders each typed message to the stream-json event dict
-the :mod:`teatree.eval.transcript` extractors already parse — the SAME path the
+``HookEventMessage``, plus the ``UserMessage`` rows that carry tool results). That
+vocabulary is the provider-agnostic seam: this module is the single adapter that
+renders each typed message to the stream-json event dict the
+:mod:`teatree.eval.transcript` extractors already parse — the SAME path the
 on-disk subscription transcript runner feeds — and folds the events into an
 :class:`~teatree.eval.models.EvalRun`. So tool-call / text / terminal / cost
 extraction is identical across every runner and the produced ``EvalRun`` is
@@ -37,6 +38,7 @@ from claude_agent_sdk import (
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
 )
 from claude_agent_sdk.types import HookEventMessage
 
@@ -220,6 +222,8 @@ def _message_to_event(message: Message) -> dict[str, Any] | None:
             "message": {"content": [_block_to_dict(b) for b in message.content]},
             "parent_tool_use_id": message.parent_tool_use_id,
         }
+    if isinstance(message, UserMessage):
+        return _tool_result_event(message)
     if isinstance(message, ResultMessage):
         return {
             "type": "result",
@@ -233,6 +237,16 @@ def _message_to_event(message: Message) -> dict[str, Any] | None:
             "model_usage": message.model_usage,
         }
     return None
+
+
+def _tool_result_event(message: UserMessage) -> dict[str, Any] | None:
+    """The CLI lane delivers tool results as ``UserMessage`` rows; a plain-text prompt echo carries none."""
+    if not isinstance(message.content, list):
+        return None
+    results = [_block_to_dict(block) for block in message.content if isinstance(block, ToolResultBlock)]
+    if not results:
+        return None
+    return {"type": "user", "message": {"content": results}, "parent_tool_use_id": message.parent_tool_use_id}
 
 
 def _block_to_dict(block: ContentBlock) -> dict[str, Any]:

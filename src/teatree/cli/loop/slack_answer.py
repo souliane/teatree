@@ -49,8 +49,9 @@ def slack_answer_status_command() -> None:
     ensure_django()
 
     from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loop.scanners.owner_dm_rows import owner_dm_rows  # noqa: PLC0415 — deferred: ORM import
 
-    count = PendingChatInjection.loop_unreplied().count()
+    count = owner_dm_rows(PendingChatInjection.loop_unreplied()).count()
     if not count:
         typer.echo("Slack-answer queue empty — nothing loop-unreplied.")
         return

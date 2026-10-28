@@ -19,13 +19,13 @@ from teatree.core.models.thread_binding import slack_command_id
 from teatree.core.owner_dm.ticket_dm_delivery import record_ticket_thread_post
 from teatree.core.worktree.survivor_notice import apply_stop_answer
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading
+from teatree.loop.owner_identity import configured_owner_id
 from teatree.loop.question_binding import (
     AmbiguousCards,
     BoundAnswer,
     CardThreadStop,
     UnmatchedCardThread,
     apply_bound_answer,
-    configured_owner_id,
 )
 from teatree.loop.slack_answer.control_verbs import control_verb
 from teatree.loop.slack_answer.thread_readback import ExpectedReply, bot_reply_match_in_thread

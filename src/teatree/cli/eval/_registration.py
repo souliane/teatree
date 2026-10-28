@@ -12,6 +12,7 @@ command definitions alone (module-health split-by-concern).
 import typer
 
 from teatree.cli.eval.audit import audit
+from teatree.cli.eval.baseline_status import baseline_status
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
 from teatree.cli.eval.changed_scenarios import ChangedScenarios
@@ -55,6 +56,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("audit")(audit)
     eval_app.command("changed-scenarios")(ChangedScenarios)
     eval_app.command("ci-trigger")(ci_trigger)
+    eval_app.command("baseline-status")(baseline_status)
     eval_app.command("ci-status")(ci_status)
     eval_app.add_typer(ci_heal_app, name="ci-heal")
     eval_app.add_typer(ci_account_app, name="ci-account")
