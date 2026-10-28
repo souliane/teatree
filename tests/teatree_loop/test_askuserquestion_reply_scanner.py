@@ -103,6 +103,27 @@ def _scan(backend: FakeMessaging) -> None:
     AskUserQuestionReplyScanner(backend=backend, overlay="").scan()
 
 
+class TestAColleaguesBacklogNeverStarvesTheOwnersReply:
+    def test_the_owners_reply_is_applied_behind_more_foreign_rows_than_one_batch(self) -> None:
+        question = DeferredQuestion.record(
+            "Can I ship the widgets?", slack_channel=_CHANNEL, slack_ts="100.0", **OWNER_DECISION
+        )
+        for number in range(25):
+            PendingChatInjection.record(
+                channel=_CHANNEL,
+                slack_ts=f"{number + 1}.0",
+                text="legacy request",
+                context=DmContext(user_id="U_COLLEAGUE"),
+            )
+        _record_reply("Yes", slack_ts="200.0")
+
+        _scan(FakeMessaging())
+
+        question.refresh_from_db()
+        assert question.answer_text == "Yes"
+        assert not PendingChatInjection.objects.filter(user_id="U_COLLEAGUE", loop_replied_at__isnull=False).exists()
+
+
 class TestATypedAnswerClosesTheRootCard:
     def test_a_typed_answer_closes_the_root_card(self) -> None:
         question = DeferredQuestion.record(

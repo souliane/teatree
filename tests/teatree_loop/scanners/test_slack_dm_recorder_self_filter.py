@@ -26,6 +26,7 @@ class FakeMessagingWithAuth:
         default_factory=lambda: {"ok": True, "user_id": _OWN_USER_ID, "bot_id": _OWN_BOT_ID},
     )
     auth_test_calls: int = 0
+    user_id: str = _USER_ID
 
     def auth_test(self) -> RawAPIDict:
         self.auth_test_calls += 1

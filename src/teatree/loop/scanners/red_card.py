@@ -43,6 +43,7 @@ from django.utils import timezone
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection, RedCardIntent, RedCardSignal
+from teatree.loop.owner_identity import configured_owner_id, owner_rows
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -120,7 +121,7 @@ class RedCardScanner:
     name: str = "red_card"
 
     def scan(self) -> list[ScanSignal]:
-        target_user = getattr(self.backend, "user_id", "")
+        target_user = configured_owner_id(self.backend)
         signals: list[ScanSignal] = []
 
         for event in self._drain_reactions():
@@ -163,8 +164,9 @@ class RedCardScanner:
         return list(fetch())
 
     def _drain_dms(self) -> list[RawAPIDict]:
-        """The overlay's recently recorded DMs; the recorder already dropped the bot's own and on-behalf posts."""
-        rows = PendingChatInjection.objects.recorded_since(timezone.now() - _DM_LOOKBACK, overlay=self.overlay)
+        """The overlay's recently recorded DMs sent by its owner."""
+        recent = PendingChatInjection.objects.recorded_since(timezone.now() - _DM_LOOKBACK, overlay=self.overlay)
+        rows = owner_rows(recent, lambda _overlay: self.backend)
         return [{"text": row.text, "ts": row.slack_ts, "channel": row.channel, "user": row.user_id} for row in rows]
 
     def _handle_reaction(self, event: RawAPIDict, target_user: str) -> ScanSignal | None:
