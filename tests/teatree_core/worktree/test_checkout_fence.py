@@ -420,6 +420,25 @@ class CheckoutFenceTests(TestCase):
         with pytest.raises(CheckoutFenceError, match="exactly one"):
             verify_task_checkout(self.task, str(self.checkout))
 
+    def test_duplicate_held_by_a_task_or_session_still_refuses_dispatch(self) -> None:
+        for field in ("occupied_by", "occupied_by_session"):
+            with self.subTest(field=field):
+                duplicate = WorktreeFactory(
+                    ticket=self.ticket,
+                    overlay=self.worktree.overlay,
+                    repo_path=self.worktree.repo_path,
+                    branch=self.worktree.branch,
+                    extra={"worktree_path": str(self.checkout)},
+                    **{field: "holder"},
+                )
+
+                with pytest.raises(CheckoutFenceError, match="exactly one"):
+                    verify_task_checkout(self.task, str(self.checkout))
+
+                duplicate.refresh_from_db()
+                assert duplicate.worktree_path == str(self.checkout)
+                duplicate.delete()
+
     def test_cross_ticket_duplicate_row_refuses_checkout(self) -> None:
         WorktreeFactory(ticket=TicketFactory(), extra={"worktree_path": str(self.checkout)})
         with pytest.raises(CheckoutFenceError, match="exactly one"):
