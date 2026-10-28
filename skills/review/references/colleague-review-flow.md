@@ -6,7 +6,7 @@ When the PR under review belongs to the **user themselves**, do NOT post review 
 
 **Step 0 — Gather Ticket Context:**
 
-Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior. Extract the ticket URL from the PR title/description, then fetch it via the `mcp__teatree__github_issue` / `mcp__teatree__gitlab_issue` MCP tool — falling back to the issue-tracker CLI (`gh issue view`, `glab issue view`) when the MCP server is not connected. Fetch every attached spec and linked external requirement too; attachments are the authoritative spec, and an author's docstring summarising them is not a substitute.
+Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior. Extract the ticket URL from the PR title/description, then fetch it via the `mcp__teatree__github_issue` / `mcp__teatree__gitlab_issue` MCP tool — falling back to the platform CLI's own issue-view command when the MCP server is not connected. Fetch every attached spec and linked external requirement too; attachments are the authoritative spec, and an author's docstring summarising them is not a substitute.
 
 **Hard rule — refuse blind reviews.** If a ticket references a spec attachment or external requirements document you cannot retrieve, **STOP**. Do not post review notes. Report back to the user: which document you could not fetch, what you tried, and what access is needed. An overlay MAY declare specific sources out of scope (a partner portal behind SSO); honour those exceptions. For anything else, a review with missing spec context is not a review — it is guessing, and guessing attached to the user's account damages the author's trust.
 
@@ -62,7 +62,7 @@ Speculative questions ("is this correct?", "could this cause issues?") without e
 
 A `// TODO`, `# TODO`, `/* TODO */`, `// FIXME`, `# FIXME`, `// XXX`, `# XXX`, `// HACK`, `# HACK` marker on an added line — or the phrases "not in this MR", "follow-up", "deferred", "implement later", "out of scope" — is the **author explicitly documenting that the work is deferred**. NEVER post a blocker-shaped (REQUEST_CHANGES) comment anchored to (or within ±3 lines of) such a marker. The strongest verdict allowed is a non-blocker comment, and only when it adds genuinely new context (e.g. "tracked at [#NNN]") — not re-stating what the author already said.
 
-`t3 review post-comment` enforce this deterministically via `src/teatree/cli/review/todo_gate.py` (souliane/teatree#1186): a blocker-shaped body anchored on a TODO-adjacent line is REFUSED with a clear error before any GitLab API call. If you genuinely believe the TODO must be addressed in THIS MR (rare — the author knows their scope), STOP and surface to the user — never post on their identity.
+`mcp__teatree__review_post_comment` (and its fallback `t3 review post-comment`) enforce this deterministically via `src/teatree/cli/review/todo_gate.py` (souliane/teatree#1186): a blocker-shaped body anchored on a TODO-adjacent line is REFUSED with a clear error before any GitLab API call. If you genuinely believe the TODO must be addressed in THIS MR (rare — the author knows their scope), STOP and surface to the user — never post on their identity.
 
 Failure mode this prevents: re-asking a colleague to do work they have explicitly deferred makes the reviewer (and the user, whose identity posts on-behalf) look unable to read code.
 
@@ -70,4 +70,4 @@ Failure mode this prevents: re-asking a colleague to do work they have explicitl
 
 **Step 3 — Post Draft Review Comments (babysit tier):**
 
-The babysit-tier draft flow — the pre-flight read of existing discussions, the `t3 review post-comment` / `--body-file` / `--live` recipes, the anchoring pre-flight and post-flight checks, the collapsed-diff workaround, and the publish/delete subcommands — is in [`skills/review/references/posting-review-comments.md`](posting-review-comments.md).
+The babysit-tier draft flow — the pre-flight read of existing discussions, the `mcp__teatree__review_post_comment` call and its `t3 review post-comment` / `--body-file` / `--live` fallback recipes, the anchoring pre-flight and post-flight checks, the collapsed-diff workaround, and the publish/delete subcommands — is in [`skills/review/references/posting-review-comments.md`](posting-review-comments.md).

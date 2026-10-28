@@ -63,9 +63,6 @@ skills/review/SKILL.md::glab mr view
 skills/review/SKILL.md::t3 config_setting set
 skills/review/SKILL.md::t3 lifecycle visit-phase
 skills/review/SKILL.md::t3 review post-comment
-skills/review/references/colleague-review-flow.md::gh issue view
-skills/review/references/colleague-review-flow.md::glab issue view
-skills/review/references/colleague-review-flow.md::t3 review post-comment
 skills/review/references/giving-review-investigation.md::gh issue view
 skills/review/references/giving-review-investigation.md::gh pr list
 skills/review/references/giving-review-investigation.md::glab api
