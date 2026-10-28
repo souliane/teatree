@@ -2,6 +2,7 @@
 
 import os
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -68,6 +69,32 @@ class ScratchSweepTestCase(TestCase):
 
 
 class ScratchSweepPlanTests(ScratchSweepTestCase):
+    def test_a_bounded_scheduled_pass_resumes_after_protected_entries(self) -> None:
+        _scratch(self.root, "a-young", days=1)
+        _scratch(self.root, "b-young", days=1)
+        old = _scratch(self.root, "c-old", days=9)
+        clock = [0.0]
+        real_stats = scratch._tree_stats
+
+        def counted_stats(path: Path, *, deadline: float | None = None) -> scratch._TreeStats:
+            clock[0] += 1.0
+            return real_stats(path, deadline=deadline)
+
+        with (
+            patch.object(scratch.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(scratch, "_tree_stats", side_effect=counted_stats),
+        ):
+            first = replace(self.sweep(), deadline=2.0).plan()
+            assert old.exists()
+            assert "deferred" in first.probe_gap
+            clock[0] = 0.0
+            second = replace(self.sweep(), deadline=2.0, start_after=first.last_checked_path).plan()
+            clock[0] = 0.0
+            third = replace(self.sweep(), start_after=second.last_checked_path).apply()
+
+        assert third.reclaimed_bytes > 0
+        assert not old.exists()
+
     def test_stale_entry_is_removable_and_young_one_is_kept(self) -> None:
         stale = _scratch(self.root, "t3db.sqlite3", days=7, size=4096)
         young = _scratch(self.root, "wt4081venv", days=1, size=8192)

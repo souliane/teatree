@@ -21,6 +21,16 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name="resourcepressuremarker",
+            name="scratch_tmp_cursor",
+            field=models.TextField(blank=True, default=""),
+        ),
+        migrations.AddField(
+            model_name="resourcepressuremarker",
+            name="scratch_var_tmp_cursor",
+            field=models.TextField(blank=True, default=""),
+        ),
+        migrations.AddField(
+            model_name="resourcepressuremarker",
             name="last_reclaimed_gb",
             field=models.FloatField(default=0.0),
         ),

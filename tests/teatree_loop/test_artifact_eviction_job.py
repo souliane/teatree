@@ -402,6 +402,28 @@ class UnattendedHousekeepingTests(TestCase):
         assert all(call.kwargs["retention_days"] == pytest.approx(1 / 6) for call in scratch.call_args_list)
         assert "worker scratch" in plan
 
+    def test_the_scheduled_sweep_persists_each_root_cursor_for_the_next_tick(self) -> None:
+        partial = ScratchSweepPlan(
+            root="/tmp",
+            retention_days=1 / 6,
+            entries=(),
+            applied=True,
+            probe_gap="pass budget exhausted; 1 entry(ies) deferred",
+            last_checked_path="/tmp/b-young",
+        )
+        complete = ScratchSweepPlan(root="/tmp", retention_days=1 / 6, entries=(), applied=True)
+        with (
+            patch.dict(os.environ, {"TEATREE_ROLE": "worker"}),
+            patch(f"{_SWEEP}.sweep_scratch", side_effect=[partial, complete, complete, complete]) as scratch,
+        ):
+            self._sweep()
+            marker = ResourcePressureMarker.load()
+            assert marker.scratch_tmp_cursor == "/tmp/b-young"
+            self._sweep()
+
+        assert scratch.call_args_list[2].kwargs["start_after"] == "/tmp/b-young"
+        assert ResourcePressureMarker.load().scratch_tmp_cursor == ""
+
     def test_unrecovered_pressure_sends_one_owner_question_with_the_refusal(self) -> None:
         marker = ResourcePressureMarker.load()
         marker.last_disk_free_gb = 16.0

@@ -89,7 +89,7 @@ def sweep_artifacts(payload: ActionPayload) -> None:
     else:
         plan.steps.append("DEFER idle database copies — pass budget exhausted")
     if time.monotonic() < deadline:
-        _sweep_worker_scratch(plan, deadline=deadline)
+        _sweep_worker_scratch(plan, marker=marker, deadline=deadline)
         persist_plan(marker, plan, field_name="last_artifact_plan", caller="sweep_artifacts")
     else:
         plan.steps.append("DEFER worker scratch — pass budget exhausted")
@@ -163,21 +163,37 @@ def _release_idle_database_copies(plan: FreePlan, *, deadline: float) -> None:
     plan.steps.extend(sampled(tuple(outcomes)))
 
 
-def _sweep_worker_scratch(plan: FreePlan, *, deadline: float) -> None:
+def _sweep_worker_scratch(plan: FreePlan, *, marker: "ResourcePressureMarker", deadline: float) -> None:
     if os.environ.get("TEATREE_ROLE") != "worker":
         return
-    for root in ("/tmp", "/var/tmp"):  # noqa: S108 — the worker's two fixed scratch roots
+    for root, cursor_field in (
+        ("/tmp", "scratch_tmp_cursor"),  # noqa: S108 — the worker's fixed scratch root
+        ("/var/tmp", "scratch_var_tmp_cursor"),  # noqa: S108 — the worker's fixed scratch root
+    ):
         if time.monotonic() >= deadline:
             plan.steps.append(f"DEFER worker scratch {root} — pass budget exhausted")
             break
         try:
-            result = sweep_scratch(configured_root=root, retention_days=1 / 6, apply=True, deadline=deadline)
+            result = sweep_scratch(
+                configured_root=root,
+                retention_days=1 / 6,
+                apply=True,
+                deadline=deadline,
+                start_after=getattr(marker, cursor_field),
+            )
         except Exception:
             logger.exception("sweep_artifacts: worker scratch sweep failed at %s", root)
             plan.steps.append(f"FAILED worker scratch {root} — see logs")
             continue
         plan.reclaimed_gb += result.reclaimed_bytes / GIB
         plan.steps.append(f"worker scratch {result.summary}")
+        if not result.refused and (result.last_checked_path or not result.probe_gap):
+            setattr(
+                marker,
+                cursor_field,
+                result.last_checked_path if result.probe_gap.startswith("pass budget exhausted;") else "",
+            )
+            marker.save(update_fields=[cursor_field])
         if result.refused:
             plan.steps.append(f"NEEDS OWNER: worker scratch {root} could not be checked — {result.probe_gap}")
 

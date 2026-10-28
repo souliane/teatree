@@ -45,6 +45,7 @@ import logging
 import os
 import shutil
 import time
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -122,6 +123,7 @@ class ScratchSweepPlan:
     probe_gap: str = ""
     applied: bool = False
     reclaimed_bytes: int = 0
+    last_checked_path: str = ""
     refused: bool = False
     """A read the sweep depends on FAILED, so it deleted nothing and says so.
 
@@ -298,6 +300,7 @@ class ScratchSweep:
     uid: int | None = None
     now: datetime | None = None
     deadline: float | None = None
+    start_after: str = ""
 
     def plan(self) -> ScratchSweepPlan:
         """Classify every top-level entry under the root, size-ranked, touching nothing."""
@@ -326,6 +329,9 @@ class ScratchSweep:
         cutoff = self._cutoff()
         held = frozenset(normalized_spelling(path) for path in view.held)
         normalized_reserved = frozenset(normalized_spelling(path) for path in reserved)
+        if self.start_after:
+            start = bisect_right(children, Path(self.start_after))
+            children = children[start:] + children[:start]
         entries = []
         for child in children:
             if self.deadline is not None and time.monotonic() >= self.deadline:
@@ -337,6 +343,7 @@ class ScratchSweep:
             retention_days=self.retention_days,
             entries=_ranked(entries),
             probe_gap=f"pass budget exhausted; {deferred} entry(ies) deferred" if deferred else "",
+            last_checked_path=entries[-1].path if entries else "",
         )
 
     def _unsighted_gap(self, view: ProcessTableView) -> str:
@@ -387,6 +394,7 @@ class ScratchSweep:
             probe_gap=plan.probe_gap,
             applied=True,
             reclaimed_bytes=reclaimed,
+            last_checked_path=plan.last_checked_path,
         )
 
     def _inert_plan(self, gap: str, children: list[Path], *, refused: bool = False) -> ScratchSweepPlan:
@@ -569,11 +577,11 @@ def resolve_scratch_sweep(configured: str = "") -> ScratchSweep:
 
 
 def sweep_scratch(
-    *, configured_root: str, retention_days: float, apply: bool, deadline: float | None = None
+    *, configured_root: str, retention_days: float, apply: bool, deadline: float | None = None, start_after: str = ""
 ) -> ScratchSweepPlan:
     """Plan (or apply) the scratch retention sweep for the resolved root."""
     resolved = resolve_scratch_sweep(configured_root)
-    sweep = replace(resolved, retention_days=retention_days, deadline=deadline)
+    sweep = replace(resolved, retention_days=retention_days, deadline=deadline, start_after=start_after)
     return sweep.apply() if apply else sweep.plan()
 
 

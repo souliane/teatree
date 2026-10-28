@@ -50,6 +50,8 @@ class ResourcePressureMarker(models.Model):
     last_plan = models.TextField(blank=True, default="")
     disk_reclaim_cursor = models.PositiveSmallIntegerField(default=0)
     idle_db_cursor = models.TextField(blank=True, default="")
+    scratch_tmp_cursor = models.TextField(blank=True, default="")
+    scratch_var_tmp_cursor = models.TextField(blank=True, default="")
     last_reclaimed_gb = models.FloatField(default=0.0)
     reclaim_blocked_since = models.DateTimeField(null=True, blank=True)
     last_reclaim_notice_at = models.DateTimeField(null=True, blank=True)
