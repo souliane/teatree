@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from teatree.core.models import PendingChatInjection
 from teatree.loop.question_binding import _addressed
+from teatree.loop.slack_answer.control_verbs import control_verb
 from teatree.loop.slack_answer.priority_directive import parse_priority_directive
 
 # Consecutive messages from the same user on the same channel, with no
@@ -52,7 +53,9 @@ def _coalesce(rows: list[PendingChatInjection]) -> list[_Unit]:
     A new unit starts when the next row is from a different
     ``(overlay, channel, user_id)``, sits in a different Slack thread, OR its
     ``received_at`` is more than :data:`_COALESCE_WINDOW_SECONDS` after the
-    previous row's. Rows arrive oldest-first (``loop_unreplied()`` ordering).
+    previous row's, OR either row is only a control word (pause / resume), which is
+    never continued onto an earlier row nor by a later one. Rows arrive oldest-first
+    (``loop_unreplied()`` ordering).
     The loop is the only bot that replies and it stamps ``loop_replied_at`` on
     a whole unit at once, so every row reaching this function is pre-reply —
     "no bot message between" reduces to the same-actor/same-thread/within-window
@@ -67,11 +70,16 @@ def _coalesce(rows: list[PendingChatInjection]) -> list[_Unit]:
     return units
 
 
+def _acts_alone(text: str) -> bool:
+    """A priority directive, or a message that is only pause / resume: joined to a neighbour it stops being one."""
+    return parse_priority_directive(text) is not None or control_verb(text) is not None
+
+
 def _continues(prev: PendingChatInjection, nxt: PendingChatInjection) -> bool:
     """True iff *nxt* continues *prev* (same actor, same thread, within window)."""
     if (prev.overlay, prev.channel, prev.user_id) != (nxt.overlay, nxt.channel, nxt.user_id):
         return False
-    if parse_priority_directive(prev.text) is not None or parse_priority_directive(nxt.text) is not None:
+    if _acts_alone(prev.text) or _acts_alone(nxt.text):
         return False
     if prev.thread_ts != nxt.thread_ts:
         # Two threads are two conversations: a unit binds on its LEAD's thread,

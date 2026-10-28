@@ -7603,6 +7603,7 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
 │ wip             Bounded-WIP throughput dial.                                 │
 │ autonomy        Per-overlay trust switch (collapses the approval gates).     │
+│ github-webhook  Create or remove a signed GitHub repository webhook.         │
 │ secrets         Inspect, manage and copy sealed credentials.                 │
 │ worktree        Per-worktree FSM operations.                                 │
 │ workspace       Ticket-level workspace operations (every worktree in the     │
@@ -9333,6 +9334,50 @@ Usage: t3 teatree autonomy set [OPTIONS] LEVEL
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 teatree github-webhook`
+
+```
+Usage: t3 teatree github-webhook [OPTIONS] COMMAND [ARGS]...
+
+ Create or remove a signed GitHub repository webhook.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ connect     Create or reconcile a repository webhook and verify its ping.    │
+│ disconnect  Remove an exact-URL repository webhook and its secret.           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree github-webhook connect`
+
+```
+Usage: t3 teatree github-webhook connect [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo                  TEXT  Repository owner/name.                         │
+│ --url                   TEXT  Public HTTPS URL for /hooks/github/.           │
+│ --replace-secret              Rotate the signing secret.                     │
+│ --disconnect                  Remove the exact-URL hook and its secret.      │
+│ --json                        Emit JSON on stdout.                           │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree github-webhook disconnect`
+
+```
+Usage: t3 teatree github-webhook disconnect [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  Repository owner/name.                                   │
+│ --url         TEXT  Exact webhook URL to remove.                             │
+│ --json              Emit JSON on stdout.                                     │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree secrets`
 
 ```
@@ -9873,6 +9918,8 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 │                             CLOSED/nonexistent target issue/PR URL.          │
 │ --kind                TEXT  Classify: 'fix' or 'feature' (blank infers from  │
 │                             the title, #17).                                 │
+│ --reason              TEXT  Reason for adding repositories to a ticket that  │
+│                             already has repos.                               │
 │ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -12788,6 +12835,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
+│ partial-merge-report         List merged tickets whose open issue has a      │
+│                              declared remainder.                             │
 │ settle-holds                 Check held no-diff reviews; --dry-run reads     │
 │                              without changing tickets.                       │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
@@ -13376,6 +13425,20 @@ Usage: t3 teatree ticket dead-rows [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the rows as JSON.                                       │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket partial-merge-report`
+
+```
+Usage: t3 teatree ticket partial-merge-report [OPTIONS]
+
+ List merged tickets whose open issue has a declared remainder.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Limit the report to one overlay.                      │
+│ --json                 Emit machine-readable JSON.                           │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

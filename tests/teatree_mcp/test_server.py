@@ -400,6 +400,11 @@ class TestReadOnlySurface(TestCase):
     def test_tool_descriptions_keep_per_tool_contracts(self) -> None:
         tools, _, _ = _surface(read_only=False, mailbox=False)
 
+        for name in ("github_issue_search", "gitlab_issue_search"):
+            assert all(
+                term in tools[name].description
+                for term in ("10", "number", "title", "url", "state", "updated_at", "truncated")
+            )
         assert "force_general" in tools["review_post_comments"].description
         assert "allow_bloat" in tools["review_post_comments"].description
         for name in ("notion_create", "notion_comment", "notion_archive", "notion_property_set"):

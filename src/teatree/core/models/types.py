@@ -2,14 +2,9 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Final, TypedDict
 
-from teatree.core.models.checkout_proof import (
-    AutoAttestation,
-    CheckoutCustody,
-    DeferredCheckoutExit,
-    DeferredExitAttestation,
-    ReleasedPrHeadAttestation,
-)
+from teatree.core.models.checkout_custody import WorktreeCheckoutExtra
 from teatree.core.models.dream_gap_types import DreamFunnelEntry, DreamGapDisposition, DreamGapEntry, DreamGapRelease
+from teatree.core.models.repo_expansion import TicketRepoExtra
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -132,7 +127,7 @@ class ShippingHold(TypedDict):
     checked_at: str
 
 
-class TicketExtra(TypedDict, total=False):
+class TicketExtra(TicketRepoExtra, total=False):
     tests_passed: bool
     nit_follow_up: bool
     nit_lane_receipts: dict[str, JSONObject]
@@ -174,11 +169,6 @@ class TicketExtra(TypedDict, total=False):
     issue_close_reason: str
     visual_qa: VisualQASummary
     branch: str
-    # #33 per-repo branch override map (repo → branch). A ticket whose repos
-    # live on DIFFERENT branches maps each one here; ``branch`` stays the
-    # single ticket-dir name so every repo provisions as a SIBLING in one dir.
-    # Repos absent from the map fall back to ``branch``.
-    branches: dict[str, str]
     # #2275 adopt: repo -> existing on-disk worktree_path for an outside branch
     # registered via ``workspace ticket --adopt``; the provisioner records the
     # path verbatim instead of ``git worktree add``.
@@ -756,14 +746,8 @@ class WorktreeSiblingFields(TypedDict, total=False):
     branch: str
 
 
-class WorktreeExtra(TypedDict, total=False):
+class WorktreeExtra(WorktreeCheckoutExtra, total=False):
     worktree_path: str
-    attested_state: str
-    direct_attested_state: str
-    direct_attested_at: str
-    checkout_custody: CheckoutCustody
-    auto_attestation: AutoAttestation | DeferredExitAttestation | ReleasedPrHeadAttestation
-    deferred_exit: DeferredCheckoutExit
     clone_path: str
     services: list[str]
     urls: dict[str, str]
@@ -772,15 +756,8 @@ class WorktreeExtra(TypedDict, total=False):
     db_refreshed_at: str
     db_import_failures: int
     setup_hook: str
-    # Written by the start runner alongside ``services`` in one locked update, and
-    # by the provision runner at the end of a provision. Both were absent from this
-    # TypedDict, so ``_WORKTREE_EXTRA_KEYS`` filtered them straight back out of
-    # every ``get_extra()`` read — declared here so the accessor keeps them.
     ports: Ports
     provision_report: "ProvisionReportDict"
-    # #2227 Explicit operator pin: when true the idle-stack reaper never reaps
-    # this worktree, regardless of idleness — the manual escape hatch alongside
-    # the active-delivery-lease and recent-E2E-run KEEP guards.
     reaper_pinned: bool
 
 

@@ -327,6 +327,20 @@
       "subcommands": []
     },
     {
+      "help": "Create or remove a signed GitHub repository webhook.",
+      "name": "github_webhook",
+      "subcommands": [
+        {
+          "help": "",
+          "name": "connect"
+        },
+        {
+          "help": "",
+          "name": "disconnect"
+        }
+      ]
+    },
+    {
       "help": "Hand all current work from this session to another session.",
       "name": "handover",
       "subcommands": [
@@ -1357,6 +1371,10 @@
         {
           "help": "Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520)",
           "name": "fix-record-override"
+        },
+        {
+          "help": "List merged tickets whose open issue has a declared remainder",
+          "name": "partial-merge-report"
         },
         {
           "help": "List every non-terminal ticket intake can never find, oldest lane first (#4527)",

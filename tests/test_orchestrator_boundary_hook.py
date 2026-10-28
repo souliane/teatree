@@ -20,11 +20,17 @@ read by ``_call_is_from_subagent``.
 
 import json
 import sqlite3
+import subprocess
+import sys
+import time
+from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 import hooks.scripts.hook_router as router
+import hooks.scripts.orchestration_boundary_signals as signals
 from hooks.scripts.hook_router import (
     _call_is_from_subagent,
     _is_orchestration_action,
@@ -33,6 +39,39 @@ from hooks.scripts.hook_router import (
     handle_enforce_orchestrator_boundary,
 )
 from tests._gate_escape_audit import audited_escape
+
+
+def test_origin_signal_import_stays_cold() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            (
+                "import sys; import hooks.scripts.orchestration_boundary_signals; "
+                "assert 'hooks.scripts.mr_cli_fields' not in sys.modules; "
+                "assert 'hooks.scripts.managed_repo' not in sys.modules"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_gate_two_blueprint_describes_scanned_payloads() -> None:
+    text = (Path(__file__).resolve().parents[1] / "docs/blueprint/factory-architecture.md").read_text()
+    paragraphs = [
+        part for part in text.split("\n\n") if "gate 2" in part and "handle_enforce_orchestrator_boundary" in part
+    ]
+    assert any(
+        "every other heredoc body and shell here-string is scanned" in part
+        and "heavy commands in quoted spans" in part
+        and "file-writing `cat`/`tee` heredocs" in part
+        for part in paragraphs
+    )
 
 
 def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
@@ -167,8 +206,18 @@ class TestMainAgentHeavyBashBlocked:
             "cargo test",
             "make all",
             "sleep 600",
+            "echo `pytest`",
+            "echo `make all`",
+            r"echo \\`pytest`",
+            r'echo "\\`pytest`"',
+            'echo "$(date; pytest)"',
+            'echo "`date; pytest`"',
+            "bash -c 'pytest'",
+            "bash -c 'date; pytest'",
             "find . -name '*.py' -exec grep -l TODO {} ;",
             "ls -laR /Users/dev/workspace",
+            "# don't\nuv run pytest\n# it's",
+            "echo \\'first && make all \\'last",
         ],
     )
     def test_heavy_main_agent_bash_blocked(self, command: str) -> None:
@@ -182,6 +231,335 @@ class TestMainAgentHeavyBashBlocked:
         assert "long-running" in reason or "heavy" in reason
         assert "run_in_background" in reason
         assert "orchestrator_bash_gate_enabled" in reason
+
+
+class TestFileWritingHeredocs:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat > run.sh <<'EOF'\nuv run pytest\nmake lint\nsleep 120\nEOF",
+            "cat <<EOF > run.sh\nuv run pytest\nEOF",
+            "cat >> run.sh <<-EOF\n\tmake lint\n\tEOF",
+            "tee run.sh <<EOF\nuv run pytest\nEOF",
+            "mkdir -p scripts && cat > scripts/run.sh <<EOF\nuv run pytest\nEOF",
+            "cat > run.sh << 'EOF'\nuv run pytest\nEOF",
+            "tee run.sh << EOF\nuv run pytest\nEOF",
+            "bash run.sh; cat > run.sh <<EOF\nmake lint\nEOF",
+            "gh pr create --body \"$(cat <<'EOF'\n`uv run pytest`\nEOF\n)\"",
+            "git commit -m \"$(cat <<'EOF'\n`uv run pytest`\nEOF\n)\"",
+            "gh pr create --body \"$(cat <<'EOF'\n`make lint`\nEOF\n)\"",
+            "gh pr create --body \"$(cat <<'EOF'\n) `uv run pytest`\nEOF\n)\"",
+            "gh pr create --body \"$(cat <<'EOF'\nEOF and rest\n`uv run pytest`\nEOF\n)\"",
+        ],
+    )
+    def test_writing_a_file_does_not_execute_its_body(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash <<EOF\nuv run pytest\nEOF",
+            "cat <<EOF | bash\nuv run pytest\nEOF",
+            "cat > run.sh <<EOF\nuv run pytest\nEOF\nmake all",
+            "cat > run.sh <<EOF\nuv run pytest",
+            "tee run.sh | bash <<EOF\nuv run pytest\nEOF",
+            "tee run.sh; bash <<EOF\nuv run pytest\nEOF",
+            "cat > run.sh && bash <<EOF\nuv run pytest\nEOF",
+            "cat > run.sh <<EOF\n$(uv run pytest)\nEOF",
+            "cat > run.sh <<EOF\n`uv run pytest`\nEOF",
+            "cat > run.sh <<EOF\nit's `uv run pytest`\nEOF",
+            "tee >(bash) <<EOF\nuv run pytest\nEOF",
+            "cat > run.sh <<<EOF\nuv run pytest\nEOF",
+            "python3 - <<'OUTER'\ncat > run.sh <<'INNER'\nuv run pytest\nINNER\nOUTER",
+            "tee run.sh <<EOF | bash\nuv run pytest\nEOF",
+            "tee run.sh <<EOF >(bash)\nuv run pytest\nEOF",
+            "cat > run.sh << 'EOF'\nuv run pytest\nEOF\nbash run.sh",
+            "cat > run.sh <<EOF\nuv run pytest\nEOF\nbash run.sh; echo done",
+            "tee run.sh <<EOF\nmake lint\nEOF\nbash run.sh",
+            "cat > run.sh <<EOF && bash run.sh\nmake lint\nEOF",
+            "tee run.sh <<EOF && sh run.sh\nmake lint\nEOF",
+            "sudo bash <<EOF\nmake lint\nEOF",
+            "docker exec -i c bash <<EOF\nmake lint\nEOF",
+            "/usr/bin/bash <<EOF\nmake lint\nEOF",
+        ],
+    )
+    def test_executable_or_unclosed_heredoc_still_denies(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "docker compose exec -T web bash <<EOF\nuv run pytest\nEOF",
+            "ssh host bash -s <<EOF\nsleep 300\nEOF",
+            "ssh host <<EOF\nsleep 300\nEOF",
+            "sudo -s <<EOF\nsleep 300\nEOF",
+            "su - x <<EOF\nsleep 300\nEOF",
+            "kubectl exec -i pod -- sh <<EOF\nsleep 300\nEOF",
+            "source /dev/stdin <<EOF\nsleep 300\nEOF",
+            ". /dev/stdin <<EOF\nsleep 300\nEOF",
+            "dash <<EOF\nsleep 300\nEOF",
+            "ksh <<EOF\nsleep 300\nEOF",
+            "node <<EOF\nsleep 300\nEOF",
+            "ruby <<EOF\nsleep 300\nEOF",
+            "perl <<EOF\nsleep 300\nEOF",
+            "cat <<EOF | source /dev/stdin\nsleep 300\nEOF",
+            "cat <<EOF | python3\nsleep 300\nEOF",
+            "cat > x; ssh host <<EOF\nsleep 300\nEOF",
+            "echo > x; cat <<EOF\nsleep 300\nEOF",
+            'eval "$(cat <<EOF\nsleep 300\nEOF\n)"',
+            'echo "$(cat <<EOF\n$(sleep 300)\nEOF\n)"',
+        ],
+    )
+    def test_non_file_writer_heredoc_body_is_scanned(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize(
+        "runner",
+        ["bash ./x.sh", "bash -x x.sh", "/bin/bash x.sh", "source x.sh", "./x.sh"],
+    )
+    def test_file_written_then_executed_is_scanned(self, runner: str) -> None:
+        command = f"cat > x.sh <<EOF\nsleep 300\nEOF\n{runner}"
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestQuotedHeavyPayloads:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "FOO=1 bash -c 'sleep 300'",
+            "nohup bash -c 'npm run build'",
+            "time bash -c 'uv sync'",
+            "timeout 600 bash -c 'docker build .'",
+            "nice -n 5 bash -c 'find . -exec echo x {} ;'",
+            "exec bash -c 'python manage.py runserver'",
+            "setsid bash -c 'cargo test'",
+            "xargs sh -c 'pip install x'",
+            "su -c 'npm install x'",
+            "kubectl exec pod -- sh -c 'npx playwright test'",
+            "watch bash -c 'docker compose up'",
+            "python3 -c 'sleep 300'",
+            "dash -c 'sleep 300'",
+            "bash -c -- 'sleep 300'",
+            "timeout 600 bash -c 'make all'",
+        ],
+    )
+    def test_quoted_heavy_command_is_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize("command", ["sh <<< 'sleep 300'", 'bash <<< "make all"', "bash <<< 'npm run build'"])
+    def test_shell_here_string_is_scanned(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        ["else make all", "elif make all", ">log make all", "2>/dev/null make all", "/usr/bin/time -v make all"],
+    )
+    def test_command_head_variants_are_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'echo "$(make all)"',
+            "x=$(make -j$(nproc) all)",
+            'out="$(cd "$(git rev-parse --show-toplevel)" && make test)"',
+            'ver="$(make -j$(nproc) -s version)"',
+            'echo "$(cd x && (make all))"',
+            'echo "$( (tox) )"',
+            'echo "$(webpack --mode "$(echo production)")"',
+            "echo \"$(printf ')' && make all)\"",
+            'echo "$(echo "(" && tox)"',
+            'echo "$(echo "$(printf "(")" && make all)"',
+            'echo "$(echo "$(printf ")")" && make all)"',
+            'echo "$(echo "$(printf \')\')" && make all)"',
+            'echo "$(echo "$(echo "$(printf ")")")" && make all)"',
+            'echo "$(make all',
+        ],
+    )
+    def test_heavy_word_inside_a_live_substitution_that_nests_parens_is_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestHeavyWordIsNotACommand:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python3 scripts/make-briefs.py",
+            "cat tox.ini",
+            "git commit -m 'make the gate narrower'",
+            "sed -n '1,3p' webpack.config.js",
+            "gh pr comment --body 'CI runs `pytest` on shard 3'",
+            "ps -eo pid,etime,stat,cmd | rg 'test-affected|pytest|uv run' | head -20",
+            'echo "CI runs | pytest on shard 3"',
+            "echo \\`pytest\\`",
+            "command -v pytest",
+            "command -V pytest",
+            "command -v make",
+            "command -v tox",
+            "echo 'make all'",
+            "echo '$(pytest)' \"$(date)\"",
+            "echo '`pytest`' `date`",
+            "echo '$(cd x && (make all))'",
+            'git commit -m "make the gate $(date) narrower"',
+            "git commit -m \"$(cat <<'EOF'\nfix it's (see 1) fine\nEOF\n)\"",
+            "bash -n; foo -c 'make all'",
+            "echo " + "$(" * 12 + "echo 'hello world'" + ")" * 12,
+        ],
+    )
+    def test_identifier_or_argument_passes(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "make all",
+            "cd src && make test",
+            "FOO=1 make",
+            "tox -e py312",
+            "webpack --mode production",
+            "sudo make all",
+            "sudo -E make all",
+            "env FOO=1 make all",
+            "nohup make all",
+            "uv run tox",
+            "uvx tox",
+            "poetry run tox",
+            "python3 -m tox",
+            "npx webpack",
+            "uv run make all",
+            "timeout 600 make all",
+            "xargs make",
+            "bash -lc 'make all'",
+            "if true; then make all; fi",
+            "command -p pytest",
+            "zsh -c 'make all'",
+            "/bin/bash -c 'make all'",
+            "bash -x -c 'make all'",
+            "bash -euo pipefail -c 'make all'",
+            "ssh host 'make all'",
+            'eval "make all"',
+            "echo 'make all' | sh",
+            "if make; then :; fi",
+            "until make; do :; done",
+            "! make",
+            "sudo -u root make",
+            "nice -n 5 make",
+            "env -u FOO make",
+            "timeout 30s make",
+            "/usr/bin/make",
+            "yarn webpack",
+            "pnpm exec webpack",
+            "watch make",
+            "xargs -P4 make",
+        ],
+    )
+    def test_real_heavy_verb_still_denies(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestQuotedPytestSelectors:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'uv run pytest "tests/test_a.py::test_b[1-2]"',
+            "pytest 'tests/test_a.py::TestX::test_y' -x",
+            'pytest "tests/test_a.py" -q',
+        ],
+    )
+    def test_quoted_file_or_node_stays_targeted(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize("command", ['pytest "tests/"', 'pytest "tests/test_a.py" && pytest'])
+    def test_quoted_directory_or_second_whole_suite_denies(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestHeavyScanStaysBounded:
+    @pytest.mark.parametrize("span", ["$(date)", "`date`"])
+    def test_thousands_of_substitutions_scan_in_bounded_time(self, span: str) -> None:
+        command = "echo " + " ".join([span] * 5000)
+        started = time.process_time()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.process_time() - started < 2.0
+
+    def test_thousands_of_file_writing_heredocs_scan_in_bounded_time(self) -> None:
+        command = "\n".join(f"cat > f{i} <<EOF{i}\nbody\nEOF{i}" for i in range(2000))
+        started = time.process_time()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.process_time() - started < 2.0
+
+    def test_a_long_blank_line_run_scans_in_bounded_time(self) -> None:
+        command = "echo a" + "\n" * 8000 + "echo done"
+        started = time.process_time()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.process_time() - started < 2.0
+
+    def test_a_verb_after_a_long_blank_line_run_still_denies(self) -> None:
+        command = "echo a" + "\n" * 8000 + "uv run pytest"
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    def test_sixteen_thousand_blank_lines_are_judged_in_under_a_second(self) -> None:
+        command = "echo a" + "\n" * 16_000 + "echo done"
+        started = time.process_time()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.process_time() - started < 1.0
+
+    @pytest.mark.parametrize(
+        ("wrapper", "flag"),
+        [("xargs", "-P1"), ("xargs", "-P 1"), ("sudo", "-u"), ("nice", "-n"), ("env", "-u"), ("env", "-u A=1")],
+    )
+    @pytest.mark.parametrize(("tail", "denied"), [("echo hi", False), ("make", True)])
+    def test_repeated_wrapper_flags_are_judged_in_bounded_time(
+        self, wrapper: str, flag: str, tail: str, *, denied: bool
+    ) -> None:
+        command = f"{wrapper} {(flag + ' ') * 40}{tail}"
+        started = time.process_time()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is denied
+        assert time.process_time() - started < 1.0
+
+    @pytest.mark.parametrize("word", ["a", "'a'"])
+    def test_a_long_run_of_words_is_judged_in_bounded_time(self, word: str) -> None:
+        command = "echo " + (word + " ") * (40_000 // (len(word) + 1))
+        started = time.process_time()
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+        assert time.process_time() - started < 1.0
+
+    def test_deeply_nested_substitutions_are_scanned_to_a_bounded_depth(self) -> None:
+        command = "echo " + "$(" * 2000 + "make all" + ")" * 2000
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize("depth", [8, 9, 12, 400])
+    @pytest.mark.parametrize(
+        "payload", ["make all", "bash -c 'make all'", "eval 'make all'", "ssh host 'make all'", "echo `make all`"]
+    )
+    def test_a_payload_nested_past_the_scan_cap_is_still_denied(self, depth: int, payload: str) -> None:
+        command = "echo " + "$(" * depth + payload + ")" * depth
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestShellLexerUnavailable:
+    @pytest.fixture(autouse=True)
+    def _lexer_cannot_be_imported(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        monkeypatch.delattr("teatree.hooks.shell_tokens", raising=False)
+        monkeypatch.setitem(sys.modules, "teatree.hooks.shell_tokens", None)
+        signals._shell_tokens.cache_clear()
+        signals.heavy_command_text.cache_clear()
+        yield
+        monkeypatch.undo()
+        signals._shell_tokens.cache_clear()
+        signals.heavy_command_text.cache_clear()
+
+    def test_the_raw_command_is_scanned_and_a_heavy_verb_still_denies(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest")) is True
+        assert "shell lexer unavailable" in capsys.readouterr().err
+
+    def test_a_light_command_still_passes(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("git status")) is False
+
+    def test_syntax_error_in_shell_lexer_falls_back_to_raw_scan(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch("hooks.scripts.managed_repo.teatree_src_on_path", side_effect=SyntaxError("broken lexer")):
+            assert signals.heavy_command_text("uv run pytest") == "uv run pytest"
+        assert "shell lexer unavailable" in capsys.readouterr().err
 
 
 class TestHeavyBashEscapeHatch:
@@ -524,7 +902,7 @@ class TestMainAgentForegroundAgentIsBlocked1442:
     paths below prove the no-lockout off-ramps.
     """
 
-    _RULE_CITATION = "feedback_always_run_in_background_for_sub_agent_dispatch"
+    _RULE_STATEMENT = "A main agent never blocks on a foreground sub-agent dispatch."
 
     @pytest.fixture(autouse=True)
     def _agent_gate_on(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -539,7 +917,7 @@ class TestMainAgentForegroundAgentIsBlocked1442:
         assert out["permissionDecision"] == "deny"
         assert "main-agent-orchestration-guard" in out["permissionDecisionReason"]
         assert "run_in_background" in out["permissionDecisionReason"]
-        assert self._RULE_CITATION in out["permissionDecisionReason"]
+        assert self._RULE_STATEMENT in out["permissionDecisionReason"]
         assert out["gate_id"] == "orchestrator_foreground_dispatch"
 
     def test_agent_absent_run_in_background_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:

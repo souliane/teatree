@@ -159,6 +159,15 @@ Generate the skills catalogue from skills/*/SKILL.md frontmatter.
 
 Generate deterministic TeaTree skill delegation documentation.
 
+## `github_webhook`
+
+Create or remove a signed GitHub repository webhook.
+
+| Subcommand | Description |
+| --- | --- |
+| `connect` |  |
+| `disconnect` |  |
+
 ## `handover`
 
 Hand all current work from this session to another session.
@@ -659,6 +668,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `attach-gaps` | Fold pending dream gaps into an existing host ticket, proved on the forge |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
 | `fix-record-override` | Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520) |
+| `partial-merge-report` | List merged tickets whose open issue has a declared remainder |
 | `dead-rows` | List every non-terminal ticket intake can never find, oldest lane first (#4527) |
 | `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLAN_RECORDED |
 | `skip-planning` | Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED |

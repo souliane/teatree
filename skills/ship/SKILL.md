@@ -21,8 +21,6 @@ This skill delegates the generic branch-finalization doctrine to:
 
 Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
-From "code is done" to "PR is merged."
-
 ### Dispatching a t3:shipper sub-agent (Non-Negotiable)
 
 When the orchestrator dispatches a `t3:shipper` sub-agent, the brief MUST carry the **exact MR/PR title** and a **description skeleton** — never leave the subject for the sub-agent to improvise. The title format is gated (the active overlay's `validate_pr` rejects a non-conforming first line at push), so an improvised subject is the real cause of off-target titles and failed pre-push validation: the sub-agent guesses a subject, it fails the gate, and the run burns a retry. Compose the title in the orchestrator from the ticket data and hand it over verbatim.
@@ -54,7 +52,9 @@ Use the active overlay's `validate_pr(title, description)` policy for title and 
    glab issue list --search '<keywords>'                 # CLI fallback (GitLab)
    ```
 
-   If you find it, **use that reference** — it is the canonical one. Do not open a new issue that duplicates an existing one.
+   MCP returns up to ten linked open issues and `truncated`; narrow the query when set.
+
+   Use the found issue; do not file a duplicate.
 
 2. **If no existing issue is found, the fallback depends on the repo class** (the same colleague-facing-vs-own distinction the [`../rules/SKILL.md`](../rules/SKILL.md) § "Three Orthogonal Repo Axes" tracks):
 
@@ -155,7 +155,7 @@ prek keeps every patch it writes rather than deleting it on restore, so
 
 - Start servers and verify functionality.
 - **E2E gate:** If the project requires E2E tests for the type of changes made (UI, forms, user flows), those tests must be written and passing BEFORE proceeding. E2E is part of implementation, not a post-push activity.
-- **Src-touching PR → run `bash dev/ci-parity-fast.sh` before push (teatree).** It is the necessary-and-sufficient local check: scoped prek, `makemigrations --check`, the diff-scoped affected-tests lane (`dev/test-affected.sh`), and the incremental push gate — **no whole-tree sweep**, because CI's required sharded `test (3.13)` lane is the authority on the 93% whole-tree branch floor and running its byte-equivalent duplicate locally buys nothing but wall-clock ([#3994](https://github.com/souliane/teatree/issues/3994)).
+- **Src-touching PR → inspect `t3 tool affected-tests` before push (teatree).** On SCOPED, run `bash dev/ci-parity-fast.sh`; on FULL, run its prek, migration and push-gate checks separately plus changed test files or pinned node ids. CI's required sharded `test (3.13)` lane owns whole-tree proof ([#3994](https://github.com/souliane/teatree/issues/3994)).
 - **`bash dev/ci-parity.sh` is the opt-in deep lane, not the pre-push mandate.** Reach for it to reproduce a red CI locally, or when a PR is coverage-sensitive (deleting tests, adding a low-coverage module) — it chains the exact blocking CI predicate (`makemigrations --check`, `t3 tool test-path-mirror`, `check_module_health.py --from-ref`, prek all-files, `dev/test-cov.sh`, `t3 ci coverage`). Neither script is ever a push hook — the 93% whole-tree coverage floor is a whole-tree property no diff-scoped push subset can prove. The push-stage `ci-critical-parity` hook only covers the fast scoped doctest / never-lockout / conformance classes.
 - **Wait for user feedback.** Do NOT proceed to push without user approval.
 
@@ -555,7 +555,7 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
 - **Prefer `git commit -a`** when committing changes that touch files the linter might reformat. Pre-commit hooks (ruff-format, end-of-file-fixer) modify files and re-stage them. If you stage specific files, the hook may modify OTHER files that remain unstaged. The pre-push hook then stashes these unstaged changes and fails to restore the patch. Use selective staging only when you specifically need to exclude files.
 - **Verify static asset URLs** after any change to `<script src>` or `<link href>` in templates: (1) check the URL resolves (`curl -sI <url>`), (2) if vendoring locally, verify file size > 1KB (a 45-byte file is an error page), (3) Playwright screenshot + console error check.
 - **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/PR/merge/remote-delete needs separate explicit approval. In `auto` mode (DB-home `mode = auto` via `config_setting set mode auto`, or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
-- **Merging is the §17.4 keystone transition, not raw `gh`.** Raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` helper are FSM-incoherent (they skip `MergeClear` validation, `expected_head_oid` SHA-binding, the atomic CLEAR-consume + `MergeAudit` + attestation binding + `mark_merged()`) and are **mechanically refused** — `hook_router._BLOCKED_COMMANDS` denies the raw commands and `pr merge` returns a redirect error. The sanctioned path is two `t3` steps, maker != checker throughout:
+- **Merging is the §17.4 keystone transition, not raw `gh`.** Raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` helper are FSM-incoherent (they skip `MergeClear` validation, `expected_head_oid` SHA-binding, the atomic CLEAR-consume + `MergeAudit` + attestation binding + `mark_merged()`, and the check that a `Part of #N` body declaring a remainder keeps its ticket out of `merged`) and are **mechanically refused** — `hook_router._BLOCKED_COMMANDS` denies the raw commands and `pr merge` returns a redirect error. The sanctioned path is two `t3` steps, maker != checker throughout:
   1. **The orchestrator (coordinator) issues the per-diff CLEAR** after an independent cold review: `t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> --reviewer-identity "<the independent reviewer's id, e.g. codex — must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker>" --blast-class <substrate|logic|docs> [--forge <github|gitlab>] [--ticket-id N] [--human-authorize <id>]`. The reviewer identity must not be a maker/coding-agent/loop role and must differ from the executing loop (§17.8 clause 3). This prints a `clear_id`, which the orchestrator passes to the loop.
   2. **The durable review-loop executes it**: the `mcp__teatree__pr_merge` MCP tool, or `t3 <overlay> ticket merge <clear_id>` when the MCP server isn't connected — issuing the CLEAR in step 1 stays CLI-only. The transition re-reads the CLEAR from the DB, re-verifies the live head SHA == `reviewed_sha`, live required-checks green, not-draft, and binds the GitHub merge to `expected_head_oid` (fail-closed on head drift). The #764 noreply-author guarantee is unchanged — the server-side squash author is the merging account's `users.noreply.github.com` address.
 

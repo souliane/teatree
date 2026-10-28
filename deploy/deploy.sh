@@ -119,8 +119,9 @@ fi
 # it by the heartbeat's age, so a legal long drain stays live and a killed deploy goes stale
 # within three beats. The deadline is the lock's own reclaim age. Cleared on exit.
 DEPLOY_HEARTBEAT_INTERVAL=60
-DEPLOY_DEADLINE=$(($(date -u +%s) + DEPLOY_LOCK_MAX_AGE_MINUTES * 60))
-write_deploy_record "$$" "$DEPLOY_DEADLINE"
+DEPLOY_STARTED=$(date -u +%s)
+DEPLOY_DEADLINE=$((DEPLOY_STARTED + DEPLOY_LOCK_MAX_AGE_MINUTES * 60))
+write_deploy_record "$$" "$DEPLOY_DEADLINE" "$DEPLOY_STARTED"
 # The beat stops with its parent and never recreates a record the exit trap cleared; fd 9 is
 # closed so a SIGKILLed deploy's flock is not held by it.
 (

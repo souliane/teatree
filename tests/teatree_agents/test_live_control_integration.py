@@ -269,6 +269,10 @@ class LiveControlIntegrationTests(TestCase):
 
         def operator() -> tuple[WorkerSessionFacts, list[WorkerSessionFacts], int, int]:
             _until(lambda: run.saw("holding_tool"), "the agent to sit in its tool")
+            _until(
+                lambda: self.live.inspect(self.task.pk)["state"] == "busy",
+                "the worker to register the open tool",
+            )
             before = run.stdin_count()
             facts = self.live.inspect(self.task.pk)
             rows = self.live.sessions()

@@ -122,11 +122,16 @@ from hooks.scripts.merged_detection_probe_gate import handle_warn_merged_detecti
 from hooks.scripts.mr_cli_fields import extract_api_mr_fields, extract_cli_mr_fields
 from hooks.scripts.mr_validator import handle_validate_mr_metadata
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
-from hooks.scripts.orchestration_boundary_signals import HELP_OR_VERSION_RE as _HELP_OR_VERSION_RE
-from hooks.scripts.orchestration_boundary_signals import NEVER_HELP_EXEMPT_RE as _NEVER_HELP_EXEMPT_RE
-from hooks.scripts.orchestration_boundary_signals import ORCHESTRATOR_HEAVY_BASH_RE as _ORCHESTRATOR_HEAVY_BASH_RE
-from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
+from hooks.scripts.orchestration_boundary_signals import COMMAND_HEAD as _COMMAND_HEAD
+from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
+from hooks.scripts.orchestration_boundary_signals import RUNNER_PREFIX as _RUNNER_PREFIX
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
+from hooks.scripts.orchestration_boundary_signals import (
+    command_matches_non_pytest_heavy as _command_matches_non_pytest_heavy,
+)
+from hooks.scripts.orchestration_boundary_signals import heavy_command_is_help_only as _heavy_command_is_help_only
+from hooks.scripts.orchestration_boundary_signals import heavy_command_text as _heavy_command_text
+from hooks.scripts.orchestration_boundary_signals import pytest_command_is_targeted as _pytest_command_is_targeted
 from hooks.scripts.orchestrator_delegation_gate import handle_block_undelegated_investigation
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from hooks.scripts.out_of_band_merge_guard import handle_block_out_of_band_merge
@@ -1000,9 +1005,8 @@ def _extract_mr_fields(data: dict) -> "tuple[str, str] | GateSkipped | None":
 def handle_quote_scanner_pretool(data: dict) -> bool:
     """Refuse a publish whose body carries a verbatim user-quote pattern.
 
-    Promotes the prose-only "never quote user verbatim" rule
-    (``feedback_redcard_never_quote_user_on_public_repos.md``) to a
-    deterministic pre-publish gate. Surfaces covered include Bash calls
+    Enforces "never quote the user verbatim in public text" before publish.
+    Surfaces covered include Bash calls
     that publish to GitHub/GitLab/Slack/git itself (``gh issue create``,
     ``glab mr update``, ``git commit -m``, ``curl … chat.postMessage``
     and siblings), the per-overlay t3 publish family (``review
@@ -1374,22 +1378,45 @@ _ORCHESTRATION_TOOLS = {
     "SendMessage",
     "AskUserQuestion",
 }
-# ``_PYTEST_VERB_RE`` / ``_PYTEST_VERB_FINDER`` (the VERB-position pytest matcher,
-# anchored to a command head so a ``git commit -m '…pytest…'`` mention is not a
-# false-deny — #1178) now live in the shared ``orchestration_boundary_signals``
-# leaf, imported aliased above so this gate and the investigation nudge read one
-# source. A TARGETED pytest run is cheap and must stay ALLOWED in the foreground
-# main agent (#1825): only the whole suite ties the session up. The verb
-# match above tells us a ``pytest`` invocation is present; this decides
-# whether the args make it a single/targeted run. Targeted iff the
-# segment after the verb carries a ``-k``/``--deselect <expr>``, a ``::``
-# node-id, OR a specific ``*.py`` test file path. A bare ``pytest`` (no
-# selector), ``pytest -q``, and a DIRECTORY arg (``pytest tests/``) are
-# whole-suite and stay DENIED.
-_PYTEST_TARGETED_RE = re.compile(
-    r"(?:^|\s)(?:-k|--deselect)(?:[=\s]|$)"  # -k <expr> / --deselect <expr>
-    r"|::"  # a node-id (path::Class::test)
-    r"|(?:^|\s)\S*\.py(?:::|\s|$)"  # a specific .py file path
+# HEAVY / long-running Bash shapes the main agent should not run inline.
+# This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
+# the escape hatch is ``run_in_background: true`` (or, for a whole class
+# of work, dispatching a sub-agent), plus a per-call ``[gate-escape:orchestrator_bash: <reason>]``
+# marker. When in doubt the command is ALLOWED — only an explicit match
+# here, foreground, is gated. Patterns cover: Python/test runners, the
+# interactive Django shells (``manage.py shell``/``shell_plus``/``dbshell``
+# — the original 1h-hung RED-FLAG incident #1178), language/asset builds,
+# dev servers, browser E2E (``playwright test``, ``nx run …:e2e`` AND bare
+# ``nx e2e <target>``), container image AND compose builds (``docker
+# build`` / ``docker compose build``), package installs/sync, long sleeps,
+# full-tree recursive sweeps (the shapes that actually wedge a session).
+# ``manage.py migrate`` is gated elsewhere (the ``_BLOCKED_COMMANDS``
+# t3-CLI redirect); short ``t3 loop tick``/``ci``/``doctor`` are NOT slow
+# and are deliberately not listed. Fast, BOUNDED ops are never matched
+# (#3253): read-only git (``status``/``log``/``diff``/``show``/``fetch``),
+# a bounded ``git push`` (a small-branch push is seconds — the pre-push
+# hook only ever runs the fast early signal, never the full suite), and a
+# bare ``--help``/``--version`` query of any verb. A TARGETED ``pytest``
+# run is exempted in :func:`_deny_heavy_main_agent_bash` (the verb still
+# matches here; the whole-suite-vs-targeted split is applied at deny time).
+_ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
+    r"(?:" + _PYTEST_VERB_RE + r"|" + _COMMAND_HEAD + _RUNNER_PREFIX + r"(?:tox|webpack|make)(?![\w-])|"
+    r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
+    r"manage\.py\s+runserver|"
+    r"manage\.py\s+(?:shell|shell_plus|dbshell)\b|"
+    r"\bnx\s+(?:serve|run|e2e)\b|"
+    r"docker\s+compose\s+(?:up|build)|"
+    r"\bdocker\s+build\b|"
+    r"(?:npx\s+)?playwright\s+test|"
+    r"\bnpm\s+(?:run|install|ci)\b|"
+    r"\b(?:pipenv|pip)\s+install\b|"
+    r"\buv\s+sync\b|"
+    r"vite\s+build|"
+    r"\bcargo\s+(?:build|test)\b|"
+    r"\bsleep\s+\d{2,}|"
+    r"\bfind\s+\S+.*-exec\b|"
+    r"\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b"
+    r")",
 )
 
 
@@ -1458,8 +1485,7 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     """#1442: deny a main-agent foreground ``Agent`` dispatch.
 
     A foreground dispatch blocks the orchestrator for the entire
-    sub-agent runtime (often 30+ min) — a recurring failure (memory rule
-    ``feedback_always_run_in_background_for_sub_agent_dispatch``). Only
+    sub-agent runtime (often 30+ min). Only
     the main agent is governed; a sub-agent dispatching its own ``Agent``
     may pick foreground.
 
@@ -1485,68 +1511,9 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
         "to the prompt for a genuine foreground dispatch, or disable this "
         "gate by setting the DB-home `orchestrator_boundary_agent_gate_enabled` to "
         "false (`t3 <overlay> config_setting set orchestrator_boundary_agent_gate_enabled false`).\n"
-        "Memory rule: "
-        "feedback_always_run_in_background_for_sub_agent_dispatch "
-        "(RED CARD recurrence).",
+        "A main agent never blocks on a foreground sub-agent dispatch.",
         gate_id="orchestrator_foreground_dispatch",
     )
-
-
-def _pytest_command_is_targeted(command: str) -> bool:
-    """True when EVERY ``pytest`` invocation in ``command`` is a targeted run (#1825).
-
-    A targeted run carries a ``-k``/``--deselect <expr>``, a ``::``
-    node-id, or a specific ``*.py`` test file path in the segment after
-    the verb (see :data:`_PYTEST_TARGETED_RE`). A bare/whole-suite
-    ``pytest`` or a directory arg (``pytest tests/``) is NOT targeted, so
-    a command containing one is whole-suite and stays gated. Each pytest
-    verb's argument span is bounded by the next shell separator so a
-    selector belonging to a LATER chained pytest cannot vouch for an
-    earlier whole-suite one.
-    """
-    matches = list(_PYTEST_VERB_FINDER.finditer(command))
-    if not matches:
-        return False
-    for i, m in enumerate(matches):
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(command)
-        segment = command[start:end]
-        boundary = re.search(r"[;&|\n(){}]", segment)
-        if boundary is not None:
-            segment = segment[: boundary.start()]
-        if not _PYTEST_TARGETED_RE.search(segment):
-            return False
-    return True
-
-
-def _command_matches_non_pytest_heavy(command: str) -> bool:
-    """True when ``command`` matches a heavy pattern OTHER than the ``pytest`` verb.
-
-    The targeted-pytest exemption (#1825) must only relax a command whose
-    sole heavy match is a targeted ``pytest`` — a ``pytest -k foo && npm
-    install`` still denies on the ``npm install`` arm. Stripping the
-    pytest verb tokens to bare placeholders before re-matching leaves any
-    other heavy arm intact.
-    """
-    stripped = _PYTEST_VERB_FINDER.sub(" __pytest__ ", command)
-    return bool(_ORCHESTRATOR_HEAVY_BASH_RE.search(stripped))
-
-
-def _heavy_command_is_help_only(command: str) -> bool:
-    """True when EVERY heavy denylist match in ``command`` is a --help/--version query.
-
-    A help/version invocation of a heavy verb prints usage and exits immediately
-    (fast, read-only). Scoped per shell segment; a segment matching
-    ``_NEVER_HELP_EXEMPT_RE`` (find-exec / recursive-ls / git-push) is never
-    exempted even with a help token. False when no heavy segment present.
-    """
-    saw_heavy = False
-    for segment in re.split(r"[;&|\n(){}]", command):
-        if _ORCHESTRATOR_HEAVY_BASH_RE.search(segment):
-            saw_heavy = True
-            if _NEVER_HELP_EXEMPT_RE.search(segment) or not _HELP_OR_VERSION_RE.search(segment):
-                return False
-    return saw_heavy
 
 
 def _deny_heavy_main_agent_bash(data: dict) -> bool:
@@ -1571,9 +1538,14 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     command = tool_input.get("command")
     if not isinstance(command, str):
         return False
-    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(command) or _heavy_command_is_help_only(command):
+    scanned = _heavy_command_text(command)
+    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(scanned) or _heavy_command_is_help_only(
+        scanned, _ORCHESTRATOR_HEAVY_BASH_RE
+    ):
         return False
-    if _pytest_command_is_targeted(command) and not _command_matches_non_pytest_heavy(command):
+    if _pytest_command_is_targeted(scanned) and not _command_matches_non_pytest_heavy(
+        scanned, _ORCHESTRATOR_HEAVY_BASH_RE
+    ):
         return False
     return _fail_open_or_deny(
         data,

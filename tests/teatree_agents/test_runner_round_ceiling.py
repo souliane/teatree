@@ -2,13 +2,13 @@
 
 A runtime whose harness takes hooks gets the refusal hook; one that does not (the codex
 app-server, the metered lane) is interrupted as a round starts past the ceiling, and the
-run is recorded as a ``needs_user_input`` hand-off that parks the task behind a question.
+run is parked for a bounded continuation.
 """
 
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 from claude_agent_sdk import AssistantMessage, SystemMessage, UserMessage
@@ -21,7 +21,7 @@ from teatree.agents.round_ceiling import PUSHED_ROUND_CEILING, ROUND_STARTED, RO
 from teatree.agents.runner import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat
 from teatree.agents.runner_outcomes import outcome_failure
 from teatree.agents.runner_route_recording import fallback_reason_for_outcome
-from teatree.agents.runner_stream import HarnessOutcome
+from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, drain_turn
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket
 from tests.factories import planned_ticket
 from tests.teatree_agents._codex_command_shape import codex_wrapped
@@ -87,7 +87,7 @@ class TestTheDriverHoldsTheCeilingOnEveryRuntime(TestCase):
         assert f"at the start of round {PUSHED_ROUND_CEILING + 1}" in outcome.round_handoff
         assert "still going" not in outcome.agent_text
 
-    def test_a_hook_runtime_gets_the_refusal_hook_and_is_never_interrupted(self) -> None:
+    def test_a_hook_runtime_gets_the_refusal_hook(self) -> None:
         harness = _Harness(_four_rounds(), hooks=True)
 
         outcome = _drive(_task(), harness)
@@ -100,6 +100,32 @@ class TestTheDriverHoldsTheCeilingOnEveryRuntime(TestCase):
         assert harness.session is not None
         assert not harness.session.interrupted
         assert outcome.round_handoff == ""
+
+    def test_a_hook_refusal_is_captured_and_interrupts_the_run(self) -> None:
+        ceiling = RoundCeiling(enforce_by_observation=False)
+        ceiling.pushes = PUSHED_ROUND_CEILING
+        refusal = asyncio.run(
+            ceiling.pre_tool_use(
+                {
+                    "session_id": "test",
+                    "transcript_path": "",
+                    "cwd": "/work",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git push origin feature"},
+                    "tool_use_id": "push-1",
+                },
+                None,
+                {"signal": None},
+            )
+        )
+        assert cast("dict[str, Any]", refusal)["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert ceiling.handoff
+
+        session = FakeHarnessSession([assistant_text("stopping now"), result_message()])
+        outcome = asyncio.run(drain_turn(session, StreamCapture(round_ceiling=ceiling)))
+        assert session.interrupted
+        assert outcome.round_handoff == ceiling.handoff
 
 
 class TestTheHandoffParksTheTask(TestCase):
@@ -125,8 +151,9 @@ class TestTheHandoffParksTheTask(TestCase):
             is not None
         )
 
-    def test_the_interrupted_run_is_recorded_as_needs_user_input(self) -> None:
+    def test_the_interrupted_run_queues_a_bounded_continuation(self) -> None:
         task = _task()
+        task.claim(claimed_by="test-worker", claimed_by_session="session-1")
         outcome = HarnessOutcome(
             agent_text="fixed two tests, pipeline still red on lint",
             result_message=None,
@@ -139,9 +166,29 @@ class TestTheHandoffParksTheTask(TestCase):
 
         task.refresh_from_db()
         assert attempt is not None
-        assert attempt.result["needs_user_input"] is True
-        assert task.status == Task.Status.COMPLETED
-        question = DeferredQuestion.objects.get(parked_task=task)
-        assert "3 rounds" in question.question
-        assert "may have partially run" in question.question
-        assert "stopped before" not in question.question
+        assert attempt.error.startswith("limit_parked: round ceiling")
+        assert task.status == Task.Status.PENDING
+        assert task.not_before is not None
+        assert "check the branch and its pipeline" in task.execution_reason
+        assert not DeferredQuestion.objects.filter(parked_task=task).exists()
+
+    def test_fourth_ceiling_stop_fails_instead_of_asking(self) -> None:
+        task = _task()
+        outcome = HarnessOutcome("still working", None, None, round_handoff="round ceiling")
+        for index in range(3):
+            task.claim(claimed_by="test-worker", claimed_by_session="session-1")
+            attempt = outcome_failure(task, outcome, phase="shipping")
+            assert attempt is not None
+            assert attempt.error.startswith("limit_parked: round ceiling")
+            parks = task.attempts.filter(error__startswith="limit_parked: round ceiling")
+            assert sum(1 + repeats for repeats in parks.values_list("park_repeats", flat=True)) == index + 1
+            task.refresh_from_db()
+            assert task.status == Task.Status.PENDING
+
+        task.claim(claimed_by="test-worker", claimed_by_session="session-1")
+        attempt = outcome_failure(task, outcome, phase="shipping")
+        assert attempt is not None
+        assert attempt.error.startswith("round_ceiling_exhausted:")
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert not DeferredQuestion.objects.filter(parked_task=task).exists()
