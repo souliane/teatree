@@ -1,11 +1,13 @@
 """GitHub backend runner credential boundary."""
 
 from subprocess import CompletedProcess
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 
 from teatree.backends.github import api
+from teatree.utils.run import CommandFailedError
 
 
 def test_unchecked_runner_refuses_empty_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,3 +52,19 @@ def test_strict_paginated_read_rejects_unreadable_response(
     monkeypatch.setattr(api, "_run_gh", run)
     with pytest.raises(ValueError, match=f"{complaint}$"):
         api.gh_api_get_paginated("repos/example/repo/hooks", token="test-token", strict=True)
+
+
+def test_the_pooled_head_sha_read_returns_just_the_sha() -> None:
+    response = httpx.Response(200, json={"sha": "abc123"}, request=httpx.Request("GET", "https://api.github.com/x"))
+    with patch.object(httpx.Client, "request", return_value=response):
+        result = api._run_gh("gh", "api", "repos/example/repo/commits/main", "--jq", ".sha", token="test-token")
+    assert result.stdout == "abc123\n"
+
+
+def test_an_unsupported_jq_expression_is_refused_instead_of_returning_the_raw_body() -> None:
+    with (
+        patch.object(httpx.Client, "request") as request,
+        pytest.raises(CommandFailedError, match="Unsupported pooled gh api --jq"),
+    ):
+        api._run_gh("gh", "api", "repos/example/repo/releases/latest", "--jq", ".tag_name", token="test-token")
+    request.assert_not_called()

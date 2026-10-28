@@ -137,6 +137,8 @@ def _run_pooled_api(
 ) -> CompletedProcess[str]:
     endpoint = args[2]
     options = _parse_api_options(args, token)
+    if options.jq not in {"", ".sha"}:
+        raise CommandFailedError(list(args), 2, "", f"Unsupported pooled gh api --jq expression: {options.jq}")
 
     url = _api_url(endpoint)
     if endpoint == "graphql":
