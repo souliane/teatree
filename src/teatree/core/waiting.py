@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core import time_format
 from teatree.core.modelkit.owner_decision import owner_kept_decision
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -42,8 +43,7 @@ if TYPE_CHECKING:
     from teatree.core.factory.merge_backlog import SupersedeContext
 
 _QUESTION_REF_LEN = 60
-_MINUTES_PER_HOUR = 60
-_HOURS_PER_DAY = 24
+format_age = time_format.format_age
 
 
 class WaitingKind(enum.StrEnum):
@@ -73,21 +73,6 @@ class WaitingEntry:
     entry_id: int | None = None
     row_id: int | None = None
     owner_only: bool = False
-
-
-def format_age(age: timedelta) -> str:
-    """Render *age* as a compact ``2d`` / ``5h`` / ``7m`` / ``now``."""
-    seconds = max(int(age.total_seconds()), 0)
-    minutes = seconds // 60
-    if minutes < 1:
-        return "now"
-    hours = minutes // _MINUTES_PER_HOUR
-    if hours < 1:
-        return f"{minutes}m"
-    days = hours // _HOURS_PER_DAY
-    if days < 1:
-        return f"{hours}h"
-    return f"{days}d"
 
 
 def gather_waiting(overlay: str) -> list[WaitingEntry]:
