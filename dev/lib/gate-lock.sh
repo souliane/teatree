@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
-acquire_push_gate_lock() {
-    local lock_started=$SECONDS
+select_push_gate_lock_path() {
     local lock_path=""
     if [ -n "${T3_PUSH_GATE_LOCK:-}" ]; then
         lock_path="$T3_PUSH_GATE_LOCK"
@@ -12,6 +11,12 @@ acquire_push_gate_lock() {
     fi
     T3_PUSH_GATE_LOCK_PATH="$lock_path"
     export T3_PUSH_GATE_LOCK_PATH
+}
+
+acquire_push_gate_lock() {
+    local lock_started=$SECONDS
+    select_push_gate_lock_path
+    local lock_path="$T3_PUSH_GATE_LOCK_PATH"
 
     # Never fall back to another path: a second lock file excludes nobody.
     if ! exec 9<>"$lock_path"; then

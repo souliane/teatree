@@ -56,14 +56,8 @@ fi
 start_push_gate_record
 trap 'finish_push_gate_record "$?"' EXIT
 
-# Serialise the machine-wide memory-heavy sweep before measuring its worker budget.
 . dev/lib/gate-lock.sh
-gate_lock_rc=0
-acquire_push_gate_lock || gate_lock_rc=$?
-record_push_gate_lock
-if [ "$gate_lock_rc" -ne 0 ]; then
-    exit "$gate_lock_rc"
-fi
+select_push_gate_lock_path
 
 # `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
 # change — so a memory-capped container spawns host-many workers and dies as an opaque
@@ -126,5 +120,12 @@ elif [ "$conformance_rc" -ne 0 ]; then
 fi
 
 echo "=== [3/3] incremental push gate: scoped doctest + ast-grep (FULL on uncertainty) ==="
+# Serial checks can run while another push holds the incremental-sweep lock.
+gate_lock_rc=0
+acquire_push_gate_lock || gate_lock_rc=$?
+record_push_gate_lock
+if [ "$gate_lock_rc" -ne 0 ]; then
+    exit "$gate_lock_rc"
+fi
 record_push_gate_stage 3
 "${UV_PROJECT_RUN[@]}" run t3 tool push-gate --run 9>&-
