@@ -332,7 +332,19 @@ export_transcript_source() {
 export_transcript_source
 
 . "$SCRIPT_DIR/disk-preflight.sh"
+# Reclaim only when the build would not fit: the ladder clears the BuildKit cache, and doing
+# that on a box with room makes every build cold. An unmeasurable box reclaims nothing here;
+# require_build_space refuses it right after.
 reclaim_before_build() {
+    if ! read_build_space; then
+        echo "deploy: free disk space could not be measured; skipping the pre-build reclaim."
+        return 0
+    fi
+    if [ "$BUILD_FREE_KIB" -ge "$BUILD_NEED_KIB" ]; then
+        echo "deploy: $(build_space_gib "$BUILD_FREE_KIB") free at $BUILD_SPACE_PATH, build needs $(build_space_gib "$BUILD_NEED_KIB"); skipping the pre-build reclaim so the build cache stays warm."
+        return 0
+    fi
+    echo "deploy: $(build_space_gib "$BUILD_FREE_KIB") free at $BUILD_SPACE_PATH, build needs $(build_space_gib "$BUILD_NEED_KIB"); reclaiming disk before the build."
     if ! compose exec -T teatree-worker t3 worker reclaim --budget-seconds 90; then
         echo "deploy: worker reclaim unavailable; pruning Docker build cache and dangling images." >&2
         docker builder prune -f >/dev/null || true
