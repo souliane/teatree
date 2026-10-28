@@ -207,3 +207,24 @@ class TestArmedOnEveryDispatch(TestCase):
         ConfigSetting.objects.set_value("envelope_stop_gate_refusals", 0, scope="")
 
         assert resolve_envelope_stop_refusals() == 0
+
+
+class TestMalformedEnvelopeStopGate(_GateTest):
+    def test_malformed_envelope_blocks_the_turn_end(self) -> None:
+        gate = EnvelopeStopGate("debugging")
+        raw = '{"summary":"draft"},"skill_application":[{"skill":"x","evidence":"y"}]}'
+
+        verdict = _run(gate, _stop_input(self.transcript(raw)))
+
+        assert verdict["decision"] == "block"
+        assert "not valid JSON" in verdict["reason"]
+
+    def test_later_corrected_envelope_allows_the_turn_end(self) -> None:
+        gate = EnvelopeStopGate("debugging")
+        bad = '{"summary":"draft"},"skill_application":[{"skill":"x","evidence":"y"}]}'
+        good = '{"summary":"corrected"}'
+
+        verdict = _run(gate, _stop_input(self.transcript(bad, good)))
+
+        assert verdict == {}
+        assert gate.refused == 0

@@ -216,7 +216,7 @@ def record_success(
 ) -> TaskAttempt:
     """Record a successful SDK run via the shared recorder."""
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — avoids recorder cycle
-    from teatree.agents.runner_result import parse_result  # noqa: PLC0415 — keeps result parsing off module import path
+    from teatree.agents.runner_result import ResultEnvelopeError, parse_result  # noqa: PLC0415 — deferred import
 
     provenance = provenance or DispatchProvenance()
     usage = _attempt_usage(
@@ -231,7 +231,12 @@ def record_success(
             model_fell_back=outcome.model_fell_back,
         ),
     )
-    parsed = parse_result(outcome.agent_text)
+    parse_error = ""
+    try:
+        parsed = parse_result(outcome.agent_text)
+    except ResultEnvelopeError as exc:
+        parsed = {}
+        parse_error = str(exc)
     if provenance.skill_assurance is not None:
         prior_loads = (
             task.attempts.skill_loads_in_session(outcome.result_message.session_id)
@@ -253,6 +258,8 @@ def record_success(
     )
     if not parsed:
         prose: AgentResultBlob = {"summary": outcome.agent_text[:_PROSE_SUMMARY_CHARS]}
+        if parse_error and not ProseSummaryPolicy.accepted(phase or task.phase):
+            return _record_failure(task, exit_code=0, error=parse_error, result=prose, usage=usage)
         if not ProseSummaryPolicy.allowed(phase or task.phase):
             logger.warning("Task %s produced no result envelope; refusing to record success", task.pk)
             return _record_failure(task, exit_code=0, error=NO_ENVELOPE_ERROR, result=prose, usage=usage)

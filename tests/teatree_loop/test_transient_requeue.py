@@ -1760,3 +1760,39 @@ class TestAFailedHoldReworkIsALiveFailure(TestCase):
         self._both_sweeps()
 
         self._assert_still_owed(ticket, rework)
+
+
+class TestMalformedEnvelopeCorrection(TestCase):
+    def test_review_parser_failure_reopens_once_with_format_instruction(self) -> None:
+        task = _failed_task(phase="codex_adversarial_reviewing")
+        _add_failed_attempt(task, error="result is not valid JSON: Extra data at char 20")
+
+        assert requeue_transient_failed() == 1
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert "[auto-corrective-retry]" in task.execution_reason
+        assert "valid JSON object" in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
+
+    def test_unexpected_keys_on_same_phase_still_escalates(self) -> None:
+        task = _failed_task(phase="codex_adversarial_reviewing")
+        _add_failed_attempt(task, error="Agent result contains unexpected keys: skill")
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_spent_correction_marker_still_escalates(self) -> None:
+        task = _failed_task(phase="codex_adversarial_reviewing")
+        task.execution_reason = "[auto-corrective-retry] prior malformed envelope"
+        task.save(update_fields=["execution_reason"])
+        _add_failed_attempt(task, error="result is not valid JSON: Extra data at char 20")
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1

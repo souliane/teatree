@@ -31,7 +31,7 @@ from claude_agent_sdk.types import HookCallback, HookContext, HookJSONOutput, Ho
 
 from teatree.agents.envelope_refusal import required_keys_phrase
 from teatree.agents.result_schema import ProseSummaryPolicy, check_evidence
-from teatree.agents.runner_result import parse_result
+from teatree.agents.runner_result import ResultEnvelopeError, parse_result
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,10 @@ def _missing_envelope_reason(agent_text: str, phase: str) -> str | None:
     Mirrors the recorder's own order — parse first, then the evidence gate — so a
     turn this allows is a turn the recorder accepts.
     """
-    result = parse_result(agent_text)
+    try:
+        result = parse_result(agent_text)
+    except ResultEnvelopeError as exc:
+        return f"Your {exc}"
     if not result:
         return "Your output carries no JSON result envelope."
     evidence_error = check_evidence(result, phase)

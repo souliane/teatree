@@ -29,6 +29,7 @@ from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, is_no_envelope_refusal, is_recorder_refusal
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.runner import TaskUsage, run_agent
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models import Session, Task, TaskAttempt
 from tests.factories import planned_ticket
 
@@ -243,3 +244,38 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         assert attempt.exit_code == 0
         assert attempt.result["summary"] == _PROSE[:1000]
         assert task.status == Task.Status.COMPLETED
+
+
+class TestMalformedEnvelopeRecording(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = planned_ticket()
+
+    def test_review_attempt_names_invalid_json_and_classifies_the_failure(self) -> None:
+        session = Session.objects.create(ticket=self.ticket, agent_id="reviewer")
+        task = Task.objects.create(ticket=self.ticket, session=session, phase="codex_adversarial_reviewing")
+        raw = '{"summary":"reviewed"},"skill_application":[{"skill":"x","evidence":"y"}]}'
+
+        with _fake_sdk(raw):
+            attempt = run_agent(task, phase="codex_adversarial_reviewing", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.error.startswith("result is not valid JSON: ")
+        assert "unexpected keys" not in attempt.error
+        assert classify_failure(attempt.error) == FailureKind.RESULT_SCHEMA_INVALID
+
+    def test_prose_phases_retain_success_for_a_broken_optional_envelope(self) -> None:
+        raw = 'The scope is clear. {"summary":"draft"},"skill_application":[{"skill":"x","evidence":"y"}]}'
+        for phase in ("scoping", "retro"):
+            with self.subTest(phase=phase):
+                session = Session.objects.create(ticket=self.ticket, agent_id=phase)
+                task = Task.objects.create(ticket=self.ticket, session=session, phase=phase)
+
+                with _fake_sdk(raw):
+                    attempt = run_agent(task, phase=phase, overlay_skill_metadata={})
+
+                task.refresh_from_db()
+                assert task.status == Task.Status.COMPLETED
+                assert attempt.error == ""
+                assert attempt.result["summary"] == raw[:1000]

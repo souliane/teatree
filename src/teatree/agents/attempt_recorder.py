@@ -24,7 +24,7 @@ from django.utils import timezone
 from teatree.agents.action_verification import action_verification_error
 from teatree.agents.coding_result_salvage import salvage_coding_result
 from teatree.agents.envelope_aliases import normalize_envelope_aliases
-from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, UNPARSEABLE_ENVELOPE_PREFIX
 from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import blocked_before_edits_error, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
@@ -42,6 +42,7 @@ from teatree.agents.review_envelope_recorder import (
     settle_review_venue_limit,
 )
 from teatree.agents.review_request_recorder import record_returned_review_request
+from teatree.agents.runner_result import ResultEnvelopeError
 from teatree.agents.ship_readiness_recorder import record_returned_ship_readiness
 from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
@@ -117,10 +118,6 @@ class AttemptUsage:
     trajectory: "list[ToolCallEntry]" = dataclasses.field(default_factory=list)
 
 
-class ResultEnvelopeError(ValueError):
-    """The supplied result envelope is not a JSON object."""
-
-
 def parse_result_envelope(raw: str) -> AgentResultBlob:
     """Parse a JSON result object, raising :class:`ResultEnvelopeError` otherwise.
 
@@ -134,7 +131,7 @@ def parse_result_envelope(raw: str) -> AgentResultBlob:
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, ValueError) as exc:
-        msg = f"result is not valid JSON: {exc}"
+        msg = f"{UNPARSEABLE_ENVELOPE_PREFIX}{exc}"
         raise ResultEnvelopeError(msg) from exc
     if not isinstance(parsed, dict):
         msg = "result must be a JSON object"

@@ -7,6 +7,7 @@ from teatree.agents.envelope_refusal import (
     is_recorder_refusal,
     is_review_shape_refusal,
     is_rubric_grades_refusal,
+    is_unparseable_envelope_refusal,
     refused_envelope_instruction,
 )
 from teatree.core.modelkit.phases import normalize_phase
@@ -51,6 +52,11 @@ def corrective_note(task: Task, error: str) -> str | None:
 
 
 def _specific_refusal_note(phase: str, error: str) -> str | None:
+    if is_unparseable_envelope_refusal(error):
+        return (
+            f"Your result envelope was refused ({error}). Re-emit the complete result envelope "
+            "as one valid JSON object, nothing after it."
+        )
     if is_owner_stop_refusal(error):
         return (
             f"Your owner question was refused ({error}). Unless only the owner can make this decision, decide it "
