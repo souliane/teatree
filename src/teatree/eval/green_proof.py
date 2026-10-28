@@ -256,7 +256,8 @@ def evaluate_baseline(
 ) -> BaselineStatus:
     """Judge the newest measured merged summary (*payloads*, newest first) against the CURRENT catalog.
 
-    A parked or empty summary measured nothing and is skipped. The first measured one must
+    An empty summary measured nothing and is skipped. A parked merge can still contain measured
+    rows from other shards, so the first summary with rows must
     cover *expected* exactly (:attr:`GreenProof.covers_the_catalog`, bound to its own SHA),
     be no older than *max_age*, and carry no gating red; the verdict names the first check it fails.
     """
@@ -330,7 +331,7 @@ def _after(proof: GreenProof, joiner: str) -> str:
 
 def _measured_something(payload: Mapping[str, Any]) -> bool:
     scenarios = payload.get("scenarios")
-    return payload.get("parked") is not True and isinstance(scenarios, list) and bool(scenarios)
+    return isinstance(scenarios, list) and bool(scenarios)
 
 
 def _instant(value: object) -> datetime | None:

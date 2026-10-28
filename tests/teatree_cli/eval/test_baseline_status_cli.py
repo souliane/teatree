@@ -149,7 +149,10 @@ def test_a_gating_red_in_the_newest_proof_reports_not_green() -> None:
 
 
 def test_a_parked_newest_run_falls_back_to_the_older_proof() -> None:
-    client = _FakeClient([_run(12), _run(11)], {12: _payload("a", "b", parked=True), 11: _payload("a", "b")})
+    client = _FakeClient(
+        [_run(12), _run(11)],
+        {12: _payload(parked=True), 11: _payload("a", "b")},
+    )
 
     with _catalog("a", "b"):
         result = _invoke(client)

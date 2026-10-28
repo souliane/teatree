@@ -2,7 +2,7 @@
 
 A recurring one-shard smoke run can stay green without saying anything about the rest of
 the catalog. The baseline is therefore judged from the newest merged ``eval-heal`` summary
-on its own: it must exist, must not be parked, must cover the CURRENT catalog's exact
+on its own: it must exist, carry rows, cover the CURRENT catalog's exact
 identity set, must be recent, and must carry no gating red.
 """
 
@@ -13,6 +13,7 @@ import pytest
 
 from teatree.eval.green_proof import BASELINE_MAX_AGE, CLOCK_SKEW_TOLERANCE, BaselineState, evaluate_baseline
 from teatree.eval.parallel import usage_limit_skip
+from teatree.eval.summary_json_merge import merge_summary_payloads
 
 _NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 _SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -58,15 +59,40 @@ def test_no_run_on_record_is_missing() -> None:
 
 
 def test_a_parked_run_measured_nothing_so_it_is_missing() -> None:
-    assert _state(_payload(parked=True)) is BaselineState.MISSING
+    assert _state(_payload(parked=True, scenarios=[], totals={"total": 0})) is BaselineState.MISSING
 
 
 def test_a_payload_without_rows_is_missing() -> None:
     assert _state(_payload(scenarios=[], totals={"total": 0})) is BaselineState.MISSING
 
 
-def test_the_newest_unparked_run_is_the_one_judged() -> None:
-    assert _state(_payload(parked=True), _payload(age=timedelta(days=2))) is BaselineState.GREEN
+def test_the_newest_run_with_rows_is_the_one_judged() -> None:
+    assert (
+        _state(_payload(parked=True, scenarios=[], totals={"total": 0}), _payload(age=timedelta(days=2)))
+        is BaselineState.GREEN
+    )
+
+
+def test_a_parked_merge_with_gating_red_cannot_hide_behind_an_older_green() -> None:
+    red_shard = _payload(
+        scenarios=[_row("a", "va", red=True)],
+        totals={"total": 1, "passed": 0, "failed": 1, "skipped": 0},
+    )
+    green_shard = _payload(
+        scenarios=[_row("b", "vb")],
+        totals={"total": 1, "passed": 1, "failed": 0, "skipped": 0},
+    )
+    merged = merge_summary_payloads(
+        [red_shard, green_shard, {"head_sha": _SHA, "parked": True}],
+        head_sha=_SHA,
+        generated_at=red_shard["generated_at"],
+    )
+
+    status = evaluate_baseline([merged, _payload(age=timedelta(days=5))], expected=_EXPECTED, now=_NOW)
+
+    assert merged["parked"] is True
+    assert status.state is BaselineState.NOT_GREEN
+    assert "1 gating red" in status.detail
 
 
 def test_a_newer_partial_run_does_not_hide_behind_an_older_full_one() -> None:
