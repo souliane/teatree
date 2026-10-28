@@ -364,6 +364,23 @@ class TestTransientRequeue(TestCase):
                 assert all(line in task.execution_reason for line in owner_stop_limits_lines())
                 assert not DeferredQuestion.objects.exists()
 
+    def test_review_comment_check_refusal_gets_one_revision_attempt(self) -> None:
+        task = _failed_task(phase="reviewing", state=Ticket.State.TESTED)
+        error = "review verdict recording refused: comment check — comment lacks an exact source line"
+        _add_failed_attempt(task, error=error)
+
+        assert requeue_transient_failed() == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert "revise" in task.execution_reason.lower()
+        assert not DeferredQuestion.objects.exists()
+
+        _add_failed_attempt(task, error=error)
+        assert requeue_transient_failed() == 0
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason
+        assert halted_retry_signals().signals
+
     def test_second_refused_owner_card_halts_without_a_question(self) -> None:
         task = _failed_task(phase="planning")
         error = validate_result_keys(owner_stop("Is widget_count ready for ticket 104?") | {"summary": "x"})

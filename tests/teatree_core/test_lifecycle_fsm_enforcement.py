@@ -374,6 +374,7 @@ class TestPrCreateNeverRaisesEvenOnNoSessionOrSkipValidation(TestCase):
             extra={"worktree_path": "/tmp/backend"},
         )
 
+    @pytest.mark.usefixtures("readable_ship_tree")
     def test_pr_create_no_session_returns_structured_failure_not_raise(self) -> None:
         ticket = _ticket(state=Ticket.State.WORK_STARTED)
         self._worktree(ticket)

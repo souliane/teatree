@@ -24,6 +24,7 @@ from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.project_repo_identity import project_repo_identity_for_ticket
 from teatree.core.modelkit.task_failure_taxonomy import (
     REVIEW_UNRECORDABLE_PREFIX,
     VENUE_LIMIT_PREFIX,
@@ -143,7 +144,7 @@ def _additional_evidence_error(
     if (
         not isinstance(covered, list)
         or not all(isinstance(repo, str) for repo in covered)
-        or not set(repos) <= set(covered)
+        or not project_repo_identity_for_ticket(ticket).covers(repos, covered)
     ):
         return (
             "integration review recording refused: review the combined changeset and return "
@@ -198,7 +199,7 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     return (
         rubric_coverage_error(rubric, grades, returned=returned, carried=carried)
         or merge_safe_over_fail_error(rubric, envelope, grades)
-        or _nit_comment_error(envelope)
+        or _nit_comment_error(envelope, ticket or task.ticket, target.head_sha)
         or _record_verdict_and_grades(
             task,
             result,
@@ -369,11 +370,12 @@ def _nit_pr_url(ticket: "Ticket", head_sha: str) -> str:
     return pr_url
 
 
-def _nit_comment_error(envelope: ReviewVerdictEnvelope) -> str:
+def _nit_comment_error(envelope: ReviewVerdictEnvelope, ticket: "Ticket", head_sha: str) -> str:
     raw = envelope.get("findings")
     findings = [Finding.from_dict(row) for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
+    points = review_nits(findings)
     try:
-        validate_nit_comments(review_nits(findings))
+        validate_nit_comments(points, pr_url=pr_url_for_nits(ticket, head_sha) if points else "")
     except NitLaneError as exc:
         return f"review verdict recording refused: {exc}"
     return ""

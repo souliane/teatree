@@ -20,6 +20,7 @@ from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Workt
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.task_repair import check_requeue_allowed
 from teatree.core.models.task_repair_queries import phase_attempts
+from teatree.core.worktree.checkout_attest import checkout_rows
 from teatree.core.worktree.checkout_fence import (
     CheckoutFenceError,
     claim_task_checkout_or_park,
@@ -125,6 +126,20 @@ class CheckoutFenceTests(TestCase):
         self.worktree.refresh_from_db()
         assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
         assert self.worktree.get_extra()["auto_attestation"]["tenures"][0]["holder"] == task_holder_id(previous)
+
+    def test_next_writer_reattests_uncommitted_work_from_interrupted_holder(self) -> None:
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
+            verify_task_checkout(self.task, str(self.checkout))
+            previous = TaskFactory(ticket=self.ticket, phase="coding")
+            acquire(self.worktree, holder=task_holder_id(previous))
+            (self.checkout / "unfinished.txt").write_text("work from interrupted run")
+            release(self.worktree, holder=task_holder_id(previous))
+            next_task = TaskFactory(ticket=self.ticket, phase="coding")
+            acquire(self.worktree, holder=task_holder_id(next_task))
+            verify_task_checkout(next_task, str(self.checkout))
+        self.worktree.refresh_from_db()
+        assert self.worktree.get_extra()["attested_state"] == checkout_state(self.checkout).digest
+        assert (self.checkout / "unfinished.txt").read_text() == "work from interrupted run"
 
     def test_a_fence_minting_the_first_tenure_records_the_writers_namespace(self) -> None:
         acquire(self.worktree, holder=task_holder_id(self.task))
@@ -378,6 +393,51 @@ class CheckoutFenceTests(TestCase):
             pytest.raises(CheckoutFenceError, match="live process"),
         ):
             verify_task_checkout(self.task, str(self.checkout))
+
+    def test_redundant_unprovisioned_row_is_released_before_dispatch(self) -> None:
+        duplicate = WorktreeFactory(
+            ticket=self.ticket,
+            overlay=self.worktree.overlay,
+            repo_path=self.worktree.repo_path,
+            branch=self.worktree.branch,
+            extra={"worktree_path": str(self.checkout)},
+        )
+        with patch("teatree.core.worktree.checkout_fence.read_process_table", return_value=_CLEAR):
+            verify_task_checkout(self.task, str(self.checkout))
+        duplicate.refresh_from_db()
+        assert duplicate.worktree_path == ""
+        assert len(checkout_rows(str(self.checkout))) == 1
+
+    def test_duplicate_with_provisioned_resources_still_refuses_dispatch(self) -> None:
+        WorktreeFactory(
+            ticket=self.ticket,
+            overlay=self.worktree.overlay,
+            repo_path=self.worktree.repo_path,
+            branch=self.worktree.branch,
+            db_name="other_database",
+            extra={"worktree_path": str(self.checkout)},
+        )
+        with pytest.raises(CheckoutFenceError, match="exactly one"):
+            verify_task_checkout(self.task, str(self.checkout))
+
+    def test_duplicate_held_by_a_task_or_session_still_refuses_dispatch(self) -> None:
+        for field in ("occupied_by", "occupied_by_session"):
+            with self.subTest(field=field):
+                duplicate = WorktreeFactory(
+                    ticket=self.ticket,
+                    overlay=self.worktree.overlay,
+                    repo_path=self.worktree.repo_path,
+                    branch=self.worktree.branch,
+                    extra={"worktree_path": str(self.checkout)},
+                    **{field: "holder"},
+                )
+
+                with pytest.raises(CheckoutFenceError, match="exactly one"):
+                    verify_task_checkout(self.task, str(self.checkout))
+
+                duplicate.refresh_from_db()
+                assert duplicate.worktree_path == str(self.checkout)
+                duplicate.delete()
 
     def test_cross_ticket_duplicate_row_refuses_checkout(self) -> None:
         WorktreeFactory(ticket=TicketFactory(), extra={"worktree_path": str(self.checkout)})

@@ -28,6 +28,8 @@ class DigestItem:
     title: str
     url: str
     rationale: str
+    decision: str
+    issue_url: str = ""
 
 
 def format_code_symbols(text: str) -> str:
@@ -49,11 +51,12 @@ def render_digest(items: Sequence[DigestItem], *, scanned_on: str) -> str:
     if not items:
         return ""
     lines = [
-        f"Press review — {scanned_on} — {len(items)} candidate(s) queued behind the ask-gate.",
-        "Nothing is filed as an issue until you approve.",
+        f"Press review — {scanned_on} — {len(items)} article decision(s) recorded.",
         "",
     ]
-    lines.extend(f"- [{item.title}]({item.url}) — {format_code_symbols(item.rationale)}" for item in items)
+    for item in items:
+        issue = f" [issue]({item.issue_url})" if item.issue_url else ""
+        lines.append(f"- [{item.title}]({item.url}) — {item.decision}{issue} — {format_code_symbols(item.rationale)}")
     return slack_linkify(normalize_slack_message("\n".join(lines)))
 
 

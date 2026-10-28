@@ -42,13 +42,11 @@ def _scanner(
     overlay_name: str = TEST_OVERLAY_NAME,
     skill: str = "scanning-news",
     cadence_hours: int = 24,
-    require_approval: bool = True,
 ) -> ScanningNewsScanner:
     return ScanningNewsScanner(
         overlay_name=overlay_name,
         skill=skill,
         cadence_hours=cadence_hours,
-        require_approval=require_approval,
     )
 
 
@@ -201,44 +199,23 @@ class ScanningNewsScannerTests(TestCase):
 
 
 class ScanningNewsAskGateTests(TestCase):
-    """The queued task must carry the ask-gate directive by default (#1391).
+    """The queued task carries the article decision directive.
 
-    Pre-fix the scanner queued a task whose ``execution_reason`` only
-    named the trigger + skill — nothing instructed the dispatched skill
-    NOT to auto-create issues, and the skill mass-filed
-    ``from-news-scan`` tickets without user confirmation (backlog
-    pollution). The ask-gate threads ``require_approval`` (default true,
-    from ``ask_before_creating_news_tickets``) into the task so the
-    skill records ``PendingArticleSuggestion`` candidates for approval
-    instead of auto-filing.
+    The scanner instructs the dispatched skill to return evidence-backed
+    decisions so the server settles each article through the issue facade.
     """
 
-    def test_default_task_carries_ask_gate_directive(self) -> None:
-        """Default scan → queued task forbids auto-create, requires approval."""
+    def test_default_task_carries_article_decision_directive(self) -> None:
         signals = _scanner().scan()
         assert len(signals) == 1
-        assert signals[0].payload["require_approval"] is True
 
         task = _last_news_task()
         assert task is not None
         reason = task.execution_reason
-        # The dispatched skill reads execution_reason — the gate must be
-        # explicit there, not just in the in-memory signal payload.
-        assert "ASK-GATE" in reason
-        assert "do NOT auto-create issues" in reason
-        assert "PendingArticleSuggestion" in reason
-
-    def test_approval_disabled_omits_gate_directive(self) -> None:
-        """Opt-out (ask_before_creating_news_tickets=false) → no gate directive."""
-        signals = _scanner(require_approval=False).scan()
-        assert len(signals) == 1
-        assert signals[0].payload["require_approval"] is False
-
-        task = _last_news_task()
-        assert task is not None
-        assert "ASK-GATE" not in task.execution_reason
-        # The skill name is still present so the dispatcher routes correctly.
-        assert "scanning-news" in task.execution_reason
+        assert "backlog fit" in reason
+        assert "clean base" in reason
+        assert "open-ticket duplicates" in reason
+        assert "settles each row" in reason
 
 
 class ScanningNewsWiringTests(TestCase):
@@ -280,30 +257,6 @@ class ScanningNewsWiringTests(TestCase):
         assert scanner is not None
         assert scanner.skill == "custom-news"
         assert scanner.cadence_hours == 12
-
-    def test_ask_gate_defaults_on_in_wiring(self) -> None:
-        """#1391 — default core config wires the scanner with require_approval=True."""
-        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.get_effective_settings",
-            return_value=self._patched_settings(),
-        ):
-            scanner = _scanning_news_scanner()
-        assert scanner is not None
-        assert scanner.require_approval is True
-
-    def test_ask_gate_opt_out_propagates_in_wiring(self) -> None:
-        """#1391 — ask_before_creating_news_tickets=false flows to require_approval=False."""
-        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.get_effective_settings",
-            return_value=self._patched_settings(ask_before_creating_news_tickets=False),
-        ):
-            scanner = _scanning_news_scanner()
-        assert scanner is not None
-        assert scanner.require_approval is False
 
     def test_wiring_resolves_overlay_name_from_discovery(self) -> None:
         """#1267 — wiring layer reads overlay name from ``discover_active_overlay``."""
@@ -398,7 +351,7 @@ class TestMergedSourceDirective(TestCase):
         reason = Task.objects.get(phase=SCANNING_NEWS_PHASE).execution_reason
         assert "teatree-relevance" in reason
 
-    def test_directive_still_carries_the_ask_gate(self) -> None:
+    def test_directive_carries_the_settlement_contract(self) -> None:
         ScanningNewsScanner(overlay_name="t3-teatree").scan()
 
-        assert "ASK-GATE" in Task.objects.get(phase=SCANNING_NEWS_PHASE).execution_reason
+        assert "settles each row" in Task.objects.get(phase=SCANNING_NEWS_PHASE).execution_reason

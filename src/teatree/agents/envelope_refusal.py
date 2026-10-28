@@ -35,6 +35,7 @@ from teatree.agents.result_schema import (
     required_evidence_for_phase,
 )
 from teatree.core.modelkit.task_failure_taxonomy import (
+    COMMENT_CHECK_PREFIX,
     MALFORMED_FIX_RECORD_PREFIX,
     MALFORMED_RUBRIC_GRADES_PREFIX,
     MALFORMED_TICKET_SWEEP_PREFIX,
@@ -96,6 +97,10 @@ def is_recorder_refusal(error: str) -> bool:
     """Whether *error* is a RECORDER-side refusal of a parsed-but-unusable envelope."""
     haystack = error.casefold()
     return any(marker in haystack for marker in _RECORDER_REFUSAL_MARKERS)
+
+
+def is_comment_check_refusal(error: str) -> bool:
+    return COMMENT_CHECK_PREFIX.casefold() in error.casefold()
 
 
 def is_review_shape_refusal(error: str) -> bool:

@@ -8,7 +8,7 @@ from django.utils import timezone
 from teatree.core.models import DeferredQuestion, PullRequest, Ticket
 from teatree.core.owner_dm_sweep import SweepSeams, run_sweep, subject_closed_locally
 from teatree.core.owner_threads import AUTO_RESOLVE_MAX_AGE, open_owner_threads
-from teatree.core.review.owner_waits import ask_owner_to_approve_post, ask_owner_to_read
+from teatree.core.review.owner_waits import ask_owner_to_approve_post
 from teatree.url_classify import find_forge_urls
 from tests._owner_channel import OWNER_DECISION
 
@@ -134,38 +134,6 @@ class TestFragmentQualifiedSubject(TestCase):
 
 
 class TestDuplicateThreads(TestCase):
-    def test_distinct_reviewed_heads_keep_their_mirrored_threads(self) -> None:
-        first = ask_owner_to_read(_PR_URL, "A reviewed change", "a" * 40)
-        assert first is not None
-        assert first.mark_mirrored(channel="D0OWNER", slack_ts="1779990001.000001")
-        second = ask_owner_to_read(_PR_URL, "A reviewed change", "b" * 40)
-        assert second is not None
-        assert second.mark_mirrored(channel="D0OWNER", slack_ts="1779990002.000001")
-
-        for _ in range(4):
-            same_head = ask_owner_to_read(_PR_URL, "A reviewed change", "b" * 40)
-            assert same_head is not None
-            assert same_head.pk == second.pk
-            result = run_sweep(seams=SweepSeams(subject_closed=lambda _question: False))
-            assert result.resolved == 0
-            assert result.left_open == 2
-            assert set(DeferredQuestion.owner_pending().values_list("pk", flat=True)) == {first.pk, second.pk}
-            assert DeferredQuestion.objects.count() == 2
-
-    def test_distinct_held_pr_cards_keep_both_owner_threads(self) -> None:
-        first = ask_owner_to_read("https://github.com/example/repo/pull/1", "First", "a" * 40)
-        second = ask_owner_to_read("https://github.com/example/repo/pull/2", "Second", "b" * 40)
-        assert first is not None
-        assert second is not None
-        DeferredQuestion.objects.filter(pk=first.pk).update(slack_channel="D0OWNER", slack_ts="1779990001.000001")
-        DeferredQuestion.objects.filter(pk=second.pk).update(slack_channel="D0OWNER", slack_ts="1779990002.000001")
-
-        result = run_sweep()
-
-        assert result.resolved == 0
-        assert result.left_open == 2
-        assert DeferredQuestion.owner_pending().count() == 2
-
     def test_distinct_live_post_cards_keep_both_owner_threads(self) -> None:
         first = ask_owner_to_approve_post("https://github.com/example/repo/pull/1")
         second = ask_owner_to_approve_post("https://github.com/example/repo/pull/2")

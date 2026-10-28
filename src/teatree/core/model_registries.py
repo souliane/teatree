@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from teatree import paths
 from teatree.core import overlay_loader
 from teatree.core.models.self_review import SelfReview
+from teatree.core.overlay_loader import repo_project_paths_for_ticket
 from teatree.core.review import pr_open_state as _pr_open_state
 from teatree.core.review.shipping_hold_notice import send_shipping_hold_notice
 from teatree.utils.git import remote_slug
@@ -83,5 +84,6 @@ def populate_model_registries() -> None:
     register_resolver("resolve_overlay_name", _resolve_overlay_name)
     register_resolver("running_checkout_overlay", _running_checkout_overlay)
     register_resolver("pr_open_state", _read_pr_open_state)
+    register_resolver("repo_project_paths", repo_project_paths_for_ticket)
     register_resolver("shipping_hold_notice", send_shipping_hold_notice)
     register_cost_factories()

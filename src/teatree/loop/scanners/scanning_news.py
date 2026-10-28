@@ -53,21 +53,13 @@ class ScanningNewsScanner:
     name — it stamps whatever value the wiring layer hands it. The
     canonical post-0027 default in production is ``"t3-teatree"``.
 
-    ``require_approval`` (#1391) is the ask-gate flag, resolved from
-    ``ask_before_creating_news_tickets`` at the wiring layer. When true
-    (the default), the queued task's directive instructs the dispatched
-    skill to record each candidate article as a
-    :class:`teatree.core.models.pending_article_suggestion.PendingArticleSuggestion`
-    and surface the batch for explicit user approval — it must NOT
-    auto-create issues. The scanner never creates issues itself; this
-    flag is the contract it stamps onto the task so the skill cannot
-    silently fall back to mass-filing.
+    The queued task directs the shell-denied agent to decide each candidate;
+    the server records and acts on those decisions through the issue facade.
     """
 
     overlay_name: str
     skill: str = "scanning-news"
     cadence_hours: int = 24
-    require_approval: bool = True
     name: str = "scanning_news"
 
     def scan(self) -> list[ScanSignal]:
@@ -98,33 +90,17 @@ class ScanningNewsScanner:
                     "phase": SCANNING_NEWS_PHASE,
                     "task_id": task.pk,
                     "trigger": trigger,
-                    "require_approval": self.require_approval,
                 },
             ),
         ]
 
     def _execution_reason(self, trigger: str) -> str:
-        """Build the dispatcher directive, embedding the ask-gate contract (#1391).
-
-        When ``require_approval`` is on (the default), the directive
-        carries an explicit instruction that the skill must record each
-        candidate as a ``PendingArticleSuggestion`` and surface the batch
-        for user approval — it must NOT auto-create issues. The marker
-        substring is load-bearing: it is the channel the dispatched skill
-        reads to know the gate is active.
-
-        The MERGED source table (#3669) is appended to every directive, gate or
-        not: the agent runs shell-denied and fetches by URL, so the breadth the
-        press-review aggregator contributed has to reach it as text. The
-        teatree-relevance triage the loop exists for is unchanged — the directive
-        names the sources, the skill still decides what survives.
-        """
+        """Build the dispatcher directive with the article decision contract."""
         base = f"Periodic scanning-news scan ({trigger}) via skill: {self.skill}"
-        if self.require_approval:
-            base = (
-                f"{base} | ASK-GATE: do NOT auto-create issues — record each candidate as a "
-                f"PendingArticleSuggestion and surface the batch for explicit user approval (#1391)"
-            )
+        base = (
+            f"{base} | decide every candidate by backlog fit, a clean base, and open-ticket duplicates; "
+            "return article_suggestions so the server settles each row and files only fitting ideas"
+        )
         return f"{base}\n{render_source_directive(NEWS_SOURCES)}"
 
 

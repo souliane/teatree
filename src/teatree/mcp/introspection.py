@@ -46,8 +46,7 @@ def question_list(*, limit: int = _DEFAULT_QUESTION_LIMIT, offset: int = 0) -> l
             "options": row.options_json,
             "decision": row.evidence.get("decision", ""),
             "owner_only": owner_kept_decision(
-                card.decision if (card := QuestionCard.from_row(row.evidence, row.options_json)) else None,
-                row.dedupe_marker,
+                card.decision if (card := QuestionCard.from_row(row.evidence, row.options_json)) else None
             ),
             "session_id": row.session_id,
             "created_at": row.created_at.isoformat(),
