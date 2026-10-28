@@ -1014,8 +1014,8 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
     ``glab mr update``, ``git commit -m``, ``curl … chat.postMessage``
     and siblings), the per-overlay t3 publish family (``review
     post-comment``, ``notify send``,
-    ``ticket create-issue``, ``t3 slack react``), and the Slack MCP
-    ``send_message`` tools.
+    ``ticket create-issue``, ``t3 slack react``), and Slack and Notion MCP
+    publish tools.
 
     HIGH match ⇒ refuse via ``permissionDecision: deny`` + a reason that
     names the matched patterns and directs a false match to the owner, who may

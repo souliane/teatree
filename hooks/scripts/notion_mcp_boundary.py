@@ -41,11 +41,17 @@ _LIVE_CACHE_ENTRIES = 50
 _PAGE_KEYS = frozenset({"page_id"})
 _BLOCK_KEYS = frozenset({"block_id"})
 _REQUEST_KEYS = frozenset({"id", "page_id", "block_id", "url"})
+_DASHED_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_HEX32 = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])")
+_BODY_KEYS = frozenset({"children", "content", "properties", "rich_text", "paragraph", "link_to_page", "blocks"})
 _FAILED_RESPONSE_RE = re.compile(
     r'^\s*(?:error\b|\{\s*"object"\s*:\s*"error"|object_not_found\b|restricted_resource\b|validation_error\b)',
     re.IGNORECASE,
 )
-_ESCAPE = "One-off escape: put `[gate-escape:notion_boundary: <reason>]` in the tool input."
+_ESCAPE = (
+    "One-off escape: use a non-published tool-input field for `[gate-escape:notion_boundary: <reason>]`. "
+    "Never put it in page or comment text."
+)
 
 
 def _stamp_owner(data: dict) -> str:
@@ -62,17 +68,53 @@ def _state_path(owner: str, suffix: str) -> Path:
 
 
 def _canonical(reference: str) -> str | None:
-    from teatree.backends.notion.errors import NotionError, normalize_object_id  # noqa: PLC0415 — after src bootstrap
-
-    try:
-        return normalize_object_id(reference)
-    except NotionError:
+    candidate = reference.strip().rstrip("/")
+    if dashed := _DASHED_UUID.search(candidate):
+        return dashed.group(0).lower()
+    matches = _HEX32.findall(candidate)
+    if not matches:
         return None
+    raw = matches[-1].lower()
+    return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
 
 
 def _response_failed(response: object, text: list[str]) -> bool:
-    flagged = isinstance(response, Mapping) and bool(response.get("is_error") or response.get("isError"))
-    return flagged or not text or any(_FAILED_RESPONSE_RE.match(leaf) for leaf in text)
+    if isinstance(response, Mapping) and (
+        response.get("is_error") or response.get("isError") or response.get("object") == "error"
+    ):
+        return True
+    if not text:
+        return True
+    if isinstance(response, str):
+        return bool(_FAILED_RESPONSE_RE.match(response))
+    if isinstance(response, Mapping) and response.get("type") == "text" and isinstance(response.get("text"), str):
+        return bool(_FAILED_RESPONSE_RE.match(response["text"]))
+    blocks = response.get("content", []) if isinstance(response, Mapping) else response
+    if isinstance(blocks, list):
+        return any(
+            _FAILED_RESPONSE_RE.match(block["text"])
+            for block in blocks
+            if isinstance(block, Mapping) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        )
+    return False
+
+
+def _write_targets(tool_input: object) -> list[tuple[str, str]]:
+    targets: list[tuple[str, str]] = []
+    pending = [tool_input]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, Mapping):
+            for key, child in item.items():
+                if key in _PAGE_KEYS | _BLOCK_KEYS and isinstance(child, str):
+                    targets.append((child, "page" if key in _PAGE_KEYS else "block"))
+                elif key == "page_or_database_ids" and isinstance(child, list):
+                    targets.extend((reference, "page") for reference in child if isinstance(reference, str))
+                elif key not in _BODY_KEYS:
+                    pending.append(child)
+        elif isinstance(item, list):
+            pending.extend(item)
+    return targets
 
 
 def _stamp_fetch(owner: str, data: dict) -> None:
@@ -144,12 +186,12 @@ def _probe(page_id: str) -> "LivenessVerdict | None":
     if budget is None:
         _skipped(page_id, "no time left in the hook budget")
         return None
-    if not bootstrap_django_registry():
-        _skipped(page_id, "Django is unavailable in the hook interpreter")
-        return None
     previous = signal.signal(signal.SIGALRM, _probe_out_of_time)
     signal.setitimer(signal.ITIMER_REAL, budget)
     try:
+        if not bootstrap_django_registry():
+            _skipped(page_id, "Django is unavailable in the hook interpreter")
+            return None
         from teatree.backends.notion.credentials import build_notion_client  # noqa: PLC0415 — after src bootstrap
 
         return build_notion_client().page_liveness(page_id)
@@ -187,13 +229,12 @@ def handle_block_notion_write_boundary(data: dict) -> bool:
     if not owner or "notion" not in tool_name.lower() or is_teatree_mcp_tool(tool_name):
         return False
     with teatree_src_on_path():
-        from teatree.hooks.mcp_publish import is_notion_mcp_write, values_under_keys  # noqa: PLC0415 — after bootstrap
+        from teatree.hooks.mcp_publish import is_notion_mcp_write  # noqa: PLC0415 — after bootstrap
 
         if not is_notion_mcp_write(tool_name):
             return False
         tool_input = data.get("tool_input")
-        targets = [(reference, "page") for reference in values_under_keys(tool_input, _PAGE_KEYS)]
-        targets += [(reference, "block") for reference in values_under_keys(tool_input, _BLOCK_KEYS)]
+        targets = _write_targets(tool_input)
         reason = _boundary_refusal(owner, targets)
     if reason is None:
         return False
@@ -212,9 +253,6 @@ def _boundary_refusal(owner: str, targets: list[tuple[str, str]]) -> str | None:
                 f"page boundary cannot be checked. Name the {noun} by its id. {_ESCAPE}"
             )
         resolved.append((page_id, noun))
-    for page_id in dict.fromkeys(page_id for page_id, noun in resolved if noun == "page"):
-        if reason := _not_live_reason(owner, page_id):
-            return reason
     read = set(read_lines(_state_path(owner, "notion-fetches")))
     for page_id, noun in resolved:
         if page_id not in read:
@@ -223,6 +261,9 @@ def _boundary_refusal(owner: str, targets: list[tuple[str, str]]) -> str | None:
                 "first (notion-fetch) so the edit is made against its current content; a sub-agent keeps its own "
                 f"reads and must fetch it itself. {_ESCAPE}"
             )
+    for page_id in dict.fromkeys(page_id for page_id, noun in resolved if noun == "page"):
+        if reason := _not_live_reason(owner, page_id):
+            return reason
     return None
 
 
@@ -236,11 +277,10 @@ def handle_track_notion_pages(data: dict) -> None:
         from teatree.hooks.mcp_publish import (  # noqa: PLC0415 — after src bootstrap
             is_notion_mcp_fetch,
             is_notion_mcp_write,
-            values_under_keys,
         )
 
         if is_notion_mcp_fetch(tool_name):
             _stamp_fetch(owner, data)
         elif is_notion_mcp_write(tool_name):
-            written = values_under_keys(data.get("tool_input"), _PAGE_KEYS | _BLOCK_KEYS)
+            written = [reference for reference, _noun in _write_targets(data.get("tool_input"))]
             _drop_live(owner, [page_id for page_id in map(_canonical, written) if page_id])

@@ -24,10 +24,16 @@ _NOTION_READ_VERBS: Final[frozenset[str]] = frozenset(
     {"fetch", "get", "list", "query", "read", "retrieve", "search", "view"}
 )
 _NOTION_FETCH_VERBS: Final[frozenset[str]] = frozenset({"fetch", "read", "retrieve", "view"})
+_NOTION_WRITE_VERBS: Final[frozenset[str]] = frozenset(
+    {"append", "archive", "create", "delete", "duplicate", "edit", "move", "patch", "replace", "send", "update"}
+)
 _NOTION_IDENTITY_KEYS: Final[frozenset[str]] = frozenset(
     {"id", "page_id", "block_id", "database_id", "data_source_id", "parent_id", "discussion_id", "user_id"}
 )
 _NAME_WORD_RE: Final = re.compile(r"[A-Z]?[a-z]+")
+_NOTION_OBJECT_ID_RE: Final = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])"
+)
 
 
 def _tool_words(tool_name: str) -> frozenset[str]:
@@ -40,11 +46,16 @@ def is_notion_mcp_tool(tool_name: str) -> bool:
 
 
 def is_notion_mcp_write(tool_name: str) -> bool:
-    return is_notion_mcp_tool(tool_name) and not _tool_words(tool_name) & _NOTION_READ_VERBS
+    words = _tool_words(tool_name)
+    return is_notion_mcp_tool(tool_name) and (bool(words & _NOTION_WRITE_VERBS) or not words & _NOTION_READ_VERBS)
 
 
 def is_notion_mcp_fetch(tool_name: str) -> bool:
-    return is_notion_mcp_tool(tool_name) and bool(_tool_words(tool_name) & _NOTION_FETCH_VERBS)
+    return (
+        is_notion_mcp_tool(tool_name)
+        and not is_notion_mcp_write(tool_name)
+        and bool(_tool_words(tool_name) & _NOTION_FETCH_VERBS)
+    )
 
 
 def text_leaves(value: object, *, skip_keys: frozenset[str] = frozenset()) -> list[str]:
@@ -84,7 +95,22 @@ def notion_write_text(tool_name: str, tool_input: Mapping[str, object]) -> str |
     """The prose a Notion write publishes (``""`` when it carries none), or ``None`` for anything else."""
     if not is_notion_mcp_write(tool_name):
         return None
-    return "\n".join(text_leaves(tool_input, skip_keys=_NOTION_IDENTITY_KEYS))
+    leaves: list[str] = []
+    pending: list[tuple[str, object, bool]] = [("", tool_input, False)]
+    while pending:
+        key, item, in_content_updates = pending.pop()
+        if isinstance(item, str):
+            if item and not (key in _NOTION_IDENTITY_KEYS and _NOTION_OBJECT_ID_RE.search(item)):
+                leaves.append(item)
+        elif isinstance(item, Mapping):
+            pending.extend(
+                (name, child, in_content_updates or name == "content_updates")
+                for name, child in reversed(list(item.items()))
+                if not (in_content_updates and name == "old_str")
+            )
+        elif isinstance(item, list):
+            pending.extend((key, child, in_content_updates) for child in reversed(item))
+    return "\n".join(leaves)
 
 
 def _extract_slack_mcp_payload(tool_name: str, tool_input: Mapping[str, object]) -> str | None:

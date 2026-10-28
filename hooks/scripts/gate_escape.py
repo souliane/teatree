@@ -51,6 +51,10 @@ def _audit_request(data: dict, gate_id: str, turn_text: str | None) -> dict[str,
 
         value = turn_text if turn_text is not None else data.get("tool_input", {})
         reason = find_escape(value, gate_id)
+        if reason is None and gate_id == "notion_boundary":
+            from teatree.hooks.mcp_publish import text_leaves  # noqa: PLC0415 — path setup
+
+            reason = next((found for leaf in text_leaves(value) if (found := find_escape(leaf, gate_id))), None)
         if reason is None:
             return None
         if policy_for(gate_id) is EscapePolicy.NEVER:

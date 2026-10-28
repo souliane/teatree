@@ -2,7 +2,7 @@
 
 A leak-prevention scanner that intercepts every tool call about to
 publish text to an external surface (a public-repo issue/PR body, a
-commit message, a Slack message, a t3 review post) and refuses the call
+commit message, a Slack message, a Notion page or comment, a t3 review post) and refuses the call
 when the body matches user-attributed quote patterns.
 
 The rule has been prose only in the memory ledger and recurred multiple

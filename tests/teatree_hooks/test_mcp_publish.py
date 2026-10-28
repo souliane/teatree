@@ -100,8 +100,32 @@ class TestNotionToolClassification:
         ]
         assert [name for name in names if is_slack_mcp_write(name)] == []
 
+    @pytest.mark.parametrize(
+        "tool",
+        ["notion-create-view", "notion-update-view", "notion-read-and-archive", "notionRetrieveAndUpdate"],
+    )
+    def test_a_write_verb_wins_over_a_read_verb(self, tool: str) -> None:
+        name = f"mcp__notion__{tool}"
+        assert is_notion_mcp_write(name)
+        assert not is_notion_mcp_fetch(name)
+
 
 class TestNotionWriteText:
+    def test_an_id_property_is_prose_not_the_target_id(self) -> None:
+        data = {"page_id": PAGE, "properties": {"id": "a quoted or secret value"}}
+        assert notion_write_text("mcp__notion__notion-update-page", data) == "a quoted or secret value"
+
+    def test_old_str_is_not_published_text(self) -> None:
+        data = {
+            "page_id": PAGE,
+            "data": {"content_updates": [{"old_str": "a quote being removed", "new_str": "clean"}]},
+        }
+        assert notion_write_text("mcp__notion__notion-update-page", data) == "clean"
+
+    def test_an_old_str_property_outside_content_updates_is_still_scanned(self) -> None:
+        data = {"page_id": PAGE, "properties": {"old_str": "published property"}}
+        assert notion_write_text("mcp__notion__notion-update-page", data) == "published property"
+
     def test_nested_edit_text_is_exposed_and_the_page_id_is_not(self) -> None:
         tool_input = {
             "data": {
@@ -112,7 +136,7 @@ class TestNotionWriteText:
         }
         text = notion_write_text("mcp__notion__notion-update-page", tool_input)
         assert text is not None
-        assert "before sentence" in text
+        assert "before sentence" not in text
         assert "after sentence" in text
         assert PAGE not in text
 

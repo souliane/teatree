@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +19,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 import hooks.scripts.notion_mcp_boundary as boundary
+from hooks.scripts.gate_escape import _audit_request
 from hooks.scripts.hook_router import handle_banned_terms_pretool, handle_quote_scanner_pretool
 from hooks.scripts.quote_verdict import QuoteVerdict
 from teatree.backends.notion import credentials
@@ -96,6 +98,16 @@ def _deny_reason(capsys: pytest.CaptureFixture[str]) -> str:
 
 
 class TestPublishScanners:
+    def test_a_quote_being_removed_does_not_block_a_redaction(self, capsys: pytest.CaptureFixture[str]) -> None:
+        data = _write(content_updates=[{"old_str": HIGH_QUOTE, "new_str": "clean"}])
+        assert handle_quote_scanner_pretool(data) is False
+        assert capsys.readouterr().out == ""
+
+    def test_a_secret_under_a_property_named_id_is_refused(self, capsys: pytest.CaptureFixture[str]) -> None:
+        data = _write(properties={"id": AWS_KEY})
+        assert handle_banned_terms_pretool(data) is True
+        assert "secret" in _deny_reason(capsys)
+
     def test_high_quote_in_a_write_is_refused(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = _write(content_updates=[{"old_str": "x", "new_str": HIGH_QUOTE}])
         assert handle_quote_scanner_pretool(data) is True
@@ -184,6 +196,18 @@ class TestFetchStamps:
         boundary.handle_track_notion_pages(_fetched())
         assert self._stamps(state_dir) == [PAGE]
 
+    def test_a_structured_title_beginning_with_error_is_not_a_failed_fetch(self, state_dir: Path) -> None:
+        data = _fetched()
+        data["tool_response"] = {"title": "Error budget policy", "id": PAGE}
+        boundary.handle_track_notion_pages(data)
+        assert self._stamps(state_dir) == [PAGE]
+
+    def test_a_top_level_text_error_blob_is_not_stamped(self, state_dir: Path) -> None:
+        data = _fetched()
+        data["tool_response"] = {"type": "text", "text": f"error: page {PAGE}"}
+        boundary.handle_track_notion_pages(data)
+        assert self._stamps(state_dir) == []
+
     def test_a_url_request_stamps_the_same_canonical_id(self, state_dir: Path) -> None:
         url = f"https://www.notion.so/Some-Title-{PAGE.replace('-', '')}"
         boundary.handle_track_notion_pages(_fetched(requested=url))
@@ -251,6 +275,83 @@ class TestFetchStamps:
 
 
 class TestWriteBoundary:
+    def test_django_bootstrap_uses_the_probe_budget(
+        self, notion: FakeNotion, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        boundary.handle_track_notion_pages(_fetched())
+        monkeypatch.setattr(boundary, "remaining_timeout_s", lambda _preferred: 0.1)
+
+        def _slow_bootstrap() -> bool:
+            time.sleep(0.5)
+            return True
+
+        monkeypatch.setattr(boundary, "bootstrap_django_registry", _slow_bootstrap)
+        started = time.monotonic()
+        assert boundary.handle_block_notion_write_boundary(_write()) is False
+        assert time.monotonic() - started < 0.4
+        assert notion.probed == []
+        assert "liveness" in capsys.readouterr().err
+
+    def test_an_unread_page_is_denied_before_a_network_probe(self, notion: FakeNotion) -> None:
+        assert boundary.handle_block_notion_write_boundary(_write()) is True
+        assert notion.probed == []
+
+    def test_fetch_stamp_and_write_deny_need_no_django_or_httpx(self) -> None:
+        code = textwrap.dedent(f"""
+            import builtins
+            import tempfile
+            from pathlib import Path
+            original = builtins.__import__
+            def reject(name, *args, **kwargs):
+                if name == 'httpx' or name.startswith('django'):
+                    raise ModuleNotFoundError(name)
+                return original(name, *args, **kwargs)
+            builtins.__import__ = reject
+            from hooks.scripts import hook_router as router
+            from hooks.scripts import notion_mcp_boundary as boundary
+            assert boundary._canonical('{PAGE.replace("-", "")}') == '{PAGE}'
+            with tempfile.TemporaryDirectory() as root:
+                router.STATE_DIR = Path(root)
+                write = {{'session_id': 'cold', 'tool_name': '{UPDATE}', 'tool_input': {{'page_id': '{PAGE}'}}}}
+                assert boundary.handle_block_notion_write_boundary(write) is True
+                fetch = {{'session_id': 'cold', 'tool_name': '{FETCH}', 'tool_input': {{'id': '{PAGE}'}}}}
+                fetch['tool_response'] = [{{'type': 'text', 'text': 'Page {PAGE}'}}]
+                boundary.handle_track_notion_pages(fetch)
+                assert (Path(root) / 'cold.notion-fetches').read_text().strip() == '{PAGE}'
+                boundary.bootstrap_django_registry = lambda: False
+                assert boundary.handle_block_notion_write_boundary(write) is False
+        """)
+        result = subprocess.run([sys.executable, "-S", "-c", code], capture_output=True, text=True, check=False)
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize(
+        "tool_input",
+        [
+            {"data": {"content_updates": [{"new_str": "[gate-escape:notion_boundary: audited edit]"}]}},
+            {"rich_text": [{"text": {"content": "[gate-escape:notion_boundary: audited comment]"}}]},
+            {
+                "children": [
+                    {
+                        "paragraph": {
+                            "rich_text": [{"text": {"content": "[gate-escape:notion_boundary: audited block]"}}]
+                        }
+                    }
+                ]
+            },
+        ],
+    )
+    def test_nested_notion_escape_reaches_the_real_audit_request(
+        self, tool_input: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("hooks.scripts.gate_escape._head", lambda _cwd: "head")
+        request = _audit_request(
+            {"session_id": SESSION, "cwd": "/tmp", "tool_name": UPDATE, "tool_input": tool_input},
+            "notion_boundary",
+            None,
+        )
+        assert isinstance(request, dict)
+        assert request["reason"].startswith("audited ")
+
     def test_an_unread_page_is_refused_with_the_page_id_and_the_fetch_guidance(
         self, notion: FakeNotion, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -308,6 +409,7 @@ class TestWriteBoundary:
         self, notion: FakeNotion, capsys: pytest.CaptureFixture[str]
     ) -> None:
         notion.verdict = ARCHIVED
+        boundary.handle_track_notion_pages(_fetched())
         boundary.handle_block_notion_write_boundary(_write())
         assert "does not authorize" in _deny_reason(capsys)
 
@@ -334,6 +436,7 @@ class TestWriteBoundary:
 
     def test_a_dead_verdict_is_never_cached(self, notion: FakeNotion) -> None:
         notion.verdict = ARCHIVED
+        boundary.handle_track_notion_pages(_fetched())
         boundary.handle_block_notion_write_boundary(_write())
         notion.verdict = LIVE
         boundary.handle_track_notion_pages(_fetched())
@@ -367,6 +470,8 @@ class TestWriteBoundary:
     ) -> None:
         monkeypatch.setattr(boundary, "bootstrap_django_registry", lambda: False)
         assert boundary.handle_block_notion_write_boundary(_write()) is True
+        boundary.handle_track_notion_pages(_fetched())
+        assert boundary.handle_block_notion_write_boundary(_write()) is False
         assert "liveness" in capsys.readouterr().err
         assert notion.probed == []
 
@@ -379,8 +484,9 @@ class TestWriteBoundary:
 
         monkeypatch.setattr(notion, "page_liveness", _hang)
         monkeypatch.setattr(boundary, "remaining_timeout_s", lambda _preferred: 0.2)
+        boundary.handle_track_notion_pages(_fetched())
         started = time.monotonic()
-        assert boundary.handle_block_notion_write_boundary(_write()) is True
+        assert boundary.handle_block_notion_write_boundary(_write()) is False
         assert time.monotonic() - started < 10
         assert "liveness" in capsys.readouterr().err
 
@@ -388,7 +494,8 @@ class TestWriteBoundary:
         self, notion: FakeNotion, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setattr(boundary, "remaining_timeout_s", lambda _preferred: None)
-        assert boundary.handle_block_notion_write_boundary(_write()) is True
+        boundary.handle_track_notion_pages(_fetched())
+        assert boundary.handle_block_notion_write_boundary(_write()) is False
         assert notion.probed == []
         assert "no time left" in capsys.readouterr().err
 
@@ -396,6 +503,7 @@ class TestWriteBoundary:
         self, notion: FakeNotion, capsys: pytest.CaptureFixture[str]
     ) -> None:
         notion.failure = NotionTokenMissingError("no token\nstep 1\nstep 2")
+        boundary.handle_track_notion_pages(_fetched())
         boundary.handle_block_notion_write_boundary(_write())
         assert "step 1" not in capsys.readouterr().err
 
@@ -420,6 +528,22 @@ class TestWriteBoundary:
 
 
 class TestWriteTargets:
+    def test_a_link_to_page_child_does_not_become_a_write_target(self, notion: FakeNotion) -> None:
+        boundary.handle_track_notion_pages(_fetched())
+        data = _write(children=[{"link_to_page": {"page_id": OTHER_PAGE}}])
+        assert boundary.handle_block_notion_write_boundary(data) is False
+        assert notion.probed == [PAGE]
+
+    def test_move_pages_checks_each_moved_page(self, notion: FakeNotion, capsys: pytest.CaptureFixture[str]) -> None:
+        data = {
+            "session_id": SESSION,
+            "tool_name": "mcp__notion__notion-move-pages",
+            "tool_input": {"page_or_database_ids": [PAGE, OTHER_PAGE]},
+        }
+        boundary.handle_track_notion_pages(_fetched(PAGE))
+        assert boundary.handle_block_notion_write_boundary(data) is True
+        assert OTHER_PAGE in _deny_reason(capsys)
+
     def test_a_create_under_a_page_is_held_to_the_parent_page(
         self, notion: FakeNotion, capsys: pytest.CaptureFixture[str]
     ) -> None:
