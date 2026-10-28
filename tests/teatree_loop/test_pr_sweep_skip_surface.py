@@ -151,8 +151,30 @@ class TestSurfacesOnPersistence(django.test.TestCase):
         for reason in flapping:
             record_sweep_outcomes([_skip(reason=reason)], notify=notifier)
 
-        assert len(notifier.sent) == 3
+        assert len(notifier.sent) == 1
         assert f"{SURFACE_AFTER_TICKS} consecutive" in notifier.sent[0][0]
+
+    def test_twelve_alternating_ci_ticks_announce_once(self) -> None:
+        notifier = _Recorder()
+        start = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+
+        for tick in range(12):
+            reason = "ci_pending" if tick % 2 == 0 else "ci_red"
+            record_sweep_outcomes([_skip(reason=reason)], notify=notifier, now=start + dt.timedelta(minutes=5 * tick))
+
+        assert len(notifier.sent) == 1
+        assert SweepSkipStreak.objects.get(slug="o/r", pr_id=7).tick_count == 12
+
+    def test_the_ci_group_returning_after_another_group_is_a_new_episode(self) -> None:
+        notifier = _Recorder()
+        start = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+        episodes = ["ci_pending", "ci_red", "ci_pending"], ["changes_requested"] * 3, ["ci_red", "ci_pending", "ci_red"]
+
+        for tick, reason in enumerate(reason for episode in episodes for reason in episode):
+            record_sweep_outcomes([_skip(reason=reason)], notify=notifier, now=start + dt.timedelta(minutes=tick))
+
+        assert len(notifier.sent) == 3
+        assert len({key for _text, key in notifier.sent}) == 3
 
     def test_a_pr_blocked_every_pass_ages_into_an_announcement(self) -> None:
         # A persistent refusal rides ``decision="blocked"``, not ``skip`` — the
@@ -166,13 +188,13 @@ class TestSurfacesOnPersistence(django.test.TestCase):
         assert "keystone_refused" in notifier.sent[0][0]
         assert SweepSkipStreak.objects.get(slug="o/r", pr_id=7).tick_count == SURFACE_AFTER_TICKS
 
-    def test_the_idempotency_key_pins_the_pr_reason_and_episode(self) -> None:
+    def test_the_idempotency_key_pins_the_pr_reason_group_and_episode(self) -> None:
         notifier = _Recorder()
         moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
         for _ in range(SURFACE_AFTER_TICKS):
             record_sweep_outcomes([_skip()], notify=notifier, now=moment)
 
-        assert notifier.sent[0][1] == f"pr_sweep_aged_skip:o/r#7:ci_pending:{moment.isoformat()}:3"
+        assert notifier.sent[0][1] == f"pr_sweep_aged_skip:o/r#7:group:ci_verdict:{moment.isoformat()}"
 
 
 class TestReasonChangeSurvivesTheNotifyLedger(django.test.TestCase):
@@ -301,7 +323,10 @@ class TestProductionNotifyPath(django.test.TestCase):
                 pr_sweep_skip_surface.record_sweep_outcomes([_skip()], now=moment)
 
         assert sent.call_count == 1
-        assert sent.call_args.kwargs["idempotency_key"] == f"pr_sweep_aged_skip:o/r#7:ci_pending:{moment.isoformat()}:3"
+        assert (
+            sent.call_args.kwargs["idempotency_key"]
+            == f"pr_sweep_aged_skip:o/r#7:group:ci_verdict:{moment.isoformat()}"
+        )
 
     def test_an_erroring_ledger_write_never_aborts_the_tick(self) -> None:
         with mock.patch.object(pr_sweep_skip_surface, "_observe", side_effect=RuntimeError("db down")):

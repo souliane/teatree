@@ -12,7 +12,9 @@ same reason GROUP. Persistence is what surfaces, not any individual skip: a reas
 from a different group restarts the count (a different problem), a MERGE deletes the
 row (the PR moved — every other outcome is one more pass on which it did NOT land, so
 ``keystone_refused`` and the ``flag_*`` family accrue here too). ``surfaced_at``
-records whether the current reason was announced; a reason change clears it.
+records whether the current reason GROUP episode was announced; only a change of group
+clears it, so a PR is announced once per episode and re-announced only after a new
+group has persisted for the threshold again.
 
 ``classify_sweep_ci`` emits four reasons — ``required_checks_indeterminate``,
 ``ci_pending``, ``uv_audit_red_but_clean_on_main``, ``ci_red`` — for the ONE condition
@@ -21,7 +23,8 @@ them on consecutive passes. Counting each flip as a new problem reset the run le
 every tick, so the flappiest PRs — the ones most worth announcing — could never reach
 the surface threshold at all (#4095). They are therefore one group for streak continuity
 only: the stored ``reason`` tracks the LATEST observation while ``first_seen_at``
-tracks the group's start. A within-group flip re-arms its own announcement.
+tracks the group's start. A within-group flip never touches ``surfaced_at``: twelve
+alternating ``ci_pending`` / ``ci_red`` passes are one announcement, not ten.
 
 Persistence is not the only question: WHAT persists decides whether anyone should be told.
 :data:`SKIP_REASON_DISPOSITION` classifies every reason the sweep can emit as a deliberate
@@ -138,10 +141,9 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         if _reason_group(row.reason) != _reason_group(observation.reason):
             row.tick_count = 1
             row.first_seen_at = moment
+            row.surfaced_at = None
         else:
             row.tick_count += 1
-        if row.reason != observation.reason:
-            row.surfaced_at = None
         row.reason = observation.reason
         row.url = observation.url or row.url
         row.overlay = observation.overlay or row.overlay
@@ -199,7 +201,7 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
     ) -> models.QuerySet["SweepSkipStreak"]:
         """Streaks at/over *threshold* whose current reason has not surfaced.
 
-        An unchanged reason never becomes due again; a changed reason re-arms it. A
+        An announced group episode never becomes due again; a change of reason group re-arms it. A
         :data:`DELIBERATE_PARK_REASONS` streak never becomes due at all — it still accrues
         and still stands in :meth:`aged`; only the DM stops.
 
@@ -275,6 +277,10 @@ class SweepSkipStreak(models.Model):
     @property
     def ref(self) -> str:
         return f"{self.slug}#{self.pr_id}"
+
+    @property
+    def reason_group(self) -> str:
+        return _reason_group(self.reason)
 
     @property
     def link(self) -> str:

@@ -7,16 +7,16 @@ merges and nobody is told why. Silence is the defect, not the skip.
 This reads the sweep's own emitted signals rather than reaching into the scanner, so
 ``pr_sweep`` needs no hook: every outcome on which the PR did NOT land extends that
 PR's streak, only a :data:`_PROGRESS_KINDS` outcome resolves it, and a streak reaching
-:data:`SURFACE_AFTER_TICKS` is announced once for each reason until it changes.
+:data:`SURFACE_AFTER_TICKS` is announced once per reason group episode.
 A deliberately-parked reason (a draft PR) never announces however long it runs, and the
 doctor's standing view is ONE finding naming the count rather than a line per row (#4523).
 A granular reason wobble (``ci_red`` flapping to ``ci_pending`` and back on the same
 stuck PR) is not a new problem, and the ledger reads it as one condition on both sides:
 the streak keeps counting through it (the CI-verdict reasons are one group, so the
 flappiest PRs still reach the threshold rather than restarting below it every tick), and
-the latest reason is announced once, with a stable key for that reason's episode.
-``t3 doctor check`` reports every aged streak standing,
-announced or not.
+the wobble is announced once, with a key stable for that group's episode. Only a different
+group re-arms, after persisting for the threshold again. ``t3 doctor check`` reports every
+aged streak standing, announced or not.
 
 Every failure is swallowed: a missing table, an unreachable DM transport, or a
 malformed payload must degrade to a quiet tick, never abort one.
@@ -192,7 +192,7 @@ def _discard_fossils(signals: list[ScanSignal], moment: dt.datetime) -> None:
 
 
 def _announcement_key(row: "SweepSkipStreak") -> str:
-    return f"pr_sweep_aged_skip:{row.ref}:{row.reason}:{row.first_seen_at.isoformat()}:{row.tick_count}"
+    return f"pr_sweep_aged_skip:{row.ref}:{row.reason_group}:{row.first_seen_at.isoformat()}"
 
 
 def _announce_due(

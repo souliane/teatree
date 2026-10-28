@@ -197,14 +197,23 @@ class TestCiVerdictGroupContinuity(django.test.TestCase):
         assert row.first_seen_at == start
         assert row.age_label(now=start + dt.timedelta(hours=4)) == "4h"
 
-    def test_a_flip_within_the_group_rearms_the_new_reason(self) -> None:
+    def test_a_flip_within_the_group_keeps_the_announcement_spent(self) -> None:
         for _ in range(3):
             _observe(reason="ci_red")
         SweepSkipStreak.objects.mark_surfaced([SweepSkipStreak.objects.get(slug="o/r", pr_id=7).pk])
         row = _observe(reason="ci_pending")
 
+        assert row.surfaced_at is not None
+        assert not SweepSkipStreak.objects.due_to_surface(threshold=3).exists()
+
+    def test_a_change_of_group_rearms_the_announcement(self) -> None:
+        for _ in range(3):
+            _observe(reason="ci_red")
+        SweepSkipStreak.objects.mark_surfaced([SweepSkipStreak.objects.get(slug="o/r", pr_id=7).pk])
+        row = _observe(reason="changes_requested")
+
         assert row.surfaced_at is None
-        assert [due.pr_id for due in SweepSkipStreak.objects.due_to_surface(threshold=3)] == [7]
+        assert row.tick_count == 1
 
     def test_a_non_ci_reason_still_restarts_the_streak(self) -> None:
         _observe(reason="ci_pending")

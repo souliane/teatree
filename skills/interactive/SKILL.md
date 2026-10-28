@@ -161,7 +161,7 @@ The invariant is not kept by remembering it. Four mechanisms enforce it, each ve
 
 **Session-end check.** Every session end sweeps all five states and names each item with the exact command that advances it. Nothing a session-end hook prints reaches anyone, so the report is kept for the next session that starts in the same checkout and delivered to it once, as context, at its start (a report older than two days is dropped). It runs unconditionally — which skills a session loaded says nothing about whether it stranded work — and it fails open, so a probe that cannot answer contributes nothing rather than breaking the session, and leaves the earlier report in place rather than clearing it. It lives in `hooks/scripts/session_end_work_check.py`; the delivery is `hooks/scripts/stranded_work_start.py`.
 
-**Aged-skip surfacing.** A repeated merge-sweep skip is announced once per PR and reason while that reason continues. A new reason, including a flip back to an earlier reason after another skip, starts a new episode and is announced again; `t3 doctor check` reports every aged hold standing.
+**Aged-skip surfacing.** A repeated merge-sweep skip is announced once per PR and reason group while that group continues (the CI verdicts `ci_pending` and `ci_red` are one group, so their flapping is one announcement). A different group, including a flip back to an earlier group after another skip, starts a new episode and is announced again once it has persisted for the threshold; `t3 doctor check` reports every aged hold standing.
 
 ### Using it
 
