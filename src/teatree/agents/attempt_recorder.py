@@ -47,7 +47,8 @@ from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.db_retry import wait_out_locked_writes
+from teatree.core.modelkit.owner_decision import OWNER_KEPT_DECISIONS, OwnerDecision, owner_decision
 from teatree.core.modelkit.owner_stop_misfits import MisfitAction, owner_stop_misfit
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.question_card import QuestionCard
@@ -168,6 +169,7 @@ def validate_result_keys(result: AgentResultBlob) -> str:
     return ""
 
 
+@wait_out_locked_writes()
 def record_result_envelope(
     task: Task,
     result: AgentResultBlob,
@@ -419,9 +421,17 @@ def _check_before_recording(
             return _PreRecordCheck(evidence_error if envelope_parsed else NO_ENVELOPE_ERROR, result)
         result = salvaged
 
+    owner_kept_stop = (
+        result.get("needs_user_input") is True and owner_decision(result.get("user_input_kind")) in OWNER_KEPT_DECISIONS
+    )
     routed = usage.route_candidate_index is not None or usage.selected_harness not in {"", "claude_sdk"}
-    blocked = blocked_before_edits_error(task, result, phase=phase, routed=routed)
-    return _PreRecordCheck(blocked or landing_verification_error(task, phase=phase), result)
+    landing_error = (
+        ""
+        if owner_kept_stop
+        else blocked_before_edits_error(task, result, phase=phase, routed=routed)
+        or landing_verification_error(task, phase=phase)
+    )
+    return _PreRecordCheck(landing_error, result)
 
 
 def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) -> str:

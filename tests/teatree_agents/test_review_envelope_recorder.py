@@ -32,6 +32,7 @@ from teatree.core.models import (
     HonestyEscalation,
     MRReviewLock,
     PullRequest,
+    ReviewEvidence,
     ReviewVerdict,
     RoundMetric,
     Rubric,
@@ -412,6 +413,30 @@ class TestTheReviewerGradesTheRubricItVerifies(TestCase):
 
         assert attempt.error == ""
         check_integration_review(ticket)
+
+    def test_multi_repo_review_envelope_accepts_qualified_declared_repo(self) -> None:
+        ticket = _author_ticket()
+        ticket.repos = ["teatree", "example-org/adapter"]
+        ticket.save(update_fields=["repos"])
+        result = _envelope(grades=_full_pass())
+        result["integration_review"] = {"repos": ["souliane/teatree", "example-org/adapter"]}
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        assert ReviewEvidence.objects.has_integration_review_covering(ticket, list(ticket.repos))
+
+    def test_multi_repo_review_envelope_rejects_other_namespace_with_same_basename(self) -> None:
+        ticket = _author_ticket()
+        ticket.repos = ["teatree", "example-org/adapter"]
+        ticket.save(update_fields=["repos"])
+        result = _envelope(grades=_full_pass())
+        result["integration_review"] = {"repos": ["other/teatree", "example-org/adapter"]}
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert "integration review recording refused" in attempt.error
+        assert not ReviewEvidence.objects.for_ticket(ticket, ReviewEvidence.Kind.INTEGRATION_REVIEW).exists()
 
     def test_review_envelope_produces_all_merge_review_evidence_without_manual_recording(self) -> None:
         ticket = _author_ticket()

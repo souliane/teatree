@@ -289,6 +289,36 @@ class TestRecordResultEnvelope(TestCase):
                     assert card.evidence["decision"] == kind
                     assert_a_plain_card(card)
 
+    def test_routed_coder_without_edits_records_each_owner_kept_card(self) -> None:
+        for phase in ("coding", "debugging"):
+            for kind, question in (
+                ("money_or_plan", "May I spend money on this service?"),
+                ("irreversible", "May I delete work that exists on no remote?"),
+                ("public_post", "May I send these words to a colleague in your name?"),
+                ("credentials", "May I use an API token for the new service?"),
+            ):
+                with self.subTest(phase=phase, kind=kind):
+                    task = self._claimed(phase=phase)
+
+                    attempt = record_result_envelope(
+                        task, owner_stop(question, kind) | {"summary": "waiting"}, usage=_routed()
+                    )
+
+                    assert attempt.error == ""
+                    assert_a_plain_card(DeferredQuestion.objects.get(parked_task=task))
+
+    def test_routed_coder_without_edits_refuses_non_owner_kept_stop(self) -> None:
+        for kind in ("product_scope", "architecture"):
+            with self.subTest(kind=kind):
+                task = self._claimed(phase="coding")
+
+                attempt = record_result_envelope(
+                    task, owner_stop("May I choose a new direction?", kind) | {"summary": "waiting"}, usage=_routed()
+                )
+
+                assert attempt.error.startswith("landing_unverified:")
+                assert not DeferredQuestion.objects.filter(parked_task=task).exists()
+
     def test_refused_own_branch_push_fails_the_attempt_and_is_reopened_once(self) -> None:
         task = self._claimed(phase="debugging")
         question = "May I push the finished branch once more after the push round limit?"
@@ -518,6 +548,19 @@ class TestLandingVerifiedCompletion(TestCase):
         assert task.ticket.state == Ticket.State.WORK_STARTED  # FSM did NOT advance
         assert latest is not None
         assert latest.error.startswith("landing_unverified:")
+
+    def test_routed_coder_with_existing_worktree_keeps_owner_card(self) -> None:
+        task = self._claimed()
+        self._attach_worktree(task.ticket, commits_ahead=0)
+
+        attempt = record_result_envelope(
+            task,
+            owner_stop("May I spend money on this service?", "money_or_plan") | {"summary": "waiting"},
+            usage=_routed(),
+        )
+
+        assert attempt.error == ""
+        assert_a_plain_card(DeferredQuestion.objects.get(parked_task=task))
 
     def test_a_plan_refused_at_coded_fails_the_attempt_as_plan_stale_with_no_success_row(self) -> None:
         task = self._claimed()

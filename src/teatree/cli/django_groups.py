@@ -371,6 +371,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("attachments", "Print (and with --fetch download) a ticket's referenced attachments."),
             ("rubric-set", "Restate a ticket's rubric from explicit JSON criteria (#2241)."),
             ("rubric-waive", "Record an owner's waiver of one rubric criterion."),
+            ("merge-item-waive", "Request an owner's waiver of one LLM merge-critic item."),
             ("rubric-grade", "Record a verifier's per-criterion PASS/FAIL on the rubric (#2241)."),
         ],
         core_dispatch=True,

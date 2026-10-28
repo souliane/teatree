@@ -226,7 +226,7 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
     # The merge-quality critic (north-star PR-4): two LLM items judged at
     # ``transition="merge"`` (the same registry, selected by transition — PR-1's
     # seam). They make "clean + tested-enough WITHOUT bloat" a real merge gate: a
-    # verdict covering the shipped head must carry zero FAILs before
+    # verdict covering the shipped head must carry zero unwaived FAILs before
     # ``execute_bound_merge`` lets a directive keystone through. The full judging
     # rubric — the ratified ``test_strategy`` anchor, the both-directions
     # anti-vacuity/anti-bloat wording, the CLAUDE.md cleanliness bar — lives in
@@ -312,3 +312,14 @@ def llm_items(transition: str = DEFAULT_TRANSITION) -> tuple[CriticRubricItem, .
 
 def item_for(slug: str, transition: str = DEFAULT_TRANSITION) -> "CriticRubricItem | None":
     return next((item for item in CRITIC_RUBRIC if item.slug == slug and item.transition == transition), None)
+
+
+EXHAUSTIVE_TEST_VALUE_RULE = (
+    "List EVERY redundant or vacuous test in ONE `test_value` citation, one per line, never only the first "
+    "found: `REDUNDANT <test node> — pinned by <test node>` or `VACUOUS <test node> — <why>`."
+)
+
+
+def merge_item_questions() -> str:
+    """The merge critic's questions, one line per LLM item — the source the contract and the coding directive share."""
+    return "\n".join(f"  - {item.slug}: {item.adversarial_question}" for item in llm_items(_MERGE_TRANSITION))
