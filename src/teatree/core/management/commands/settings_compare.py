@@ -14,7 +14,7 @@ from teatree.core.settings.settings_files import load_snapshots
 
 class Command(MachineOutputCommand):
     help = (
-        "What differs between this box and its peers, and whether it can be read as drift. "
+        "What differs between this box and imported peers, and whether it can be read as drift. "
         "Exits non-zero only when fewer than two instances answered. A completed comparison "
         "succeeds even when instances are not comparable. COLUMNS sets table width for a redirected run."
     )
@@ -27,8 +27,8 @@ class Command(MachineOutputCommand):
             typer.Option(
                 "--snapshot",
                 help=(
-                    "A saved snapshot JSON file to compare against, repeatable. A record reaches what a tunnel "
-                    "cannot: a box whose forward is down, a box that is gone, and this box as it stood earlier."
+                    "A saved snapshot JSON file to compare against, repeatable. "
+                    "Import a capture from each peer to compare it with this instance."
                 ),
             ),
         ] = None,
@@ -37,16 +37,6 @@ class Command(MachineOutputCommand):
             typer.Option(
                 "--kind",
                 help="Show only these difference kinds, repeatable: values, override, code. Default shows all three.",
-            ),
-        ] = None,
-        timeout: Annotated[
-            float | None,
-            typer.Option(
-                "--timeout",
-                help=(
-                    "Seconds to wait for each peer, overriding its registry entry. A forward under load "
-                    "answers late, and a wait too short reports a live box as one that did not answer."
-                ),
             ),
         ] = None,
         *,
@@ -78,7 +68,7 @@ class Command(MachineOutputCommand):
                 raise SystemExit(2) from None
         loaded = load_snapshots(documents)
         filters = CompareFilters(scope=scope, family=family, group=group, text=text, differs_only=not all_rows)
-        view = build_compare_view(loaded.snapshots, timeout=timeout, kinds=selected, filters=filters)
+        view = build_compare_view(loaded.snapshots, kinds=selected, filters=filters)
         human = render_compare(
             view,
             width=shutil.get_terminal_size(fallback=(100, 24)).columns,

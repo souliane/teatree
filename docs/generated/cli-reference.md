@@ -112,10 +112,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 off_live_tick + critic/signal code guards) — the master flag │
 │                 graduated default-ON in #3895, so the disabled loop row is   │
 │                 what keeps a fresh install inert.                            │
-│ peer            The loopback forwards the Compare Instances page reads its   │
-│                 peers through.                                               │
-│ settings        This box's settings beside its peers' — the Compare          │
-│                 Instances page, in a terminal.                               │
+│ peer            Open a peer dashboard to sign in and download a comparison   │
+│                 snapshot.                                                    │
+│ settings        Compare this instance's settings with imported peer          │
+│                 snapshots.                                                   │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -7464,7 +7464,7 @@ Usage: t3 directive history [OPTIONS]
 ```
 Usage: t3 peer [OPTIONS] COMMAND [ARGS]...
 
- The loopback forwards the Compare Instances page reads its peers through.
+ Open a peer dashboard to sign in and download a comparison snapshot.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -7568,15 +7568,14 @@ Usage: t3 peer open [OPTIONS] NAME
 ```
 Usage: t3 settings [OPTIONS] COMMAND [ARGS]...
 
- This box's settings beside its peers' — the Compare Instances page, in a
- terminal.
+ Compare this instance's settings with imported peer snapshots.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ compare  What differs between this box and its peers, and whether it can be  │
-│          read as drift.                                                      │
+│ compare  What differs between this box and imported peers, and whether it is │
+│          drift.                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7585,33 +7584,27 @@ Usage: t3 settings [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 settings compare [OPTIONS]
 
- What differs between this box and its peers, and whether it can be read as
- drift. Exits non-zero only when fewer than two instances answered. A completed
- comparison succeeds even when instances are not comparable. COLUMNS sets table
- width for a redirected run.
+ What differs between this box and imported peers, and whether it can be read
+ as drift. Exits non-zero only when fewer than two instances answered. A
+ completed comparison succeeds even when instances are not comparable. COLUMNS
+ sets table width for a redirected run.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --snapshot        TEXT   A saved snapshot JSON file to compare against,      │
-│                          repeatable. A record reaches what a tunnel cannot:  │
-│                          a box whose forward is down, a box that is gone,    │
-│                          and this box as it stood earlier.                   │
-│ --kind            TEXT   Show only these difference kinds, repeatable:       │
-│                          values, override, code. Default shows all three.    │
-│ --timeout         FLOAT  Seconds to wait for each peer, overriding its       │
-│                          registry entry. A forward under load answers late,  │
-│                          and a wait too short reports a live box as one that │
-│                          did not answer.                                     │
-│ --family          TEXT   Show one setting or seed family.                    │
-│ --group           TEXT   Match a setting group by name.                      │
-│ --text            TEXT   Search row names and descriptions.                  │
-│ --scope           TEXT   Global, all, or one overlay scope.                  │
-│                          [default: global]                                   │
-│ --all-rows               Include matching identical rows.                    │
-│ --full                   Do not truncate a value, and print each row's       │
-│                          import reason.                                      │
-│ --json                   Emit the whole view as JSON, nothing summarised     │
-│                          away.                                               │
-│ --help                   Show this message and exit.                         │
+│ --snapshot        TEXT  A saved snapshot JSON file to compare against,       │
+│                         repeatable. Import a capture from each peer to       │
+│                         compare it with this instance.                       │
+│ --kind            TEXT  Show only these difference kinds, repeatable:        │
+│                         values, override, code. Default shows all three.     │
+│ --family          TEXT  Show one setting or seed family.                     │
+│ --group           TEXT  Match a setting group by name.                       │
+│ --text            TEXT  Search row names and descriptions.                   │
+│ --scope           TEXT  Global, all, or one overlay scope. [default: global] │
+│ --all-rows              Include matching identical rows.                     │
+│ --full                  Do not truncate a value, and print each row's import │
+│                         reason.                                              │
+│ --json                  Emit the whole view as JSON, nothing summarised      │
+│                         away.                                                │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

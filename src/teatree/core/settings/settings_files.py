@@ -1,13 +1,11 @@
 """A settings snapshot as a FILE — the name one is saved under, and the load of one back in.
 
-The comparison page reaches a peer over a loopback tunnel, which needs that peer to be UP
-right now. A snapshot is also a RECORD, and the three columns a live fetch can never produce
-are exactly the ones a saved file can: a box whose tunnel is not up, a box that is gone, and
-THIS box as it stood at some earlier date. So a loaded file joins the same comparison as one
-more column under the same rules — it is not a second mode with its own answers.
+Every peer must be captured while signed in on its own dashboard, then imported here.
+A snapshot is a RECORD, including a box that is gone and THIS box as it stood earlier.
+Each loaded file joins the same comparison as one more column under the same rules.
 
 A loaded column says it came from a file and carries the snapshot's own ``captured_at``, so a
-record can never be mistaken for a live reading. A document that is not a
+record can never be mistaken for this instance's current reading. A document that is not a
 :data:`~teatree.core.settings_snapshot.SNAPSHOT_FORMAT` payload, or carries a
 ``format_version`` this teatree does not read, is refused BY NAME, saying which document and
 what was wrong with it: a file dropped in silence reads as a box that agrees with everything.

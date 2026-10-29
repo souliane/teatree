@@ -167,7 +167,7 @@ def settings_group(request: "HttpRequest", slug: str) -> "HttpResponse":
 
 @require_GET
 def settings_snapshot(request: "HttpRequest") -> "HttpResponse":
-    """This instance's settings snapshot as JSON — the payload a peer fetches to diff against.
+    """This instance's settings snapshot as JSON for signed-in export and manual comparison.
 
     Read-only, and behind the same staff login every other dash view sits behind. There
     is no private mode to ask for: :func:`~teatree.core.settings_snapshot.build_snapshot` never
