@@ -3,14 +3,13 @@
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.pytest_selection import SelectionContext, ci_environment_enabled, oversized_selection_refusal
-from tests.teatree_quality.real_pytest_pool_support import REPO
+from tests.teatree_quality.real_pytest_pool_support import REPO, pytest_command
 
 
 @pytest.mark.parametrize("value", [None, "", " ", "0", "false", "FALSE", "no", "off"])
@@ -239,7 +238,7 @@ def test_real_unsharded_pytest_refuses_before_collection() -> None:
     for name in ("CI", "CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
         env.pop(name, None)
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q"],
+        pytest_command("-n", "0", "--collect-only", "-q"),
         cwd=repo,
         env=env,
         capture_output=True,
@@ -258,7 +257,7 @@ def test_real_pytest_refuses_large_directory_before_collection() -> None:
     for name in ("CI", "CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
         env.pop(name, None)
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q", "tests/teatree_core"],
+        pytest_command("-n", "0", "--collect-only", "-q", "tests/teatree_core"),
         cwd=REPO,
         env=env,
         capture_output=True,
@@ -272,13 +271,14 @@ def test_real_pytest_refuses_large_directory_before_collection() -> None:
 
 
 @pytest.mark.timeout(120)
-def test_real_ci_still_refuses_bare_whole_tree() -> None:
+def test_real_ci_still_refuses_bare_whole_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "teatree.settings")
     env = os.environ.copy()
     for name in ("CI_NODE_TOTAL", "CI_NODE_INDEX", "PYTEST_ADDOPTS"):
         env.pop(name, None)
     env["CI"] = "true"
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q", "tests"],
+        pytest_command("-o", "addopts=", "-n", "0", "--collect-only", "-q", "tests"),
         cwd=REPO,
         env=env,
         capture_output=True,
@@ -298,7 +298,7 @@ def test_real_pytest_collects_a_small_directory() -> None:
         env.pop(name, None)
 
     small = subprocess.run(
-        [sys.executable, "-m", "pytest", "-n", "0", "--collect-only", "-q", "tests/teatree_verification"],
+        pytest_command("-n", "0", "--collect-only", "-q", "tests/teatree_verification"),
         cwd=REPO,
         env=env,
         capture_output=True,
@@ -330,10 +330,7 @@ def test_real_tach_scoped_invocation_is_never_refused(tmp_path: Path) -> None:
     )
     env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), env.get("PYTHONPATH", "")))
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
+        pytest_command(
             "-n",
             "0",
             "--tach",
@@ -345,7 +342,7 @@ def test_real_tach_scoped_invocation_is_never_refused(tmp_path: Path) -> None:
             "stop_after_startup_4998",
             "--collect-only",
             "-q",
-        ],
+        ),
         cwd=repo,
         env=env,
         capture_output=True,
