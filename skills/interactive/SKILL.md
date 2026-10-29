@@ -13,6 +13,8 @@ metadata:
 
 The shared Claude Code and Codex side of teatree: how skills reach an attended agent and the one rule that session must not break. Runtime-specific automation is called out explicitly below; reading this skill in Codex does not activate Claude's plugin hooks or start a loop.
 
+Use only teatree's own MCP server. For any job unavailable there, use the `t3` CLI; do not call tools from another MCP server, including hosted connectors.
+
 ## Answer the owner's cards in his place (attended session only)
 
 This applies only to this attended session, below Rules 0-5. A headless factory run never answers a card addressed to the owner in his place.

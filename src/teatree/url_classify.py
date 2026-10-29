@@ -26,7 +26,7 @@ _PR_URL_RE = re.compile(r"https?://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
 #: URL up against teatree's own records, which track both ``PullRequest.url`` and
 #: ``Ticket.issue_url``. Non-greedy so a run-on sentence yields one URL per
 #: reference rather than one URL swallowing the tail.
-_FORGE_URL_RE = re.compile(r"https?://\S*?/(?:merge_requests|pull|pulls|issues)/\d+")
+_FORGE_URL_RE = re.compile(r"https?://\S*?/(?:merge_requests|pull|pulls|issues|work_items)/\d+")
 _FORGE_REF_RE = re.compile(
     r"https?://\S*?/(?:merge_requests|pull|pulls|issues|work_items)/\d+/?(?:#[^\s:|>)\]`'\"?]+)?"
 )

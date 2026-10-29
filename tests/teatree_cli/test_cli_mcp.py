@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -159,6 +161,12 @@ class TestServeCommand:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_ROOT = _REPO_ROOT / "src"
 _SERVE_DRIVER = "from teatree.cli.mcp import serve; serve()"
+
+
+def _attended_driver(*, interactive: bool) -> str:
+    return f"from teatree.cli.mcp import serve; serve(interactive={interactive})"
+
+
 _WORKER_SCRIPT = (
     "import json,sys\n"
     "from pathlib import Path\n"
@@ -188,6 +196,33 @@ def _migrate(env: dict[str, str]) -> None:
         text=True,
         check=True,
     )
+
+
+@contextmanager
+def _attended_worker() -> Generator[tuple[Path, dict[str, str], dict[str, str], MailboxClient]]:
+    with tempfile.TemporaryDirectory(prefix="t3m-", dir="/tmp") as root:
+        directory = Path(root)
+        env = _clean_env(directory / "xdg")
+        env["T3_CONTROL_DB_DIR"] = str(directory / "control")
+        env["T3_MCP_DELEGATED"] = "1"
+        _migrate(env)
+        worker = subprocess.Popen(
+            [sys.executable, "-c", _WORKER_SCRIPT, str(directory / "control" / "live"), "t3", "worker"],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert worker.stdout is not None
+            registered = json.loads(worker.stdout.readline())
+            yield directory, env, registered, MailboxClient(Path(registered["socket"]), registered["token"])
+        finally:
+            assert worker.stdin is not None
+            worker.stdin.write("\n")
+            worker.stdin.flush()
+            worker.communicate(timeout=10)
 
 
 async def _round_trip(env: dict[str, str]) -> tuple[set[str], dict]:
@@ -233,53 +268,50 @@ class TestServeSubprocessSmoke:
         }
 
     def test_attended_stdio_child_joins_worker_and_exchanges_a_nonce(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="t3m-", dir="/tmp") as root:
-            directory = Path(root)
-            env = _clean_env(directory / "xdg")
-            env["T3_CONTROL_DB_DIR"] = str(directory / "control")
-            env["T3_MCP_DELEGATED"] = "1"
-            _migrate(env)
-            worker = subprocess.Popen(
-                [sys.executable, "-c", _WORKER_SCRIPT, str(directory / "control" / "live"), "t3", "worker"],
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            try:
-                assert worker.stdout is not None
-                peer = json.loads(worker.stdout.readline())
+        with _attended_worker() as (_directory, env, peer, agent):
 
-                async def round_trip() -> None:
-                    driver = "from teatree.cli.mcp import serve; serve(interactive=True)"
-                    params = StdioServerParameters(
-                        command=sys.executable, args=["-c", driver], env=env, cwd=str(_REPO_ROOT)
-                    )
-                    agent = MailboxClient(Path(peer["socket"]), peer["token"])
-                    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
-                        await session.initialize()
-                        tools = await session.list_tools()
-                        names = {tool.name for tool in tools.tools}
-                        assert {f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")} <= names
-                        own = structured(await session.call_tool("agent_mailbox_self", {}))
-                        outbound = asyncio.create_task(
-                            session.call_tool(
-                                "agent_mailbox_send",
-                                {"to": peer["address"], "text": "nonce-attended", "key": "attended-1"},
-                            )
+            async def round_trip() -> None:
+                driver = _attended_driver(interactive=True)
+                params = StdioServerParameters(
+                    command=sys.executable, args=["-c", driver], env=env, cwd=str(_REPO_ROOT)
+                )
+                async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    names = {tool.name for tool in tools.tools}
+                    assert {f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")} <= names
+                    own = structured(await session.call_tool("agent_mailbox_self", {}))
+                    outbound = asyncio.create_task(
+                        session.call_tool(
+                            "agent_mailbox_send",
+                            {"to": peer["address"], "text": "nonce-attended", "key": "attended-1"},
                         )
-                        received = await agent.wait(timeout_seconds=2)
-                        assert received["messages"][0]["text"] == "nonce-attended"
-                        assert structured(await outbound)["outcome"] == "accepted_inbox_read"
-                        inbound = asyncio.create_task(agent.send(own["address"], "nonce-worker", "worker-1"))
-                        reply = structured(await session.call_tool("agent_mailbox_wait", {"timeout_seconds": 2}))
-                        assert reply["messages"][0]["text"] == "nonce-worker"
-                        assert (await inbound)["outcome"] == "accepted_inbox_read"
+                    )
+                    received = await agent.wait(timeout_seconds=2)
+                    assert received["messages"][0]["text"] == "nonce-attended"
+                    assert structured(await outbound)["outcome"] == "accepted_inbox_read"
+                    inbound = asyncio.create_task(agent.send(own["address"], "nonce-worker", "worker-1"))
+                    reply = structured(await session.call_tool("agent_mailbox_wait", {"timeout_seconds": 2}))
+                    assert reply["messages"][0]["text"] == "nonce-worker"
+                    assert (await inbound)["outcome"] == "accepted_inbox_read"
 
-                asyncio.run(round_trip())
-            finally:
-                assert worker.stdin is not None
-                worker.stdin.write("\n")
-                worker.stdin.flush()
-                worker.communicate(timeout=10)
+            asyncio.run(round_trip())
+
+    def test_interactive_flag_controls_the_stdio_mailbox_tools(self) -> None:
+        with _attended_worker() as (_directory, env, _peer, _agent):
+
+            async def names(*, interactive: bool) -> set[str]:
+                params = StdioServerParameters(
+                    command=sys.executable,
+                    args=["-c", _attended_driver(interactive=interactive)],
+                    env=env,
+                    cwd=str(_REPO_ROOT),
+                )
+                async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+                    await session.initialize()
+                    return {tool.name for tool in (await session.list_tools()).tools}
+
+            without, with_flag = asyncio.run(names(interactive=False)), asyncio.run(names(interactive=True))
+        mailbox = {f"agent_mailbox_{name}" for name in ("self", "peers", "send", "inbox", "wait")}
+        assert mailbox.isdisjoint(without)
+        assert mailbox <= with_flag
