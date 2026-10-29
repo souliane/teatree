@@ -115,7 +115,7 @@ def _setting_fields(source: str) -> set[str]:
     fields = {
         f"{node.name}.{field.target.id}"
         for node in tree.body
-        if isinstance(node, ast.ClassDef) and "settings" in node.name.lower()
+        if isinstance(node, ast.ClassDef) and node.name.lower().endswith("settings")
         for field in node.body
         if isinstance(field, ast.AnnAssign) and isinstance(field.target, ast.Name)
     }

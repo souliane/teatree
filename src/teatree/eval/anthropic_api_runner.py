@@ -54,6 +54,7 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext
 from pydantic_ai.usage import RequestUsage
 
+from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig
 from teatree.config import get_effective_settings
 from teatree.core.cost import ModelPrice
 from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
@@ -96,9 +97,7 @@ class AnthropicApiRunner:
         suite_budget: ConservativeSuiteBudget | None = None,
     ) -> None:
         self._model = model
-        #: The bounds on the delegated drive. ``turn_cap`` folds an explicit
-        #: ``--max-turns`` and the eval-lane guardrail to one value in
-        #: :func:`build_anthropic_api_eval_runner` (both bound the same loop).
+        #: Explicit ``--max-turns`` wins; otherwise the scenario budget is tightened by the backend limit.
         self._caps = caps or EvalDriveCaps()
         self._require_executed = require_executed
         self._credential = credential or AnthropicApiKeyCredential()
@@ -128,7 +127,8 @@ class AnthropicApiRunner:
         if self._suite_budget is not None:
             budgeted = BudgetedModel(metered, self._suite_budget, spec.model, self._caps.max_tokens)
             metered = budgeted
-        delegate = PydanticAiRunner(model=metered, caps=self._caps)
+        backend = OpenAICompatibleLaneConfig(lane=LANE_EVAL, request_limit=self._caps.request_limit)
+        delegate = PydanticAiRunner(model=metered, caps=self._caps, backend=backend)
         try:
             result = delegate.run(spec)
         except UsageLimitReachedError as stop:
@@ -304,12 +304,16 @@ def build_anthropic_api_eval_runner(
     here (never inside the delegated async drive, where a ``get_effective_settings``
     read fails safe to defaults under Django's async guard), mirroring
     :func:`~teatree.eval.pydantic_ai_runner.build_pydantic_ai_eval_runner`. An
-    explicit ``max_turns_override`` wins over the guardrail — both bound the same
-    delegated request loop, so they fold to one ``turn_cap``.
+    Explicit ``max_turns_override`` wins; otherwise the scenario budget is
+    tightened by the configured request limit.
     """
     settings = get_effective_settings()
-    turn_cap = max_turns_override if max_turns_override is not None else settings.pydantic_ai_request_limit
-    caps = EvalDriveCaps(turn_cap=turn_cap, effort=effort, max_tokens=settings.pydantic_ai_max_tokens)
+    caps = EvalDriveCaps(
+        turn_cap=max_turns_override,
+        request_limit=settings.pydantic_ai_request_limit,
+        effort=effort,
+        max_tokens=settings.pydantic_ai_max_tokens,
+    )
     return AnthropicApiRunner(caps=caps, require_executed=require_executed, suite_budget=suite_budget)
 
 

@@ -17,6 +17,20 @@ from the DB. `config_setting export` / `import` are a byte-stable round-trip
 interchange; the shipped default VALUES, the pydantic schema that hosts them + the
 category taxonomy, and the model-derived registries are described in §10.7.
 
+Numeric run limits declare write-time floors alongside their setting definitions;
+zero keeps the documented uncapped option. Every manager or cold rescue change
+records an audit row with the previous value, writer and time. `t3 doctor check`
+shows divergent overrides with that context and flags rows below a floor;
+`t3 <overlay> notify digest` lists recent setting changes.
+Review and critic child environments mark their phase, and the settings write paths
+refuse canonical database writes while that marker is present; verification scripts
+that change settings must use a private test database.
+The 24-hour watchdog default requires a 48-hour claim drive-marker grace (twice the
+watchdog window); after a hard kill, a reused process id can delay reclaim for up to
+that grace. The in-session claim lease remains three hours.
+`config_setting set` and `clear` print the previous value from the audit row
+so an operator can restore the prior override.
+
 The keys and value shapes below are illustrative — set each one with
 `config_setting set`; the `[table]` syntax only shows how a key is scoped
 (`[teatree]` = global, `[overlays.<name>]` = that overlay):
@@ -396,7 +410,7 @@ The worker's scheduled reclaim uses the same scratch guard on its own `/tmp` and
 | `gitlab_events_subscription` | The relay's Pub/Sub pull subscription as `projects/<project>/subscriptions/<name>` (default `""`, which is OFF: the `inbox` loop does not build the GitLab-events job). Read by the loop with no overlay, so box-global. The VM's metadata-server identity needs `roles/pubsub.subscriber` on it; nothing is stored. |
 | `stale_stack_min_age_minutes` | #2207: stale-stack reaper threshold (minutes, default `0` = disabled, opt-in; set e.g. `240` to enable). A teatree-provisioned compose stack (named `<repo>-wt<ticket-pk>`) with NO live `Worktree` row — a failed-teardown leftover, or a hand-rolled stack started inside a worktree, which inherits `COMPOSE_PROJECT_NAME` from the env cache — is torn down once its newest container lifecycle event is older than this: automatically before `worktree start` / `workspace start` / `workspace provision`, and on demand via `t3 <overlay> workspace reap-stale [--dry-run]`. Age-keyed + fail-safe (unknown age ⇒ keep) so a parallel session's fresh stack is never reaped, and ownership-gated so a stack teatree did not provision (the deploy stack, an unrelated user project) is never a candidate on either this path or `clean-all`. Per-overlay overridable. |
 | `orchestrator_bash_gate_enabled` | #115: kill-switch (default `true`) for the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary`). When on, the MAIN agent is blocked from running a LONG / HEAVY foreground `Bash` command (test suite, build, dev server, long sleep, full-tree sweep); `run_in_background: true` is the escape hatch, sub-agents unrestricted. Set `false` under `[teatree]` (read directly by the hook layer) or per-overlay to disable it — e.g. as the failsafe after `t3 update` reinstalls the gate. |
-| `orchestrator_turn_budget` | Soft per-turn tool-call **count** budget (default `25`; `0` disables) for the §17.6.4 gate 2 responsiveness nudge (`handle_orchestrator_turn_budget_nudge`). Governs long TURNS (vs the heavy-`Bash` arm's long OPERATIONS) — once a MAIN-agent turn makes this many NON-orchestration tool calls, a one-time `additionalContext` line steers it to yield. Advisory only (never a deny); orchestration calls and sub-agents exempt. |
+| `orchestrator_turn_budget` | Soft per-turn tool-call **count** budget (default `25`; `0` disables) for the §17.6.4 gate 2 responsiveness nudge (`handle_orchestrator_turn_budget_nudge`); its registry help and generated defaults name the same unit. Governs long TURNS (vs the heavy-`Bash` arm's long OPERATIONS) — once a MAIN-agent turn makes this many NON-orchestration tool calls, a one-time `additionalContext` line steers it to yield. Advisory only (never a deny); orchestration calls and sub-agents exempt. |
 | `orchestrator_turn_wall_clock_seconds` | #1733 §2: the **wall-clock** dimension of the same responsiveness nudge (default `180`; `0` disables). Independent of `orchestrator_turn_budget` — once a MAIN-agent turn has run more than this many seconds of wall-clock since it started (the last user-visible action), the same one-time yield nudge fires even when few tool calls were made (the slow-but-few-calls case the count dimension misses). Both dimensions share one per-turn idempotent marker; advisory only; orchestration calls and sub-agents exempt. |
 | `worktree_containment_gate_enabled` | Default-on global ColdHookSetting for the Bash PreToolUse gate that refuses managed-source `git worktree add|move` outside the resolved allowed checkout roots. `t3 <overlay> gate worktree-containment disable` turns it off; `[gate-escape:worktree_containment: <reason>]` waives one call. |
 | `skill_loading_gate_enabled` | #1488: kill-switch (default `true`) for the §17.6.4 skill-loading gate that blocks `Bash`/`Edit`/`Write` code work until the resolvable pending teatree skills load. It has no `TaskCreated` counterpart (#4216). Read directly by the hook layer; set `false` under `[teatree]` or per-overlay, or disable via `t3 <overlay> gate skill-loading disable`. |
@@ -1187,8 +1201,8 @@ therefore carries the coordinate alone. Every write runs `ConfigSetting.objects.
 so the cross-key check and the seed-provenance clear fire exactly as they do for
 `config_setting set`; `ConfigSetting.clean` runs that same cross-key check, so an
 inconsistent coupled pair is a form error rather than a silent save. The masking taxonomy is
-ONE function (`teatree.core.config_display.is_secret`) shared by all three rendering
-surfaces — it lives in `core` because the admin sits below `dash` in the layer graph. There
+ONE function (`teatree.config.value_visibility.is_secret`) shared by all three rendering
+surfaces — it lives in `config` so the Django-free rescue writer can use it too. There
 is no `list_editable`: an inline widget must round-trip the raw value (so it cannot mask)
 and the changelist formset writes through `Model.save()` (so it cannot use the seam).
 

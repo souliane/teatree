@@ -24,6 +24,7 @@ from types import NoneType, UnionType
 from typing import Literal, Union, get_args, get_origin
 
 from teatree.config.schema import TeatreeSettingsSchema, setting_choices
+from teatree.config.setting_registries import SETTING_BOUNDS
 
 #: The stored TYPE each annotation maps to, in the vocabulary the FILE writes it in. Keyed on
 #: the EXACT type rather than by ``issubclass``, so ``bool`` never resolves through ``int``.
@@ -81,6 +82,11 @@ def setting_annotation(key: str) -> str:
     """
     type_name = setting_type_name(key)
     choices = setting_choices(key)
+    if bounds := SETTING_BOUNDS.get(key):
+        if bounds.maximum is not None:
+            return f"{type_name}, between {bounds.minimum:g} and {bounds.maximum:g}"
+        zero = "0 or " if bounds.zero_disables else ""
+        return f"{type_name}, {zero}at least {bounds.minimum:g}"
     if not type_name or not choices or type_name == "bool":
         return type_name
     return f"{type_name}, one of: {' | '.join(choice_token(value) for value in choices)}"

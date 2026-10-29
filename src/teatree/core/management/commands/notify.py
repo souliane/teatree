@@ -55,11 +55,12 @@ from teatree.core.backend_protocols import MessagingBackend, MessagingReadRefuse
 from teatree.core.modelkit.dm_channel_policy import signal_of
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
-from teatree.core.models import BotPing, TicketDmPost
+from teatree.core.models import BotPing, ConfigSettingChange, TicketDmPost
 from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
 from teatree.core.notify_targets import resolve_user_id
 from teatree.core.notify_types import NotifyReason
 from teatree.core.on_behalf_egress import NO_TOKEN_FOR_DESTINATION, OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.settings.config_change_digest import render_change_rows
 from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict
 
@@ -384,7 +385,7 @@ class Command(TyperCommand):
         self,
         since_hours: Annotated[
             int,
-            typer.Option("--since-hours", help="How far back to read the pulled status signals."),
+            typer.Option("--since-hours", help="How far back to read status signals and setting changes."),
         ] = 24,
         overlay: Annotated[
             str,
@@ -402,28 +403,38 @@ class Command(TyperCommand):
                 BotPing.objects.filter(status=BotPing.Status.PULLED, posted_at__gte=cutoff).order_by("-posted_at")
             )
 
-        if not rows:
-            return f"no status signals in the last {since_hours}h."
+        summary = f"no status signals in the last {since_hours}h."
+        if rows:
+            grouped: dict[str, list[BotPing]] = defaultdict(list)
+            for row in rows:
+                grouped[signal_of(row.idempotency_key)].append(row)
+            table = [
+                [signal, str(len(pings)), _first_line(pings[0].text)]
+                for signal, pings in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
+            ]
+            rendered = io.StringIO()
+            print_table(
+                ["Signal", "Count", "Most recent"],
+                table,
+                title=f"Status signals, last {since_hours}h (not DM'd)",
+                stream=rendered,
+            )
+            self.stdout.write(rendered.getvalue())
+            summary = f"{len(rows)} signal(s) across {len(grouped)} kind(s)."
 
-        grouped: dict[str, list[BotPing]] = defaultdict(list)
-        for row in rows:
-            grouped[signal_of(row.idempotency_key)].append(row)
-
-        table = [
-            [signal, str(len(pings)), _first_line(pings[0].text)]
-            for signal, pings in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
-        ]
-        # Rendered into a buffer because Django's ``OutputWrapper`` is not an ``IO[str]``;
-        # going through ``self.stdout`` is what keeps ``call_command(stdout=...)`` capturing.
-        rendered = io.StringIO()
-        print_table(
-            ["Signal", "Count", "Most recent"],
-            table,
-            title=f"Status signals, last {since_hours}h (not DM'd)",
-            stream=rendered,
-        )
-        self.stdout.write(rendered.getvalue())
-        return f"{len(rows)} signal(s) across {len(grouped)} kind(s)."
+        changes = ConfigSettingChange.objects.filter(changed_at__gte=cutoff).order_by("-changed_at", "-pk")
+        change_rows = render_change_rows(changes, now=timezone.now())
+        if change_rows:
+            rendered = io.StringIO()
+            print_table(
+                ["Setting", "Scope", "Old → new", "Writer", "Age"],
+                change_rows,
+                title=f"Setting changes, last {since_hours}h",
+                stream=rendered,
+            )
+            self.stdout.write(rendered.getvalue())
+            summary += f" {len(change_rows)} setting change(s)."
+        return summary
 
     @command()
     def post(

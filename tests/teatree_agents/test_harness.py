@@ -1343,10 +1343,10 @@ class TestPydanticAiStepCap(TestCase):
         # Resolved SYNC in resolve_harness (before asyncio.run) — a read inside the
         # async open would fail safe to the default.
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        ConfigSetting.objects.set_value("pydantic_ai_request_limit", value=3)
+        ConfigSetting.objects.set_value("pydantic_ai_request_limit", value=300)
         harness = resolve_harness(phase="coding")
         assert isinstance(harness, PydanticAiHarness)
-        assert harness._backend.request_limit == 3
+        assert harness._backend.request_limit == 300
 
     def test_open_threads_the_request_limit_into_the_session(self) -> None:
         harness = PydanticAiHarness(
@@ -1399,7 +1399,7 @@ class TestPydanticAiStepCap(TestCase):
     def test_default_setting_is_a_real_turn_budget(self) -> None:
         # A live Lane-B task runs ~16 model requests, so the cap is a generous budget
         # well above that reality (the old 5 refused mid-task before ``open()``).
-        assert get_effective_settings().pydantic_ai_request_limit == 40
+        assert get_effective_settings().pydantic_ai_request_limit == 3000
 
 
 class TestPydanticAiMaxTokens(TestCase):

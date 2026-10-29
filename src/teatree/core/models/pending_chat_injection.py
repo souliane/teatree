@@ -286,13 +286,6 @@ class PendingChatInjection(models.Model):
                 pk=self.pk,
                 loop_replied_at__isnull=False,
                 loop_response_confirmed_at__isnull=True,
-                answer_kind__in={
-                    self.AnswerKind.SIMPLE,
-                    self.AnswerKind.QUESTION_REPLY,
-                    self.AnswerKind.DELEGATED,
-                    self.AnswerKind.SESSION,
-                    self.AnswerKind.PRIORITY,
-                },
             )
             .update(loop_response_confirmed_at=timezone.now())
         )
