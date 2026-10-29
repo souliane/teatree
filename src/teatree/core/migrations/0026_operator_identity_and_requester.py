@@ -37,6 +37,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 "db_table": "teatree_operator_identity",
+                "verbose_name_plural": "operator identities",
                 "constraints": [
                     models.UniqueConstraint(fields=("platform", "handle"), name="unique_operator_platform_handle"),
                     models.UniqueConstraint(

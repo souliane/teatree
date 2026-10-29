@@ -34,6 +34,7 @@ class OperatorIdentity(models.Model):
 
     class Meta:
         db_table = "teatree_operator_identity"
+        verbose_name_plural = "operator identities"
         constraints: ClassVar = [
             models.UniqueConstraint(fields=["platform", "handle"], name="unique_operator_platform_handle"),
             models.UniqueConstraint(
