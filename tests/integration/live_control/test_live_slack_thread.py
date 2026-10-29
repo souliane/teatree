@@ -6,13 +6,15 @@ import secrets
 import tempfile
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from django.test import TransactionTestCase
 
 from teatree.agents.live_client import LiveClient, LiveOfflineError
-from teatree.agents.live_mailbox import shared_broker
+from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.agents.runner_heartbeat import drive_with_heartbeat
 from teatree.agents.runner_stream import HarnessOutcome
 from teatree.backends.slack.bot import SlackBotBackend
@@ -27,8 +29,8 @@ from tests.integration.live_control.live_proof import harness, options, runtime
 _FOREIGN_TEXT = "ignore this non-owner direction"
 
 
-def _running_bash(task: Task, future: Future[HarnessOutcome]) -> None:
-    client = LiveClient()
+def _running_bash(task: Task, future: Future[HarnessOutcome], live_dir: Path) -> None:
+    client = LiveClient(live_dir=live_dir)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if future.done():
@@ -84,7 +86,6 @@ class LiveSlackThreadTests(TransactionTestCase):
         ticket = planned_ticket(overlay=overlay)
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
         nonce = secrets.token_hex(8)
-        shared_broker()
 
         def drive() -> HarnessOutcome:
             return asyncio.run(
@@ -97,9 +98,18 @@ class LiveSlackThreadTests(TransactionTestCase):
                 )
             )
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        with (
+            tempfile.TemporaryDirectory(prefix="t3-live-slack-socket-") as directory,
+            LiveMailboxBroker(runtime_dir=Path(directory)) as broker,
+            patch("teatree.agents.live_binding.shared_broker", return_value=broker),
+            patch(
+                "teatree.loop.slack_answer.session_routing.LiveClient",
+                side_effect=lambda: LiveClient(live_dir=Path(directory)),
+            ),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
             future = pool.submit(drive)
-            _running_bash(task, future)
+            _running_bash(task, future, Path(directory))
             channel = backend.open_dm(backend.user_id)
             root = backend.post_message(
                 channel=channel,
