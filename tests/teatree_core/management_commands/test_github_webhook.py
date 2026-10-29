@@ -233,7 +233,17 @@ class GitHubWebhookCommandTests(TestCase):
 
         assert result["status"] == "updated"
         assert sum("PATCH" in argv for argv, _ in self.fake.calls) == before + 1
-        assert "check_run" not in self.fake.hooks[0]["events"]
+        assert self.fake.hooks[0]["events"] == [
+            "pull_request_review",
+            "pull_request_review_comment",
+            "issue_comment",
+            "commit_comment",
+            "pull_request",
+            "issues",
+            "check_suite",
+            "workflow_run",
+            "push",
+        ]
         assert self.store.entries[KEY] == CANARY
 
     def test_secret_only_reaches_stdin_and_store(self) -> None:

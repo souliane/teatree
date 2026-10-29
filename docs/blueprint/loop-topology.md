@@ -81,15 +81,27 @@ The deferred-question poster and answer cycle share the current ticket DM root w
 | `workflow_run` | Subscribed | `MyPrsScanner` CI. |
 | `push` | Subscribed | Base-branch conflict refresh. |
 
-| Polling path | Shipped cadence | Forge reads still in use |
-| --- | --- | --- |
-| `inbox` / `PrApprovalScanner` | 60 s | Approvals of PRs awaiting review. |
-| `review` / `ReviewerPrsScanner`, `ReviewedPrHeadScanner` | 300 s | Review requests, review state, live head, and PR conversation comments. |
-| `ship` / `MyPrsScanner`, conflict/triage, `PrSweepScanner` | 300 s | Authored PRs, CI, mergeability, merge state, and default-branch check-runs. |
-| `tickets` / disposition and completion | 300 s | Issue state for tracked tickets. |
-| `followup` / review nag and review request | 1,800 s | Open PRs, review-request state, and PR conversation comments. |
-| `issue_implementer` / admitted backlog | 1,800 s | Open issues eligible for implementation. |
-| `housekeeping` / board reconciliation and `SelfUpdateScanner` | 3,600 s | Forge truth for repair and default-branch check-runs. |
+| Poller | Loop | Shipped cadence | Forge reads still in use |
+| --- | --- | --- | --- |
+| `PrApprovalScanner` | `inbox` | 60 s | Approvals of PRs awaiting review. |
+| `ReviewerPrsScanner` | `review` | 300 s | Review requests and review state. |
+| `ReviewedPrHeadScanner` | `review` | 300 s | Live heads of reviewer tickets. |
+| `MyPrsScanner` | `ship` | 300 s | Authored PRs, CI, and mergeability. |
+| `MrConflictScanner` | `ship` | 300 s | Merge conflicts on authored PRs. |
+| `MrTriageScanner` | `ship`, `followup` | 300 s / 1,800 s | Review-request state of authored PRs. |
+| `UnauditedMergeScanner` | `ship` | 300 s | Merged-PR search and merge audit state. |
+| `PrSweepScanner` | `ship` | 300 s | Merge readiness and PR state. |
+| `TicketDispositionScanner` | `tickets` | 300 s | Tracked issue state, assignees, and labels. |
+| `TicketCompletionScanner` | `tickets` | 300 s | Completion state of post-ship issues. |
+| `TaskSweepScanner` | `tickets` | 300 s | Terminal state of task artifacts. |
+| `IssueIntakeScanner` | `issue_implementer` | 1,800 s | Open issues eligible for implementation. |
+| `IssueDispositionScanner` | `issue_disposition` | 300 s | Open issues eligible for dead-issue closure. |
+| `ReviewNagScanner` | `followup` | 1,800 s | Open review requests and PR conversation comments. |
+| `ReviewRequestResumeScanner` | `followup` | 1,800 s | Review-request state and PR conversation comments. |
+| `ReviewRequestMergeReactScanner` | `followup` | 1,800 s | Merged review requests awaiting a reaction. |
+| `BoardReconcileScanner` | `housekeeping` | 3,600 s | Forge truth for tracked tickets and PRs. |
+| `SelfUpdateScanner` | `housekeeping` | 3,600 s | Default-branch check-runs before self-update. |
+| `GitHubSyncBackend` | `followup sync` (on demand) | on demand | GitHub project-board items. |
 
 **Forge relay identity.** GitLab relay rows retain the event kind, `relay` origin, project-id repository key, action and Pub/Sub publish time after the body and payload are cleared. A `body-omitted` message can retain only its header-derived event kind and publish time. Successfully drained forge rows also clear prior error text; pending and dead-lettered rows keep their diagnostic content.
 

@@ -138,19 +138,3 @@ def test_github_subscription_inventory_matches_provisioned_events() -> None:
     assert {"GhMainCiStatus", "GhPrApiClient.main_check_failed", "red_set_surface"} <= set(
         events["check_run"][1].replace("`", "").replace(",", "").split()
     )
-    assert (
-        "| `review` / `ReviewerPrsScanner`, `ReviewedPrHeadScanner` | 300 s | "
-        "Review requests, review state, live head, and PR conversation comments. |"
-    ) in section
-    assert (
-        "| `ship` / `MyPrsScanner`, conflict/triage, `PrSweepScanner` | 300 s | "
-        "Authored PRs, CI, mergeability, merge state, and default-branch check-runs. |"
-    ) in section
-    assert (
-        "| `followup` / review nag and review request | 1,800 s | "
-        "Open PRs, review-request state, and PR conversation comments. |"
-    ) in section
-    assert (
-        "| `housekeeping` / board reconciliation and `SelfUpdateScanner` | 3,600 s | "
-        "Forge truth for repair and default-branch check-runs. |"
-    ) in section
