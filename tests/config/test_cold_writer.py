@@ -19,10 +19,13 @@ from pathlib import Path
 
 import pytest
 
+from teatree.cli import teatree_gate
 from teatree.config import cold_reader, cold_writer
 from teatree.config.cold_writer import WriteResult
 from teatree.config.host_projection import GENERATION_KEY
+from teatree.config.setting_registries import SETTING_BOUNDS
 from teatree.config.value_visibility import MASKED
+from teatree.config.write_validation import ConfigWriteValue
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 # The exact ``teatree_config_setting`` shape Django's migration emits (see
@@ -360,3 +363,55 @@ class TestValueAndGenerationCommitTogether:
 
         assert cold_writer.write_setting("autoload", value=False, db_path=db).result is WriteResult.WROTE
         assert cold_reader.read_setting(GENERATION_KEY, scope="", db_path=db) == 1
+
+
+def _make_audited_db(path: Path) -> None:
+    _make_real_schema_db(path)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(_AUDIT_SCHEMA)
+        conn.commit()
+
+
+def _stored_tables(path: Path) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
+    with closing(sqlite3.connect(path)) as conn:
+        settings = conn.execute("SELECT * FROM teatree_config_setting ORDER BY id").fetchall()
+        audit = conn.execute("SELECT * FROM teatree_config_setting_change ORDER BY id").fetchall()
+    return settings, audit
+
+
+class TestRescueWriteHonoursDeclaredBounds:
+    """The Django-free writer refuses what the manager refuses, and never locks a gate out."""
+
+    def test_a_below_floor_value_is_refused_and_leaves_the_row_and_the_audit_untouched(self, tmp_path: Path) -> None:
+        db = tmp_path / "bounded.sqlite3"
+        _make_audited_db(db)
+        assert cold_writer.write_setting("agent_max_turns", 3000, db_path=db).result is WriteResult.WROTE
+        before = _stored_tables(db)
+
+        with pytest.raises(ValueError, match=r"agent_max_turns must be 0 .* or at least 300, got 9"):
+            cold_writer.write_setting("agent_max_turns", 9, db_path=db)
+
+        assert cold_reader.read_setting("agent_max_turns", db_path=db) == 3000
+        assert _stored_tables(db) == before
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("agent_max_turns", 3000), ("agent_max_turns", 300), ("agent_max_turns", 0), ("autoload", False)],
+    )
+    def test_an_in_range_or_boolean_gate_value_still_writes_and_is_audited(
+        self, tmp_path: Path, key: str, value: ConfigWriteValue
+    ) -> None:
+        db = tmp_path / "in-range.sqlite3"
+        _make_audited_db(db)
+
+        assert cold_writer.write_setting(key, value, db_path=db).result is WriteResult.WROTE
+
+        assert cold_reader.read_setting(key, db_path=db) == value
+        assert _audit_values(db, key) == (None, json.dumps(value))
+
+    def test_no_key_the_gate_cli_writes_carries_a_declared_bound(self) -> None:
+        gate_keys = {
+            value for name, value in vars(teatree_gate).items() if name.endswith("_KEY") and isinstance(value, str)
+        }
+        assert teatree_gate.DANGER_GATE_FAIL_OPEN_KEY in gate_keys
+        assert gate_keys & SETTING_BOUNDS.keys() == set()

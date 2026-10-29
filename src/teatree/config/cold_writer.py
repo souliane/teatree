@@ -20,6 +20,7 @@ from teatree.config.cold_reader import canonical_config_db
 from teatree.config.host_projection import GENERATION_KEY, ProjectionPublisher, ProjectionPublishError, next_generation
 from teatree.config.value_visibility import MASKED, withholds_value
 from teatree.config.write_authority import review_write_refusal
+from teatree.config.write_validation import ConfigWriteValue, validate_config_bounds
 from teatree.db.boundary import ControlDbBoundary, DbBoundaryError
 
 _GLOBAL_SCOPE = ""
@@ -74,13 +75,14 @@ def _audit_table_present(conn: sqlite3.Connection) -> bool:
 
 def write_setting(
     key: str,
-    value: object,
+    value: ConfigWriteValue,
     *,
     scope: str = _GLOBAL_SCOPE,
     env: Mapping[str, str] = os.environ,
     db_path: Path | None = None,
 ) -> WriteOutcome:
     """Write one setting and return the target DB plus the result; boundary violations raise."""
+    validate_config_bounds(key, value)
     db = db_path if db_path is not None else canonical_config_db(env=env)
     if reason := review_write_refusal(db, env=env):
         raise ValueError(reason)
