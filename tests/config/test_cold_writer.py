@@ -63,6 +63,23 @@ def _clean_canonical_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestWriteRoundTrip:
+    def test_legacy_schema_keeps_rescue_write_available(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        db = tmp_path / "legacy-schema.sqlite3"
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                "CREATE TABLE teatree_config_setting ("
+                "scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(scope, key))"
+            )
+            conn.commit()
+
+        outcome = cold_writer.write_setting("issue_implementer_label", "t3-auto", db_path=db)
+        assert outcome.result is WriteResult.WROTE
+        assert cold_reader.read_setting("issue_implementer_label", db_path=db) == "t3-auto"
+        assert "WARNING" in capsys.readouterr().err
+
     def test_review_phase_refuses_canonical_rescue_write(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "live.sqlite3"
         _make_real_schema_db(db)

@@ -12,6 +12,8 @@ currently indistinguishable from an intended one — that is the whole finding.
 """
 
 import io
+import subprocess
+import sys
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
@@ -24,6 +26,17 @@ from teatree.cli.doctor.checks_config_drift import (
     drifted_settings,
 )
 from teatree.core.models import ConfigSetting, ConfigSettingChange
+
+
+def test_doctor_module_imports_before_django_setup() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "import teatree.cli.doctor.checks_config_drift"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _run() -> str:
@@ -132,7 +145,7 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
                 "teatree.cli.doctor.checks_config_drift.declared_defaults",
                 return_value={"issue_implementer_label": "t3-auto"},
             ),
-            patch("teatree.cli.doctor.checks_config_drift.ConfigSettingChange.objects.filter", side_effect=unavailable),
+            patch("teatree.core.models.ConfigSettingChange.objects.filter", side_effect=unavailable),
         ):
             out = _run()
         assert "issue_implementer_label" in out
