@@ -523,15 +523,13 @@ class ReviewService:
             lines.append(f"  {nid}  {fp}:{ln}  {body}...")
         return "\n".join(lines), 0
 
-    def approve(self, repo: str, mr: int) -> tuple[str, int]:
-        from teatree.cli.review.operator_approval import legacy_approve  # noqa: PLC0415 — ORM after bootstrap
+    @staticmethod
+    def approve(repo: str, mr: int) -> tuple[str, int]:
+        return f"OAuth grant required; use `t3 review approve {repo} {mr}` with recorded approve-on-behalf consent", 1
 
-        return legacy_approve(self, repo, mr)
-
-    def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
-        from teatree.cli.review.operator_approval import legacy_unapprove  # noqa: PLC0415 — ORM after bootstrap
-
-        return legacy_unapprove(self, repo, mr)
+    @staticmethod
+    def unapprove(repo: str, mr: int) -> tuple[str, int]:
+        return f"OAuth grant required; use `t3 review unapprove {repo} {mr}` with recorded approve-on-behalf consent", 1
 
 
 # Register sibling-module typer commands. Kept out of this file so the

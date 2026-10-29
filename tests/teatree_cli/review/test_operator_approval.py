@@ -149,3 +149,37 @@ class TestOperatorApproval(TestCase):
         approval.refresh_from_db()
         assert approval.consumed_at is None
         assert not OnBehalfAudit.objects.exists()
+
+    def test_service_approve_cannot_publish_with_a_supplied_personal_token(self) -> None:
+        approval = OnBehalfApproval.record("org/repo!7", "approve", "gitlab:alice")
+        api = ApprovalAPI()
+        service = ReviewService("personal-token", repo="org/repo")
+
+        with (
+            patch.object(service, "_get_api", return_value=api),
+            patch.object(api, "post_status", wraps=api.post_status) as post,
+        ):
+            message, code = service.approve("org/repo", 7)
+
+        assert code == 1
+        assert "OAuth grant" in message
+        post.assert_not_called()
+        approval.refresh_from_db()
+        assert approval.consumed_at is None
+
+    def test_service_unapprove_cannot_publish_with_a_supplied_personal_token(self) -> None:
+        approval = OnBehalfApproval.record("org/repo!7", "unapprove", "gitlab:alice")
+        api = ApprovalAPI()
+        service = ReviewService("personal-token", repo="org/repo")
+
+        with (
+            patch.object(service, "_get_api", return_value=api),
+            patch.object(api, "post_status", wraps=api.post_status) as post,
+        ):
+            message, code = service.unapprove("org/repo", 7)
+
+        assert code == 1
+        assert "OAuth grant" in message
+        post.assert_not_called()
+        approval.refresh_from_db()
+        assert approval.consumed_at is None

@@ -9,7 +9,6 @@ from django.utils import timezone
 
 from teatree.cli.review.approval import identity_has_reviewed
 from teatree.cli.review.audit import ReviewArtifactNotVerifiedError
-from teatree.cli.review.on_behalf import check_on_behalf, publish_or_blocked
 from teatree.cli.review.post_impl import approve_impl, unapprove_impl
 from teatree.core.models import OnBehalfApproval, OnBehalfAudit
 
@@ -29,25 +28,6 @@ def _reviewed(service: "ReviewService", repo: str, mr: int) -> tuple[str, int] |
             "`post-comment`) first, then approve."
         ), 1
     return None
-
-
-def legacy_approve(service: "ReviewService", repo: str, mr: int) -> tuple[str, int]:
-    blocked = check_on_behalf(repo, mr, "approve")
-    if blocked:
-        return blocked, 1
-    refusal = _reviewed(service, repo, mr)
-    if refusal:
-        return refusal
-    encoded = repo.replace("/", "%2F")
-    return publish_or_blocked(repo, mr, "approve", lambda: approve_impl(service, repo, mr, encoded=encoded))
-
-
-def legacy_unapprove(service: "ReviewService", repo: str, mr: int) -> tuple[str, int]:
-    blocked = check_on_behalf(repo, mr, "unapprove")
-    if blocked:
-        return blocked, 1
-    encoded = repo.replace("/", "%2F")
-    return publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(service, repo, mr, encoded=encoded))
 
 
 def publish_operator_approval(
