@@ -24,6 +24,11 @@ health collector can read it without a backwards edge.
 #: reported stalled. Not per-item, so not a setting: at the shipped 30-minute
 #: freeing interval it is roughly 90 minutes of a full box freeing nothing.
 ZERO_YIELD_ALARM_PASSES = 3
+BUILD_NEED_GB = 17.0
+
+
+def effective_disk_floor_gb(configured_gb: float) -> float:
+    return max(configured_gb, BUILD_NEED_GB)
 
 
 def effective_idle_days(
@@ -34,7 +39,10 @@ def effective_idle_days(
     idle_days: float,
 ) -> float | None:
     """The dormancy the evictor should require now — ``None`` when age must not gate at all."""
-    if free_gb is None or warn_gb is None or crit_gb is None or warn_gb <= crit_gb:
+    if free_gb is None or warn_gb is None or crit_gb is None:
+        return idle_days
+    crit_gb = effective_disk_floor_gb(crit_gb)
+    if warn_gb <= crit_gb:
         return idle_days
     if free_gb < crit_gb:
         return None
@@ -45,7 +53,7 @@ def effective_idle_days(
 
 def below_floor(*, free_gb: float | None, crit_gb: float | None) -> bool:
     """True only when a reading PROVES the disk is under the critical floor."""
-    return free_gb is not None and crit_gb is not None and free_gb < crit_gb
+    return free_gb is not None and crit_gb is not None and free_gb < effective_disk_floor_gb(crit_gb)
 
 
 def reclaim_is_stalled(*, streak: int, free_gb: float | None, crit_gb: float | None) -> bool:
@@ -58,4 +66,11 @@ def reclaim_is_stalled(*, streak: int, free_gb: float | None, crit_gb: float | N
     return streak >= ZERO_YIELD_ALARM_PASSES and below_floor(free_gb=free_gb, crit_gb=crit_gb)
 
 
-__all__ = ["ZERO_YIELD_ALARM_PASSES", "below_floor", "effective_idle_days", "reclaim_is_stalled"]
+__all__ = [
+    "BUILD_NEED_GB",
+    "ZERO_YIELD_ALARM_PASSES",
+    "below_floor",
+    "effective_disk_floor_gb",
+    "effective_idle_days",
+    "reclaim_is_stalled",
+]

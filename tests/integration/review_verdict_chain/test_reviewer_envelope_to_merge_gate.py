@@ -276,7 +276,7 @@ class TestReviewingBriefTeachesTheEnvelopeVocabulary:
     def test_schema_allowed_values_match_the_recorder_vocabulary(self) -> None:
         properties = cast("dict[str, Any]", RESULT_JSON_SCHEMA["properties"])
         verdict_schema = properties["review_verdict"]["properties"]["verdict"]
-        assert verdict_schema["enum"] == ["merge_safe", "hold"]
+        assert verdict_schema["enum"] == ["merge_safe", "hold", "unverified"]
         assert {choice.value for choice in ReviewVerdict.Verdict} == set(verdict_schema["enum"])
 
 

@@ -5622,6 +5622,8 @@ Usage: t3 worker [OPTIONS] [COMMAND] [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ run      Run the singleton loop-timer worker — the cadence owner (#1796).    │
+│ reclaim  Run a bounded disk reclaim in the worker venue before a deploy      │
+│          build.                                                              │
 │ status   Report the worker: flock holder, admitted loops, timers, staleness, │
 │          and the agent admission ceiling.                                    │
 │ ensure   Spawn a detached worker iff the flock is free.                      │
@@ -5643,6 +5645,20 @@ Usage: t3 worker run [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 worker reclaim`
+
+```
+Usage: t3 worker reclaim [OPTIONS]
+
+ Run a bounded disk reclaim in the worker venue before a deploy build.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --budget-seconds        INTEGER RANGE [1<=x<=240]  [default: 90]             │
+│ --help                                             Show this message and     │
+│                                                    exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -13240,6 +13256,11 @@ Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG
 │ --human-authorize                TEXT     ONLY for blast_class=substrate:    │
 │                                           the human/owner id authorising the │
 │                                           substrate merge.                   │
+│ --actor-kind                     TEXT     Clearance issuer: factory_loop or  │
+│                                           hand_session (must match the       │
+│                                           issuing session).                  │
+│ --delegation                     TEXT     Authorization source; 'none' when  │
+│                                           no delegation applies.             │
 │ --expedite-authorize             TEXT     PENDING-checks waiver: the         │
 │                                           human/owner id authorising a merge │
 │                                           on queued (never FAILED) required  │

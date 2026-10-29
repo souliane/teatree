@@ -19,7 +19,8 @@ strings drift apart is pinned on the runner side, in
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, corrective_instruction
+from teatree.agents.envelope_contract import corrective_instruction
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.core.factory.halted_retries import halted_retry_signals
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion

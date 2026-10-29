@@ -290,7 +290,7 @@ class TestPhaseAutoDispatch(TestCase):
         )
         ticket.record_anti_vacuity_attestation("a" * 40, "AC covered", [], no_new_tests=True)
         first_review.claim(claimed_by="t")
-        first_review.complete()
+        first_review.complete_with_attempt(result={"review_verdict": {"verdict": "merge_safe"}})
         # A second reviewing task could exist (e.g. retry); simulate one.
         ticket.refresh_from_db()
         ticket.state = Ticket.State.TESTED

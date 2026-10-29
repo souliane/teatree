@@ -12,18 +12,17 @@ from django.test import SimpleTestCase
 
 import teatree.agents.envelope_refusal as refusal
 from teatree.agents.attempt_recorder import validate_result_keys
+from teatree.agents.envelope_contract import corrective_instruction, required_keys_phrase
 from teatree.agents.envelope_refusal import (
     MALFORMED_FIX_RECORD_PREFIX,
     MALFORMED_RUBRIC_GRADES_PREFIX,
     NO_ENVELOPE_ERROR,
     NO_ENVELOPE_PREFIX,
-    corrective_instruction,
     is_no_envelope_refusal,
     is_owner_stop_refusal,
     is_recorder_refusal,
     is_review_shape_refusal,
     is_rubric_grades_refusal,
-    required_keys_phrase,
 )
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from tests._owner_channel import owner_stop

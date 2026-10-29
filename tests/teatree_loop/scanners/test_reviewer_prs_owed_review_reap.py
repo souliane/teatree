@@ -20,6 +20,7 @@ from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_external_review import ReviewDeclined, reviewer_dispatch_decline
 from teatree.loop.dispatch import dispatch
@@ -83,9 +84,14 @@ def _reviewing_task(ticket: Ticket, *, status: str = Task.Status.PENDING) -> Tas
 
 def _review_delivered_ticket(pr_id: int) -> Ticket:
     """A reviewer ticket that reached ``review_delivered`` the real way: a first review completed."""
-    ticket = Ticket.objects.create(issue_url=_url(pr_id), role=Ticket.Role.REVIEWER)
+    ticket = Ticket.objects.create(issue_url=_url(pr_id), role=Ticket.Role.REVIEWER, extra={"reviewed_sha": _HEAD})
     record_review_context_for_test(ticket)
-    mint_open_pr_review(ticket).complete()
+    task = mint_open_pr_review(ticket)
+    TaskAttempt.objects.create(task=task, result={"review_verdict": {"verdict": "merge_safe"}})
+    ReviewVerdict.record(
+        pr_id=pr_id, slug=_SLUG, reviewed_sha=_HEAD, verdict="merge_safe", reviewer_identity="cold-reviewer"
+    )
+    task.complete()
     ticket.refresh_from_db()
     assert ticket.state == Ticket.State.REVIEW_DELIVERED
     return ticket

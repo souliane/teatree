@@ -16,6 +16,7 @@ from teatree.core.models import (
     HeadCarryOver,
     MergeClear,
     MRReviewLock,
+    ReviewHoldDisposition,
     ReviewVerdict,
     ReviewVerdictError,
     Ticket,
@@ -290,6 +291,44 @@ class TestDoesNotCarryDifferingPatch(TestCase):
 
 
 class TestHoldStandsOnlyForItsPatch(TestCase):
+    def test_dispositioned_hold_stays_cleared_after_a_main_merge(self) -> None:
+        ticket = _ticket()
+        hold = ReviewVerdict.record(
+            pr_id=PR_ID,
+            slug=SLUG,
+            reviewed_sha=OLD,
+            verdict="hold",
+            reviewer_identity="first-reviewer",
+            findings=[Finding(severity="major", summary="premise unproved", file="a.py", line=3)],
+            ticket=ticket,
+        )
+        clearing = ReviewVerdict.record(
+            pr_id=PR_ID,
+            slug=SLUG,
+            reviewed_sha=OLD,
+            verdict="merge_safe",
+            reviewer_identity="independent-reviewer",
+            ticket=ticket,
+        )
+        ReviewHoldDisposition.record(
+            hold=hold,
+            clearing_verdict=clearing,
+            points=[{"index": 0, "classification": "disproved_premise", "citation": "verified at the reviewed head"}],
+        )
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug=SLUG, pr_id=PR_ID, head_sha=OLD)
+            is HeadVerdictState.MERGE_SAFE
+        )
+
+        _carry(_Reader(_lineage()))
+
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug=SLUG, pr_id=PR_ID, head_sha=NEW)
+            is HeadVerdictState.MERGE_SAFE
+        )
+        carried_hold = ReviewVerdict.objects.get(reviewed_sha=NEW, verdict="hold")
+        assert ReviewHoldDisposition.objects.filter(hold=carried_hold, clearing_verdict__reviewed_sha=NEW).exists()
+
     def _hold_at_old(self) -> None:
         _seed()
         ReviewVerdict.record(

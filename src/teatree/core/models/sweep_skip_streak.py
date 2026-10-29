@@ -11,10 +11,10 @@ One row per ``(slug, pr_id)`` counts how many CONSECUTIVE sweep passes produced 
 same reason GROUP. Persistence is what surfaces, not any individual skip: a reason
 from a different group restarts the count (a different problem), a MERGE deletes the
 row (the PR moved — every other outcome is one more pass on which it did NOT land, so
-``keystone_refused`` and the ``flag_*`` family accrue here too), and ``surfaced_at`` —
-the last time this PR was announced, independent of which reason triggered it — gates a
-cooldown so a PR held for days is announced once, then again only after backing off,
-rather than every tick.
+``keystone_refused`` and the ``flag_*`` family accrue here too). ``surfaced_at``
+records whether the current reason GROUP episode was announced; only a change of group
+clears it, so a PR is announced once per episode and re-announced only after a new
+group has persisted for the threshold again.
 
 ``classify_sweep_ci`` emits four reasons — ``required_checks_indeterminate``,
 ``ci_pending``, ``uv_audit_red_but_clean_on_main``, ``ci_red`` — for the ONE condition
@@ -22,10 +22,9 @@ rather than every tick.
 them on consecutive passes. Counting each flip as a new problem reset the run length
 every tick, so the flappiest PRs — the ones most worth announcing — could never reach
 the surface threshold at all (#4095). They are therefore one group for streak continuity
-only: the stored ``reason`` still tracks the LATEST observation while ``first_seen_at``
-holds at the group's start, so the doctor view and the DM pair the actionable current
-reason with the age of the condition rather than of that one flip. A within-group flip
-never touches ``surfaced_at`` — re-arming is the cooldown window's job alone (#4086).
+only: the stored ``reason`` tracks the LATEST observation while ``first_seen_at``
+tracks the group's start. A within-group flip never touches ``surfaced_at``: twelve
+alternating ``ci_pending`` / ``ci_red`` passes are one announcement, not ten.
 
 Persistence is not the only question: WHAT persists decides whether anyone should be told.
 :data:`SKIP_REASON_DISPOSITION` classifies every reason the sweep can emit as a deliberate
@@ -140,8 +139,9 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         if created:
             return row
         if _reason_group(row.reason) != _reason_group(observation.reason):
-            row.first_seen_at = moment
             row.tick_count = 1
+            row.first_seen_at = moment
+            row.surfaced_at = None
         else:
             row.tick_count += 1
         row.reason = observation.reason
@@ -197,32 +197,24 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         self,
         *,
         threshold: int,
-        cooldown: dt.timedelta,
-        now: dt.datetime | None = None,
         observed_since: dt.datetime | None = None,
     ) -> models.QuerySet["SweepSkipStreak"]:
-        """Streaks at/over *threshold* that have never surfaced, or last surfaced ≥ *cooldown* ago.
+        """Streaks at/over *threshold* whose current reason has not surfaced.
 
-        Reason-independent: a PR that has already been announced does not become due
-        again just because its granular skip reason changed — only the backoff window
-        re-arms it, so a flapping ``ci_red``/``ci_pending`` on the same stuck PR is one
-        notification and a later reminder, not one notification per wobble. A
+        An announced group episode never becomes due again; a change of reason group re-arms it. A
         :data:`DELIBERATE_PARK_REASONS` streak never becomes due at all — it still accrues
         and still stands in :meth:`aged`; only the DM stops.
 
         *observed_since* bounds the answer to the rows the caller's own pass folded in.
         The announcement's claim — skipped N times running — is about the CURRENT pass,
         so a row that pass never touched cannot support it: PR #4055 closed and froze at
-        57 while its age label kept growing, and the cooldown re-armed that dead finding
+        57 while its age label kept growing, and the old cooldown re-armed that dead finding
         daily for fifteen days (#4518).
         """
-        moment = now or timezone.now()
-        never_surfaced = models.Q(surfaced_at__isnull=True)
-        cooled_down = models.Q(surfaced_at__lte=moment - cooldown)
         due = (
             self.filter(tick_count__gte=threshold)
             .exclude(reason__in=DELIBERATE_PARK_REASONS)
-            .filter(never_surfaced | cooled_down)
+            .filter(surfaced_at__isnull=True)
         )
         if observed_since is not None:
             due = due.filter(last_seen_at__gte=observed_since)
@@ -285,6 +277,10 @@ class SweepSkipStreak(models.Model):
     @property
     def ref(self) -> str:
         return f"{self.slug}#{self.pr_id}"
+
+    @property
+    def reason_group(self) -> str:
+        return _reason_group(self.reason)
 
     @property
     def link(self) -> str:

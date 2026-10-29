@@ -3,6 +3,8 @@
 from typing import TypedDict
 
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
+from teatree.core.models.review_hold_disposition import HoldPointResponse
+from teatree.core.models.types import RubricGrade
 
 
 class ReviewHeadMismatch(TypedDict):
@@ -14,11 +16,46 @@ class ReviewVenueLimit(TypedDict):
     limits: list[str]
 
 
+HOLD_DISPOSITIONS_SCHEMA_PROPERTY = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "hold_id": {"type": "integer"},
+            "points": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "classification": {"type": "string", "enum": ["venue_limit", "disproved_premise"]},
+                        "citation": {"type": "string"},
+                        "counter_reproduction": {
+                            "type": "object",
+                            "description": (
+                                "REQUIRED when the held finding carries an executed reproduction: the command "
+                                "or test node id you ran at this head and the result it printed."
+                            ),
+                            "properties": {"command": {"type": "string"}, "observed_result": {"type": "string"}},
+                            "required": ["command", "observed_result"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["index", "classification", "citation"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["hold_id", "points"],
+        "additionalProperties": False,
+    },
+}
+
 REVIEW_VERDICT_SCHEMA_PROPERTY = {
     "type": "object",
     "description": "A reviewing-phase agent's typed verdict, recorded server-side (corr-11).",
     "properties": {
-        "verdict": {"type": "string", "enum": ["merge_safe", "hold"]},
+        "verdict": {"type": "string", "enum": ["merge_safe", "hold", "unverified"]},
         "reviewed_sha": {
             "type": "string",
             "description": (
@@ -39,9 +76,18 @@ REVIEW_VERDICT_SCHEMA_PROPERTY = {
                     "summary": {"type": "string"},
                     "file": {"type": "string"},
                     "line": {"type": "integer"},
+                    "kind": {"type": "string", "enum": ["blocking", "nit", "note"]},
+                    "basis": {"type": "string", "enum": ["executed", "documentation", "venue_limit"]},
+                    "citation": {"type": "string"},
+                    "reproduction": {"type": "string"},
                 },
             },
         },
+        "evidence_gaps": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["ci_unreadable", "tests_unavailable", "plan_unavailable"]},
+        },
+        "hold_dispositions": HOLD_DISPOSITIONS_SCHEMA_PROPERTY,
         "merge_result_retake": {
             "type": "boolean",
             "description": (
@@ -92,6 +138,76 @@ REVIEW_HEAD_MISMATCH_SCHEMA_PROPERTY = {
     "required": ["observed_sha", "reason"],
     "additionalProperties": False,
 }
+
+
+class ReviewFinding(TypedDict, total=False):
+    severity: str
+    summary: str
+    file: str
+    line: int
+    kind: str
+    basis: str
+    citation: str
+    reproduction: str
+
+
+class ReviewVerdictEnvelope(TypedDict, total=False):
+    """A reviewing-phase agent's typed verdict, recorded server-side (corr-11)."""
+
+    verdict: str
+    reviewed_sha: str
+    reviewer_identity: str
+    gh_verify_result: str
+    blast_class: str
+    findings: list[ReviewFinding]
+    evidence_gaps: list[str]
+    merge_result_retake: bool
+    rubric_grades: list[RubricGrade]
+    hold_dispositions: list["HoldDispositionResponse"]
+
+
+class HoldDispositionResponse(TypedDict):
+    hold_id: int
+    points: list[HoldPointResponse]
+
+
+def _counter_reproduction_shape_ok(counter: object) -> bool:
+    return counter is None or (
+        isinstance(counter, dict)
+        and isinstance(counter.get("command"), str)
+        and isinstance(counter.get("observed_result"), str)
+    )
+
+
+def _hold_response_shape_error(response: object) -> str:
+    if not isinstance(response, dict) or type(response.get("hold_id")) is not int:
+        return "each hold_dispositions item needs an integer hold_id"
+    points = response.get("points")
+    if not isinstance(points, list) or any(
+        not isinstance(point, dict)
+        or type(point.get("index")) is not int
+        or not isinstance(point.get("classification"), str)
+        or not isinstance(point.get("citation"), str)
+        for point in points
+    ):
+        return "each hold_dispositions item needs points with index, classification, and citation"
+    if any(not _counter_reproduction_shape_ok(point.get("counter_reproduction")) for point in points):
+        return "counter_reproduction must be an object with string command and observed_result"
+    return ""
+
+
+def review_envelope_shape_error(envelope: ReviewVerdictEnvelope) -> str:
+    findings = envelope.get("findings", [])
+    if not isinstance(findings, list) or any(not isinstance(item, dict) for item in findings):
+        return "findings must be a list of objects"
+    gaps = envelope.get("evidence_gaps", [])
+    if not isinstance(gaps, list) or any(not isinstance(item, str) for item in gaps):
+        return "evidence_gaps must be a list of strings"
+    responses = envelope.get("hold_dispositions", [])
+    if not isinstance(responses, list):
+        return "hold_dispositions must be a list of objects"
+    return next((error for response in responses if (error := _hold_response_shape_error(response))), "")
+
 
 REVIEW_VENUE_LIMIT_SCHEMA_PROPERTY = {
     "type": "object",

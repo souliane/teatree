@@ -1,9 +1,8 @@
 """The refusal half of the result-envelope contract — one vocabulary, one owner.
 
-:mod:`teatree.agents.envelope_contract` states what every headless brief TEACHES;
-this module states what the pipeline REFUSES when an agent ignores that brief, and
-how that refusal is corrected. Both halves of one contract, so a new refusal can
-never be added on the producing side without the consuming side learning it.
+:mod:`teatree.agents.envelope_contract` states what every headless brief teaches
+and how a refused envelope is corrected. This module classifies what the pipeline
+refuses when an agent ignores that brief.
 
 Two seams produce an envelope refusal, and they used to name it in two
 hand-maintained vocabularies that drifted:
@@ -29,12 +28,7 @@ What this module makes possible is a BOUNDED, satisfiable correction of it.
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from teatree.agents.result_schema import (
-    RESULT_JSON_SCHEMA,
-    JSONSchema,
-    conditional_evidence_for_phase,
-    required_evidence_for_phase,
-)
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, JSONSchema
 from teatree.core.modelkit.task_failure_taxonomy import (
     COMMENT_CHECK_PREFIX,
     MALFORMED_FIX_RECORD_PREFIX,
@@ -62,6 +56,8 @@ UNPARSEABLE_ENVELOPE_PREFIX = "result is not valid JSON: "
 #: Prefixes on review context blocks. They retain the recording-refused failure kind.
 REVIEW_CONTEXT_REFUSAL_PREFIX = "review context recording refused: "
 ANTI_VACUITY_REFUSAL_PREFIX = "anti-vacuity recording refused: "
+MALFORMED_REVIEW_VERDICT_PREFIX = "malformed review_verdict: "
+
 
 #: Substrings identifying a RECORDER-side envelope refusal — an envelope that
 #: parsed but is unusable, as opposed to a genuine defect (an assertion, a test
@@ -73,6 +69,7 @@ _RECORDER_REFUSAL_MARKERS = (
     "result must be a json object",
     MALFORMED_FIX_RECORD_PREFIX.strip().casefold(),
     MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
+    MALFORMED_REVIEW_VERDICT_PREFIX.strip().casefold(),
     MALFORMED_TICKET_SWEEP_PREFIX.strip().casefold(),
     REVIEW_CONTEXT_REFUSAL_PREFIX.strip().casefold(),
     ANTI_VACUITY_REFUSAL_PREFIX.strip().casefold(),
@@ -84,6 +81,7 @@ _RECORDER_REFUSAL_MARKERS = (
 #: evidence`` is left out: a reviewing run that returned no verdict withheld a judgement.
 _REVIEW_SHAPE_REFUSAL_MARKERS = (
     "unexpected keys",
+    MALFORMED_REVIEW_VERDICT_PREFIX.strip().casefold(),
     REVIEW_CONTEXT_REFUSAL_PREFIX.strip().casefold(),
     ANTI_VACUITY_REFUSAL_PREFIX.strip().casefold(),
 )
@@ -134,42 +132,3 @@ def returned_block_refusal(prefix: str, block: str, raw: Mapping[str, object], p
     if unknown := sorted(set(raw) - set(expected)):
         named.append(f"unknown keys {', '.join(unknown)} — {block} takes only {', '.join(expected)}")
     return prefix + "; ".join(named)
-
-
-def required_keys_phrase(phase: str) -> str:
-    """The phase's own required envelope keys, rendered for an instruction line.
-
-    Derived from :data:`~teatree.agents.result_schema.PHASE_REQUIRED_EVIDENCE`, never
-    a second hand-maintained list — an instruction that names a key the phase does
-    not require teaches the re-dispatched agent the wrong contract.
-    """
-    required = required_evidence_for_phase(phase)
-    if not required:
-        return "`summary`"
-    phrase = "`summary` and " + " or ".join(f"`{field}`" for field in required)
-    conditional = conditional_evidence_for_phase(phase)
-    if conditional:
-        also = " and ".join(f"`{field}`" for field in conditional)
-        phrase += f" (plus {also} when the request implies work)"
-    return phrase
-
-
-def corrective_instruction(phase: str) -> str:
-    """The one-shot corrective note appended to a re-dispatched task's prompt.
-
-    Lands in ``Task.execution_reason``, which ``agents/prompt.py`` renders as the
-    brief's ``Reason:`` line — so it is phase-accurate by construction.
-    """
-    return (
-        f"your last run omitted the required trailing JSON result envelope "
-        f"({required_keys_phrase(phase)}) — emit it as the last thing you write, "
-        "plain JSON, nothing after it."
-    )
-
-
-def refused_envelope_instruction(refusal: str) -> str:
-    """The one-shot corrective note for an envelope the recorder refused by name."""
-    return (
-        f"your last run's result envelope was refused ({refusal}) — re-emit the complete envelope "
-        "with exactly those keys corrected, as the last thing you write, plain JSON, nothing after it."
-    )
