@@ -389,6 +389,8 @@ description = "Runs the overlay provisioning smoke test once a day to catch brok
 
 [loops.eval_local]
 delay_seconds = 86400
+replaces_delay_seconds = 604800
+replaces_description = "Runs the local behavioral eval suite weekly; this row IS the cadence."
 colleague_facing = false
 description = "Runs one shard of behavioral evals daily on the factory subscription account."
 

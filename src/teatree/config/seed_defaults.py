@@ -65,7 +65,7 @@ SEED_ROW_FIELDS: dict[str, dict[str, tuple[str, type]]] = {
 #: The shipped loop posture is a preset opinion, and ``Loop.enabled`` is the
 #: manual override — an incident state a box should never carry into another box's config.
 SHIPPED_ONLY_FIELDS: dict[str, tuple[str, ...]] = {
-    "loops": ("prompt_body",),
+    "loops": ("prompt_body", "replaces_delay_seconds", "replaces_description"),
     "schedules": ("slots",),
 }
 

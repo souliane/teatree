@@ -9,7 +9,11 @@ from teatree.core.models import EvalRunRecord, EvalVerdict
 
 def render_results_page(*, now: datetime | None = None) -> str:
     current = now or timezone.now()
-    run = EvalRunRecord.objects.order_by("-started_at", "-pk").first()
+    run = (
+        EvalRunRecord.objects.filter(suite__startswith=EvalRunRecord.LOCAL_SUITE_PREFIX)
+        .order_by("-started_at", "-pk")
+        .first()
+    )
     if run is None:
         return "# Behavioral eval results\n\nno recorded runs\n"
     lines = [f"# Behavioral eval results — {run.started_at.date().isoformat()}", ""]
@@ -23,8 +27,8 @@ def render_results_page(*, now: datetime | None = None) -> str:
             f"{run.passed} passed, {run.failed} failed, {run.errored} errors, "
             f"{run.skipped} skipped (of {run.total}); cost ${cost:.4f}"
         )
-        failures = run.results.filter(verdict=EvalVerdict.FAIL).order_by("scenario_name")
-        if failures.exists():
-            lines.extend(("", "## Failing scenarios", ""))
-            lines.extend(f"- {row.scenario_name}" for row in failures)
+    failures = run.results.filter(verdict__in=(EvalVerdict.FAIL, EvalVerdict.ERROR)).order_by("scenario_name")
+    if failures.exists():
+        lines.extend(("", "## Failing scenarios", ""))
+        lines.extend(f"- {row.scenario_name}" for row in failures)
     return "\n".join(lines) + "\n"

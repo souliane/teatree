@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """The scheduled local eval must run the real CLI lane and record a measurable result."""
 
 import os
@@ -9,7 +10,7 @@ from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.core.deterministic_phases import deterministic_phase_runner, run_deterministic_phase
+from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.models import EvalRunRecord, EvalVerdict, Loop, Session, Task, Ticket
 from teatree.eval.models import EvalSpec, Matcher
 
@@ -19,9 +20,6 @@ class TestEvalLocalPhase(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", extra={"issue_title": "local eval"})
         session = Session.objects.create(ticket=ticket, agent_id="eval-local")
         return Task.objects.create(ticket=ticket, session=session, phase="eval_local")
-
-    def test_runner_is_registered(self) -> None:
-        assert deterministic_phase_runner("eval_local") is not None
 
     def test_a_measured_run_completes_and_never_passes_the_metered_key(self) -> None:
         task = self._task()
@@ -38,7 +36,7 @@ class TestEvalLocalPhase(TestCase):
             returncode = 1
 
             def communicate(self, *, timeout: float) -> tuple[str, str]:
-                run = EvalRunRecord.objects.create(model="claude-sonnet", suite="local")
+                run = EvalRunRecord.objects.create(model="claude-sonnet", suite=f"eval_local:{task.pk}")
                 run.record_scenario(scenario_name="alpha", verdict=EvalVerdict.FAIL, cost_usd=0.42)
                 return "", ""
 
@@ -60,6 +58,7 @@ class TestEvalLocalPhase(TestCase):
         assert "--persist" in run_argv
         assert "rotate/7" in run_argv
         assert "ANTHROPIC_API_KEY" not in spawn.call_args.kwargs["env"]
+        assert spawn.call_args.kwargs["env"][EvalRunRecord.RECORD_SUITE_ENV] == f"eval_local:{task.pk}"
         assert EvalRunRecord.objects.latest("pk").failed == 1
 
     def test_unavailable_lane_records_all_skips_and_fails_the_task(self) -> None:
@@ -89,6 +88,34 @@ class TestEvalLocalPhase(TestCase):
         assert run.total == 2
         assert run.skipped == 2
         assert run.measured_nothing
+
+    def test_unrelated_run_cannot_make_a_failed_lane_measured(self) -> None:
+        task = self._task()
+
+        def fake_run(argv: list[str], **kwargs: object) -> object:
+            output = "alpha\n" if "list" in argv else ""
+            return type("Completed", (), {"returncode": 0, "stdout": output, "stderr": ""})()
+
+        class FakeChild:
+            returncode = 2
+
+            def communicate(self, *, timeout: float) -> tuple[str, str]:
+                unrelated = EvalRunRecord.objects.create(model="manual", suite="other")
+                unrelated.record_scenario(scenario_name="alpha", verdict=EvalVerdict.PASS)
+                return "", ""
+
+        with (
+            patch("teatree.agents.eval_local_phase.run_allowed_to_fail", side_effect=fake_run),
+            patch("teatree.agents.eval_local_phase.spawn_session_leader", return_value=FakeChild()),
+        ):
+            result = run_deterministic_phase(task)
+
+        assert result is not None
+        assert result["exit_code"] == "1"
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        local = EvalRunRecord.objects.get(suite=f"eval_local:{task.pk}")
+        assert local.measured_nothing
 
     def test_unavailable_catalog_records_an_unmeasured_run(self) -> None:
         task = self._task()
@@ -137,7 +164,10 @@ class TestEvalLocalPhase(TestCase):
                 returncode = 0
 
                 def communicate(self, *, timeout: float) -> tuple[str, str]:
-                    with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
+                    with (
+                        patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+                        patch.dict(os.environ, {EvalRunRecord.RECORD_SUITE_ENV: f"eval_local:{task.pk}"}),
+                    ):
                         result = CliRunner().invoke(
                             app,
                             ["eval", "run", "--backend", "transcript", "--transcript-dir", directory, "--persist"],

@@ -66,8 +66,8 @@ def _run_child(task: Task, shard: str, selected: list[str], env: dict[str, str])
             return child.returncode
 
 
-def _record_unmeasured(selected: list[str], *, reason: str) -> EvalRunRecord:
-    run = EvalRunRecord.objects.create(model="subscription_oauth", suite="eval_local")
+def _record_unmeasured(selected: list[str], *, reason: str, suite: str) -> EvalRunRecord:
+    run = EvalRunRecord.objects.create(model="subscription_oauth", suite=suite)
     for name in selected:
         run.record_scenario(scenario_name=name, verdict=EvalVerdict.SKIP, terminal_reason=reason)
     return run
@@ -75,11 +75,13 @@ def _record_unmeasured(selected: list[str], *, reason: str) -> EvalRunRecord:
 
 def run_eval_local(task: Task) -> str:
     env = _subscription_env()
+    suite = f"{EvalRunRecord.LOCAL_SUITE_PREFIX}{task.pk}"
+    env[EvalRunRecord.RECORD_SUITE_ENV] = suite
     shard = _shard()
     try:
         selected = _selected_scenarios(shard, env)
     except RuntimeError:
-        _record_unmeasured([], reason="scenario catalog unavailable")
+        _record_unmeasured([], reason="scenario catalog unavailable", suite=suite)
         raise
     pinned = run_allowed_to_fail(
         _command("pinned-regressions"),
@@ -88,9 +90,9 @@ def run_eval_local(task: Task) -> str:
     )
     prior_pk = EvalRunRecord.objects.order_by("-pk").values_list("pk", flat=True).first() or 0
     child_exit = _run_child(task, shard, selected, env)
-    run = EvalRunRecord.objects.filter(pk__gt=prior_pk).order_by("-pk").first()
+    run = EvalRunRecord.objects.filter(pk__gt=prior_pk, suite=suite).order_by("-pk").first()
     if run is None:
-        run = _record_unmeasured(selected, reason=f"eval lane exited {child_exit} without a recorded run")
+        run = _record_unmeasured(selected, reason=f"eval lane exited {child_exit} without a recorded run", suite=suite)
     if run.measured_nothing:
         msg = f"measured nothing: 0 of {run.total} scenarios graded (child exit {child_exit})"
         raise RuntimeError(msg)

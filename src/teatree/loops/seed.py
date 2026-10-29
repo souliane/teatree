@@ -6,7 +6,8 @@ values live in the ``[loops.<name>]`` tables of ``src/teatree/config/defaults.to
 alongside every other shipped default an operator tunes, and this module builds the
 :class:`LoopSeedSpec` set from them. Migrations seeded these at migrate-time; this
 module is the install-time seed ``t3 setup`` runs so a fresh — or squashed-migration —
-install has them present regardless of migration history.
+install has them present regardless of migration history. A shipped replacement
+value upgrades only rows that still carry the prior shipped value.
 
 The seed is **idempotent**: it ``get_or_create``s by ``name``, so re-running it
 creates nothing new and NEVER clobbers an operator-edited row (a disabled loop,
@@ -75,6 +76,8 @@ class LoopSeedSpec:
     daily_at: dt.time | None = None
     prompt_body: str | None = None
     colleague_facing: bool = False
+    replaces_delay_seconds: int | None = None
+    replaces_description: str | None = None
 
     @property
     def is_prompt_backed(self) -> bool:
@@ -102,6 +105,8 @@ def load_loop_specs(path: Path | None = None) -> tuple[LoopSeedSpec, ...]:
             daily_at=entry.get("daily_at"),
             prompt_body=entry.get("prompt_body"),
             colleague_facing=entry.get("colleague_facing", False),
+            replaces_delay_seconds=entry.get("replaces_delay_seconds"),
+            replaces_description=entry.get("replaces_description"),
         )
         for name, entry in shipped_seed_table(_LOOPS_TABLE, path).items()
     )
@@ -177,5 +182,10 @@ def seed_default_loops_and_prompts() -> SeedResult:
             defaults["script"] = spec.script_entry_point
         _, made = Loop.objects.get_or_create(name=spec.name, defaults=defaults)
         loops_created += int(made)
+        if spec.replaces_delay_seconds is not None:
+            old_default = Loop.objects.filter(name=spec.name, delay_seconds=spec.replaces_delay_seconds)
+            if spec.replaces_description is not None:
+                old_default.filter(description=spec.replaces_description).update(description=spec.description)
+            old_default.update(delay_seconds=spec.delay_seconds)
         Loop.objects.filter(name=spec.name, description="").update(description=spec.description)
     return SeedResult(loops_created=loops_created, prompts_created=prompts_created)

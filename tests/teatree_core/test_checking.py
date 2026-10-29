@@ -512,7 +512,7 @@ class TestNeedsYouGroup(CheckingTestBase):
 
 class TestTerseFormatting(CheckingTestBase):
     def test_measured_nothing_survives_an_otherwise_empty_report(self) -> None:
-        run = EvalRunRecord.objects.create(model="subscription", started_at=self.now)
+        run = EvalRunRecord.objects.create(model="subscription", suite="eval_local:1", started_at=self.now)
         run.record_scenario(scenario_name="alpha", verdict=EvalVerdict.SKIP)
 
         with patch("teatree.loops.enable_verdict.loop_admits", return_value=True):

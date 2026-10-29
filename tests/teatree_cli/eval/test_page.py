@@ -18,7 +18,7 @@ class TestPage(TestCase):
         assert "no recorded runs" in result.output
 
     def test_page_writes_current_recorded_run(self) -> None:
-        run = EvalRunRecord.objects.create(model="subscription")
+        run = EvalRunRecord.objects.create(model="subscription", suite="eval_local:1")
         run.record_scenario(scenario_name="alpha", verdict=EvalVerdict.FAIL, cost_usd=0.25)
         with TemporaryDirectory() as directory:
             out = Path(directory) / "results.md"

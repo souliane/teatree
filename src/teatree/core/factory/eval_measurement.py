@@ -12,11 +12,12 @@ _STALE_AFTER = timedelta(days=7)
 def eval_measurement_signal(now: datetime) -> HealthSignal | None:
     if not import_module("teatree.loops.enable_verdict").loop_admits("eval_local", now):
         return None
-    latest = EvalRunRecord.objects.order_by("-started_at", "-pk").first()
+    local_runs = EvalRunRecord.objects.filter(suite__startswith=EvalRunRecord.LOCAL_SUITE_PREFIX)
+    latest = local_runs.order_by("-started_at", "-pk").first()
     if latest is None:
         return None
     last_measured = (
-        EvalRunRecord.objects.filter(scenario_results__verdict__in=("pass", "fail"))
+        local_runs.filter(scenario_results__verdict__in=("pass", "fail"))
         .distinct()
         .order_by("-started_at", "-pk")
         .first()

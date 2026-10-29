@@ -176,6 +176,8 @@ class EvalRunManager(models.Manager["EvalRunRecord"]):
 
 
 class EvalRunRecord(models.Model):
+    LOCAL_SUITE_PREFIX: ClassVar[str] = "eval_local:"
+    RECORD_SUITE_ENV: ClassVar[str] = "T3_EVAL_RUN_SUITE"
     """One ``t3 eval run`` invocation across all selected scenarios."""
 
     started_at = models.DateTimeField(default=timezone.now)
