@@ -367,9 +367,9 @@ _LOOP_ROWS = (
         "prompt": None,
         "script": "src/teatree/loops/dm_sweep/loop.py",
         "run_in_sub_agent": True,
-        "description": "Sweeps the owner's DM threads hourly and resolves the ones that no longer need them (owner "
-        "already replied, subject merged/closed, duplicate of an open thread); leaves anything "
-        "older than a day for the resurfacing side, and says nothing when it resolved nothing.",
+        "description": "Sweeps the owner's DM threads hourly and resolves the ones that no longer need them "
+        "(subject merged/closed, duplicate of an open thread); leaves anything older than a day "
+        "for the resurfacing side, and says nothing when it resolved nothing.",
         "overlay": "",
         "delay_seconds": 3600,
         "daily_at": None,
