@@ -1,6 +1,6 @@
 """Loopback ttyd web-terminal launcher (#3162 — resurrected from #541's `f7d65a9e~1`).
 
-Spawns ``ttyd --writable --once`` on a free ``127.0.0.1`` port wrapping an agent
+Spawns ``ttyd --writable --once`` on fixed ``127.0.0.1:8804`` wrapping an agent
 command and returns the ``launch_url``. This is the convenience debug tier: it
 binds loopback ONLY (reached through the same SSH tunnel as the admin, never a
 new network door), and ``--once`` makes the ttyd process die once the FIRST
@@ -25,15 +25,18 @@ Break-glass when teatree itself is down stays host ``ssh`` + ``tmux`` (see
 
 import logging
 import shutil
+import socket
 import threading
+import time
 from dataclasses import dataclass
 
-from teatree.utils.ports import find_free_port
 from teatree.utils.run import DEVNULL, Popen, run_allowed_to_fail, spawn
 
 logger = logging.getLogger(__name__)
 
 _LOOPBACK = "127.0.0.1"
+TERMINAL_PORT = 8804
+_READY_SECONDS = 3.0
 _TTYD_INSTALL_HINT = "ttyd not found on PATH — install with `brew install ttyd` (macOS) or `apt install ttyd` (Linux)"
 #: How long an unconnected ``--writable`` ttyd may sit with no client before it is
 #: reaped. Generous enough for a human to click the dashboard button and connect,
@@ -45,7 +48,31 @@ _CONNECT_GRACE_SECONDS = 120.0
 class LaunchResult:
     launch_url: str = ""
     pid: int = 0
+    port: int = 0
     error: str = ""
+
+
+def _port_available(port: int) -> bool:
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((_LOOPBACK, port))
+        except OSError:
+            return False
+    return True
+
+
+def _wait_until_listening(proc: Popen[str], port: int) -> bool:
+    deadline = time.monotonic() + _READY_SECONDS
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False
+        try:
+            with socket.create_connection((_LOOPBACK, port), timeout=0.2):
+                return True
+        except OSError:
+            time.sleep(0.05)
+    return False
 
 
 def _has_established_client(port: int) -> bool:
@@ -93,7 +120,7 @@ def _arm_connect_grace_reaper(proc: Popen[str], port: int) -> None:
 
 
 def launch_ttyd(command: list[str], *, env: dict[str, str] | None = None) -> LaunchResult:
-    """Spawn ``ttyd --writable --once`` on a free loopback port wrapping *command*.
+    """Spawn ``ttyd --writable --once`` on the fixed loopback port wrapping *command*.
 
     Returns a :class:`LaunchResult` with the ``launch_url`` on success, or one
     carrying an ``error`` when ttyd is not installed — never raises, so a missing
@@ -109,7 +136,9 @@ def launch_ttyd(command: list[str], *, env: dict[str, str] | None = None) -> Lau
         logger.error(_TTYD_INSTALL_HINT)
         return LaunchResult(error=_TTYD_INSTALL_HINT)
 
-    port = find_free_port(_LOOPBACK)
+    port = TERMINAL_PORT
+    if not _port_available(port):
+        return LaunchResult(error=f"terminal port {port} is already in use")
     # Both streams go to DEVNULL: nothing reads ttyd's output, and an unread PIPE
     # can fill the OS pipe buffer and block a chatty ttyd mid-session. The reaper's
     # liveness probe is an independent loopback ``lsof`` on the port, not ttyd's stderr.
@@ -119,6 +148,11 @@ def launch_ttyd(command: list[str], *, env: dict[str, str] | None = None) -> Lau
         stdout=DEVNULL,
         stderr=DEVNULL,
     )
+    threading.Thread(target=proc.wait, daemon=True).start()
+    if not _wait_until_listening(proc, port):
+        if proc.poll() is None:
+            proc.terminate()
+        return LaunchResult(error="terminal did not listen on its port")
     _arm_connect_grace_reaper(proc, port)
     logger.info("Launched loopback ttyd (pid=%d, port=%d)", proc.pid, port)
-    return LaunchResult(launch_url=f"http://{_LOOPBACK}:{port}", pid=proc.pid)
+    return LaunchResult(launch_url=f"http://{_LOOPBACK}:{port}", pid=proc.pid, port=port)

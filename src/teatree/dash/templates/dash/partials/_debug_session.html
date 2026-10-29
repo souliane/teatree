@@ -1,6 +1,8 @@
 {% if result.launch_url %}
   <p data-ttyd-launch="{{ result.launch_url }}">Opening terminal in a new tab — if your browser blocked the pop-up, use
-    <a href="{{ result.launch_url }}" target="_blank" rel="noopener">{{ result.launch_url }}</a> (loopback; reach it over your SSH tunnel).</p>
+    <a href="{{ result.launch_url }}" target="_blank" rel="noopener">{{ result.launch_url }}</a>.</p>
+  <p>If the tab cannot connect from your computer, add this forward to your dashboard SSH tunnel:
+    <code>ssh -L {{ result.port }}:127.0.0.1:{{ result.port }} &lt;your SSH target&gt;</code></p>
 {% else %}
   <p class="card-error">{{ result.error|default:"failed to launch terminal" }}</p>
 {% endif %}

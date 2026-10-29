@@ -5,8 +5,12 @@ from the main dashboard there was no way to open a terminal. This header button
 opens a fresh loopback terminal from every page; the per-ticket drawer button stays.
 """
 
+import base64
+import os
 import re
 import shutil
+import socket
+from http import HTTPStatus
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -15,7 +19,7 @@ from pytest_django.live_server_helper import LiveServer
 from e2e.dash.pom import BoardPage
 
 _TERMINAL = "Open a loopback terminal session"
-_LOOPBACK_URL = re.compile(r"^http://127\.0\.0\.1:\d+")
+_LOOPBACK_URL = re.compile(r"^http://127\.0\.0\.1:8804$")
 
 # The click spec drives the REAL launcher, which resolves ``shutil.which("ttyd")``
 # and renders the install hint instead of a launch URL when it is absent. That is a
@@ -57,3 +61,16 @@ def test_terminal_button_click_renders_launch_url(live_server: LiveServer, page:
     expect(result).to_contain_text("Opening terminal in a new tab")
     expect(result.locator("[data-ttyd-launch]")).to_have_attribute("data-ttyd-launch", _LOOPBACK_URL)
     expect(result.get_by_role("link")).to_have_attribute("href", _LOOPBACK_URL)
+    if page.request.get("http://127.0.0.1:8804").status != HTTPStatus.OK:
+        pytest.fail("terminal did not answer HTTP")
+    key = base64.b64encode(os.urandom(16)).decode()
+    with socket.create_connection(("127.0.0.1", 8804), timeout=2) as client:
+        client.sendall(
+            (
+                "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:8804\r\nUpgrade: websocket\r\n"
+                f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: tty\r\n\r\n"
+            ).encode()
+        )
+        if not client.recv(1024).startswith(b"HTTP/1.1 101 Switching Protocols"):
+            pytest.fail("terminal did not accept a websocket upgrade")
