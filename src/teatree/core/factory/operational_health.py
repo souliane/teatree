@@ -39,7 +39,6 @@ from django.db.models import Max
 from django.utils import timezone
 
 from teatree.core.cleanup.reclaim_pressure import effective_disk_floor_gb, reclaim_is_stalled
-from teatree.core.factory.dead_worktree_health import dead_worktree_row_signals
 from teatree.core.factory.dream_staleness import dream_fallen_behind
 from teatree.core.factory.halted_retries import halted_retry_signals, stuck_ticket_halt_signals
 from teatree.core.factory.harness_provider_consistency import harness_provider_mismatches
@@ -472,7 +471,6 @@ _COLLECTORS = (
     _admission_pressure_signals,
     host_pressure_signals,
     pending_pr_overdue_signals,
-    dead_worktree_row_signals,
     _reclaim_stall_signals,
     stack_skill_coverage_signals,
     secret_key_signals,

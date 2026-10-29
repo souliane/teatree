@@ -69,6 +69,7 @@ class TestDispatchLoopBuildJobs:
             "owner_actions",
             "pending_pr_drain",
             "dead_worktree_rows",
+            "stuck_checkout_recheck",
             "undelivered_notify",
             "deferred_question_poster",
             "question_backlog_nag",

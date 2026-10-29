@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from teatree.core.models.errors import NoCurrentPlanError
 from teatree.core.models.task import Task
+from teatree.core.models.ticket import Ticket
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.queued_task_freshness import QueuedTaskFreshnessScanner, _remote_branch_state
 from tests.factories import SessionFactory, TaskFactory, TicketFactory, WorktreeFactory
@@ -117,6 +118,8 @@ class QueuedTaskFreshnessTests(TestCase):
         assert len(signals) == 1
 
     def test_stale_plan_supersedes_coding_and_queues_a_new_plan(self) -> None:
+        Ticket.objects.filter(pk=self.ticket.pk).update(state=Ticket.State.PLAN_RECORDED)
+        self.ticket.refresh_from_db()
         with (
             patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", return_value=_Host()),
             patch("teatree.loop.scanners.queued_task_freshness._remote_branch_state", return_value="present"),
@@ -133,6 +136,55 @@ class QueuedTaskFreshnessTests(TestCase):
         assert Task.objects.filter(ticket=self.ticket, phase="planning", status=Task.Status.PENDING).exists()
         assert len(signals) == 1
 
+    def test_closed_issue_is_not_a_cancellation_of_shipping(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(phase="shipping")
+        self.task.refresh_from_db()
+        with patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", return_value=_Host("closed")):
+            signals = self.scanner.scan()
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        assert "issue already closed" in self.task.execution_reason
+        assert len(signals) == 1
+
+    def test_stale_plan_does_not_cancel_a_ticket_outside_the_coding_gate(self) -> None:
+        with (
+            patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", return_value=_Host()),
+            patch("teatree.loop.scanners.queued_task_freshness._remote_branch_state", return_value="present"),
+            patch("teatree.loop.scanners.queued_task_freshness.branch_content_landed_on_base", return_value=False),
+            patch(
+                "teatree.loop.scanners.queued_task_freshness.check_plan_current",
+                side_effect=NoCurrentPlanError("seams moved"),
+            ) as plan,
+        ):
+            assert self.scanner.scan() == []
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        plan.assert_not_called()
+
+    def test_stamped_old_tasks_do_not_starve_a_new_candidate(self) -> None:
+        old = [TaskFactory(ticket=self.ticket, session=self.task.session, phase="coding") for _ in range(51)]
+        Task.objects.filter(pk__in=[task.pk for task in old]).update(created_at=timezone.now() - timedelta(hours=26))
+        self.ticket.merge_extra(
+            set_keys={"last_validated_at": {str(task.pk): timezone.now().isoformat() for task in old}}
+        )
+        with (
+            patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", return_value=_Host()),
+            patch("teatree.loop.scanners.queued_task_freshness._remote_branch_state", return_value="missing"),
+        ):
+            signals = self.scanner.scan()
+        assert [signal.payload["task_id"] for signal in signals] == [self.task.pk]
+
+    def test_recheck_stops_at_its_tick_budget(self) -> None:
+        second = TaskFactory(ticket=self.ticket, session=self.task.session, phase="coding")
+        Task.objects.filter(pk=second.pk).update(created_at=timezone.now() - timedelta(hours=24, minutes=30))
+        times = iter((0.0, 0.0, 11.0))
+        scanner = QueuedTaskFreshnessScanner(overlay=_Overlay(), overlay_name="t3-test", monotonic=lambda: next(times))
+        with patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", return_value=None):
+            signals = scanner.scan()
+        assert [signal.payload["task_id"] for signal in signals] == [self.task.pk]
+        self.ticket.refresh_from_db()
+        assert str(second.pk) not in self.ticket.extra["last_validated_at"]
+
     def test_remote_target_probe_distinguishes_missing_from_unreadable(self) -> None:
         for code, expected in ((0, "present"), (2, "missing"), (128, "unknown")):
             with (
@@ -147,15 +199,19 @@ class QueuedTaskFreshnessTests(TestCase):
             assert _remote_branch_state(str(Path.cwd()), "origin/stacked") == "unknown"
 
     def test_bad_validation_stamp_is_replaced_by_a_current_one(self) -> None:
-        self.ticket.merge_extra(set_keys={"last_validated_at": {str(self.task.pk): "not-a-date"}})
-        with (
-            patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", return_value=_Host()),
-            patch("teatree.loop.scanners.queued_task_freshness._remote_branch_state", return_value="present"),
-            patch("teatree.loop.scanners.queued_task_freshness.branch_content_landed_on_base", return_value=False),
-        ):
-            assert self.scanner.scan() == []
-        self.ticket.refresh_from_db()
-        assert self.ticket.extra["last_validated_at"][str(self.task.pk)] != "not-a-date"
+        for bad in ("not-a-date", "2020-01-01T00:00:00"):
+            with self.subTest(bad=bad):
+                self.ticket.merge_extra(set_keys={"last_validated_at": {str(self.task.pk): bad}})
+                with (
+                    patch("teatree.loop.scanners.queued_task_freshness.get_code_host_for_url", return_value=_Host()),
+                    patch("teatree.loop.scanners.queued_task_freshness._remote_branch_state", return_value="present"),
+                    patch(
+                        "teatree.loop.scanners.queued_task_freshness.branch_content_landed_on_base", return_value=False
+                    ),
+                ):
+                    assert self.scanner.scan() == []
+                self.ticket.refresh_from_db()
+                assert self.ticket.extra["last_validated_at"][str(self.task.pk)] != bad
 
     def test_target_probe_uncertainty_is_in_the_agent_reason(self) -> None:
         with (

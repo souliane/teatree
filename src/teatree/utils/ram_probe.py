@@ -94,7 +94,7 @@ def _macos_page_size(vm_stat_output: str) -> int:
 
     Not a constant: Apple Silicon uses 16384-byte pages where Intel used 4096,
     and ``vm_stat`` reports page COUNTS. Assuming 4 KiB on an arm64 Mac scales
-    the reclaimable total (free + inactive + purgeable + speculative pages) down 4x,
+    the reclaimable total (free + speculative + the larger of inactive or purgeable pages) down 4x,
     so a 24 GiB host can falsely appear to have less than 4 GiB available. ``vm_stat`` states the
     real size on its first line, so read it rather than guess.
 
@@ -208,7 +208,7 @@ def host_available_ram_mib(*, trace: "dict[str, int | str] | None" = None) -> in
 
 
 def _macos_available_ram_mib() -> int:
-    """Reclaimable mac RAM (MiB) from free, inactive, purgeable and speculative pages."""
+    """Conservative reclaimable mac RAM (MiB), without counting purgeable pages twice."""
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from teatree.utils.run import CommandFailedError, run_checked  # noqa: PLC0415 — deferred: call-time import
@@ -220,13 +220,18 @@ def _macos_available_ram_mib() -> int:
         stat = run_checked([vm_stat], timeout=2).stdout
     except (CommandFailedError, OSError, TimeoutError):
         return 0
-    page_size, pages = _macos_page_size(stat), 0
+    page_size = _macos_page_size(stat)
+    pages = {"Pages free": 0, "Pages inactive": 0, "Pages purgeable": 0, "Pages speculative": 0}
     for line in stat.splitlines():
-        if line.startswith(("Pages free:", "Pages inactive:", "Pages purgeable:", "Pages speculative:")):
-            digits = line.split(":")[1].strip().rstrip(".")
+        name, _, value = line.partition(":")
+        if name in pages:
+            digits = value.strip().rstrip(".")
             if digits.isdigit():
-                pages += int(digits)
-    return max(0, pages * page_size // (1024 * 1024))
+                pages[name] = int(digits)
+    reclaimable = (
+        pages["Pages free"] + pages["Pages speculative"] + max(pages["Pages inactive"], pages["Pages purgeable"])
+    )
+    return reclaimable * page_size // (1024 * 1024)
 
 
 def cgroup_v2_memory_mib(filename: str, *, trace: "dict[str, int | str] | None" = None) -> "int | None":

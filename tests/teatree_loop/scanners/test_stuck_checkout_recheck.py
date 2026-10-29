@@ -5,7 +5,9 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.core.models.ticket import Ticket
 from teatree.core.worktree.checkout_fence import CheckoutFenceError, park_task_checkout
 from teatree.loop.scanners.stuck_checkout_recheck import StuckCheckoutRecheckScanner, _claim_recheck
 from tests.factories import SessionFactory, TaskFactory, TicketFactory, WorktreeFactory
@@ -83,6 +85,16 @@ class StuckCheckoutRecheckTests(TestCase):
         self.ticket.merge_extra(pop_keys=["stuck_halt"])
         assert _claim_recheck(self.ticket, timezone.now()) is False
 
+    def test_naive_recheck_stamp_is_replaced(self) -> None:
+        self.ticket.merge_extra(merge_into_dicts={"stuck_halt": {"recheck_at": "2020-01-01T00:00:00"}})
+        with patch(
+            "teatree.loop.scanners.stuck_checkout_recheck.verify_task_checkout",
+            side_effect=CheckoutFenceError("still blocked"),
+        ):
+            assert self.scanner.scan() == []
+        self.ticket.refresh_from_db()
+        assert self.ticket.extra["stuck_halt"]["recheck_at"] != "2020-01-01T00:00:00"
+
     def test_old_valid_recheck_stamp_allows_another_check(self) -> None:
         self.ticket.merge_extra(merge_into_dicts={"stuck_halt": {"recheck_at": "2020-01-01T00:00:00+00:00"}})
         with patch(
@@ -102,3 +114,47 @@ class StuckCheckoutRecheckTests(TestCase):
         self.ticket.refresh_from_db()
         assert self.task.status == Task.Status.CLAIMED
         assert "stuck_halt" in self.ticket.extra
+
+    def test_non_checkout_halts_do_not_starve_later_checkout_park(self) -> None:
+        self.ticket.merge_extra(merge_into_dicts={"stuck_halt": {"reason": "budget spent"}})
+        for _ in range(50):
+            TicketFactory(extra={"stuck_halt": {"reason": "budget spent"}})
+        later = TicketFactory()
+        task = TaskFactory(ticket=later, session=SessionFactory(ticket=later), phase="coding")
+        WorktreeFactory(ticket=later, extra={"worktree_path": str(Path.cwd())})
+        for _ in range(3):
+            park_task_checkout(task, reason="foreign checkout state")
+        with patch("teatree.loop.scanners.stuck_checkout_recheck.verify_task_checkout"):
+            signals = self.scanner.scan()
+        later.refresh_from_db()
+        assert [signal.payload["ticket_id"] for signal in signals] == [later.pk]
+        assert "stuck_halt" not in later.extra
+
+    def test_recently_rechecked_halts_do_not_starve_later_checkout_park(self) -> None:
+        self.ticket.merge_extra(merge_into_dicts={"stuck_halt": {"recheck_at": timezone.now().isoformat()}})
+        tickets = Ticket.objects.bulk_create(TicketFactory.build_batch(49))
+        sessions = Session.objects.bulk_create([Session(ticket=ticket, overlay=ticket.overlay) for ticket in tickets])
+        tasks = Task.objects.bulk_create(
+            [
+                Task(ticket=ticket, session=session, phase="coding")
+                for ticket, session in zip(tickets, sessions, strict=True)
+            ]
+        )
+        for ticket, task in zip(tickets, tasks, strict=True):
+            ticket.extra = {
+                "stuck_halt": {
+                    "reason": "checkout parked: foreign checkout state",
+                    "newest_task": task.pk,
+                    "reviewed_sha": "",
+                    "recheck_at": timezone.now().isoformat(),
+                }
+            }
+        Ticket.objects.bulk_update(tickets, ["extra"])
+        later = TicketFactory()
+        task = TaskFactory(ticket=later, session=SessionFactory(ticket=later), phase="coding")
+        WorktreeFactory(ticket=later, extra={"worktree_path": str(Path.cwd())})
+        for _ in range(3):
+            park_task_checkout(task, reason="foreign checkout state")
+        with patch("teatree.loop.scanners.stuck_checkout_recheck.verify_task_checkout"):
+            signals = self.scanner.scan()
+        assert [signal.payload["ticket_id"] for signal in signals] == [later.pk]

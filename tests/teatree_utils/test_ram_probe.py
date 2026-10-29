@@ -369,7 +369,7 @@ class TestHostAvailableRamMib:
         ):
             assert host_available_ram_mib() == 0
 
-    def test_macos_sums_the_reclaimable_page_classes(self) -> None:
+    def test_macos_does_not_double_count_purgeable_pages(self) -> None:
         stat = (
             "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 32768.\n"
             "Pages inactive: 32768.\nPages purgeable: 16384.\nPages speculative: 8192.\n"
@@ -379,7 +379,7 @@ class TestHostAvailableRamMib:
             patch("shutil.which", return_value="/usr/bin/vm_stat"),
             patch("teatree.utils.run.run_checked", return_value=CompletedProcess([], 0, stat, "")),
         ):
-            assert host_available_ram_mib() == 1408
+            assert host_available_ram_mib() == 1152
 
     def test_macos_without_vm_stat_is_zero(self) -> None:
         with (

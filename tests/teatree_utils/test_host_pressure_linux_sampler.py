@@ -33,6 +33,17 @@ def test_sampler_publishes_fresh_feed_and_throttles_writes(monkeypatch: pytest.M
     assert json.loads(target.read_text())["epoch"] == 1_016
 
 
+def test_sampler_replaces_feed_with_unrepresentable_load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TEATREE_HOST_OS", "Linux")
+    proc = tmp_path / "proc"
+    _proc(proc)
+    target = tmp_path / "host-pressure.json"
+    target.write_text(json.dumps({"epoch": 1_000, "cores": 8, "load1": int("9" * 400), "ram_available_mib": 1000}))
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    HostSampler(proc_root=proc, path=target).publish_if_due(now=1_001)
+    assert json.loads(target.read_text())["load1"] == pytest.approx(1.25)
+
+
 def test_sampler_swap_rate_requires_comparable_samples(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TEATREE_HOST_OS", "Linux")
     proc = tmp_path / "proc"

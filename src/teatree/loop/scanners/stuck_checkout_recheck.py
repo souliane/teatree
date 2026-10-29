@@ -13,6 +13,7 @@ from teatree.core.worktree.checkout_fence import CheckoutFenceError, verify_task
 from teatree.loop.scanners.base import ScanSignal
 
 _RECHECK = timedelta(hours=24)
+_SCAN_LIMIT = 50
 
 
 @dataclass(slots=True)
@@ -23,7 +24,11 @@ class StuckCheckoutRecheckScanner:
     def scan() -> list[ScanSignal]:
         now = timezone.now()
         signals: list[ScanSignal] = []
-        for ticket in Ticket.objects.filter(extra__stuck_halt__isnull=False).order_by("pk")[:50]:
+        checked = 0
+        rows = Ticket.objects.filter(extra__stuck_halt__reason__startswith="checkout parked: ").order_by("pk")
+        for ticket in rows.iterator(chunk_size=100):
+            if checked >= _SCAN_LIMIT:
+                break
             stamp = (ticket.extra or {}).get("stuck_halt")
             if not isinstance(stamp, dict) or not str(stamp.get("reason", "")).startswith("checkout parked: "):
                 continue
@@ -34,6 +39,7 @@ class StuckCheckoutRecheckScanner:
                 or not _claim_recheck(ticket, now)
             ):
                 continue
+            checked += 1
             path = dispatch_worktree_path(ticket)
             if not path:
                 continue
@@ -67,7 +73,7 @@ def _claim_recheck(ticket: Ticket, now: datetime) -> bool:
             try:
                 if datetime.fromisoformat(prior) > now - _RECHECK:
                     return False
-            except ValueError:
+            except (TypeError, ValueError):
                 pass
         locked.merge_extra(merge_into_dicts={"stuck_halt": {"recheck_at": now.isoformat()}})
         return True

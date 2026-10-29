@@ -79,7 +79,8 @@ target="$data_dir/host-pressure.json"
 temporary="$target.$$"
 trap 'rm -f -- "$temporary"' EXIT
 epoch="$(date +%s)"
-ram_mib=$(( (free_pages + inactive_pages + purgeable_pages + speculative_pages) * page_size / 1048576 ))
+reclaimable_pages=$(( free_pages + speculative_pages + (inactive_pages > purgeable_pages ? inactive_pages : purgeable_pages) ))
+ram_mib=$(( reclaimable_pages * page_size / 1048576 ))
 activity=""
 if [[ -n "$swap_pages" ]]; then
     activity=",\"swap_pages\":$swap_pages"

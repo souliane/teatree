@@ -35,7 +35,7 @@ _CONTINUING_STAGE = 100
 _AGED_PLANNING_STAGE = 150
 _NEW_TICKET_STAGE = 0
 _PLANNING_AGE_WINDOW = timedelta(hours=24)
-#: Priority part: an expedited ticket lifts its work above all unexpedited non-review work, never above a review.
+#: Priority part: expedited adds 200 points; started pull requests and reviews retain higher stages.
 _EXPEDITED_PRIORITY = 200
 _NIT_PRIORITY = -1000
 

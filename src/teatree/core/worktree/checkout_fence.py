@@ -251,7 +251,7 @@ def park_task_checkout(
         and (rearmed or stamp.get("reason") != halt_reason)
     ):
         task.ticket.merge_extra(pop_keys=["stuck_halt"])
-    if repeats >= _REPEATED_PARK_THRESHOLD and not rearmed:
+    if repeats >= _REPEATED_PARK_THRESHOLD and behind is None and not rearmed:
         record_ticket_halt(task.ticket, reason=halt_reason)
     if seat_freed or rearmed:
         checkout_capacity_opened.send(sender=Task)

@@ -24,11 +24,11 @@ class TestCheckProvisionAdmission(TestCase):
     def _machine(available_gb: float) -> MachineSignal:
         return MachineSignal(cores=8, load1=1.0, ram_available_gb=available_gb)
 
-    def test_holds_on_the_governor_memory_floor_and_names_unknown(self) -> None:
+    def test_holds_on_the_governor_memory_floor_and_allows_unknown(self) -> None:
         floor = MachineSignal(cores=8, load1=1.0, ram_available_gb=4.0, memory_source="container reading")
         unreadable = MachineSignal(cores=8, load1=1.0, ram_available_gb=None, memory_source="container reading")
         assert "4 GB floor" in check_provision_admission(machine=floor).reason
-        assert "memory_unknown" in check_provision_admission(machine=unreadable).reason
+        assert check_provision_admission(machine=unreadable).ok
 
     def test_holds_on_critical_disk_before_provisioning(self) -> None:
         verdict = check_provision_admission(machine=self._machine(8), disk_used_percent=96)

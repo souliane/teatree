@@ -39,21 +39,29 @@ def _nonnegative_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def _valid(raw: dict, moment: float) -> bool:
+def _valid(raw: object, moment: float) -> str | None:
+    if not isinstance(raw, dict):
+        return "feed malformed"
     epoch = raw.get("epoch")
     cores = raw.get("cores")
     load = raw.get("load1")
-    if not _nonnegative_int(epoch) or not 0 <= moment - epoch < MAX_AGE_SECONDS:
-        return False
-    if not _nonnegative_int(cores) or cores < 1:
-        return False
-    if not _nonnegative_number(load):
-        return False
-    return _nonnegative_int(raw.get("ram_available_mib"))
+    if not _nonnegative_int(epoch):
+        return "feed malformed"
+    if epoch > moment:
+        return "feed from the future"
+    age = moment - epoch
+    if age >= MAX_AGE_SECONDS:
+        return f"feed stale by {age:.0f} seconds"
+    if not _nonnegative_int(cores) or cores < 1 or not _nonnegative_number(load):
+        return "feed malformed"
+    return None if _nonnegative_int(raw.get("ram_available_mib")) else "feed malformed"
 
 
 def _nonnegative_number(value: object) -> TypeGuard[float | int]:
-    return isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    try:
+        return isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
 
 
 def _optional_rate(value: object) -> float | None:
@@ -62,17 +70,6 @@ def _optional_rate(value: object) -> float | None:
 
 def _optional_level(value: object) -> int | None:
     return value if _nonnegative_int(value) else None
-
-
-def _feed_validation_fault(raw: object, moment: float) -> str | None:
-    if not isinstance(raw, dict) or not _nonnegative_int(raw.get("epoch")):
-        return "feed malformed"
-    age = moment - raw["epoch"]
-    if age < 0:
-        return "feed from the future"
-    if age >= MAX_AGE_SECONDS:
-        return f"feed stale by {age:.0f} seconds"
-    return None if _valid(raw, moment) else "feed malformed"
 
 
 def _load_feed(source: Path, moment: float) -> tuple[HostPressure | None, str | None]:
@@ -84,7 +81,7 @@ def _load_feed(source: Path, moment: float) -> tuple[HostPressure | None, str | 
         return None, "feed unreadable"
     except (ValueError, UnicodeError):
         return None, "feed malformed"
-    fault = _feed_validation_fault(raw, moment)
+    fault = _valid(raw, moment)
     if fault is not None:
         return None, fault
     return (

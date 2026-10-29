@@ -80,7 +80,7 @@ def test_publisher_refreshes_host_feed_after_idle_minute(tmp_path: Path) -> None
         "epoch": 1061,
         "cores": 10,
         "load1": 109.45,
-        "ram_available_mib": 497,
+        "ram_available_mib": 481,
         "swap_used_mib": 1660,
         "swap_total_mib": 3072,
         "swap_pages": 150,

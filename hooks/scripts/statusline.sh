@@ -403,7 +403,8 @@ if [ -n "$_ram_total" ]; then
 $(vm_stat 2>/dev/null)
 EOF
     if [[ "$_page_sz" =~ ^[0-9]+$ ]] && [[ "$_free" =~ ^[0-9]+$ ]] && [[ "$_inact" =~ ^[0-9]+$ ]] && [[ "$_purgeable" =~ ^[0-9]+$ ]] && [[ "$_speculative" =~ ^[0-9]+$ ]]; then
-        _ram_used=$(( _ram_total - (_free + _inact + _purgeable + _speculative) * _page_sz ))
+        _reclaimable_pages=$(( _free + _speculative + (_inact > _purgeable ? _inact : _purgeable) ))
+        _ram_used=$(( _ram_total - _reclaimable_pages * _page_sz ))
         _ram_pct=$(( _ram_used * 100 / _ram_total ))
         _used_tenths=$(( (_ram_used * 10 + 536870912) / 1073741824 ))
         _total_gb=$(( (_ram_total + 536870912) / 1073741824 ))
@@ -427,7 +428,7 @@ EOF
                 if [[ "$_old_host_json" =~ \"epoch\":([0-9]+) ]]; then _last_host_epoch="${BASH_REMATCH[1]}"; fi
             fi
             if [ $(( _host_epoch - _last_host_epoch )) -ge 45 ]; then
-                _host_ram_mib=$(( (_free + _inact + _purgeable + _speculative) * _page_sz / 1048576 ))
+                _host_ram_mib=$(( _reclaimable_pages * _page_sz / 1048576 ))
                 _swap_total_mib="${_swap_total%%.*}"
                 _swap_used_mib="${_swap_used%%.*}"
                 if [ -d "$_host_pressure_dir" ] || mkdir -p "$_host_pressure_dir" 2>/dev/null; then

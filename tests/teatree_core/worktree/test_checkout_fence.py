@@ -201,6 +201,13 @@ class CheckoutFenceTests(TestCase):
         assert "stuck_halt" not in self.ticket.extra
         assert not stuck_ticket_halt_signals().signals
 
+    def test_repeated_park_behind_a_live_holder_does_not_record_a_halt(self) -> None:
+        holder = acquire(self.worktree, holder="owner-terminal", holder_session="owner")
+        for _ in range(3):
+            park_task_checkout(self.task, reason="held by the owner", behind=holder)
+        self.ticket.refresh_from_db()
+        assert "stuck_halt" not in self.ticket.extra
+
     def test_held_checkout_is_skipped_until_its_holder_releases_or_lapses(self) -> None:
         Task.objects.filter(pk=self.task.pk).update(status=Task.Status.PENDING, admitted_at=None, not_before=None)
         waiting = Task.objects.waiting_for_admission().filter(pk=self.task.pk)

@@ -1,9 +1,12 @@
 from typing import cast
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase
+from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import DeferredQuestion, PlanArtifact, Session, Task, Ticket
+from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanError
 
 
 class RepairSelfImproveWedgesTests(TestCase):
@@ -63,3 +66,18 @@ class RepairSelfImproveWedgesTests(TestCase):
         assert all(row.dismissed_at is None for row in untouched)
         repeated = cast("dict[str, list[int]]", call_command("repair_self_improve_wedges", "--apply"))
         assert repeated["repaired"] == []
+
+    def test_transition_refusal_rolls_back_and_a_rerun_can_repair(self) -> None:
+        for error in (NoCurrentPlanError("stale"), InvalidTransitionError("invalid"), TransitionNotAllowed("blocked")):
+            with self.subTest(error=type(error).__name__):
+                ticket, question = self._wedge()
+                with patch.object(Ticket, "plan", side_effect=error):
+                    result = cast("dict[str, list[int]]", call_command("repair_self_improve_wedges", "--apply"))
+                ticket.refresh_from_db()
+                question.refresh_from_db()
+                assert ticket.pk in result["invalid_plan"]
+                assert ticket.pk not in result["repaired"]
+                assert ticket.state == Ticket.State.NOT_STARTED
+                assert question.dismissed_at is None
+                rerun = cast("dict[str, list[int]]", call_command("repair_self_improve_wedges", "--apply"))
+                assert ticket.pk in rerun["repaired"]

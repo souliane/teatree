@@ -1,6 +1,8 @@
 """Recheck old pending work before its recorded premise can silently age out."""
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
@@ -11,6 +13,7 @@ from django.utils import timezone
 
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.gates.plan_currency_gate import check_plan_current
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
 from teatree.core.models.errors import NoCurrentPlanError
 from teatree.core.models.task_attempt import TaskAttempt
@@ -29,6 +32,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _AGE = timedelta(hours=24)
 _RECHECK = timedelta(hours=24)
+_SCAN_SECONDS = 10
+_SCAN_LIMIT = 50
 
 
 def _remote_branch_state(repo: str, branch: str) -> str:
@@ -49,6 +54,7 @@ class QueuedTaskFreshnessScanner:
     overlay: OverlayBase
     overlay_name: str
     name: str = "queued_task_freshness"
+    monotonic: Callable[[], float] = time.monotonic
 
     def scan(self) -> list[ScanSignal]:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
@@ -61,12 +67,17 @@ class QueuedTaskFreshnessScanner:
             )
             .exclude(ticket__issue_url="")
             .select_related("ticket")
-            .order_by("created_at", "pk")[:50]
+            .order_by("created_at", "pk")
         )
         signals: list[ScanSignal] = []
-        for task in rows:
+        deadline = self.monotonic() + _SCAN_SECONDS
+        checked = 0
+        for task in rows.iterator(chunk_size=100):
+            if checked >= _SCAN_LIMIT or self.monotonic() >= deadline:
+                break
             if not self._claim(task.ticket, task.pk, now):
                 continue
+            checked += 1
             try:
                 finding = self._check(task)
             except Exception:
@@ -92,7 +103,7 @@ class QueuedTaskFreshnessScanner:
                 try:
                     if datetime.fromisoformat(prior) > now - _RECHECK:
                         return False
-                except ValueError:
+                except (TypeError, ValueError):
                     pass
             locked.merge_extra(merge_into_dicts={"last_validated_at": {str(task_id): now.isoformat()}})
             return True
@@ -109,7 +120,9 @@ class QueuedTaskFreshnessScanner:
         if not isinstance(issue, dict) or "error" in issue:
             return self._note(task, "issue could not be read", changed=False)
         if self.overlay.is_issue_done(issue):
-            return self._supersede(task, "issue already closed")
+            if normalize_phase(task.phase) == "coding":
+                return self._supersede(task, "issue already closed")
+            return self._note(task, "issue already closed")
         return self._check_worktree(task)
 
     def _check_worktree(self, task: "Task") -> str:
@@ -120,12 +133,20 @@ class QueuedTaskFreshnessScanner:
         repo = worktree.worktree_path
         target = resolve_target_branch(ticket, repo, branch=worktree.branch)
         state = _remote_branch_state(repo, target)
-        if state == "unknown":
-            return self._note(task, "target branch could not be read", changed=False)
-        if state == "missing":
-            return self._note(task, f"recorded target branch {bare_target(target)} no longer exists")
+        if state != "present":
+            reason = (
+                f"recorded target branch {bare_target(target)} no longer exists"
+                if state == "missing"
+                else "target branch could not be read"
+            )
+            return self._note(task, reason, changed=state == "missing")
         if branch_content_landed_on_base(repo, worktree.branch, target):
-            return self._supersede(task, "branch content already landed on target")
+            reason = "branch content already landed on target"
+            return (
+                self._supersede(task, reason) if normalize_phase(task.phase) == "coding" else self._note(task, reason)
+            )
+        if normalize_phase(task.phase) != "coding" or ticket.state != ticket.State.PLAN_RECORDED:
+            return ""
         try:
             check_plan_current(ticket)
         except NoCurrentPlanError as error:
